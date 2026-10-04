@@ -6,6 +6,8 @@
  * No live request, funded action or actual service acceptance is qualified.
  * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield self|foreign [PROVER_ASAR ARTIFACT_DIRECTORY]
  * FREEDOM_RAILGUN_TRANSACT_OUTPUT=1 implies proof+membership; selector is exclusive.
+ * FREEDOM_RAILGUN_PARTIAL_CREATOR=1 uses a mixed creator with a 500-unit unshield
+ * and a 1000-unit ordinary output; the own second operation remains legacy.
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -64,6 +66,7 @@ const sources = [
   'src/main/wallet/railgun-poi-source-capture.js',
   'src/main/wallet/railgun-poi-source-evidence.js',
   'src/main/wallet/railgun-poi-creator.js',
+  'src/main/wallet/railgun-poi-creator-data.js',
   'src/main/wallet/railgun-note-provenance.js',
   'src/main/wallet/railgun-note-provenance-job.js',
   'src/main/wallet/railgun-poi-reconstruct.js',
@@ -263,6 +266,8 @@ async function main() {
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   assert.ok(['transfer', 'unshield'].includes(kind));
   assert.ok(['self', 'foreign'].includes(senderKind));
+  const partialCreator = process.env.FREEDOM_RAILGUN_PARTIAL_CREATOR === '1';
+  assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_PARTIAL_CREATOR));
   const selectorQualification = process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR === '1';
   assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR));
   const outputQualification = process.env.FREEDOM_RAILGUN_TRANSACT_OUTPUT === '1';
@@ -1186,6 +1191,7 @@ async function main() {
         kind,
         recipient,
         creatorKind: 'Transact',
+        ...(partialCreator ? { creatorMode: 'partial' } : {}),
         senderKind,
         creatorRow,
         ...(foreignIdentity ? { senderDescriptor: foreignIdentity.descriptor } : {}),
@@ -1318,6 +1324,17 @@ async function main() {
     const creatorInner = txAbi
       .decodeFunctionData('transact', payload.creatorTransaction.data)[0][0]
       .toArray(true);
+    assert.equal(payload.priorShield.preimage.value, partialCreator ? '1500' : '1000');
+    assert.equal(creatorInner[3].length, partialCreator ? 2 : 1);
+    assert.equal(creatorInner[4][6].length, 1);
+    if (partialCreator) {
+      assert.deepEqual(payload.creatorRow.unshield, {
+        tokenData: payload.priorShield.preimage.token,
+        toAddress: '0x' + '12'.repeat(20),
+        value: '500',
+      });
+      assert.equal(creatorInner[3][0], payload.noteHash);
+    }
     const creatorMetadata = {
       address: fixture.receipt.to,
       transactionHash: '0x' + payload.creatorRow.txid,
@@ -1332,10 +1349,29 @@ async function main() {
         ...eventAbi.encodeEventLog('Nullified', [0, creatorInner[2]]),
         logIndex: tag(0),
       },
+      ...(partialCreator
+        ? [
+            {
+              ...creatorMetadata,
+              ...eventAbi.encodeEventLog('Unshield', [
+                '0x' + '12'.repeat(20),
+                [0, require('../src/main/wallet/railgun-shield-pins.json').wrappedNative, 0],
+                499,
+                1,
+              ]),
+              logIndex: tag(1),
+            },
+          ]
+        : []),
       {
         ...creatorMetadata,
-        ...eventAbi.encodeEventLog('Transact', [0, 1, creatorInner[3], creatorInner[4][6]]),
-        logIndex: tag(1),
+        ...eventAbi.encodeEventLog('Transact', [
+          0,
+          1,
+          partialCreator ? creatorInner[3].slice(0, 1) : creatorInner[3],
+          creatorInner[4][6],
+        ]),
+        logIndex: tag(partialCreator ? 2 : 1),
       },
     ];
     history = [priorShield, ...creatorLogs, ...fixture.receipt.logs];
@@ -1574,9 +1610,13 @@ async function main() {
       assert.deepEqual(creator.noteWitness.witness.row, payload.creatorRow);
       assert.equal(creator.noteWitness.witness.index, 0);
       assert.equal(result.witness.index, 1);
+      assert.equal(creator.noteWitness.witness.root, result.witness.root);
+      assert.equal(Boolean(creator.noteWitness.witness.row.unshield), partialCreator);
       assert.equal(creator.verification.pathVerified, true);
       assert.equal(creator.verification.suppliedCreatorEventsMatched, true);
       assert.equal(creator.verification.utilityExitObserved, true);
+      if (partialCreator) assert.equal(creator.verification.unshieldCommitmentVerified, true);
+      else assert.equal(Object.hasOwn(creator.verification, 'unshieldCommitmentVerified'), false);
       assert.equal(creator.origin.transactionIndex, 2);
       for (const flag of [
         'boundParamsChecked',
@@ -1614,7 +1654,21 @@ async function main() {
       for (const entry of timings)
         assert.ok(Number.isSafeInteger(entry.elapsedMs) && entry.elapsedMs >= 0);
       assert.ok(timings[5].elapsedMs < 55000);
-      captureEvidence.push({ phase, rpc, publicTxidPairs: 4, timings });
+      captureEvidence.push({
+        phase,
+        rpc,
+        publicTxidPairs: 4,
+        timings,
+        ...(partialCreator
+          ? {
+              creatorRowHasUnshield: Boolean(creator.noteWitness.witness.row.unshield),
+              creatorUnshieldCommitmentVerified:
+                creator.verification.unshieldCommitmentVerified === true,
+              creatorBeforeOwn: creator.noteWitness.witness.index < result.witness.index,
+              sameCheckpoint: creator.noteWitness.witness.root === result.witness.root,
+            }
+          : {}),
+      });
       assert.deepEqual(await journal.readSnapshot(), beforeJournal);
       return result;
     };
@@ -1971,6 +2025,19 @@ async function main() {
             assert.equal(observed, value.observation);
             assert.equal(observed.inputType, 'Transact');
             assert.equal(observed.poiPreparation.creator.type, 'Transact');
+            if (partialCreator)
+              assert.equal(
+                observed.creatorProvenance.verification.unshieldCommitmentVerified,
+                true
+              );
+            else
+              assert.equal(
+                Object.hasOwn(
+                  observed.creatorProvenance.verification,
+                  'unshieldCommitmentVerified'
+                ),
+                false
+              );
             assert.deepEqual(observed.membership.proofs, [payload.proof]);
             assert.equal(observed.membership.membershipVerified, true);
             assert.equal(observed.selector.blindedCommitment, payload.blindedCommitment);
@@ -1983,6 +2050,9 @@ async function main() {
             ])
               assert.equal(observed[flag], false);
             assert.throws(() => assertMembership({}, enrollment, publicAccount.coordinator));
+            assert.throws(() =>
+              assertMembership({ ...value.receipt }, enrollment, publicAccount.coordinator)
+            );
             assert.throws(() => assertMembership(value.receipt, {}, publicAccount.coordinator));
             const heldJobs = JSON.stringify(jobs),
               heldKeys = selectorKeyReplies,
@@ -2211,6 +2281,9 @@ async function main() {
             sourceCalls: expectedList,
             membershipJobs: expectedMembership,
             genuineRegistryAndTypedMembership: healthy,
+            ...(partialCreator && healthy
+              ? { creatorHashDiagnosticSurvivedRegistry: true, copiedReceiptRefused: true }
+              : {}),
             localProofQualified: healthy && proofQualification && name === 'membership-healthy',
             sharedOwnerExclusion: healthy,
             capsuleAndEoaJournalUnchanged: true,
@@ -3102,6 +3175,17 @@ async function main() {
           elapsedMs: Math.round(performance.now() - started),
           kind,
           senderKind,
+          ...(partialCreator
+            ? {
+                creatorMode: 'partial',
+                creatorInputAmount: '1500',
+                creatorUnshieldAmount: '500',
+                recoveredOutputAmount: '1000',
+                creatorOutputKind: senderKind === 'self' ? 'change' : 'received-transfer',
+                mainPartialAdmissionEnabled: false,
+                creatorSpendProofValidityVerified: false,
+              }
+            : {}),
           sourceSha256: before,
           runs,
           rpcMethods: methods,

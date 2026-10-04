@@ -47,6 +47,7 @@ jest.mock('./railgun-process', () => ({
         inputSha256: require('crypto').createHash('sha256').update(options.input).digest('hex'),
         pathVerified: true,
         suppliedCreatorEventsMatched: true,
+        ...(input.noteWitness.witness.row.unshield ? { unshieldCommitmentVerified: true } : {}),
         ownershipVerified: false,
         eventSourceAuthenticated: false,
         rootAccepted: false,
@@ -65,6 +66,9 @@ jest.mock('./railgun-process', () => ({
       if (mockMode === 'authority') value.spendingEnabled = true;
       if (mockMode === 'guards') value.guards.attempts = 1;
       if (mockMode === 'path') value.pathVerified = false;
+      if (mockMode === 'unshield-missing') delete value.unshieldCommitmentVerified;
+      if (mockMode === 'unshield-false') value.unshieldCommitmentVerified = false;
+      if (mockMode === 'unshield-extra') value.unshieldCommitmentVerified = true;
       if (mockMode === 'coverage')
         value.coverage = { ...value.coverage, globalTxidCompleteness: true };
       const wire = JSON.stringify({
@@ -504,3 +508,203 @@ test('throwing scope close still closes the task and awaits its observed exit', 
     await pending;
   }
 });
+
+async function creatorShape(mixed, multi = false, mutate = () => {}) {
+  const row = JSON.parse(JSON.stringify(input.noteWitness.witness.row));
+  if (mixed) {
+    row.commitments.push('0x' + hash('final unshield'));
+    row.unshield = {
+      toAddress: '0x' + '12'.repeat(20),
+      tokenData: {
+        tokenType: 0,
+        tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+        tokenSubID: '0x' + '0'.repeat(64),
+      },
+      value: '400',
+    };
+  }
+  if (multi) {
+    row.nullifiers.push('0x' + hash('nullifier2'));
+    row.commitments.splice(1, 0, '0x' + hash('output2'));
+  }
+  mutate(row);
+  const projection = createRailgunTxidProjection({
+    hashPair: pair,
+    zeroNodes: zeros,
+    transactionHash: (r) => ({ hash: hash(JSON.stringify(r)), railgunTxid: hash(r.nullifiers[0]) }),
+    verificationHash: () => '0x' + hash('verification'),
+  });
+  const values = new Map(),
+    read = async (k) => values.get(k) ?? null;
+  const { state, writes } = await projection.append(projection.empty(), [row], read);
+  writes.forEach(({ key, value }) => values.set(key, value));
+  const outputIndex = multi ? 1 : 0;
+  const note = {
+    type: 'Transact',
+    txid: '0x' + row.txid,
+    hash: row.commitments[outputIndex],
+    tree: row.utxoTreeOut,
+    position: row.utxoBatchStartPositionOut + outputIndex,
+    blockNumber: row.blockNumber,
+  };
+  Object.assign(input, {
+    state,
+    note,
+    noteWitness: await findRailgunNoteTxidWitness({ state, note, read, projection }),
+    events: [
+      { name: 'Nullified', logIndex: 1, tree: row.utxoTreeIn, values: row.nullifiers },
+      ...(mixed
+        ? [
+            {
+              name: 'Unshield',
+              logIndex: 2,
+              to: row.unshield.toAddress,
+              token: row.unshield.tokenData.tokenAddress,
+              type: row.unshield.tokenData.tokenType,
+              subID: BigInt(row.unshield.tokenData.tokenSubID).toString(),
+              value: row.unshield.value,
+            },
+          ]
+        : []),
+      {
+        name: 'Transact',
+        logIndex: 3,
+        tree: row.utxoTreeOut,
+        start: row.utxoBatchStartPositionOut,
+        hashes: row.commitments.slice(0, row.commitments.length - (mixed ? 1 : 0)),
+      },
+    ],
+  });
+}
+test('mixed host requires the extra crypto diagnostic and only publishes it after exit', async () => {
+  await creatorShape(true);
+  mockDeferExit = true;
+  let settled = false;
+  const work = verifyRailgunNoteProvenance(input).then((v) => {
+    settled = true;
+    return v;
+  });
+  try {
+    await observedTurn();
+    expect(mockTask.close).toHaveBeenCalled();
+    expect(settled).toBe(false);
+    mockExit();
+    const result = await work;
+    expect(result.unshieldCommitmentVerified).toBe(true);
+    expect(result.utilityExitObserved).toBe(true);
+    expect(result.coverage.unshieldCommitmentHashesChecked).toBe(false);
+    expect(result.spendingEnabled).toBe(false);
+  } finally {
+    mockExit();
+    await work;
+  }
+});
+test('legacy generic multi-input/multi-output creator and nonzero selected offset remain accepted', async () => {
+  await creatorShape(false, true);
+  expect(input.noteWitness.outputIndex).toBe(1);
+  const result = await verifyRailgunNoteProvenance(input);
+  expect(result.pathVerified).toBe(true);
+  expect(Object.hasOwn(result, 'unshieldCommitmentVerified')).toBe(false);
+  expect(Object.keys(result)).toEqual([
+    'inputSha256',
+    'pathVerified',
+    'suppliedCreatorEventsMatched',
+    'ownershipVerified',
+    'eventSourceAuthenticated',
+    'rootAccepted',
+    'spendingEnabled',
+    'coverage',
+    'utilityExitObserved',
+  ]);
+  expect(result.coverage.matchedRows).toBe(1);
+});
+test.each(['unshield-missing', 'unshield-false'])(
+  'mixed %s result refuses and drains even when the process exits normally',
+  async (mode) => {
+    await creatorShape(true);
+    mockMode = mode;
+    mockDeferExit = true;
+    let settled = false;
+    const work = verifyRailgunNoteProvenance(input).catch((e) => {
+      settled = true;
+      return e;
+    });
+    try {
+      await observedTurn();
+      expect(mockTask.close).toHaveBeenCalled();
+      expect(settled).toBe(false);
+      expect(startRailgunProcess.mock.calls[0][0].broker.signal.aborted).toBe(true);
+      mockExit();
+      expect(await work).toMatchObject(sanitizedRefusal);
+    } finally {
+      mockExit();
+      await work;
+    }
+  }
+);
+test('legacy result cannot add the mixed hash diagnostic', async () => {
+  mockMode = 'unshield-extra';
+  await expect(verifyRailgunNoteProvenance(input)).rejects.toMatchObject(sanitizedRefusal);
+});
+test.each([
+  ['multiple inputs/outputs', true, () => {}],
+  [
+    'non-WETH',
+    false,
+    (r) => {
+      r.unshield.tokenData.tokenAddress = require('./railgun-shield-pins.json').proxy;
+    },
+  ],
+  [
+    'zero gross',
+    false,
+    (r) => {
+      r.unshield.value = '0';
+    },
+  ],
+])(
+  'generic mixed %s reaches the utility without retained-only narrowing',
+  async (_name, multi, mutate) => {
+    await creatorShape(true, multi, mutate);
+    const result = await verifyRailgunNoteProvenance(input);
+    expect(result.unshieldCommitmentVerified).toBe(true);
+    expect(startRailgunProcess).toHaveBeenCalledTimes(1);
+    expect(input.noteWitness.outputIndex).toBe(multi ? 1 : 0);
+  }
+);
+test('mixed missing-flag refusal cannot be rescued by a subsequent correct result', async () => {
+  await creatorShape(true);
+  const observed = {};
+  mockProtocol = async (broker, valid) => {
+    const bad = JSON.parse(valid);
+    delete bad.value.unshieldCommitmentVerified;
+    const first = broker.dispatch(JSON.stringify(bad));
+    observed.aborted = broker.signal.aborted;
+    await first.catch(() => {});
+    await broker.dispatch(valid).then(
+      () => {
+        observed.rescued = true;
+      },
+      () => {}
+    );
+  };
+  await expect(verifyRailgunNoteProvenance(input)).rejects.toMatchObject(sanitizedRefusal);
+  expect(observed.aborted).toBe(true);
+  expect(observed.rescued).not.toBe(true);
+});
+
+test.each(['normal', 'unshield-extra'])(
+  'nullable absent unshield preserves generic host schema: %s',
+  async (mode) => {
+    await creatorShape(false, true, (row) => {
+      row.unshield = null;
+    });
+    mockMode = mode;
+    if (mode === 'unshield-extra')
+      await expect(verifyRailgunNoteProvenance(input)).rejects.toMatchObject(sanitizedRefusal);
+    else {
+      const result = await verifyRailgunNoteProvenance(input);
+      expect(Object.hasOwn(result, 'unshieldCommitmentVerified')).toBe(false);
+    }
+  }
+);

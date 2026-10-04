@@ -307,6 +307,15 @@ function transactFixture() {
   f.logs.splice(0, f.logs.length, shield, nullified, selected);
   return { ...f, selected, nullified, shield };
 }
+function partialCreatorFixture() {
+  const f = transactFixture();
+  const unshieldArgs = ['0x' + '12'.repeat(20), [0, pins.wrappedNative, 0], 399, 1];
+  const unshield = { ...f.selected, logIndex: 5, ...abi.encodeEventLog('Unshield', unshieldArgs) };
+  f.selected.logIndex = 6;
+  f.logs.splice(2, 0, unshield);
+  f.options.checkpoint.state.unshields.count = 1;
+  return { ...f, unshield, unshieldArgs };
+}
 test('fixed Transact collector binds complete 1x1 group and ciphertext from one full visit', async () => {
   const f = transactFixture();
   const result = await collectTransact(f.options);
@@ -355,7 +364,7 @@ test.each([
   'missing-nullifier',
   'two-nullifiers',
   'two-outputs',
-  'unshield',
+  'wrong-unshield-token',
   'wrong-order',
   'wrong-hash',
   'wrong-index',
@@ -380,18 +389,13 @@ test.each([
     f.options.checkpoint.state.trees[0].length = 3;
     f.options.checkpoint.state.commitments.count = 3;
   }
-  if (fault === 'unshield')
+  if (fault === 'wrong-unshield-token')
     f.logs.splice(2, 0, {
       ...f.selected,
       logIndex: 5,
-      ...abi.encodeEventLog('Unshield', [
-        '0x' + '12'.repeat(20),
-        [0, pins.wrappedNative, 0],
-        998,
-        2,
-      ]),
+      ...abi.encodeEventLog('Unshield', ['0x' + '12'.repeat(20), [0, pins.proxy, 0], 998, 2]),
     });
-  if (fault === 'unshield') f.selected.logIndex = 6;
+  if (fault === 'wrong-unshield-token') f.selected.logIndex = 6;
   if (fault === 'wrong-order') {
     f.selected.logIndex = 3;
     f.logs.splice(1, 2, f.selected, f.nullified);
@@ -519,6 +523,122 @@ test.each([
 );
 
 const collectRetained = require('./railgun-poi-creator').collectRailgunPoiRetainedCreator;
+describe.each([
+  ['Transact', collectTransact],
+  ['retained', collectRetained],
+])('%s partial-creator collection', (_name, collector) => {
+  test('retains the exact three-event group for a legacy second-spend capsule', async () => {
+    const f = partialCreatorFixture();
+    expect(f.options.capsule.version).toBe(1);
+    const result = await collector(f.options);
+    expect(result.transaction.events.map((e) => e.name)).toEqual([
+      'Nullified',
+      'Unshield',
+      'Transact',
+    ]);
+    expect(result.transaction.events[1]).toEqual({
+      name: 'Unshield',
+      logIndex: 5,
+      to: f.unshieldArgs[0],
+      token: pins.wrappedNative,
+      type: 0,
+      subID: '0',
+      value: '400',
+    });
+    expect(result.transaction.events[2].hashes).toEqual([f.options.capsule.noteHash]);
+    expect(result.creator.ciphertext).toEqual(f.transactCipher[1]);
+    expect(result.origin).toMatchObject({ outputOffset: 0, startPosition: 1, logIndex: 6 });
+    expect(result.transaction.logsSha256).toBe(
+      require('crypto')
+        .createHash('sha256')
+        .update(JSON.stringify([f.nullified, f.unshield, f.selected]))
+        .digest('hex')
+    );
+    expect(Object.isFrozen(result.transaction.events[1])).toBe(true);
+    expect(result.sourceAuthenticated).toBe(false);
+    expect(result.txidMembershipVerified).toBe(false);
+    expect(result.spendingEnabled).toBe(false);
+    expect(f.visited()).toBe(4);
+  });
+  test.each([
+    'token',
+    'token-type',
+    'token-subid',
+    'zero-gross',
+    'two-nullifiers',
+    'extra-event',
+    'noncanonical',
+    'different-transaction',
+    'oversize-ciphertext',
+  ])('rejects mixed %s after the entire supplied suffix is visited', async (fault) => {
+    const f = partialCreatorFixture();
+    if (fault === 'token') f.unshieldArgs[1][1] = pins.proxy;
+    if (fault === 'token-type') f.unshieldArgs[1][0] = 1;
+    if (fault === 'token-subid') f.unshieldArgs[1][2] = 1;
+    if (fault === 'zero-gross') f.unshieldArgs[2] = f.unshieldArgs[3] = 0;
+    Object.assign(f.unshield, abi.encodeEventLog('Unshield', f.unshieldArgs));
+    if (fault === 'two-nullifiers')
+      Object.assign(f.nullified, abi.encodeEventLog('Nullified', [0, [hex(700), hex(701)]]));
+    if (fault === 'extra-event') f.logs.push({ ...f.nullified, logIndex: 7 });
+    if (fault === 'noncanonical') f.unshield.data += '00'.repeat(32);
+    if (fault === 'different-transaction') f.unshield.transactionHash = hex(999);
+    if (fault === 'oversize-ciphertext')
+      Object.assign(
+        f.selected,
+        abi.encodeEventLog('Transact', [
+          0,
+          1,
+          [f.options.capsule.noteHash],
+          [{ ...f.transactCipher[1], annotationData: '0x' + 'ab'.repeat(3521), memo: '0x' }],
+        ])
+      );
+    f.logs.push({
+      ...f.shield,
+      blockNumber: 291,
+      blockHash: hex(291),
+      transactionHash: hex(91),
+      logIndex: 0,
+      ...abi.encodeEventLog('Shield', [0, 2, [], [], []]),
+    });
+    await expect(collector(f.options)).rejects.toMatchObject({
+      code: 'RAILGUN_POI_CREATOR_REFUSED',
+    });
+    expect(f.visited()).toBe(f.logs.length);
+  });
+  test('does not release a mixed selection before source authentication completes', async () => {
+    const f = partialCreatorFixture();
+    let release, entered;
+    const gate = new Promise((resolve) => (release = resolve));
+    const ready = new Promise((resolve) => (entered = resolve));
+    const original = f.options.visit.getMockImplementation();
+    f.options.visit.mockImplementation(async (visitor) => {
+      await original(visitor);
+      entered();
+      await gate;
+      throw Error('source suffix authentication failed');
+    });
+    let settled = false;
+    const pending = collector(f.options).then(
+      () => {
+        settled = true;
+        return 'unexpected success';
+      },
+      (error) => {
+        settled = true;
+        return error;
+      }
+    );
+    try {
+      await ready;
+      expect(settled).toBe(false);
+      release();
+      expect(await pending).toMatchObject({ code: 'RAILGUN_POI_CREATOR_REFUSED' });
+    } finally {
+      release();
+      await pending;
+    }
+  });
+});
 test('retained selected-Transact collector binds complete 1x1 group and ciphertext from one full visit', async () => {
   const f = transactFixture();
   const result = await collectRetained(f.options);
@@ -567,7 +687,7 @@ test.each([
   'missing-nullifier',
   'two-nullifiers',
   'two-outputs',
-  'unshield',
+  'wrong-unshield-token',
   'wrong-order',
   'wrong-hash',
   'wrong-index',
@@ -594,18 +714,13 @@ test.each([
       f.options.checkpoint.state.trees[0].length = 3;
       f.options.checkpoint.state.commitments.count = 3;
     }
-    if (fault === 'unshield')
+    if (fault === 'wrong-unshield-token')
       f.logs.splice(2, 0, {
         ...f.selected,
         logIndex: 5,
-        ...abi.encodeEventLog('Unshield', [
-          '0x' + '12'.repeat(20),
-          [0, pins.wrappedNative, 0],
-          998,
-          2,
-        ]),
+        ...abi.encodeEventLog('Unshield', ['0x' + '12'.repeat(20), [0, pins.proxy, 0], 998, 2]),
       });
-    if (fault === 'unshield') f.selected.logIndex = 6;
+    if (fault === 'wrong-unshield-token') f.selected.logIndex = 6;
     if (fault === 'wrong-order') {
       f.selected.logIndex = 3;
       f.logs.splice(1, 2, f.selected, f.nullified);

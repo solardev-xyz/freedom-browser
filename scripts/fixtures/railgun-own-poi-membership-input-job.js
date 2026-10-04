@@ -3,6 +3,8 @@
  * memory; no account, spending-proof or production key-handoff authority.
  * Optional Transact creators are SDK-encrypted 1x1 self/foreign transfers from
  * Shield position 0 to receiver position 1, followed by the selected own spend.
+ * Optional partial creators instead use 1500 in, 1000 ordinary out and 500
+ * unshielded: self output is SDK Change; foreign output is a received Transfer.
  * Both serialized transactions use dummy proofs, never a valid chain spend.
  */
 const assert = require('assert/strict');
@@ -14,6 +16,11 @@ exports.run = async (text, { request, signal, guardReport }) => {
   const input = JSON.parse(text);
   const creatorKind = input.creatorKind ?? 'Shield';
   const senderKind = input.senderKind ?? 'self';
+  const partialCreator = Object.hasOwn(input, 'creatorMode');
+  if (partialCreator) {
+    assert.equal(input.creatorMode, 'partial');
+    assert.equal(creatorKind, 'Transact');
+  }
   assert.ok(['Shield', 'Transact'].includes(creatorKind));
   assert.ok(['self', 'foreign'].includes(senderKind));
   assert.ok(creatorKind === 'Transact' || senderKind === 'self');
@@ -28,6 +35,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
       'row',
       ...(Object.hasOwn(input, 'creatorKind') ? ['creatorKind'] : []),
       ...(Object.hasOwn(input, 'senderKind') ? ['senderKind'] : []),
+      ...(partialCreator ? ['creatorMode'] : []),
       ...(transact ? ['creatorRow'] : []),
       ...(senderKind === 'foreign' ? ['senderDescriptor'] : []),
     ].sort()
@@ -75,6 +83,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
   const { ViewOnlyWallet } = imp('wallet/view-only-wallet');
   const { ShieldNoteERC20 } = imp('note/erc20/shield-note-erc20');
   const { TransactNote } = imp('note/transact-note');
+  const { OutputType } = imp('models/formatted-types');
   const { Transaction } = imp('transaction/transaction');
   const { Prover } = imp('prover/prover');
   const pins = require('../../src/main/wallet/railgun-shield-pins.json');
@@ -182,7 +191,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
     let note = new ShieldNoteERC20(
       sender.addressKeys.masterPublicKey,
       '02'.repeat(16),
-      1000n,
+      partialCreator ? 1500n : 1000n,
       pins.wrappedNative
     );
     let noteHash = hex(
@@ -227,22 +236,28 @@ exports.run = async (text, { request, signal, guardReport }) => {
         position: 0,
         preimage: {
           npk: hex(note.notePublicKey),
-          value: '1000',
+          value: note.value.toString(),
           token: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
         },
         ciphertext: encryptedShield.ciphertext,
       };
+      // The pinned SDK exposes Change through createTransfer's output type,
+      // not a separate createChange factory. A foreign receiver is never change.
+      const selfChange = partialCreator && senderKind === 'self';
       const received = TransactNote.createTransfer(
         addressKeys,
         sender.addressKeys,
-        note.value,
+        partialCreator ? 1000n : note.value,
         note.tokenData,
-        senderKind === 'foreign',
-        0,
+        selfChange || senderKind === 'foreign',
+        selfChange ? OutputType.Change : OutputType.Transfer,
         undefined
       );
       assert.equal(received.receiverAddressData.masterPublicKey, addressKeys.masterPublicKey);
       assert.equal(received.senderAddressData.masterPublicKey, sender.addressKeys.masterPublicKey);
+      assert.equal(received.value, 1000n);
+      assert.equal(received.memoText, undefined);
+      assert.equal(received.outputType, selfChange ? OutputType.Change : OutputType.Transfer);
       const builder = new Transaction(
         { type: 0, id: pins.chainId },
         note.tokenData,
@@ -251,6 +266,20 @@ exports.run = async (text, { request, signal, guardReport }) => {
         [received],
         { contract: '0x' + '0'.repeat(40), parameters: hex(0) }
       );
+      const creatorUnshieldRecipient = '0x' + '12'.repeat(20);
+      let creatorUnshieldCommitment;
+      if (partialCreator) {
+        builder.addUnshieldData(
+          { tokenData: note.tokenData, toAddress: creatorUnshieldRecipient, allowOverride: false },
+          500n
+        );
+        creatorUnshieldCommitment = imp('note/note-util').getNoteHash(
+          creatorUnshieldRecipient,
+          note.tokenData,
+          500n
+        );
+        assert.equal(note.value, received.value + 500n);
+      }
       const creatorRequest = await builder.generateTransactionRequest(
         walletFor(sender, noteHash, pathElements, merkleRoot, 0),
         'V2_PoseidonMerkle',
@@ -260,15 +289,23 @@ exports.run = async (text, { request, signal, guardReport }) => {
       active();
       const cp = creatorRequest.publicInputs;
       assert.deepEqual(cp.nullifiers, [TransactNote.getNullifier(sender.nullifyingKey, 0)]);
-      assert.deepEqual(cp.commitmentsOut, [received.hash]);
+      assert.deepEqual(
+        cp.commitmentsOut,
+        partialCreator ? [received.hash, creatorUnshieldCommitment] : [received.hash]
+      );
       assert.equal(cp.merkleRoot, merkleRoot);
+      assert.deepEqual(creatorRequest.privateInputs.valueIn, [partialCreator ? 1500n : 1000n]);
+      assert.deepEqual(
+        creatorRequest.privateInputs.valueOut,
+        partialCreator ? [1000n, 500n] : [1000n]
+      );
       assert.deepEqual(creatorRequest.privateInputs.pathElements, [pathElements.map(BigInt)]);
       assert.deepEqual(creatorRequest.privateInputs.leavesIndices, [0n]);
       const dummyCreator = await builder.generateDummyProvedTransaction(
         new Prover({
           assertArtifactExists: (inputs, outputs) => {
             assert.equal(inputs, 1);
-            assert.equal(outputs, 1);
+            assert.equal(outputs, partialCreator ? 2 : 1);
           },
         }),
         creatorRequest
@@ -283,7 +320,13 @@ exports.run = async (text, { request, signal, guardReport }) => {
       const decodedCreator = extractRailgunTransactIntent(creatorTransaction);
       assert.deepEqual(decodedCreator.intent, creatorTransaction);
       assert.equal(decodedCreator.expected.boundParamsHash, hex(cp.boundParamsHash));
-      assert.equal(decodedCreator.expected.commitment, hex(received.hash));
+      if (partialCreator) {
+        assert.equal(decodedCreator.expected.kind, 'railgun-partial-unshield');
+        assert.equal(decodedCreator.expected.changeCommitment, hex(received.hash));
+        assert.equal(decodedCreator.expected.unshieldCommitment, hex(creatorUnshieldCommitment));
+        assert.equal(decodedCreator.expected.unshieldAmount, '500');
+        assert.equal(decodedCreator.expected.recipient, creatorUnshieldRecipient);
+      } else assert.equal(decodedCreator.expected.commitment, hex(received.hash));
       assert.equal(decodedCreator.expected.nullifier, hex(cp.nullifiers[0]));
       assert.equal(creatorRequest.boundParams.commitmentCiphertext.length, 1);
       creator = {
@@ -296,11 +339,20 @@ exports.run = async (text, { request, signal, guardReport }) => {
       creatorRow = {
         ...input.creatorRow,
         nullifiers: [hex(cp.nullifiers[0])],
-        commitments: [hex(cp.commitmentsOut[0])],
+        commitments: cp.commitmentsOut.map(hex),
         boundParamsHash: hex(cp.boundParamsHash),
         utxoTreeIn: 0,
         utxoTreeOut: 0,
         utxoBatchStartPositionOut: 1,
+        ...(partialCreator
+          ? {
+              unshield: {
+                tokenData: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
+                toAddress: creatorUnshieldRecipient,
+                value: '500',
+              },
+            }
+          : {}),
       };
       note = received;
       noteHash = hex(note.hash);

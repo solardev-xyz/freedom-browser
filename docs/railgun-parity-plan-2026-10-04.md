@@ -51,6 +51,11 @@ regression passes 13,949 tests at `941099ff`. The subsequent
 public outcomes, both token transfers and ordered change/unshield commitments,
 with real engine hashing/path qualification over synthetic evidence. Main
 partial admission remains closed; earlier counts belong to their recorded sources.
+The [creator-authentication checkpoint](railgun-partial-creator-authentication-2026-10-05.md)
+now verifies the final unshield preimage for generic received-note provenance
+and bounded retained change recovery. Its self-change fixture reaches genuine
+local POI proving and encrypted recovery with simulated chain/services; it does
+not establish combined partial POI or the complete second-spend lifecycle.
 
 ## Next technical work
 
@@ -67,7 +72,8 @@ partial admission remains closed; earlier counts belong to their recorded source
    operation admission remains limited to full-note spends. The new structural
    records express partial withdrawal, and native utility qualification now covers
    proof shape, amount conservation, change decryption and cold reconstruction.
-   Receipt/TXID primitives are now implemented and qualified independently.
+   Receipt/TXID primitives and creator authentication are implemented and qualified
+   independently.
    Enabling it still requires deployed verifier checks, reservation integration,
    connected recovery, normal change ingestion and post-transaction POI. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,

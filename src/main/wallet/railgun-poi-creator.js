@@ -9,6 +9,7 @@ const { SHIELD_EVENT } = require('./railgun-shield-receipt');
 const { PRIVATE_EVENTS } = require('./railgun-transact-receipt');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunPrivateCreatorEvents } = require('./railgun-private-creator');
+const { assertRailgunPoiCreatorEvents } = require('./railgun-poi-creator-data');
 const { checkpointHash } = require('./railgun-wallet-coverage');
 const pins = require('./railgun-shield-pins.json');
 const abi = new Interface([SHIELD_EVENT, ...PRIVATE_EVENTS]);
@@ -234,26 +235,23 @@ async function collect(
       selectedGroup &&
         !selectedGroup.overflow &&
         !selectedGroup.repeated &&
-        selectedGroup.logs.length === 2
+        (selectedGroup.logs.length === 2 || selectedGroup.logs.length === 3)
     );
-    const events = normalizeRailgunPrivateCreatorEvents(selectedGroup.logs);
-    assert.equal(events[0].name, 'Nullified');
-    assert.equal(events[1].name, 'Transact');
-    assert.equal(events[0].values.length, 1);
-    assert.equal(events[1].hashes.length, 1);
-    assert.equal(events[1].tree, tree);
-    assert.equal(events[1].start, position);
-    assert.equal(events[1].hashes[0], capsule.noteHash);
-    assert.equal(events[1].logIndex, selected.origin.logIndex);
+    const note = {
+      type: 'Transact',
+      txid: selected.origin.transactionHash,
+      hash: capsule.noteHash,
+      tree,
+      position,
+      blockNumber: selected.origin.blockNumber,
+    };
+    const { events } = assertRailgunPoiCreatorEvents({
+      note,
+      events: normalizeRailgunPrivateCreatorEvents(selectedGroup.logs),
+    });
+    assert.equal(events.at(-1).logIndex, selected.origin.logIndex);
     transaction = {
-      note: {
-        type: 'Transact',
-        txid: selected.origin.transactionHash,
-        hash: capsule.noteHash,
-        tree,
-        position,
-        blockNumber: selected.origin.blockNumber,
-      },
+      note,
       events,
       logsSha256: createHash('sha256').update(JSON.stringify(selectedGroup.logs)).digest('hex'),
     };

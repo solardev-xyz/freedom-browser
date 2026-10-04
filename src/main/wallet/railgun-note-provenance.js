@@ -36,6 +36,7 @@ async function verify({
   assert.equal(parent.subject.role, 'engine');
   assert.equal(parent.subject.operation, 'note-provenance');
   const normalized = normalizeRailgunNoteTxidWitness(noteWitness, state, note);
+  const hasUnshield = Boolean(normalized.witness.row.unshield);
   const coverage = matchRailgunTxidEvents({
     blockNumber: normalized.note.blockNumber,
     txid: normalized.note.txid.slice(2),
@@ -129,6 +130,7 @@ async function verify({
               'inputSha256',
               'pathVerified',
               'suppliedCreatorEventsMatched',
+              ...(hasUnshield ? ['unshieldCommitmentVerified'] : []),
               'ownershipVerified',
               'eventSourceAuthenticated',
               'rootAccepted',
@@ -140,6 +142,7 @@ async function verify({
             assert.equal(value.inputSha256, digest);
             assert.equal(value.pathVerified, true);
             assert.equal(value.suppliedCreatorEventsMatched, true);
+            if (hasUnshield) assert.equal(value.unshieldCommitmentVerified, true);
             for (const key of [
               'ownershipVerified',
               'eventSourceAuthenticated',
@@ -165,6 +168,7 @@ async function verify({
               inputSha256: digest,
               pathVerified: true,
               suppliedCreatorEventsMatched: true,
+              ...(hasUnshield ? { unshieldCommitmentVerified: true } : {}),
               ownershipVerified: false,
               eventSourceAuthenticated: false,
               rootAccepted: false,

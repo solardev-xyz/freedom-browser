@@ -1,6 +1,6 @@
 # Bounded partial WETH unshield and change spending
 
-**Status: structural records, utility-level native cryptography and receipt/TXID primitives implemented;
+**Status: structural records, native cryptography, receipt/TXID primitives and creator authentication implemented;
 main partial spending remains unavailable.**
 The bounded model now has a distinct `railgun-partial-unshield` kind and version-2
 capsule. Preparation and selection bind recovered input value, gross withdrawal
@@ -11,6 +11,10 @@ qualifies production change construction, 01x02 proving, independent verificatio
 and original-ciphertext recovery using a stored signature and synthetic scan.
 The [receipt/TXID checkpoint](railgun-partial-receipt-2026-10-04.md) adds versioned
 public journal records, strict five-log receipts and keyless partial TXID checks.
+The [creator-authentication checkpoint](railgun-partial-creator-authentication-2026-10-05.md)
+adds final-preimage verification before roots and qualifies retained change
+provenance through real local POI and encrypted recovery. Generic received-note
+compatibility remains intact; this is not the complete second-spend lifecycle.
 Main operation, account, signing, submission and POI entry points still refuse
 this new kind; reservations remain legacy-only.
 Combined POI, authenticated change ingestion and the second spend remain to be
@@ -131,17 +135,16 @@ unavailable until the connected qualification passes, including the second spend
    payload parser is exclusive and the durable record has only a capsule digest,
    not an authenticated operation-kind discriminator. Do not infer new authority
    from a payload containing both fields or reinterpret existing attempted bytes.
-5. **Admit change as a supported creator, then spend it.** Current retained
-   received-Transact joins require a creator with one commitment and no unshield.
-   Extend `railgun-poi-creator.js`, `railgun-own-witness.js`,
-   `railgun-own-poi-proof.js`, `railgun-own-poi-checks.js`, and output-recovery
-   joins to the exact additional creator shape: one nullifier, two commitments,
-   one ordinary output at index zero, and the final unshield commitment. Keep
-   complete creator-event coverage, zero known omissions, source/checkpoint
-   equality and path verification before keys or current-root requests. The
-   creating Transact log still contains one ordinary output; the group adds an
-   Unshield log. Recompute the group-size bound without widening the individual
-   Transact-log policy unnecessarily.
+5. **Creator authentication implemented; complete second spend still pending.**
+   The October 5 checkpoint extends retained joins to one nullifier, two
+   commitments, one ordinary output at index zero and a final unshield. It
+   preserves complete event coverage, source/checkpoint equality and path checks,
+   then requires the pinned-engine final-preimage hash before roots or credentials.
+   Existing three-log capacity suffices. Generic pre-spend received-note support
+   remains broader and now verifies its final unshield without narrowing token
+   types or ordinary-output selection. Native qualification covers real local POI
+   for a legacy second-operation fixture and encrypted same-parent reopening;
+   it does not establish the complete real first/second-spend lifecycle.
    The second spend requires independently obtained typed Transact membership;
    generating or submitting the first POI is not evidence of list eligibility.
    That second full unshield is still a version-1 operation, but its creating
@@ -150,8 +153,8 @@ unavailable until the connected qualification passes, including the second spend
 
 The lower-level `railgun-private-creator.js`, `railgun-txid-events.js`, and
 `railgun-txid-note-witness.js` already represent optional unshield plus ordinary
-outputs. Retained collectors currently impose narrower joins; simply relaxing
-the transaction commitment count would strand change at those joins.
+outputs. Retained collectors preserve deliberately narrower joins than generic pre-spend
+provenance; changing transaction commitment counts alone does not grant authority.
 
 The bounded expected protocol-event order is Nullified, Unshield, Transact.
 The newer local contract checkout also emits Action; it is not an exact deployed

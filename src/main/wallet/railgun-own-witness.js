@@ -18,10 +18,12 @@ const {
   captureRailgunOwnOperationSelector,
 } = require('./railgun-own-operation');
 const { openRailgunAccountTxid } = require('./railgun-account-txid');
+const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
 const {
-  normalizeRailgunTxidWitness,
-  normalizeRailgunNoteTxidWitness,
-} = require('./railgun-txid-note-witness');
+  assertRailgunPoiCreatorEvents,
+  normalizeRailgunPoiCreatorWitness,
+  assertRailgunPoiCreatorVerification,
+} = require('./railgun-poi-creator-data');
 const { verifyRailgunNoteProvenance } = require('./railgun-note-provenance');
 const { observeRailgunOwnReceipt } = require('./railgun-own-receipt');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
@@ -54,7 +56,8 @@ async function captureRailgunOwnWitness(
   retainedInput = false
 ) {
   const sourceFirst = transactMembership || retainedInput;
-  let creatorRequired = transactMembership;
+  let creatorRequired = transactMembership,
+    creatorHasUnshield;
   let stage = 'context',
     timer,
     tailTimer,
@@ -266,12 +269,10 @@ async function captureRailgunOwnWitness(
             position: first.capture.capsule.selection.position,
             blockNumber: captured.origin.blockNumber,
           });
-          assert.deepEqual(
-            captured.transaction.events.map((event) => event.name),
-            ['Nullified', 'Transact']
-          );
-          assert.equal(captured.transaction.events[0].values.length, 1);
-          assert.equal(captured.transaction.events[1].hashes.length, 1);
+          creatorHasUnshield = assertRailgunPoiCreatorEvents({
+            note: captured.transaction.note,
+            events: captured.transaction.events,
+          }).hasUnshield;
         }
         current();
       }
@@ -310,17 +311,15 @@ async function captureRailgunOwnWitness(
           const captured = sourceObservation.creator;
           const foundCreator = await txid.witnessNote(captured.transaction.note);
           current();
-          creatorNoteWitness = normalizeRailgunNoteTxidWitness(
-            foundCreator.noteWitness,
+          const creating = normalizeRailgunPoiCreatorWitness({
             state,
-            captured.transaction.note
-          );
+            note: captured.transaction.note,
+            noteWitness: foundCreator.noteWitness,
+          });
+          assert.equal(creating.hasUnshield, creatorHasUnshield);
+          creatorNoteWitness = creating.noteWitness;
           const creatorWitness = creatorNoteWitness.witness;
           const creatorRow = creatorWitness.row;
-          assert.equal(creatorRow.unshield, undefined);
-          assert.equal(creatorRow.nullifiers.length, 1);
-          assert.equal(creatorRow.commitments.length, 1);
-          assert.equal(creatorNoteWitness.outputIndex, 0);
           assert.equal(creatorRow.commitments[0], captured.creator.hash);
           assert.equal(creatorRow.utxoTreeOut, captured.creator.tree);
           assert.equal(creatorRow.utxoBatchStartPositionOut, captured.creator.position);
@@ -391,11 +390,15 @@ async function captureRailgunOwnWitness(
           });
           current();
           verificationPhase.assertCurrent();
-          assert.equal(creatorVerification.utilityExitObserved, true);
-          assert.equal(creatorVerification.pathVerified, true);
-          assert.equal(creatorVerification.suppliedCreatorEventsMatched, true);
-          assert.equal(creatorVerification.coverage.matchedRows, 1);
-          assert.equal(creatorVerification.coverage.knownOmissions, 0);
+          assert.deepEqual(
+            assertRailgunPoiCreatorVerification({
+              state,
+              note: sourceObservation.creator.transaction.note,
+              noteWitness: creatorNoteWitness,
+              verification: creatorVerification,
+            }),
+            creatorNoteWitness
+          );
           assert.equal(creatorVerification.coverage.boundParamsChecked, false);
           assert.equal(creatorVerification.coverage.globalTxidCompleteness, false);
           verificationPhase.release();

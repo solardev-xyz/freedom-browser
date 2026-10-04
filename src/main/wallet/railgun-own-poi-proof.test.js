@@ -1384,7 +1384,7 @@ test.each(['deadline', 'identity'])(
 
 // Structural fixture only: real capsule/receipt/row/schema checks, synthetic
 // Merkle fields. It does not establish cryptographic path/proof correctness.
-function makeTransactProofFixture(unshield = false) {
+function makeTransactProofFixture(unshield = false, mixedCreator = false) {
   const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
   const hash = (v) =>
     require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -1428,7 +1428,7 @@ function makeTransactProofFixture(unshield = false) {
   const creatorRow = {
     version: 'V2',
     graphID: h(blockNumber) + h(2).slice(2) + h(0).slice(2),
-    commitments: [creator.hash],
+    commitments: mixedCreator ? [creator.hash, h(702)] : [creator.hash],
     nullifiers: [h(700)],
     boundParamsHash: h(701),
     blockNumber,
@@ -1438,6 +1438,19 @@ function makeTransactProofFixture(unshield = false) {
     utxoTreeOut: creator.tree,
     utxoBatchStartPositionOut: creator.position,
     verificationHash: evidence.row.verificationHash,
+    ...(mixedCreator
+      ? {
+          unshield: {
+            tokenData: {
+              tokenType: 0,
+              tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+              tokenSubID: h(0),
+            },
+            toAddress: '0x' + '12'.repeat(20),
+            value: '400',
+          },
+        }
+      : {}),
   };
   const note = {
     type: 'Transact',
@@ -1488,10 +1501,17 @@ function makeTransactProofFixture(unshield = false) {
         spendingEnabled: false,
       },
       verification: {
+        ...(mixedCreator ? { unshieldCommitmentVerified: true } : {}),
         utilityExitObserved: true,
         pathVerified: true,
         suppliedCreatorEventsMatched: true,
-        coverage: { matchedRows: 1, knownOmissions: 0 },
+        coverage: {
+          matchedRows: 1,
+          knownOmissions: 0,
+          boundParamsChecked: false,
+          unshieldCommitmentHashesChecked: false,
+          globalTxidCompleteness: false,
+        },
       },
     },
   };
@@ -1509,8 +1529,8 @@ test('Transact-tagged mocked receipt cannot enter the otherwise valid Shield bra
 describe('Transact host cross-binding with real normalization and mocked membership authority', () => {
   const actualData = jest.requireActual('./railgun-own-poi-proof-data');
   const mockedData = require('./railgun-own-poi-proof-data');
-  function install(unshield = false) {
-    const fixture = makeTransactProofFixture(unshield);
+  function install(unshield = false, mixedCreator = false) {
+    const fixture = makeTransactProofFixture(unshield, mixedCreator);
     mockIdentity.descriptor = fixture.input.descriptor;
     mockEnrollment.descriptor = fixture.input.descriptor;
     mockCapture.capsule = copy(fixture.input.preparation.ownEvidence.capsule);
@@ -1553,10 +1573,15 @@ describe('Transact host cross-binding with real normalization and mocked members
     mockedData.normalizeRailgunOwnPoiProofInput.mockImplementation((v) => copy(v));
     mockedData.expectedRailgunOwnPoiFields.mockImplementation(() => copy(mockExpected));
   });
-  test.each([false, true])(
-    'complete structurally valid Transact transfer/unshield %s reaches both proof stages',
-    async (unshield) => {
-      const fixture = install(unshield);
+  test.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'structural Transact second spend unshield=%s mixed creator=%s reaches both mocked proof stages',
+    async (unshield, mixedCreator) => {
+      const fixture = install(unshield, mixedCreator);
       const result = await run();
       expect(result.status).toBe('proved');
       expect(mockCredential).toHaveBeenCalledTimes(1);
@@ -1572,82 +1597,118 @@ describe('Transact host cross-binding with real normalization and mocked members
       expect(result.membershipAuthenticated).toBe(false);
     }
   );
-  test.each([
-    'missing-type',
-    'wrong-type',
-    'selector-binding',
-    'selector-input',
-    'archive',
-    'capture-capsule',
-    'provenance-type',
-    'provenance-tree',
-    'provenance-position',
-    'provenance-hash',
-    'public-identity',
-    'creator-root',
-    'creator-checkpoint',
-    'creator-transcript',
-    'creator-after-own',
-    'creator-output',
-    'creator-extra-input',
-    'creator-extra-output',
-    'creator-exit',
-    'creator-path',
-    'creator-events',
-    'matched-rows',
-    'known-omission',
-    'events-missing',
-    'events-many',
-    'event-type',
-    'event-leaf',
-    'event-index',
-  ])('pre-key %s mismatch refuses without consuming mocked membership receipt', async (fault) => {
-    install();
-    const original = copy(mockObserved),
-      originalArchive = options.archive;
-    const provenance = mockObserved.creatorProvenance;
-    const witness = provenance.noteWitness.witness;
-    if (fault === 'missing-type') delete mockObserved.inputType;
-    if (fault === 'wrong-type') mockObserved.inputType = 'Shield';
-    if (fault === 'selector-binding') mockObserved.selector.bindingDigest = '0'.repeat(64);
-    if (fault === 'selector-input') mockObserved.selector.inputSha256 = '0'.repeat(64);
-    if (fault === 'archive') options.archive = '/other-engine.asar';
-    if (fault === 'capture-capsule') mockObserved.capture.capsule.operationId = 'changed';
-    if (fault === 'provenance-type') provenance.note.type = 'Shield';
-    if (fault === 'provenance-tree') provenance.note.tree++;
-    if (fault === 'provenance-position') provenance.note.position++;
-    if (fault === 'provenance-hash') provenance.note.hash = hex(99);
-    if (fault === 'public-identity') provenance.publicIdentity.generationId = 'another';
-    if (fault === 'creator-root') witness.root = hex(99).slice(2);
-    if (fault === 'creator-checkpoint') witness.checkpointIndex = 0;
-    if (fault === 'creator-transcript') witness.transcript = hex(99).slice(2);
-    if (fault === 'creator-after-own') witness.index = 1;
-    if (fault === 'creator-output') provenance.noteWitness.outputIndex = 1;
-    if (fault === 'creator-extra-input') witness.row.nullifiers.push(hex(99));
-    if (fault === 'creator-extra-output') witness.row.commitments.push(hex(99));
-    if (fault === 'creator-extra-input' || fault === 'creator-extra-output')
-      witness.rowSha256 = sha(JSON.stringify(witness.row));
-    if (fault === 'creator-exit') provenance.verification.utilityExitObserved = false;
-    if (fault === 'creator-path') provenance.verification.pathVerified = false;
-    if (fault === 'creator-events') provenance.verification.suppliedCreatorEventsMatched = false;
-    if (fault === 'matched-rows') provenance.verification.coverage.matchedRows = 2;
-    if (fault === 'known-omission') provenance.verification.coverage.knownOmissions = 1;
-    if (fault === 'events-missing') delete mockObserved.membership.events;
-    if (fault === 'events-many')
-      mockObserved.membership.events.push(copy(mockObserved.membership.events[0]));
-    if (fault === 'event-type') mockObserved.membership.events[0].signedPOIEvent.type = 'Shield';
-    if (fault === 'event-leaf')
-      mockObserved.membership.events[0].signedPOIEvent.blindedCommitment = hex(99);
-    if (fault === 'event-index') mockObserved.membership.events[0].signedPOIEvent.index = 1;
-    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
-    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
-    expect(startRailgunProcess).not.toHaveBeenCalled();
-    expect(mockCredential).not.toHaveBeenCalled();
-    expect(mockVerifier).not.toHaveBeenCalled();
-    mockObserved = original;
-    options.archive = originalArchive;
-    expect((await run()).status).toBe('proved');
-  });
+  test.each(
+    [
+      'missing-type',
+      'wrong-type',
+      'selector-binding',
+      'selector-input',
+      'archive',
+      'capture-capsule',
+      'provenance-type',
+      'provenance-tree',
+      'provenance-position',
+      'provenance-hash',
+      'public-identity',
+      'creator-root',
+      'creator-checkpoint',
+      'creator-transcript',
+      'creator-after-own',
+      'creator-output',
+      'creator-extra-input',
+      'creator-extra-output',
+      'creator-exit',
+      'creator-path',
+      'creator-events',
+      'matched-rows',
+      'known-omission',
+      'events-missing',
+      'events-many',
+      'event-type',
+      'event-leaf',
+      'event-index',
+    ].flatMap((fault) => [
+      [fault, false],
+      [fault, true],
+    ])
+  )(
+    'pre-key %s mixed=%s mismatch refuses without consuming mocked membership receipt',
+    async (fault, mixedCreator) => {
+      install(false, mixedCreator);
+      const original = copy(mockObserved),
+        originalArchive = options.archive;
+      const provenance = mockObserved.creatorProvenance;
+      const witness = provenance.noteWitness.witness;
+      if (fault === 'missing-type') delete mockObserved.inputType;
+      if (fault === 'wrong-type') mockObserved.inputType = 'Shield';
+      if (fault === 'selector-binding') mockObserved.selector.bindingDigest = '0'.repeat(64);
+      if (fault === 'selector-input') mockObserved.selector.inputSha256 = '0'.repeat(64);
+      if (fault === 'archive') options.archive = '/other-engine.asar';
+      if (fault === 'capture-capsule') mockObserved.capture.capsule.operationId = 'changed';
+      if (fault === 'provenance-type') provenance.note.type = 'Shield';
+      if (fault === 'provenance-tree') provenance.note.tree++;
+      if (fault === 'provenance-position') provenance.note.position++;
+      if (fault === 'provenance-hash') provenance.note.hash = hex(99);
+      if (fault === 'public-identity') provenance.publicIdentity.generationId = 'another';
+      if (fault === 'creator-root') witness.root = hex(99).slice(2);
+      if (fault === 'creator-checkpoint') witness.checkpointIndex = 0;
+      if (fault === 'creator-transcript') witness.transcript = hex(99).slice(2);
+      if (fault === 'creator-after-own') witness.index = 1;
+      if (fault === 'creator-output') provenance.noteWitness.outputIndex = 1;
+      if (fault === 'creator-extra-input') witness.row.nullifiers.push(hex(99));
+      if (fault === 'creator-extra-output') witness.row.commitments.push(hex(99));
+      if (fault === 'creator-extra-input' || fault === 'creator-extra-output')
+        witness.rowSha256 = sha(JSON.stringify(witness.row));
+      if (fault === 'creator-exit') provenance.verification.utilityExitObserved = false;
+      if (fault === 'creator-path') provenance.verification.pathVerified = false;
+      if (fault === 'creator-events') provenance.verification.suppliedCreatorEventsMatched = false;
+      if (fault === 'matched-rows') provenance.verification.coverage.matchedRows = 2;
+      if (fault === 'known-omission') provenance.verification.coverage.knownOmissions = 1;
+      if (fault === 'events-missing') delete mockObserved.membership.events;
+      if (fault === 'events-many')
+        mockObserved.membership.events.push(copy(mockObserved.membership.events[0]));
+      if (fault === 'event-type') mockObserved.membership.events[0].signedPOIEvent.type = 'Shield';
+      if (fault === 'event-leaf')
+        mockObserved.membership.events[0].signedPOIEvent.blindedCommitment = hex(99);
+      if (fault === 'event-index') mockObserved.membership.events[0].signedPOIEvent.index = 1;
+      expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+      expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+      expect(startRailgunProcess).not.toHaveBeenCalled();
+      expect(mockCredential).not.toHaveBeenCalled();
+      expect(mockVerifier).not.toHaveBeenCalled();
+      mockObserved = original;
+      options.archive = originalArchive;
+      expect((await run()).status).toBe('proved');
+    }
+  );
+  test.each(['missing', 'false', 'copied-legacy', 'inherited', 'coverage-hash', 'copied-receipt'])(
+    'mixed creator %s verification cannot authorize a proof key',
+    async (fault) => {
+      install(false, true);
+      const provenance = mockObserved.creatorProvenance;
+      if (fault === 'missing') delete provenance.verification.unshieldCommitmentVerified;
+      if (fault === 'false') provenance.verification.unshieldCommitmentVerified = false;
+      if (fault === 'copied-legacy')
+        provenance.verification = copy(makeTransactProofFixture().creatorProvenance.verification);
+      if (fault === 'inherited') {
+        delete provenance.verification.unshieldCommitmentVerified;
+        Object.setPrototypeOf(provenance.verification, { unshieldCommitmentVerified: true });
+      }
+      if (fault === 'coverage-hash')
+        provenance.verification.coverage.unshieldCommitmentHashesChecked = true;
+      const supplied =
+        fault === 'copied-receipt'
+          ? {
+              ...options,
+              membershipReceipt: { ...options.membershipReceipt, unshieldCommitmentVerified: true },
+            }
+          : options;
+      expect(await run(supplied)).toEqual({ status: 'refused', stage: 'context' });
+      expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+      expect(startRailgunProcess).not.toHaveBeenCalled();
+      expect(mockCredential).not.toHaveBeenCalled();
+    }
+  );
   test('historical typed membership may close after entry without extending root or list authority', async () => {
     install();
     mockRecoveryStart.mockImplementationOnce(async () => {

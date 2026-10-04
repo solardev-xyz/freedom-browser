@@ -675,7 +675,7 @@ test('root closure during final reattestation revokes authority and waits for re
 });
 
 // Structural joins only; genuine source authentication and crypto are native qualifications.
-function makeTransactProofFixture(unshield = false) {
+function makeTransactProofFixture(unshield = false, mixedCreator = false) {
   const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
   const hash = (v) =>
     require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -719,7 +719,7 @@ function makeTransactProofFixture(unshield = false) {
   const creatorRow = {
     version: 'V2',
     graphID: h(blockNumber) + h(2).slice(2) + h(0).slice(2),
-    commitments: [creator.hash],
+    commitments: mixedCreator ? [creator.hash, h(702)] : [creator.hash],
     nullifiers: [h(700)],
     boundParamsHash: h(701),
     blockNumber,
@@ -729,6 +729,19 @@ function makeTransactProofFixture(unshield = false) {
     utxoTreeOut: creator.tree,
     utxoBatchStartPositionOut: creator.position,
     verificationHash: evidence.row.verificationHash,
+    ...(mixedCreator
+      ? {
+          unshield: {
+            tokenData: {
+              tokenType: 0,
+              tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+              tokenSubID: h(0),
+            },
+            toAddress: '0x' + '12'.repeat(20),
+            value: '400',
+          },
+        }
+      : {}),
   };
   const note = {
     type: 'Transact',
@@ -779,16 +792,23 @@ function makeTransactProofFixture(unshield = false) {
         spendingEnabled: false,
       },
       verification: {
+        ...(mixedCreator ? { unshieldCommitmentVerified: true } : {}),
         utilityExitObserved: true,
         pathVerified: true,
         suppliedCreatorEventsMatched: true,
-        coverage: { matchedRows: 1, knownOmissions: 0 },
+        coverage: {
+          matchedRows: 1,
+          knownOmissions: 0,
+          boundParamsChecked: false,
+          unshieldCommitmentHashesChecked: false,
+          globalTxidCompleteness: false,
+        },
       },
     },
   };
 }
-function configureTransactChecks() {
-  const fixture = makeTransactProofFixture();
+function configureTransactChecks(mixedCreator = false) {
+  const fixture = makeTransactProofFixture(false, mixedCreator);
   fixture.input.preparation.state.count = 5;
   for (const witness of [
     fixture.input.preparation.witness,
@@ -834,27 +854,32 @@ test('fresh Transact checks bind retained creator and common checkpoint before t
   expect(createRailgunPoiTxidRootSource).toHaveBeenCalledTimes(1);
   expect(result).not.toHaveProperty('sourceOutcome');
 });
-test.each([
-  'type',
-  'note',
-  'identity',
-  'policy',
-  'checkpoint',
-  'origin',
-  'witness-root',
-  'witness-count',
-  'output-index',
-  'not-before-own',
-  'exit',
-  'path',
-  'events',
-  'coverage-count',
-  'coverage-omissions',
-  'capsule',
-])(
-  'retained Transact checks %s mismatch refuses before either original-root request',
-  async (fault) => {
-    configureTransactChecks();
+test.each(
+  [
+    'type',
+    'note',
+    'identity',
+    'policy',
+    'checkpoint',
+    'origin',
+    'witness-root',
+    'witness-count',
+    'output-index',
+    'not-before-own',
+    'exit',
+    'path',
+    'events',
+    'coverage-count',
+    'coverage-omissions',
+    'capsule',
+  ].flatMap((fault) => [
+    [fault, false],
+    [fault, true],
+  ])
+)(
+  'retained Transact checks %s mixed=%s mismatch refuses before either original-root request',
+  async (fault, mixedCreator) => {
+    configureTransactChecks(mixedCreator);
     const fresh = mock.fresh,
       provenance = fresh.creatorProvenance;
     if (fault === 'type') fresh.creatorClassification.type = 'Shield';
@@ -933,5 +958,30 @@ test.each(['missing', 'pending'])(
     mock.preflight = complete;
     expect((await run()).status).toBe('checked');
     expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(2);
+  }
+);
+
+test('mixed creator diagnostic reaches roots only through current mocked retained preflight', async () => {
+  configureTransactChecks(true);
+  const result = await run();
+  expect(result.status).toBe('checked');
+  expect(createRailgunPoiRootSource).toHaveBeenCalledTimes(1);
+  expect(createRailgunPoiTxidRootSource).toHaveBeenCalledTimes(1);
+  expect(result.rootAccepted).not.toBe(true);
+});
+test.each(['missing', 'false', 'copied-legacy', 'coverage-hash'])(
+  'mixed creator %s verification refuses before either original root',
+  async (fault) => {
+    configureTransactChecks(true);
+    const provenance = mock.fresh.creatorProvenance;
+    if (fault === 'missing') delete provenance.verification.unshieldCommitmentVerified;
+    if (fault === 'false') provenance.verification.unshieldCommitmentVerified = false;
+    if (fault === 'copied-legacy')
+      provenance.verification = clone(makeTransactProofFixture().creatorProvenance.verification);
+    if (fault === 'coverage-hash')
+      provenance.verification.coverage.unshieldCommitmentHashesChecked = true;
+    expect(await run()).toMatchObject({ status: 'refused', stage: 'history-binding' });
+    expect(createRailgunPoiRootSource).not.toHaveBeenCalled();
+    expect(createRailgunPoiTxidRootSource).not.toHaveBeenCalled();
   }
 );

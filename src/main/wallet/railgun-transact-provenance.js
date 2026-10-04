@@ -127,6 +127,7 @@ async function open({
       blockNumber: staged.baseline.owned.blockNumber,
     });
     assert.match(creator.transactionDigest, /^0x[0-9a-f]{64}$/);
+    const hasUnshield = Boolean(row.unshield);
     verified = await verifyRailgunNoteProvenance({
       handle: parent,
       archive: staged.bindings.archive,
@@ -143,6 +144,16 @@ async function open({
     );
     assert.equal(verified.coverage.boundParamsChecked, false);
     assert.equal(verified.coverage.globalTxidCompleteness, false);
+    if (hasUnshield) {
+      assert.equal(verified.unshieldCommitmentVerified, true);
+      assert.deepEqual(verified.coverage, {
+        matchedRows: 1,
+        knownOmissions: 0,
+        boundParamsChecked: false,
+        unshieldCommitmentHashesChecked: false,
+        globalTxidCompleteness: false,
+      });
+    }
     const point = Object.freeze({ index: staged.state.count - 1, root: staged.state.root });
     const observation = Object.freeze({
       transactionDigest: creator.transactionDigest,
@@ -153,6 +164,7 @@ async function open({
       creatorBlockHash: creator.creator.blockHash,
       creatorTransactionIndex: creator.creator.transactionIndex,
       pathVerified: true,
+      ...(hasUnshield ? { unshieldCommitmentVerified: true } : {}),
       creatorSourceAuthenticated: true,
       boundParamsChecked: false,
       globalTxidCompleteness: false,

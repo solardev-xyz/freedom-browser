@@ -22,6 +22,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     input.state,
     input.note
   );
+  const hasUnshield = Boolean(normalized.witness.row.unshield);
   // Only the complete, unambiguous single-row creator is supported. The known
   // omitted service outputs remain inadmissible even in a mixed event group.
   const coverage = require('./railgun-txid-events').matchRailgunTxidEvents({
@@ -49,6 +50,18 @@ exports.run = async function run(text, { request, signal, guardReport }) {
   });
   projection.verifyWitness(input.state, normalized.witness);
   assert.ok(!signal.aborted);
+  if (hasUnshield) {
+    const { getNoteHash, assertValidNoteToken } = require(path.join(root, 'note/note-util'));
+    const unshield = normalized.witness.row.unshield;
+    const value = BigInt(unshield.value);
+    assertValidNoteToken(unshield.tokenData, value);
+    const commitment = getNoteHash(unshield.toAddress, unshield.tokenData, value);
+    assert.equal(
+      '0x' + commitment.toString(16).padStart(64, '0'),
+      normalized.witness.row.commitments.at(-1)
+    );
+  }
+  assert.ok(!signal.aborted);
   const guards = guardReport();
   assert.equal(guards.attempts, 0);
   assert.deepEqual(
@@ -61,6 +74,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
             inputSha256: createHash('sha256').update(text).digest('hex'),
             pathVerified: true,
             suppliedCreatorEventsMatched: true,
+            ...(hasUnshield ? { unshieldCommitmentVerified: true } : {}),
             ownershipVerified: false,
             eventSourceAuthenticated: false,
             rootAccepted: false,

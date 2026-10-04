@@ -13,7 +13,7 @@ const {
   getRailgunAccountPublicDestination,
   assertRailgunAccountPublicDestination,
 } = require('./railgun-account-public');
-const { normalizeRailgunNoteTxidWitness } = require('./railgun-txid-note-witness');
+const { assertRailgunPoiCreatorVerification } = require('./railgun-poi-creator-data');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const {
@@ -63,21 +63,13 @@ function compareHistory(current, history) {
     assert.equal(provenance.txidPolicy, current.txidPolicy);
     assert.equal(provenance.checkpointHash, current.observations.source.checkpointHash);
     assert.deepEqual(provenance.origin, current.observations.source.creator.origin);
-    const creating = normalizeRailgunNoteTxidWitness(
-      provenance.noteWitness,
-      current.poiPreparation.state,
-      provenance.note
-    );
-    assert.equal(creating.outputIndex, 0);
-    assert.equal(creating.witness.row.unshield, undefined);
-    assert.equal(creating.witness.row.nullifiers.length, 1);
-    assert.equal(creating.witness.row.commitments.length, 1);
+    const creating = assertRailgunPoiCreatorVerification({
+      state: current.poiPreparation.state,
+      note: provenance.note,
+      noteWitness: provenance.noteWitness,
+      verification: provenance.verification,
+    });
     assert.ok(creating.witness.index < current.witness.index);
-    assert.equal(provenance.verification.utilityExitObserved, true);
-    assert.equal(provenance.verification.pathVerified, true);
-    assert.equal(provenance.verification.suppliedCreatorEventsMatched, true);
-    assert.equal(provenance.verification.coverage.matchedRows, 1);
-    assert.equal(provenance.verification.coverage.knownOmissions, 0);
   } else assert.equal(current.creatorProvenance, undefined);
   assert.deepEqual(current.poiPreparation.ownEvidence.row, history.preparation.ownEvidence.row);
   for (const key of ['railgunTxid', 'leaf', 'index', 'rowSha256'])

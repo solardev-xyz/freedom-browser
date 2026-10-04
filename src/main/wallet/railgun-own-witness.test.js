@@ -1045,7 +1045,7 @@ const deferredGate = () => {
   return { promise, resolve };
 };
 let creatorNoteWitness;
-async function setupTransact(unshield = false) {
+async function setupTransact(unshield = false, partialCreator = false) {
   await setup(unshield);
   const creatorBlock = 5944701,
     ownBlock = 5944702;
@@ -1081,6 +1081,18 @@ async function setupTransact(unshield = false) {
     utxoBatchStartPositionOut: 1,
     verificationHash: fixture.row.verificationHash,
   };
+  if (partialCreator) {
+    creatorRow.commitments.push(prefixed(702));
+    creatorRow.unshield = {
+      tokenData: {
+        tokenType: 0,
+        tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+        tokenSubID: prefixed(0),
+      },
+      toAddress: '0x' + '12'.repeat(20),
+      value: '400',
+    };
+  }
   const projection = createRailgunTxidProjection({
     hashPair: pair,
     zeroNodes: zeros,
@@ -1129,7 +1141,7 @@ async function setupTransact(unshield = false) {
         blockHash: prefixed(creatorBlock),
         transactionHash: note.txid,
         transactionIndex: 2,
-        logIndex: 1,
+        logIndex: partialCreator ? 2 : 1,
         tree: 0,
         startPosition: 1,
         outputOffset: 0,
@@ -1139,7 +1151,26 @@ async function setupTransact(unshield = false) {
         logsSha256: 'b'.repeat(64),
         events: [
           { name: 'Nullified', logIndex: 0, tree: 0, values: creatorRow.nullifiers },
-          { name: 'Transact', logIndex: 1, tree: 0, start: 1, hashes: creatorRow.commitments },
+          ...(partialCreator
+            ? [
+                {
+                  name: 'Unshield',
+                  logIndex: 1,
+                  to: creatorRow.unshield.toAddress,
+                  token: creatorRow.unshield.tokenData.tokenAddress,
+                  type: 0,
+                  subID: '0',
+                  value: '400',
+                },
+              ]
+            : []),
+          {
+            name: 'Transact',
+            logIndex: partialCreator ? 2 : 1,
+            tree: 0,
+            start: 1,
+            hashes: [creatorRow.commitments[0]],
+          },
         ],
       },
     },
@@ -1153,7 +1184,15 @@ async function setupTransact(unshield = false) {
     mockSourceAt = performance.now();
     return { ...mockSource, status: 'captured' };
   });
-  mockVerifyCreator.mockImplementation(async () => {
+  mockVerifyCreator.mockImplementation(async ({ note, noteWitness, events: creatorEvents }) => {
+    // Actual structural row/event comparison; native path/preimage cryptography
+    // and worker exit remain explicit mocks in this orchestration unit suite.
+    const coverage = require('./railgun-txid-events').matchRailgunTxidEvents({
+      blockNumber: note.blockNumber,
+      txid: note.txid.slice(2),
+      events: creatorEvents,
+      rows: [noteWitness.witness.row],
+    });
     events.push('creator-verify-exited');
     return {
       utilityExitObserved: true,
@@ -1163,12 +1202,8 @@ async function setupTransact(unshield = false) {
       eventSourceAuthenticated: false,
       rootAccepted: false,
       spendingEnabled: false,
-      coverage: {
-        matchedRows: 1,
-        knownOmissions: 0,
-        boundParamsChecked: false,
-        globalTxidCompleteness: false,
-      },
+      coverage: { ...coverage },
+      ...(partialCreator ? { unshieldCommitmentVerified: true } : {}),
     };
   });
   const rootObservation = { index: 1, root: state.root, accepted: true };
@@ -1762,8 +1797,8 @@ test('witness exports fixed historical producer with no claim, registration or a
   );
 });
 
-async function setupRetainedTransact(unshield = false) {
-  await setupTransact(unshield);
+async function setupRetainedTransact(unshield = false, partialCreator = false) {
+  await setupTransact(unshield, partialCreator);
   mockPoiRetainedCapture.mockImplementation(async () => {
     events.push('poi-source-retained');
     mockSourceAt = performance.now();
@@ -1777,6 +1812,138 @@ const retainedTransact = (input = options) =>
       ? input.sourceDestination
       : mockDestination,
   });
+describe.each([
+  ['membership', poiTransact, setupTransact],
+  ['retained', retainedTransact, setupRetainedTransact],
+])('%s preflight with a partial creator', (_name, run, prepare) => {
+  beforeEach(async () => {
+    await prepare(true, true);
+  });
+  test.each([false, true])(
+    'binds mixed creator and legacy own operation, full-unshield=%s',
+    async (unshield) => {
+      await prepare(unshield, true);
+      const result = await run(options);
+      expect(result.status).toBe('captured');
+      expect(result.capture.capsule.version).toBe(1);
+      expect(result.creatorProvenance.noteWitness.witness.row.commitments).toHaveLength(2);
+      expect(result.creatorProvenance.noteWitness.outputIndex).toBe(0);
+      expect(result.creatorProvenance.verification.unshieldCommitmentVerified).toBe(true);
+      expect(result.creatorProvenance.verification.coverage).toMatchObject({
+        matchedRows: 1,
+        knownOmissions: 0,
+        unshieldCommitmentHashesChecked: false,
+      });
+      expect(mockVerifyCreator.mock.calls[0][0].state).toEqual(mockVerify.mock.calls[0][0].state);
+      expect(mockVerifyCreator.mock.calls[0][0].events.map((event) => event.name)).toEqual([
+        'Nullified',
+        'Unshield',
+        'Transact',
+      ]);
+      expect(mockVerifyCreator.mock.calls[0][0].noteWitness.witness.index).toBeLessThan(
+        mockVerify.mock.calls[0][0].witness.index
+      );
+      expect(events.indexOf('creator-verify-exited')).toBeLessThan(events.indexOf('root'));
+      expect(events.indexOf('txid-drained')).toBeLessThan(events.indexOf('creator-verify-exited'));
+      expect(mockRootCreate).toHaveBeenCalledTimes(1);
+      expect(result.spendingEnabled).toBe(false);
+    }
+  );
+  test.each([
+    'missing-hash-proof',
+    'false-hash-proof',
+    'unobserved-exit',
+    'missing-path',
+    'missing-events',
+    'extra-row',
+    'omission',
+  ])('refuses %s before constructing any root client', async (fault) => {
+    const original = mockVerifyCreator.getMockImplementation();
+    mockVerifyCreator.mockImplementation(async (...args) => {
+      const result = await original(...args);
+      if (fault === 'missing-hash-proof') delete result.unshieldCommitmentVerified;
+      if (fault === 'false-hash-proof') result.unshieldCommitmentVerified = false;
+      if (fault === 'unobserved-exit') result.utilityExitObserved = false;
+      if (fault === 'missing-path') result.pathVerified = false;
+      if (fault === 'missing-events') result.suppliedCreatorEventsMatched = false;
+      if (fault === 'extra-row') result.coverage = { ...result.coverage, matchedRows: 2 };
+      if (fault === 'omission') result.coverage = { ...result.coverage, knownOmissions: 1 };
+      return result;
+    });
+    expect(await run(options)).toMatchObject({ status: 'refused', stage: 'creator-verify' });
+    expect(mockVerifyCreator).toHaveBeenCalledTimes(1);
+    expect(mockRootCreate).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+  test('rejects a two-event source with a mixed creator row before either verifier', async () => {
+    mockPoiObservation.creator.transaction.events.splice(1, 1);
+    expect((await run(options)).status).toBe('refused');
+    expect(txid.witnessNote).toHaveBeenCalledTimes(1);
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockVerifyCreator).not.toHaveBeenCalled();
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  });
+  test('rejects a changed unshield event against the genuine normalized creator row', async () => {
+    mockPoiObservation.creator.transaction.events[1].value = '401';
+    // The mock verifies actual event coverage; pinned preimage crypto belongs
+    // to note-provenance's native qualification, not this controller unit test.
+    expect(await run(options)).toMatchObject({ status: 'refused', stage: 'creator-verify' });
+    expect(mockVerifyCreator).toHaveBeenCalledTimes(1);
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  });
+  test.each(['pending', 'missing'])(
+    'requires separate maintenance after %s checkpoint refusal',
+    async (kind) => {
+      const completed = txid.inspect.getMockImplementation();
+      txid.inspect.mockImplementation(async () => {
+        const value = await completed();
+        return kind === 'pending'
+          ? { ...value, pending: { progress: 1 } }
+          : { ...value, checkpoint: null };
+      });
+      expect((await run(options)).status).toBe('refused');
+      expect(txid.witnessNote).not.toHaveBeenCalled();
+      expect(mockVerifyCreator).not.toHaveBeenCalled();
+      expect(mockRootCreate).not.toHaveBeenCalled();
+      // A separate maintenance owner has completed the mirror. The preflight
+      // itself never acquires repair/write authority or retries the old visit.
+      txid.inspect.mockImplementation(completed);
+      expect((await run(options)).status).toBe('captured');
+      expect(mockOpen).toHaveBeenCalledTimes(2);
+      expect(mockRootCreate).toHaveBeenCalledTimes(1);
+    }
+  );
+  test('retains phase exclusion until the cancelled mixed verifier actually drains', async () => {
+    const entered = deferredGate(),
+      gate = deferredGate();
+    const original = mockVerifyCreator.getMockImplementation();
+    mockVerifyCreator.mockImplementation(async (...args) => {
+      entered.resolve();
+      await gate.promise;
+      return original(...args);
+    });
+    let settled = false;
+    const pending = run(options).then((value) => {
+      settled = true;
+      return value;
+    });
+    try {
+      await entered.promise;
+      caller.abort();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(mockVerifyCreator.mock.calls[0][0].signal.aborted).toBe(true);
+      expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+      expect(mockRootCreate).not.toHaveBeenCalled();
+    } finally {
+      gate.resolve();
+    }
+    expect((await pending).status).toBe('refused');
+    const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+    phase.release();
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  });
+});
 describe('fixed source-first retained Transact preflight', () => {
   beforeEach(async () => {
     await setupRetainedTransact();

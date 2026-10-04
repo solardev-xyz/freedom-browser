@@ -14,7 +14,7 @@ const { verifyRailgunProverRuntime } = require('./railgun-prover-runtime');
 const { assertRailgunOwnPoiMembership } = require('./railgun-own-poi-membership');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
-const { normalizeRailgunNoteTxidWitness } = require('./railgun-txid-note-witness');
+const { assertRailgunPoiCreatorVerification } = require('./railgun-poi-creator-data');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const { startRailgunProcess } = require('./railgun-process');
@@ -128,21 +128,13 @@ async function proveRailgunOwnPoi(options = {}) {
       for (const key of ['type', 'tree', 'position', 'hash'])
         assert.equal(provenance.note[key], creator[key]);
       assert.deepEqual(provenance.publicIdentity, publicIdentity);
-      const creating = normalizeRailgunNoteTxidWitness(
-        provenance.noteWitness,
-        input.preparation.state,
-        provenance.note
-      );
-      assert.equal(creating.outputIndex, 0);
-      assert.equal(creating.witness.row.unshield, undefined);
-      assert.equal(creating.witness.row.nullifiers.length, 1);
-      assert.equal(creating.witness.row.commitments.length, 1);
+      const creating = assertRailgunPoiCreatorVerification({
+        state: input.preparation.state,
+        note: provenance.note,
+        noteWitness: provenance.noteWitness,
+        verification: provenance.verification,
+      });
       assert.ok(creating.witness.index < input.preparation.witness.index);
-      assert.equal(provenance.verification.utilityExitObserved, true);
-      assert.equal(provenance.verification.pathVerified, true);
-      assert.equal(provenance.verification.suppliedCreatorEventsMatched, true);
-      assert.equal(provenance.verification.coverage.matchedRows, 1);
-      assert.equal(provenance.verification.coverage.knownOmissions, 0);
       assert.ok(Array.isArray(observed.membership.events));
       assert.equal(observed.membership.events.length, 1);
       const event = observed.membership.events[0].signedPOIEvent;
