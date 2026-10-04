@@ -7,7 +7,11 @@ const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { openRailgunAccountStore } = require('./railgun-account-store');
 const { createRailgunPublicJobs } = require('./railgun-public-run');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
-const { createRailgunScanSource } = require('./railgun-scan-source');
+const {
+  createRailgunScanSource,
+  getRailgunScanSourceDestination,
+  assertRailgunScanSourceDestination,
+} = require('./railgun-scan-source');
 const {
   createRailgunScanCoordinator,
   assertRailgunScanCoordinator,
@@ -83,6 +87,7 @@ async function openRailgunAccountPublic({
   async function close() {
     for (const signal of watched) signal.removeEventListener('abort', onAbort);
     const stop = () => {
+      coordinators.delete(coordinator);
       coordinator?.close();
       source?.close();
       sourceStore?.ledger.close();
@@ -228,6 +233,10 @@ async function openRailgunAccountPublic({
     active();
     check(!coordinator.signal.aborted);
     coordinators.set(coordinator, {
+      enrollment,
+      owner,
+      source,
+      rpcHandle,
       binding: enrollment.binding,
       policy,
       catalog,
@@ -271,6 +280,32 @@ function assertRailgunAccountPublic(coordinator, enrollment, policy) {
   entry.catalog.assertActive(entry.generationId, entry.policy);
   assertRailgunScanCoordinator(coordinator, enrollment.getContext('engine'));
   return entry.policy;
+}
+// The exact enrolled owner and active generation bind the retained source.
+// No snapshot/recovery, policy recomputation, key derivation or RPC work here.
+function destinationEntry(coordinator, enrollment, policy) {
+  check(isRailgunAccountEnrollment(enrollment));
+  const entry = coordinators.get(coordinator);
+  check(entry && entry.enrollment === enrollment);
+  check(owners.get(enrollment.directory) === entry.owner);
+  assertRailgunAccountPublic(coordinator, enrollment, policy);
+  return entry;
+}
+function getRailgunAccountPublicDestination(coordinator, enrollment, policy) {
+  try {
+    const entry = destinationEntry(coordinator, enrollment, policy);
+    return getRailgunScanSourceDestination(entry.source, entry.rpcHandle);
+  } catch {
+    throw fail();
+  }
+}
+function assertRailgunAccountPublicDestination(coordinator, enrollment, observation, policy) {
+  try {
+    const entry = destinationEntry(coordinator, enrollment, policy);
+    return assertRailgunScanSourceDestination(entry.source, entry.rpcHandle, observation);
+  } catch {
+    throw fail();
+  }
 }
 function getRailgunAccountPublicIdentity(coordinator, enrollment, policy) {
   assertRailgunAccountPublic(coordinator, enrollment, policy);
@@ -326,6 +361,8 @@ module.exports = {
   openRailgunAccountPublic,
   assertRailgunAccountPublic,
   getRailgunAccountPublicIdentity,
+  getRailgunAccountPublicDestination,
+  assertRailgunAccountPublicDestination,
   openRailgunAccountPublicTxidStore,
   withRailgunAccountTxidJournalKey,
 };

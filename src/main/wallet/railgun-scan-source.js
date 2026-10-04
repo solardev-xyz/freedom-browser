@@ -4,7 +4,12 @@
  */
 const { createHash } = require('crypto');
 const { getPrivacyContext } = require('../networks/privacy-context');
-const { createPrivateRpc } = require('../networks/private-rpc');
+const {
+  createPrivateRpc,
+  getPrivateRpcDestination,
+  assertPrivateRpcDestination,
+} = require('../networks/private-rpc');
+const sources = new WeakMap();
 const { plan: normalizePlan } = require('./railgun-scan-journal');
 const PROXY = '0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea';
 const MAX_AGE_MS = 60000;
@@ -18,6 +23,27 @@ const fail = () =>
 const check = (value) => {
   if (!value) throw fail();
 };
+// Destination identity only: these reads never acquire or refresh source data.
+function getRailgunScanSourceDestination(source, handle) {
+  try {
+    const entry = sources.get(source);
+    check(entry && entry.handle === handle);
+    entry.active();
+    return getPrivateRpcDestination(entry.rpc, handle);
+  } catch {
+    throw fail();
+  }
+}
+function assertRailgunScanSourceDestination(source, handle, observation) {
+  try {
+    const entry = sources.get(source);
+    check(entry && entry.handle === handle);
+    entry.active();
+    return assertPrivateRpcDestination(entry.rpc, handle, observation);
+  } catch {
+    throw fail();
+  }
+}
 const hash = (v) => typeof v === 'string' && /^0x[0-9a-f]{64}$/.test(v);
 const integer = (v) => Number.isSafeInteger(v) && v >= 0;
 const tag = (n) => '0x' + n.toString(16);
@@ -128,7 +154,8 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
   const observations = new WeakMap(),
     issued = [];
   let closed = false,
-    busy = false;
+    busy = false,
+    instance;
   function active() {
     check(!closed && !ledger.signal.aborted);
     getPrivacyContext(handle);
@@ -137,6 +164,7 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
   function close() {
     if (closed) return;
     closed = true;
+    sources.delete(instance);
     controller.abort();
     for (const evidence of issued) observations.delete(evidence);
     issued.length = 0;
@@ -396,7 +424,7 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
       busy = false;
     }
   }
-  return Object.freeze({
+  instance = Object.freeze({
     acquire,
     refresh,
     assertSource,
@@ -406,5 +434,14 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
     ledgerId,
     retain: (token) => ledger.retain(token),
   });
+  sources.set(instance, { handle, rpc, active });
+  return instance;
 }
-module.exports = { createRailgunScanSource, normalizeLogs, MAX_AGE_MS, PROXY };
+module.exports = {
+  createRailgunScanSource,
+  getRailgunScanSourceDestination,
+  assertRailgunScanSourceDestination,
+  normalizeLogs,
+  MAX_AGE_MS,
+  PROXY,
+};
