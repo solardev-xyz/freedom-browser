@@ -32,9 +32,10 @@ reinstall or upstream pin bump was needed.
 
 The source milestone's 11,858-test full regression is tied to `14615558` and
 predates this watchdog merge. No merged file intersects its five native source
-inventories or the public/TXID policy inputs. The next RPC prerequisite will run
-a full regression of the combined tree; no live startup smoke or funded-profile
-operation was run for this synchronization.
+inventories or the public/TXID policy inputs. The subsequent [RPC prerequisite](private-rpc-read-budget-2026-10-04.md)
+qualifies the combined tree: 11,994 tests pass / 33 skipped across 483 passing
+suites in 406.285 seconds (native access; existing OpenLV exclusion). No live
+startup smoke or funded-profile operation was run for this synchronization.
 
 ## Colibri worker continuation
 
