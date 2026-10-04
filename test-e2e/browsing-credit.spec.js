@@ -2,9 +2,9 @@
 // browsing credit (#488): what is left, the recent spend, whether the node
 // pays peers, a top-up of any amount, and bee's `swap-enable` switch.
 //
-// The pinned Ant (v0.5.56) predates freedom-hq/ant#126 and the harness runs
-// no node at all. The first group replaces the browsing credit and publish
-// setup IPC and feeds each node state to the real renderer. The second runs
+// The harness runs no node at all. The first group replaces the browsing
+// credit and publish setup IPC and feeds each node state to the real
+// renderer. The second runs
 // the real main-process services against a fake antd serving #126's routes
 // (`GET /node`'s `settlement`, `PUT /v0/settlement/swap`,
 // `POST /v0/settlement/deposit?amount=`). Set CREDIT_SHOTS_DIR to keep a

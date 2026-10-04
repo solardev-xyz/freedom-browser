@@ -1,6 +1,6 @@
 # Ant chain transport through Freedom
 
-Freedom runs Ant v0.5.56 as a separate `antd` process. The host callback added
+Freedom runs Ant v0.5.57 as a separate `antd` process. The host callback added
 in ant#77 is for embedded FFI consumers; the daemon can already use an HTTP
 JSON-RPC endpoint. The main-process Swarm service therefore owns a private
 loopback bridge to the existing chain-data router. No native patch, dependency

@@ -71,8 +71,8 @@ not the file the app runs from.
 The generated `config.yaml` always carries bee's `swap-enable` (#488), from the
 `antSwapEnable` setting the wallet sidebar's **Pay peers from the chequebook**
 switch writes. Releases from before Ant's switch
-([freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126), merged after
-v0.5.56) parse the key and ignore it. Releases with it say so themselves:
+([freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126), first released in
+v0.5.57) parse the key and ignore it. Releases with it say so themselves:
 `GET /node` carries a `settlement` object (`supported`, `swapSwitch`,
 `swapEnabled`, `paying`, `chequebook`), and its absence on a node that answers
 `/node` means "no switch" (`browsing-credit-service.js`; there is no

@@ -33,9 +33,9 @@
  *     persist it, so the `antSwapEnable` setting is saved too and ant-manager
  *     writes it into config.yaml, and the next start matches.
  *
- * An Ant release from before the switch (the pinned v0.5.56, as of this
- * change) still serves the two reads; the switch is then reported
- * `unsupported` and the sidebar disables it.
+ * An Ant release from before the switch (v0.5.56 and older) still serves
+ * the two reads; the switch is then reported `unsupported` and the sidebar
+ * disables it.
  */
 
 const fs = require('fs');

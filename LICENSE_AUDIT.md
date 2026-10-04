@@ -81,7 +81,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.56` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.57` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC

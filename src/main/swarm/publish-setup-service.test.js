@@ -390,6 +390,28 @@ describe('publish readiness', () => {
     expect(api.getStamps).not.toHaveBeenCalled();
   });
 
+  test("/readiness 503 'unready' is connecting until it turns 200", async () => {
+    // Ant v0.5.57 (freedom-hq/ant#136) answers 503 until a routing peer that
+    // is not a bootnode can serve, and again if every such peer drops.
+    const { service, api } = setup();
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ usable: true }] }));
+    api.getReadiness.mockResolvedValue({
+      ok: false,
+      status: 503,
+      data: { status: 'unready', version: 'antd/0.5.57' },
+      message: null,
+    });
+    await expect(service.getPublishReadiness()).resolves.toEqual({
+      ok: false,
+      reason: 'node-not-ready',
+      message: 'The Swarm node is connecting to peers…',
+    });
+
+    api.getReadiness.mockResolvedValue(ok({ status: 'ready', version: 'antd/0.5.57' }));
+    jest.advanceTimersByTime(2_500); // past the probe's 2 s reuse window
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({ ok: true });
+  });
+
   test('treats a node without the chainReady flag as ready', async () => {
     const { service, api } = setup();
     api.getHealth.mockResolvedValue(ok({ status: 'ok' }));
