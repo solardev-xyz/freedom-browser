@@ -34,6 +34,27 @@ jest.mock('./railgun-public-policy', () => ({
   },
 }));
 jest.mock('./railgun-account-public', () => ({
+  getRailgunAccountPublicDestination: jest.fn((coordinator, enrollment, policy) => {
+    if (
+      coordinator !== mock.coordinator ||
+      enrollment !== mock.enrollment ||
+      policy !== 'fixture-policy' ||
+      !mock.publicCurrent
+    )
+      throw Error('destination owner');
+    return mock.destination;
+  }),
+  assertRailgunAccountPublicDestination: jest.fn((coordinator, enrollment, destination, policy) => {
+    if (
+      coordinator !== mock.coordinator ||
+      enrollment !== mock.enrollment ||
+      destination !== mock.destination ||
+      policy !== 'fixture-policy' ||
+      !mock.publicCurrent
+    )
+      throw Error('destination');
+    return destination;
+  }),
   getRailgunAccountPublicIdentity: jest.fn((coordinator, enrollment, policy) => {
     if (
       coordinator !== mock.coordinator ||
@@ -60,6 +81,7 @@ jest.mock('./railgun-prover-runtime', () => ({
 }));
 jest.mock('./railgun-poi-output-recovery', () => ({
   recoverRailgunPoiOutput: jest.fn((options) => mock.output(options)),
+  recoverRailgunPoiOutputCompleted: jest.fn((options) => mock.output(options)),
 }));
 jest.mock('./railgun-poi-verifier', () => ({
   verifyRailgunPoiPayload: jest.fn((options) => mock.verify(options)),
@@ -148,7 +170,14 @@ const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
-const { recoverRailgunPoiOutput } = require('./railgun-poi-output-recovery');
+const {
+  recoverRailgunPoiOutput,
+  recoverRailgunPoiOutputCompleted,
+} = require('./railgun-poi-output-recovery');
+const {
+  getRailgunAccountPublicDestination,
+  assertRailgunAccountPublicDestination,
+} = require('./railgun-account-public');
 const { verifyRailgunPoiPayload } = require('./railgun-poi-verifier');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const {
@@ -281,6 +310,7 @@ beforeEach(() => {
   gates = [];
   operations = [];
   mock = {
+    destination: Object.freeze({}),
     caller: new AbortController(),
     identityAbort: new AbortController(),
     enrollmentAbort: new AbortController(),
@@ -1869,3 +1899,127 @@ test.each(['output-proof', 'retained-history'])(
     expect(mock.enrollment.openPoiIntents).toHaveBeenLastCalledWith({ existingOnly: true });
   }
 );
+
+describe('completed-only retained-history source route', () => {
+  beforeEach(() => configureHistory());
+  test.each([false, true])(
+    'retained history %s pins one destination internally and selects only completed output',
+    async (unshield) => {
+      configureHistory(unshield);
+      expect((await runHistory()).status).toBe('validated');
+      expect(getRailgunAccountPublicDestination).toHaveBeenCalledTimes(1);
+      expect(recoverRailgunPoiOutputCompleted).toHaveBeenCalledTimes(1);
+      expect(recoverRailgunPoiOutputCompleted.mock.calls[0][0]).toMatchObject({
+        sourceDestination: mock.destination,
+        timeoutMs: 240000,
+      });
+      expect(recoverRailgunPoiOutput).not.toHaveBeenCalled();
+      expect(assertRailgunAccountPublicDestination.mock.calls.length).toBeGreaterThan(1);
+      for (const [coordinator, enrollment, destination] of assertRailgunAccountPublicDestination
+        .mock.calls) {
+        expect(coordinator).toBe(mock.coordinator);
+        expect(enrollment).toBe(mock.enrollment);
+        expect(destination).toBe(mock.destination);
+      }
+      expect(mock.coordinator.withCompletedPublicSnapshot).toBeUndefined();
+    }
+  );
+  test('caller-supplied source destination cannot override internal history pinning', async () => {
+    expect((await runHistory({ ...options, sourceDestination: {} })).status).toBe('refused');
+    expect(recoverRailgunPoiOutputCompleted).not.toHaveBeenCalled();
+    expect(mock.output).not.toHaveBeenCalled();
+  });
+  test.each([false, true])(
+    'authenticated completed-source fatal=%s survives output refusal without verifier/mirror work',
+    async (fatal) => {
+      const sourceOutcome = Object.freeze({
+        fatal,
+        reason: fatal ? 'fatal' : 'checkpoint-unavailable',
+        rpcFailure: fatal ? 'response' : null,
+      });
+      mock.output.mockResolvedValueOnce({
+        status: 'refused',
+        stage: 'preflight:source:snapshot',
+        sourceOutcome,
+      });
+      const result = await runHistory();
+      expect(result).toMatchObject({ status: 'refused', sourceOutcome });
+      expect(Object.isFrozen(result.sourceOutcome)).toBe(true);
+      expect(mock.verify).not.toHaveBeenCalled();
+      expect(captureRailgunOwnOperationSelector).not.toHaveBeenCalled();
+      expect(openRailgunAccountTxid).not.toHaveBeenCalled();
+    }
+  );
+  test('cancelled retained history drains completed output and retains its late fatal outcome', async () => {
+    const gate = deferred();
+    const sourceOutcome = Object.freeze({ fatal: true, reason: 'fatal', rpcFailure: 'response' });
+    mock.output.mockImplementationOnce(async () => {
+      await gate.promise;
+      return { status: 'refused', stage: 'preflight:source:snapshot', sourceOutcome };
+    });
+    let settled = false;
+    const pending = runHistory().then((result) => {
+      settled = true;
+      return result;
+    });
+    await until(() => mock.output.mock.calls.length === 1);
+    mock.caller.abort();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect((await runHistory(freshOptions())).status).toBe('refused');
+    expect(mock.output).toHaveBeenCalledTimes(1);
+    gate.resolve();
+    expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
+    expect(mock.verify).not.toHaveBeenCalled();
+    expect(openRailgunAccountTxid).not.toHaveBeenCalled();
+  });
+  test.each([
+    'output',
+    'verify',
+    'selectorWork',
+    'opening',
+    'historyRead',
+    'mirrorDrain',
+    'reattest',
+  ])('destination replacement during %s prevents a validated result', async (boundary) => {
+    const target = mock[boundary],
+      original = target.getMockImplementation();
+    target.mockImplementationOnce(async (...args) => {
+      const result = await original(...args);
+      mock.destination = Object.freeze({});
+      return result;
+    });
+    expect((await runHistory()).status).toBe('refused');
+    if (boundary === 'output') expect(mock.verify).not.toHaveBeenCalled();
+    if (['output', 'verify', 'selectorWork'].includes(boundary))
+      expect(openRailgunAccountTxid).not.toHaveBeenCalled();
+  });
+  test('arbitrary thrown error properties cannot forge a diagnostic outcome', async () => {
+    mock.output.mockRejectedValueOnce(
+      Object.assign(Error('PRIVATE diagnostic'), {
+        sourceOutcome: { fatal: false, reason: 'cancelled', rpcFailure: null },
+      })
+    );
+    const result = await runHistory();
+    expect(result.status).toBe('refused');
+    expect(result.sourceOutcome).toBeUndefined();
+    expect(mock.verify).not.toHaveBeenCalled();
+  });
+  test('original 540s cap and stage reserves remain nonrenewing on the completed route', async () => {
+    const original = mock.read.getMockImplementation();
+    mock.read.mockImplementationOnce(async (...args) => {
+      jest.advanceTimersByTime(10000);
+      return original(...args);
+    });
+    expect((await runHistory({ ...options, timeoutMs: 300000 })).status).toBe('validated');
+    expect(recoverRailgunPoiOutputCompleted.mock.calls[0][0].timeoutMs).toBe(15000);
+    expect(mock.verify.mock.calls[0][0].timeoutMs).toBe(35000);
+  });
+});
+test('legacy Stage A neither captures a destination nor selects completed-only output', async () => {
+  expect((await run()).status).toBe('validated');
+  expect(recoverRailgunPoiOutput).toHaveBeenCalledTimes(1);
+  expect(recoverRailgunPoiOutputCompleted).not.toHaveBeenCalled();
+  expect(getRailgunAccountPublicDestination).not.toHaveBeenCalled();
+  expect(assertRailgunAccountPublicDestination).not.toHaveBeenCalled();
+});

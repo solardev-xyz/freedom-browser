@@ -7,11 +7,18 @@ const path = require('path');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { assertRailgunIdentity } = require('./railgun-identity');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
-const { getRailgunAccountPublicIdentity } = require('./railgun-account-public');
+const {
+  getRailgunAccountPublicIdentity,
+  getRailgunAccountPublicDestination,
+  assertRailgunAccountPublicDestination,
+} = require('./railgun-account-public');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { verifyRailgunProverRuntime } = require('./railgun-prover-runtime');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
-const { recoverRailgunPoiOutput } = require('./railgun-poi-output-recovery');
+const {
+  recoverRailgunPoiOutput,
+  recoverRailgunPoiOutputCompleted,
+} = require('./railgun-poi-output-recovery');
 const { verifyRailgunPoiPayload } = require('./railgun-poi-verifier');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const {
@@ -47,6 +54,7 @@ async function validate(options, history) {
     txid,
     txidClosing,
     mirrorTimer,
+    sourceOutcome,
     lifetime;
   const owner = {},
     controller = new AbortController();
@@ -107,6 +115,9 @@ async function validate(options, history) {
     const policy = getRailgunPublicPolicy(archive);
     const publicValue = getRailgunAccountPublicIdentity(coordinator, enrollment, policy);
     const publicIdentity = history ? snapshot(publicValue) : publicValue;
+    const sourceDestination = history
+      ? getRailgunAccountPublicDestination(coordinator, enrollment, policy)
+      : undefined;
     // Load only for the fixed history export; Stage A keeps its old dependency
     // and phase behavior. Policy changes select another mirror, never a rebuild.
     const getTxidPolicy = history
@@ -140,6 +151,8 @@ async function validate(options, history) {
         getRailgunAccountPublicIdentity(coordinator, enrollment, policy),
         publicIdentity
       );
+      if (history)
+        assertRailgunAccountPublicDestination(coordinator, enrollment, sourceDestination, policy);
     };
     const remaining = (limit, reserve = 0) => {
       current(reserve);
@@ -169,7 +182,8 @@ async function validate(options, history) {
       assert.equal(JSON.stringify(latest), stored);
     };
     stage = 'output';
-    const output = await recoverRailgunPoiOutput({
+    const recoverOutput = history ? recoverRailgunPoiOutputCompleted : recoverRailgunPoiOutput;
+    const output = await recoverOutput({
       identity,
       enrollment,
       coordinator,
@@ -177,7 +191,13 @@ async function validate(options, history) {
       capsuleDigest,
       signal: lifetime,
       timeoutMs: remaining(OUTPUT_MS, VERIFY_MS + historyReserve + FINAL_MS),
+      ...(history ? { sourceDestination } : {}),
     });
+    if (history && output.status !== 'matched') {
+      stage = 'output:' + output.stage;
+      sourceOutcome = output.sourceOutcome;
+      throw Error('refused');
+    }
     current();
     if (output.status !== 'matched') {
       stage = 'output:' + output.stage;
@@ -462,7 +482,7 @@ async function validate(options, history) {
       spendingEnabled: false,
     });
   } catch {
-    return Object.freeze({ status: 'refused', stage });
+    return Object.freeze({ status: 'refused', stage, ...(sourceOutcome ? { sourceOutcome } : {}) });
   } finally {
     clearTimeout(timer);
     controller.abort();

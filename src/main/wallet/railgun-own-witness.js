@@ -8,7 +8,10 @@ const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const { getRailgunTxidPolicy } = require('./railgun-txid-policy');
-const { getRailgunAccountPublicIdentity } = require('./railgun-account-public');
+const {
+  getRailgunAccountPublicIdentity,
+  assertRailgunAccountPublicDestination,
+} = require('./railgun-account-public');
 const {
   captureRailgunOwnOperation,
   captureRailgunOwnOperationSelector,
@@ -18,7 +21,11 @@ const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
 const { observeRailgunOwnReceipt } = require('./railgun-own-receipt');
 const { captureRailgunOwnSource, assertRailgunOwnSource } = require('./railgun-own-source-capture');
 const { verifyRailgunOwnTxid } = require('./railgun-own-txid-verifier');
-const { captureRailgunPoiSource, assertRailgunPoiSource } = require('./railgun-poi-source-capture');
+const {
+  captureRailgunPoiSource,
+  captureRailgunPoiSourceCompleted,
+  assertRailgunPoiSource,
+} = require('./railgun-poi-source-capture');
 const { POI_LAUNCH_BLOCK } = require('./railgun-owned-poi-records');
 const { createRailgunTxidRootSource } = require('./railgun-txid-root');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
@@ -30,15 +37,17 @@ const freeze = (value) => {
   return value;
 };
 async function captureRailgunOwnWitness(
-  { enrollment, coordinator, archive, selector, signal, timeoutMs } = {},
+  { enrollment, coordinator, archive, selector, signal, timeoutMs, sourceDestination } = {},
   preflight = false,
-  poi = false
+  poi = false,
+  completed = false
 ) {
   let stage = 'context',
     timer,
     txid,
     source,
     roots,
+    sourceOutcome,
     rootScope,
     verificationPhase;
   const controller = new AbortController();
@@ -72,6 +81,13 @@ async function captureRailgunOwnWitness(
         getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
         publicIdentity
       );
+      if (completed)
+        assertRailgunAccountPublicDestination(
+          coordinator,
+          enrollment,
+          sourceDestination,
+          publicPolicy
+        );
     };
     const remaining = (max) => {
       current();
@@ -99,7 +115,11 @@ async function captureRailgunOwnWitness(
       }
       const derived = first.derived;
       let chain, sourceObservation, verified, rootReceipt, rootObservation;
-      const captureSource = poi ? captureRailgunPoiSource : captureRailgunOwnSource;
+      const captureSource = completed
+        ? captureRailgunPoiSourceCompleted
+        : poi
+          ? captureRailgunPoiSource
+          : captureRailgunOwnSource;
       const assertSource = poi ? assertRailgunPoiSource : assertRailgunOwnSource;
       if (preflight) {
         stage = 'receipt';
@@ -179,7 +199,7 @@ async function captureRailgunOwnWitness(
       }
       if (preflight) {
         stage = 'source';
-        source = await captureSource({
+        const capturedSource = await captureSource({
           enrollment,
           coordinator,
           record: first.capture.record,
@@ -188,7 +208,14 @@ async function captureRailgunOwnWitness(
           receipt: chain.receipt,
           signal: lifetime,
           timeoutMs: remaining(180000),
+          ...(completed ? { destination: sourceDestination } : {}),
         });
+        if (completed && capturedSource.status !== 'captured') {
+          stage = 'source:' + capturedSource.stage;
+          sourceOutcome = capturedSource.sourceOutcome;
+          throw Error('source refused');
+        }
+        source = capturedSource;
         current();
         sourceObservation = assertSource(source.receipt, enrollment, coordinator);
         assert.deepEqual(
@@ -350,7 +377,7 @@ async function captureRailgunOwnWitness(
       lifetime.removeEventListener('abort', stop);
     }
   } catch {
-    return Object.freeze({ status: 'refused', stage });
+    return Object.freeze({ status: 'refused', stage, ...(sourceOutcome ? { sourceOutcome } : {}) });
   } finally {
     clearTimeout(timer);
     controller.abort();
@@ -365,4 +392,5 @@ module.exports = {
   captureRailgunOwnWitness: (options) => captureRailgunOwnWitness(options),
   preflightRailgunOwnTransaction: (options) => captureRailgunOwnWitness(options, true),
   preflightRailgunOwnPoi: (options) => captureRailgunOwnWitness(options, true, true),
+  preflightRailgunOwnPoiCompleted: (options) => captureRailgunOwnWitness(options, true, true, true),
 };

@@ -1,4 +1,4 @@
-let mockEnrollment, mockCoordinator, mockGeneration;
+let mockEnrollment, mockCoordinator, mockGeneration, mockDestination, mockOutcomes;
 const mockCollect = jest.fn();
 jest.mock('./railgun-account-public', () => ({
   assertRailgunAccountPublic: (coordinator, enrollment, policy) => {
@@ -10,8 +10,24 @@ jest.mock('./railgun-account-public', () => ({
       throw Error('owner');
     return 'policy';
   },
+  assertRailgunAccountPublicDestination: (coordinator, enrollment, destination) => {
+    if (
+      coordinator !== mockCoordinator ||
+      enrollment !== mockEnrollment ||
+      destination !== mockDestination
+    )
+      throw Error('destination');
+    return destination;
+  },
   getRailgunAccountPublicIdentity: () =>
     Object.freeze({ generationId: mockGeneration, sourceId: 'source', publicId: 'public' }),
+}));
+jest.mock('./railgun-scan-coordinator', () => ({
+  getRailgunCompletedSnapshotOutcome: (coordinator, error) => {
+    if (coordinator !== mockCoordinator || !mockOutcomes.has(error))
+      throw Error('unauthenticated outcome');
+    return mockOutcomes.get(error);
+  },
 }));
 jest.mock('./railgun-poi-source-evidence', () => ({
   collectRailgunPoiSourceEvidence: (...args) => mockCollect(...args),
@@ -22,6 +38,7 @@ jest.mock('./railgun-wallet-coverage', () => ({
 const { createPrivacyScope } = require('../networks/privacy-context');
 const {
   captureRailgunPoiSource: capture,
+  captureRailgunPoiSourceCompleted: captureCompleted,
   assertRailgunPoiSource: attest,
 } = require('./railgun-poi-source-capture');
 let scope, controller, publicController, input, ready, finalize, deferred, mode, captures;
@@ -30,8 +47,11 @@ beforeEach(() => {
   mode = 'valid';
   deferred = false;
   ready = null;
+  finalize = undefined;
   captures = [];
   mockGeneration = 'generation';
+  mockDestination = Object.freeze({});
+  mockOutcomes = new WeakMap();
   controller = new AbortController();
   publicController = new AbortController();
   scope = createPrivacyScope({ profileId: 'source-capture', signal: new AbortController().signal });
@@ -75,6 +95,15 @@ beforeEach(() => {
       };
     }),
   };
+  const snapshotImpl = mockCoordinator.withPublicSnapshot.getMockImplementation();
+  mockCoordinator.withCompletedPublicSnapshot = jest.fn(async (options, run) => {
+    expect(options.destination).toBe(mockDestination);
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+    return snapshotImpl(run);
+  });
+  mockCoordinator.recover = jest.fn(() => {
+    throw Error('implicit recovery');
+  });
   mockCollect.mockImplementation(async ({ checkpoint, visit, assertCurrent }) => {
     assertCurrent();
     await visit(() => {});
@@ -219,5 +248,120 @@ test('refuses forged owners and already-cancelled requests before snapshot entry
   await expect(capture({ ...input, enrollment: {} })).rejects.toThrow();
   controller.abort();
   await expect(capture(input)).rejects.toThrow();
+  expect(mockCoordinator.withPublicSnapshot).not.toHaveBeenCalled();
+});
+
+const startCompleted = async (overrides = {}) => {
+  const result = await captureCompleted({ ...input, destination: mockDestination, ...overrides });
+  if (result.close) captures.push(result);
+  return result;
+};
+test('completed capture uses only the fixed snapshot entry and mints the same restricted receipt', async () => {
+  const result = await startCompleted();
+  expect(result.status).toBe('captured');
+  expect(attest(result.receipt, mockEnrollment, mockCoordinator)).toBe(result.observation);
+  expect(result.observation).toMatchObject({
+    sourceAuthenticated: true,
+    ownershipAuthenticated: false,
+    currentCanonicalityVerified: false,
+    spendingEnabled: false,
+  });
+  expect(mockCoordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(1);
+  expect(mockCoordinator.withPublicSnapshot).not.toHaveBeenCalled();
+  expect(mockCoordinator.recover).not.toHaveBeenCalled();
+  expect(mockCoordinator.withCompletedPublicSnapshot.mock.calls[0][0].timeoutMs).toBeGreaterThan(0);
+  expect(
+    mockCoordinator.withCompletedPublicSnapshot.mock.calls[0][0].timeoutMs
+  ).toBeLessThanOrEqual(45000);
+});
+test.each([undefined, {}, null])(
+  'completed capture rejects missing/copied destination %# before snapshot',
+  async (destination) => {
+    expect(await startCompleted({ destination })).toMatchObject({
+      status: 'refused',
+      stage: 'context',
+    });
+    expect(mockCoordinator.withCompletedPublicSnapshot).not.toHaveBeenCalled();
+    expect(mockCollect).not.toHaveBeenCalled();
+  }
+);
+test.each(['destination', 'generation', 'coordinator', 'enrollment'])(
+  'completed receipt refuses %s replacement after capture',
+  async (kind) => {
+    const result = await startCompleted();
+    const enrollment = mockEnrollment,
+      coordinator = mockCoordinator;
+    if (kind === 'destination') mockDestination = Object.freeze({});
+    if (kind === 'generation') mockGeneration = 'reopened-generation';
+    if (kind === 'coordinator') mockCoordinator = { ...coordinator };
+    if (kind === 'enrollment') mockEnrollment = { ...enrollment };
+    expect(() => attest(result.receipt, enrollment, coordinator)).toThrow();
+  }
+);
+test('completed semantic mismatch returns data, leaves coordinator healthy and permits later capture', async () => {
+  mockCollect.mockRejectedValueOnce(Error('wrong capsule semantics'));
+  const refused = await startCompleted();
+  expect(refused).toEqual({ status: 'refused', stage: 'match' });
+  expect(publicController.signal.aborted).toBe(false);
+  expect(ready).not.toBeNull();
+  expect((await startCompleted()).status).toBe('captured');
+  expect(mockCoordinator.withPublicSnapshot).not.toHaveBeenCalled();
+});
+test.each([false, true])(
+  'only authenticated completed-snapshot error propagates fatal=%s diagnostic',
+  async (fatal) => {
+    const error = Object.assign(Error('private diagnostic'), {
+      code: 'RAILGUN_SCAN_COORDINATOR_REFUSED',
+    });
+    const outcome = Object.freeze({
+      fatal,
+      reason: fatal ? 'fatal' : 'checkpoint-unavailable',
+      rpcFailure: fatal ? 'response' : null,
+    });
+    mockOutcomes.set(error, outcome);
+    mockCoordinator.withCompletedPublicSnapshot.mockRejectedValueOnce(error);
+    const result = await startCompleted();
+    expect(result).toEqual({ status: 'refused', stage: 'snapshot', sourceOutcome: outcome });
+    expect(Object.isFrozen(result.sourceOutcome)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('private diagnostic');
+  }
+);
+test('copied public error fields cannot manufacture a source outcome', async () => {
+  const error = Object.assign(Error('private diagnostic'), {
+    code: 'RAILGUN_SCAN_COORDINATOR_REFUSED',
+    sourceOutcome: { fatal: false, reason: 'cancelled', rpcFailure: null },
+  });
+  mockCoordinator.withCompletedPublicSnapshot.mockRejectedValueOnce(error);
+  expect(await startCompleted()).toEqual({ status: 'refused', stage: 'snapshot' });
+});
+test('completed capture drains held final authentication after cancellation and retains exclusion', async () => {
+  deferred = true;
+  let settled = false;
+  const pending = startCompleted().then((result) => {
+    settled = true;
+    return result;
+  });
+  try {
+    for (let n = 0; n < 30 && !finalize; n++) await Promise.resolve();
+    expect(finalize).toEqual(expect.any(Function));
+    controller.abort();
+    expect((await startCompleted({ signal: new AbortController().signal })).status).toBe('refused');
+    expect(mockCoordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+  } finally {
+    finalize?.();
+  }
+  expect((await pending).status).toBe('refused');
+  deferred = false;
+  expect((await startCompleted({ signal: new AbortController().signal })).status).toBe('captured');
+});
+test('generation drift during completed collection cannot produce a source receipt', async () => {
+  const original = mockCollect.getMockImplementation();
+  mockCollect.mockImplementationOnce(async (options) => {
+    const result = await original(options);
+    mockGeneration = 'changed';
+    return result;
+  });
+  expect((await startCompleted()).status).toBe('refused');
   expect(mockCoordinator.withPublicSnapshot).not.toHaveBeenCalled();
 });

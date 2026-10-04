@@ -1,8 +1,8 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * RPC destination identity is fixture-simulated, not a qualification of real
- * retained-destination binding or the private-RPC chain-ID handshake.
+ * Real private RPC and destination/budget identities use simulated registry,
+ * Tor endpoint and transport. Chain-ID handshakes are included in wire counts.
  * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts|plans]]
  */
 const { app } = require('electron');
@@ -77,6 +77,9 @@ const sources = [
   'src/main/wallet/transaction-submission-coordinator.js',
   'src/main/wallet/ordinary-submission-policy.js',
   'src/main/networks/private-rpc.js',
+  'src/main/networks/network-registry.js',
+  'src/main/settings-store.js',
+  'src/main/tor-manager.js',
   'src/main/wallet/railgun-private-operation.js',
   'src/main/wallet/railgun-account-poi.js',
   'src/main/wallet/railgun-private-preflight.js',
@@ -340,6 +343,7 @@ async function main() {
     outputRecoveryGuards = { reports: 0, attempts: 0, canaryChecks: 0, hooks: [] };
   let outputRecoveryActive = false,
     outputRecoveryFault = 'healthy',
+    outputPublicPlanAdmitted = false,
     outputRecoveryInputDigest,
     outputRecoveryTxid;
   let intentStore;
@@ -360,6 +364,16 @@ async function main() {
   const { REQUIRED_LIST } = require('../src/main/wallet/railgun-poi-records');
   const { createPrivacyScope, getPrivacyContext } = require('../src/main/networks/privacy-context');
   const transport = require('../src/main/networks/wallet-tor-transport');
+  const registry = require('../src/main/networks/network-registry');
+  const originalRegistry = {
+    getNetwork: registry.getNetwork,
+    getEndpoints: registry.getEndpoints,
+    getEndpointSources: registry.getEndpointSources,
+  };
+  const rpcUrl = 'https://synthetic.invalid/railgun-qualification';
+  registry.getNetwork = () => ({ access: { readOrder: ['direct'] }, quorum: { timeoutMs: 30000 } });
+  registry.getEndpoints = () => [rpcUrl];
+  registry.getEndpointSources = () => [{ keyed: false, coverage: { 11155111: rpcUrl } }];
   const processModule = require('../src/main/wallet/railgun-process');
   const tor = require('../src/main/tor-manager'),
     settings = require('../src/main/settings-store');
@@ -459,6 +473,8 @@ async function main() {
     '../src/main/wallet/railgun-poi-root',
     '../src/main/wallet/railgun-own-poi-checks',
     '../src/main/wallet/railgun-scan-source',
+    '../src/main/wallet/railgun-scan-coordinator',
+    '../src/main/wallet/railgun-source-ledger',
     '../src/main/wallet/railgun-txid-root',
     '../src/main/wallet/private-transaction-network',
     '../src/main/wallet/railgun-own-receipt',
@@ -471,8 +487,8 @@ async function main() {
     '../src/main/networks/kohaku-network',
   ])
     assert.equal(require.cache[require.resolve(file)], undefined);
-  transport.createWalletTorTransport = () => {
-    if (checksActive) {
+  const createFixturePoiTransport = (checking) => {
+    if (checking) {
       checksRoots.creates++;
       let closed = false,
         used = false;
@@ -696,30 +712,46 @@ async function main() {
     clients.add(client);
     return client;
   };
+  // Route at the transport boundary. RPC clients and their destination/budget
+  // registries stay genuine; all wire responses are local synthetic fixtures.
+  transport.createWalletTorTransport = () => {
+    const checking = checksActive;
+    let poiTransport,
+      closed = false;
+    return {
+      release() {},
+      close() {
+        closed = true;
+        poiTransport?.close();
+      },
+      async request(handle, url, options) {
+        assert.equal(closed, false);
+        const context = getPrivacyContext(handle);
+        if (['protocol-rpc', 'transaction-rpc'].includes(context.subject.role)) {
+          if (url !== rpcUrl) {
+            unexpectedTransport++;
+            throw Error('External RPC transport forbidden');
+          }
+          assert.equal(options.method, 'POST');
+          assert.ok(options.signal instanceof AbortSignal && !options.signal.aborted);
+          const wire = JSON.parse(options.body);
+          assert.equal(wire.jsonrpc, '2.0');
+          assert.equal(typeof wire.id, 'string');
+          const result = fixtureRpcReply(handle, wire.method, wire.params);
+          return {
+            status: 200,
+            body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: wire.id, result })),
+          };
+        }
+        poiTransport ||= createFixturePoiTransport(checking);
+        return poiTransport.request(handle, url, options);
+      },
+    };
+  };
   const rpcModule = require('../src/main/networks/private-rpc');
   const serviceModule = require('../src/main/wallet/railgun-public-services');
   originals.rpc = rpcModule.createPrivateRpc;
-  originals.destinationGet = rpcModule.getPrivateRpcDestination;
-  originals.destinationAssert = rpcModule.assertPrivateRpcDestination;
-  // Exact fixture clients only: no fabricated/cross-handle/token acceptance.
-  // Keep the production detail accessor untouched so these tokens cannot
-  // expose or claim a genuinely retained RPC destination.
-  const rpcDestinations = new WeakMap();
-  const fixtureDestination = (client, handle) => {
-    const entry = rpcDestinations.get(client);
-    assert.ok(entry && entry.handle === handle);
-    assert.equal(getPrivacyContext(handle), entry.context);
-    assert.equal(client.signal, entry.context.signal);
-    assert.ok(client.signal instanceof AbortSignal);
-    assert.equal(client.signal.aborted, false);
-    return entry.observation;
-  };
-  rpcModule.getPrivateRpcDestination = fixtureDestination;
-  rpcModule.assertPrivateRpcDestination = (client, handle, observation) => {
-    const actual = fixtureDestination(client, handle);
-    assert.equal(observation, actual);
-    return actual;
-  };
+  let rpcClientCreates = 0;
   originals.services = serviceModule.createRailgunPublicServices;
   processModule.startRailgunProcess = (options) => {
     if (planActive) {
@@ -826,8 +858,13 @@ async function main() {
       }
       if (outputPublicPlan) {
         const input = JSON.parse(options.input);
-        if (input.mode !== 'plan' || outputRecoveryRuns.length + coldValidationRuns.length !== 0)
+        if (
+          input.mode !== 'plan' ||
+          outputPublicPlanAdmitted ||
+          (!retainedHistoryMode && outputRecoveryRuns.length + coldValidationRuns.length !== 0)
+        )
           refuseOutputUtility();
+        outputPublicPlanAdmitted = true;
         outputRecoveryJobs.publicPlan++;
         const {
           getRailgunAccountPublicIdentity,
@@ -1455,62 +1492,56 @@ async function main() {
     }
     return real;
   };
-  rpcModule.createPrivateRpc = (handle, role) => {
-    const context = getPrivacyContext(handle);
+  rpcModule.createPrivateRpc = (...args) => {
+    rpcClientCreates++;
+    return originals.rpc(...args);
+  };
+  function fixtureRpcReply(handle, method, params) {
+    const context = getPrivacyContext(handle),
+      role = context.subject.role;
     assert.ok(['transaction-rpc', 'protocol-rpc'].includes(role));
     if (role === 'transaction-rpc')
       assert.equal(context.subject.principal, fixture.transaction.from);
-    const client = {
-      signal: context.signal,
-      trust: { queried: ['synthetic.invalid'] },
-      release() {},
-      assertActive: () => getPrivacyContext(handle),
-      async request(method, params, validate) {
-        rpcMethods[method] = (rpcMethods[method] ?? 0) + 1;
-        if (
-          ![
-            'eth_getLogs',
-            'eth_getTransactionReceipt',
-            'eth_getTransactionByHash',
-            'eth_getBlockByNumber',
-            'eth_blockNumber',
-          ].includes(method)
-        ) {
-          unexpectedRpc++;
-          throw Error('Unexpected RPC');
-        }
-        getPrivacyContext(handle);
-        let value;
-        if (method === 'eth_getLogs') {
-          assert.equal(role, 'protocol-rpc');
-          value = history.filter(
-            (log) =>
-              BigInt(log.blockNumber) >= BigInt(params[0].fromBlock) &&
-              BigInt(log.blockNumber) <= BigInt(params[0].toBlock)
-          );
-        } else if (method === 'eth_blockNumber') {
-          assert.deepEqual(params, []);
-          value = tag(FINALIZED);
-        } else if (method === 'eth_getBlockByNumber') {
-          assert.equal(params[1], false);
-          const number = params[0] === 'finalized' ? FINALIZED : Number(BigInt(params[0]));
-          assert.ok(Number.isSafeInteger(number) && number >= 0 && number <= FINALIZED);
-          value = {
-            number: tag(number),
-            hash: blockHash(number),
-            parentHash: blockHash(number - 1),
-          };
-        } else {
-          assert.deepEqual(params, [fixture.transaction.hash]);
-          value = method === 'eth_getTransactionReceipt' ? fixture.receipt : fixture.transaction;
-        }
-        assert.ok(validate(value));
-        return { result: copy(value) };
-      },
-    };
-    rpcDestinations.set(client, { handle, context, observation: Object.freeze({}) });
-    return client;
-  };
+    rpcMethods[method] = (rpcMethods[method] ?? 0) + 1;
+    if (
+      ![
+        'eth_chainId',
+        'eth_getLogs',
+        'eth_getTransactionReceipt',
+        'eth_getTransactionByHash',
+        'eth_getBlockByNumber',
+        'eth_blockNumber',
+      ].includes(method)
+    ) {
+      unexpectedRpc++;
+      throw Error('Unexpected RPC');
+    }
+    let value;
+    if (method === 'eth_chainId') {
+      assert.deepEqual(params, []);
+      value = '0xaa36a7';
+    } else if (method === 'eth_getLogs') {
+      assert.equal(role, 'protocol-rpc');
+      assert.equal(params[0].address, fixture.receipt.to);
+      value = history.filter(
+        (log) =>
+          BigInt(log.blockNumber) >= BigInt(params[0].fromBlock) &&
+          BigInt(log.blockNumber) <= BigInt(params[0].toBlock)
+      );
+    } else if (method === 'eth_blockNumber') {
+      assert.deepEqual(params, []);
+      value = tag(FINALIZED);
+    } else if (method === 'eth_getBlockByNumber') {
+      assert.equal(params[1], false);
+      const number = params[0] === 'finalized' ? FINALIZED : Number(BigInt(params[0]));
+      assert.ok(Number.isSafeInteger(number) && number >= 0 && number <= FINALIZED);
+      value = { number: tag(number), hash: blockHash(number), parentHash: blockHash(number - 1) };
+    } else {
+      assert.deepEqual(params, [fixture.transaction.hash]);
+      value = method === 'eth_getTransactionReceipt' ? fixture.receipt : fixture.transaction;
+    }
+    return copy(value);
+  }
   serviceModule.createRailgunPublicServices = (handle) => {
     const context = getPrivacyContext(handle);
     assert.equal(context.subject.kind, 'service');
@@ -1559,6 +1590,45 @@ async function main() {
       },
     };
   };
+  const sourceMaintenance = { stages: 0, retains: 0, beforeAcquire: 0, applies: 0 };
+  for (const file of ['./railgun-account-store', './railgun-account-public'])
+    assert.equal(require.cache[require.resolve('../src/main/wallet/' + file.slice(2))], undefined);
+  const ledgerModule = require('../src/main/wallet/railgun-source-ledger'),
+    sourceModule = require('../src/main/wallet/railgun-scan-source'),
+    coordinatorModule = require('../src/main/wallet/railgun-scan-coordinator');
+  originals.ledger = ledgerModule.createRailgunSourceLedger;
+  originals.source = sourceModule.createRailgunScanSource;
+  originals.coordinator = coordinatorModule.createRailgunScanCoordinator;
+  ledgerModule.createRailgunSourceLedger = async (options) => {
+    const ledger = await originals.ledger(options);
+    return Object.freeze({
+      ...ledger,
+      stage(...args) {
+        sourceMaintenance.stages++;
+        return ledger.stage(...args);
+      },
+      retain(...args) {
+        sourceMaintenance.retains++;
+        return ledger.retain(...args);
+      },
+    });
+  };
+  sourceModule.createRailgunScanSource = (options) =>
+    originals.source({
+      ...options,
+      beforeAcquire: async (...args) => {
+        sourceMaintenance.beforeAcquire++;
+        return options.beforeAcquire?.(...args);
+      },
+    });
+  coordinatorModule.createRailgunScanCoordinator = (options) =>
+    originals.coordinator({
+      ...options,
+      applyRange: (...args) => {
+        sourceMaintenance.applies++;
+        return options.applyRange(...args);
+      },
+    });
   const vault = require('../src/main/identity/vault');
   const { openRailgunIdentity } = require('../src/main/wallet/railgun-identity');
   const { openRailgunAccountEnrollment } = require('../src/main/wallet/railgun-account-enrollment');
@@ -1989,6 +2059,10 @@ async function main() {
       advances++;
     }
     assert.equal(advances, 60);
+    // Positive control: ordinary setup must exercise every delegating counter
+    // before zero deltas can establish completed-reader maintenance exclusion.
+    const setupSourceMaintenance = copy(sourceMaintenance);
+    for (const count of Object.values(setupSourceMaintenance)) assert.ok(count > 0);
     phase = 'mirror';
     txid = await openRailgunAccountTxid({
       enrollment,
@@ -2672,6 +2746,7 @@ async function main() {
           assert.deepEqual(publicDelta, { latest: 3 * queried, validate: 3 * queried, page: 0 });
           const rpcDelta = delta(after.rpcMethods, before.rpcMethods);
           assert.deepEqual(rpcDelta, {
+            eth_chainId: queried,
             eth_getTransactionReceipt: queried,
             eth_getBlockByNumber: 22 * queried,
             eth_blockNumber: 2 * queried,
@@ -3226,16 +3301,19 @@ async function main() {
       const exerciseOutputRecovery = async (fault) => {
         phase = (coldValidationMode ? 'cold-validation-' : 'output-recovery-') + fault;
         outputRecoveryFault = fault;
+        outputPublicPlanAdmitted = false;
         outputRecoveryInputDigest = undefined;
         outputRecoveryTxid = undefined;
         const coldPublicRestore = Number(
             outputRecoveryRuns.length + coldValidationRuns.length === 0
           ),
+          sourcePlanning = Number(retainedHistoryMode || coldPublicRestore),
           invalidSnark = coldValidationMode && fault === 'invalid-snark',
           historyFault = fault === 'substituted-history-root',
           historyReached = retainedHistoryMode && !invalidSnark,
           substituted = fault === 'substituted-output',
           beforeActivity = intentActivity(),
+          beforeSourceMaintenance = copy(sourceMaintenance),
           beforeJournal = await journal.readSnapshot(),
           beforeSignatures = signature.attempts(),
           beforeJobs = copy(outputRecoveryJobs),
@@ -3274,6 +3352,14 @@ async function main() {
           coldValidationActive = false;
         }
         const viewing = Number(kind === 'transfer');
+        const maintenanceDelta = delta(sourceMaintenance, beforeSourceMaintenance);
+        if (retainedHistoryMode)
+          assert.deepEqual(maintenanceDelta, {
+            stages: 0,
+            retains: 0,
+            beforeAcquire: 0,
+            applies: 0,
+          });
         if (
           (substituted &&
             (recovered.status !== 'refused' || recovered.stage !== 'recovery:callback')) ||
@@ -3355,8 +3441,8 @@ async function main() {
           mirrorHistorical: Number(historyReached),
           mirrorHistoricalExit: Number(historyReached),
           historicalSubstitutions: Number(historyFault),
-          publicPlan: coldPublicRestore,
-          publicPlanExit: coldPublicRestore,
+          publicPlan: sourcePlanning,
+          publicPlanExit: sourcePlanning,
           viewing,
           viewingExit: viewing,
           keyRequests: viewing,
@@ -3377,10 +3463,10 @@ async function main() {
         });
         const publicBrokerDelta = delta(outputRecoveryPublicBroker, beforePublicBroker);
         assert.deepEqual(publicBrokerDelta, {
-          attempted: 3 * coldPublicRestore,
-          admitted: 3 * coldPublicRestore,
-          sourceNext: 2 * coldPublicRestore,
-          jobResult: coldPublicRestore,
+          attempted: 3 * sourcePlanning,
+          admitted: 3 * sourcePlanning,
+          sourceNext: 2 * sourcePlanning,
+          jobResult: sourcePlanning,
           forbidden: 0,
         });
         assert.equal(outputRecoveryReplies.length - beforeReplies, viewing);
@@ -3402,7 +3488,7 @@ async function main() {
         }
         assert.equal(
           outputRecoveryGuards.reports - beforeGuards,
-          5 + viewing + coldPublicRestore + 6 * Number(historyReached)
+          5 + viewing + sourcePlanning + 6 * Number(historyReached)
         );
         assert.equal(outputRecoveryGuards.attempts, 0);
         assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), retainedIntent);
@@ -3421,11 +3507,12 @@ async function main() {
           page: 0,
         });
         assert.deepEqual(chainDelta, {
+          eth_chainId: 1 + coldPublicRestore,
           eth_getTransactionReceipt: 1,
-          eth_getBlockByNumber: 22 + 12 * coldPublicRestore,
+          eth_getBlockByNumber: 22 + 12 * sourcePlanning,
           eth_blockNumber: 2,
           eth_getTransactionByHash: 1,
-          eth_getLogs: coldPublicRestore,
+          eth_getLogs: sourcePlanning,
         });
         const verifierDelta = delta(coldValidationVerifierJobs, beforeVerifier),
           verifierTimings = coldValidationVerifierTimings.slice(beforeVerifierTimings);
@@ -3491,6 +3578,7 @@ async function main() {
                 savedIndex: 0,
                 currentCheckpointIndex: 1,
                 globalTxidCompleteness: false,
+                sourceMaintenance: maintenanceDelta,
               }
             : {}),
           activityObservationSeams: [
@@ -3656,6 +3744,7 @@ async function main() {
         coldValidationVerifierUtilities: coldValidationGuards,
       },
       publicPrefixAdvances: advances,
+      setupSourceMaintenance,
       poiMethods,
       publicMethods,
       rpcMethods,
@@ -3681,9 +3770,11 @@ async function main() {
       selfTransferOnly: kind === 'transfer',
       productionViewingKeyHandoffQualified: proofMode,
       chainAndRootServicesSimulated: true,
-      rpcDestinationBindingSimulated: true,
-      rpcDestinationBindingQualified: false,
-      rpcChainIdHandshakeExercised: false,
+      rpcDestinationBindingSimulated: false,
+      rpcDestinationBindingQualified: true,
+      rpcChainIdHandshakeExercised: true,
+      realPrivateRpcWithSimulatedTransport: true,
+      rpcClientCreates,
       serviceSignatureTrust: 'fixture-ed25519-key-substitution',
       realRequiredListKeyRejectsFixtureSignatures: true,
       requiredListAuthenticationQualified: false,
@@ -3748,8 +3839,10 @@ async function main() {
       } finally {
         transport.createWalletTorTransport = originals.transport;
         rpcModule.createPrivateRpc = originals.rpc;
-        rpcModule.getPrivateRpcDestination = originals.destinationGet;
-        rpcModule.assertPrivateRpcDestination = originals.destinationAssert;
+        ledgerModule.createRailgunSourceLedger = originals.ledger;
+        sourceModule.createRailgunScanSource = originals.source;
+        coordinatorModule.createRailgunScanCoordinator = originals.coordinator;
+        Object.assign(registry, originalRegistry);
         serviceModule.createRailgunPublicServices = originals.services;
         processModule.startRailgunProcess = originals.start;
         tor.getWalletSocksEndpoint = originals.endpoint;

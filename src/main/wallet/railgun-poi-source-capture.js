@@ -7,7 +7,9 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const {
   assertRailgunAccountPublic,
   getRailgunAccountPublicIdentity,
+  assertRailgunAccountPublicDestination,
 } = require('./railgun-account-public');
+const { getRailgunCompletedSnapshotOutcome } = require('./railgun-scan-coordinator');
 const { collectRailgunPoiSourceEvidence } = require('./railgun-poi-source-evidence');
 const { checkpointHash } = require('./railgun-wallet-coverage');
 const receipts = new WeakMap();
@@ -16,20 +18,26 @@ const fail = () =>
   Object.assign(new Error('Railgun POI source capture unavailable'), {
     code: 'RAILGUN_POI_SOURCE_CAPTURE_REFUSED',
   });
-async function capture({
-  enrollment,
-  coordinator,
-  capsule,
-  record,
-  transaction,
-  receipt,
-  signal,
-  timeoutMs = 45000,
-}) {
+async function capture(
+  {
+    enrollment,
+    coordinator,
+    capsule,
+    record,
+    transaction,
+    receipt,
+    signal,
+    timeoutMs = 45000,
+    destination,
+  },
+  completed = false
+) {
   assert.ok(signal instanceof AbortSignal && !signal.aborted);
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 180000);
   const policy = assertRailgunAccountPublic(coordinator, enrollment);
   const publicIdentity = getRailgunAccountPublicIdentity(coordinator, enrollment, policy);
+  if (completed)
+    assertRailgunAccountPublicDestination(coordinator, enrollment, destination, policy);
   assert.ok(!captures.has(coordinator));
   const text = JSON.stringify({ capsule, record, transaction, receipt });
   assert.ok(Buffer.byteLength(text) <= 192 * 1024);
@@ -43,6 +51,8 @@ async function capture({
   });
   let evidence,
     captured,
+    stage = 'context',
+    sourceOutcome,
     closed = false;
   const current = () => {
     assert.ok(
@@ -57,6 +67,8 @@ async function capture({
       getRailgunAccountPublicIdentity(coordinator, enrollment, policy),
       publicIdentity
     );
+    if (completed)
+      assertRailgunAccountPublicDestination(coordinator, enrollment, destination, policy);
   };
   const close = () => {
     if (closed) return;
@@ -72,7 +84,7 @@ async function capture({
     current();
     // Await the coordinator itself, including its final authentication/refresh.
     // Cancellation revokes admission; it never races away from in-flight work.
-    const snapshot = await coordinator.withPublicSnapshot(async (window) => {
+    const run = async (window) => {
       try {
         current();
         const assertCurrent = () => {
@@ -92,9 +104,34 @@ async function capture({
         // corruption. The coordinator independently tracks visitor failures.
         return null;
       }
-    });
+    };
+    stage = 'snapshot';
+    let snapshot;
+    try {
+      if (completed) {
+        const remaining = Math.floor(deadline - performance.now());
+        assert.ok(remaining > 0);
+        snapshot = await coordinator.withCompletedPublicSnapshot(
+          { destination, signal: scope.signal, timeoutMs: remaining },
+          run
+        );
+      } else snapshot = await coordinator.withPublicSnapshot(run);
+    } catch (error) {
+      if (completed) {
+        try {
+          // Only the exact coordinator rejection supplies failure provenance.
+          // Read it before sanitizing, even if fatal closure revoked our scope.
+          sourceOutcome = getRailgunCompletedSnapshotOutcome(coordinator, error);
+        } catch {
+          // Local/unknown failures carry no fabricated coordinator outcome.
+        }
+      }
+      throw error;
+    }
     current();
+    stage = 'match';
     assert.ok(snapshot.value);
+    stage = 'evidence';
     captured = coordinator.assertSnapshot(snapshot.evidence);
     assert.equal(captured.source.ledgerId, publicIdentity.sourceId);
     assert.equal(checkpointHash(captured), snapshot.value.checkpointHash);
@@ -117,9 +154,21 @@ async function capture({
     };
     assertCurrent();
     receipts.set(token, { enrollment, coordinator, assertCurrent });
-    return Object.freeze({ receipt: token, observation, close, signal: scope.signal });
+    return Object.freeze({
+      ...(completed ? { status: 'captured' } : {}),
+      receipt: token,
+      observation,
+      close,
+      signal: scope.signal,
+    });
   } catch {
     close();
+    if (completed)
+      return Object.freeze({
+        status: 'refused',
+        stage,
+        ...(sourceOutcome ? { sourceOutcome } : {}),
+      });
     throw fail();
   } finally {
     captures.delete(coordinator);
@@ -130,6 +179,13 @@ exports.captureRailgunPoiSource = async (options) => {
     return await capture(options);
   } catch {
     throw fail();
+  }
+};
+exports.captureRailgunPoiSourceCompleted = async (options) => {
+  try {
+    return await capture(options, true);
+  } catch {
+    return Object.freeze({ status: 'refused', stage: 'context' });
   }
 };
 exports.assertRailgunPoiSource = (receipt, enrollment, coordinator) => {

@@ -32,6 +32,27 @@ jest.mock('./railgun-public-policy', () => ({
   },
 }));
 jest.mock('./railgun-account-public', () => ({
+  getRailgunAccountPublicDestination: (coordinator, enrollment, policy) => {
+    if (
+      coordinator !== mock.coordinator ||
+      enrollment !== mock.enrollment ||
+      policy !== 'fixture-policy' ||
+      !mock.publicCurrent
+    )
+      throw Error('destination owner');
+    return mock.destination;
+  },
+  assertRailgunAccountPublicDestination: (coordinator, enrollment, destination, policy) => {
+    if (
+      coordinator !== mock.coordinator ||
+      enrollment !== mock.enrollment ||
+      destination !== mock.destination ||
+      policy !== 'fixture-policy' ||
+      !mock.publicCurrent
+    )
+      throw Error('destination');
+    return destination;
+  },
   getRailgunAccountPublicIdentity: (coordinator, enrollment, policy) => {
     if (
       coordinator !== mock.coordinator ||
@@ -52,6 +73,7 @@ jest.mock('./railgun-engine-runtime', () => ({
 }));
 jest.mock('./railgun-own-witness', () => ({
   preflightRailgunOwnPoi: jest.fn((options) => mock.preflight(options)),
+  preflightRailgunOwnPoiCompleted: jest.fn((options) => mock.preflight(options)),
 }));
 jest.mock('./railgun-own-operation', () => ({
   withRailgunOwnOperationRecovery: jest.fn(async (options, use) => {
@@ -162,10 +184,16 @@ const { classifyRailgunTxidContinuity } = require('./railgun-txid-omissions');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { normalizeRailgunPoiOutputRecoveryInput } = require('./railgun-poi-output-recovery-data');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
-const { recoverRailgunPoiOutput } = require('./railgun-poi-output-recovery');
+const {
+  recoverRailgunPoiOutput,
+  recoverRailgunPoiOutputCompleted,
+} = require('./railgun-poi-output-recovery');
 const { withRailgunViewingCredential } = require('./railgun-identity');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
-const { preflightRailgunOwnPoi } = require('./railgun-own-witness');
+const {
+  preflightRailgunOwnPoi,
+  preflightRailgunOwnPoiCompleted,
+} = require('./railgun-own-witness');
 const { startRailgunProcess } = require('./railgun-process');
 const hex = (n) => BigInt(n).toString(16).padStart(64, '0');
 const prefixed = (n) => '0x' + hex(n);
@@ -343,6 +371,7 @@ beforeEach(() => {
   gates = [];
   operations = [];
   mock = {
+    destination: Object.freeze({}),
     caller: new AbortController(),
     identityAbort: new AbortController(),
     enrollmentAbort: new AbortController(),
@@ -1385,4 +1414,137 @@ test('missing existing-only POI storage refuses output recovery before preflight
   expect(withRailgunViewingCredential).not.toHaveBeenCalled();
   expect(startRailgunProcess).not.toHaveBeenCalled();
   expect((await run()).status).toBe('matched');
+});
+
+const runCompleted = (input = { ...options, sourceDestination: mock.destination }) => {
+  const work = recoverRailgunPoiOutputCompleted(input);
+  operations.push(work);
+  return work;
+};
+test.each([false, true])(
+  'completed output recovery %s chooses the fixed preflight with exact destination',
+  async (unshield) => {
+    configure(unshield);
+    const result = await runCompleted();
+    expect(result.status).toBe('matched');
+    expect(preflightRailgunOwnPoiCompleted).toHaveBeenCalledTimes(1);
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(preflightRailgunOwnPoiCompleted.mock.calls[0][0]).toMatchObject({
+      sourceDestination: mock.destination,
+      coordinator: mock.coordinator,
+      enrollment: mock.enrollment,
+    });
+    expect(result).toMatchObject({
+      sourceAuthenticated: false,
+      spendingEnabled: false,
+      disclosureEnabled: false,
+    });
+    expect(withRailgunViewingCredential).toHaveBeenCalledTimes(unshield ? 0 : 1);
+  }
+);
+test.each([undefined, null, {}])(
+  'completed output refuses copied/absent destination %# before preflight/key/utility',
+  async (sourceDestination) => {
+    expect((await runCompleted({ ...options, sourceDestination })).status).toBe('refused');
+    expect(preflightRailgunOwnPoiCompleted).not.toHaveBeenCalled();
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+  }
+);
+test.each([false, true])(
+  'completed output propagates preflight fatal=%s diagnostic without key work',
+  async (fatal) => {
+    const sourceOutcome = Object.freeze({
+      fatal,
+      reason: fatal ? 'fatal' : 'prefix-unavailable',
+      rpcFailure: fatal ? 'response' : null,
+    });
+    mock.preflight.mockResolvedValueOnce({
+      status: 'refused',
+      stage: 'source:snapshot',
+      sourceOutcome,
+    });
+    expect(await runCompleted()).toMatchObject({ status: 'refused', sourceOutcome });
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+  }
+);
+test('cancelled completed preflight is drained and late fatal diagnostic survives before any key admission', async () => {
+  const gate = deferred();
+  const sourceOutcome = Object.freeze({ fatal: true, reason: 'fatal', rpcFailure: 'response' });
+  mock.preflight.mockImplementationOnce(async () => {
+    await gate.promise;
+    return { status: 'refused', stage: 'source:snapshot', sourceOutcome };
+  });
+  let settled = false;
+  const pending = runCompleted().then((result) => {
+    settled = true;
+    return result;
+  });
+  await waitFor(() => preflightRailgunOwnPoiCompleted.mock.calls.length === 1);
+  mock.caller.abort();
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(
+    (
+      await runCompleted({
+        ...options,
+        sourceDestination: mock.destination,
+        signal: new AbortController().signal,
+      })
+    ).status
+  ).toBe('refused');
+  expect(preflightRailgunOwnPoiCompleted).toHaveBeenCalledTimes(1);
+  gate.resolve();
+  expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
+  expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+  expect(startRailgunProcess).not.toHaveBeenCalled();
+});
+test.each(['stored-read', 'preflight', 'final-reattest'])(
+  'completed destination replacement at %s invalidates recovery',
+  async (boundary) => {
+    const target =
+      boundary === 'stored-read'
+        ? mock.store.get
+        : boundary === 'preflight'
+          ? mock.preflight
+          : mock.reattest;
+    const original = target.getMockImplementation();
+    target.mockImplementationOnce(async (...args) => {
+      const value = await original(...args);
+      mock.destination = Object.freeze({});
+      return value;
+    });
+    expect((await runCompleted()).status).toBe('refused');
+    if (boundary !== 'final-reattest') {
+      expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+      expect(startRailgunProcess).not.toHaveBeenCalled();
+    }
+  }
+);
+test('completed output does not trust copied outcome properties on an arbitrary thrown exception', async () => {
+  mock.preflight.mockRejectedValueOnce(
+    Object.assign(Error('private'), {
+      sourceOutcome: { fatal: false, reason: 'cancelled', rpcFailure: null },
+    })
+  );
+  const result = await runCompleted();
+  expect(result.status).toBe('refused');
+  expect(result.sourceOutcome).toBeUndefined();
+  expect(startRailgunProcess).not.toHaveBeenCalled();
+});
+test('completed output reduces preflight budget by elapsed retained-store work', async () => {
+  const original = mock.store.get.getMockImplementation();
+  mock.store.get.mockImplementationOnce(async (...args) => {
+    jest.advanceTimersByTime(10000);
+    return original(...args);
+  });
+  expect(
+    (await runCompleted({ ...options, sourceDestination: mock.destination, timeoutMs: 240000 }))
+      .status
+  ).toBe('matched');
+  expect(preflightRailgunOwnPoiCompleted.mock.calls[0][0].timeoutMs).toBeLessThanOrEqual(230000);
+  expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
 });

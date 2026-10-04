@@ -7,9 +7,15 @@ const { createHash } = require('crypto');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { assertRailgunIdentity, withRailgunViewingCredential } = require('./railgun-identity');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
-const { getRailgunAccountPublicIdentity } = require('./railgun-account-public');
+const {
+  getRailgunAccountPublicIdentity,
+  assertRailgunAccountPublicDestination,
+} = require('./railgun-account-public');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
-const { preflightRailgunOwnPoi } = require('./railgun-own-witness');
+const {
+  preflightRailgunOwnPoi,
+  preflightRailgunOwnPoiCompleted,
+} = require('./railgun-own-witness');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
@@ -47,10 +53,11 @@ function guards(value) {
   assert.equal(new Set(value.hooks).size, value.hooks.length);
   assert.equal(value.canaries, value.hooks.length);
 }
-async function recoverRailgunPoiOutput(options = {}) {
+async function recover(options = {}, completed = false) {
   let stage = 'context',
     timer,
     directory,
+    sourceOutcome,
     store;
   const owner = {},
     controller = new AbortController();
@@ -63,6 +70,7 @@ async function recoverRailgunPoiOutput(options = {}) {
       'archive',
       'capsuleDigest',
       'signal',
+      ...(completed ? ['sourceDestination'] : []),
       ...(Object.hasOwn(options, 'timeoutMs') ? ['timeoutMs'] : []),
     ]);
     const {
@@ -71,6 +79,7 @@ async function recoverRailgunPoiOutput(options = {}) {
       coordinator,
       capsuleDigest,
       signal,
+      sourceDestination,
       timeoutMs = TOTAL_MS,
     } = options;
     assert.ok(isRailgunAccountEnrollment(enrollment));
@@ -111,6 +120,8 @@ async function recoverRailgunPoiOutput(options = {}) {
         getRailgunAccountPublicIdentity(coordinator, enrollment, policy),
         publicIdentity
       );
+      if (completed)
+        assertRailgunAccountPublicDestination(coordinator, enrollment, sourceDestination, policy);
     };
     const remaining = (max) => {
       current();
@@ -120,6 +131,7 @@ async function recoverRailgunPoiOutput(options = {}) {
     };
     timer = setTimeout(stop, timeoutMs);
     timer.unref?.();
+    if (completed) current();
     stage = 'stored';
     store = await enrollment.openPoiIntents({ existingOnly: true });
     current();
@@ -138,14 +150,21 @@ async function recoverRailgunPoiOutput(options = {}) {
       assert.equal(JSON.stringify(latest), storedText);
     };
     stage = 'preflight';
-    const fresh = await preflightRailgunOwnPoi({
+    const preflight = completed ? preflightRailgunOwnPoiCompleted : preflightRailgunOwnPoi;
+    const fresh = await preflight({
       enrollment,
       coordinator,
       archive,
       selector: entry.selector,
       signal: lifetime,
       timeoutMs: remaining(PREFLIGHT_MS),
+      ...(completed ? { sourceDestination } : {}),
     });
+    if (completed && fresh.status !== 'captured') {
+      stage = 'preflight:' + fresh.stage;
+      sourceOutcome = fresh.sourceOutcome;
+      throw fail();
+    }
     current(MIN_JOB_MS);
     if (fresh.status !== 'captured') {
       stage = 'preflight:' + fresh.stage;
@@ -404,7 +423,7 @@ async function recoverRailgunPoiOutput(options = {}) {
       spendingEnabled: false,
     });
   } catch {
-    return Object.freeze({ status: 'refused', stage });
+    return Object.freeze({ status: 'refused', stage, ...(sourceOutcome ? { sourceOutcome } : {}) });
   } finally {
     clearTimeout(timer);
     controller.abort();
@@ -412,4 +431,7 @@ async function recoverRailgunPoiOutput(options = {}) {
     if (owners.get(directory) === owner) owners.delete(directory);
   }
 }
-module.exports = { recoverRailgunPoiOutput };
+module.exports = {
+  recoverRailgunPoiOutput: (options) => recover(options),
+  recoverRailgunPoiOutputCompleted: (options) => recover(options, true),
+};

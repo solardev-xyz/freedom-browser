@@ -1,4 +1,5 @@
-const mockPoiCapture = jest.fn();
+const mockPoiCapture = jest.fn(),
+  mockPoiCompletedCapture = jest.fn();
 let mockPoiObservation;
 const mockObserve = jest.fn(),
   mockSourceCapture = jest.fn(),
@@ -22,6 +23,7 @@ jest.mock('./railgun-own-source-capture', () => ({
 }));
 jest.mock('./railgun-poi-source-capture', () => ({
   captureRailgunPoiSource: (...args) => mockPoiCapture(...args),
+  captureRailgunPoiSourceCompleted: (...args) => mockPoiCompletedCapture(...args),
   assertRailgunPoiSource: (receipt) => {
     if (
       receipt !== mockSource.receipt ||
@@ -38,7 +40,7 @@ jest.mock('./railgun-own-txid-verifier', () => ({
 jest.mock('./railgun-txid-root', () => ({
   createRailgunTxidRootSource: (...args) => mockRootCreate(...args),
 }));
-let mockEnrollment, mockCoordinator, mockPublicIdentity, mockPolicy;
+let mockEnrollment, mockCoordinator, mockPublicIdentity, mockPolicy, mockDestination;
 const mockCapture = jest.fn(),
   mockSelectorCapture = jest.fn(),
   mockOpen = jest.fn();
@@ -49,6 +51,15 @@ jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) =
 jest.mock('./railgun-public-policy', () => ({ getRailgunPublicPolicy: () => 'public' }));
 jest.mock('./railgun-txid-policy', () => ({ getRailgunTxidPolicy: () => mockPolicy }));
 jest.mock('./railgun-account-public', () => ({
+  getRailgunAccountPublicDestination: (c, e) => {
+    if (c !== mockCoordinator || e !== mockEnrollment) throw Error('owner');
+    return mockDestination;
+  },
+  assertRailgunAccountPublicDestination: (c, e, destination) => {
+    if (c !== mockCoordinator || e !== mockEnrollment || destination !== mockDestination)
+      throw Error('destination');
+    return destination;
+  },
   getRailgunAccountPublicIdentity: (c, e) => {
     if (c !== mockCoordinator || e !== mockEnrollment) throw Error('owners');
     return mockPublicIdentity;
@@ -70,6 +81,7 @@ const {
   captureRailgunOwnWitness: capture,
   preflightRailgunOwnTransaction: preflight,
   preflightRailgunOwnPoi: poiPreflight,
+  preflightRailgunOwnPoiCompleted: poiCompleted,
 } = require('./railgun-own-witness');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const copy = (v) => JSON.parse(JSON.stringify(v));
@@ -187,6 +199,11 @@ async function setup(unshield = false, mutateRow = () => {}) {
     mockSourceAt = performance.now();
     return mockSource;
   });
+  mockPoiCompletedCapture.mockImplementation(async () => {
+    events.push('poi-source-completed');
+    mockSourceAt = performance.now();
+    return { ...mockSource, status: 'captured' };
+  });
   mockVerify.mockImplementation(async () => {
     events.push('verify-exited');
     return { pathVerified: true, utilityExitObserved: true };
@@ -220,6 +237,7 @@ beforeEach(async () => {
   caller = new AbortController();
   events = [];
   mockPolicy = 'txid';
+  mockDestination = Object.freeze({});
   mockPublicIdentity = {
     generationId: '1'.repeat(64),
     publicId: '2'.repeat(64),
@@ -480,6 +498,11 @@ test('verifier phase remains claimed until observed completion after cancellatio
   const ready = new Promise((resolve) => {
     entered = resolve;
   });
+  mockPoiCompletedCapture.mockImplementation(async () => {
+    events.push('poi-source-completed');
+    mockSourceAt = performance.now();
+    return { ...mockSource, status: 'captured' };
+  });
   mockVerify.mockImplementation(async () => {
     entered();
     await new Promise((resolve) => {
@@ -516,6 +539,11 @@ test('source freshness starts after slow TXID and verifier steps', async () => {
   txid.witness.mockImplementation(async () => {
     await jest.advanceTimersByTimeAsync(30001);
     return { witness: copy(witness) };
+  });
+  mockPoiCompletedCapture.mockImplementation(async () => {
+    events.push('poi-source-completed');
+    mockSourceAt = performance.now();
+    return { ...mockSource, status: 'captured' };
   });
   mockVerify.mockImplementation(async () => {
     await jest.advanceTimersByTimeAsync(20001);
@@ -631,6 +659,11 @@ test.each(['source', 'expired-source', 'root', 'capsule-drift'])(
 );
 test('POI source stays late after slow verifier and retains the 180-second acquisition budget', async () => {
   jest.useFakeTimers();
+  mockPoiCompletedCapture.mockImplementation(async () => {
+    events.push('poi-source-completed');
+    mockSourceAt = performance.now();
+    return { ...mockSource, status: 'captured' };
+  });
   mockVerify.mockImplementation(async () => {
     await jest.advanceTimersByTimeAsync(50001);
     return { pathVerified: true };
@@ -691,3 +724,132 @@ test.each([
     }
   }
 );
+
+test.each([false, true])(
+  'completed POI preflight %s pins destination and retains the existing receipt wrapper',
+  async (unshield) => {
+    await setup(unshield);
+    const result = await poiCompleted({ ...options, sourceDestination: mockDestination });
+    expect(result.status).toBe('captured');
+    expect(mockPoiCompletedCapture).toHaveBeenCalledTimes(1);
+    expect(mockPoiCompletedCapture.mock.calls[0][0]).toMatchObject({
+      destination: mockDestination,
+      enrollment: mockEnrollment,
+      coordinator: mockCoordinator,
+    });
+    expect(mockPoiCapture).not.toHaveBeenCalled();
+    expect(mockSourceCapture).not.toHaveBeenCalled();
+    expect(mockObserve).toHaveBeenCalledTimes(1);
+    expect(mockRootCreate).toHaveBeenCalledTimes(1);
+    expect(events.indexOf('poi-source-completed')).toBeGreaterThan(events.indexOf('verify-exited'));
+    expect(events.indexOf('root')).toBeGreaterThan(events.indexOf('poi-source-completed'));
+    expect(result).toMatchObject({
+      spendingEnabled: false,
+      disclosureEnabled: false,
+      sourceAuthenticated: false,
+    });
+  }
+);
+test.each([undefined, null, {}])(
+  'completed preflight refuses absent/copied source destination %# before receipt/TXID work',
+  async (sourceDestination) => {
+    expect((await poiCompleted({ ...options, sourceDestination })).status).toBe('refused');
+    expect(mockObserve).not.toHaveBeenCalled();
+    expect(mockSelectorCapture).not.toHaveBeenCalled();
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  }
+);
+test.each([false, true])(
+  'completed source refusal forwards authenticated fatal=%s and admits no root',
+  async (fatal) => {
+    const sourceOutcome = Object.freeze({
+      fatal,
+      reason: fatal ? 'fatal' : 'checkpoint-unavailable',
+      rpcFailure: fatal ? 'response' : null,
+    });
+    mockPoiCompletedCapture.mockResolvedValueOnce({
+      status: 'refused',
+      stage: 'snapshot',
+      sourceOutcome,
+    });
+    const result = await poiCompleted({ ...options, sourceDestination: mockDestination });
+    expect(result).toMatchObject({ status: 'refused', sourceOutcome });
+    expect(Object.isFrozen(result.sourceOutcome)).toBe(true);
+    expect(mockRootCreate).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
+  }
+);
+test('cancellation waits for completed source and preserves its late fatal outcome before checking currency', async () => {
+  let release, entered;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const sourceOutcome = Object.freeze({ fatal: true, reason: 'fatal', rpcFailure: 'response' });
+  mockPoiCompletedCapture.mockImplementationOnce(async () => {
+    entered();
+    await gate;
+    return { status: 'refused', stage: 'snapshot', sourceOutcome };
+  });
+  let settled = false;
+  const pending = poiCompleted({ ...options, sourceDestination: mockDestination }).then(
+    (result) => {
+      settled = true;
+      return result;
+    }
+  );
+  try {
+    await ready;
+    caller.abort();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  } finally {
+    release();
+  }
+  expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
+  expect(mockRootCreate).not.toHaveBeenCalled();
+});
+test.each(['receipt', 'verification', 'source'])(
+  'destination replacement during %s refuses without later root admission',
+  async (boundary) => {
+    const target =
+      boundary === 'receipt'
+        ? mockObserve
+        : boundary === 'verification'
+          ? mockVerify
+          : mockPoiCompletedCapture;
+    const original = target.getMockImplementation();
+    target.mockImplementationOnce(async (...args) => {
+      const result = await original(...args);
+      mockDestination = Object.freeze({});
+      return result;
+    });
+    expect((await poiCompleted({ ...options, sourceDestination: mockDestination })).status).toBe(
+      'refused'
+    );
+    expect(mockRootCreate).not.toHaveBeenCalled();
+    if (boundary !== 'source') expect(mockPoiCompletedCapture).not.toHaveBeenCalled();
+  }
+);
+test('completed preflight passes remaining total budget to the late source capture', async () => {
+  jest.useFakeTimers();
+  mockVerify.mockImplementationOnce(async () => {
+    jest.advanceTimersByTime(130000);
+    return { pathVerified: true, utilityExitObserved: true };
+  });
+  expect(
+    (await poiCompleted({ ...options, sourceDestination: mockDestination, timeoutMs: 300000 }))
+      .status
+  ).toBe('captured');
+  expect(mockPoiCompletedCapture.mock.calls[0][0].timeoutMs).toBe(170000);
+});
+test('legacy POI preflight ignores extra route-selector arguments and keeps its original source path', async () => {
+  expect(
+    (await poiPreflight({ ...options, sourceDestination: mockDestination }, true)).status
+  ).toBe('captured');
+  expect(mockPoiCapture).toHaveBeenCalledTimes(1);
+  expect(mockPoiCompletedCapture).not.toHaveBeenCalled();
+});
