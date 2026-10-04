@@ -3,6 +3,7 @@ import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
 import { isPrivateWindow } from './private-mode.js';
 import { homeUrl } from './page-urls.js';
+import { matchesShortcut } from './shortcuts.js';
 import { close as closeWalletSidebar, isVisible as isWalletSidebarVisible } from './sidebar.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
 
@@ -127,6 +128,11 @@ let workspaceInspector = null;
 let composerResizeObserver = null;
 let workspaceInspectionConversationId = null;
 let agentFirstMode = false;
+let focusBeforeOpen = null;
+let launcherSnapshot = null;
+// Optional presentation nodes: animation targets only, never required.
+let panelInner = null;
+let panelHeader = null;
 let sessionSidebarOpen = true;
 let sessionContextMenu = null;
 let workspaceSidebarOpen = true;
@@ -675,6 +681,7 @@ function setAgentView(nextView) {
     : 'Give Agent a task';
   elements.agentFirstToggle.hidden = nextView !== 'workspace';
   closeComposerPopovers();
+  syncFloatingPresentation();
 }
 
 function titleFromPrompt(prompt) {
@@ -1183,6 +1190,7 @@ function setAgentFirstMode(nextMode) {
   elements.modeAgent.setAttribute('aria-checked', String(agentFirstMode));
   elements.modeBrowser.setAttribute('aria-checked', String(!agentFirstMode));
   document.body.classList.toggle('agent-first-mode', agentFirstMode);
+  syncFloatingPresentation();
   document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
   document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
   elements.taskPages.hidden = !agentFirstMode;
@@ -1237,6 +1245,7 @@ function observeComposerHeight() {
   const update = () => {
     const height = elements.composerWrap.getBoundingClientRect().height;
     if (height > 0) elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
+    captureLauncherSnapshot();
   };
   update();
   if (typeof ResizeObserver === 'function') {
@@ -1358,7 +1367,175 @@ function setPanelOpen(nextOpen) {
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
   elements.toggle.setAttribute('aria-expanded', String(panelOpen));
+  syncFloatingPresentation();
   pageActions?.render();
+}
+
+// In browser mode Agent floats over the page instead of docking beside it, so
+// the page keeps its width. Before a task exists it is a centred composer;
+// once one does (or a saved conversation is reopened) it is a column of
+// floating cards on the right. Agent-first mode keeps its own full layout.
+function floatingPresentationFor() {
+  return agentView === 'workspace' &&
+    !currentConversationId &&
+    currentRunStatus === 'idle' &&
+    !pendingApproval &&
+    elements.transcript.hidden
+    ? 'launcher'
+    : 'column';
+}
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+function syncFloatingPresentation() {
+  if (!elements?.panel) return;
+  const floating = !agentFirstMode;
+  const next = floatingPresentationFor();
+  const previous = elements.panel.dataset?.presentation;
+  const moving =
+    floating && panelOpen && Boolean(previous) && previous !== next && !prefersReducedMotion();
+  // Leaving the launcher, the DOM may already hold the first turn, so the
+  // geometry comes from the last settled launcher layout.
+  const before = moving
+    ? previous === 'launcher' && launcherSnapshot
+      ? launcherSnapshot
+      : { composer: elements.composer.getBoundingClientRect?.() }
+    : null;
+  elements.panel.classList.toggle('agent-floating', floating);
+  if (elements.panel.dataset) elements.panel.dataset.presentation = next;
+  // A closed floating surface must not take clicks or focus from the page.
+  elements.panel.inert = floating && !panelOpen;
+  document.body.classList.toggle('agent-floating-open', floating && panelOpen);
+  document.body.classList.toggle(
+    'agent-floating-column',
+    floating && panelOpen && next === 'column'
+  );
+  if (moving) animateFloatingPresentation(previous, next, before);
+  captureLauncherSnapshot();
+}
+
+function captureLauncherSnapshot() {
+  if (agentFirstMode || !panelOpen || elements.panel.dataset?.presentation !== 'launcher') {
+    if (!panelOpen || agentFirstMode) launcherSnapshot = null;
+    return;
+  }
+  launcherSnapshot = {
+    composer: elements.composer.getBoundingClientRect?.(),
+    launcher: panelInner?.getBoundingClientRect?.(),
+    greeting: elements.emptyState.hidden ? null : elements.emptyState.getBoundingClientRect?.(),
+  };
+}
+
+const FLOAT_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
+
+// Glass cards cannot fade with opacity without losing their blur (see
+// agent-floating.css), so they arrive by materialising: blur, tint, border
+// and shadow interpolate from nothing to their resting values.
+function glassHiddenKeyframe(extra = {}) {
+  const hiddenFilter =
+    window.getComputedStyle?.(elements.panel)?.getPropertyValue?.('--agent-glass-filter-hidden')?.trim() ||
+    'blur(0px)';
+  return {
+    backgroundColor: 'transparent',
+    backdropFilter: hiddenFilter,
+    borderColor: 'transparent',
+    boxShadow: 'none',
+    ...extra,
+  };
+}
+
+function materialise(element, transform, delay = 0) {
+  if (typeof element?.animate !== 'function') return;
+  const timing = { duration: 380, delay, easing: FLOAT_EASE, fill: 'backwards' };
+  element.animate([{ offset: 0, ...glassHiddenKeyframe({ transform }) }], timing);
+  for (const child of element.children || []) {
+    child.animate?.([{ offset: 0, opacity: 0 }], { ...timing, duration: 260, delay: delay + 80 });
+  }
+}
+
+// The composer is the one element both presentations share, so it travels
+// between them (first-last-invert-play) while the rest materialises around
+// it. Draft, focus and attachments stay put because the node never moves.
+function animateFloatingPresentation(previous, next, before) {
+  const composer = elements.composer;
+  const after = composer.getBoundingClientRect?.();
+  if (before?.composer?.width && after?.width && typeof composer.animate === 'function') {
+    composer.animate(
+      [
+        {
+          transform: `translate(${before.composer.left - after.left}px, ${
+            before.composer.top - after.top
+          }px)`,
+          width: `${before.composer.width}px`,
+        },
+        { transform: 'translate(0, 0)', width: `${after.width}px` },
+      ],
+      { duration: 480, easing: FLOAT_EASE }
+    );
+  }
+  if (previous === 'launcher' && before?.launcher?.width) {
+    dissolveLauncherGhost(before.launcher, before.greeting);
+  }
+  if (next === 'column') materialise(panelHeader, 'translateY(-8px)', 140);
+  else materialise(panelInner, 'translateY(10px) scale(0.985)', 40);
+}
+
+// The centred card dissolves where it stood while its composer flies to the
+// column. The ghost is decorative: no ids, no focusable content, no pointer.
+function dissolveLauncherGhost(rect, greetingRect) {
+  if (typeof document.createElement !== 'function' || !document.body?.appendChild) return;
+  const ghost = document.createElement('div');
+  ghost.className = 'agent-floating-ghost';
+  ghost.setAttribute('aria-hidden', 'true');
+  Object.assign(ghost.style, {
+    left: `${rect.left}px`,
+    top: `${rect.top}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+  });
+  let greeting = null;
+  if (greetingRect?.width && typeof elements.emptyState.cloneNode === 'function') {
+    greeting = elements.emptyState.cloneNode(true);
+    greeting.removeAttribute?.('id');
+    greeting.hidden = false;
+    greeting.classList?.add('agent-floating-ghost-greeting');
+    Object.assign(greeting.style, {
+      left: `${greetingRect.left - rect.left}px`,
+      top: `${greetingRect.top - rect.top}px`,
+      width: `${greetingRect.width}px`,
+    });
+    ghost.appendChild(greeting);
+  }
+  document.body.appendChild(ghost);
+  const timing = { duration: 320, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'forwards' };
+  greeting?.animate?.([{ opacity: 1 }, { opacity: 0 }], { ...timing, duration: 180 });
+  const dissolve = ghost.animate?.(
+    [{ transform: 'scale(1)' }, glassHiddenKeyframe({ transform: 'scale(0.97)' })],
+    timing
+  );
+  if (dissolve) dissolve.onfinish = () => ghost.remove();
+  else ghost.remove();
+}
+
+// Cmd/Ctrl+K and the menu item: open Agent, or bring the keyboard back to an
+// open composer from the page, and only close it when it already has focus.
+function summonPanel() {
+  if (!panelOpen) {
+    openPanel();
+    return;
+  }
+  if (agentFirstMode) {
+    focusComposer();
+    return;
+  }
+  if (!elements.panel.contains(document.activeElement) && focusComposer()) return;
+  closePanel();
 }
 
 function focusComposer(options = {}) {
@@ -1383,8 +1560,16 @@ function focusComposer(options = {}) {
 }
 
 function closePanel() {
+  const hadFocus = elements.panel.contains(document.activeElement);
   if (agentFirstMode) setAgentFirstMode(false);
   if (panelOpen) setPanelOpen(false);
+  // Hand the keyboard back to whatever summoned Agent (the page, the toolbar
+  // button) rather than leaving it on a surface that is now inert.
+  const previous = focusBeforeOpen;
+  focusBeforeOpen = null;
+  if (hadFocus && previous?.isConnected && !elements.panel.contains(previous)) {
+    previous.focus?.({ preventScroll: true });
+  }
 }
 
 function openPanel() {
@@ -1392,6 +1577,9 @@ function openPanel() {
   if (isWalletSidebarVisible()) {
     closeWalletSidebar();
     if (isWalletSidebarVisible()) return;
+  }
+  if (!panelOpen && !elements.panel.contains(document.activeElement)) {
+    focusBeforeOpen = document.activeElement || null;
   }
   setPanelOpen(true);
   showPrimaryView();
@@ -2126,6 +2314,7 @@ function setRunState(status, label) {
   renderPageInterlock();
   renderPageContext();
   renderSessionSidebar();
+  syncFloatingPresentation();
 }
 
 function updateSendAvailability() {
@@ -2163,6 +2352,7 @@ function resetConversationUi() {
   elements.emptyState.hidden = false;
   clearApproval();
   setMessage(elements.runMessage);
+  syncFloatingPresentation();
 }
 
 function createTurnView(turn) {
@@ -2290,6 +2480,7 @@ function createTurnView(turn) {
   elements.transcript.appendChild(section);
   elements.transcript.hidden = false;
   elements.emptyState.hidden = true;
+  syncFloatingPresentation();
 
   const view = {
     section,
@@ -4174,6 +4365,7 @@ async function startRun(options = {}) {
   if (!explicitPrompt) elements.prompt.value = '';
   if (!currentConversationId) conversationRendererTabId = rendererTabId;
   if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
+  captureLauncherSnapshot();
   setRunState('starting', 'Starting');
   setMessage(elements.runMessage);
   try {
@@ -4642,6 +4834,8 @@ export function initAgentUi(options = {}) {
     attachmentContexts: byId('agent-attachment-contexts'),
   };
   if (Object.values(elements).some((element) => !element)) return;
+  panelInner = elements.panel.querySelector?.('.agent-sidebar-inner') || null;
+  panelHeader = elements.panel.querySelector?.('.agent-sidebar-header') || null;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
   isTabAgentOwned =
@@ -4709,6 +4903,10 @@ export function initAgentUi(options = {}) {
     });
   }
 
+  syncFloatingPresentation();
+  panelInner?.addEventListener?.('transitionend', (event) => {
+    if (event.target === panelInner) captureLauncherSnapshot();
+  });
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
@@ -4961,7 +5159,13 @@ export function initAgentUi(options = {}) {
       elements.processCompactPopover.hidden = true;
       elements.processCompactToggle.setAttribute('aria-expanded', 'false');
       elements.processCompactToggle.focus();
-    } else if (!popoverWasOpen && currentRunStatus === 'running' && currentRunId &&
+    } else if (!popoverWasOpen && !agentFirstMode && panelOpen && !pendingApproval &&
+      (elements.panel.contains(event.target) || event.target === document.body)) {
+      // The floating surface only goes away: a running task keeps running and
+      // the draft stays in the composer for the next Cmd/Ctrl+K.
+      event.preventDefault();
+      closePanel();
+    } else if (!popoverWasOpen && agentFirstMode && currentRunStatus === 'running' && currentRunId &&
       elements.panel.contains(event.target) && !event.target?.closest?.('input, textarea, [contenteditable], #agent-approval')) {
       event.preventDefault();
       void stopRun();
@@ -4969,6 +5173,14 @@ export function initAgentUi(options = {}) {
       setAgentFirstMode(false);
     }
   });
+  // Cmd/Ctrl+K while the chrome has focus; with the page focused the same
+  // chord arrives through the View menu accelerator instead (main → agent:toggle).
+  window.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || !matchesShortcut(event, 'view.toggleAgent')) return;
+    event.preventDefault();
+    summonPanel();
+  });
+  window.electronAPI?.onToggleAgent?.(() => summonPanel());
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {
     elements.toggle.disabled = inFlight;

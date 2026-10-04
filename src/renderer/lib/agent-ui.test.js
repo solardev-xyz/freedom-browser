@@ -656,6 +656,42 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run'].disabled).toBe(true);
   });
 
+  test('floats over the page: centred before a task, a right column once one runs, inert while closed', async () => {
+    let toggleAgent;
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        onToggleAgent: jest.fn((callback) => {
+          toggleAgent = callback;
+          return jest.fn();
+        }),
+      },
+    });
+    const panel = ctx.elements['agent-sidebar'];
+    expect(panel.classList.contains('agent-floating')).toBe(true);
+    expect(panel.inert).toBe(true);
+
+    // Cmd/Ctrl+K arriving through the View menu while the page has focus.
+    toggleAgent();
+    expect(panel.classList.contains('collapsed')).toBe(false);
+    expect(panel.inert).toBe(false);
+    expect(panel.dataset.presentation).toBe('launcher');
+
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Read this page' });
+    expect(panel.dataset.presentation).toBe('column');
+    expect(ctx.document.body.classList.contains('agent-floating-column')).toBe(true);
+
+    // Escape only puts the surface away; the run keeps going.
+    ctx.document.handlers.keydown({ key: 'Escape', target: ctx.document.body, preventDefault: jest.fn() });
+    expect(panel.classList.contains('collapsed')).toBe(true);
+    expect(panel.inert).toBe(true);
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+
+    // Reopening an existing conversation goes straight to the right column.
+    toggleAgent();
+    expect(panel.classList.contains('collapsed')).toBe(false);
+    expect(panel.dataset.presentation).toBe('column');
+  });
+
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
     const ctx = await loadAgentUi();
     const focus = jest.spyOn(ctx.elements['agent-prompt'], 'focus');

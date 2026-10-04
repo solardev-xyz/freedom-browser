@@ -1,0 +1,354 @@
+/* Floating Agent (browser mode).
+
+   Agent no longer docks a solid column beside the page: it floats over the
+   live page, which keeps its width. agent-ui.js sets `.agent-floating` on
+   #agent-sidebar outside Agent-first mode and `data-presentation`:
+
+     launcher  no task yet: one centred glass card holding the composer;
+     column    a task exists or a conversation was reopened: separate glass
+               cards stacked on the right (header, turns, composer).
+
+   The glass is real: backdrop-filter blurs the <webview> guest beneath,
+   which the compositor draws into the same frame. Chromium only keeps that
+   blur while nothing makes the card its own backdrop root, so:
+   - a glass card never gets opacity < 1, and no ancestor of one gets
+     opacity, filter, mask or clip-path (any of those blurs nothing);
+   - cards therefore appear and leave by interpolating their own blur, tint,
+     border and shadow (`--agent-glass-filter-hidden` is the resting filter
+     list), while their *contents* fade with opacity, and they move with
+     transform, which is safe.
+
+   Everything here is scoped under `.agent-floating`, so Agent-first mode
+   keeps the layout in agent.css untouched. */
+
+.app-body {
+  position: relative;
+}
+
+.agent-sidebar.agent-floating {
+  --muted: var(--agent-glass-muted);
+  --agent-float-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --agent-float-column-width: min(408px, calc(100% - 20px));
+
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: block;
+  width: auto;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  pointer-events: none;
+  visibility: visible;
+  transition: visibility 0s linear 0s;
+}
+
+/* Closed: the surfaces dissolve first, then the layer stops existing for
+   hit-testing and focus (agent-ui.js also makes it inert). */
+.agent-sidebar.agent-floating.collapsed {
+  width: auto;
+  border: 0;
+  visibility: hidden;
+  transition: visibility 0s linear 300ms;
+}
+
+.agent-floating .agent-sidebar-inner {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  transition: transform 360ms var(--agent-float-ease);
+}
+
+.agent-floating .agent-pane-resizer {
+  display: none;
+}
+
+/* Shared glass treatment. In the launcher the card itself is the glass; in
+   the column every card is, and the wrapper stays bare. */
+.agent-floating[data-presentation='launcher'] .agent-sidebar-inner,
+.agent-floating[data-presentation='column'] .agent-sidebar-header,
+.agent-floating[data-presentation='column'] .agent-loading-view,
+.agent-floating[data-presentation='column'] .agent-setup-view,
+.agent-floating[data-presentation='column'] .agent-run-header,
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty),
+.agent-floating[data-presentation='column'] .agent-turn,
+.agent-floating[data-presentation='column'] .agent-composer,
+.agent-floating-ghost {
+  background-color: var(--agent-glass);
+  backdrop-filter: var(--agent-glass-filter);
+  border: 1px solid var(--agent-glass-border);
+  box-shadow:
+    var(--agent-glass-shadow-soft),
+    inset 0 1px 0 var(--agent-glass-highlight);
+  transition:
+    background-color 240ms ease,
+    backdrop-filter 300ms ease,
+    border-color 240ms ease,
+    box-shadow 240ms ease,
+    transform 360ms var(--agent-float-ease);
+}
+
+.agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner,
+.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-header,
+.agent-floating.collapsed[data-presentation='column'] .agent-loading-view,
+.agent-floating.collapsed[data-presentation='column'] .agent-setup-view,
+.agent-floating.collapsed[data-presentation='column'] .agent-run-header,
+.agent-floating.collapsed[data-presentation='column'] #agent-run-message:not(:empty),
+.agent-floating.collapsed[data-presentation='column'] .agent-turn,
+.agent-floating.collapsed[data-presentation='column'] .agent-composer {
+  background-color: transparent;
+  backdrop-filter: var(--agent-glass-filter-hidden);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Contents fade on their own; the glass under them dissolves as above. */
+.agent-floating .agent-sidebar-inner > *,
+.agent-floating .agent-composer > *,
+.agent-floating .agent-turn > * {
+  transition: opacity 200ms ease;
+}
+
+.agent-floating.collapsed .agent-sidebar-inner > *,
+.agent-floating.collapsed .agent-composer > *,
+.agent-floating.collapsed .agent-turn > * {
+  opacity: 0;
+}
+
+/* ── Launcher: one centred card ─────────────────────────────────────────── */
+
+.agent-floating[data-presentation='launcher'] .agent-sidebar-inner {
+  --agent-launcher-top: clamp(32px, 14vh, 148px);
+  top: var(--agent-launcher-top);
+  right: 0;
+  left: 0;
+  width: min(664px, calc(100% - 32px));
+  max-height: calc(100% - var(--agent-launcher-top) - 24px);
+  margin-inline: auto;
+  pointer-events: auto;
+  border-radius: 26px;
+  box-shadow:
+    var(--agent-glass-shadow),
+    inset 0 1px 0 var(--agent-glass-highlight);
+}
+
+.agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner {
+  transform: translateY(12px) scale(0.985);
+}
+
+.agent-floating[data-presentation='launcher'] .agent-sidebar-header {
+  padding: 12px 12px 0 14px;
+  border-bottom: 0;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-workspace-view,
+.agent-floating[data-presentation='launcher'] .agent-workspace-body {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-workspace-scroll {
+  flex: 0 1 auto;
+  padding: 0 24px;
+  overflow: visible;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-run-header,
+.agent-floating[data-presentation='launcher'] .agent-empty-state-icon {
+  display: none;
+}
+
+.agent-floating[data-presentation='launcher'] #agent-run-message:empty {
+  display: none;
+}
+
+.agent-floating[data-presentation='launcher'] #agent-run-message {
+  margin: 6px 0 0;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-empty-state,
+.agent-floating-ghost-greeting {
+  max-width: none;
+  margin: 14px 0 18px;
+  color: var(--agent-glass-muted);
+  text-align: left;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-empty-state h3,
+.agent-floating-ghost-greeting h3 {
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 640;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-empty-state p,
+.agent-floating-ghost-greeting p {
+  max-width: 46ch;
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-composer-wrap {
+  padding: 0 14px 14px;
+  background: transparent;
+}
+
+.agent-floating[data-presentation='launcher'] .agent-composer {
+  background: var(--agent-glass-field);
+  border-color: var(--agent-glass-border);
+  box-shadow: none;
+}
+
+/* ── Column: separate floating cards on the right ───────────────────────── */
+
+.agent-floating[data-presentation='column'] .agent-sidebar-inner {
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: var(--agent-float-column-width);
+  gap: 8px;
+  pointer-events: none;
+}
+
+.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-inner {
+  transform: translateX(28px);
+}
+
+/* The wrapper is click-through so the page between cards stays usable;
+   every interactive region inside it takes the pointer back. */
+.agent-floating[data-presentation='column'] .agent-sidebar-header,
+.agent-floating[data-presentation='column'] .agent-view,
+.agent-floating[data-presentation='column'] .agent-workspace-scroll,
+.agent-floating[data-presentation='column'] .agent-process-panel,
+.agent-floating[data-presentation='column'] .agent-composer-wrap {
+  pointer-events: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-workspace-view {
+  min-height: 0;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-sidebar-header {
+  flex: 0 0 auto;
+  padding: 7px 8px 7px 10px;
+  border-radius: 18px;
+}
+
+.agent-floating[data-presentation='column'] .agent-loading-view,
+.agent-floating[data-presentation='column'] .agent-setup-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 22px;
+}
+
+.agent-floating[data-presentation='column'] .agent-workspace-scroll {
+  padding: 0 2px 2px;
+  scrollbar-width: thin;
+}
+
+.agent-floating[data-presentation='column'] .agent-run-header {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 8px auto;
+  padding: 4px;
+  border-radius: 999px;
+}
+
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border-radius: 14px;
+}
+
+.agent-floating[data-presentation='column'] .agent-empty-state {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-transcript {
+  gap: 8px;
+  padding: 0;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn {
+  padding: 14px 16px;
+  border-radius: 22px;
+  animation: agent-floating-arrive 420ms var(--agent-float-ease) both;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn > * {
+  animation: agent-floating-content 320ms ease 80ms both;
+}
+
+.agent-floating[data-presentation='column'] .agent-user-message {
+  background: var(--agent-glass-user);
+  border-color: var(--agent-glass-border);
+}
+
+.agent-floating[data-presentation='column'] .agent-composer-wrap {
+  padding: 0;
+  background: transparent;
+}
+
+.agent-floating[data-presentation='column'] .agent-composer {
+  background-color: var(--agent-glass-raised);
+}
+
+@keyframes agent-floating-arrive {
+  from {
+    transform: translateY(10px);
+    background-color: transparent;
+    backdrop-filter: var(--agent-glass-filter-hidden);
+    border-color: transparent;
+    box-shadow: none;
+  }
+}
+
+@keyframes agent-floating-content {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The centred card dissolving while its composer moves to the column. */
+.agent-floating-ghost {
+  position: fixed;
+  z-index: 39;
+  pointer-events: none;
+  border-radius: 26px;
+}
+
+.agent-floating-ghost-greeting {
+  position: absolute;
+  margin: 0;
+}
+
+.agent-floating-ghost-greeting .agent-empty-state-icon {
+  display: none;
+}
+
+/* Page chrome that lives in the column's corner moves out of its way. */
+@media (min-width: 720px) {
+  body.agent-floating-column .download-shelf,
+  body.agent-floating-column .find-bar {
+    right: calc(min(408px, 100vw - 20px) + 22px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Out-ranks both presentations' collapsed offsets: nothing slides. */
+  .agent-sidebar.agent-floating[data-presentation] .agent-sidebar-inner,
+  .agent-sidebar.agent-floating.collapsed[data-presentation] .agent-sidebar-inner {
+    transform: none;
+  }
+
+  .agent-floating[data-presentation='column'] .agent-turn,
+  .agent-floating[data-presentation='column'] .agent-turn > * {
+    animation: none;
+  }
+}
