@@ -1,5 +1,27 @@
 # Privacy branch main synchronization — October 4, 2026
 
+## Ant 0.5.57 continuation
+
+Main `6b5c2ea7` merged cleanly in `b9858be0` after the completed-snapshot
+milestone `3de72f2d`. It updates Ant's pin/checksum and corresponding tests,
+comments, licensing and changelog material. No wallet/network implementation,
+public/TXID policy input, dependency lockfile or qualification inventory changes.
+All five completed-snapshot report inventories still match after the merge.
+
+Ant 0.5.57 was downloaded for all configured targets with pinned checksum
+verification; the host reports `antd 0.5.57`. freedom-ipfs 0.4.3, Myotis 0.1.12
+(official targets, ABI 32 validation) and libradicle 0.7.1 were explicitly
+reinstalled, and the Myotis supervisor rebuilt. The unchanged installed Arti
+2.6.0/static-sqlite build was verified and retained. `npm run check-binaries`
+passes for mac-arm64. The lockfile is unchanged, so no npm reinstall was needed.
+
+All 282 focused tests across seven suites pass in 5.288 seconds, including the
+real-binary Bee-to-Ant identity migration, Ant fetch/checksum tests, license audit,
+browsing credit, chain bridge/router and publishing setup. Lint is clean. The
+12,097-test full result belongs to pre-merge `3de72f2d`; the next implementation
+slice will qualify the combined tree. No live node startup smoke or funded
+profile operation was performed for this merge.
+
 ## Event-loop watchdog continuation
 
 Main `05d91b18` was merged without conflicts in `76bb135f`, after the enrolled
