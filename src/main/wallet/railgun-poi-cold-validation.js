@@ -284,28 +284,32 @@ async function validate(options, history) {
       const mirrorStarted = performance.now();
       const mirrorBudget = remaining(MIRROR_MS, FINAL_MS);
       const mirrorDeadline = mirrorStarted + mirrorBudget;
+      const mirrorController = new AbortController();
+      const mirrorSignal = AbortSignal.any([lifetime, mirrorController.signal]);
       let mirrorExpired = false;
       const mirrorCurrent = () => {
         current(FINAL_MS);
-        assert.ok(!mirrorExpired && performance.now() < mirrorDeadline);
+        assert.ok(!mirrorSignal.aborted && !mirrorExpired && performance.now() < mirrorDeadline);
         assert.ok(!txid?.signal.aborted);
       };
       mirrorTimer = setTimeout(() => {
         mirrorExpired = true;
+        mirrorController.abort();
         closeTxid();
       }, mirrorBudget);
       mirrorTimer.unref?.();
       try {
         const { openRailgunAccountTxid } = require('./railgun-account-txid');
         mirrorCurrent();
-        // No signal parameter exists here. Retain even a late handle BEFORE
-        // checking cancellation, then close/drain it before releasing ownership.
+        // The signal revokes pending startup. Still retain any late handle
+        // before checking cancellation, then close/drain before releasing ownership.
         txid = await openRailgunAccountTxid({
           enrollment,
           coordinator,
           archive,
           create: false,
           checkpointOnly: true,
+          signal: mirrorSignal,
         });
         mirrorCurrent();
         assert.equal(txid.policy, txidPolicy);
@@ -369,8 +373,12 @@ async function validate(options, history) {
         mirrorCurrent();
       } finally {
         // Timer/listener remain armed throughout ignored work and close drain.
-        await closeTxid();
-        clearTimeout(mirrorTimer);
+        try {
+          await closeTxid();
+        } finally {
+          clearTimeout(mirrorTimer);
+          mirrorController.abort();
+        }
       }
       current(FINAL_MS);
       assert.ok(!mirrorExpired && performance.now() < mirrorDeadline);

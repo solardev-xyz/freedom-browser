@@ -385,3 +385,93 @@ test('a TXID store arriving after public revocation is closed before the helper 
   ).rejects.toThrow();
   expect(stores.at(-1).session.signal.aborted).toBe(true);
 });
+
+function publicCancellationGate() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+test.each([null, false, {}, { aborted: false }])(
+  'TXID public helper invalid signal %p refuses before store dispatch',
+  async (signal) => {
+    await expect(openRailgunAccountPublicTxidStore({ signal })).rejects.toThrow();
+    expect(mockOpen).not.toHaveBeenCalled();
+  }
+);
+test('TXID public helper refuses pre-abort without disturbing healthy shared coordinator', async () => {
+  const value = await open(true);
+  await value.publish();
+  mockOpen.mockClear();
+  const caller = new AbortController();
+  caller.abort();
+  await expect(
+    openRailgunAccountPublicTxidStore({
+      coordinator: value.coordinator,
+      enrollment: mockEnrollment,
+      policy: 'a'.repeat(64),
+      txidPolicy: 'e'.repeat(64),
+      create: true,
+      signal: caller.signal,
+    })
+  ).rejects.toThrow();
+  expect(mockOpen).not.toHaveBeenCalled();
+  expect(value.coordinator.signal.aborted).toBe(false);
+  expect(scope.signal.aborted).toBe(false);
+});
+test('TXID public helper forwards caller signal and drains a late local session without closing shared stores', async () => {
+  const value = await open(true);
+  await value.publish();
+  const shared = stores.slice();
+  const caller = new AbortController(),
+    entered = publicCancellationGate(),
+    release = publicCancellationGate(),
+    exit = publicCancellationGate();
+  const original = mockOpen.getMockImplementation();
+  let late,
+    settled = false,
+    forwarded;
+  mockOpen.mockImplementation(async (options) => {
+    forwarded = options.signal;
+    late = await original(options);
+    late.session.closed = exit.promise;
+    late.session.close.mockImplementation(() => {});
+    entered.resolve();
+    await release.promise;
+    return late;
+  });
+  const options = {
+    coordinator: value.coordinator,
+    enrollment: mockEnrollment,
+    policy: 'a'.repeat(64),
+    txidPolicy: 'e'.repeat(64),
+    create: true,
+    signal: caller.signal,
+  };
+  const pending = openRailgunAccountPublicTxidStore(options).catch((error) => {
+    settled = true;
+    return error;
+  });
+  try {
+    await entered.promise;
+    expect(forwarded).toBe(caller.signal);
+    caller.abort();
+    release.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(late.session.close).toHaveBeenCalled();
+    expect(settled).toBe(false);
+    expect(shared.every(({ session }) => !session.signal.aborted)).toBe(true);
+    expect(value.coordinator.signal.aborted).toBe(false);
+    exit.resolve();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(() =>
+      assertRailgunAccountPublic(value.coordinator, mockEnrollment, 'a'.repeat(64))
+    ).not.toThrow();
+    expect(scope.signal.aborted).toBe(false);
+  } finally {
+    release.resolve();
+    exit.resolve();
+    await pending;
+  }
+});

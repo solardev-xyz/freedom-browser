@@ -43,7 +43,10 @@ async function openRailgunAccountStore({
   txidPolicy,
   create = false,
   expectedStoreId,
+  signal,
 }) {
+  check(signal === undefined || signal instanceof AbortSignal);
+  check(!signal?.aborted);
   check(isRailgunAccountEnrollment(enrollment));
   check(typeof create === 'boolean' && ['source', 'public', 'wallet', 'txid'].includes(kind));
   check(
@@ -73,14 +76,25 @@ async function openRailgunAccountStore({
   realDirectory(directory);
   const basename = kind === 'txid' ? 'txid-' + txidPolicy : kind;
   const filename = path.join(directory, basename + '.sqlite');
+  check(!signal?.aborted);
   const release = claimRailgunAccountStore(filename);
   let worker, ledger;
+  const stop = () => {
+    ledger?.close();
+    worker?.close();
+  };
+  const cleanup = () => {
+    signal?.removeEventListener('abort', stop);
+    release();
+  };
+  signal?.addEventListener('abort', stop, { once: true });
   const active = () => {
-    check(!enrollment.signal.aborted);
+    check(!signal?.aborted && !enrollment.signal.aborted);
     enrollment.getContext('engine');
     realDirectory(enrollment.directory);
     realDirectory(directory);
     enrollment.profileGuard.assert(filename);
+    check(!signal?.aborted);
   };
   const open = async (name, key, initialize) => {
     active();
@@ -106,8 +120,13 @@ async function openRailgunAccountStore({
       }),
       onClose: () => {},
     });
+    // A factory can synchronously trigger revocation before its handle is
+    // assigned. Retain that late handle, then let the outer catch drain it.
+    active();
     await worker.ready;
+    active();
     const observed = await worker.inspectStoreIdentity();
+    active();
     worker.assertFresh(observed);
     check(observed.format === 'paged-v2' && /^[0-9a-f]{64}$/.test(observed.instanceId));
     if (kind === 'source') {
@@ -137,13 +156,16 @@ async function openRailgunAccountStore({
     active();
     let generation;
     const selectedGeneration = async () => {
+      active();
       const current = await (publicCatalog ?? enrollment.catalog).inspect();
+      active();
       const selected = current.active?.id === generationId ? current.active : current.pending;
       check(selected?.id === generationId);
       return selected;
     };
     if (kind === 'wallet' || publicCatalog) {
       generation = await selectedGeneration();
+      active();
       check(kind === 'txid' || !create || generation.storeId === undefined);
     }
     check(create ? !fileExists(filename) : fileExists(filename));
@@ -185,6 +207,7 @@ async function openRailgunAccountStore({
       }
     }
     const storeId = await open(filename, key, false);
+    active();
     if (initializedId !== undefined) check(storeId === initializedId);
     if (expectedStoreId !== undefined) check(storeId === expectedStoreId);
     if (generation) {
@@ -198,6 +221,7 @@ async function openRailgunAccountStore({
     return Object.freeze({ session: worker, storeId, filename, ...(ledger ? { ledger } : {}) });
   };
   try {
+    active();
     const result = await (kind === 'wallet'
       ? enrollment.withGenerationKeys(generationId, use)
       : kind === 'txid'
@@ -206,13 +230,14 @@ async function openRailgunAccountStore({
           ? enrollment.withPublicGenerationKeys(publicCatalog, generationId, use)
           : enrollment.withPublicKeys(use));
     active();
-    worker.closed.then(release);
+    // Keep cancellation bound to the returned session, and do not release
+    // its filename before both the borrowed key callback and worker exit.
+    worker.closed.then(cleanup);
     return result;
   } catch (error) {
-    ledger?.close();
-    worker?.close();
+    stop();
     if (worker) await worker.closed;
-    release();
+    cleanup();
     throw error;
   }
 }

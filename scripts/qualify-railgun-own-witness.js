@@ -168,7 +168,15 @@ const hashes = () =>
     sources.map((file) => [file, sha(fs.readFileSync(path.join(__dirname, '..', file)))])
   );
 async function main() {
-  const [directory, archive, kind] = process.argv.slice(2);
+  const [directory, archive, kind, mode] = process.argv.slice(2);
+  assert.ok(process.argv.length <= 6 && (mode === undefined || mode === 'cancellation'));
+  const cancellationMode = mode === 'cancellation';
+  const cancellationRuns = [];
+  const watchdog = setTimeout(() => {
+    console.error(JSON.stringify({ phase, code: 'QUALIFICATION_TIMEOUT' }));
+    app.exit(1);
+  }, 120000);
+  watchdog.unref();
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   assert.ok(['transfer', 'unshield'].includes(kind));
   fs.mkdirSync(directory, { mode: 0o700 });
@@ -190,6 +198,26 @@ async function main() {
     payload,
     rejectRoot = false;
   const serviceMethods = { latest: 0, validate: 0, page: 0 };
+  let serviceGate;
+  for (const name of ['railgun-account-store', 'railgun-txid-runner', 'railgun-own-witness'])
+    assert.equal(require.cache[require.resolve('../src/main/wallet/' + name)], undefined);
+  const workerModule = require('../src/main/wallet/railgun-session-worker'),
+    originalWorker = workerModule.startRailgunSessionWorker;
+  const processModule = require('../src/main/wallet/railgun-process'),
+    originalProcess = processModule.startRailgunProcess;
+  const resources = { workers: 0, workerExits: 0, jobs: 0, jobExits: 0 };
+  workerModule.startRailgunSessionWorker = (...args) => {
+    const worker = originalWorker(...args);
+    resources.workers++;
+    worker.closed.then(() => resources.workerExits++);
+    return worker;
+  };
+  processModule.startRailgunProcess = (...args) => {
+    const job = originalProcess(...args);
+    resources.jobs++;
+    job.closed.then(() => resources.jobExits++);
+    return job;
+  };
   const methods = {};
   transport.createWalletTorTransport = () => {
     externalAttempts++;
@@ -273,6 +301,12 @@ async function main() {
       async latestTxid() {
         serviceMethods.latest++;
         active();
+        if (serviceGate?.method === 'latest') {
+          serviceGate.entered();
+          // Intentionally ignore revocation after admission. The real root
+          // reader, not this fixture, must refuse the subsequent validate.
+          await serviceGate.promise;
+        }
         return { index: payload.state.count - 1, root: payload.state.root };
       },
       async validateTxidRoot(point) {
@@ -283,6 +317,10 @@ async function main() {
           index: payload.state.count - 1,
           root: payload.state.root,
         });
+        if (serviceGate?.method === 'validate') {
+          serviceGate.entered();
+          await serviceGate.promise;
+        }
         return !rejectRoot;
       },
       async txidPage(after) {
@@ -510,8 +548,184 @@ async function main() {
       assert.equal(JSON.stringify(methods), beforeRpc);
       return result;
     };
+    if (cancellationMode) {
+      const { claimRailgunAccountPhase } = require('../src/main/wallet/railgun-account-phase');
+      const options = () => ({
+        enrollment,
+        archive,
+        coordinator: publicAccount.coordinator,
+        checkpointOnly: true,
+      });
+      const checkpoint = async () => {
+        txid = await openRailgunAccountTxid(options());
+        const current = await txid.inspect();
+        assert.equal(current.pending, null);
+        const saved = JSON.parse(JSON.stringify(current.checkpoint));
+        await txid.close();
+        txid = null;
+        return saved;
+      };
+      const beforeBaseline = { ...resources };
+      const saved = await checkpoint();
+      assert.equal(resources.workers - beforeBaseline.workers, 1);
+      assert.equal(resources.workerExits - beforeBaseline.workerExits, 1);
+      assert.ok(resources.jobs - beforeBaseline.jobs >= 1);
+      assert.equal(
+        resources.jobExits - beforeBaseline.jobExits,
+        resources.jobs - beforeBaseline.jobs
+      );
+      const busy = () =>
+        assert.throws(
+          () => {
+            const unexpected = claimRailgunAccountPhase(enrollment, 'recovery');
+            unexpected.release();
+          },
+          { code: 'RAILGUN_ACCOUNT_PHASE_BUSY' }
+        );
+      const healthy = async () => {
+        assert.equal(enrollment.signal.aborted, false);
+        assert.equal(publicAccount.coordinator.signal.aborted, false);
+        assert.deepEqual(await checkpoint(), saved);
+        assert.equal((await publicAccount.coordinator.withPublicSnapshot(() => true)).value, true);
+      };
+      phase = 'cancel-before-admission';
+      const revoked = new AbortController();
+      revoked.abort();
+      const beforeInvalid = { ...resources },
+        beforeInvalidServices = { ...serviceMethods };
+      for (const signal of [null, false, {}, revoked.signal])
+        await assert.rejects(openRailgunAccountTxid({ ...options(), signal }), {
+          code: 'RAILGUN_ACCOUNT_TXID_REFUSED',
+        });
+      assert.deepEqual(resources, beforeInvalid);
+      assert.deepEqual(serviceMethods, beforeInvalidServices);
+      cancellationRuns.push({
+        mode: phase,
+        refusals: 4,
+        newWorkers: 0,
+        newJobs: 0,
+        serviceCalls: 0,
+      });
+      const exercise = async (method, caller) => {
+        phase = `cancel-${caller}-pending-${method}`;
+        const controller = new AbortController();
+        let release, entered;
+        const admitted = new Promise((resolve) => {
+          entered = resolve;
+        });
+        const held = new Promise((resolve) => {
+          release = resolve;
+        });
+        serviceGate = { method, promise: held, entered };
+        const beforeWork = { ...resources },
+          beforeServices = { ...serviceMethods };
+        let settled = false;
+        const pending = (
+          caller === 'account'
+            ? openRailgunAccountTxid({ ...options(), signal: controller.signal })
+            : captureRailgunOwnWitness({
+                enrollment,
+                archive,
+                coordinator: publicAccount.coordinator,
+                selector,
+                signal: controller.signal,
+              })
+        ).then(
+          (value) => {
+            settled = true;
+            return { value };
+          },
+          () => {
+            settled = true;
+            return { refused: true };
+          }
+        );
+        try {
+          await admitted;
+          busy();
+          controller.abort();
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(settled, false);
+          busy();
+          assert.equal(serviceMethods.latest - beforeServices.latest, 1);
+          assert.equal(
+            serviceMethods.validate - beforeServices.validate,
+            Number(method === 'validate')
+          );
+          release();
+          const result = await pending;
+          if (caller === 'account') assert.deepEqual(result, { refused: true });
+          else assert.equal(result.value?.status, 'refused');
+          assert.equal(serviceMethods.latest - beforeServices.latest, 1);
+          assert.equal(
+            serviceMethods.validate - beforeServices.validate,
+            Number(method === 'validate')
+          );
+          assert.equal(serviceMethods.page, beforeServices.page);
+          const workers = resources.workers - beforeWork.workers;
+          const jobs = resources.jobs - beforeWork.jobs;
+          assert.equal(workers, 1);
+          assert.equal(resources.workerExits - beforeWork.workerExits, workers);
+          assert.equal(resources.jobExits - beforeWork.jobExits, jobs);
+          if (caller === 'account') assert.equal(jobs, 0);
+          serviceGate = undefined;
+          const available = claimRailgunAccountPhase(enrollment, 'recovery');
+          available.release();
+          await healthy();
+          cancellationRuns.push({
+            mode: phase,
+            latest: 1,
+            validate: Number(method === 'validate'),
+            pages: 0,
+            workers,
+            workerExits: workers,
+            jobs,
+            jobExits: jobs,
+            heldPhaseUntilBorrowedWorkSettled: true,
+            authenticatedCheckpointUnchanged: true,
+            sharedCoordinatorHealthy: true,
+            socketsObservedClosed: false,
+          });
+        } finally {
+          release();
+          await pending;
+          serviceGate = undefined;
+        }
+      };
+      await exercise('latest', 'account');
+      await exercise('validate', 'account');
+      await exercise('latest', 'witness');
+      phase = 'cancel-returned-account';
+      const controller = new AbortController();
+      const beforeReturned = { ...resources };
+      txid = await openRailgunAccountTxid({ ...options(), signal: controller.signal });
+      controller.abort();
+      busy();
+      assert.equal(txid.signal.aborted, true);
+      await assert.rejects(txid.inspect());
+      await txid.close();
+      await txid.close();
+      txid = null;
+      assert.equal(resources.workers - beforeReturned.workers, 1);
+      assert.equal(resources.workerExits - beforeReturned.workerExits, 1);
+      const available = claimRailgunAccountPhase(enrollment, 'recovery');
+      available.release();
+      await healthy();
+      cancellationRuns.push({
+        mode: phase,
+        workerExits: 1,
+        lifetimeRevoked: true,
+        repeatedCloseSafe: true,
+        authenticatedCheckpointUnchanged: true,
+        sharedCoordinatorHealthy: true,
+      });
+      assert.equal(cancellationRuns.length, 5);
+    }
     phase = 'active-witness';
+    const beforeWitness = { ...resources };
     const activeCapture = await checkedCapture();
+    assert.ok(resources.jobs - beforeWitness.jobs >= 1);
+    assert.equal(resources.jobExits - beforeWitness.jobExits, resources.jobs - beforeWitness.jobs);
     runs.push({
       mode: phase,
       publicLatestRequests: 2,
@@ -574,6 +788,9 @@ async function main() {
           kind,
           sourceSha256: before,
           runs,
+          cancellationMode,
+          cancellationRuns,
+          resources,
           rpcMethods: methods,
           externalAttempts,
           unexpectedRpc,
@@ -606,6 +823,8 @@ async function main() {
     identity?.close();
     vault.lockVault();
     serviceModule.createRailgunPublicServices = originalServices;
+    workerModule.startRailgunSessionWorker = originalWorker;
+    processModule.startRailgunProcess = originalProcess;
     rpcModule.createPrivateRpc = originalRpc;
     transport.createWalletTorTransport = originalTransport;
   }

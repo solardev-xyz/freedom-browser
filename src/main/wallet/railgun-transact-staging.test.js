@@ -355,7 +355,11 @@ test.each(['txid', 'wallet'])(
       return v;
     });
     await ready;
+    const txidSignal = mockOpenTxid.mock.calls[0][0].signal;
+    expect(txidSignal).toBeInstanceOf(AbortSignal);
+    expect(txidSignal.aborted).toBe(false);
     caller.abort();
+    expect(txidSignal.aborted).toBe(true);
     await Promise.resolve();
     expect(settled).toBe(false);
     expect(mockHandoff.release).not.toHaveBeenCalled();

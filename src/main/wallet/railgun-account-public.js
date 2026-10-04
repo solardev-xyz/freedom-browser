@@ -283,8 +283,12 @@ async function openRailgunAccountPublicTxidStore({
   policy,
   txidPolicy,
   create,
+  signal,
 }) {
+  check(signal === undefined || signal instanceof AbortSignal);
+  check(!signal?.aborted);
   assertRailgunAccountPublic(coordinator, enrollment, policy);
+  check(!signal?.aborted);
   const entry = coordinators.get(coordinator);
   const opened = await openRailgunAccountStore({
     enrollment,
@@ -293,9 +297,12 @@ async function openRailgunAccountPublicTxidStore({
     generationId: entry.generationId,
     txidPolicy,
     create,
+    signal,
   });
   try {
+    check(!signal?.aborted);
     assertRailgunAccountPublic(coordinator, enrollment, policy);
+    check(!signal?.aborted);
     return opened;
   } catch (error) {
     opened.session.close();

@@ -125,6 +125,7 @@ async function captureRailgunOwnWitness(
         archive,
         create: false,
         checkpointOnly: true,
+        signal: lifetime,
       });
       current();
       assert.equal(txid.policy, txidPolicy);

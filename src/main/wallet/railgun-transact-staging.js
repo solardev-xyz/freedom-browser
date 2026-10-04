@@ -148,6 +148,7 @@ async function stage(
       create: false,
       checkpointOnly: true,
       handoff: handoff.token,
+      signal: scope.signal,
     });
     active();
     assert.equal(txid.policy, txidPolicy);

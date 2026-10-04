@@ -1,4 +1,9 @@
 const mockEnrollments = new WeakSet();
+let mockStartWorker;
+jest.mock('./railgun-session-worker', () => ({
+  ...jest.requireActual('./railgun-session-worker'),
+  startRailgunSessionWorker: (...args) => mockStartWorker(...args),
+}));
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => mockEnrollments.has(v),
 }));
@@ -13,6 +18,9 @@ const { railgunSourceBinding } = require('./railgun-source-ledger');
 let scope, enrollment, opened, remembered, borrowed, current;
 const generationId = '1'.repeat(64);
 beforeEach(() => {
+  mockStartWorker = jest.fn(
+    jest.requireActual('./railgun-session-worker').startRailgunSessionWorker
+  );
   opened = [];
   remembered = new Set();
   borrowed = [];
@@ -290,5 +298,225 @@ test.each(['missing-meta', 'invalid-meta', 'legacy-binding'])(
     await expect(open({ create: true })).rejects.toThrow();
     expect(remembered.size).toBe(0);
     expect(fs.readFileSync(filename)).toEqual(before);
+  }
+);
+
+function storeCancellationGate() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+const storeCancellationTurn = () => new Promise((resolve) => setImmediate(resolve));
+test.each([null, false, {}, { aborted: false }, 'signal'])(
+  'invalid store caller signal %p refuses before context, keys or worker',
+  async (signal) => {
+    const context = jest.spyOn(enrollment, 'getContext');
+    await expect(open({ create: true, signal })).rejects.toMatchObject({
+      code: 'RAILGUN_ACCOUNT_STORE_REFUSED',
+    });
+    expect(context).not.toHaveBeenCalled();
+    expect(borrowed).toHaveLength(0);
+    expect(mockStartWorker).not.toHaveBeenCalled();
+    expect(remembered.size).toBe(0);
+  }
+);
+test('pre-aborted store caller leaves filename, keys and inventory untouched', async () => {
+  const caller = new AbortController();
+  caller.abort();
+  await expect(open({ create: true, signal: caller.signal })).rejects.toThrow();
+  expect(borrowed).toHaveLength(0);
+  expect(mockStartWorker).not.toHaveBeenCalled();
+  expect(fs.readdirSync(enrollment.directory)).toEqual(['railgun-cache-' + generationId]);
+  const healthy = await open({ create: true });
+  expect(healthy.storeId).toMatch(/^[0-9a-f]{64}$/);
+});
+test('cancelled deferred store key derivation retains filename until callback and key wipe finish', async () => {
+  const caller = new AbortController(),
+    entered = storeCancellationGate(),
+    release = storeCancellationGate();
+  const original = enrollment.withPublicKeys;
+  enrollment.withPublicKeys = (use) =>
+    original(async (keys) => {
+      entered.resolve();
+      await release.promise;
+      return use(keys);
+    });
+  let settled = false;
+  const pending = open({ create: true, signal: caller.signal }).catch((error) => {
+    settled = true;
+    return error;
+  });
+  try {
+    await entered.promise;
+    caller.abort();
+    await storeCancellationTurn();
+    expect(settled).toBe(false);
+    expect(mockStartWorker).not.toHaveBeenCalled();
+    await expect(open({ create: true })).rejects.toThrow();
+    expect(borrowed).toHaveLength(2);
+    expect(borrowed.every((key) => key.some((byte) => byte !== 0))).toBe(true);
+    release.resolve();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(borrowed.every((key) => key.every((byte) => byte === 0))).toBe(true);
+    expect(mockStartWorker).not.toHaveBeenCalled();
+    expect(remembered.size).toBe(0);
+    enrollment.withPublicKeys = original;
+    expect((await open({ create: true })).storeId).toMatch(/^[0-9a-f]{64}$/);
+    expect(scope.signal.aborted).toBe(false);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+test('cancelled catalog inspection refuses worker creation but drains the borrowed callback before reuse', async () => {
+  const caller = new AbortController(),
+    entered = storeCancellationGate(),
+    release = storeCancellationGate();
+  const original = enrollment.catalog.inspect;
+  enrollment.catalog.inspect = async () => {
+    entered.resolve();
+    await release.promise;
+    return original();
+  };
+  const pending = open({ kind: 'wallet', generationId, create: true, signal: caller.signal }).catch(
+    (error) => error
+  );
+  try {
+    await entered.promise;
+    caller.abort();
+    await expect(open({ kind: 'wallet', generationId, create: true })).rejects.toThrow();
+    expect(mockStartWorker).not.toHaveBeenCalled();
+    release.resolve();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(mockStartWorker).not.toHaveBeenCalled();
+    expect(borrowed.every((key) => key.every((byte) => byte === 0))).toBe(true);
+    enrollment.catalog.inspect = original;
+    expect((await open({ kind: 'wallet', generationId, create: true })).storeId).toMatch(
+      /^[0-9a-f]{64}$/
+    );
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+test.each(['ready', 'identity', 'factory'])(
+  'store cancellation during %s keeps filename until both opening callback and worker exit',
+  async (stage) => {
+    const healthy = await open({ kind: 'public', create: true });
+    healthy.session.close();
+    await healthy.session.closed;
+    const caller = new AbortController(),
+      entered = storeCancellationGate(),
+      release = storeCancellationGate(),
+      exit = storeCancellationGate();
+    const controller = new AbortController();
+    const worker = {
+      signal: controller.signal,
+      ready: stage === 'ready' ? release.promise : Promise.resolve(),
+      closed: exit.promise,
+      inspectStoreIdentity: jest.fn(async () => {
+        if (stage === 'identity') {
+          entered.resolve();
+          await release.promise;
+        }
+        return { format: 'paged-v2', instanceId: healthy.storeId };
+      }),
+      assertFresh: jest.fn(),
+      close: jest.fn(() => controller.abort()),
+    };
+    mockStartWorker.mockImplementation(() => {
+      if (stage === 'factory') caller.abort();
+      if (stage !== 'identity') entered.resolve();
+      return worker;
+    });
+    let settled = false;
+    const pending = open({ kind: 'public', signal: caller.signal }).catch((error) => {
+      settled = true;
+      return error;
+    });
+    try {
+      await entered.promise;
+      caller.abort();
+      if (stage === 'factory') await storeCancellationTurn();
+      expect(worker.close).toHaveBeenCalled();
+      expect(controller.signal.aborted).toBe(true);
+      await expect(open({ kind: 'public' })).rejects.toThrow();
+      release.resolve();
+      await storeCancellationTurn();
+      expect(settled).toBe(false);
+      await expect(open({ kind: 'public' })).rejects.toThrow();
+      if (stage !== 'identity') expect(worker.inspectStoreIdentity).not.toHaveBeenCalled();
+      expect(worker.assertFresh).not.toHaveBeenCalled();
+      exit.resolve();
+      expect(await pending).toBeInstanceOf(Error);
+      expect(borrowed.every((key) => key.every((byte) => byte === 0))).toBe(true);
+      mockStartWorker.mockImplementation(
+        jest.requireActual('./railgun-session-worker').startRailgunSessionWorker
+      );
+      expect((await open({ kind: 'public' })).storeId).toBe(healthy.storeId);
+      expect(scope.signal.aborted).toBe(false);
+    } finally {
+      release.resolve();
+      exit.resolve();
+      await pending;
+    }
+  }
+);
+test('store worker exit before borrowed key wrapper settlement does not release filename early', async () => {
+  const caller = new AbortController(),
+    entered = storeCancellationGate(),
+    release = storeCancellationGate();
+  const original = enrollment.withPublicKeys;
+  let allocated;
+  enrollment.withPublicKeys = async (use) => {
+    const result = await original(use);
+    allocated = result.session;
+    entered.resolve();
+    await release.promise;
+    return result;
+  };
+  const pending = open({ kind: 'public', create: true, signal: caller.signal }).catch(
+    (error) => error
+  );
+  try {
+    await entered.promise;
+    caller.abort();
+    await allocated.closed;
+    await expect(open({ kind: 'public' })).rejects.toThrow();
+    release.resolve();
+    expect(await pending).toBeInstanceOf(Error);
+    enrollment.withPublicKeys = original;
+    expect((await open({ kind: 'public' })).storeId).toMatch(/^[0-9a-f]{64}$/);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+test.each(['source', 'public', 'wallet', 'txid'])(
+  'caller revocation closes only its returned %s store and permits healthy reopening',
+  async (kind) => {
+    const caller = new AbortController();
+    const options = { kind };
+    if (kind === 'wallet') options.generationId = generationId;
+    if (kind === 'txid') {
+      fs.mkdirSync(path.join(enrollment.directory, 'railgun-public-' + generationId));
+      Object.assign(options, {
+        generationId,
+        publicCatalog: { inspect: async () => structuredClone(current) },
+        txidPolicy: '4'.repeat(64),
+      });
+    }
+    const value = await open({ ...options, create: true, signal: caller.signal });
+    caller.abort();
+    expect(value.session.signal.aborted).toBe(true);
+    await value.session.closed;
+    expect(scope.signal.aborted).toBe(false);
+    const reopened = await open(options);
+    expect(reopened.storeId).toBe(value.storeId);
+    value.session.close();
+    await expect(open(options)).rejects.toThrow();
+    expect(reopened.session.signal.aborted).toBe(false);
   }
 );

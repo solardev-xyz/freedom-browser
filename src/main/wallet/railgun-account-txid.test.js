@@ -1,5 +1,6 @@
 let mockEnrollment, mockCoordinator, mockRunner, mockJournal, mockRoots, mockServices, mockSession;
-const mockOpen = jest.fn(),
+const mockCreateRoots = jest.fn(),
+  mockOpen = jest.fn(),
   mockKey = jest.fn(),
   mockCreateJournal = jest.fn(),
   mockCreateRunner = jest.fn();
@@ -25,7 +26,9 @@ jest.mock('./railgun-txid-runner', () => ({
 jest.mock('./railgun-txid-journal', () => ({
   createRailgunTxidJournal: (...args) => mockCreateJournal(...args),
 }));
-jest.mock('./railgun-txid-root', () => ({ createRailgunTxidRootSource: () => mockRoots }));
+jest.mock('./railgun-txid-root', () => ({
+  createRailgunTxidRootSource: (...args) => mockCreateRoots(...args),
+}));
 jest.mock('./railgun-public-services', () => ({ createRailgunPublicServices: () => mockServices }));
 const fs = require('fs'),
   os = require('os'),
@@ -130,9 +133,11 @@ beforeEach(() => {
     assertRoot: jest.fn(),
     close: jest.fn(),
   };
+  mockCreateRoots.mockImplementation(() => mockRoots);
   mockServices = {
     signal: controller.signal,
     latestTxid: jest.fn(async () => ({ index: 1, root: '0'.repeat(64) })),
+    validateTxidRoot: jest.fn(async () => true),
     txidPage: jest.fn(async () => ({ transactions: [{ row: 1 }, { row: 2 }, { row: 3 }] })),
     close: jest.fn(),
   };
@@ -870,3 +875,350 @@ test('overlapping historical reader refuses without closing the first computatio
     await pending.catch(() => {});
   }
 });
+
+function cancellationGate() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+const cancellationTurn = () => new Promise((resolve) => setImmediate(resolve));
+function expectTxidPhaseHeld() {
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+}
+function expectTxidPhaseReleased() {
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'wallet');
+  phase.release();
+}
+test.each([null, false, {}, { aborted: false }, 'signal'])(
+  'invalid TXID caller signal %p refuses before any factory or key work',
+  async (signal) => {
+    await expect(open({ signal })).rejects.toMatchObject({ code: 'RAILGUN_ACCOUNT_TXID_REFUSED' });
+    expect(mockCreateRoots).not.toHaveBeenCalled();
+    expect(mockOpen).not.toHaveBeenCalled();
+    expect(mockKey).not.toHaveBeenCalled();
+    expect(mockCreateRunner).not.toHaveBeenCalled();
+    expect(mockEnrollment.profileGuard.assert).not.toHaveBeenCalled();
+    expectTxidPhaseReleased();
+  }
+);
+test('pre-aborted TXID caller refuses before phase, factories, files or keys', async () => {
+  const caller = new AbortController();
+  caller.abort();
+  await expect(open({ signal: caller.signal })).rejects.toThrow();
+  expect(mockCreateRoots).not.toHaveBeenCalled();
+  expect(mockOpen).not.toHaveBeenCalled();
+  expect(mockKey).not.toHaveBeenCalled();
+  expect(fs.readdirSync(directory)).toEqual([]);
+  expectTxidPhaseReleased();
+});
+test('caller revocation while first store await is pending retains phase through late handle and worker exit', async () => {
+  const caller = new AbortController(),
+    entered = cancellationGate(),
+    release = cancellationGate();
+  const original = mockOpen.getMockImplementation();
+  let forwarded,
+    settled = false;
+  mockOpen.mockImplementation(async (options) => {
+    forwarded = options.signal;
+    entered.resolve();
+    await release.promise;
+    return original(options);
+  });
+  mockSession.close.mockImplementation(() => {});
+  const pending = open({ signal: caller.signal }).then(
+    () => {
+      throw Error('unexpected success');
+    },
+    (error) => {
+      settled = true;
+      return error;
+    }
+  );
+  try {
+    await entered.promise;
+    expect(forwarded).toBeInstanceOf(AbortSignal);
+    caller.abort();
+    expect(forwarded.aborted).toBe(true);
+    await cancellationTurn();
+    expect(settled).toBe(false);
+    expectTxidPhaseHeld();
+    expect(mockCreateRunner).not.toHaveBeenCalled();
+    release.resolve();
+    await cancellationTurn();
+    expect(mockSession.close).toHaveBeenCalled();
+    expect(settled).toBe(false);
+    expectTxidPhaseHeld();
+    expect(mockKey).not.toHaveBeenCalled();
+    finishWorker();
+    expect(await pending).toBeInstanceOf(Error);
+    expectTxidPhaseReleased();
+    expect(publicController.signal.aborted).toBe(false);
+    expect(scope.signal.aborted).toBe(false);
+  } finally {
+    release.resolve();
+    finishWorker();
+    await pending;
+  }
+});
+test('abort inside the opening factory is reentrant-safe and drains its late session', async () => {
+  const caller = new AbortController();
+  const original = mockOpen.getMockImplementation();
+  mockOpen.mockImplementation(async (options) => {
+    caller.abort();
+    return original(options);
+  });
+  await expect(open({ signal: caller.signal })).rejects.toThrow();
+  expect(mockSession.close).toHaveBeenCalled();
+  expect(mockCreateRunner).not.toHaveBeenCalled();
+  expect(mockKey).not.toHaveBeenCalled();
+  expectTxidPhaseReleased();
+});
+test('abort during borrowed journal-key derivation waits for wipe and refuses journal creation', async () => {
+  const caller = new AbortController(),
+    entered = cancellationGate(),
+    release = cancellationGate();
+  const key = Buffer.alloc(32, 19);
+  let settled = false;
+  mockKey.mockImplementation(async (_c, _e, _p, _t, use) => {
+    entered.resolve();
+    await release.promise;
+    try {
+      return await use(key);
+    } finally {
+      key.fill(0);
+    }
+  });
+  const pending = open({ signal: caller.signal }).catch((error) => {
+    settled = true;
+    return error;
+  });
+  try {
+    await entered.promise;
+    caller.abort();
+    await cancellationTurn();
+    expect(mockSession.close).toHaveBeenCalled();
+    expect(settled).toBe(false);
+    expectTxidPhaseHeld();
+    expect(mockCreateJournal).not.toHaveBeenCalled();
+    expect(key.some((value) => value !== 0)).toBe(true);
+    release.resolve();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(key.every((value) => value === 0)).toBe(true);
+    expect(mockCreateJournal).not.toHaveBeenCalled();
+    expect(mockRunner.run).not.toHaveBeenCalled();
+    expectTxidPhaseReleased();
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+test.each(['journal', 'inspect'])(
+  'abort during startup %s waits for callback and independent storage exit',
+  async (stage) => {
+    const caller = new AbortController(),
+      entered = cancellationGate(),
+      release = cancellationGate();
+    if (stage === 'journal') {
+      const original = mockCreateJournal.getMockImplementation();
+      mockCreateJournal.mockImplementation(async (options) => {
+        const allocated = await original(options);
+        entered.resolve();
+        await release.promise;
+        return allocated;
+      });
+    } else {
+      const original = mockRunner.run.getMockImplementation();
+      mockRunner.run.mockImplementation(async (...args) => {
+        entered.resolve();
+        await release.promise;
+        return original(...args);
+      });
+    }
+    mockSession.close.mockImplementation(() => {});
+    let settled = false;
+    const pending = open({ signal: caller.signal }).catch((error) => {
+      settled = true;
+      return error;
+    });
+    try {
+      await entered.promise;
+      caller.abort();
+      expect(mockSession.close).toHaveBeenCalled();
+      expectTxidPhaseHeld();
+      finishWorker();
+      await cancellationTurn();
+      expect(settled).toBe(false);
+      expectTxidPhaseHeld();
+      release.resolve();
+      expect(await pending).toBeInstanceOf(Error);
+      expect(mockJournal.revalidate).not.toHaveBeenCalled();
+      if (stage === 'journal') expect(mockRunner.run).not.toHaveBeenCalled();
+      expect(mockJournal.close).toHaveBeenCalled();
+      expectTxidPhaseReleased();
+    } finally {
+      release.resolve();
+      finishWorker();
+      await pending;
+    }
+  }
+);
+test.each(['latest', 'validate'])(
+  'actual root source caller cancellation during %s refuses after ignored callback without admitting later jobs',
+  async (stage) => {
+    existingCheckpoint();
+    mockCreateRoots.mockImplementation(
+      jest.requireActual('./railgun-txid-root').createRailgunTxidRootSource
+    );
+    const caller = new AbortController(),
+      entered = cancellationGate(),
+      release = cancellationGate();
+    const target = stage === 'latest' ? mockServices.latestTxid : mockServices.validateTxidRoot;
+    const original = target.getMockImplementation();
+    target.mockImplementation(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return original(...args);
+    });
+    let settled = false;
+    const pending = open({ create: false, checkpointOnly: true, signal: caller.signal }).catch(
+      (error) => {
+        settled = true;
+        return error;
+      }
+    );
+    try {
+      await entered.promise;
+      caller.abort();
+      await cancellationTurn();
+      expect(settled).toBe(false);
+      expectTxidPhaseHeld();
+      expect(mockRunner.run).not.toHaveBeenCalled();
+      release.resolve();
+      expect(await pending).toBeInstanceOf(Error);
+      expect(mockServices.validateTxidRoot).toHaveBeenCalledTimes(stage === 'latest' ? 0 : 1);
+      expect(mockRunner.run).not.toHaveBeenCalled();
+      expect(mockJournal.revalidate).not.toHaveBeenCalled();
+      expect(publicController.signal.aborted).toBe(false);
+      expect(scope.signal.aborted).toBe(false);
+      expectTxidPhaseReleased();
+      target.mockImplementation(original);
+      const fresh = new AbortController();
+      mockSession = {
+        signal: fresh.signal,
+        closed: new Promise((resolve) => {
+          finishWorker = resolve;
+        }),
+        close: jest.fn(() => {
+          fresh.abort();
+          finishWorker();
+        }),
+      };
+      for (const resource of [mockRunner, mockJournal, mockServices])
+        resource.signal = fresh.signal;
+      const reopened = await open({ create: false, checkpointOnly: true });
+      expect(reopened.signal.aborted).toBe(false);
+      expect((await reopened.inspect()).pending).toBeNull();
+      await reopened.close();
+      expectTxidPhaseReleased();
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  }
+);
+test('returned account remains bound to caller and reentrant close cannot release a newer phase', async () => {
+  const caller = new AbortController();
+  const value = await open({ signal: caller.signal });
+  let reentered;
+  value.signal.addEventListener(
+    'abort',
+    () => {
+      reentered = value.close();
+    },
+    { once: true }
+  );
+  caller.abort();
+  expect(value.signal.aborted).toBe(true);
+  expect(value.close()).toBe(reentered);
+  await reentered;
+  const next = claimRailgunAccountPhase(mockEnrollment, 'wallet');
+  await value.close();
+  expect(() => next.assertCurrent()).not.toThrow();
+  await expect(value.inspect()).rejects.toThrow();
+  expect(publicController.signal.aborted).toBe(false);
+  expect(scope.signal.aborted).toBe(false);
+  next.release();
+});
+
+test('caller abort immediately after invocation refuses before initialization factories', async () => {
+  const caller = new AbortController();
+  const pending = open({ signal: caller.signal });
+  caller.abort();
+  await expect(pending).rejects.toThrow();
+  expect(mockCreateRoots).not.toHaveBeenCalled();
+  expect(mockOpen).not.toHaveBeenCalled();
+  expect(mockKey).not.toHaveBeenCalled();
+  expectTxidPhaseReleased();
+});
+test.each(['inspect', 'witness', 'historical-root'])(
+  'caller cancellation during admitted %s retains phase until job and storage exit',
+  async (mode) => {
+    historicalCheckpoint();
+    const caller = new AbortController(),
+      entered = cancellationGate(),
+      release = cancellationGate();
+    const value = await open({ create: false, checkpointOnly: true, signal: caller.signal });
+    if (mode === 'inspect') {
+      const original = mockJournal.readState.getMockImplementation();
+      mockJournal.readState.mockImplementation(async () => {
+        entered.resolve();
+        await release.promise;
+        return original();
+      });
+    } else {
+      const original = mockRunner.run.getMockImplementation();
+      mockRunner.run.mockImplementation(async (selected, input) => {
+        if (selected === mode) {
+          entered.resolve();
+          await release.promise;
+        }
+        return original(selected, input);
+      });
+    }
+    mockSession.close.mockImplementation(() => {});
+    let settled = false;
+    const action =
+      mode === 'historical-root'
+        ? () => value.historicalRoot(1)
+        : mode === 'witness'
+          ? () => value.witness('0'.repeat(64))
+          : () => value.inspect();
+    const pending = action().catch((error) => {
+      settled = true;
+      return error;
+    });
+    try {
+      await entered.promise;
+      caller.abort();
+      expect(value.signal.aborted).toBe(true);
+      expect(mockSession.close).toHaveBeenCalled();
+      expectTxidPhaseHeld();
+      release.resolve();
+      await cancellationTurn();
+      expect(settled).toBe(false);
+      expectTxidPhaseHeld();
+      expect(mockRunner.assertResult).not.toHaveBeenCalled();
+      finishWorker();
+      expect(await pending).toBeInstanceOf(Error);
+      await value.close();
+      expectTxidPhaseReleased();
+      expect(publicController.signal.aborted).toBe(false);
+    } finally {
+      release.resolve();
+      finishWorker();
+      await pending;
+    }
+  }
+);

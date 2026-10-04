@@ -1216,6 +1216,7 @@ describe('retained historical TXID root composition', () => {
       archive: options.archive,
       create: false,
       checkpointOnly: true,
+      signal: expect.any(AbortSignal),
     });
     expect(mock.txid.witness).toHaveBeenCalledWith(mock.derived.railgunTxid);
     expect(mock.txid.historicalRoot).toHaveBeenCalledWith(3);
@@ -1560,7 +1561,11 @@ describe('retained historical TXID root composition', () => {
         return value;
       });
       await until(() => mock.opening.mock.calls.length === 1);
+      const mirrorSignal = mock.openTxid.mock.calls[0][0].signal;
+      expect(mirrorSignal).toBeInstanceOf(AbortSignal);
+      expect(mirrorSignal.aborted).toBe(false);
       mock.caller.abort();
+      expect(mirrorSignal.aborted).toBe(true);
       await jest.advanceTimersByTimeAsync(0);
       expect(settled).toBe(false);
       expect(mock.txid.close).not.toHaveBeenCalled();
@@ -1686,14 +1691,27 @@ describe('retained historical TXID root composition', () => {
       settled = true;
       return value;
     });
-    await until(() => mock.opening.mock.calls.length === 1);
-    await jest.advanceTimersByTimeAsync(180000);
-    expect(settled).toBe(false);
-    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
-    gate.resolve();
-    expect((await pending).status).toBe('refused');
-    expect(mock.inspect).not.toHaveBeenCalled();
-    expect(mock.txid.close).toHaveBeenCalled();
+    try {
+      await until(() => mock.opening.mock.calls.length === 1);
+      const mirrorSignal = mock.openTxid.mock.calls[0][0].signal;
+      expect(mirrorSignal).toBeInstanceOf(AbortSignal);
+      expect(mirrorSignal.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(179999);
+      expect(mirrorSignal.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mirrorSignal.aborted).toBe(true);
+      expect(mock.caller.signal.aborted).toBe(false);
+      expect(mock.enrollment.signal.aborted).toBe(false);
+      expect(settled).toBe(false);
+      expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+      gate.resolve();
+      expect((await pending).status).toBe('refused');
+      expect(mock.inspect).not.toHaveBeenCalled();
+      expect(mock.txid.close).toHaveBeenCalled();
+    } finally {
+      gate.resolve();
+      await pending;
+    }
   });
   test('mirror work shares one 180-second clock across witness and historical root', async () => {
     mock.witnessRead.mockImplementation(async () => {
@@ -1747,6 +1765,7 @@ describe('retained historical TXID root composition', () => {
       archive: options.archive,
       create: false,
       checkpointOnly: true,
+      signal: expect.any(AbortSignal),
     });
   });
   test('unshield marker must identify the freshly derived own transaction', async () => {

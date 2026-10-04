@@ -265,6 +265,7 @@ test.each([false, true])(
       archive: '/runtime.asar',
       create: false,
       checkpointOnly: true,
+      signal: expect.any(AbortSignal),
     });
     expect(result.capture).toEqual(latest.capture);
     expect(Object.isFrozen(result.witness.row)).toBe(true);
@@ -335,7 +336,11 @@ test.each(['txid', 'output', 'input-tree', 'unshield-recipient'])(
     expect(await capture(options)).toEqual({ status: 'refused', stage: 'row' });
   }
 );
-test('drains a late open after cancellation before returning', async () => {
+test.each([
+  ['witness', capture],
+  ['preflight', preflight],
+  ['POI preflight', poiPreflight],
+])('drains a late %s open after cancellation before returning', async (_name, run) => {
   let release, entered;
   const ready = new Promise((resolve) => {
     entered = resolve;
@@ -348,12 +353,16 @@ test('drains a late open after cancellation before returning', async () => {
     return txid;
   });
   let settled = false;
-  const pending = capture(options).then((result) => {
+  const pending = run(options).then((result) => {
     settled = true;
     return result;
   });
   await ready;
+  const forwarded = mockOpen.mock.calls[0][0].signal;
+  expect(forwarded).toBeInstanceOf(AbortSignal);
+  expect(forwarded.aborted).toBe(false);
   caller.abort();
+  expect(forwarded.aborted).toBe(true);
   await Promise.resolve();
   expect(settled).toBe(false);
   release();
@@ -630,3 +639,55 @@ test('POI source stays late after slow verifier and retains the 180-second acqui
   expect(mockSourceAt).toBeGreaterThan(45000);
   expect(mockPoiCapture.mock.calls[0][0].timeoutMs).toBe(180000);
 });
+
+test.each([
+  ['witness', capture],
+  ['preflight', preflight],
+  ['POI preflight', poiPreflight],
+])(
+  'own %s deadline revokes pending TXID startup and drains late handle without cancelling shared owners',
+  async (_name, run) => {
+    jest.useFakeTimers();
+    let entered,
+      release,
+      settled = false;
+    const ready = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    mockOpen.mockImplementation(async () => {
+      entered();
+      await gate;
+      return txid;
+    });
+    const pending = run({ ...options, timeoutMs: 1000 }).then((result) => {
+      settled = true;
+      return result;
+    });
+    try {
+      await ready;
+      const forwarded = mockOpen.mock.calls[0][0].signal;
+      expect(forwarded).toBeInstanceOf(AbortSignal);
+      await jest.advanceTimersByTimeAsync(999);
+      expect(forwarded.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(forwarded.aborted).toBe(true);
+      expect(caller.signal.aborted).toBe(false);
+      expect(scope.signal.aborted).toBe(false);
+      expect(settled).toBe(false);
+      expect(txid.inspect).not.toHaveBeenCalled();
+      release();
+      expect((await pending).status).toBe('refused');
+      expect(txid.close).toHaveBeenCalledTimes(1);
+      expect(txid.witness).not.toHaveBeenCalled();
+      expect(mockVerify).not.toHaveBeenCalled();
+      expect(mockRoots.acquire).not.toHaveBeenCalled();
+      expect(mockCapture).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pending;
+    }
+  }
+);

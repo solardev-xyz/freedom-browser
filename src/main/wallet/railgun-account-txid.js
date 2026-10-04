@@ -109,29 +109,35 @@ async function openRailgunAccountTxid({
   create = false,
   checkpointOnly = false,
   handoff,
+  signal,
 }) {
+  check(signal === undefined || signal instanceof AbortSignal);
+  check(!signal?.aborted);
   check(typeof create === 'boolean' && typeof checkpointOnly === 'boolean');
   check(!checkpointOnly || !create);
   check(handoff === undefined || checkpointOnly);
   const publicPolicy = getRailgunPublicPolicy(archive),
     publicIdentity = getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
     policy = getRailgunTxidPolicy(archive),
-    binding = railgunTxidBinding(enrollment.binding),
-    phase = claimRailgunAccountPhase(enrollment, 'txid', handoff);
-  let scope, opened, runner, journal, roots, services, work, onAbort;
+    binding = railgunTxidBinding(enrollment.binding);
+  check(!signal?.aborted);
+  const phase = claimRailgunAccountPhase(enrollment, 'txid', handoff);
+  let scope, opened, runner, journal, roots, services, work, initializing;
   const watched = [];
   let closed = false,
     draining,
     capturedCheckpoint,
     serviceLatestIndex = null;
   const active = () => {
-    check(!closed && !scope.signal.aborted);
+    check(!closed && !signal?.aborted && !scope.signal.aborted);
     phase.assertCurrent();
     getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy);
+    check(!closed && !signal?.aborted && !scope.signal.aborted);
   };
   const stop = () => {
     closed = true;
-    if (onAbort) for (const signal of watched) signal.removeEventListener('abort', onAbort);
+    for (const signal of watched) signal.removeEventListener('abort', onAbort);
+    watched.length = 0;
     scope?.close();
     journal?.close();
     roots?.close();
@@ -141,24 +147,44 @@ async function openRailgunAccountTxid({
   };
   const close = () => {
     if (draining) return draining;
-    stop();
-    draining = (async () => {
+    // Publish before stop(): synchronous abort listeners can reenter close.
+    // Neither tracked promise includes this outer cleanup, avoiding a cycle.
+    draining = Promise.resolve().then(async () => {
+      if (initializing) await initializing.catch(() => {});
       if (work) await work.catch(() => {});
       stop();
       if (opened) await opened.session.closed;
       phase.release();
-    })();
+    });
+    stop();
     return draining;
   };
-  const validate = (state) => roots.acquire({ index: state.count - 1, root: state.root });
+  const onAbort = () => {
+    close().catch(() => {});
+  };
+  const watch = (signal) => {
+    active();
+    check(signal instanceof AbortSignal && !signal.aborted);
+    watched.push(signal);
+    signal.addEventListener('abort', onAbort, { once: true });
+  };
+  const validate = (state) => {
+    active();
+    return roots.acquire({ index: state.count - 1, root: state.root });
+  };
   async function applyAndComplete(token, payload) {
+    active();
     await runner.run('apply', payload);
+    active();
     // Root acquisition can itself exceed the compute receipt lifetime. Replay
     // the already authenticated page after refreshing the root, so both final
     // receipts are fresh. The runner verifies the whole idempotent page.
     const root = await validate(payload.expected);
+    active();
     const applied = await runner.run('apply', payload);
+    active();
     await journal.complete(token, applied.receipt, root);
+    active();
   }
   function assertCheckpoint(current) {
     if (checkpointOnly) {
@@ -177,28 +203,36 @@ async function openRailgunAccountTxid({
     }
   }
   async function restore() {
+    active();
     const current = await journal.readState();
     active();
     assertCheckpoint(current);
     if (current.pending) {
       const payload = current.pending.work;
       const receipt = await validate(payload.expected);
+      active();
       const inspected = await runner.run('inspect', {});
+      active();
       const token = await journal.resume(inspected.receipt, receipt);
+      active();
       await applyAndComplete(token, payload);
     } else {
       const receipt = current.checkpoint ? await validate(current.checkpoint.state) : undefined;
+      active();
       const inspected = await runner.run('inspect', {});
+      active();
       await journal.revalidate(inspected.receipt, receipt);
     }
     active();
   }
   async function advance() {
+    active();
     check(!checkpointOnly);
     // Opening already recovered the journal. Every successful page is complete;
     // a page failure closes this lifetime and requires another opening.
-    const inspected = await runner.run('inspect', {}),
-      base = inspected.value.state,
+    const inspected = await runner.run('inspect', {});
+    active();
+    const base = inspected.value.state,
       latest = await services.latestTxid();
     serviceLatestIndex = latest.index;
     active();
@@ -212,17 +246,22 @@ async function openRailgunAccountTxid({
     // A service round trip may outlive a compute receipt. Acquire root evidence
     // first, then repeat the deterministic read-only projection before prepare.
     const projected = await runner.run('project', { base, rows });
+    active();
     const expected = projected.value.state;
     const root = await validate(expected);
+    active();
     const fresh = await runner.run('project', { base, rows });
+    active();
     check(JSON.stringify(fresh.value.state) === JSON.stringify(expected));
     const payload = { base, rows, expected };
     const token = await journal.prepare(payload, fresh.receipt, root);
+    active();
     await applyAndComplete(token, payload);
     active();
     return diagnostic();
   }
   async function diagnostic() {
+    active();
     const value = await journal.readState();
     active();
     assertCheckpoint(value);
@@ -234,7 +273,9 @@ async function openRailgunAccountTxid({
   }
   async function cover() {
     await restore();
+    active();
     const current = await journal.readState();
+    active();
     assertCheckpoint(current);
     check(current.checkpoint && !current.pending);
     let payload;
@@ -264,6 +305,7 @@ async function openRailgunAccountTxid({
   }
   async function witness(mode, input) {
     await restore();
+    active();
     const current = await journal.readState();
     active();
     assertCheckpoint(current);
@@ -302,7 +344,10 @@ async function openRailgunAccountTxid({
   async function exclusive(run) {
     active();
     check(!work);
-    work = Promise.resolve().then(run);
+    work = Promise.resolve().then(() => {
+      active();
+      return run();
+    });
     try {
       const value = await work;
       active();
@@ -314,16 +359,22 @@ async function openRailgunAccountTxid({
       work = null;
     }
   }
-  try {
+  async function initialize() {
+    check(!closed && !signal?.aborted);
     const context = getPrivacyContext(enrollment.getContext('engine'));
     scope = createPrivacyScope({
       profileId: context.profileId,
-      signal: AbortSignal.any([enrollment.signal, coordinator.signal]),
+      signal: AbortSignal.any([
+        enrollment.signal,
+        coordinator.signal,
+        ...(signal === undefined ? [] : [signal]),
+      ]),
       isCurrent: () => {
         phase.assertCurrent();
         return true;
       },
     });
+    watch(scope.signal);
     const serviceHandle = scope.getContext({
       kind: 'service',
       principal: 'railgun-public-sync',
@@ -333,7 +384,9 @@ async function openRailgunAccountTxid({
       role: 'public-services',
     });
     roots = createRailgunTxidRootSource(serviceHandle);
+    watch(roots.signal);
     services = createRailgunPublicServices(serviceHandle);
+    watch(services.signal);
     const directory = coordinator.identity.directory;
     const journalHandle = scope.getContext({
       ...context.subject,
@@ -348,14 +401,16 @@ async function openRailgunAccountTxid({
       hasJournal = exists(journalFile);
     check(create || (hasStore && hasJournal));
     check(hasStore || !hasJournal);
+    active();
     opened = await openRailgunAccountPublicTxidStore({
       coordinator,
       enrollment,
       policy: publicPolicy,
       txidPolicy: policy,
       create: !hasStore,
+      signal: scope.signal,
     });
-    active();
+    watch(opened.session.signal);
     runner = createRailgunTxidRunner({
       handle: scope.getContext({ ...context.subject, operation: undefined }),
       archive,
@@ -364,12 +419,14 @@ async function openRailgunAccountTxid({
       binding,
       policy,
     });
+    watch(runner.signal);
     await withRailgunAccountTxidJournalKey(
       coordinator,
       enrollment,
       publicPolicy,
       policy,
       async (key) => {
+        active();
         journal = await createRailgunTxidJournal({
           handle: journalHandle,
           directory,
@@ -383,24 +440,18 @@ async function openRailgunAccountTxid({
           assertRoot: roots.assertRoot,
           create: !hasJournal,
         });
+        watch(journal.signal);
       }
     );
+    active();
     await restore();
-    onAbort = () => {
-      close().catch(() => {});
-    };
-    for (const signal of [
-      scope.signal,
-      opened.session.signal,
-      runner.signal,
-      journal.signal,
-      roots.signal,
-      services.signal,
-    ]) {
-      check(signal instanceof AbortSignal && !signal.aborted);
-      watched.push(signal);
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
+    active();
+  }
+  // Assign tracked startup before it can allocate resources or synchronously
+  // abort. The outer wrapper alone awaits close on initialization failure.
+  initializing = Promise.resolve().then(initialize);
+  try {
+    await initializing;
     active();
     return Object.freeze({
       close,
