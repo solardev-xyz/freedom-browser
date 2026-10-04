@@ -2169,7 +2169,34 @@ describe('swarm-provider-ipc', () => {
 
         const result = await invokeProvider('swarm_sendGsoc', { topic: 'room:doc', data: 'hello' }, ORIGIN);
         expect(result.result).toEqual({ sent: true, address: GSOC_ADDRESS });
-        expect(mockSendGsoc).toHaveBeenCalledWith({ topic: 'room:doc', data: expect.any(Buffer) });
+        expect(mockSendGsoc).toHaveBeenCalledWith({ topic: 'room:doc', data: expect.any(Buffer), origin: ORIGIN });
+      });
+
+      test('a new-topic budget refusal reaches the page as rate_limited (#503)', async () => {
+        mockMessagingGranted();
+        mockSendPreFlightOk();
+        const err = new Error('Too many new messaging topics');
+        Object.assign(err, { reason: 'topic_rate_limited', limit: 16, windowMs: 60000, retryAfterMs: 12000 });
+        mockSendGsoc.mockRejectedValueOnce(err);
+
+        const result = await invokeProvider('swarm_sendGsoc', { topic: 'room:new', data: 'hello' }, ORIGIN);
+        expect(result.error.code).toBe(-32602);
+        expect(result.error.message).toBe('Too many new messaging topics');
+        expect(result.error.data).toEqual({
+          reason: 'rate_limited', limit: 16, windowMs: 60000, retryAfterMs: 12000,
+        });
+      });
+
+      test('a mining timeout is an internal error carrying its reason (#503)', async () => {
+        mockMessagingGranted();
+        mockSendPreFlightOk();
+        const err = new Error('GSOC mining failed: timed out after 15000 ms');
+        err.reason = 'gsoc_mining_timeout';
+        mockSendGsoc.mockRejectedValueOnce(err);
+
+        const result = await invokeProvider('swarm_sendGsoc', { topic: 'room:new', data: 'hello' }, ORIGIN);
+        expect(result.error.code).toBe(-32603);
+        expect(result.error.data).toEqual({ reason: 'gsoc_mining_timeout' });
       });
     });
 
@@ -2211,7 +2238,7 @@ describe('swarm-provider-ipc', () => {
       test('gsoc topic subscribe derives the address and registers with the webContents target', async () => {
         mockMessagingGranted();
         mockReachable();
-        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
         mockRegistrySubscribe.mockResolvedValue({ subscriptionId: 'sub-1' });
         mockWebContentsFromId.mockReturnValue(fakeWebContents());
 
@@ -2223,6 +2250,34 @@ describe('swarm-provider-ipc', () => {
           kind: 'gsoc',
           key: GSOC_ADDRESS,
         });
+      });
+
+      test('gsoc topic subscribe charges the derivation to the requesting origin (#503)', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
+        mockRegistrySubscribe.mockResolvedValue({ subscriptionId: 'sub-1' });
+        mockWebContentsFromId.mockReturnValue(fakeWebContents());
+
+        await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 'room:doc' }, ORIGIN, META);
+        expect(mockDeriveGsoc).toHaveBeenCalledWith('room:doc', { origin: ORIGIN });
+      });
+
+      test('gsoc topic subscribe over the new-topic budget is rate_limited and registers nothing (#503)', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        const err = new Error('Too many new messaging topics');
+        Object.assign(err, { reason: 'topic_rate_limited', limit: 16, windowMs: 60000, retryAfterMs: 5000 });
+        mockDeriveGsoc.mockReset();
+        mockDeriveGsoc.mockRejectedValueOnce(err);
+        mockWebContentsFromId.mockReturnValue(fakeWebContents());
+
+        const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 'room:new' }, ORIGIN, META);
+        expect(result.error.code).toBe(-32602);
+        expect(result.error.data).toEqual({
+          reason: 'rate_limited', limit: 16, windowMs: 60000, retryAfterMs: 5000,
+        });
+        expect(mockRegistrySubscribe).not.toHaveBeenCalled();
       });
 
       test('pss subscribe resolves the hashed topic as key', async () => {
@@ -2239,7 +2294,7 @@ describe('swarm-provider-ipc', () => {
       test('maps registry cap and node slot refusals to distinct errors', async () => {
         mockMessagingGranted();
         mockReachable();
-        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
         mockWebContentsFromId.mockReturnValue(fakeWebContents());
         const capError = new Error('cap');
         capError.reason = 'too_many_subscriptions';
@@ -2264,7 +2319,7 @@ describe('swarm-provider-ipc', () => {
       test('arms teardown before establishment settles', async () => {
         mockMessagingGranted();
         mockReachable();
-        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
 
         // Establishment that never settles — a node that stopped answering
         // while its socket reconnects forever.
@@ -2291,7 +2346,7 @@ describe('swarm-provider-ipc', () => {
       test('maps a stuck or cancelled establishment to a retryable 4900', async () => {
         mockMessagingGranted();
         mockReachable();
-        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
         mockWebContentsFromId.mockReturnValue(fakeWebContents());
 
         const timeout = new Error('Subscription did not establish within 30000ms');
@@ -2312,7 +2367,7 @@ describe('swarm-provider-ipc', () => {
 
       test('refuses to bind the subscription when the page navigated while we waited', async () => {
         mockMessagingGranted();
-        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
         mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
 
         // The grant prompt and the reachability probe are user-paced: the
@@ -2365,7 +2420,7 @@ describe('swarm-provider-ipc', () => {
         // Reset first: clearAllMocks() does not drain queued *Once implementations,
         // so an unconsumed mockReturnValueOnce from an earlier test would win here.
         mockDeriveGsoc.mockReset();
-        mockDeriveGsoc.mockImplementation(() => {
+        mockDeriveGsoc.mockImplementation(async () => {
           listeners['did-navigate']?.(); // cross-document nav while we waited
           return { address: GSOC_ADDRESS };
         });
@@ -2380,7 +2435,7 @@ describe('swarm-provider-ipc', () => {
       test('rejects a webContents that is already gone', async () => {
         mockMessagingGranted();
         mockReachable();
-        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
         mockWebContentsFromId.mockReturnValue(null);
 
         const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
@@ -2510,7 +2565,7 @@ describe('swarm-provider-ipc', () => {
       test('navigation and destroy listeners cancel the webContents subscriptions', async () => {
         mockMessagingGranted();
         mockReachable();
-        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
         mockRegistrySubscribe.mockResolvedValue({ subscriptionId: 'sub-1' });
 
         const listeners = {};

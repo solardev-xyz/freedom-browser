@@ -1,4 +1,5 @@
-var mockGsocMine = jest.fn();
+var mockMineSigner = jest.fn();
+var mockJoinJob = jest.fn();
 var mockGsocSend = jest.fn();
 var mockPssSend = jest.fn();
 var mockGetNodeAddresses = jest.fn();
@@ -24,8 +25,15 @@ class MockPublicKey {
   toCompressedHex() { return this._compressedHex; }
 }
 
-class MockMinedKey {
-  constructor(ownerHex) { this._owner = new MockOwner(ownerHex); }
+// Stands in for bee-js PrivateKey: the derivation rebuilds the mined signer
+// from the worker's hex. The owner is derived from the key so distinct keys
+// stay distinguishable.
+class MockPrivateKey {
+  constructor(hex) {
+    this._hex = hex;
+    this._owner = new MockOwner(hex.slice(0, 40));
+  }
+  toHex() { return this._hex; }
   publicKey() { return new MockPublicKey(this._owner); }
 }
 
@@ -47,7 +55,6 @@ const MockBytes = {
 var mockBee = {
   url: 'http://127.0.0.1:1633',
   messaging: {
-    gsocMine: mockGsocMine,
     gsocSend: mockGsocSend,
     pssSend: mockPssSend,
   },
@@ -61,6 +68,12 @@ jest.mock('@ethersphere/bee-js', () => ({
   Topic: MockTopic,
   Identifier: MockIdentifier,
   Bytes: MockBytes,
+  PrivateKey: MockPrivateKey,
+}));
+
+jest.mock('./gsoc-miner', () => ({
+  mineSigner: mockMineSigner,
+  joinJob: mockJoinJob,
 }));
 
 jest.mock('./swarm-service', () => ({
@@ -85,18 +98,20 @@ const {
   MAX_MESSAGE_BYTES,
   MAX_TARGET_DEPTH,
   DEFAULT_TARGET_DEPTH,
+  NEW_TOPIC_WINDOW_MS,
+  NEW_TOPICS_PER_WINDOW,
   _resetGsocCache,
 } = require('./messaging-service');
 
 const BATCH_ID = 'aa'.repeat(32);
 const SOC_ADDRESS = 'cc'.repeat(32);
-const MINED_OWNER = 'dd'.repeat(20);
+const MINED_KEY = 'dd'.repeat(32);
 
 beforeEach(() => {
   jest.clearAllMocks();
   _resetGsocCache();
   mockSelectBestBatch.mockResolvedValue(BATCH_ID);
-  mockGsocMine.mockReturnValue(new MockMinedKey(MINED_OWNER));
+  mockMineSigner.mockResolvedValue(MINED_KEY);
   mockCalculateSingleOwnerChunkAddress.mockReturnValue(new MockHexValue(SOC_ADDRESS));
 });
 
@@ -132,26 +147,148 @@ describe('getMessagingIdentity', () => {
 });
 
 describe('deriveGsoc', () => {
-  test('mines with topic-derived identifier and target, returns the SOC address', () => {
-    const result = deriveGsoc('room:doc-42');
+  test('mines with topic-derived identifier and target, returns the SOC address', async () => {
+    const result = await deriveGsoc('room:doc-42', { origin: 'https://a.example' });
 
-    expect(mockGsocMine).toHaveBeenCalledTimes(1);
-    const [targetOverlay, identifier, proximity] = mockGsocMine.mock.calls[0];
+    expect(mockMineSigner).toHaveBeenCalledTimes(1);
+    const [targetOverlay, identifier, proximity, options] = mockMineSigner.mock.calls[0];
+    // The origin is passed through so the miner can queue fairly per origin.
+    expect(options).toEqual({ owner: 'https://a.example', key: 'gsoc-topic:room:doc-42' });
     // targetOverlay derives from the namespaced context string, identifier from the raw topic
     expect(Buffer.from(targetOverlay).toString('utf-8')).toContain('freedom-gsoc-v1:room:doc-42');
-    expect(identifier.toHex()).toBe(Buffer.from('keccak:room:doc-42').toString('hex'));
-    expect(typeof proximity).toBe('number');
+    expect(Buffer.from(identifier).toString('hex')).toBe(Buffer.from('keccak:room:doc-42').toString('hex'));
+    expect(proximity).toBe(12);
     expect(result.address).toBe(SOC_ADDRESS);
-    expect(result.signer).toBeInstanceOf(MockMinedKey);
+    expect(result.identifier.toHex()).toBe(Buffer.from('keccak:room:doc-42').toString('hex'));
+    // The worker's hex comes back as a signer object, and the SOC address is
+    // computed from that signer's owner.
+    expect(result.signer).toBeInstanceOf(MockPrivateKey);
+    expect(result.signer.toHex()).toBe(MINED_KEY);
+    const [, owner] = mockCalculateSingleOwnerChunkAddress.mock.calls[0];
+    expect(owner.toHex()).toBe(MINED_KEY.slice(0, 40));
   });
 
-  test('caches the mined derivation per topic', () => {
-    deriveGsoc('room:a');
-    deriveGsoc('room:a');
-    expect(mockGsocMine).toHaveBeenCalledTimes(1);
+  test('caches the mined derivation per topic', async () => {
+    await deriveGsoc('room:a');
+    await deriveGsoc('room:a');
+    expect(mockMineSigner).toHaveBeenCalledTimes(1);
 
-    deriveGsoc('room:b');
-    expect(mockGsocMine).toHaveBeenCalledTimes(2);
+    await deriveGsoc('room:b');
+    expect(mockMineSigner).toHaveBeenCalledTimes(2);
+  });
+
+  test('concurrent derivations of one topic share a single mining job', async () => {
+    let release;
+    mockMineSigner.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+
+    const first = deriveGsoc('room:a', { origin: 'https://a.example' });
+    const second = deriveGsoc('room:a', { origin: 'https://b.example' });
+    await Promise.resolve();
+    expect(mockMineSigner).toHaveBeenCalledTimes(1);
+    // The job is keyed by topic, and the joining origin is added as an owner of
+    // it, so it runs at B's round-robin turn too — not only behind A's backlog.
+    expect(mockMineSigner.mock.calls[0][3]).toEqual({
+      owner: 'https://a.example',
+      key: 'gsoc-topic:room:a',
+    });
+    expect(mockJoinJob).toHaveBeenCalledTimes(1);
+    expect(mockJoinJob).toHaveBeenCalledWith('gsoc-topic:room:a', { owner: 'https://b.example' });
+    release(MINED_KEY);
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toBe(b);
+    expect(mockMineSigner).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed derivation is not cached and the next call mines again', async () => {
+    const err = new Error('GSOC mining failed: timed out');
+    err.reason = 'gsoc_mining_timeout';
+    mockMineSigner.mockRejectedValueOnce(err);
+
+    const first = deriveGsoc('room:a');
+    const joined = deriveGsoc('room:a');
+    await expect(first).rejects.toBe(err);
+    await expect(joined).rejects.toBe(err);
+
+    await expect(deriveGsoc('room:a')).resolves.toMatchObject({ address: SOC_ADDRESS });
+    expect(mockMineSigner).toHaveBeenCalledTimes(2);
+  });
+
+  test('evicts the oldest topic once 128 are cached', async () => {
+    // One origin per topic, so the per-origin budget stays out of the way.
+    const derive = (topic, i) => deriveGsoc(topic, { origin: `https://o${i}.example` });
+    for (let i = 0; i < 128; i++) await derive(`room:${i}`, i);
+    expect(mockMineSigner).toHaveBeenCalledTimes(128);
+    await derive('room:127', 1000);
+    expect(mockMineSigner).toHaveBeenCalledTimes(128);
+
+    await derive('room:128', 128); // evicts room:0
+    await derive('room:1', 1001); // still cached
+    expect(mockMineSigner).toHaveBeenCalledTimes(129);
+    await derive('room:0', 1002);
+    expect(mockMineSigner).toHaveBeenCalledTimes(130);
+  });
+
+  describe('per-origin new-topic budget', () => {
+    afterEach(() => jest.useRealTimers());
+
+    test('refuses an origin past its budget with a clear, retryable error', async () => {
+      jest.useFakeTimers({ now: 1_000_000 });
+      const origin = 'https://cycler.example';
+      for (let i = 0; i < NEW_TOPICS_PER_WINDOW; i++) {
+        await deriveGsoc(`room:${i}`, { origin });
+      }
+      jest.setSystemTime(1_000_000 + 10_000);
+
+      const refused = deriveGsoc('room:one-too-many', { origin });
+      await expect(refused).rejects.toMatchObject({
+        reason: 'topic_rate_limited',
+        limit: NEW_TOPICS_PER_WINDOW,
+        windowMs: NEW_TOPIC_WINDOW_MS,
+        retryAfterMs: NEW_TOPIC_WINDOW_MS - 10_000,
+      });
+      await expect(refused).rejects.toThrow(/Too many new messaging topics.*Retry in 50 s/);
+      expect(mockMineSigner).toHaveBeenCalledTimes(NEW_TOPICS_PER_WINDOW);
+    });
+
+    test('cache hits and joins of an in-flight derivation are free', async () => {
+      const origin = 'https://chat.example';
+      for (let i = 0; i < NEW_TOPICS_PER_WINDOW; i++) {
+        await deriveGsoc(`room:${i}`, { origin });
+      }
+      // Already-derived rooms keep working for the origin at its budget.
+      await expect(deriveGsoc('room:0', { origin })).resolves.toMatchObject({ address: SOC_ADDRESS });
+
+      // A topic another origin is mining right now can be joined at no cost.
+      let release;
+      mockMineSigner.mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+      const other = deriveGsoc('room:shared', { origin: 'https://other.example' });
+      const joined = deriveGsoc('room:shared', { origin });
+      release(MINED_KEY);
+      await expect(Promise.all([other, joined])).resolves.toHaveLength(2);
+    });
+
+    test('budgets are per origin', async () => {
+      for (let i = 0; i < NEW_TOPICS_PER_WINDOW; i++) {
+        await deriveGsoc(`room:${i}`, { origin: 'https://a.example' });
+      }
+      await expect(deriveGsoc('room:a-extra', { origin: 'https://a.example' }))
+        .rejects.toMatchObject({ reason: 'topic_rate_limited' });
+      await expect(deriveGsoc('room:b-1', { origin: 'https://b.example' }))
+        .resolves.toMatchObject({ address: SOC_ADDRESS });
+    });
+
+    test('the budget frees up as the window slides', async () => {
+      jest.useFakeTimers({ now: 2_000_000 });
+      const origin = 'https://chat.example';
+      for (let i = 0; i < NEW_TOPICS_PER_WINDOW; i++) {
+        await deriveGsoc(`room:${i}`, { origin });
+      }
+      await expect(deriveGsoc('room:late', { origin })).rejects.toMatchObject({ reason: 'topic_rate_limited' });
+
+      jest.setSystemTime(2_000_000 + NEW_TOPIC_WINDOW_MS);
+      await expect(deriveGsoc('room:late', { origin })).resolves.toMatchObject({ address: SOC_ADDRESS });
+    });
   });
 });
 
@@ -192,7 +329,7 @@ describe('sendGsoc', () => {
     expect(mockGsocSend).toHaveBeenCalledTimes(1);
     const [batchId, signer, identifier, data] = mockGsocSend.mock.calls[0];
     expect(batchId).toBe(BATCH_ID);
-    expect(signer).toBeInstanceOf(MockMinedKey);
+    expect(signer).toBeInstanceOf(MockPrivateKey);
     expect(identifier.toHex()).toBe(Buffer.from('keccak:room:doc-42').toString('hex'));
     expect(data).toBe('hello room');
     expect(result.address).toBe(SOC_ADDRESS);
