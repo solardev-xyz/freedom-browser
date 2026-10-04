@@ -121,7 +121,7 @@ async function recoverRailgunPoiOutput(options = {}) {
     timer = setTimeout(stop, timeoutMs);
     timer.unref?.();
     stage = 'stored';
-    store = await enrollment.openPoiIntents();
+    store = await enrollment.openPoiIntents({ existingOnly: true });
     current();
     store.signal.addEventListener('abort', stop, { once: true });
     const entry = await store.get(capsuleDigest);

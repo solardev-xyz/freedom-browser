@@ -151,7 +151,7 @@ async function validate(options, history) {
     timer = setTimeout(stop, timeoutMs);
     timer.unref?.();
     stage = 'stored';
-    store = await enrollment.openPoiIntents();
+    store = await enrollment.openPoiIntents({ existingOnly: true });
     current();
     store.signal.addEventListener('abort', stop, { once: true });
     const loaded = await store.get(capsuleDigest);

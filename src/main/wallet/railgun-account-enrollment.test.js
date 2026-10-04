@@ -810,8 +810,7 @@ test('cold enrollment and POI store opening do not import proof, recovery or mem
           .digest('hex'),
         signal: mockVault.signal,
       });
-      let entry,
-        store;
+      let entry, store;
       try {
         const { openRailgunAccountEnrollment: openCold } = require('./railgun-account-enrollment');
         entry = await openCold({ identity: mockIdentity, create: true });
@@ -836,5 +835,257 @@ test('cold enrollment and POI store opening do not import proof, recovery or mem
       };
     });
     for (const name of forbidden) jest.dontMock(name);
+  }
+});
+
+function poiPhysicalSnapshot() {
+  const files = [];
+  const walk = (directory) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const file = path.join(directory, name);
+      if (fs.lstatSync(file).isDirectory()) walk(file);
+      else files.push([path.relative(mockProfile.userDataDir, file), fs.readFileSync(file)]);
+    }
+  };
+  walk(mockProfile.userDataDir);
+  return files;
+}
+function watchPoiDerivation() {
+  const hmac = require('crypto').createHmac('sha256', Buffer.alloc(32));
+  return jest.spyOn(Object.getPrototypeOf(hmac), 'update');
+}
+function expectNoPoiDerivation(spy) {
+  expect(
+    spy.mock.calls.filter(([value]) => value === JSON.stringify([1, 'poi-intents', null]))
+  ).toEqual([]);
+}
+
+test.each([undefined, {}, { existingOnly: false }])(
+  'POI opening preserves default creation for options %#',
+  async (options) => {
+    const entry = await open(true);
+    const creations = [];
+    mockPoiFactoryHook = (input, create) => {
+      creations.push(input.create);
+      return create(input);
+    };
+    const store = await entry.openPoiIntents(options);
+    expect(await store.inspect()).toEqual(emptyPoiIntents);
+    expect(creations).toEqual([true]);
+    expect(fs.existsSync(poiIntentFile(entry))).toBe(true);
+  }
+);
+test('existing-only missing POI file refuses before derivation, factory or any write', async () => {
+  const entry = await open(true),
+    before = poiPhysicalSnapshot(),
+    derive = watchPoiDerivation(),
+    rename = jest.spyOn(fs, 'renameSync'),
+    factory = jest.fn();
+  mockPoiFactoryHook = factory;
+  await expect(entry.openPoiIntents({ existingOnly: true })).rejects.toMatchObject({
+    code: 'RAILGUN_ACCOUNT_ENROLLMENT_REFUSED',
+  });
+  expectNoPoiDerivation(derive);
+  expect(factory).not.toHaveBeenCalled();
+  expect(rename).not.toHaveBeenCalled();
+  expect(poiPhysicalSnapshot()).toEqual(before);
+  mockPoiFactoryHook = undefined;
+  expect(await (await entry.openPoiIntents()).inspect()).toEqual(emptyPoiIntents);
+});
+test.each([false, true])('invalid POI options refuse before cached=%s return', async (cached) => {
+  const entry = await open(true);
+  if (cached) await entry.openPoiIntents();
+  const before = poiPhysicalSnapshot(),
+    derive = watchPoiDerivation(),
+    factory = jest.fn();
+  mockPoiFactoryHook = factory;
+  for (const options of [
+    null,
+    false,
+    true,
+    1,
+    'PRIVATE',
+    [],
+    { existingOnly: undefined },
+    { existingOnly: null },
+    { existingOnly: 1 },
+    { existingOnly: 'true' },
+    { extra: true },
+    { existingOnly: true, extra: false },
+    { [Symbol('extra')]: true },
+  ])
+    await expect(entry.openPoiIntents(options)).rejects.toMatchObject({
+      code: 'RAILGUN_ACCOUNT_ENROLLMENT_REFUSED',
+    });
+  expectNoPoiDerivation(derive);
+  expect(factory).not.toHaveBeenCalled();
+  expect(poiPhysicalSnapshot()).toEqual(before);
+});
+test('existing-only healthy cached POI store is reused without initialization', async () => {
+  const entry = await open(true),
+    store = await entry.openPoiIntents(),
+    before = poiPhysicalSnapshot(),
+    derive = watchPoiDerivation(),
+    factory = jest.fn();
+  mockPoiFactoryHook = factory;
+  expect(await entry.openPoiIntents({ existingOnly: true })).toBe(store);
+  expectNoPoiDerivation(derive);
+  expect(factory).not.toHaveBeenCalled();
+  expect(poiPhysicalSnapshot()).toEqual(before);
+});
+test('existing-only refuses a renamed cached POI store without recreating it', async () => {
+  const entry = await open(true),
+    store = await entry.openPoiIntents(),
+    file = poiIntentFile(entry);
+  fs.renameSync(file, file + '.retained');
+  const before = poiPhysicalSnapshot(),
+    derive = watchPoiDerivation(),
+    factory = jest.fn();
+  mockPoiFactoryHook = factory;
+  await expect(entry.openPoiIntents({ existingOnly: true })).rejects.toThrow();
+  expectNoPoiDerivation(derive);
+  expect(factory).not.toHaveBeenCalled();
+  expect(poiPhysicalSnapshot()).toEqual(before);
+  expect(fs.existsSync(file)).toBe(false);
+  fs.renameSync(file + '.retained', file);
+  expect(await entry.openPoiIntents({ existingOnly: true })).toBe(store);
+});
+test('existing-only cold POI reopen authenticates retained state with creation disabled', async () => {
+  const entry = await open(true),
+    store = await entry.openPoiIntents();
+  entry.close();
+  await store.closed;
+  const cold = await open(),
+    creations = [];
+  mockPoiFactoryHook = (input, create) => {
+    creations.push(input.create);
+    return create(input);
+  };
+  expect(await (await cold.openPoiIntents({ existingOnly: true })).inspect()).toEqual(
+    emptyPoiIntents
+  );
+  expect(creations).toEqual([false]);
+});
+test('existing-only raced removal after presence check cannot create an empty POI file', async () => {
+  const entry = await open(true),
+    store = await entry.openPoiIntents(),
+    file = poiIntentFile(entry);
+  store.close();
+  await store.closed;
+  const before = poiPhysicalSnapshot(),
+    creations = [];
+  mockPoiFactoryHook = (input, create) => {
+    creations.push(input.create);
+    fs.renameSync(file, file + '.retained');
+    return create(input);
+  };
+  await expect(entry.openPoiIntents({ existingOnly: true })).rejects.toThrow();
+  expect(creations).toEqual([false]);
+  expect(fs.existsSync(file)).toBe(false);
+  fs.renameSync(file + '.retained', file);
+  expect(poiPhysicalSnapshot()).toEqual(before);
+  mockPoiFactoryHook = undefined;
+  expect(await (await entry.openPoiIntents({ existingOnly: true })).inspect()).toEqual(
+    emptyPoiIntents
+  );
+});
+test('existing-only repeats missing-file check after an old store drain', async () => {
+  const entry = await open(true),
+    gate = deferredPoi();
+  let original;
+  mockPoiFactoryHook = async (input, create) => {
+    original = await create(input);
+    return Object.freeze({ ...original, closed: gate.promise });
+  };
+  const store = await entry.openPoiIntents(),
+    file = poiIntentFile(entry);
+  store.close();
+  await original.closed;
+  const factory = jest.fn(),
+    derive = watchPoiDerivation();
+  mockPoiFactoryHook = factory;
+  const pending = entry.openPoiIntents({ existingOnly: true });
+  const settled = pending.then(
+    (value) => ({ value }),
+    (error) => ({ error })
+  );
+  try {
+    fs.renameSync(file, file + '.retained');
+    const before = poiPhysicalSnapshot();
+    gate.resolve();
+    expect((await settled).error).toBeDefined();
+    expect(factory).not.toHaveBeenCalled();
+    expectNoPoiDerivation(derive);
+    expect(poiPhysicalSnapshot()).toEqual(before);
+  } finally {
+    gate.resolve();
+    await settled;
+    fs.renameSync(file + '.retained', file);
+  }
+});
+test.each(['directory', 'symlink', 'hardlink'])(
+  'existing-only rejects a %s POI target before key or factory',
+  async (kind) => {
+    const entry = await open(true),
+      file = poiIntentFile(entry);
+    if (kind === 'directory') fs.mkdirSync(file);
+    else {
+      const retained = file + '.retained';
+      fs.writeFileSync(retained, 'not an encrypted POI document');
+      if (kind === 'symlink') fs.symlinkSync(retained, file);
+      else fs.linkSync(retained, file);
+    }
+    const derive = watchPoiDerivation(),
+      factory = jest.fn(),
+      rename = jest.spyOn(fs, 'renameSync');
+    mockPoiFactoryHook = factory;
+    await expect(entry.openPoiIntents({ existingOnly: true })).rejects.toThrow();
+    expectNoPoiDerivation(derive);
+    expect(factory).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+  }
+);
+test('existing-only initialization refuses concurrent opens and wipes borrowed key on close', async () => {
+  const entry = await open(true),
+    previous = await entry.openPoiIntents();
+  previous.close();
+  await previous.closed;
+  const entered = deferredPoi(),
+    release = deferredPoi();
+  let key, createFlag;
+  mockPoiFactoryHook = (input, create) => {
+    key = input.key;
+    createFlag = input.create;
+    return create({
+      ...input,
+      async advanceFloor(sequence) {
+        entered.resolve();
+        await release.promise;
+        return input.advanceFloor(sequence);
+      },
+    });
+  };
+  const pending = entry.openPoiIntents({ existingOnly: true }),
+    settled = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    );
+  try {
+    await Promise.race([
+      entered.promise,
+      settled.then(() => {
+        throw Error('initialization ended early');
+      }),
+    ]);
+    expect(createFlag).toBe(false);
+    expect(key.some((byte) => byte !== 0)).toBe(true);
+    await expect(entry.openPoiIntents({ existingOnly: true })).rejects.toThrow();
+    entry.close();
+    expect(key.every((byte) => byte === 0)).toBe(true);
+    release.resolve();
+    expect((await settled).error).toBeDefined();
+  } finally {
+    release.resolve();
+    await settled;
   }
 });

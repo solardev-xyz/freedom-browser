@@ -49,8 +49,10 @@ function regularFileIfPresent(target) {
   try {
     const stat = fs.lstatSync(target);
     check(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1);
+    return true;
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
+    return false;
   }
 }
 async function openRailgunAccountEnrollment({ identity, create = false }) {
@@ -383,8 +385,32 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       openingCapsules = false;
     }
   }
-  async function openPoiIntents() {
+  async function openPoiIntents(options = {}) {
+    let existingOnly;
+    try {
+      check(options && typeof options === 'object' && !Array.isArray(options));
+      const keys = Reflect.ownKeys(options);
+      check(keys.length <= 1 && keys.every((name) => name === 'existingOnly'));
+      existingOnly = Object.hasOwn(options, 'existingOnly') ? options.existingOnly : false;
+      check(typeof existingOnly === 'boolean');
+    } catch {
+      throw fail();
+    }
     active();
+    let intentHandle, target;
+    const locate = () => {
+      intentHandle = scope.getContext({
+        ...subject,
+        operation: 'railgun-poi-intents-v1:' + descriptor.walletId,
+      });
+      target = getPrivacyStoragePath(intentHandle, accountDirectory);
+    };
+    // Review/recovery must not create missing history, even when a cached
+    // instance exists. Refuse before inventory checks, key derivation or writes.
+    if (existingOnly) {
+      locate();
+      check(regularFileIfPresent(target));
+    }
     if (poiIntents && !poiIntents.signal.aborted) return poiIntents;
     check(!openingPoiIntents);
     openingPoiIntents = true;
@@ -392,12 +418,11 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     try {
       if (poiIntents) await poiIntents.closed;
       active();
-      const intentHandle = scope.getContext({
-        ...subject,
-        operation: 'railgun-poi-intents-v1:' + descriptor.walletId,
-      });
-      const target = getPrivacyStoragePath(intentHandle, accountDirectory);
-      regularFileIfPresent(target);
+      if (!intentHandle) locate();
+      // Repeat after a retired store's drain; presence before that await is
+      // insufficient. The factory also receives create:false to close the race.
+      const present = regularFileIfPresent(target);
+      if (existingOnly) check(present);
       guard.assert(target);
       const floorRecord = 'railgun-poi-intents-floor-v1';
       const decodeFloor = (text) => {
@@ -443,7 +468,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
         binding,
         walletId: descriptor.walletId,
         profileGuard: guard,
-        create: !fs.existsSync(target),
+        create: existingOnly ? false : !fs.existsSync(target),
         readFloor,
         advanceFloor,
       });

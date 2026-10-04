@@ -407,6 +407,7 @@ test.each([false, true])(
       'validateRailgunRetainedPoiHistory',
     ]);
     expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
+    expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
     expect(mock.store.get).toHaveBeenCalledTimes(5);
     expect(mock.events).toEqual([
       'read',
@@ -1823,5 +1824,29 @@ test.each([false, true].flatMap((unshield) => [false, true].map((history) => [un
     expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
     expect(mock.store.signal.aborted).toBe(false);
     expect(JSON.stringify(mock.entry)).toBe(stored);
+  }
+);
+
+test.each(['output-proof', 'retained-history'])(
+  'missing existing-only POI storage refuses %s validation before any recovery work',
+  async (kind) => {
+    if (kind === 'retained-history') configureHistory();
+    mock.enrollment.openPoiIntents.mockRejectedValueOnce(
+      Object.assign(Error('missing retained storage'), {
+        code: 'RAILGUN_ACCOUNT_ENROLLMENT_REFUSED',
+      })
+    );
+    const validate = kind === 'retained-history' ? runHistory : run;
+    expect((await validate()).status).toBe('refused');
+    expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
+    expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
+    expect(mock.store.get).not.toHaveBeenCalled();
+    expect(mock.output).not.toHaveBeenCalled();
+    expect(mock.verify).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(captureRailgunOwnOperationSelector).not.toHaveBeenCalled();
+    expect(openRailgunAccountTxid).not.toHaveBeenCalled();
+    expect((await validate()).status).toBe('validated');
+    expect(mock.enrollment.openPoiIntents).toHaveBeenLastCalledWith({ existingOnly: true });
   }
 );

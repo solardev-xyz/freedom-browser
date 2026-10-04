@@ -467,6 +467,7 @@ test.each([false, true])(
     expect(Object.isFrozen(result)).toBe(true);
     expect(mock.entry).toEqual(original);
     expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
+    expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
     expect(mock.store.get).toHaveBeenCalledTimes(5);
     expect(mock.store.get.mock.calls.every(([digest]) => digest === original.capsuleDigest)).toBe(
       true
@@ -993,6 +994,7 @@ test('directory ownership is held while preflight ignores cancellation', async (
     stage: 'context',
   });
   expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
+  expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
   gate.resolve();
   expect((await work).status).toBe('refused');
   expect((await run({ ...options, signal: freshSignal })).status).toBe('matched');
@@ -1369,3 +1371,18 @@ test.each([false, true])(
     expect(JSON.stringify(mock.entry)).toBe(stored);
   }
 );
+
+test('missing existing-only POI storage refuses output recovery before preflight, keys or utility', async () => {
+  mock.enrollment.openPoiIntents.mockRejectedValueOnce(
+    Object.assign(Error('missing retained storage'), { code: 'RAILGUN_ACCOUNT_ENROLLMENT_REFUSED' })
+  );
+  expect((await run()).status).toBe('refused');
+  expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
+  expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
+  expect(mock.store.get).not.toHaveBeenCalled();
+  expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+  expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+  expect(startRailgunProcess).not.toHaveBeenCalled();
+  expect((await run()).status).toBe('matched');
+});

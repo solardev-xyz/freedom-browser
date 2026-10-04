@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts|plans]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -195,6 +195,8 @@ const sources = [
   'src/main/wallet/railgun-own-poi-proof.test.js',
   'src/main/wallet/railgun-own-poi-checks.js',
   'src/main/wallet/railgun-own-poi-checks.test.js',
+  'src/main/wallet/railgun-poi-disclosure-plan.js',
+  'src/main/wallet/railgun-poi-disclosure-plan.test.js',
   'src/main/wallet/railgun-poi-submit-data.js',
   'src/main/wallet/railgun-poi-submit-data.test.js',
   'src/main/wallet/railgun-poi-intent-store.js',
@@ -258,8 +260,14 @@ async function main() {
         'cold-validation',
         'retained-history',
         'attempts',
+        'plans',
       ].includes(checksFlag)
     );
+  const planMode = checksFlag === 'plans';
+  const planRuns = [],
+    planResults = [];
+  const planWork = { utilities: 0, utilityKeyHandoffs: 0 };
+  let planActive = false;
   const attemptMode = checksFlag === 'attempts';
   const attemptRuns = [];
   const attemptWork = { utilities: 0, utilityKeyHandoffs: 0 };
@@ -271,7 +279,7 @@ async function main() {
     mirrorAdvanced = false;
   const mirrorState = () => (mirrorAdvanced ? laterMirror.state : payload.state);
   const intentsMode =
-    checksFlag === 'intents' || outputRecoveryMode || coldValidationMode || attemptMode;
+    checksFlag === 'intents' || outputRecoveryMode || coldValidationMode || attemptMode || planMode;
   const coldValidationRuns = [],
     coldValidationVerifierTimings = [],
     coldValidationVerifierJobs = {
@@ -685,6 +693,11 @@ async function main() {
   originals.rpc = rpcModule.createPrivateRpc;
   originals.services = serviceModule.createRailgunPublicServices;
   processModule.startRailgunProcess = (options) => {
+    if (planActive) {
+      planWork.utilities++;
+      if (options.binaryKey) planWork.utilityKeyHandoffs++;
+      throw Error('Unexpected disclosure-plan utility');
+    }
     if (attemptActive) {
       attemptWork.utilities++;
       if (options.binaryKey) attemptWork.utilityKeyHandoffs++;
@@ -2818,6 +2831,188 @@ async function main() {
       assert.deepEqual(intentActivity(), initialActivity);
       assert.equal(intentRuns.length, 6);
     };
+    if (planMode) {
+      phase = 'poi-disclosure-plan';
+      planActive = true;
+      const {
+        prepareRailgunPoiDisclosurePlan,
+        revalidateRailgunPoiDisclosurePlan,
+      } = require('../src/main/wallet/railgun-poi-disclosure-plan');
+      const preparedBaseline = copy(retainedIntent);
+      const beforeActivity = intentActivity();
+      const beforeJournal = await journal.readSnapshot();
+      const beforeInventory = await intentStore.inspect();
+      const options = () => ({
+        identity,
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        capsuleDigest: preparedBaseline.capsuleDigest,
+        signal: enrollment.signal,
+      });
+      const make = async (changes = {}) => {
+        const value = await prepareRailgunPoiDisclosurePlan({ ...options(), ...changes });
+        assert.equal(value.status, 'prepared');
+        planResults.push(value);
+        return value;
+      };
+      const revalidate = (value, changes = {}) =>
+        revalidateRailgunPoiDisclosurePlan({
+          plan: value.plan,
+          identity,
+          enrollment,
+          coordinator: publicAccount.coordinator,
+          signal: enrollment.signal,
+          ...changes,
+        });
+      const unchanged = async () => {
+        assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), preparedBaseline);
+        assert.deepEqual(await intentStore.inspect(), beforeInventory);
+        assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+        assert.deepEqual(intentActivity(), beforeActivity);
+        assert.deepEqual(planWork, { utilities: 0, utilityKeyHandoffs: 0 });
+      };
+      const first = await make();
+      assert.equal(first.summary.accountIndex, enrollment.descriptor.accountIndex);
+      assert.equal(first.summary.operation, kind);
+      assert.equal(first.summary.outputCount, kind === 'transfer' ? 1 : 0);
+      assert.equal(
+        first.summary.unshieldIdCategory,
+        kind === 'transfer' ? 'absent' : 'railgun-txid'
+      );
+      assert.equal(first.summary.endpoint, 'https://ppoi.fdi.network');
+      assert.equal(first.summary.listKey, REQUIRED_LIST);
+      assert.deepEqual(first.summary.requestInventory, [
+        { method: 'ppoi_validate_poi_merkleroots', count: 1 },
+        { method: 'ppoi_validate_txid_merkleroot', count: 1 },
+        { method: 'ppoi_submit_transact_proof', count: 1 },
+      ]);
+      for (const flag of [
+        'consentGranted',
+        'transportAuthorized',
+        'requestLimitsEnforced',
+        'proofVerified',
+        'rootsAccepted',
+        'spendingEnabled',
+      ])
+        assert.equal(first.summary[flag], false);
+      assert.ok(Object.isFrozen(first.summary.requestInventory[0]));
+      assert.doesNotMatch(
+        JSON.stringify(first.summary),
+        /"(?:walletId|profileId|capsuleDigest|payloadSha256|bindingDigest|proof|root|selector|transaction|noteHash)"\s*:/
+      );
+      assert.ok(Buffer.byteLength(JSON.stringify(first.summary)) <= 4096);
+      await unchanged();
+      planRuns.push({
+        mode: 'genuine-prepared-review',
+        summaryBound: true,
+        noIntentTransition: true,
+        consentGranted: false,
+        transportAuthorized: false,
+      });
+      const checked = await revalidate(first);
+      assert.equal(checked.status, 'current');
+      assert.equal(checked.summary, first.summary);
+      assert.equal((await revalidate(first, { plan: copy(first.plan) })).status, 'refused');
+      assert.equal((await revalidate(first, { plan: first.summary })).status, 'refused');
+      assert.equal(first.signal.aborted, false);
+      await unchanged();
+      planRuns.push({
+        mode: 'revalidate-and-forgery',
+        sameSummaryObject: true,
+        copiedPlanRefused: true,
+        summaryIsNotPlan: true,
+        genuinePlanUnaffected: true,
+      });
+      const failedSuccessor = await prepareRailgunPoiDisclosurePlan({
+        ...options(),
+        capsuleDigest: hex(1).slice(2),
+      });
+      assert.equal(failedSuccessor.status, 'refused');
+      assert.equal(failedSuccessor.stage, 'entry');
+      assert.equal(first.signal.aborted, false);
+      assert.equal((await revalidate(first)).status, 'current');
+      await unchanged();
+      planRuns.push({ mode: 'failed-successor', previousPlanPreserved: true });
+      const second = await make();
+      assert.equal(first.signal.aborted, true);
+      await first.closed;
+      assert.equal((await revalidate(first)).status, 'refused');
+      assert.equal(second.signal.aborted, false);
+      assert.equal((await revalidate(second)).status, 'current');
+      await unchanged();
+      planRuns.push({
+        mode: 'successful-successor',
+        previousPlanRevoked: true,
+        stalePlanCannotRevokeSuccessor: true,
+      });
+      const cancelled = new AbortController();
+      cancelled.abort();
+      assert.deepEqual(await revalidate(second, { signal: cancelled.signal }), {
+        status: 'refused',
+        stage: 'context',
+      });
+      assert.equal(second.signal.aborted, true);
+      await second.closed;
+      assert.equal(intentStore.signal.aborted, false);
+      await unchanged();
+      planRuns.push({
+        mode: 'cancelled-revalidation',
+        planRevoked: true,
+        sharedStoreHealthy: true,
+      });
+      const beforeReopen = await make();
+      await reopenPreparedIntent();
+      assert.equal(beforeReopen.signal.aborted, true);
+      await beforeReopen.closed;
+      assert.equal((await revalidate(beforeReopen)).status, 'refused');
+      const cold = await make();
+      assert.deepEqual(cold.summary, first.summary);
+      assert.equal((await revalidate(cold)).status, 'current');
+      await unchanged();
+      planRuns.push({
+        mode: 'enrollment-reopen',
+        oldPlanRefused: true,
+        newlyDerivedPlanCurrent: true,
+        storedProofRegistryNotRestored: true,
+      });
+      // Deliberately change only disposable fixture history through the genuine
+      // existing attempt method; plan inspection never authorizes this mutation.
+      assert.equal(
+        (
+          await intentStore.beginAttempt({
+            capsuleDigest: preparedBaseline.capsuleDigest,
+            expectedRevision: preparedBaseline.revision,
+            expectedPayloadSha256: preparedBaseline.payloadSha256,
+            signal: enrollment.signal,
+          })
+        ).status,
+        'attempted'
+      );
+      const attempted = await intentStore.get(preparedBaseline.capsuleDigest);
+      assert.equal(attempted.state, 'attempted');
+      assert.deepEqual(await revalidate(cold), { status: 'refused', stage: 'entry' });
+      assert.equal(cold.signal.aborted, true);
+      await cold.closed;
+      assert.deepEqual(await prepareRailgunPoiDisclosurePlan(options()), {
+        status: 'refused',
+        stage: 'entry',
+      });
+      assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), attempted);
+      assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+      assert.deepEqual(intentActivity(), beforeActivity);
+      assert.deepEqual(planWork, { utilities: 0, utilityKeyHandoffs: 0 });
+      planRuns.push({
+        mode: 'attempt-invalidates-review',
+        revalidationRefused: true,
+        newPlanRefused: true,
+        fixtureAttemptPreserved: true,
+        additionalQueries: 0,
+        additionalUtilities: 0,
+        additionalUtilityKeyHandoffs: 0,
+      });
+      assert.equal(planRuns.length, 7);
+      planActive = false;
+    }
     if (attemptMode) {
       phase = 'poi-durable-attempt';
       attemptActive = true;
@@ -3388,7 +3583,7 @@ async function main() {
     assert.equal(transportCreates, transportCloses);
     assert.equal(jobs.membership, jobs.membershipExit);
     assert.equal(jobs.selector, jobs.selectorExit);
-    if (intentsMode && !outputRecoveryMode && !coldValidationMode && !attemptMode)
+    if (intentsMode && !outputRecoveryMode && !coldValidationMode && !attemptMode && !planMode)
       await reopenPreparedIntent();
     assert.deepEqual(hashes(), before);
     const report = {
@@ -3406,6 +3601,9 @@ async function main() {
       outputRecoveryMode,
       coldValidationMode,
       retainedHistoryMode,
+      planMode,
+      planRuns,
+      planWork,
       attemptMode,
       attemptRuns,
       attemptWork,
@@ -3482,6 +3680,7 @@ async function main() {
   } finally {
     // Stop work, drain actual resources, then unconditionally restore fixture seams.
     operationsController.abort();
+    for (const value of planResults) value.close();
     intentStore?.close();
     for (const release of checksReleases) release.resolve();
     for (const value of checksResults) value.close();
@@ -3494,6 +3693,7 @@ async function main() {
     try {
       const operations = await Promise.allSettled([...pendingOperations]);
       const drained = await Promise.allSettled([
+        ...planResults.map((value) => value.closed),
         ...[...checksResults].map((value) => value.closed),
         ...(intentStore ? [intentStore.closed] : []),
         ...(task ? [task.closed] : []),
