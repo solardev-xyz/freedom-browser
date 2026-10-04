@@ -60,9 +60,61 @@ function selectJournal(snapshot, facts, intent) {
   assert.deepEqual(record.intent, intent);
   return { record, projection: projectRailgunOwnRecord(record) };
 }
+const refused = () =>
+  Object.assign(new Error('Railgun own recovery unavailable'), {
+    code: 'RAILGUN_OWN_OPERATION_REFUSED',
+  });
+// Copy plain JSON only: no getters, toJSON hooks, capabilities or lossy values.
+function detachResult(input) {
+  let nodes = 0,
+    bytes = 0;
+  const charge = (size) => {
+    bytes += size;
+    assert.ok(bytes <= 32768);
+  };
+  const copy = (value, depth = 0) => {
+    assert.ok(++nodes <= 32768 && depth <= 64);
+    if (value === null || typeof value === 'boolean') {
+      charge(JSON.stringify(value).length);
+      return value;
+    }
+    if (typeof value === 'string') {
+      assert.ok(Buffer.byteLength(value) <= 32768);
+      charge(Buffer.byteLength(JSON.stringify(value)));
+      return value;
+    }
+    if (typeof value === 'number') {
+      assert.ok(Number.isFinite(value));
+      charge(JSON.stringify(value).length);
+      return value;
+    }
+    assert.ok(value && typeof value === 'object');
+    assert.ok(
+      Array.isArray(value) || [Object.prototype, null].includes(Object.getPrototypeOf(value))
+    );
+    assert.equal(Object.getOwnPropertySymbols(value).length, 0);
+    const keys = Object.keys(value);
+    charge(2 + Math.max(0, keys.length - 1));
+    if (Array.isArray(value)) assert.equal(keys.length, value.length);
+    const entries = keys.map((key, index) => {
+      if (Array.isArray(value)) assert.equal(key, String(index));
+      assert.ok(Buffer.byteLength(key) <= 32768);
+      if (!Array.isArray(value)) charge(Buffer.byteLength(JSON.stringify(key)) + 1);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      assert.ok(Object.hasOwn(descriptor, 'value'));
+      return [key, copy(descriptor.value, depth + 1)];
+    });
+    return Array.isArray(value) ? entries.map(([, v]) => v) : Object.fromEntries(entries);
+  };
+  const detached = copy(input),
+    text = JSON.stringify(detached);
+  assert.ok(Buffer.byteLength(text) <= 32768);
+  return freeze(detached);
+}
 async function captureRailgunOwnOperation(
   { enrollment, selector: input, signal, timeoutMs = 45000 } = {},
-  selectorArchive
+  selectorArchive,
+  use
 ) {
   let stage = 'context',
     scope,
@@ -77,9 +129,11 @@ async function captureRailgunOwnOperation(
     const started = performance.now(),
       deadline = started + timeoutMs;
     const lifetime = AbortSignal.any([signal, enrollment.signal, controller.signal]);
-    const current = () => {
+    const current = (margin = 0) => {
+      assert.ok(Number.isSafeInteger(margin) && margin >= 0 && margin <= 175000);
       getPrivacyContext(parent);
-      assert.ok(!lifetime.aborted && performance.now() >= started && performance.now() < deadline);
+      const now = performance.now();
+      assert.ok(!lifetime.aborted && now >= started && now + margin < deadline);
     };
     timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref?.();
@@ -91,9 +145,11 @@ async function captureRailgunOwnOperation(
     const result = await reservations.withSigningRecovery(
       async (records, context) => {
         try {
-          const active = () => {
-            current();
+          const active = (margin = 0) => {
+            current(margin);
             context.assertCurrent();
+            assert.ok(Number.isFinite(context.deadline));
+            assert.ok(performance.now() + margin < context.deadline);
           };
           active();
           stage = 'selection';
@@ -149,51 +205,126 @@ async function captureRailgunOwnOperation(
             });
             active();
           }
-          stage = 'reattest';
-          reservations.assertReceiptContext(receipt, 'recovery');
-          assert.deepEqual(await reservations.assertReceipt(receipt), entry);
-          active();
-          assert.deepEqual(await capsules.readSigned(receipt), stored);
-          active();
-          const latest = selectJournal(await journal.readSnapshot(), entry.facts, intent);
-          active();
-          assert.deepEqual(latest.projection, first.projection);
-          const bindingDigest = digest({
-            account: enrollment.binding,
-            walletId: enrollment.descriptor.walletId,
-            holdId: entry.id,
-            facts: entry.facts,
-            signing: entry.signing,
-            capsuleDigest: stored.capsuleDigest,
-            authorizationDigest: stored.authorizationDigest,
-            signingDigest: stored.signingDigest,
-            intent,
-            projection: latest.projection,
-          });
-          const capture = JSON.parse(
-            JSON.stringify({
-              version: 1,
-              bindingDigest,
-              selector: selected,
+          const reattest = async (assertActive = active) => {
+            stage = 'reattest';
+            assertActive();
+            reservations.assertReceiptContext(receipt, 'recovery');
+            assert.deepEqual(await reservations.assertReceipt(receipt), entry);
+            assertActive();
+            assert.deepEqual(await capsules.readSigned(receipt), stored);
+            assertActive();
+            const latest = selectJournal(await journal.readSnapshot(), entry.facts, intent);
+            assertActive();
+            assert.deepEqual(latest.projection, first.projection);
+            const bindingDigest = digest({
+              account: enrollment.binding,
+              walletId: enrollment.descriptor.walletId,
+              holdId: entry.id,
               facts: entry.facts,
-              submitter,
-              capsule,
+              signing: entry.signing,
               capsuleDigest: stored.capsuleDigest,
-              provedTransaction,
+              authorizationDigest: stored.authorizationDigest,
+              signingDigest: stored.signingDigest,
               intent,
-              record: latest.record,
               projection: latest.projection,
-              accountAuthenticated: false,
-              sourceAuthenticated: false,
-              currentFinalityVerified: false,
-              txidPathVerified: false,
-              txidRootAccepted: false,
-              poiVerified: false,
-              spendingEnabled: false,
-            })
-          );
+            });
+            const capture = JSON.parse(
+              JSON.stringify({
+                version: 1,
+                bindingDigest,
+                selector: selected,
+                facts: entry.facts,
+                submitter,
+                capsule,
+                capsuleDigest: stored.capsuleDigest,
+                provedTransaction,
+                intent,
+                record: latest.record,
+                projection: latest.projection,
+                accountAuthenticated: false,
+                sourceAuthenticated: false,
+                currentFinalityVerified: false,
+                txidPathVerified: false,
+                txidRootAccepted: false,
+                poiVerified: false,
+                spendingEnabled: false,
+              })
+            );
+            assertActive();
+            return freeze(capture);
+          };
+          const capture = await reattest();
+          if (!use) return freeze({ status: 'captured', capture, ...(derived ? { derived } : {}) });
+          // Trusted main callback owns and drains any other children it starts.
+          // This window neither locks the EOA journal nor grants key authority.
+          const windowController = new AbortController();
+          let accepting = true,
+            pending,
+            failed = false;
+          const revoke = () => {
+            accepting = false;
+            windowController.abort();
+          };
+          const assertCurrent = (margin = 0) => {
+            if (!accepting || windowController.signal.aborted) throw refused();
+            try {
+              active(margin);
+            } catch {
+              throw refused();
+            }
+          };
+          const window = Object.freeze({
+            capture,
+            signal: AbortSignal.any([lifetime, context.signal, windowController.signal]),
+            assertCurrent,
+            reattest() {
+              assertCurrent();
+              if (pending) throw refused();
+              // Return the exact observed promise, including when discarded.
+              const work = (async () => {
+                try {
+                  const fresh = await reattest(assertCurrent);
+                  assertCurrent();
+                  return fresh;
+                } catch {
+                  failed = true;
+                  revoke();
+                  throw refused();
+                }
+              })();
+              pending = work;
+              work.then(
+                () => {
+                  if (pending === work) pending = undefined;
+                },
+                () => {
+                  if (pending === work) pending = undefined;
+                }
+              );
+              return work;
+            },
+          });
+          let value,
+            callbackFailed = false;
+          try {
+            stage = 'callback';
+            value = await use(window);
+          } catch {
+            callbackFailed = true;
+          } finally {
+            revoke();
+            if (pending) await Promise.allSettled([pending]);
+          }
+          if (failed) {
+            stage = 'reattest';
+            throw refused();
+          }
+          stage = 'callback';
+          if (callbackFailed) throw refused();
           active();
-          return freeze({ status: 'captured', capture, ...(derived ? { derived } : {}) });
+          value = detachResult(value);
+          await reattest();
+          return Object.freeze({ status: 'used', value });
         } catch {
           // A missing/incomplete operation or changed observation is an expected
           // refusal, not a reason to tear down healthy reservation storage.
@@ -215,6 +346,18 @@ async function captureRailgunOwnOperation(
   }
 }
 module.exports = {
+  // Only the callback lifetime retains recovery. No receipt/store is exposed;
+  // callback-owned child jobs must be cancelled and drained before it settles.
+  withRailgunOwnOperationRecovery: (options, use) => {
+    if (
+      !options ||
+      typeof options !== 'object' ||
+      Array.isArray(options) ||
+      typeof use !== 'function'
+    )
+      return Promise.resolve(Object.freeze({ status: 'refused', stage: 'context' }));
+    return captureRailgunOwnOperation(options, undefined, use);
+  },
   captureRailgunOwnOperation: (options) => captureRailgunOwnOperation(options),
   captureRailgunOwnOperationSelector: ({ archive, ...options } = {}) => {
     if (typeof archive !== 'string')

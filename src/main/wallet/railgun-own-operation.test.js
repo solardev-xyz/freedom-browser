@@ -17,6 +17,7 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const {
   captureRailgunOwnOperation: capture,
   captureRailgunOwnOperationSelector: captureSelector,
+  withRailgunOwnOperationRecovery: withRecovery,
 } = require('./railgun-own-operation');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
 const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -98,22 +99,31 @@ beforeEach(() => {
       reservations.assertReceiptContext(value, 'recovery');
       return copy(entry);
     }),
-    withSigningRecovery: jest.fn(async (use) => {
+    close: jest.fn(),
+    withSigningRecovery: jest.fn(async (use, { timeoutMs }) => {
       if (inRecovery) throw Error('phase busy');
       inRecovery = true;
       const controller = new AbortController();
+      const deadline = performance.now() + timeoutMs;
+      const assertCurrent = () => {
+        if (!inRecovery || controller.signal.aborted || performance.now() >= deadline)
+          throw Error('ended');
+      };
       try {
         const result = await use(records, {
           signal: controller.signal,
-          assertCurrent: () => {
-            if (!inRecovery || controller.signal.aborted) throw Error('ended');
-          },
+          deadline,
+          assertCurrent,
         });
         if (delayFinish)
           await new Promise((resolve) => {
             finish = resolve;
           });
+        assertCurrent(); // Model the real store's post-callback lifetime check.
         return result;
+      } catch (error) {
+        reservations.close(); // Real withSigningRecovery fail-closes on expiry.
+        throw error;
       } finally {
         inRecovery = false;
         controller.abort();
@@ -353,4 +363,446 @@ test('selector cancellation drains the outstanding derivation before leaving rec
   release();
   expect((await pending).status).toBe('refused');
   expect(inRecovery).toBe(false);
+});
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+const waitFor = async (check) => {
+  for (let i = 0; i < 150 && !check(); i++) await Promise.resolve();
+  expect(check()).toBe(true);
+};
+test('retained recovery shares capture, reattests live, detaches result, and never nests the claim', async () => {
+  let window;
+  const value = { nested: { accepted: true } };
+  const result = await withRecovery(input, async (w) => {
+    window = w;
+    expect(Object.keys(w).sort()).toEqual(['assertCurrent', 'capture', 'reattest', 'signal']);
+    expect(Object.isFrozen(w)).toBe(true);
+    expect(Object.isFrozen(w.capture.capsule)).toBe(true);
+    expect(w.capture.accountAuthenticated).toBe(false);
+    w.assertCurrent(1);
+    const fresh = await w.reattest();
+    expect(fresh).toEqual(w.capture);
+    expect(fresh).not.toBe(w.capture);
+    expect(inRecovery).toBe(true);
+    return value;
+  });
+  expect(result).toEqual({ status: 'used', value });
+  value.nested.accepted = false;
+  expect(result.value.nested.accepted).toBe(true);
+  expect(Object.isFrozen(result.value.nested)).toBe(true);
+  expect(reservations.withSigningRecovery).toHaveBeenCalledTimes(1);
+  expect(mockJournal.readSnapshot).toHaveBeenCalledTimes(4);
+  expect(window.signal.aborted).toBe(true);
+  expect(() => window.assertCurrent()).toThrow('Railgun own recovery unavailable');
+  expect(() => window.reattest()).toThrow('Railgun own recovery unavailable');
+  expect(inRecovery).toBe(false);
+});
+test.each(['hold', 'capsule', 'projection', 'unresolved'])(
+  'live %s drift refuses and cannot be swallowed by the callback',
+  async (fault) => {
+    const result = await withRecovery(input, async (window) => {
+      if (fault === 'hold') {
+        const changed = copy(entry);
+        changed.signing.gatesDigest = 'a'.repeat(64);
+        reservations.assertReceipt.mockResolvedValueOnce(changed);
+      }
+      if (fault === 'capsule') stored.authorizationDigest = 'a'.repeat(64);
+      if (fault === 'projection') {
+        const record = journalState.records[0],
+          hash = '0x' + 'a'.repeat(64);
+        record.observation.blockHash = record.resolution.blockHash = hash;
+        record.resolution.railgun.transact.blockHash = hash;
+        expect(require('./railgun-own-txid').projectRailgunOwnRecord(record).blockHash).toBe(hash);
+      }
+      if (fault === 'unresolved') journalState.records.push({ resolution: null });
+      await expect(window.reattest()).rejects.toThrow('Railgun own recovery unavailable');
+      expect(window.signal.aborted).toBe(true);
+      return { ignored: true };
+    });
+    expect(result).toEqual({ status: 'refused', stage: 'reattest' });
+    expect(inRecovery).toBe(false);
+  }
+);
+test('routine refresh returns latest record with original stable binding', async () => {
+  const result = await withRecovery(input, async (window) => {
+    journalState.records[0].revision++;
+    journalState.records[0].observation.confirmations++;
+    journalState.records[0].observation.observedAt++;
+    const fresh = await window.reattest();
+    expect(fresh.bindingDigest).toBe(window.capture.bindingDigest);
+    expect(fresh.record).toEqual(journalState.records[0]);
+    expect(fresh.record).not.toEqual(window.capture.record);
+    return true;
+  });
+  expect(result).toEqual({ status: 'used', value: true });
+});
+test('fresh final reattestation catches drift after callback result', async () => {
+  expect(
+    await withRecovery(input, () => {
+      stored.authorizationDigest = 'a'.repeat(64);
+      return 'result';
+    })
+  ).toEqual({ status: 'refused', stage: 'reattest' });
+});
+test('overlapping reattestation refuses synchronously without overlapping store reads', async () => {
+  const gate = deferred();
+  const result = await withRecovery(input, async (window) => {
+    mockJournal.readSnapshot.mockImplementationOnce(async () => {
+      await gate.promise;
+      return copy(journalState);
+    });
+    const first = window.reattest();
+    await waitFor(() => mockJournal.readSnapshot.mock.calls.length === 3);
+    expect(() => window.reattest()).toThrow('Railgun own recovery unavailable');
+    expect(mockJournal.readSnapshot).toHaveBeenCalledTimes(3);
+    gate.resolve();
+    await first;
+    await window.reattest();
+    return null;
+  });
+  expect(result).toEqual({ status: 'used', value: null });
+});
+test('discarded reattestation is observed and drained after immediate window revocation', async () => {
+  const gate = deferred();
+  let window,
+    settled = false;
+  const pending = withRecovery(input, async (w) => {
+    window = w;
+    mockJournal.readSnapshot.mockImplementationOnce(async () => {
+      await gate.promise;
+      return copy(journalState);
+    });
+    void w.reattest(); // Deliberately no caller rejection handler.
+    await waitFor(() => mockJournal.readSnapshot.mock.calls.length === 3);
+    return true;
+  }).then((v) => {
+    settled = true;
+    return v;
+  });
+  await waitFor(() => window?.signal.aborted);
+  expect(settled).toBe(false);
+  expect(inRecovery).toBe(true);
+  expect(() => window.assertCurrent()).toThrow();
+  expect(() => window.reattest()).toThrow();
+  gate.resolve();
+  expect(await pending).toEqual({ status: 'refused', stage: 'reattest' });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(inRecovery).toBe(false);
+  expect((await capture(input)).status).toBe('captured');
+});
+test.each(['caller', 'parent'])(
+  '%s revocation drains a pending reattestation and callback before releasing recovery',
+  async (which) => {
+    const gate = deferred(),
+      callbackGate = deferred();
+    let window,
+      settled = false;
+    const pending = withRecovery(input, async (w) => {
+      window = w;
+      mockJournal.readSnapshot.mockImplementationOnce(async () => {
+        await gate.promise;
+        return copy(journalState);
+      });
+      const work = w.reattest();
+      await expect(work).rejects.toThrow();
+      await callbackGate.promise;
+      return true;
+    }).then((v) => {
+      settled = true;
+      return v;
+    });
+    await waitFor(() => mockJournal.readSnapshot.mock.calls.length === 3);
+    if (which === 'caller') caller.abort();
+    else scope.close();
+    expect(window.signal.aborted).toBe(true);
+    expect(() => window.assertCurrent()).toThrow();
+    expect(inRecovery).toBe(true);
+    expect(settled).toBe(false);
+    gate.resolve();
+    await Promise.resolve();
+    expect(inRecovery).toBe(true);
+    callbackGate.resolve();
+    expect((await pending).status).toBe('refused');
+    expect(inRecovery).toBe(false);
+  }
+);
+test('callback throw is sanitized inside recovery and healthy capture remains possible', async () => {
+  expect(
+    await withRecovery(input, async (w) => {
+      await w.reattest();
+      throw Error('private callback detail');
+    })
+  ).toEqual({ status: 'refused', stage: 'callback' });
+  expect((await capture(input)).status).toBe('captured');
+});
+test.each([
+  'oversize',
+  'undefined',
+  'bigint',
+  'function',
+  'infinite',
+  'cycle',
+  'accessor',
+  'capability',
+  'deep',
+])('rejects %s callback output without retaining authority', async (mode) => {
+  let value;
+  const getter = jest.fn(() => 'private');
+  if (mode === 'oversize') value = 'x'.repeat(32767);
+  if (mode === 'undefined') value = { omitted: undefined };
+  if (mode === 'bigint') value = 1n;
+  if (mode === 'function') value = () => {};
+  if (mode === 'infinite') value = Infinity;
+  if (mode === 'cycle') {
+    value = {};
+    value.self = value;
+  }
+  if (mode === 'accessor')
+    value = Object.defineProperty({}, 'data', { enumerable: true, get: getter });
+  if (mode === 'capability') value = new AbortController().signal;
+  if (mode === 'deep') {
+    value = {};
+    for (let i = 0; i < 66; i++) value = { next: value };
+  }
+  expect(await withRecovery(input, () => value)).toEqual({ status: 'refused', stage: 'callback' });
+  expect(getter).not.toHaveBeenCalled();
+  expect((await capture(input)).status).toBe('captured');
+});
+test('exact 32768-byte callback JSON is accepted', async () => {
+  const value = 'x'.repeat(32766);
+  expect(await withRecovery(input, () => value)).toEqual({ status: 'used', value });
+});
+test('window margin checks strict total deadline without waiting for timer dispatch', async () => {
+  jest.useFakeTimers();
+  let now = 0;
+  const clock = jest.spyOn(performance, 'now').mockImplementation(() => now);
+  try {
+    expect(
+      await withRecovery({ ...input, timeoutMs: 1000 }, (window) => {
+        window.assertCurrent(999);
+        for (const margin of [-1, 0.1, 1000, 2000])
+          expect(() => window.assertCurrent(margin)).toThrow();
+        now = 500;
+        window.assertCurrent(499);
+        expect(() => window.assertCurrent(500)).toThrow();
+        now = 1000;
+        expect(() => window.assertCurrent()).toThrow();
+        expect(() => window.reattest()).toThrow();
+        return true;
+      })
+    ).toEqual({ status: 'refused', stage: 'callback' });
+  } finally {
+    clock.mockRestore();
+  }
+});
+test('window revokes before recovery post-attestation and result waits for it', async () => {
+  delayFinish = true;
+  let window,
+    settled = false;
+  const pending = withRecovery(input, (w) => {
+    window = w;
+    return true;
+  }).then((v) => {
+    settled = true;
+    return v;
+  });
+  await waitFor(() => typeof finish === 'function');
+  expect(window.signal.aborted).toBe(true);
+  expect(() => window.assertCurrent()).toThrow();
+  expect(inRecovery).toBe(true);
+  expect(settled).toBe(false);
+  finish();
+  expect(await pending).toEqual({ status: 'used', value: true });
+});
+test('invalid callback refuses before opening stores', async () => {
+  expect(await withRecovery(input, null)).toEqual({ status: 'refused', stage: 'context' });
+  expect(mockEnrollment.openReservations).not.toHaveBeenCalled();
+});
+
+test.each(['callback', 'reattest', 'final-reattest'])(
+  'expiry during %s retains recovery until drain then follows store fail-close',
+  async (when) => {
+    jest.useFakeTimers();
+    let now = 0;
+    const clock = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const gate = deferred(),
+      entered = deferred();
+    let window,
+      settled = false;
+    try {
+      const pending = withRecovery({ ...input, timeoutMs: 1000 }, async (w) => {
+        window = w;
+        if (when === 'callback') {
+          entered.resolve();
+          await gate.promise;
+        } else {
+          mockJournal.readSnapshot.mockImplementationOnce(async () => {
+            entered.resolve();
+            await gate.promise;
+            return copy(journalState);
+          });
+          if (when === 'reattest') await w.reattest();
+        }
+        return true;
+      }).then((v) => {
+        settled = true;
+        return v;
+      });
+      await entered.promise;
+      now = 1000; // No timer dispatch: synchronous deadlines must still reject.
+      expect(() => window.assertCurrent()).toThrow();
+      expect(settled).toBe(false);
+      expect(inRecovery).toBe(true);
+      expect(reservations.close).not.toHaveBeenCalled();
+      gate.resolve();
+      expect(await pending).toEqual({
+        status: 'refused',
+        stage: when === 'callback' ? 'callback' : 'reattest',
+      });
+      expect(inRecovery).toBe(false);
+      expect(window.signal.aborted).toBe(true);
+      expect(reservations.close).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  }
+);
+test('caller cancellation alone returns a refusal inside recovery without store fail-close', async () => {
+  const gate = deferred();
+  let window;
+  const pending = withRecovery(input, async (w) => {
+    window = w;
+    await gate.promise;
+    return true;
+  });
+  await waitFor(() => !!window);
+  caller.abort();
+  expect(window.signal.aborted).toBe(true);
+  expect(inRecovery).toBe(true);
+  gate.resolve();
+  expect(await pending).toEqual({ status: 'refused', stage: 'callback' });
+  expect(reservations.close).not.toHaveBeenCalled();
+  expect((await capture({ ...input, signal: new AbortController().signal })).status).toBe(
+    'captured'
+  );
+});
+test('callback result is detached before the final asynchronous reattestation', async () => {
+  const value = { stable: true };
+  expect(
+    await withRecovery(input, () => {
+      mockJournal.readSnapshot.mockImplementationOnce(async () => {
+        value.stable = false;
+        return copy(journalState);
+      });
+      return value;
+    })
+  ).toEqual({ status: 'used', value: { stable: true } });
+});
+
+test('final reattestation refuses independently valid stable-projection drift after callback', async () => {
+  expect(
+    await withRecovery(input, () => {
+      const record = journalState.records[0],
+        hash = '0x' + 'b'.repeat(64);
+      record.observation.blockHash = record.resolution.blockHash = hash;
+      record.resolution.railgun.transact.blockHash = hash;
+      expect(require('./railgun-own-txid').projectRailgunOwnRecord(record).blockHash).toBe(hash);
+      return { proof: 'detached' };
+    })
+  ).toEqual({ status: 'refused', stage: 'reattest' });
+  expect(mockJournal.readSnapshot).toHaveBeenCalledTimes(3);
+  expect(reservations.close).not.toHaveBeenCalled();
+});
+test('retained capture preserves existing archive-transition semantics for controller comparison', async () => {
+  expect(
+    await withRecovery(input, async (window) => {
+      const archived = copy(sample(false, true).record);
+      archived.intent = copy(journalState.records[0].intent);
+      journalState = { records: [], archive: [archived] };
+      const fresh = await window.reattest();
+      expect(fresh.bindingDigest).toBe(window.capture.bindingDigest);
+      expect(fresh.record).toEqual(archived);
+      expect(fresh.record).not.toEqual(window.capture.record);
+      return true;
+    })
+  ).toEqual({ status: 'used', value: true });
+});
+
+test.each([undefined, null, false, [], 'options'])(
+  'malformed recovery options %s return context refusal before stores',
+  async (options) => {
+    const use = jest.fn();
+    expect(await withRecovery(options, use)).toEqual({ status: 'refused', stage: 'context' });
+    expect(use).not.toHaveBeenCalled();
+    expect(mockEnrollment.openReservations).not.toHaveBeenCalled();
+  }
+);
+
+test('shorter recovery deadline bounds margins and expiry even while outer deadline remains live', async () => {
+  jest.useFakeTimers();
+  let now = 0;
+  const clock = jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const original = reservations.withSigningRecovery.getMockImplementation();
+  reservations.withSigningRecovery.mockImplementation((use, options) =>
+    original((records, context) => use(records, { ...context, deadline: 500 }), options)
+  );
+  try {
+    expect(
+      await withRecovery({ ...input, timeoutMs: 1000 }, async (window) => {
+        window.assertCurrent(499);
+        expect(() => window.assertCurrent(500)).toThrow('Railgun own recovery unavailable');
+        now = 100;
+        window.assertCurrent(399);
+        expect(() => window.assertCurrent(400)).toThrow('Railgun own recovery unavailable');
+        expect((await window.reattest()).bindingDigest).toBe(window.capture.bindingDigest);
+        now = 500;
+        expect(() => window.assertCurrent()).toThrow('Railgun own recovery unavailable');
+        expect(() => window.reattest()).toThrow('Railgun own recovery unavailable');
+        return true;
+      })
+    ).toEqual({ status: 'refused', stage: 'callback' });
+  } finally {
+    clock.mockRestore();
+  }
+});
+test.each([
+  'missing',
+  'undefined',
+  'nan',
+  'positive-infinity',
+  'negative-infinity',
+  'string',
+  'null',
+])('%s recovery deadline refuses before reading hold or entering callback', async (kind) => {
+  const values = {
+    undefined: undefined,
+    nan: NaN,
+    'positive-infinity': Infinity,
+    'negative-infinity': -Infinity,
+    string: '100000',
+    null: null,
+  };
+  const original = reservations.withSigningRecovery.getMockImplementation();
+  reservations.withSigningRecovery.mockImplementation((use, options) =>
+    original((records, context) => {
+      const altered = { ...context };
+      if (kind === 'missing') delete altered.deadline;
+      else altered.deadline = values[kind];
+      return use(records, altered);
+    }, options)
+  );
+  const use = jest.fn();
+  expect(await withRecovery(input, use)).toEqual({ status: 'refused', stage: 'context' });
+  expect(use).not.toHaveBeenCalled();
+  expect(reservations.assertReceipt).not.toHaveBeenCalled();
+  expect(capsules.readSigned).not.toHaveBeenCalled();
+  expect(mockJournal.readSnapshot).not.toHaveBeenCalled();
+  expect(inRecovery).toBe(false);
+  expect(reservations.close).not.toHaveBeenCalled();
 });

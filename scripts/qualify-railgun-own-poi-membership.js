@@ -179,6 +179,7 @@ const sources = [
   'src/main/wallet/railgun-shield-receipt.js',
   'src/main/wallet/railgun-own-txid.js',
   'src/main/wallet/railgun-own-operation.js',
+  'src/main/wallet/railgun-own-operation.test.js',
   'scripts/qualify-railgun-poi-preflight.js',
   'scripts/qualify-railgun-own-poi-membership.js',
   'scripts/fixtures/railgun-own-poi-membership-input-job.js',
@@ -277,7 +278,8 @@ async function main() {
     transportCloses = 0;
   const clients = new Set(),
     results = new Set(),
-    pendingOperations = new Set();
+    pendingOperations = new Set(),
+    recoveryReleases = new Set();
   const operationsController = new AbortController();
   // Every consumer must capture the counted fixture transport, including the
   // original factories whose exports are replaced below. Never retain a real
@@ -532,7 +534,10 @@ async function main() {
   const { openRailgunAccountEnrollment } = require('../src/main/wallet/railgun-account-enrollment');
   const { openRailgunAccountPublic } = require('../src/main/wallet/railgun-account-public');
   const { openRailgunAccountTxid } = require('../src/main/wallet/railgun-account-txid');
-  const { captureRailgunOwnOperation } = require('../src/main/wallet/railgun-own-operation');
+  const {
+    captureRailgunOwnOperation,
+    withRailgunOwnOperationRecovery,
+  } = require('../src/main/wallet/railgun-own-operation');
   const { getPrivateSubmissionJournal } = require('../src/main/wallet/private-submission-journal');
   const {
     extractRailgunTransactIntent,
@@ -545,7 +550,8 @@ async function main() {
     openRailgunOwnPoiMembership: open,
     assertRailgunOwnPoiMembership: assertMembership,
   } = require('../src/main/wallet/railgun-own-poi-membership');
-  const runs = [];
+  const runs = [],
+    recoveryRuns = [];
   try {
     phase = 'enrollment';
     const vaultDirectory = path.join(profile.userDataDir, 'identity');
@@ -742,6 +748,143 @@ async function main() {
     recovery = undefined;
     const baseline = await capture();
     assert.equal(baseline.status, 'captured');
+    const withRecovery = (use, signal = enrollment.signal) => {
+      const work = withRailgunOwnOperationRecovery(
+        {
+          enrollment,
+          selector,
+          signal: AbortSignal.any([signal, operationsController.signal]),
+        },
+        use
+      );
+      pendingOperations.add(work);
+      return work.finally(() => pendingOperations.delete(work));
+    };
+    const assertWindowClosed = async (window) => {
+      assert.equal(window.signal.aborted, true);
+      assert.throws(() => window.assertCurrent());
+      await assert.rejects(async () => window.reattest());
+    };
+    phase = 'retained-recovery';
+    let retained;
+    const value = { diagnostic: 'public-fixture' };
+    const used = await withRecovery(async (window) => {
+      retained = window;
+      assert.deepEqual(Object.keys(window).sort(), [
+        'assertCurrent',
+        'capture',
+        'reattest',
+        'signal',
+      ]);
+      assert.equal(Object.isFrozen(window), true);
+      assert.equal(Object.isFrozen(window.capture), true);
+      assert.deepEqual(window.capture, baseline.capture);
+      window.assertCurrent(1000);
+      assert.throws(() => claimRailgunAccountPhase(enrollment, 'recovery'));
+      const latest = await window.reattest();
+      assert.deepEqual(latest, baseline.capture);
+      assert.notEqual(latest, window.capture);
+      return value;
+    });
+    assert.deepEqual(used, { status: 'used', value });
+    assert.notEqual(used.value, value);
+    assert.equal(Object.isFrozen(used.value), true);
+    value.diagnostic = 'changed-after-callback';
+    assert.equal(used.value.diagnostic, 'public-fixture');
+    await assertWindowClosed(retained);
+    recoveryRuns.push({ mode: phase, freshReattestation: true, closedWindowRefused: true });
+
+    phase = 'retained-routine-refresh';
+    let updated;
+    const recoveryRefreshed = await withRecovery(async (window) => {
+      const current = (await journal.list())[0];
+      updated = await journal.observe(
+        current.hash,
+        {
+          ...current.observation,
+          confirmations: current.observation.confirmations + 1,
+          observedAt: current.observation.observedAt + 1,
+        },
+        current.revision
+      );
+      assert.ok(updated.resolution);
+      const latest = await window.reattest();
+      assert.equal(latest.bindingDigest, window.capture.bindingDigest);
+      assert.equal(latest.record.revision, current.revision + 1);
+      assert.deepEqual(latest.record, updated);
+      return { refreshed: true };
+    });
+    assert.deepEqual(recoveryRefreshed, { status: 'used', value: { refreshed: true } });
+    assert.deepEqual((await journal.list())[0], updated);
+    recoveryRuns.push({ mode: phase, newJournalRecordRead: true, stableBinding: true });
+
+    for (const fault of ['callback-refusal', 'result-bound']) {
+      phase = 'retained-' + fault;
+      const beforeJournal = await journal.readSnapshot();
+      const refused = await withRecovery(async () => {
+        if (fault === 'callback-refusal') throw Error('private-fixture-sentinel');
+        return { data: 'x'.repeat(32768) };
+      });
+      assert.equal(refused.status, 'refused');
+      assert.doesNotMatch(JSON.stringify(refused), /private-fixture-sentinel|xxx/);
+      assert.equal((await capture()).status, 'captured');
+      assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+      recoveryRuns.push({ mode: phase, refused: true, healthyCaptureAfterRefusal: true });
+    }
+
+    phase = 'retained-cancellation';
+    const recoveryCaller = new AbortController(),
+      callbackEntered = deferred(),
+      releaseCallback = deferred();
+    recoveryReleases.add(releaseCallback);
+    let callbackWindow,
+      callbackSettled = false;
+    const cancelled = withRecovery(async (window) => {
+      callbackWindow = window;
+      callbackEntered.resolve();
+      await releaseCallback.promise;
+      return { diagnostic: true };
+    }, recoveryCaller.signal).then((result) => {
+      callbackSettled = true;
+      return result;
+    });
+    await callbackEntered.promise;
+    recoveryCaller.abort();
+    await assertWindowClosed(callbackWindow);
+    assert.equal(callbackSettled, false);
+    assert.throws(() => claimRailgunAccountPhase(enrollment, 'recovery'));
+    releaseCallback.resolve();
+    recoveryReleases.delete(releaseCallback);
+    assert.equal((await cancelled).status, 'refused');
+    const freed = claimRailgunAccountPhase(enrollment, 'recovery');
+    freed.release();
+    assert.equal((await capture()).status, 'captured');
+    recoveryRuns.push({
+      mode: phase,
+      phaseHeldUntilCallbackDrain: true,
+      healthyCaptureAfterRefusal: true,
+    });
+
+    phase = 'retained-abandoned-reattest';
+    let abandonedSettled = false;
+    const abandoned = await withRecovery(async (window) => {
+      // Deliberately abandon the public promise. The window must observe and
+      // drain its store work itself before releasing the recovery phase.
+      window.reattest().then(
+        () => {
+          abandonedSettled = true;
+        },
+        () => {
+          abandonedSettled = true;
+        }
+      );
+      return { diagnostic: true };
+    });
+    assert.equal(abandoned.status, 'refused');
+    assert.equal(abandonedSettled, true);
+    assert.equal((await capture()).status, 'captured');
+    recoveryRuns.push({ mode: phase, pendingReadDrained: true, healthyCaptureAfterRefusal: true });
+    assert.equal(recoveryRuns.length, 6);
     phase = 'public-prefix';
     publicAccount = await openRailgunAccountPublic({ enrollment, archive, create: true });
     let advances = 0;
@@ -1036,13 +1179,32 @@ async function main() {
     await success('healthy-reopen-after-refusals');
     phase = 'final-journal-drift';
     mode = 'valid';
-    onRoot = () => journal.begin(hex(101), 4);
+    onRoot = async () => {
+      // Acquisition holds no phase, so a genuine local recovery window can run
+      // here. Its callback returns normally after introducing an unresolved
+      // journal entry; only the final private reattestation detects that drift.
+      let callbackCompleted = false;
+      const changedWindow = await withRecovery(async (window) => {
+        window.assertCurrent();
+        await journal.begin(hex(101), 4);
+        callbackCompleted = true;
+        return { diagnostic: true };
+      });
+      assert.equal(callbackCompleted, true);
+      assert.deepEqual(changedWindow, { status: 'refused', stage: 'reattest' });
+      recoveryRuns.push({
+        mode: 'retained-final-journal-drift',
+        callbackCompleted: true,
+        finalPrivateReattestationRefused: true,
+      });
+    };
     const a = counts();
     const changed = await call();
     onRoot = undefined;
     assert.deepEqual(changed, { status: 'refused', stage: 'after-query' });
     checkDelta(a, [1, 1, 1, 1], 1);
     runs.push({ mode: phase, refused: true, membershipCompletedBeforeFinalCapture: true });
+    assert.equal(recoveryRuns.length, 7);
     assert.deepEqual(
       runs.map((run) => run.mode),
       [
@@ -1080,6 +1242,7 @@ async function main() {
       elapsedMs: Math.round(performance.now() - started),
       sourceSha256: before,
       runs,
+      recoveryRuns,
       publicPrefixAdvances: advances,
       poiMethods,
       publicMethods,
@@ -1123,6 +1286,7 @@ async function main() {
   } finally {
     // Stop work, drain actual resources, then unconditionally restore fixture seams.
     operationsController.abort();
+    for (const release of recoveryReleases) release.resolve();
     releaseTransport?.resolve();
     heldTask?.close();
     task?.close();
