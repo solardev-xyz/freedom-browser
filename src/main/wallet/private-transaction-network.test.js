@@ -25,7 +25,11 @@ const mockRequest = jest.fn();
 let mockEndpoint;
 const { Wallet, Transaction } = require('ethers');
 const { createPrivacyScope } = require('../networks/privacy-context');
-const { getPrivateTransactionNetwork } = require('./private-transaction-network');
+const {
+  getPrivateTransactionNetwork,
+  getPrivateTransactionNetworkDestination,
+  assertPrivateTransactionNetworkDestination,
+} = require('./private-transaction-network');
 const service = require('./transaction-service');
 const chainData = require('../networks/chain-data-router');
 const wallet = new Wallet(`0x${'1'.repeat(64)}`); // Public synthetic fixture only.
@@ -674,4 +678,53 @@ test('recovery permits bounded numbered headers and rejects mismatched response 
     });
     expect(requests.length).toBe(before);
   }
+});
+
+test('transaction destination is genuinely bound to cached network and handle without RPC', () => {
+  const observed = getPrivateTransactionNetworkDestination(network, handle);
+  expect(getPrivateTransactionNetworkDestination(network, handle)).toBe(observed);
+  expect(() => assertPrivateTransactionNetworkDestination(network, handle, observed)).not.toThrow();
+  expect(Object.isFrozen(observed)).toBe(true);
+  expect(JSON.stringify(observed)).not.toContain('rpc.example');
+  for (const fake of [{}, { ...network }, Object.create(network)]) {
+    expect(() => getPrivateTransactionNetworkDestination(fake, handle)).toThrow();
+    expect(() => assertPrivateTransactionNetworkDestination(fake, handle, observed)).toThrow();
+  }
+  for (const fake of [{}, { ...observed }, JSON.parse(JSON.stringify(observed))]) {
+    expect(() => assertPrivateTransactionNetworkDestination(network, handle, fake)).toThrow();
+  }
+  const unrelated = scope.getContext({
+    kind: 'public-address',
+    principal: params.to,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  expect(() => getPrivateTransactionNetworkDestination(network, unrelated)).toThrow();
+  expect(() => assertPrivateTransactionNetworkDestination(network, unrelated, observed)).toThrow();
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+test('destination accessor never repairs a stale transaction client after Tor replacement', () => {
+  const observed = getPrivateTransactionNetworkDestination(network, handle);
+  tor.abort();
+  tor = new AbortController();
+  mockEndpoint = { signal: tor.signal };
+  expect(() => getPrivateTransactionNetworkDestination(network, handle)).toThrow();
+  expect(() => assertPrivateTransactionNetworkDestination(network, handle, observed)).toThrow();
+  const fresh = getPrivateTransactionNetwork(handle);
+  expect(fresh).not.toBe(network);
+  const next = getPrivateTransactionNetworkDestination(fresh, handle);
+  expect(next).not.toBe(observed);
+  expect(() => assertPrivateTransactionNetworkDestination(fresh, handle, observed)).toThrow();
+  expect(() => assertPrivateTransactionNetworkDestination(fresh, handle, next)).not.toThrow();
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+test('destination observation does not authorize an arbitrary transaction hash', async () => {
+  const observed = getPrivateTransactionNetworkDestination(network, handle);
+  assertPrivateTransactionNetworkDestination(network, handle, observed);
+  await expect(
+    network.request(11155111, 'eth_getTransactionReceipt', ['0x' + 'f'.repeat(64)])
+  ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  expect(mockRequest).not.toHaveBeenCalled();
+  scope.close();
+  expect(() => assertPrivateTransactionNetworkDestination(network, handle, observed)).toThrow();
 });

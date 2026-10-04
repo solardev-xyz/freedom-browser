@@ -1,6 +1,8 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
+ * RPC destination identity is fixture-simulated, not a qualification of real
+ * retained-destination binding or the private-RPC chain-ID handshake.
  * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts|plans]]
  */
 const { app } = require('electron');
@@ -459,6 +461,12 @@ async function main() {
     '../src/main/wallet/railgun-scan-source',
     '../src/main/wallet/railgun-txid-root',
     '../src/main/wallet/private-transaction-network',
+    '../src/main/wallet/railgun-own-receipt',
+    '../src/main/wallet/railgun-own-witness',
+    '../src/main/wallet/railgun-own-poi-membership',
+    '../src/main/wallet/railgun-own-poi-proof',
+    '../src/main/wallet/railgun-poi-output-recovery',
+    '../src/main/wallet/railgun-poi-cold-validation',
     '../src/main/wallet/railgun-account-poi',
     '../src/main/networks/kohaku-network',
   ])
@@ -691,6 +699,27 @@ async function main() {
   const rpcModule = require('../src/main/networks/private-rpc');
   const serviceModule = require('../src/main/wallet/railgun-public-services');
   originals.rpc = rpcModule.createPrivateRpc;
+  originals.destinationGet = rpcModule.getPrivateRpcDestination;
+  originals.destinationAssert = rpcModule.assertPrivateRpcDestination;
+  // Exact fixture clients only: no fabricated/cross-handle/token acceptance.
+  // Keep the production detail accessor untouched so these tokens cannot
+  // expose or claim a genuinely retained RPC destination.
+  const rpcDestinations = new WeakMap();
+  const fixtureDestination = (client, handle) => {
+    const entry = rpcDestinations.get(client);
+    assert.ok(entry && entry.handle === handle);
+    assert.equal(getPrivacyContext(handle), entry.context);
+    assert.equal(client.signal, entry.context.signal);
+    assert.ok(client.signal instanceof AbortSignal);
+    assert.equal(client.signal.aborted, false);
+    return entry.observation;
+  };
+  rpcModule.getPrivateRpcDestination = fixtureDestination;
+  rpcModule.assertPrivateRpcDestination = (client, handle, observation) => {
+    const actual = fixtureDestination(client, handle);
+    assert.equal(observation, actual);
+    return actual;
+  };
   originals.services = serviceModule.createRailgunPublicServices;
   processModule.startRailgunProcess = (options) => {
     if (planActive) {
@@ -1431,7 +1460,7 @@ async function main() {
     assert.ok(['transaction-rpc', 'protocol-rpc'].includes(role));
     if (role === 'transaction-rpc')
       assert.equal(context.subject.principal, fixture.transaction.from);
-    return {
+    const client = {
       signal: context.signal,
       trust: { queried: ['synthetic.invalid'] },
       release() {},
@@ -1479,6 +1508,8 @@ async function main() {
         return { result: copy(value) };
       },
     };
+    rpcDestinations.set(client, { handle, context, observation: Object.freeze({}) });
+    return client;
   };
   serviceModule.createRailgunPublicServices = (handle) => {
     const context = getPrivacyContext(handle);
@@ -3650,6 +3681,9 @@ async function main() {
       selfTransferOnly: kind === 'transfer',
       productionViewingKeyHandoffQualified: proofMode,
       chainAndRootServicesSimulated: true,
+      rpcDestinationBindingSimulated: true,
+      rpcDestinationBindingQualified: false,
+      rpcChainIdHandshakeExercised: false,
       serviceSignatureTrust: 'fixture-ed25519-key-substitution',
       realRequiredListKeyRejectsFixtureSignatures: true,
       requiredListAuthenticationQualified: false,
@@ -3714,6 +3748,8 @@ async function main() {
       } finally {
         transport.createWalletTorTransport = originals.transport;
         rpcModule.createPrivateRpc = originals.rpc;
+        rpcModule.getPrivateRpcDestination = originals.destinationGet;
+        rpcModule.assertPrivateRpcDestination = originals.destinationAssert;
         serviceModule.createRailgunPublicServices = originals.services;
         processModule.startRailgunProcess = originals.start;
         tor.getWalletSocksEndpoint = originals.endpoint;

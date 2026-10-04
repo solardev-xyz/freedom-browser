@@ -20,6 +20,10 @@ let lock,
   phase = 'setup';
 const sources = [
   'src/main/wallet/railgun-own-receipt.js',
+  'src/main/networks/wallet-tor-transport.js',
+  'src/main/networks/network-registry.js',
+  'src/main/settings-store.js',
+  'src/main/tor-manager.js',
   'src/main/wallet/railgun-own-selector.js',
   'src/main/wallet/railgun-own-selector-job.js',
   'src/main/wallet/railgun-account-public.js',
@@ -170,6 +174,11 @@ async function main() {
   const [directory, archive, kind] = process.argv.slice(2);
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   assert.ok(['transfer', 'unshield'].includes(kind));
+  const watchdog = setTimeout(() => {
+    console.error(JSON.stringify({ phase, code: 'QUALIFICATION_TIMEOUT' }));
+    app.exit(1);
+  }, 90000);
+  watchdog.unref();
   fs.mkdirSync(directory, { mode: 0o700 });
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
     env: { FREEDOM_TEST_USER_DATA: path.join(directory, 'profile') },
@@ -183,61 +192,111 @@ async function main() {
   const { createPrivacyScope, getPrivacyContext } = require('../src/main/networks/privacy-context');
   const transport = require('../src/main/networks/wallet-tor-transport');
   const originalTransport = transport.createWalletTorTransport;
-  let externalAttempts = 0,
+  const registry = require('../src/main/networks/network-registry');
+  const settings = require('../src/main/settings-store');
+  const tor = require('../src/main/tor-manager');
+  const originalRegistry = {
+    getNetwork: registry.getNetwork,
+    getEndpoints: registry.getEndpoints,
+    getEndpointSources: registry.getEndpointSources,
+  };
+  const originalAvailable = settings.isWalletTorExperimentAvailable;
+  const originalEndpoint = tor.getWalletSocksEndpoint;
+  const endpointController = new AbortController();
+  let endpoint = { signal: endpointController.signal };
+  const destinations = [
+    'https://rpc.example.test/retained-a',
+    'https://rpc.example.test/retained-b',
+  ];
+  let selectedDestination = destinations[0],
+    expectedDestination,
+    requestGate,
+    factoryCalls = 0,
+    externalAttempts = 0,
     unexpectedRpc = 0,
     fixture,
     finalizedHeight = 300,
     wrongHeader = null;
-  const methods = {};
-  transport.createWalletTorTransport = () => {
-    externalAttempts++;
-    throw Error('External transport forbidden');
+  const methods = {},
+    destinationCalls = [0, 0];
+  settings.isWalletTorExperimentAvailable = () => true;
+  tor.getWalletSocksEndpoint = () => endpoint;
+  registry.getNetwork = (chain) => {
+    assert.equal(chain, 11155111);
+    return { access: { readOrder: ['direct'] }, quorum: { timeoutMs: 30000 } };
   };
+  registry.getEndpoints = (chain, role) => {
+    assert.equal(chain, 11155111);
+    assert.equal(role, 'rpc');
+    return [selectedDestination];
+  };
+  registry.getEndpointSources = () => [
+    { keyed: false, coverage: { 11155111: selectedDestination } },
+  ];
+  transport.createWalletTorTransport = () => ({
+    release() {},
+    close() {},
+    request: async (handle, url, options) => {
+      const context = getPrivacyContext(handle);
+      assert.equal(context.subject.role, 'transaction-rpc');
+      assert.equal(context.subject.principal, fixture.transaction.from);
+      const index = destinations.indexOf(url);
+      if (index < 0) {
+        externalAttempts++;
+        throw Error('External destination refused');
+      }
+      if (expectedDestination) assert.equal(url, expectedDestination);
+      destinationCalls[index]++;
+      const { id, method, params } = JSON.parse(options.body);
+      methods[method] = (methods[method] ?? 0) + 1;
+      if (
+        ![
+          'eth_chainId',
+          'eth_getTransactionReceipt',
+          'eth_getTransactionByHash',
+          'eth_getBlockByNumber',
+          'eth_blockNumber',
+        ].includes(method)
+      ) {
+        unexpectedRpc++;
+        throw Error('Unexpected RPC');
+      }
+      let result;
+      if (method === 'eth_chainId') {
+        assert.deepEqual(params, []);
+        result = '0xaa36a7';
+      } else if (method === 'eth_blockNumber') {
+        assert.deepEqual(params, []);
+        result = '0x136';
+      } else if (method === 'eth_getBlockByNumber') {
+        assert.equal(params[1], false);
+        const number = params[0] === 'finalized' ? finalizedHeight : Number(BigInt(params[0]));
+        assert.ok([291, 300, 310].includes(number));
+        result = {
+          number: '0x' + number.toString(16),
+          hash: number === wrongHeader ? hex(999) : blockHash(number),
+        };
+      } else {
+        assert.deepEqual(params, [fixture.transaction.hash]);
+        result = method === 'eth_getTransactionReceipt' ? fixture.receipt : fixture.transaction;
+      }
+      if (requestGate?.method === method) {
+        requestGate.entered();
+        // Deliberately ignore the signal after admission. The retained reader
+        // must drain this work and refuse further requests after cancellation.
+        await requestGate.promise;
+      }
+      return { status: 200, body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, result })) };
+    },
+  });
+  for (const name of ['private-transaction-network', 'railgun-own-receipt'])
+    assert.equal(require.cache[require.resolve('../src/main/wallet/' + name)], undefined);
+  assert.equal(require.cache[require.resolve('../src/main/networks/private-rpc')], undefined);
   const rpcModule = require('../src/main/networks/private-rpc'),
     originalRpc = rpcModule.createPrivateRpc;
-  rpcModule.createPrivateRpc = (handle, role) => {
-    const context = getPrivacyContext(handle);
-    assert.equal(role, 'transaction-rpc');
-    assert.equal(context.subject.principal, fixture.transaction.from);
-    const active = () => getPrivacyContext(handle);
-    return {
-      signal: context.signal,
-      assertActive: active,
-      release() {},
-      request: async (method, params, validate) => {
-        methods[method] = (methods[method] ?? 0) + 1;
-        if (
-          ![
-            'eth_getTransactionReceipt',
-            'eth_getTransactionByHash',
-            'eth_getBlockByNumber',
-            'eth_blockNumber',
-          ].includes(method)
-        ) {
-          unexpectedRpc++;
-          throw Error('Unexpected RPC');
-        }
-        active();
-        let result;
-        if (method === 'eth_blockNumber') {
-          assert.deepEqual(params, []);
-          result = '0x136';
-        } else if (method === 'eth_getBlockByNumber') {
-          assert.equal(params[1], false);
-          const number = params[0] === 'finalized' ? finalizedHeight : Number(BigInt(params[0]));
-          assert.ok([291, 300, 310].includes(number));
-          result = {
-            number: '0x' + number.toString(16),
-            hash: number === wrongHeader ? hex(999) : blockHash(number),
-          };
-        } else {
-          assert.deepEqual(params, [fixture.transaction.hash]);
-          result = method === 'eth_getTransactionReceipt' ? fixture.receipt : fixture.transaction;
-        }
-        assert.ok(validate(result));
-        return { result: JSON.parse(JSON.stringify(result)) };
-      },
-    };
+  rpcModule.createPrivateRpc = (...args) => {
+    factoryCalls++;
+    return originalRpc(...args);
   };
   const { openRailgunIdentity } = require('../src/main/wallet/railgun-identity');
   const { openRailgunAccountEnrollment } = require('../src/main/wallet/railgun-account-enrollment');
@@ -250,7 +309,9 @@ async function main() {
   const { TRANSACT_ABI } = require('../src/main/wallet/railgun-private-policy');
   const { openRailgunTransactRecovery } = require('../src/main/wallet/railgun-transact-recovery');
   let identity, enrollment, journalScope, recovery, restoreClock;
-  const runs = [];
+  const runs = [],
+    preparedRuns = [];
+  const preparedReaders = new Set();
   try {
     phase = 'enrollment';
     const vaultDirectory = path.join(profile.userDataDir, 'identity');
@@ -375,7 +436,230 @@ async function main() {
     restoreClock = null;
     recovery.close();
     recovery = null;
-    const { observeRailgunOwnReceipt } = require('../src/main/wallet/railgun-own-receipt');
+    const {
+      observeRailgunOwnReceipt,
+      prepareRailgunOwnReceiptReader,
+      observePreparedRailgunOwnReceipt,
+    } = require('../src/main/wallet/railgun-own-receipt');
+    const { getPrivateRpcDestinationDetails } = rpcModule;
+    const totalRequests = () => Object.values(methods).reduce((sum, n) => sum + n, 0);
+    const prepare = (captured, signal = enrollment.signal, timeoutMs) => {
+      const prepared = prepareRailgunOwnReceiptReader({
+        enrollment,
+        capture: captured,
+        signal,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      });
+      assert.equal(prepared.status, 'prepared');
+      preparedReaders.add(prepared);
+      return prepared;
+    };
+    const checkedPrepared = async (archived) => {
+      phase = archived
+        ? 'prepared-archived-retained-destination'
+        : 'prepared-active-retained-destination';
+      const captured = (await capture()).capture;
+      const detached = JSON.parse(JSON.stringify(captured));
+      const beforeRequests = totalRequests(),
+        beforeFactories = factoryCalls;
+      const beforeDestination = [...destinationCalls],
+        beforeChain = methods.eth_chainId ?? 0;
+      selectedDestination = destinations[0];
+      const prepared = prepare(detached);
+      assert.equal(factoryCalls - beforeFactories, 1);
+      assert.equal(totalRequests(), beforeRequests);
+      assert.deepEqual(Object.keys(prepared.destination), []);
+      assert.equal(JSON.stringify(prepared.destination), '{}');
+      assert.ok(!JSON.stringify(prepared).includes('rpc.example.test'));
+      assert.equal(getPrivateRpcDestinationDetails(prepared.destination).url, destinations[0]);
+      assert.equal(totalRequests(), beforeRequests);
+      for (const flag of ['accountAuthenticated', 'disclosureEnabled', 'spendingEnabled'])
+        assert.equal(prepared[flag], false);
+      detached.bindingDigest = 'f'.repeat(64);
+      selectedDestination = destinations[1];
+      expectedDestination = destinations[0];
+      try {
+        const pending = observePreparedRailgunOwnReceipt(prepared.reader);
+        assert.deepEqual(await observePreparedRailgunOwnReceipt(prepared.reader), {
+          status: 'refused',
+          stage: 'context',
+        });
+        const result = await pending;
+        assert.equal(result.status, 'observed');
+        assert.equal(result.observation.captureBindingDigest, captured.bindingDigest);
+        assert.equal(result.observation.capturedRepresentation, archived ? 'archived' : 'active');
+        await prepared.closed;
+        assert.equal(prepared.signal.aborted, true);
+        assert.throws(() => getPrivateRpcDestinationDetails(prepared.destination), {
+          code: 'PRIVATE_RPC_DESTINATION_REFUSED',
+        });
+        assert.deepEqual(await observePreparedRailgunOwnReceipt(prepared.reader), {
+          status: 'refused',
+          stage: 'context',
+        });
+        assert.equal(factoryCalls - beforeFactories, 1);
+        const requests = archived ? 17 : 16;
+        assert.equal(totalRequests() - beforeRequests, requests);
+        assert.equal((methods.eth_chainId ?? 0) - beforeChain, 1);
+        assert.equal(destinationCalls[0] - beforeDestination[0], requests);
+        assert.equal(destinationCalls[1], beforeDestination[1]);
+        preparedRuns.push({
+          mode: phase,
+          preparationRequests: 0,
+          factories: 1,
+          observeFactories: 0,
+          requests,
+          lazyChainId: 1,
+          retainedDestinationUsed: true,
+          changedRegistryNotSubstituted: true,
+          captureSnapshotRetained: true,
+          duplicateUseRefused: true,
+          logicalDrainObserved: true,
+          urlInReport: false,
+          disclosureEnabled: false,
+        });
+      } finally {
+        prepared.close();
+        await prepared.closed;
+        expectedDestination = undefined;
+        selectedDestination = destinations[0];
+      }
+    };
+    const readerRefusals = async () => {
+      const captured = (await capture()).capture;
+      phase = 'prepared-observation-identity';
+      const beforeIdentity = totalRequests();
+      selectedDestination = destinations[0];
+      const first = prepare(captured),
+        sameUrl = prepare(captured);
+      selectedDestination = destinations[1];
+      const otherPath = prepare(captured);
+      assert.notEqual(first.destination, sameUrl.destination);
+      assert.notEqual(first.destination, otherPath.destination);
+      assert.notEqual(
+        getPrivateRpcDestinationDetails(first.destination).url,
+        getPrivateRpcDestinationDetails(otherPath.destination).url
+      );
+      assert.throws(() => getPrivateRpcDestinationDetails({ ...first.destination }), {
+        code: 'PRIVATE_RPC_DESTINATION_REFUSED',
+      });
+      assert.deepEqual(await observePreparedRailgunOwnReceipt({ ...first.reader }), {
+        status: 'refused',
+        stage: 'context',
+      });
+      for (const reader of [first, sameUrl, otherPath]) {
+        reader.close();
+        await reader.closed;
+      }
+      assert.equal(totalRequests(), beforeIdentity);
+      preparedRuns.push({
+        mode: phase,
+        sameUrlDistinctInstance: true,
+        sameHostPathDistinguished: true,
+        copiedObservationRefused: true,
+        copiedReaderRefused: true,
+        requests: 0,
+      });
+      selectedDestination = destinations[0];
+      for (const method of ['eth_chainId', 'eth_getTransactionReceipt']) {
+        phase = 'prepared-cancel-' + method;
+        const controller = new AbortController();
+        const unrelated = prepare(captured);
+        const prepared = prepare(captured, controller.signal);
+        let entered, release;
+        const admitted = new Promise((resolve) => {
+          entered = resolve;
+        });
+        const held = new Promise((resolve) => {
+          release = resolve;
+        });
+        requestGate = { method, entered, promise: held };
+        const beforeRequests = totalRequests(),
+          beforeFactories = factoryCalls;
+        let closed = false,
+          settled = false;
+        prepared.closed.then(() => {
+          closed = true;
+        });
+        const pending = observePreparedRailgunOwnReceipt(prepared.reader).then((value) => {
+          settled = true;
+          return value;
+        });
+        try {
+          await admitted;
+          controller.abort();
+          assert.equal(prepared.signal.aborted, true);
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(closed, false);
+          assert.equal(settled, false);
+          const requests = method === 'eth_chainId' ? 1 : 3;
+          assert.equal(totalRequests() - beforeRequests, requests);
+          release();
+          const result = await pending;
+          assert.equal(result.status, 'refused');
+          assert.equal(result.stage, method === 'eth_chainId' ? 'transaction' : 'receipt');
+          await prepared.closed;
+          assert.equal(totalRequests() - beforeRequests, requests);
+          assert.equal(factoryCalls, beforeFactories);
+          assert.equal(unrelated.signal.aborted, false);
+          assert.equal(enrollment.signal.aborted, false);
+          requestGate = undefined;
+          assert.equal(
+            (await observePreparedRailgunOwnReceipt(unrelated.reader)).status,
+            'observed'
+          );
+          await unrelated.closed;
+          preparedRuns.push({
+            mode: phase,
+            admittedRequests: requests,
+            subsequentRequests: 0,
+            logicalDrainWaitedForIgnoredAbort: true,
+            unrelatedReaderHealthy: true,
+            observeFactories: 0,
+            automaticRetry: false,
+          });
+        } finally {
+          release();
+          await pending;
+          requestGate = undefined;
+          prepared.close();
+          unrelated.close();
+          await Promise.all([prepared.closed, unrelated.closed]);
+        }
+      }
+      phase = 'prepared-idle-expiry';
+      const beforeExpiry = totalRequests();
+      const expiring = prepare(captured, enrollment.signal, 250);
+      await expiring.closed;
+      assert.equal(expiring.signal.aborted, true);
+      assert.deepEqual(await observePreparedRailgunOwnReceipt(expiring.reader), {
+        status: 'refused',
+        stage: 'context',
+      });
+      assert.equal(totalRequests(), beforeExpiry);
+      preparedRuns.push({ mode: phase, unusedReaderClosed: true, requests: 0 });
+      phase = 'prepared-tor-generation-change';
+      const stale = prepare(captured),
+        beforeStale = totalRequests(),
+        factoriesBeforeStale = factoryCalls;
+      endpoint = { signal: new AbortController().signal };
+      assert.throws(() => getPrivateRpcDestinationDetails(stale.destination), {
+        code: 'PRIVATE_RPC_DESTINATION_REFUSED',
+      });
+      assert.deepEqual(await observePreparedRailgunOwnReceipt(stale.reader), {
+        status: 'refused',
+        stage: 'context',
+      });
+      await stale.closed;
+      assert.equal(totalRequests(), beforeStale);
+      assert.equal(factoryCalls, factoriesBeforeStale);
+      preparedRuns.push({
+        mode: phase,
+        staleDestinationRefused: true,
+        requests: 0,
+        replacementFactories: 0,
+      });
+    };
     const observe = async (captured) =>
       observeRailgunOwnReceipt({ enrollment, capture: captured, signal: enrollment.signal });
     const checkedObservation = async (archived) => {
@@ -399,6 +683,7 @@ async function main() {
         archived ? 12 : 11
       );
       assert.equal(methods.eth_blockNumber - beforeMethods.eth_blockNumber, 2);
+      assert.equal(methods.eth_chainId - beforeMethods.eth_chainId, 1);
       for (const flag of [
         'accountAuthenticated',
         'sourceAuthenticated',
@@ -422,11 +707,14 @@ async function main() {
       mode: phase,
       receiptMatched: true,
       rpcConsistencyObserved: true,
-      requests: 15,
+      requests: 16,
+      includesLazyChainId: true,
       journalUnchanged: true,
       recaptureEqual: true,
       authority: false,
     });
+    await checkedPrepared(false);
+    await readerRefusals();
     phase = 'archive';
     const ready = (await journal.list())[0];
     await journal.archiveResolved(
@@ -443,10 +731,12 @@ async function main() {
     runs.push({
       mode: 'archived-observation',
       bothStoredAnchorsChecked: true,
-      requests: 16,
+      requests: 17,
+      includesLazyChainId: true,
       journalUnchanged: true,
       recaptureEqual: true,
     });
+    await checkedPrepared(true);
     phase = 'reopen';
     enrollment.close();
     enrollment = await openRailgunAccountEnrollment({ identity });
@@ -491,7 +781,11 @@ async function main() {
           kind,
           sourceSha256: before,
           runs,
+          preparedRuns,
           rpcMethods: methods,
+          factoryCalls,
+          destinationCalls,
+          realPrivateRpcWithSimulatedTransport: true,
           externalAttempts,
           unexpectedRpc,
           genuineEnrollmentAndEncryptedStores: true,
@@ -513,6 +807,8 @@ async function main() {
     console.log(JSON.stringify({ report: path.join(directory, 'report.json') }));
   } finally {
     restoreClock?.();
+    for (const prepared of preparedReaders) prepared.close();
+    await Promise.all([...preparedReaders].map((prepared) => prepared.closed));
     recovery?.close();
     journalScope?.close();
     enrollment?.close();
@@ -520,6 +816,10 @@ async function main() {
     vault.lockVault();
     rpcModule.createPrivateRpc = originalRpc;
     transport.createWalletTorTransport = originalTransport;
+    Object.assign(registry, originalRegistry);
+    settings.isWalletTorExperimentAvailable = originalAvailable;
+    tor.getWalletSocksEndpoint = originalEndpoint;
+    endpointController.abort();
   }
 }
 main().then(

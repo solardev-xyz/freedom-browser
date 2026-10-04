@@ -2,10 +2,43 @@
  * A caller must own a transaction-rpc context and a reviewed transaction.
  */
 const { Transaction } = require('ethers');
-const { createPrivateRpc, isQuantity } = require('../networks/private-rpc');
+const {
+  createPrivateRpc,
+  isQuantity,
+  getPrivateRpcDestination,
+  assertPrivateRpcDestination,
+} = require('../networks/private-rpc');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const { validIntent, transactionIntent } = require('./private-transaction-intent');
 const clients = new WeakMap();
+const instances = new WeakMap();
+const destinationFailure = () =>
+  privacyError(
+    'PRIVATE_TRANSACTION_DESTINATION_REFUSED',
+    'Private transaction destination unavailable'
+  );
+
+function getPrivateTransactionNetworkDestination(network, handle) {
+  try {
+    const entry = instances.get(network);
+    if (!entry || entry.handle !== handle || clients.get(handle) !== network)
+      throw destinationFailure();
+    return getPrivateRpcDestination(entry.rpc, handle);
+  } catch {
+    throw destinationFailure();
+  }
+}
+
+function assertPrivateTransactionNetworkDestination(network, handle, observation) {
+  try {
+    const entry = instances.get(network);
+    if (!entry || entry.handle !== handle || clients.get(handle) !== network)
+      throw destinationFailure();
+    return assertPrivateRpcDestination(entry.rpc, handle, observation);
+  } catch {
+    throw destinationFailure();
+  }
+}
 const address = (value) => typeof value === 'string' && /^0x[0-9a-f]{40}$/i.test(value);
 const hash = (value) => typeof value === 'string' && /^0x[0-9a-f]{64}$/i.test(value);
 const data = (value) =>
@@ -248,6 +281,7 @@ function getPrivateTransactionNetwork(handle) {
     archiveResolvedSubmissions: (policy) => reconciliation().archiveResolved(policy),
   });
   clients.set(handle, client);
+  instances.set(client, { handle, rpc });
   return client;
 }
 
@@ -268,4 +302,9 @@ function assertSignedIntent(signed, intended) {
   );
 }
 
-module.exports = { getPrivateTransactionNetwork, assertSignedIntent };
+module.exports = {
+  getPrivateTransactionNetwork,
+  assertSignedIntent,
+  getPrivateTransactionNetworkDestination,
+  assertPrivateTransactionNetworkDestination,
+};

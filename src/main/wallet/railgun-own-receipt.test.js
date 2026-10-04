@@ -1,4 +1,5 @@
 let mockEnrollment, mockHandle, mockNetwork;
+const mockDestination = Object.freeze({});
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
 }));
@@ -6,6 +7,11 @@ jest.mock('./private-transaction-network', () => ({
   getPrivateTransactionNetwork: (handle) => {
     mockHandle = handle;
     return mockNetwork;
+  },
+  getPrivateTransactionNetworkDestination: () => mockDestination,
+  assertPrivateTransactionNetworkDestination: (network, handle, destination) => {
+    if (network !== mockNetwork || handle !== mockHandle || destination !== mockDestination)
+      throw Error('destination');
   },
 }));
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
@@ -45,6 +51,7 @@ function setup(unshield = false, archived = false) {
   finalized = '0x12e';
   calls = [];
   mockNetwork = {
+    signal: caller.signal,
     request: jest.fn(async (chain, method, params) => {
       const context = getPrivacyContext(mockHandle);
       expect(context.subject.kind).toBe('public-address');
@@ -204,6 +211,7 @@ test.each(['caller', 'timeout', 'enrollment'])(
       settled = true;
       return result;
     });
+    await Promise.resolve();
     if (mode === 'caller') caller.abort();
     if (mode === 'enrollment') scope.close();
     if (mode === 'timeout') await jest.advanceTimersByTimeAsync(21);

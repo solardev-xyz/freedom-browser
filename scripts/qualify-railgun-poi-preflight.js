@@ -1,5 +1,7 @@
 /** Actual encrypted account/journal capture with simulated chain observations.
  * Transaction proof/signature fixtures are structural, not valid spend crypto.
+ * RPC destination identity is fixture-simulated; this does not qualify real
+ * retained-destination binding or the private-RPC chain-ID handshake.
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -206,19 +208,47 @@ async function main() {
   const serviceMethods = { latest: 0, validate: 0, page: 0 };
   const methods = {};
   const roleMethods = { 'transaction-rpc': {}, 'protocol-rpc': {} };
+  for (const name of [
+    '../src/main/networks/private-rpc',
+    '../src/main/wallet/private-transaction-network',
+    '../src/main/wallet/railgun-own-receipt',
+    '../src/main/wallet/railgun-own-witness',
+    '../src/main/wallet/railgun-scan-source',
+  ])
+    assert.equal(require.cache[require.resolve(name)], undefined);
   transport.createWalletTorTransport = () => {
     externalAttempts++;
     throw Error('External transport forbidden');
   };
   const rpcModule = require('../src/main/networks/private-rpc'),
-    originalRpc = rpcModule.createPrivateRpc;
+    originalRpc = rpcModule.createPrivateRpc,
+    originalDestinationGet = rpcModule.getPrivateRpcDestination,
+    originalDestinationAssert = rpcModule.assertPrivateRpcDestination;
+  // Only this fixture's exact clients/handles/tokens qualify here. The real
+  // detail accessor is untouched and refuses these synthetic observations.
+  const rpcDestinations = new WeakMap();
+  const fixtureDestination = (client, handle) => {
+    const entry = rpcDestinations.get(client);
+    assert.ok(entry && entry.handle === handle);
+    assert.equal(getPrivacyContext(handle), entry.context);
+    assert.equal(client.signal, entry.context.signal);
+    assert.ok(client.signal instanceof AbortSignal);
+    assert.equal(client.signal.aborted, false);
+    return entry.observation;
+  };
+  rpcModule.getPrivateRpcDestination = fixtureDestination;
+  rpcModule.assertPrivateRpcDestination = (client, handle, observation) => {
+    const actual = fixtureDestination(client, handle);
+    assert.equal(observation, actual);
+    return actual;
+  };
   rpcModule.createPrivateRpc = (handle, role) => {
     const context = getPrivacyContext(handle);
     assert.ok(['transaction-rpc', 'protocol-rpc'].includes(role));
     if (role === 'transaction-rpc')
       assert.equal(context.subject.principal, fixture.transaction.from);
     const active = () => getPrivacyContext(handle);
-    return {
+    const client = {
       signal: context.signal,
       trust: { queried: ['synthetic.invalid'] },
       assertActive: active,
@@ -273,6 +303,8 @@ async function main() {
         return { result: JSON.parse(JSON.stringify(result)) };
       },
     };
+    rpcDestinations.set(client, { handle, context, observation: Object.freeze({}) });
+    return client;
   };
   const serviceModule = require('../src/main/wallet/railgun-public-services');
   const originalServices = serviceModule.createRailgunPublicServices;
@@ -721,6 +753,9 @@ async function main() {
           genuineEnrollmentAndEncryptedStores: true,
           genuineResolutionPermit: true,
           chainObservationsSimulated: true,
+          rpcDestinationBindingSimulated: true,
+          rpcDestinationBindingQualified: false,
+          rpcChainIdHandshakeExercised: false,
           structuralProofAndSignature: true,
           serviceMethods,
           roleMethods,
@@ -738,19 +773,24 @@ async function main() {
     );
     console.log(JSON.stringify({ report: path.join(directory, 'report.json') }));
   } finally {
-    restoreClock?.();
-    task?.close();
-    if (task) await task.closed;
-    if (txid) await txid.close();
-    if (publicAccount) await publicAccount.close();
-    recovery?.close();
-    journalScope?.close();
-    enrollment?.close();
-    identity?.close();
-    vault.lockVault();
-    serviceModule.createRailgunPublicServices = originalServices;
-    rpcModule.createPrivateRpc = originalRpc;
-    transport.createWalletTorTransport = originalTransport;
+    try {
+      restoreClock?.();
+      task?.close();
+      if (task) await task.closed;
+      if (txid) await txid.close();
+      if (publicAccount) await publicAccount.close();
+      recovery?.close();
+      journalScope?.close();
+      enrollment?.close();
+      identity?.close();
+      vault.lockVault();
+    } finally {
+      serviceModule.createRailgunPublicServices = originalServices;
+      rpcModule.createPrivateRpc = originalRpc;
+      rpcModule.getPrivateRpcDestination = originalDestinationGet;
+      rpcModule.assertPrivateRpcDestination = originalDestinationAssert;
+      transport.createWalletTorTransport = originalTransport;
+    }
   }
 }
 main().then(

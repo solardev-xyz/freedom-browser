@@ -6,6 +6,40 @@ const registry = require('./network-registry');
 const { getPrivacyContext, privacyError } = require('./privacy-context');
 const { createWalletTorTransport } = require('./wallet-tor-transport');
 let transport;
+const instances = new WeakMap(),
+  destinations = new WeakMap();
+const destinationFailure = () =>
+  privacyError('PRIVATE_RPC_DESTINATION_REFUSED', 'Private RPC destination unavailable');
+
+function getPrivateRpcDestination(client, handle) {
+  try {
+    const entry = instances.get(client);
+    if (!entry || entry.handle !== handle) throw destinationFailure();
+    entry.assertActive();
+    return entry.observation;
+  } catch {
+    throw destinationFailure();
+  }
+}
+
+function assertPrivateRpcDestination(client, handle, observation) {
+  const actual = getPrivateRpcDestination(client, handle);
+  if (actual !== observation) throw destinationFailure();
+  return actual;
+}
+
+// Explicit trusted-main disclosure only. The observation itself serializes as
+// {} and carries no URL, URL hash, context identifier or transport authority.
+function getPrivateRpcDestinationDetails(observation) {
+  try {
+    const entry = destinations.get(observation);
+    if (!entry) throw destinationFailure();
+    entry.assertActive();
+    return entry.details;
+  } catch {
+    throw destinationFailure();
+  }
+}
 
 function createPrivateRpc(handle, role, { signal } = {}) {
   const context = getPrivacyContext(handle);
@@ -148,7 +182,7 @@ function createPrivateRpc(handle, role, { signal } = {}) {
       observedAt: new Date().toISOString(),
     };
   }
-  return Object.freeze({
+  const client = Object.freeze({
     request,
     ready,
     assertActive,
@@ -157,10 +191,32 @@ function createPrivateRpc(handle, role, { signal } = {}) {
     privacy,
     release: () => transport?.release(handle),
   });
+  const observation = Object.freeze({});
+  const entry = {
+    handle,
+    assertActive,
+    observation,
+    details: Object.freeze({
+      version: 1,
+      url: new URL(url).href,
+      chainId: subject.chainId,
+      role,
+      transport: 'tor-experimental',
+    }),
+  };
+  instances.set(client, entry);
+  destinations.set(observation, entry);
+  return client;
 }
 
 function isQuantity(value) {
   return typeof value === 'string' && /^0x[0-9a-f]{1,64}$/i.test(value);
 }
 
-module.exports = { createPrivateRpc, isQuantity };
+module.exports = {
+  createPrivateRpc,
+  isQuantity,
+  getPrivateRpcDestination,
+  assertPrivateRpcDestination,
+  getPrivateRpcDestinationDetails,
+};
