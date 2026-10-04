@@ -112,9 +112,9 @@ test.each([
     },
   ],
   [
-    'transfer-marker',
+    'extra-discriminator',
     (v) => {
-      v.railgunTxidIfHasUnshield = hex(1n);
+      v.kind = 'partial-unshield';
     },
   ],
   [
@@ -150,4 +150,26 @@ test.each([
       message: 'Railgun POI payload unavailable',
     })
   );
+});
+
+test('combined payload retains the exact seven-key wire schema and leading-zero marker', () => {
+  const value = payload();
+  value.railgunTxidIfHasUnshield = hex(6n);
+  const result = normalize(value);
+  expect(JSON.stringify(result)).toBe(JSON.stringify(value));
+  expect(Object.keys(result)).toHaveLength(7);
+  expect(Object.isFrozen(result.blindedCommitmentsOut)).toBe(true);
+});
+// Captured from the pre-widening HEAD implementation; canonical order is part
+// of existing payload, submission-envelope and request-body digest bindings.
+test.each([
+  [false, '52f3ed00d460736b3b1656c58e5964340765491d42f7cb758181c2df6cd3048e'],
+  [true, '5ca54b055bf7afea23437433ab94c21be40687ca8a7e8b8c644a15c647b1458d'],
+])('legacy %s canonical payload bytes retain their digest', (unshield, digest) => {
+  expect(
+    require('crypto')
+      .createHash('sha256')
+      .update(JSON.stringify(normalize(payload(unshield))))
+      .digest('hex')
+  ).toBe(digest);
 });

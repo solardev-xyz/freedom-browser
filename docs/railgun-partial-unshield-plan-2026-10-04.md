@@ -1,6 +1,6 @@
 # Bounded partial WETH unshield and change spending
 
-**Status: structural records, native cryptography, receipt/TXID primitives and creator authentication implemented;
+**Status: structural records, native cryptography, receipt/TXID primitives, creator authentication and standalone combined POI implemented;
 main partial spending remains unavailable.**
 The bounded model now has a distinct `railgun-partial-unshield` kind and version-2
 capsule. Preparation and selection bind recovered input value, gross withdrawal
@@ -17,8 +17,10 @@ provenance through real local POI and encrypted recovery. Generic received-note
 compatibility remains intact; this is not the complete second-spend lifecycle.
 Main operation, account, signing, submission and POI entry points still refuse
 this new kind; reservations remain legacy-only.
-Combined POI, authenticated change ingestion and the second spend remain to be
-implemented and qualified. This is not evidence of deployed
+The [combined local POI checkpoint](railgun-combined-poi-2026-10-05.md) qualifies
+one proof for withdrawal and original private change. Genuine partial operation
+admission, combined POI persistence/recovery, authenticated change ingestion and
+the second spend remain to be implemented and qualified. This is not evidence of deployed
 contract acceptance, a funded partial transaction or live service eligibility.
 
 ## Complete target
@@ -66,8 +68,8 @@ these values match the 01x02 entries in `railgun-artifacts.js`:
 The VKey declares five public inputs. Engine source gives their expected order:
 root, bound-parameters hash, nullifier, change commitment, unshield commitment.
 This verifies local availability,
-not proving success or the deployed verifier. POI_3x3 is already pinned and has
-sufficient output capacity; the combined POI shape still needs native proving.
+not proving success or the deployed verifier. POI_3x3 is already pinned and its combined shape now passes native proving;
+genuine controller-bound durable POI remains outstanding.
 No new dependency or artifact is expected from this source inspection.
 
 ## Implementation stages

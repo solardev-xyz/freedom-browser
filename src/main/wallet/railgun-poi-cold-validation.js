@@ -324,6 +324,16 @@ async function validate(options, history, submission) {
       assert.equal(capture.capsuleDigest, capsuleDigest);
       assert.equal(capture.bindingDigest, entry.bindingDigest);
       assert.deepEqual(capture.selector, entry.selector);
+      // A widened standalone payload parser does not widen retained authority.
+      // Stage A's real output recovery binds the exact unshield TXID; history
+      // additionally compares its freshly derived value before mirror access.
+      assert.equal(capture.capsule.version, 1);
+      const kind = capture.capsule.selection.kind;
+      assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(kind));
+      const transfer = kind === 'railgun-private-transfer';
+      assert.equal(payload.blindedCommitmentsOut.length, transfer ? 1 : 0);
+      if (transfer) assert.equal(payload.railgunTxidIfHasUnshield, '0x00');
+      else assert.notEqual(payload.railgunTxidIfHasUnshield, '0x00');
     };
     let first;
     if (history) {
@@ -367,8 +377,12 @@ async function validate(options, history, submission) {
         derived.bindingDigest,
         sha('freedom:railgun:own-selector-v1\0' + JSON.stringify(transaction))
       );
-      if (payload.railgunTxidIfHasUnshield !== '0x00')
-        assert.equal(payload.railgunTxidIfHasUnshield, '0x' + derived.railgunTxid);
+      assert.equal(
+        payload.railgunTxidIfHasUnshield,
+        first.capture.capsule.selection.kind === 'railgun-token-unshield'
+          ? '0x' + derived.railgunTxid
+          : '0x00'
+      );
       await readCurrent();
 
       stage = 'txid';

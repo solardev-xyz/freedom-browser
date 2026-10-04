@@ -1811,6 +1811,45 @@ describe('retained historical TXID root composition', () => {
     expect((await runHistory()).status).toBe('refused');
     expect(mock.openTxid).not.toHaveBeenCalled();
   });
+  test.each(
+    [false, true].flatMap((history) =>
+      [false, true].flatMap((unshield) =>
+        ['opposite-shape', 'combined-shape', 'partial-capture'].map((fault) => [
+          history,
+          unshield,
+          fault,
+        ])
+      )
+    )
+  )(
+    'history=%s retained kind=%s refuses %s at the capture boundary',
+    async (history, unshield, fault) => {
+      configureHistory(unshield);
+      mock.entry.payload = copy(mock.entry.payload);
+      if (fault === 'opposite-shape') {
+        mock.entry.payload.blindedCommitmentsOut = unshield ? [prefixed(22)] : [];
+        mock.entry.payload.railgunTxidIfHasUnshield = unshield ? '0x00' : prefixed(9);
+      }
+      if (fault === 'combined-shape') {
+        mock.entry.payload.blindedCommitmentsOut = [prefixed(22)];
+        mock.entry.payload.railgunTxidIfHasUnshield = prefixed(9);
+      }
+      if (fault === 'partial-capture') {
+        mock.capture.capsule =
+          require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData().capsule;
+      }
+      mock.entry.payload = normalizeRailgunPoiPayload(mock.entry.payload);
+      mock.entry.payloadSha256 = sha(mock.entry.payload);
+      mock.outputResult.payloadSha256 = mock.entry.payloadSha256;
+      mock.verified.payloadSha256 = mock.entry.payloadSha256;
+      expect(await (history ? runHistory() : run())).toEqual({
+        status: 'refused',
+        stage: history ? 'selector' : 'final-account:callback',
+      });
+      expect(mock.verify).toHaveBeenCalledTimes(1);
+      expect(mock.openTxid).not.toHaveBeenCalled();
+    }
+  );
   test('detaches mutable selector capture before the later mirror phase', async () => {
     const captured = {
       status: 'captured',

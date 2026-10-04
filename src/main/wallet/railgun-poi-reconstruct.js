@@ -1,6 +1,6 @@
 /** Utility-only post-transaction reconstruction for a Shield/Transact input and one
- * self-transfer/full-unshield output. Caller owns the viewing key. Returned
- * witness secrets must remain inside that utility, never serialized to main.
+ * self-transfer/full-unshield or change plus unshield output. Caller owns the
+ * viewing key. Witness secrets stay in that utility, never serialized to main.
  * Supplied creator/capsule data is not authenticated source or spending authority.
  */
 const assert = require('assert/strict');
@@ -26,9 +26,12 @@ async function reconstructRailgunPoiNotes({
   descriptor = copied.descriptor;
   const capsule = normalizeRailgunPrivateCapsule(copied.capsule),
     creator = copied.creator;
-  assert.equal(capsule.version, 1);
+  const partial = capsule.selection.kind === 'railgun-partial-unshield';
+  assert.equal(capsule.version, partial ? 2 : 1);
   assert.ok(
-    ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      capsule.selection.kind
+    )
   );
   assert.ok(viewingKey instanceof Uint8Array && viewingKey.byteLength === 32);
   // Own a working copy across awaits; the caller's key remains caller-owned.
@@ -78,6 +81,7 @@ async function reconstructRailgunPoiNotes({
     );
     assert.equal(capsule.walletId, descriptor.walletId);
     const { selection, preparation, noteHash } = capsule;
+    const inputAmount = partial ? preparation.inputAmount : preparation.amount;
     const { getTokenDataERC20, getTokenDataHash } = imp('note/note-util');
     const tokenData = getTokenDataERC20(pins.wrappedNative);
     const tokenHash = getTokenDataHash(tokenData);
@@ -168,7 +172,7 @@ async function reconstructRailgunPoiNotes({
       assert.equal(preimage.token.tokenAddress, pins.wrappedNative);
       assert.equal(preimage.token.tokenSubID, hex(0n));
       assert.match(preimage.value, /^[1-9][0-9]*$/);
-      assert.equal(preimage.value, preparation.amount);
+      assert.equal(preimage.value, inputAmount);
       assert.deepEqual(Object.keys(ciphertext).sort(), ['encryptedBundle', 'shieldKey']);
       assert.ok(
         Array.isArray(ciphertext.encryptedBundle) && ciphertext.encryptedBundle.length === 3
@@ -207,7 +211,7 @@ async function reconstructRailgunPoiNotes({
         'memo',
       ]);
       note = await decryptReceived(creator.ciphertext);
-      assert.equal(note.value.toString(), preparation.amount);
+      assert.equal(note.value.toString(), inputAmount);
     }
     assertToken(note);
     assert.equal(
@@ -225,14 +229,41 @@ async function reconstructRailgunPoiNotes({
     );
     const npksOut = [],
       valuesOut = [];
-    if (selection.kind === 'railgun-private-transfer') {
-      assert.equal(selection.recipient, descriptor.instanceId);
+    const unshieldAmount = partial ? BigInt(preparation.unshieldAmount) : note.value;
+    const changeAmount = partial ? note.value - unshieldAmount : note.value;
+    if (partial) {
+      assert.equal(note.value.toString(), preparation.inputAmount);
+      assert.ok(unshieldAmount > 0n && changeAmount > 0n);
+      assert.equal(changeAmount.toString(), preparation.changeAmount);
+      assert.equal(
+        imp('note/note-util').getNoteHash(selection.recipient, note.tokenData, unshieldAmount),
+        BigInt(preparation.expected.unshieldCommitment)
+      );
+    }
+    if (selection.kind === 'railgun-private-transfer' || partial) {
+      if (!partial) assert.equal(selection.recipient, descriptor.instanceId);
       assert.equal(tx.boundParams.commitmentCiphertext.length, 1);
       const bundle = tx.boundParams.commitmentCiphertext[0];
       const output = await decryptReceived(bundle);
-      assert.equal(output.value, note.value);
+      assert.equal(output.value, changeAmount);
       assert.equal(output.tokenHash, note.tokenHash);
-      assert.equal(output.hash, BigInt(preparation.expected.commitment));
+      assert.equal(
+        output.hash,
+        BigInt(partial ? preparation.expected.changeCommitment : preparation.expected.commitment)
+      );
+      if (partial) {
+        assert.equal(bundle.memo, '0x');
+        assert.equal(output.memoText, undefined);
+        const annotation = imp('note/memo').Memo.decryptNoteAnnotationData(
+          bundle.annotationData,
+          key
+        );
+        assert.equal(annotation?.outputType, imp('models/formatted-types').OutputType.Change);
+        assert.equal(
+          annotation.senderRandom,
+          imp('models/transaction-constants').MEMO_SENDER_RANDOM_NULL
+        );
+      }
       assert.equal(
         TransactNote.getHash(output.notePublicKey, output.tokenHash, output.value),
         output.hash

@@ -97,6 +97,14 @@ async function proveRailgunOwnPoi(options = {}) {
       coordinator,
       1000
     );
+    // Standalone combined-proof data may accept partial capsules, but this
+    // genuine membership/operation lifecycle still admits only legacy spends.
+    for (const capsule of [observed.capture.capsule, observed.poiPreparation.ownEvidence.capsule]) {
+      assert.equal(capsule.version, 1);
+      assert.ok(
+        ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
+      );
+    }
     assert.ok(!consumed.has(membershipReceipt));
     assert.equal(observed.membership.membershipVerified, true);
     assert.equal('0x' + observed.membership.proofs[0].leaf, observed.selector.blindedCommitment);

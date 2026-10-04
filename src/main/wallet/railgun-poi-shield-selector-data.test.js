@@ -1,5 +1,8 @@
 const { createHash } = require('crypto');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
+const {
+  createRailgunPartialCapsuleData,
+} = require('../../../scripts/fixtures/railgun-partial-capsule-data');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const {
   normalizeRailgunPoiShieldFacts,
@@ -41,6 +44,11 @@ test.each([false, true])(
     capsule = sample(unshield).capsule;
     const original = copy({ capsule, creator });
     const result = normalizeRailgunPoiShieldInput(capsule, creator);
+    expect(result.bindingDigest).toBe(
+      unshield
+        ? 'ecf9d41c226dd4ab590ffb896183655a394dfcb3a8d0e256f780c1e6533b6749'
+        : '3f74ecb729ffc71fdc6cea4ff1bc0d24c2e9771947c23477e8aef9379ece2645'
+    );
     expect(result.facts).toEqual({
       npk: hex(7),
       token: pins.wrappedNative,
@@ -68,6 +76,43 @@ test.each([false, true])(
     expect(normalizeRailgunPoiShieldInput(original.capsule, original.creator)).toEqual(result);
   }
 );
+test('partial Shield creator binds the full input value and canonical v2 capsule', () => {
+  capsule = createRailgunPartialCapsuleData().capsule;
+  const result = normalizeRailgunPoiShieldInput(capsule, creator);
+  expect(result.facts.value).toBe('1000');
+  expect(result.facts.noteHash).toBe(capsule.noteHash);
+  expect(result.bindingDigest).toBe(
+    createHash('sha256')
+      .update('freedom:railgun:poi-shield-selector-v1\0')
+      .update(JSON.stringify({ capsule: normalizeRailgunPrivateCapsule(capsule), creator }))
+      .digest('hex')
+  );
+  expect(normalizeRailgunPoiShieldInput(reverse(capsule), reverse(creator))).toEqual(result);
+  const changed = createRailgunPartialCapsuleData({ unshieldAmount: '300' }).capsule;
+  const changedResult = normalizeRailgunPoiShieldInput(changed, creator);
+  expect(changedResult.facts).toEqual(result.facts);
+  expect(changedResult.bindingDigest).not.toBe(result.bindingDigest);
+  expect(Object.isFrozen(result.facts)).toBe(true);
+  creator.preimage.value = '1';
+  expect(result.facts.value).toBe('1000');
+});
+test.each([
+  'gross-unshield',
+  'change',
+  'version',
+  'legacy-amount',
+  'missing-input',
+  'conservation',
+])('partial Shield creator refuses %s in place of the original input', (kind) => {
+  capsule = createRailgunPartialCapsuleData().capsule;
+  if (kind === 'gross-unshield') creator.preimage.value = capsule.preparation.unshieldAmount;
+  if (kind === 'change') creator.preimage.value = capsule.preparation.changeAmount;
+  if (kind === 'version') capsule.version = 1;
+  if (kind === 'legacy-amount') capsule.preparation.amount = '1000';
+  if (kind === 'missing-input') delete capsule.preparation.inputAmount;
+  if (kind === 'conservation') capsule.preparation.inputAmount = '1001';
+  expect(() => normalizeRailgunPoiShieldInput(capsule, creator)).toThrow();
+});
 
 test.each(['bundle', 'shield-key', 'path', 'wallet', 'expected-hash'])(
   'binds %s even when public hashing facts remain identical',

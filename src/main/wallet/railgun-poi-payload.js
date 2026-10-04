@@ -61,7 +61,8 @@ function normalizeRailgunPoiPayload(value) {
     const marker =
       v.railgunTxidIfHasUnshield === '0x00' ? '0x00' : field(v.railgunTxidIfHasUnshield);
     if (BigInt(marker) === 0n) assert.equal(marker, '0x00');
-    assert.equal(BigInt(marker) === 0n, outputs.length === 1);
+    // Transfer, full unshield, or one change output plus an unshield marker.
+    if (BigInt(marker) === 0n) assert.equal(outputs.length, 1);
     if (outputs.length) assert.ok(BigInt(outputs[0]) > 0n);
     return Object.freeze({
       listKey: REQUIRED_LIST,

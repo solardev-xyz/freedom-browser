@@ -8,7 +8,7 @@ const pins = require('../../src/main/wallet/railgun-shield-pins.json');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 exports.run = async function run(text, { request, signal, guardReport }) {
   const input = JSON.parse(text);
-  assert.ok(['transfer', 'unshield'].includes(input.kind));
+  assert.ok(['transfer', 'unshield', 'partial'].includes(input.kind));
   const creatorKind = input.creatorKind ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(creatorKind));
   const archive =
@@ -109,16 +109,19 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     addressKeys,
   };
   const unshield = input.kind === 'unshield';
+  const partial = input.kind === 'partial';
+  const hasUnshield = unshield || partial;
+  const unshieldAmount = partial ? 400n : note.value;
   const outputs = unshield
     ? []
     : [
         TransactNote.createTransfer(
           addressKeys,
           addressKeys,
-          note.value,
+          partial ? note.value - unshieldAmount : note.value,
           note.tokenData,
-          false,
-          0,
+          partial,
+          partial ? imp('models/formatted-types').OutputType.Change : 0,
           undefined
         ),
       ];
@@ -131,10 +134,10 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     { contract: '0x' + '0'.repeat(40), parameters: hex(0n) }
   );
   const recipient = '0x' + '12'.repeat(20);
-  if (unshield)
+  if (hasUnshield)
     transaction.addUnshieldData(
       { tokenData: note.tokenData, toAddress: recipient, allowOverride: false },
-      note.value
+      unshieldAmount
     );
   const scope = require('../../src/main/networks/privacy-context').createPrivacyScope({
     profileId: 'synthetic-poi',
@@ -151,7 +154,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
   const loaded = [];
   try {
     const artifacts = await require('../../src/main/wallet/railgun-artifacts').loadRailgunArtifacts(
-      { handle, directory: input.artifactDirectory, variant: '01x01' }
+      { handle, directory: input.artifactDirectory, variant: partial ? '01x02' : '01x01' }
     );
     loaded.push(artifacts);
     const poiArtifacts =
@@ -164,7 +167,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     const prover = new Prover({
       assertArtifactExists: (i, o) => {
         assert.equal(i, 1);
-        assert.equal(o, 1);
+        assert.equal(o, partial ? 2 : 1);
       },
       getArtifacts: async () => artifacts,
       getArtifactsPOI: async (i, o) => {
@@ -201,13 +204,26 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       true
     );
     const expected = {
-      kind: unshield ? 'railgun-token-unshield' : 'railgun-private-transfer',
+      kind: partial
+        ? 'railgun-partial-unshield'
+        : unshield
+          ? 'railgun-token-unshield'
+          : 'railgun-private-transfer',
       tree: 0,
       merkleRoot: hex(pub.merkleRoot),
       nullifier: hex(pub.nullifiers[0]),
-      commitment: hex(pub.commitmentsOut[0]),
+      ...(partial
+        ? {
+            changeCommitment: hex(pub.commitmentsOut[0]),
+            unshieldCommitment: hex(pub.commitmentsOut[1]),
+          }
+        : { commitment: hex(pub.commitmentsOut[0]) }),
       boundParamsHash: hex(pub.boundParamsHash),
-      ...(unshield ? { recipient, amount: note.value.toString() } : {}),
+      ...(partial
+        ? { recipient, unshieldAmount: unshieldAmount.toString() }
+        : unshield
+          ? { recipient, amount: note.value.toString() }
+          : {}),
     };
     const intent = {
       chainId: pins.chainId,
@@ -237,27 +253,35 @@ exports.run = async function run(text, { request, signal, guardReport }) {
         viewWallet.generateShareableViewingKey()
       ),
       instanceId,
+      ...(input.combinedQualification ? { accountIndex: keyIndex } : {}),
       spendingPublicKey: publicKey.map((v) => hex(v).slice(2)),
       viewingPublicKey: Buffer.from(viewingPublicKey).toString('hex'),
       masterPublicKey: hex(addressKeys.masterPublicKey).slice(2),
     };
     assert.equal(viewWallet.getNullifyingKey(), nullifyingKey);
     const capsule = {
-      version: 1,
+      version: partial ? 2 : 1,
       walletId: descriptor.walletId,
       engineSha256: require('../../src/main/wallet/railgun-engine-manifest.json').sha256,
       selection: {
         kind: expected.kind,
         tree: 0,
         position,
-        recipient: unshield ? recipient : instanceId,
+        ...(partial ? { unshieldAmount: unshieldAmount.toString() } : {}),
+        recipient: hasUnshield ? recipient : instanceId,
       },
       preparation: {
         transaction: intent,
         expected,
         expectedHash: hex(message),
-        recipient: unshield ? recipient : instanceId,
-        amount: note.value.toString(),
+        recipient: hasUnshield ? recipient : instanceId,
+        ...(partial
+          ? {
+              inputAmount: note.value.toString(),
+              unshieldAmount: unshieldAmount.toString(),
+              changeAmount: (note.value - unshieldAmount).toString(),
+            }
+          : { amount: note.value.toString() }),
       },
       noteHash: hex(leaf),
       pathElements: Array(16).fill(hex(0n)),
@@ -359,8 +383,11 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     assert.deepEqual(recovered.utxoPositionsIn.map(BigInt), txRequest.privateInputs.leavesIndices);
     assert.equal(recovered.utxoTreeIn, 0);
     assert.equal(recovered.inputNpk, note.notePublicKey);
-    assert.deepEqual(recovered.npksOut, unshield ? [] : txRequest.privateInputs.npkOut);
-    assert.deepEqual(recovered.valuesOut, unshield ? [] : txRequest.privateInputs.valueOut);
+    assert.deepEqual(recovered.npksOut, unshield ? [] : txRequest.privateInputs.npkOut.slice(0, 1));
+    assert.deepEqual(
+      recovered.valuesOut,
+      unshield ? [] : txRequest.privateInputs.valueOut.slice(0, 1)
+    );
     const reconstructionControls = [];
     const rejectReconstruction = async (name, mutate) => {
       const altered = reconstructionArgs();
@@ -401,7 +428,14 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       v.capsule.preparation.expected = decoded.expected;
       const e = decoded.expected;
       v.capsule.preparation.expectedHash = hex(
-        poseidon([e.merkleRoot, e.boundParamsHash, e.nullifier, e.commitment].map(BigInt))
+        poseidon(
+          [
+            e.merkleRoot,
+            e.boundParamsHash,
+            e.nullifier,
+            ...(partial ? [e.changeCommitment, e.unshieldCommitment] : [e.commitment]),
+          ].map(BigInt)
+        )
       );
     });
     const flip = (v, index) =>
@@ -503,6 +537,79 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     await rejectReconstruction('ciphertext-shape', (v) => {
       v.creator.ciphertext.extra = true;
     });
+    if (partial) {
+      const changeType = imp('models/formatted-types').OutputType.Change;
+      const change = (
+        receiver = addressKeys,
+        value = 600n,
+        type = changeType,
+        memo = undefined,
+        visible = true
+      ) =>
+        TransactNote.createTransfer(
+          receiver,
+          addressKeys,
+          value,
+          note.tokenData,
+          visible,
+          type,
+          memo
+        );
+      const replaceTransaction = (v, mutate) => {
+        const [[original]] = abi.decodeFunctionData(
+          'transact',
+          v.capsule.preparation.transaction.data
+        );
+        const raw = original.toArray(true);
+        mutate(raw);
+        v.capsule.preparation.transaction.data = abi.encodeFunctionData('transact', [[raw]]);
+        const decoded =
+          require('../../src/main/wallet/railgun-transact-intent').extractRailgunTransactIntent(
+            v.capsule.preparation.transaction
+          );
+        v.capsule.preparation.expected = decoded.expected;
+        const e = decoded.expected;
+        v.capsule.preparation.expectedHash = hex(
+          poseidon(
+            [
+              e.merkleRoot,
+              e.boundParamsHash,
+              e.nullifier,
+              e.changeCommitment,
+              e.unshieldCommitment,
+            ].map(BigInt)
+          )
+        );
+      };
+      for (const [name, output] of [
+        ['change-value-conservation', change(addressKeys, 599n)],
+        [
+          'change-foreign-npk-same-viewing-key',
+          change({ ...addressKeys, masterPublicKey: foreignAddressKeys.masterPublicKey }),
+        ],
+        ['change-transfer-annotation', change(addressKeys, 600n, 0)],
+        ['change-memo', change(addressKeys, 600n, changeType, 'not allowed')],
+        ['change-hidden-sender', change(addressKeys, 600n, changeType, undefined, false)],
+      ]) {
+        const encrypted = await encryptCreator(output);
+        await rejectReconstruction(name, (v) =>
+          replaceTransaction(v, (raw) => {
+            raw[3][0] = hex(output.hash);
+            raw[4][6] = [encrypted.ciphertext];
+          })
+        );
+      }
+      await rejectReconstruction('final-unshield-preimage-hash', (v) =>
+        replaceTransaction(v, (raw) => {
+          raw[3][1] = hex(BigInt(raw[3][1]) + 1n);
+        })
+      );
+      await rejectReconstruction('reversed-output-commitments', (v) =>
+        replaceTransaction(v, (raw) => {
+          raw[3].reverse();
+        })
+      );
+    }
     const { ownEvidence, state, witness } =
       await require('./railgun-poi-witness-data').createPoiWitnessData({
         archive,
@@ -542,7 +649,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     );
     assert.equal(
       prepared.inputs.railgunTxidIfHasUnshield,
-      unshield ? '0x' + witness.railgunTxid : '0x00'
+      hasUnshield ? '0x' + witness.railgunTxid : '0x00'
     );
     assert.equal(
       prepared.inputs.utxoBatchGlobalStartPositionOut,
@@ -585,7 +692,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       v.ownEvidence.row.utxoBatchStartPositionOut++;
     });
     await reject('wrong-kind', (v) => {
-      if (unshield) delete v.ownEvidence.row.unshield;
+      if (hasUnshield) delete v.ownEvidence.row.unshield;
       else v.ownEvidence.row.unshield = {};
     });
     await reject('wrong-checkpoint-index', (v) => {
@@ -620,7 +727,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     assert.equal(result.payload.txidMerkleroot, state.root);
     assert.equal(
       result.payload.railgunTxidIfHasUnshield,
-      unshield ? '0x' + witness.railgunTxid : '0x00'
+      hasUnshield ? '0x' + witness.railgunTxid : '0x00'
     );
     assert.deepEqual(result.payload.blindedCommitmentsOut, prepared.blindedOut);
     assert.deepEqual(result.payload.poiMerkleroots, prepared.inputs.poiMerkleroots);
@@ -648,11 +755,55 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       changed[i] += 1n;
       assert.equal(await serial.verify(poiArtifacts.vkey, changed, result.payload.proof), false);
     }
+    let markerControl;
+    if (input.combinedQualification) {
+      const {
+        expectedRailgunOwnPoiFields,
+        bindRailgunOwnPoiPayload,
+      } = require('../../src/main/wallet/railgun-own-poi-proof-data');
+      const expectedFields = expectedRailgunOwnPoiFields({
+        archive,
+        proverArchive: input.proverArchive,
+        artifactDirectory: input.artifactDirectory,
+        descriptor,
+        preparation: { creator, ownEvidence, state, witness },
+        listProofs,
+      });
+      assert.deepEqual(bindRailgunOwnPoiPayload(result.payload, expectedFields), result.payload);
+      if (partial || input.kind === 'transfer') {
+        // Fixture-only direct SDK construction: production witness has no marker override.
+        const wrongMarker = partial ? '0x00' : '0x' + witness.railgunTxid;
+        const wrongInputs = { ...prepared.inputs, railgunTxidIfHasUnshield: wrongMarker };
+        const wrong = await prover.provePOI(
+          wrongInputs,
+          prepared.listKey,
+          prepared.blindedIn,
+          prepared.blindedOut,
+          () => {}
+        );
+        const wrongSignals = [...signals];
+        wrongSignals[4] = BigInt(wrongMarker);
+        assert.equal(await serial.verify(poiArtifacts.vkey, wrongSignals, wrong.proof), true);
+        const wrongPayload =
+          require('../../src/main/wallet/railgun-poi-payload').normalizeRailgunPoiPayload({
+            ...result.payload,
+            proof: wrong.proof,
+            railgunTxidIfHasUnshield: wrongMarker,
+          });
+        assert.throws(() => bindRailgunOwnPoiPayload(wrongPayload, expectedFields));
+        markerControl = {
+          payload: wrongPayload,
+          cryptographicallyVerified: true,
+          applicationRefused: true,
+        };
+      }
+    }
     assert.ok(!signal.aborted);
     assert.equal(guardReport().attempts, 0);
     assert.equal(globalThis.curve_bn128, null);
     const value = {
       payload: result.payload,
+      ...(input.combinedQualification ? { combinedBindingVerified: true, markerControl } : {}),
       kind: input.kind,
       creatorKind,
       creatorSender: creatorKind === 'Transact' ? 'foreign' : null,

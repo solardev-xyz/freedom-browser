@@ -45,7 +45,10 @@ function normalizeRailgunPoiShieldInput(capsule, creator) {
   shape(preimage.token, ['tokenType', 'tokenAddress', 'tokenSubID']);
   assert.equal(preimage.token.tokenType, 0);
   assert.equal(preimage.token.tokenSubID, '0x' + '0'.repeat(64));
-  assert.equal(preimage.value, capsule.preparation.amount);
+  assert.equal(
+    preimage.value,
+    capsule.version === 2 ? capsule.preparation.inputAmount : capsule.preparation.amount
+  );
   shape(ciphertext, ['encryptedBundle', 'shieldKey']);
   assert.ok(Array.isArray(ciphertext.encryptedBundle) && ciphertext.encryptedBundle.length === 3);
   for (const v of [...ciphertext.encryptedBundle, ciphertext.shieldKey])
@@ -72,6 +75,8 @@ function normalizeRailgunPoiShieldInput(capsule, creator) {
       shieldKey: ciphertext.shieldKey,
     },
   };
+  // Keep legacy bytes: this domain also binds the complete normalized capsule,
+  // including its strict version and partial input/change/unshield amounts.
   const bindingDigest = createHash('sha256')
     .update('freedom:railgun:poi-shield-selector-v1\0')
     .update(JSON.stringify({ capsule, creator: canonicalCreator }))

@@ -1,0 +1,144 @@
+{
+  "createdAt": "2026-10-04T23:20:55.006533+00:00",
+  "baseCommit": "527c882623ddf4c459e89b75e6f95b930c90f481",
+  "scope": "Standalone combined POI cryptography; genuine partial controller, durable preparation and live qualification remain unavailable.",
+  "native": {
+    "path": "docs/qualification/railgun-combined-poi-native-2026-10-05.json",
+    "sha256": "41e16110acba3ac370df59d9d086e7a0705699a199da54f255df2d3e2371c78a",
+    "bytes": 60907,
+    "sourceFiles": 465,
+    "runs": 4,
+    "allCurrentHashesMatch": true,
+    "syntheticChainAndMembership": true,
+    "publicTestMnemonic": true,
+    "genuinePartialHold": false,
+    "liveQueries": 0,
+    "submissions": 0
+  },
+  "tests": {
+    "command": "npm test -- -- --runInBand --runTestsByPath src/main/wallet/railgun-poi-reconstruct.test.js src/main/wallet/railgun-poi-witness.test.js src/main/wallet/railgun-poi-payload.test.js src/main/wallet/railgun-own-poi-proof-data.test.js src/main/wallet/railgun-poi-verify-job.test.js src/main/wallet/railgun-poi-intent-store.test.js src/main/wallet/railgun-poi-submit-data.test.js src/main/wallet/railgun-poi-shield-selector-data.test.js src/main/wallet/railgun-poi-transact-selector-data.test.js src/main/wallet/railgun-poi-cold-validation.test.js src/main/wallet/railgun-own-poi-proof.test.js src/main/wallet/railgun-own-poi-membership.test.js src/main/wallet/railgun-own-transact-poi-membership.test.js src/main/wallet/railgun-poi-output-recovery.test.js",
+    "passed": 1697,
+    "suites": 14,
+    "seconds": 129.025,
+    "exitCode": 0,
+    "log": "/private/tmp/railgun-combined-poi-targeted-final-oct5.log",
+    "laterFixtureStrengthening": {
+      "path": "src/main/wallet/railgun-own-transact-poi-membership.test.js",
+      "passed": 37,
+      "seconds": 2.096,
+      "exitCode": 0,
+      "log": "/private/tmp/railgun-combined-poi-transact-membership-final-oct5.log",
+      "countUnchanged": true,
+      "productionUnchanged": true
+    },
+    "fullRegressionRepeated": false
+  },
+  "lint": {
+    "command": "npm run lint",
+    "exitCode": 0,
+    "log": "/private/tmp/railgun-combined-poi-final-lint-oct5.log"
+  },
+  "detachedControls": {
+    "repositoryMutations": false,
+    "reconstruction": {
+      "baselinePassed": 7,
+      "independentRemovals": 7,
+      "directFailuresPerRemoval": 1
+    },
+    "storeRead": {
+      "expectedFailures": 3
+    },
+    "earlyPrepare": {
+      "expectedFailures": 3
+    },
+    "exactMarker": {
+      "expectedFailures": 3,
+      "independentRefusals": 3
+    },
+    "verifierPublicCount": {
+      "expectedFailures": 5
+    },
+    "proofHost": {
+      "expectedFailures": 6
+    },
+    "coldCapture": {
+      "expectedFailures": 8,
+      "independentRefusals": 4
+    },
+    "membership": {
+      "expectedFailures": 4,
+      "independentRefusals": 2
+    },
+    "limits": "Unit controls mock engine cryptography and selected authority registries. Separate native proof evidence uses real pinned crypto, synthetic history and no genuine partial hold."
+  },
+  "changedJavaScriptSha256": {
+    "scripts/fixtures/railgun-poi-verifier-input-job.js": "915741c64c83d0f682c050929bd035e9eedcef29cad9fe95063350675a298477",
+    "scripts/fixtures/railgun-poi-witness-data.js": "38931fd766f255aea8d5cf13b95a4aa4d78c9893654e10e5eee1fcb36bc47a01",
+    "scripts/qualify-railgun-combined-poi.js": "3e1e7507e8c56c4a883a926e381f45f9f3ccbb68cbc4d56e9323c7c2192d62f6",
+    "src/main/wallet/railgun-own-poi-membership.js": "7d2ae5139ad670a28c54695b73c980f7aa40791e74b9550dc9618b83ea84bf4b",
+    "src/main/wallet/railgun-own-poi-membership.test.js": "69fe3f2b99dde371db77e88df9f932f3c556bfed59cac100c65429634418d73d",
+    "src/main/wallet/railgun-own-poi-proof-data.js": "332687184e60f8543e51106859a441a890c97bd9b8c84af1ae5ffdeddb5cc222",
+    "src/main/wallet/railgun-own-poi-proof-data.test.js": "8c98d358a4227d8eaecf1c9e4cc01f3d2403072551c9a2833bd50076c0f0cb9d",
+    "src/main/wallet/railgun-own-poi-proof.js": "2ed00aeb9deee031e9474c9a85a4c8608fa9c91c354be9b5a641f0dd35b21c12",
+    "src/main/wallet/railgun-own-poi-proof.test.js": "4349882963a510287ededc387496ef5410c17ced6fbbbb8e01fb6d0f66ac19d7",
+    "src/main/wallet/railgun-own-transact-poi-membership.test.js": "ce71ebabaf7001ff2742b7048142bc81444aac5b21337c4667ffe1b7313a8f80",
+    "src/main/wallet/railgun-poi-cold-validation.js": "d6e7b569ff58582fe388bb67f293ad747080fa3dfb8457cd75db7db6019355ed",
+    "src/main/wallet/railgun-poi-cold-validation.test.js": "a6d980167240a055237b139e647ed46e2f3bc6f43c18cb23a8a1a992fe6496bb",
+    "src/main/wallet/railgun-poi-intent-store.js": "618bdff954dae9bf31836c8d1ab9b5100d7409b9f7f8e68844afdff4b577fb89",
+    "src/main/wallet/railgun-poi-intent-store.test.js": "47a9e93925841fe0392036510a0f8e34fb638414f7c0f3da7bc5faf9b0b400ad",
+    "src/main/wallet/railgun-poi-output-recovery.test.js": "7578d6701b38507229fbddc8a25890a9b4768e6d3dd5b605a8aae9ce50a2ca00",
+    "src/main/wallet/railgun-poi-payload.js": "6e136e7d9f7b40b5d6c970e742b8e80a9a9e46e494d6a4bc16aa0cdbef986348",
+    "src/main/wallet/railgun-poi-payload.test.js": "e38db8259b023caaa25e6c30e75bd630a6c62aabbe7528bf6093f433877feb2c",
+    "src/main/wallet/railgun-poi-reconstruct.js": "d5e7e2c549cf58b08ed0de26afa72b985f03636c7059d9255374eb184936b050",
+    "src/main/wallet/railgun-poi-reconstruct.test.js": "6bd3691af19dbb84f89f9d75c208c065c5bdc51da452eb641a8650432241b9a1",
+    "src/main/wallet/railgun-poi-shield-selector-data.js": "c385027c0842adc5ae6445c6e759baba534a294463e8f1aaa744cf5571100fce",
+    "src/main/wallet/railgun-poi-shield-selector-data.test.js": "9b87d19b0b3962b56415815d9bd3d18a585618a2c1d3dd4f3a43e7827a244626",
+    "src/main/wallet/railgun-poi-transact-selector-data.js": "9a46edda3d01ef149b3333ce0a972fe11fb1da394818672f84638cd81241ccb2",
+    "src/main/wallet/railgun-poi-transact-selector-data.test.js": "b7fcdc363f10284eb85d7f5087554ee4cacc2a710a95099af449ea7670231c7c",
+    "src/main/wallet/railgun-poi-verify-job.js": "f260ca8171d2aa37906002201bdd5d59c2886b5ff345001e4fc435596ac038d3",
+    "src/main/wallet/railgun-poi-verify-job.test.js": "9350c88b3c103ad28a561ffb08d8ed233d68f0ef767b3b2de5262e1a2b3207dc",
+    "src/main/wallet/railgun-poi-witness.js": "bad69776faf70576f104c3fbe7467e39e623f84af053bb71b1730146889bb688",
+    "src/main/wallet/railgun-poi-witness.test.js": "59aaba7d2d6818e838efbf96e949cf9d1df2612d4a2ad04a9382c456625450b8"
+  },
+  "evidenceSha256": {
+    "/private/tmp/railgun-combined-poi-targeted-final-oct5.log": "8a0db2f05698e22ed1f7944021c7dfd8f6b6541e7765e7e7974b132e4e508008",
+    "/private/tmp/railgun-combined-poi-transact-membership-final-oct5.log": "eb2a03bb81ff05ab45562f5e750f8840cd9b9b487888108591cd91c017eb7357",
+    "/private/tmp/railgun-combined-poi-membership-final-lint-oct5.log": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f",
+    "/private/tmp/railgun-combined-local-evidence-2026-10-05.md": "d7f1f6cf3a4d90d59e0da66314e6788a6454f0154098ae6627829fa64e4548bb",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/README.md": "bd741d895b70785dcc58272eb5c8e05a280f184a777d8766960cabad1bdb86b6",
+    "/private/tmp/railgun-combined-poi-proof-guard-mutant-oct5.log": "f205caca8d33e6b4143689efc029f02de1053f2e1650f768b5b016a7516209bf",
+    "/private/tmp/railgun-combined-poi-cold-guard-mutant-oct5.log": "92aa43204aa1faeb7695a755daaa341dc5379771eca260ae3cbcfca499c01c20",
+    "/private/tmp/railgun-combined-poi-membership-final-mutant-oct5.log": "4428b585008dff11183068364762d3954f2688962f0e24b49ab4863fb1adf323",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/absent-memo-text.log": "57ebe258f4632850792e7e50e3ebfcfa97b11a2d31115aaa69430f171c2b35ad",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/baseline.log": "e1692bb7438363c894ef0f7f264587762f00cb613ca98ec317ffee0dfe47c719",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/change-annotation.log": "bdf57dd48a5f2874cca6e8ecebb1f2b44c59f1d4a2ac9a14686679728843f711",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/empty-memo-ciphertext.log": "37f0715aebb62f8926b26467be2df1a1add831bdd2f11ed4fcd8f912bb8a36e9",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/final-unshield-hash.log": "0f6496eb088a88ba1abaa1c18108b549d5dcc8e2c843ff9b7b0c18c670a0d93b",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/null-sender-random.log": "3626a94a1e1e2ece6e74e7a78b64e726f53b0c8eb630227968963b0233fdc22e",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/same-account-npk.log": "1080b78c55a0af320c768c34c437e293a4d4d10ebc888ddfadc5265cdad5ff34",
+    "/private/tmp/railgun-combined-poi-reconstruct-controls/value-conservation.log": "58870ae41514c4d9f4d5cdd04d919a586fef797f378415364afcc2d256935ec6",
+    "/private/tmp/railgun-combined-local-controls/baseline.log": "a0e92e33abf6d1af0e84160f49f1375e90d7ef5ad96876f486fe244bc404cc15",
+    "/private/tmp/railgun-combined-local-controls/marker.log": "394f602a224dcba976c1518cdc89d3e4ca6af76163020ad099ea9e3718f8f082",
+    "/private/tmp/railgun-combined-local-controls/npublic.log": "fa099ae737e66ec67dc9747c1764c1323e4fe8b7c8b961def8d7c8618bd702fa",
+    "/private/tmp/railgun-combined-local-controls/prepare.log": "359ebbb24abbbddf6d4c4ee7deecd0463ecc9be20370ce526d5561f27396db5c",
+    "/private/tmp/railgun-combined-local-controls/reader.log": "531362ebeb52e17e298c5272e246f262b0cb877095612bc65cf14b7fecc5a33b",
+    "/private/tmp/railgun-combined-poi-final-lint-oct5.log": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f"
+  },
+  "unchanged": {
+    "dependencies": true,
+    "runtimeAndArtifactPins": true,
+    "derivedCachePolicyInputs": true,
+    "ipcAndRenderer": true
+  },
+  "remaining": [
+    "genuine partial controller and hold",
+    "intent-bound01x02 deployed verification",
+    "independent change check before spend-key release",
+    "submission and coherent receipt-bound recovery",
+    "combined POI persistence and disclosure",
+    "normal change scanning and full restart",
+    "second spend of recovered change",
+    "production signed-unfinished proof resumption",
+    "authorized live private qualification"
+  ]
+}

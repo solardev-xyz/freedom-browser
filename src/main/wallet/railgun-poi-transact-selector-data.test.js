@@ -1,6 +1,9 @@
 const { createHash } = require('crypto');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
 const {
+  createRailgunPartialCapsuleData,
+} = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+const {
   prepareRailgunPoiTransactSelectorInput: prepare,
   normalizeRailgunPoiTransactSelectorInput: normalize,
 } = require('./railgun-poi-transact-selector-data');
@@ -34,12 +37,24 @@ function input(unshield = false) {
     },
   };
 }
+function partialInput(options) {
+  const value = input();
+  value.capsule = createRailgunPartialCapsuleData(options).capsule;
+  value.descriptor.walletId = value.capsule.walletId;
+  value.creator.hash = value.capsule.noteHash;
+  return value;
+}
 test.each([false, true])(
   'real capsule validation binds detached transfer/unshield input: %s',
   (unshield) => {
     const raw = input(unshield),
       value = prepare(raw);
     expect(normalize(value)).toEqual(value);
+    expect(value.bindingDigest).toBe(
+      unshield
+        ? 'bbd25a77b062f6e67fb489da921f60a4579947bcb9a7ec9c1dc6bd58480a258e'
+        : '7d84cecff55e22dcf53619e0fb74b6df6b190bf37ca69b3d022efa3f1ece3679'
+    );
     expect(value.bindingDigest).toBe(
       createHash('sha256')
         .update('freedom:railgun:poi-transact-selector-v1\0')
@@ -60,6 +75,68 @@ test.each([false, true])(
     expect(value.capsule.pathElements[0]).not.toBe(hex(99));
   }
 );
+test('partial input uses the v2 domain and binds the full input, not either output', () => {
+  const raw = partialInput();
+  const value = prepare(raw);
+  const bound = JSON.stringify({
+    descriptor: value.descriptor,
+    capsule: value.capsule,
+    creator: value.creator,
+  });
+  expect(value.bindingDigest).toBe(
+    createHash('sha256')
+      .update('freedom:railgun:poi-transact-selector-v2\0')
+      .update(bound)
+      .digest('hex')
+  );
+  expect(value.capsule.preparation.inputAmount).toBe('1000');
+  expect(value.capsule.preparation.changeAmount).toBe('600');
+  expect(value.capsule.preparation.unshieldAmount).toBe('400');
+  expect(value.creator.hash).toBe(value.capsule.noteHash);
+  expect(value.creator.hash).not.toBe(value.capsule.preparation.expected.changeCommitment);
+  expect(normalize(value)).toEqual(value);
+  const stale = {
+    ...value,
+    bindingDigest: createHash('sha256')
+      .update('freedom:railgun:poi-transact-selector-v1\0')
+      .update(bound)
+      .digest('hex'),
+  };
+  expect(() => normalize(stale)).toThrow();
+  expect(prepare(partialInput({ inputAmount: '1100' })).bindingDigest).not.toBe(
+    value.bindingDigest
+  );
+  expect(prepare(partialInput({ unshieldAmount: '300' })).bindingDigest).not.toBe(
+    value.bindingDigest
+  );
+  expect(Object.isFrozen(value.capsule.preparation)).toBe(true);
+  raw.capsule.preparation.inputAmount = '1';
+  raw.creator.ciphertext.memo = '0x12';
+  expect(value.capsule.preparation.inputAmount).toBe('1000');
+  expect(value.creator.ciphertext.memo).toBe('0x');
+});
+test.each([
+  'version',
+  'legacy-amount',
+  'missing-input',
+  'conservation',
+  'selected-amount',
+  'output-hash',
+  'output-position',
+  'caller-domain',
+])('partial input refuses %s before deriving a selector', (kind) => {
+  const value = partialInput();
+  if (kind === 'version') value.capsule.version = 1;
+  if (kind === 'legacy-amount') value.capsule.preparation.amount = '1000';
+  if (kind === 'missing-input') delete value.capsule.preparation.inputAmount;
+  if (kind === 'conservation') value.capsule.preparation.inputAmount = '1001';
+  if (kind === 'selected-amount') value.capsule.selection.unshieldAmount = '401';
+  if (kind === 'output-hash')
+    value.creator.hash = value.capsule.preparation.expected.changeCommitment;
+  if (kind === 'output-position') value.creator.position++;
+  if (kind === 'caller-domain') value.domain = 'freedom:railgun:poi-transact-selector-v1\0';
+  expect(() => prepare(value)).toThrow();
+});
 test('canonical property order is stable; archive relocation is not cryptographic binding authority', () => {
   const raw = input(),
     first = prepare(raw);

@@ -52,7 +52,9 @@ function prepareRailgunPoiTransactSelectorInput(value) {
   const capsule = normalizeRailgunPrivateCapsule(input.capsule);
   assert.equal(capsule.walletId, descriptor.walletId);
   assert.ok(
-    ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      capsule.selection.kind
+    )
   );
   if (capsule.selection.kind === 'railgun-private-transfer')
     assert.equal(capsule.selection.recipient, descriptor.instanceId);
@@ -94,7 +96,7 @@ function prepareRailgunPoiTransactSelectorInput(value) {
     },
   };
   const bindingDigest = createHash('sha256')
-    .update('freedom:railgun:poi-transact-selector-v1\0')
+    .update(`freedom:railgun:poi-transact-selector-v${capsule.version}\0`)
     .update(JSON.stringify({ descriptor, capsule, creator }))
     .digest('hex');
   const result = { archive: input.archive, descriptor, capsule, creator, bindingDigest };

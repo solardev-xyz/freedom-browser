@@ -549,6 +549,39 @@ test.each([false, true])(
     expect(() => attest(op.receipt, { ...mock.enrollment }, mock.coordinator)).toThrow();
   }
 );
+test.each(['partial', 'version', 'kind'])(
+  'matching %s capsules refuse before the Transact selector, keys or roots',
+  async (fault) => {
+    const original = copy(mock.historical);
+    const capsule =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData()
+        .capsule;
+    // Keep the original input note: the standalone selector must accept this
+    // coherent partial capsule so a lower mismatch cannot mask this host guard.
+    capsule.noteHash = original.capture.capsule.noteHash;
+    if (fault === 'partial')
+      expect(() =>
+        require('./railgun-poi-transact-selector-data').prepareRailgunPoiTransactSelectorInput({
+          archive: options.archive,
+          descriptor: mock.enrollment.descriptor,
+          capsule,
+          creator: original.poiPreparation.creator,
+        })
+      ).not.toThrow();
+    if (fault === 'version') capsule.selection.kind = 'railgun-token-unshield';
+    if (fault === 'kind') capsule.version = 1;
+    mock.historical.capture.capsule = copy(capsule);
+    mock.historical.poiPreparation.ownEvidence.capsule = copy(capsule);
+    expect(await run()).toEqual({ status: 'refused', stage: 'preflight' });
+    expect(mock.jobs).toHaveLength(0);
+    expect(mock.credential).not.toHaveBeenCalled();
+    expect(mock.recapture).not.toHaveBeenCalled();
+    expect(mock.rootFactory).not.toHaveBeenCalled();
+    expect(mock.sourceFactory).not.toHaveBeenCalled();
+    mock.historical = original;
+    expect((await run()).status).toBe('verified');
+  }
+);
 test('root service context has exact public-only tuple and no operation', async () => {
   let subject;
   const original = mock.rootFactory.getMockImplementation();

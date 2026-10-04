@@ -37,9 +37,10 @@ function normalizeRailgunOwnPoiProofInput(value) {
   shape(v.preparation, ['creator', 'ownEvidence', 'state', 'witness']);
   shape(v.preparation.ownEvidence, ['capsule', 'record', 'transaction', 'receipt', 'row']);
   const { creator, ownEvidence, state, witness } = v.preparation;
-  assert.equal(ownEvidence.capsule.version, 1);
+  const partial = ownEvidence.capsule.selection.kind === 'railgun-partial-unshield';
+  assert.equal(ownEvidence.capsule.version, partial ? 2 : 1);
   assert.ok(
-    ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
       ownEvidence.capsule.selection.kind
     )
   );
@@ -60,9 +61,18 @@ function normalizeRailgunOwnPoiProofInput(value) {
   }
   assert.equal(v.descriptor.walletId, ownEvidence.capsule.walletId);
   const matched = matchRailgunOwnTxid(ownEvidence);
-  if (creator.type === 'Transact') {
+  if (creator.type === 'Transact' || partial) {
     assert.equal(matched.row.nullifiers.length, 1);
-    assert.equal(matched.row.commitments.length, 1);
+    assert.equal(matched.row.commitments.length, partial ? 2 : 1);
+  }
+  if (partial) {
+    assert.equal(matched.output.kind, 'partial-unshield');
+    const expected = ownEvidence.capsule.preparation.expected;
+    assert.deepEqual(matched.row.nullifiers, [expected.nullifier]);
+    assert.deepEqual(matched.row.commitments, [
+      expected.changeCommitment,
+      expected.unshieldCommitment,
+    ]);
   }
   const normalizedWitness = normalizeRailgunTxidWitness(witness, state);
   assert.deepEqual(normalizedWitness.row, matched.row);
@@ -79,14 +89,15 @@ function normalizeRailgunOwnPoiProofInput(value) {
 function expectedRailgunOwnPoiFields(input) {
   const v = normalizeRailgunOwnPoiProofInput(input);
   const witness = normalizeRailgunTxidWitness(v.preparation.witness, v.preparation.state);
-  const unshield = v.preparation.ownEvidence.capsule.selection.kind === 'railgun-token-unshield';
+  const kind = v.preparation.ownEvidence.capsule.selection.kind;
+  const unshield = kind !== 'railgun-private-transfer';
   return freeze({
     listKey: REQUIRED_LIST,
     poiMerkleroots: [v.listProofs[0].root],
     txidMerkleroot: witness.root,
     txidMerklerootIndex: witness.checkpointIndex,
     railgunTxidIfHasUnshield: unshield ? '0x' + witness.railgunTxid : '0x00',
-    outputCount: unshield ? 0 : 1,
+    outputCount: kind === 'railgun-token-unshield' ? 0 : 1,
   });
 }
 function bindRailgunOwnPoiPayload(value, expected) {

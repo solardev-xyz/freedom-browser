@@ -28,7 +28,11 @@ exports.createPoiWitnessData = async ({ archive, capsule, proof }) => {
     data: abi.encodeFunctionData('transact', [[raw]]),
   };
   const [[decoded]] = abi.decodeFunctionData('transact', tx.data);
+  const partial = capsule.selection.kind === 'railgun-partial-unshield';
   const unshield = capsule.selection.kind === 'railgun-token-unshield';
+  const hasUnshield = unshield || partial;
+  const amount = partial ? BigInt(capsule.preparation.unshieldAmount) : 1000n;
+  const fee = (amount * 25n) / 10000n;
   const transaction = {
     ...tx,
     chainId: '0xaa36a7',
@@ -41,12 +45,33 @@ exports.createPoiWitnessData = async ({ archive, capsule, proof }) => {
     transactionIndex: '0x4',
   };
   delete transaction.data;
-  const e = [
-    ['Nullified', [0, decoded.nullifiers]],
-    unshield
-      ? ['Unshield', [capsule.selection.recipient, [0, pins.wrappedNative, 0], 998, 2]]
-      : ['Transact', [1, 23456, decoded.commitments, decoded.boundParams.commitmentCiphertext]],
-  ];
+  const e = partial
+    ? [
+        ['Nullified', [0, decoded.nullifiers]],
+        ['Transfer', [pins.proxy, capsule.selection.recipient, amount - fee]],
+        [
+          'Transfer',
+          [
+            pins.proxy,
+            require('../../src/main/wallet/railgun-transact-receipt-policy').treasury,
+            fee,
+          ],
+        ],
+        ['Unshield', [capsule.selection.recipient, [0, pins.wrappedNative, 0], amount - fee, fee]],
+        [
+          'Transact',
+          [1, 23456, [decoded.commitments[0]], decoded.boundParams.commitmentCiphertext],
+        ],
+      ]
+    : [
+        ['Nullified', [0, decoded.nullifiers]],
+        unshield
+          ? ['Unshield', [capsule.selection.recipient, [0, pins.wrappedNative, 0], 998, 2]]
+          : ['Transact', [1, 23456, decoded.commitments, decoded.boundParams.commitmentCiphertext]],
+      ];
+  const transfers = new Interface([
+    'event Transfer(address indexed from,address indexed to,uint256 value)',
+  ]);
   const receipt = {
     status: '0x1',
     transactionHash: transaction.hash,
@@ -56,13 +81,13 @@ exports.createPoiWitnessData = async ({ archive, capsule, proof }) => {
     blockNumber: transaction.blockNumber,
     transactionIndex: transaction.transactionIndex,
     logs: e.map(([name, values], i) => ({
-      ...events.encodeEventLog(name, values),
-      address: pins.proxy,
+      ...(name === 'Transfer' ? transfers : events).encodeEventLog(name, values),
+      address: name === 'Transfer' ? pins.wrappedNative : pins.proxy,
       transactionHash: transaction.hash,
       blockHash: transaction.blockHash,
       blockNumber: transaction.blockNumber,
       transactionIndex: transaction.transactionIndex,
-      logIndex: i ? '0x8' : '0x5',
+      logIndex: partial ? '0x' + (5 + i).toString(16) : i ? '0x8' : '0x5',
       removed: false,
     })),
   };
@@ -98,7 +123,12 @@ exports.createPoiWitnessData = async ({ archive, capsule, proof }) => {
   const row = {
     version: 'V2',
     graphID: hex(291) + hex(4).slice(2) + '0'.repeat(64),
-    commitments: [capsule.preparation.expected.commitment],
+    commitments: partial
+      ? [
+          capsule.preparation.expected.changeCommitment,
+          capsule.preparation.expected.unshieldCommitment,
+        ]
+      : [capsule.preparation.expected.commitment],
     nullifiers: [capsule.preparation.expected.nullifier],
     boundParamsHash: capsule.preparation.expected.boundParamsHash,
     blockNumber: 291,
@@ -107,12 +137,12 @@ exports.createPoiWitnessData = async ({ archive, capsule, proof }) => {
     utxoTreeIn: 0,
     utxoTreeOut: unshield ? 99999 : 1,
     utxoBatchStartPositionOut: unshield ? 99999 : 23456,
-    ...(unshield
+    ...(hasUnshield
       ? {
           unshield: {
             tokenData: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
             toAddress: capsule.selection.recipient,
-            value: '1000',
+            value: amount.toString(),
           },
         }
       : {}),

@@ -152,7 +152,11 @@ function issue(n = 1, revision = 1, change = () => {}) {
       selector: { tree: 0, position: n, nullifier: '0x' + hex(n), noteHash: '0x' + hex(80) },
       facts: { kind: 'railgun-private-transfer', amount: '1000' },
       submitter: '0x' + '12'.repeat(20),
-      capsule: { walletId: options.walletId, selection: { position: n } },
+      capsule: {
+        version: 1,
+        walletId: options.walletId,
+        selection: { position: n, kind: 'railgun-private-transfer' },
+      },
       provedTransaction: { data: '0x1234' },
       intent: { digest: hex(40) },
       projection: { included: true, blockHash: '0x' + hex(50) },
@@ -2272,3 +2276,66 @@ test.each(['prepared', 'attempted'])(
     expect(await store.get(hex(1))).toEqual(before);
   }
 );
+
+describe('legacy documents exclude combined proofs until an explicit migration', () => {
+  test.each([
+    [1, 'prepared'],
+    [2, 'prepared'],
+    [2, 'attempted'],
+  ])(
+    'authenticated v%s %s combined record refuses without file or floor changes',
+    async (version, state) => {
+      const store = await open();
+      expect((await prepare(store)).status).toBe('prepared');
+      if (state === 'attempted') expect((await begin(store)).status).toBe('attempted');
+      store.close();
+      await store.closed;
+      await alter((doc) => {
+        doc.version = version;
+        const entry = doc.entries[0];
+        entry.payload.railgunTxidIfHasUnshield = '0x' + hex(9);
+        entry.payloadSha256 = sha(entry.payload);
+        if (state === 'attempted')
+          entry.attempt.submission = prepareRailgunPoiSubmission({
+            payload: entry.payload,
+            requestId: entry.attempt.attemptedAt,
+          });
+      });
+      const bytes = fs.readFileSync(filename()),
+        floor = minimum;
+      const inventory = fs.readdirSync(options.directory).sort();
+      options.advanceFloor.mockClear();
+      await expect(open(false)).rejects.toMatchObject(REFUSED);
+      expect(fs.readFileSync(filename())).toEqual(bytes);
+      expect(fs.readdirSync(options.directory).sort()).toEqual(inventory);
+      expect(minimum).toBe(floor);
+      expect(options.advanceFloor).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['combined-payload', 'v2-capsule', 'partial-kind'])(
+    'mock-registry %s refuses before recovery and preserves healthy storage',
+    async (fault) => {
+      const store = await open();
+      const bytes = fs.readFileSync(filename()),
+        floor = minimum;
+      const candidate = issue(2, 1, (history) => {
+        if (fault === 'combined-payload') {
+          history.payload = { ...history.payload, railgunTxidIfHasUnshield: '0x' + hex(9) };
+          history.expected.railgunTxidIfHasUnshield = history.payload.railgunTxidIfHasUnshield;
+          history.payloadSha256 = sha(history.payload);
+        }
+        if (fault === 'v2-capsule') history.capture.capsule.version = 2;
+        if (fault === 'partial-kind')
+          history.capture.capsule.selection.kind = 'railgun-partial-unshield';
+      });
+      withRailgunOwnOperationRecovery.mockClear();
+      options.advanceFloor.mockClear();
+      expect((await prepare(store, candidate)).status).toBe('refused');
+      expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+      expect(fs.readFileSync(filename())).toEqual(bytes);
+      expect(minimum).toBe(floor);
+      expect(options.advanceFloor).not.toHaveBeenCalled();
+      expect((await prepare(store)).status).toBe('prepared');
+    }
+  );
+});

@@ -352,7 +352,7 @@ beforeEach(() => {
     selector: { tree: 0, position: 0, noteHash: hex(2), nullifier: hex(3) },
     facts: {},
     submitter: 'owner',
-    capsule: { walletId: 'wallet' },
+    capsule: { walletId: 'wallet', version: 1, selection: { kind: 'railgun-private-transfer' } },
     capsuleDigest: 'b'.repeat(64),
     provedTransaction: {},
     intent: {},
@@ -519,6 +519,32 @@ test.each([
   expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
   expect(startRailgunProcess).not.toHaveBeenCalled();
 });
+test.each(
+  ['capture', 'preparation'].flatMap((source) =>
+    ['partial', 'version', 'kind'].map((fault) => [source, fault])
+  )
+)(
+  'production proof refuses %s %s before normalization, keys or receipt consumption',
+  async (source, fault) => {
+    const holder =
+      source === 'capture' ? mockObserved.capture : mockObserved.poiPreparation.ownEvidence;
+    const original = holder.capsule;
+    holder.capsule =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData().capsule;
+    if (fault === 'version') holder.capsule.selection.kind = 'railgun-token-unshield';
+    if (fault === 'kind') holder.capsule.version = 1;
+    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+    expect(
+      require('./railgun-own-poi-proof-data').normalizeRailgunOwnPoiProofInput
+    ).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(mockVerifier).not.toHaveBeenCalled();
+    holder.capsule = original;
+    expect((await run()).status).toBe('proved');
+  }
+);
 test.each(['purpose', 'hash', 'method', 'id', 'extra'])(
   'malformed key %s refuses before consuming the receipt',
   async (fault) => {

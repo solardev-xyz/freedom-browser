@@ -603,6 +603,22 @@ test('same prepared record is independently recoverable twice, one viewing loan 
   expect(mock.copies.every((bytes) => bytes.every((v) => v === 0))).toBe(true);
 });
 
+test.each([false, true])(
+  'combined payload from mocked store refuses legacy output recovery unshield=%s before keys',
+  async (unshield) => {
+    configure(unshield);
+    changePayload((payload) => {
+      payload.blindedCommitmentsOut = [prefixed(77)];
+      payload.railgunTxidIfHasUnshield = '0x' + mock.fresh.witness.railgunTxid;
+    });
+    expect(normalizeRailgunPoiPayload(mock.entry.payload)).toEqual(mock.entry.payload);
+    expect(await run()).toEqual({ status: 'refused', stage: 'binding' });
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+  }
+);
+
 test.each(['store', 'record', 'payload', 'capture', 'broker', 'callback'])(
   'rejects caller-injected %s before storage or preflight',
   async (name) => {

@@ -11,7 +11,7 @@ let input, request, controller;
 beforeEach(() => {
   globalThis.curve_bn128 = null;
   mockSerial = { verify: jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false) };
-  mockArtifacts = { vkey: {}, wasm: Buffer.from('wasm'), zkey: Buffer.from('zkey') };
+  mockArtifacts = { vkey: { nPublic: 8 }, wasm: Buffer.from('wasm'), zkey: Buffer.from('zkey') };
   request = jest.fn(async () => JSON.stringify({ id: 1, value: null }));
   controller = new AbortController();
   input = {
@@ -131,3 +131,21 @@ test('cancellation waits for verification before wiping artifacts and refusing',
   expect(mockArtifacts.zkey.every((v) => v === 0)).toBe(true);
   expect(request).not.toHaveBeenCalled();
 });
+
+test('combined proof uses change and marker together in the eight pinned signal positions', async () => {
+  input.payload.railgunTxidIfHasUnshield = '0x' + hex(6n);
+  await execute();
+  const zero = BigInt('0x' + require('./railgun-public-records').ZERO_NODES[0]);
+  expect(mockSerial.verify.mock.calls[0][1]).toEqual([5n, 0n, 0n, 4n, 6n, 3n, zero, zero]);
+});
+test.each([undefined, 7, 9, '8', 8.1])(
+  'refuses vkey nPublic %s before verification',
+  async (nPublic) => {
+    mockArtifacts.vkey.nPublic = nPublic;
+    await expect(execute()).rejects.toThrow();
+    expect(mockSerial.verify).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(mockArtifacts.wasm.every((v) => v === 0)).toBe(true);
+    expect(mockArtifacts.zkey.every((v) => v === 0)).toBe(true);
+  }
+);

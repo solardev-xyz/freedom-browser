@@ -40,6 +40,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       variant: 'POI_3x3',
     });
     active();
+    assert.equal(artifacts.vkey.nPublic, 8);
     // Pinned engine Merkle zero, distinct from the blinded-output zero padding.
     const zero = BigInt('0x' + require('./railgun-public-records').ZERO_NODES[0]);
     const signals = [

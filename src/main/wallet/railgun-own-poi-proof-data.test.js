@@ -1,5 +1,7 @@
-jest.mock('./railgun-own-txid', () => ({ matchRailgunOwnTxid: (v) => ({ row: v.row }) }));
-jest.mock('./railgun-txid-note-witness', () => ({ normalizeRailgunTxidWitness: (v) => v }));
+jest.mock('./railgun-own-txid', () => ({ matchRailgunOwnTxid: jest.fn((v) => ({ row: v.row })) }));
+jest.mock('./railgun-txid-note-witness', () => ({
+  normalizeRailgunTxidWitness: jest.fn((v) => v),
+}));
 jest.mock('./railgun-poi-shield-selector-data', () => ({
   normalizeRailgunPoiShieldInput: jest.fn((capsule, creator) => {
     if (creator.type !== 'Shield' || capsule.selection.position !== creator.position)
@@ -142,22 +144,146 @@ test.each(['list', 'poi-root', 'txid-root', 'checkpoint', 'marker', 'output-coun
   }
 );
 
-test.each(['Shield', 'Transact'])(
-  'v2 partial %s input refuses before creator binding and public-field derivation',
-  (type) => {
-    const {
-      createRailgunPartialCapsuleData,
-    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
-    const value = input();
-    value.preparation.ownEvidence.capsule =
-      require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(
-        createRailgunPartialCapsuleData().capsule
-      );
-    value.preparation.creator.type = type;
-    const shield = require('./railgun-poi-shield-selector-data').normalizeRailgunPoiShieldInput;
-    shield.mockClear();
-    expect(() => normalize(value)).toThrow();
-    expect(() => expected(value)).toThrow();
-    expect(shield).not.toHaveBeenCalled();
+// Public structural fixtures use real capsule, receipt, row and path-schema
+// normalization. They do not prove ownership, Merkle paths or Groth16 validity.
+describe('combined partial proof binding', () => {
+  beforeEach(() => {
+    require('./railgun-own-txid').matchRailgunOwnTxid.mockImplementation(
+      jest.requireActual('./railgun-own-txid').matchRailgunOwnTxid
+    );
+    require('./railgun-txid-note-witness').normalizeRailgunTxidWitness.mockImplementation(
+      jest.requireActual('./railgun-txid-note-witness').normalizeRailgunTxidWitness
+    );
+    require('./railgun-poi-shield-selector-data').normalizeRailgunPoiShieldInput.mockImplementation(
+      jest.requireActual('./railgun-poi-shield-selector-data').normalizeRailgunPoiShieldInput
+    );
+  });
+  function partial(type = 'Shield') {
+    const evidence =
+      require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial();
+    const v = input();
+    const { capsule, row } = evidence;
+    v.descriptor = {
+      walletId: capsule.walletId,
+      instanceId: '0zk1' + 'q'.repeat(123),
+      masterPublicKey: hex(3).slice(2),
+      spendingPublicKey: [hex(4).slice(2), hex(5).slice(2)],
+      viewingPublicKey: hex(6).slice(2),
+      accountIndex: 0,
+    };
+    v.preparation.ownEvidence = evidence;
+    v.preparation.creator =
+      type === 'Shield'
+        ? {
+            type,
+            tree: capsule.selection.tree,
+            position: capsule.selection.position,
+            preimage: {
+              npk: hex(7),
+              token: {
+                tokenType: 0,
+                tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+                tokenSubID: hex(0),
+              },
+              value: capsule.preparation.inputAmount,
+            },
+            ciphertext: { encryptedBundle: [hex(8), hex(9), hex(10)], shieldKey: hex(11) },
+          }
+        : {
+            type,
+            tree: capsule.selection.tree,
+            position: capsule.selection.position,
+            hash: capsule.noteHash,
+            ciphertext: {
+              ciphertext: [hex(8), hex(9), hex(10), hex(11)],
+              blindedSenderViewingKey: hex(12),
+              blindedReceiverViewingKey: hex(13),
+              annotationData: '0x',
+              memo: '0x',
+            },
+          };
+    const state = { count: 1, root: hex(8).slice(2), transcript: hex(16).slice(2), breaks: [] };
+    v.preparation.state = state;
+    v.preparation.witness = {
+      row: JSON.parse(JSON.stringify(row)),
+      leaf: hex(17).slice(2),
+      railgunTxid: hex(9).slice(2),
+      rowSha256: require('crypto').createHash('sha256').update(JSON.stringify(row)).digest('hex'),
+      index: 0,
+      elements: Array(16).fill(hex(0).slice(2)),
+      root: state.root,
+      checkpointIndex: 0,
+      transcript: state.transcript,
+      continuity: require('./railgun-txid-omissions').classifyRailgunTxidContinuity(0, []),
+      globalTxidCompleteness: false,
+    };
+    return v;
   }
-);
+  test.each(['Shield', 'Transact'])(
+    'derives exact combined marker/count from real normalized %s input',
+    (type) => {
+      const v = partial(type),
+        normalized = normalize(v),
+        fields = expected(normalized);
+      expect(fields).toMatchObject({
+        railgunTxidIfHasUnshield: hex(9),
+        outputCount: 1,
+        txidMerklerootIndex: 0,
+      });
+      const p = { ...payload(), txidMerklerootIndex: 0, railgunTxidIfHasUnshield: hex(9) };
+      expect(bind(p, fields)).toEqual(p);
+      expect(Object.isFrozen(normalized.preparation.ownEvidence.capsule)).toBe(true);
+      v.preparation.ownEvidence.row.commitments.reverse();
+      expect(normalized.preparation.ownEvidence.row.commitments).not.toEqual(
+        v.preparation.ownEvidence.row.commitments
+      );
+    }
+  );
+  test.each([
+    'version',
+    'kind',
+    'order',
+    'extra-output',
+    'extra-input',
+    'receipt',
+    'state',
+    'witness-row',
+    'creator-value',
+    'list-count',
+  ])('refuses structurally inconsistent partial %s', (fault) => {
+    const v = partial(),
+      e = v.preparation.ownEvidence;
+    if (fault === 'version') e.capsule.version = 1;
+    if (fault === 'kind') e.capsule.selection.kind = 'railgun-token-unshield';
+    if (fault === 'order') e.row.commitments.reverse();
+    if (fault === 'extra-output') e.row.commitments.push(hex(33));
+    if (fault === 'extra-input') e.row.nullifiers.push(hex(33));
+    if (fault === 'receipt') e.receipt.logs.pop();
+    if (fault === 'state') v.preparation.state.root = hex(33).slice(2);
+    if (fault === 'witness-row') v.preparation.witness.row.commitments[0] = hex(33);
+    if (fault === 'creator-value') v.preparation.creator.preimage.value = '400';
+    if (fault === 'list-count') v.listProofs.push(v.listProofs[0]);
+    expect(() => normalize(v)).toThrow();
+  });
+  test.each(['zero-marker', 'foreign-marker', 'short-marker', 'no-change', 'two-changes'])(
+    'binder rejects partial %s even if a separate cryptographic verifier would return true',
+    (fault) => {
+      const fields = expected(partial());
+      const p = { ...payload(), txidMerklerootIndex: 0, railgunTxidIfHasUnshield: hex(9) };
+      if (fault === 'zero-marker') p.railgunTxidIfHasUnshield = '0x00';
+      if (fault === 'foreign-marker') p.railgunTxidIfHasUnshield = hex(10);
+      if (fault === 'short-marker') p.railgunTxidIfHasUnshield = '0x09';
+      if (fault === 'no-change') p.blindedCommitmentsOut = [];
+      if (fault === 'two-changes') p.blindedCommitmentsOut.push(hex(10));
+      expect(() => bind(p, fields)).toThrow();
+    }
+  );
+  test('transfer-shaped proof with a positive marker is not a transfer binding', () => {
+    const p = payload();
+    p.railgunTxidIfHasUnshield = hex(9);
+    expect(require('./railgun-poi-payload').normalizeRailgunPoiPayload(p)).toEqual(p);
+    expect(() =>
+      bind(p, { ...expected(partial()), txidMerklerootIndex: 5, railgunTxidIfHasUnshield: '0x00' })
+    ).toThrow();
+  });
+});

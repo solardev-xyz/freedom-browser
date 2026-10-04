@@ -56,6 +56,10 @@ now verifies the final unshield preimage for generic received-note provenance
 and bounded retained change recovery. Its self-change fixture reaches genuine
 local POI proving and encrypted recovery with simulated chain/services; it does
 not establish combined partial POI or the complete second-spend lifecycle.
+The subsequent [combined local POI checkpoint](railgun-combined-poi-2026-10-05.md)
+qualifies one actual proof for change plus withdrawal, both input creator types
+and exact application marker binding. Its genuine controller/persistence path
+remains unavailable.
 
 ## Next technical work
 
@@ -72,10 +76,12 @@ not establish combined partial POI or the complete second-spend lifecycle.
    operation admission remains limited to full-note spends. The new structural
    records express partial withdrawal, and native utility qualification now covers
    proof shape, amount conservation, change decryption and cold reconstruction.
-   Receipt/TXID primitives and creator authentication are implemented and qualified
-   independently.
+   Receipt/TXID primitives, creator authentication and standalone combined POI
+   are implemented and qualified independently.
    Enabling it still requires deployed verifier checks, reservation integration,
-   connected recovery, normal change ingestion and post-transaction POI. Do not merely
+   connected recovery, normal change ingestion and durable post-transaction POI.
+   Signed-but-unfinished proof resumption still needs a production recovery host;
+   native utility replay alone is not that host. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are
    already pinned in `railgun-artifacts.js`; the missing work is integration.

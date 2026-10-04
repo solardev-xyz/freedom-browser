@@ -91,8 +91,12 @@ async function prepareRailgunPoiWitness(options) {
     });
     active();
     const { row } = witness;
+    assert.ok(['unshield', 'shielded', 'partial-unshield'].includes(matched.output.kind));
+    const partial = matched.output.kind === 'partial-unshield';
+    const unshield = partial || matched.output.kind === 'unshield';
+    const ordinaryOutput = partial || !unshield;
     assert.equal(row.nullifiers.length, 1);
-    assert.equal(row.commitments.length, 1);
+    assert.equal(row.commitments.length, partial ? 2 : 1);
     assert.equal(row.utxoTreeIn, notes.utxoTreeIn);
     assert.equal(
       row.nullifiers[0],
@@ -115,16 +119,14 @@ async function prepareRailgunPoiWitness(options) {
     ];
     assert.equal(proofs[0].leaf, blindedIn[0].slice(2));
     assert.equal(imp('merkletree/merkle-proof').verifyMerkleProof(proofs[0]), true);
-    assert.ok(['unshield', 'shielded'].includes(matched.output.kind));
-    const unshield = matched.output.kind === 'unshield';
     assert.equal(Object.hasOwn(row, 'unshield'), unshield);
-    assert.equal(notes.npksOut.length, unshield ? 0 : 1);
-    assert.equal(notes.valuesOut.length, unshield ? 0 : 1);
-    if (!unshield) assert.ok(notes.valuesOut[0] > 0n);
+    assert.equal(notes.npksOut.length, ordinaryOutput ? 1 : 0);
+    assert.equal(notes.valuesOut.length, ordinaryOutput ? 1 : 0);
+    if (ordinaryOutput) assert.ok(notes.valuesOut[0] > 0n);
     const globalOut = getGlobalTreePosition(row.utxoTreeOut, row.utxoBatchStartPositionOut);
-    const blindedOut = unshield
-      ? []
-      : [BlindedCommitment.getForShieldOrTransact(row.commitments[0], notes.npksOut[0], globalOut)];
+    const blindedOut = ordinaryOutput
+      ? [BlindedCommitment.getForShieldOrTransact(row.commitments[0], notes.npksOut[0], globalOut)]
+      : [];
     // The circuit accepts either zero or TXID regardless of transaction kind.
     // The application must derive this marker; there is no override parameter.
     const marker = unshield ? BlindedCommitment.getForUnshield('0x' + witness.railgunTxid) : '0x00';

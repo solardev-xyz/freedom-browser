@@ -152,7 +152,7 @@ beforeEach(() => {
     selector: { tree: 0, position: 1, noteHash: hex(2), nullifier: hex(3) },
     facts: {},
     submitter: 'owner',
-    capsule: { noteHash: hex(2) },
+    capsule: { noteHash: hex(2), version: 1, selection: { kind: 'railgun-private-transfer' } },
     capsuleDigest: 'b'.repeat(64),
     provedTransaction: {},
     intent: {},
@@ -348,6 +348,25 @@ test.each(['refused', 'archive-anchor', 'legacy', 'transact', 'capsule', 'public
     expect((await run()).status).toBe('refused');
     expect(mockDerive).not.toHaveBeenCalled();
     expect(createRailgunPoiSource).not.toHaveBeenCalled();
+  }
+);
+test.each(['partial', 'version', 'kind'])(
+  'matching %s capsules refuse before the Shield selector or query',
+  async (fault) => {
+    const original = copy(mockPreflight);
+    const capsule =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData()
+        .capsule;
+    if (fault === 'version') capsule.selection.kind = 'railgun-token-unshield';
+    if (fault === 'kind') capsule.version = 1;
+    mockPreflight.capture.capsule = copy(capsule);
+    mockPreflight.poiPreparation.ownEvidence.capsule = copy(capsule);
+    expect(await run()).toEqual({ status: 'refused', stage: 'creator' });
+    expect(mockDerive).not.toHaveBeenCalled();
+    expect(mockCaptureRun).not.toHaveBeenCalled();
+    expect(createRailgunPoiSource).not.toHaveBeenCalled();
+    mockPreflight = original;
+    expect((await run()).status).toBe('verified');
   }
 );
 test.each(['bindingDigest', 'capsule', 'record'])(

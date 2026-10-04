@@ -140,6 +140,11 @@ async function createRailgunPoiIntentStore({
       );
     }
     const payload = normalizeRailgunPoiPayload(value.payload);
+    // Current documents deliberately exclude combined proofs until migration.
+    assert.equal(
+      BigInt(payload.railgunTxidIfHasUnshield) === 0n,
+      payload.blindedCommitmentsOut.length === 1
+    );
     assert.equal(value.payloadSha256, hash(JSON.stringify(payload)));
     let attempt;
     if (attempted) {
@@ -369,7 +374,17 @@ async function createRailgunPoiIntentStore({
       // validation derives it again from fresh authenticated source evidence;
       // records themselves do not persist a caller-controlled discriminator.
       assert.ok(['Shield', 'Transact'].includes(history.preparation.creator.type));
+      assert.equal(history.capture.capsule.version, 1);
+      assert.ok(
+        ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+          history.capture.capsule.selection.kind
+        )
+      );
       const payload = bindRailgunOwnPoiPayload(history.payload, history.expected);
+      assert.equal(
+        BigInt(payload.railgunTxidIfHasUnshield) === 0n,
+        payload.blindedCommitmentsOut.length === 1
+      );
       assert.equal(hash(JSON.stringify(payload)), history.payloadSha256);
       const currentProof = () => {
         active();
