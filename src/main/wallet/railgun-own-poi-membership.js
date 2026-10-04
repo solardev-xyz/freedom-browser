@@ -45,21 +45,34 @@ async function openRailgunOwnPoiMembership(options = {}) {
     parent,
     closed = false,
     drained = false,
+    sourceDrained = false,
+    resolveClosed,
     success = false;
   const owner = {},
-    controller = new AbortController();
-  const releaseOwner = () => {
+    controller = new AbortController(),
+    drain = new Promise((resolve) => (resolveClosed = resolve));
+  const finishClose = () => {
+    if (!closed || !drained || (source && !sourceDrained)) return;
     if (owners.get(ownerDirectory) === owner) owners.delete(ownerDirectory);
+    resolveClosed();
   };
   const close = () => {
     if (closed) return;
     closed = true;
     clearTimeout(timer);
     controller.abort();
-    source?.close();
-    scope?.close();
-    // Abort revokes admission; it never releases an in-flight phase/owner.
-    if (drained) releaseOwner();
+    try {
+      source?.close();
+    } catch {
+      // A close request is not drain evidence; retain the owner until closed.
+    }
+    try {
+      scope?.close();
+    } catch {
+      // Cleanup is also called by abort listeners and must not throw.
+    }
+    // Abort revokes admission; phase/work and source drain retain the owner.
+    finishClose();
   };
   try {
     assert.ok(options && typeof options === 'object' && !Array.isArray(options));
@@ -194,6 +207,15 @@ async function openRailgunOwnPoiMembership(options = {}) {
     ]);
     current();
     source = createRailgunPoiSource({ handle, notes });
+    const sourceClosed = source.closed;
+    assert.ok(sourceClosed && typeof sourceClosed.then === 'function');
+    sourceClosed.then(
+      () => {
+        sourceDrained = true;
+        finishClose();
+      },
+      () => close()
+    );
     source.signal.addEventListener('abort', close, { once: true });
     current();
     const acquisitionStarted = performance.now();
@@ -277,15 +299,28 @@ async function openRailgunOwnPoiMembership(options = {}) {
     timer = setTimeout(close, acquisitionRemaining(MAX_AGE_MS));
     timer.unref?.();
     success = true;
-    return Object.freeze({ status: 'verified', receipt, observation, close, signal: scope.signal });
+    return Object.freeze({
+      status: 'verified',
+      receipt,
+      observation,
+      close,
+      closed: drain,
+      signal: scope.signal,
+    });
   } catch {
     return Object.freeze({ status: 'refused', stage });
   } finally {
-    phase?.release();
-    phase = undefined;
-    drained = true;
-    if (!success) close();
-    if (closed) releaseOwner();
+    try {
+      phase?.release();
+    } finally {
+      phase = undefined;
+      drained = true;
+      if (!success) close();
+      finishClose();
+      // The public open wrapper is not part of the work flag. A refusal waits
+      // here only after all admitted work and phase cleanup have completed.
+      if (closed) await drain;
+    }
   }
 }
 function assertRailgunOwnPoiMembership(receipt, enrollment, coordinator, minimumRemainingMs = 0) {

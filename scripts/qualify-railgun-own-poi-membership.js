@@ -234,6 +234,8 @@ const sources = [
   'src/main/wallet/railgun-poi-shield-selector-data.js',
   'src/main/wallet/railgun-poi-shield-selector-job.js',
   'src/main/wallet/railgun-poi-source.js',
+  'src/main/wallet/railgun-poi-source.test.js',
+  'src/main/wallet/railgun-poi-membership.test.js',
   'src/main/wallet/railgun-poi-membership.js',
   'src/main/wallet/railgun-poi-records.js',
   'src/main/wallet/railgun-poi-job.js',
@@ -429,7 +431,9 @@ async function main() {
     hold,
     releaseTransport,
     heldTask,
-    onRoot;
+    onRoot,
+    membershipDrain;
+  const membershipDrainGates = new Set();
   let identity,
     enrollment,
     journalScope,
@@ -512,13 +516,29 @@ async function main() {
     if (checking) {
       checksRoots.creates++;
       let closed = false,
-        used = false;
+        used = false,
+        pending = 0;
+      const completion = deferred();
+      const drain = () => {
+        if (closed && pending === 0) completion.resolve();
+      };
       const client = {
+        closed: completion.promise,
         close() {
           if (!closed) checksRoots.closes++;
           closed = true;
+          drain();
         },
         async request(handle, url, options) {
+          pending++;
+          try {
+            return await client.read(handle, url, options);
+          } finally {
+            pending--;
+            drain();
+          }
+        },
+        async read(handle, url, options) {
           const held = checksHold;
           try {
             checksRoots.attempted++;
@@ -632,13 +652,37 @@ async function main() {
     transportCreates++;
     let closed = false,
       operation,
-      cursor = 0;
+      cursor = 0,
+      pending = 0;
+    const completion = deferred(),
+      gate = membershipDrain;
+    let transportReleased = !gate;
+    const drain = () => {
+      if (closed && pending === 0 && transportReleased) completion.resolve();
+    };
+    gate?.release.promise.then(() => {
+      transportReleased = true;
+      drain();
+    });
     const client = {
+      closed: completion.promise,
       close() {
         if (!closed) transportCloses++;
         closed = true;
+        gate?.closeRequested.resolve();
+        drain();
       },
       async request(handle, url, options) {
+        pending++;
+        try {
+          return await client.read(handle, url, options);
+        } finally {
+          pending--;
+          if (closed && pending === 0) gate?.requestSettled.resolve();
+          drain();
+        }
+      },
+      async read(handle, url, options) {
         // Count before every assertion, including context and cancellation.
         const body = JSON.parse(options.body);
         if (!Object.hasOwn(poiMethods, body.method) || url !== 'https://ppoi.fdi.network') {
@@ -905,7 +949,10 @@ async function main() {
       close() {
         closed = true;
         poiTransport?.close();
-        Promise.resolve(poiTransport?.closed).then(resolveClosed);
+        if (poiTransport) {
+          assert.ok(poiTransport.closed instanceof Promise);
+          poiTransport.closed.then(resolveClosed);
+        } else resolveClosed();
       },
       async request(handle, url, options) {
         assert.equal(closed, false);
@@ -2273,7 +2320,10 @@ async function main() {
           options.signal ?? enrollment.signal,
         ]),
       }).then((value) => {
-        if (value.status === 'verified') results.add(value);
+        if (value.status === 'verified') {
+          assert.ok(value.closed instanceof Promise);
+          results.add(value);
+        }
         return value;
       });
       pendingOperations.add(work);
@@ -2337,6 +2387,7 @@ async function main() {
         assertMembership(value.receipt, enrollment, publicAccount.coordinator, 60000)
       );
       value.close();
+      await value.closed;
       results.delete(value);
       assert.throws(() => assertMembership(value.receipt, enrollment, publicAccount.coordinator));
       assert.deepEqual(await journal.readSnapshot(), snapshot);
@@ -2369,6 +2420,50 @@ async function main() {
       runs.push({ mode: name, refused: true, stage, noPoiOrChainCalls: true });
     }
     await success('active');
+    phase = 'idle-transport-drain';
+    membershipDrain = {
+      release: deferred(),
+      closeRequested: deferred(),
+      requestSettled: deferred(),
+    };
+    membershipDrainGates.add(membershipDrain);
+    const idleBefore = counts(),
+      idleMember = await call();
+    assert.equal(idleMember.status, 'verified');
+    checkDelta(idleBefore, [1, 1, 1, 1], 1);
+    let idleClosed = false;
+    assert.ok(idleMember.closed instanceof Promise);
+    idleMember.closed.then(() => {
+      idleClosed = true;
+    });
+    idleMember.close();
+    await membershipDrain.closeRequested.promise;
+    assert.throws(() =>
+      assertMembership(idleMember.receipt, enrollment, publicAccount.coordinator)
+    );
+    const idleBusy = counts();
+    assert.deepEqual(await call(), { status: 'refused', stage: 'context' });
+    assert.deepEqual(counts(), idleBusy);
+    assert.equal(idleClosed, false);
+    membershipDrain.release.resolve();
+    await idleMember.closed;
+    assert.equal(idleClosed, true);
+    results.delete(idleMember);
+    membershipDrain = undefined;
+    const reopenBefore = counts(),
+      reopenedMember = await call();
+    assert.equal(reopenedMember.status, 'verified');
+    checkDelta(reopenBefore, [1, 1, 1, 1], 1);
+    reopenedMember.close();
+    await reopenedMember.closed;
+    results.delete(reopenedMember);
+    runs.push({
+      mode: 'idle-transport-drain',
+      revokedImmediately: true,
+      directoryHeldUntilTransport: true,
+      reopenedAfterDrain: true,
+    });
+
     phase = 'routine-journal-refresh';
     let refreshed;
     const refreshCounts = counts();
@@ -2396,6 +2491,7 @@ async function main() {
     );
     assert.deepEqual((await journal.list())[0], refreshed);
     refreshResult.close();
+    await refreshResult.closed;
     results.delete(refreshResult);
     checkDelta(refreshCounts, [1, 1, 1, 1], 1);
     runs.push({
@@ -2464,9 +2560,17 @@ async function main() {
         journalUnchanged: true,
       });
     }
-    for (const fault of ['transport-drain', 'utility-drain']) {
-      phase = fault;
+    for (const [fault, drainOrder] of [
+      ['transport-drain', 'request-first'],
+      ['transport-drain', 'close-first'],
+      ['utility-drain', null],
+    ]) {
+      phase = fault + (drainOrder ? ':' + drainOrder : '');
       mode = fault;
+      membershipDrain = drainOrder
+        ? { release: deferred(), closeRequested: deferred(), requestSettled: deferred() }
+        : undefined;
+      if (membershipDrain) membershipDrainGates.add(membershipDrain);
       hold = deferred();
       releaseTransport = deferred();
       const a = counts(),
@@ -2500,6 +2604,22 @@ async function main() {
       assert.deepEqual(counts(), beforeCompeting);
       await Promise.resolve();
       assert.equal(settled, false);
+      if (membershipDrain) {
+        await membershipDrain.closeRequested.promise;
+        if (drainOrder === 'request-first') {
+          releaseTransport.resolve();
+          await membershipDrain.requestSettled.promise;
+        } else membershipDrain.release.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(settled, false);
+        const beforeSecondCompeting = counts();
+        assert.deepEqual(await call({ signal: new AbortController().signal }), {
+          status: 'refused',
+          stage: 'context',
+        });
+        assert.deepEqual(counts(), beforeSecondCompeting);
+        membershipDrain.release.resolve();
+      }
       releaseTransport.resolve();
       const result = await pending;
       assert.deepEqual(result, {
@@ -2516,13 +2636,16 @@ async function main() {
       free.release();
       assert.deepEqual(await journal.readSnapshot(), snapshot);
       runs.push({
-        mode: fault,
+        mode: phase,
         refused: true,
         pendingUntilDrain: true,
+        independentTransportBarrier: !!drainOrder,
+        drainOrder,
         phaseHeldUntilExit: fault === 'utility-drain',
         journalUnchanged: true,
       });
       heldTask = undefined;
+      membershipDrain = undefined;
     }
     await publicAccount.close();
     publicAccount = undefined;
@@ -2653,6 +2776,7 @@ async function main() {
         assert.equal(proofJobs.viewing, before);
       } finally {
         member.close();
+        await member.closed;
         results.delete(member);
       }
       for (const fault of [
@@ -2668,6 +2792,7 @@ async function main() {
           await proofCall(member, fault, fault === 'early-timeout' ? { timeoutMs: 70000 } : {});
         } finally {
           member.close();
+          await member.closed;
           results.delete(member);
         }
       }
@@ -4417,6 +4542,7 @@ async function main() {
         'forged-enrollment',
         'wrong-selector',
         'active',
+        'idle-transport-drain',
         'routine-journal-refresh',
         'archive-transition',
         'archived',
@@ -4426,7 +4552,8 @@ async function main() {
         'root',
         'path',
         'index',
-        'transport-drain',
+        'transport-drain:request-first',
+        'transport-drain:close-first',
         'utility-drain',
         'healthy-reopen-after-refusals',
         'final-journal-drift',
@@ -4435,12 +4562,12 @@ async function main() {
     const additionalMemberships = proofMode ? 7 : 0;
     assert.deepEqual(
       Object.values(poiMethods),
-      [14, 13, 12, 11].map((v) => v + additionalMemberships)
+      [17, 16, 14, 13].map((v) => v + additionalMemberships)
     );
-    assert.equal(signature.attempts(), 12 + additionalMemberships);
-    assert.equal(transportCreates, 14 + additionalMemberships);
-    assert.equal(jobs.membership, 10 + additionalMemberships);
-    assert.equal(jobs.selector, 14 + additionalMemberships);
+    assert.equal(signature.attempts(), 14 + additionalMemberships);
+    assert.equal(transportCreates, 17 + additionalMemberships);
+    assert.equal(jobs.membership, 12 + additionalMemberships);
+    assert.equal(jobs.selector, 17 + additionalMemberships);
     assert.equal(transportCreates, transportCloses);
     assert.equal(jobs.membership, jobs.membershipExit);
     assert.equal(jobs.selector, jobs.selectorExit);
@@ -4582,6 +4709,7 @@ async function main() {
     for (const value of checksResults) value.close();
     for (const release of recoveryReleases) release.resolve();
     releaseTransport?.resolve();
+    for (const gate of membershipDrainGates) gate.release.resolve();
     heldTask?.close();
     task?.close();
     for (const value of results) value.close();
@@ -4589,6 +4717,7 @@ async function main() {
     try {
       const operations = await Promise.allSettled([...pendingOperations]);
       const drained = await Promise.allSettled([
+        ...[...results].map((value) => value.closed),
         ...planResults.map((value) => value.closed),
         ...[...checksResults].map((value) => value.closed),
         ...(intentStore ? [intentStore.closed] : []),

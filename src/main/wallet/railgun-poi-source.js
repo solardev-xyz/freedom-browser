@@ -52,28 +52,68 @@ function createRailgunPoiSource({ handle, notes: input }) {
     signal: AbortSignal.any([context.signal, endpoint.signal, controller.signal]),
     isCurrent: () => tor.getWalletSocksEndpoint() === endpoint,
   });
-  const scopedHandle = scope.getContext(subject),
-    transport = createWalletTorTransport();
   const receipts = new WeakMap();
-  let busy = false,
+  let scopedHandle,
+    transport,
+    busy = false,
     closed = false,
+    transportDrained = false,
+    resolveClosed,
     sequence = 0,
     acquisitionStarted,
     acquisitionBudget;
+  const drained = new Promise((resolve) => (resolveClosed = resolve));
+  const finishClose = () => {
+    // busy covers only inner acquisition work, never the public wrapper's
+    // terminal wait below. Otherwise acquire -> closed -> acquire deadlocks.
+    if (closed && !busy && transportDrained) resolveClosed();
+  };
   const close = () => {
     if (closed) return;
     closed = true;
     scope.signal.removeEventListener('abort', close);
     controller.abort();
-    scope.close();
-    transport.close();
+    try {
+      scope.close();
+    } catch {
+      // Abort listeners must not throw or skip the transport close request.
+    }
+    try {
+      transport?.close();
+    } catch {
+      // Only its actual closed barrier can establish physical drain.
+    }
+    finishClose();
   };
-  scope.signal.addEventListener('abort', close, { once: true });
   const active = () => {
     check(!closed && !scope.signal.aborted);
     getPrivacyContext(handle);
     check(tor.getWalletSocksEndpoint() === endpoint);
   };
+  try {
+    scopedHandle = scope.getContext(subject);
+    transport = createWalletTorTransport();
+    const barrier = transport.closed;
+    check(barrier && typeof barrier.then === 'function');
+    barrier.then(
+      () => {
+        transportDrained = true;
+        finishClose();
+      },
+      () => {
+        // The real transport never rejects. Consume a contract violation but
+        // never turn it into evidence that its sockets have actually closed.
+        close();
+      }
+    );
+    scope.signal.addEventListener('abort', close, { once: true });
+    active();
+  } catch {
+    // A synchronous factory failure cannot promise construction-time drain,
+    // but must revoke the scope and request cleanup of any returned transport.
+    close();
+    throw fail();
+  }
   async function request(method, params) {
     active();
     const now = performance.now();
@@ -127,6 +167,8 @@ function createRailgunPoiSource({ handle, notes: input }) {
     const started = acquisitionStarted;
     const timer = setTimeout(close, acquisitionBudget);
     timer.unref?.();
+    let result,
+      failed = false;
     try {
       const statuses = normalizePoiStatuses(
         await request('ppoi_pois_per_list', {
@@ -183,14 +225,22 @@ function createRailgunPoiSource({ handle, notes: input }) {
       });
       const receipt = Object.freeze({});
       receipts.set(receipt, { sequence: current, at: started, observation });
-      return Object.freeze({ receipt, observation });
+      result = Object.freeze({ receipt, observation });
     } catch {
+      failed = true;
       close();
-      throw fail();
     } finally {
       clearTimeout(timer);
       busy = false;
+      finishClose();
     }
+    if (failed) {
+      // All request/validation work has settled before waiting on terminal
+      // closure. A healthy acquisition leaves the source and this barrier open.
+      await drained;
+      throw fail();
+    }
+    return result;
   }
   function assertResult(receipt, minimumRemainingMs = 0) {
     active();
@@ -210,7 +260,13 @@ function createRailgunPoiSource({ handle, notes: input }) {
     );
     return entry.observation;
   }
-  const source = Object.freeze({ acquire, assertResult, close, signal: scope.signal });
+  const source = Object.freeze({
+    acquire,
+    assertResult,
+    close,
+    closed: drained,
+    signal: scope.signal,
+  });
   sources.set(source, { handle, notes });
   return source;
 }

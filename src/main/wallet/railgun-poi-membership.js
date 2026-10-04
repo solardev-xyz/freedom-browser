@@ -24,6 +24,8 @@ async function verifyRailgunPoiMembership({
 }) {
   check(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 180000);
   const notes = assertRailgunPoiSource(source, handle);
+  const sourceClosed = source.closed;
+  check(sourceClosed && typeof sourceClosed.then === 'function');
   const observation = source.assertResult(receipt);
   check(
     observation.rootsAccepted === true && observation.statuses.every((n) => n.status === 'Valid')
@@ -156,6 +158,9 @@ async function verifyRailgunPoiMembership({
     return Object.freeze({ receipt: membershipReceipt, observation: verified });
   } catch {
     refuse();
+    // Child exit was observed above; only failure waits for terminal source
+    // drain. Healthy verification keeps the service receipt usable.
+    await sourceClosed;
     throw fail();
   }
 }

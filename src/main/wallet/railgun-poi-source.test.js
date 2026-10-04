@@ -1,9 +1,22 @@
 let mockEndpoint;
+const mockScopes = [];
 const mockRequest = jest.fn(),
-  mockClose = jest.fn();
+  mockClose = jest.fn(),
+  mockFactory = jest.fn();
 jest.mock('../networks/wallet-tor-transport', () => ({
-  createWalletTorTransport: () => ({ request: mockRequest, close: mockClose }),
+  createWalletTorTransport: (...args) => mockFactory(...args),
 }));
+jest.mock('../networks/privacy-context', () => {
+  const actual = jest.requireActual('../networks/privacy-context');
+  return {
+    ...actual,
+    createPrivacyScope: (...args) => {
+      const scope = actual.createPrivacyScope(...args);
+      mockScopes.push(scope);
+      return scope;
+    },
+  };
+});
 jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint }));
 jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => true }));
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
@@ -30,6 +43,23 @@ const subject = {
 let scope, handle, source, replyStatus, accepted;
 beforeEach(() => {
   jest.clearAllMocks();
+  mockClose.mockReset();
+  mockFactory.mockReset();
+  mockScopes.length = 0;
+  mockFactory.mockImplementation(() => {
+    let resolve;
+    const closed = new Promise((done) => {
+      resolve = done;
+    });
+    return {
+      request: mockRequest,
+      closed,
+      close: () => {
+        mockClose();
+        resolve();
+      },
+    };
+  });
   mockEndpoint = { signal: new AbortController().signal };
   scope = createPrivacyScope({ profileId: 'poi-test', signal: new AbortController().signal });
   handle = scope.getContext(subject);
@@ -253,5 +283,335 @@ test('public sync, wrong chain, unscoped operations and stronger requirements ar
   expect(() =>
     createRailgunPoiSource({ handle: scope.getContext(subject, { correctness: 'proof' }), notes })
   ).toThrow();
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+const drainedTurn = () => new Promise((resolve) => setImmediate(resolve));
+const drainGate = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+function heldTransport() {
+  const exit = drainGate();
+  const transport = { request: mockRequest, close: mockClose, closed: exit.promise };
+  mockFactory.mockReturnValueOnce(transport);
+  return { exit, transport };
+}
+test('healthy repeated acquisitions leave the single terminal promise pending until close', async () => {
+  const client = open();
+  const closed = client.closed;
+  let drained = false;
+  closed.then(() => {
+    drained = true;
+  });
+  const first = await client.acquire();
+  expect(client.assertResult(first.receipt)).toBe(first.observation);
+  const second = await client.acquire();
+  expect(client.assertResult(second.receipt)).toBe(second.observation);
+  await drainedTurn();
+  expect(drained).toBe(false);
+  expect(client.closed).toBe(closed);
+  client.close();
+  client.close();
+  expect(client.signal.aborted).toBe(true);
+  await closed;
+  expect(drained).toBe(true);
+  expect(mockClose).toHaveBeenCalledTimes(1);
+});
+test.each(['explicit', 'parent', 'tor'])(
+  'unused source %s revocation waits the actual transport barrier',
+  async (kind) => {
+    const tor = new AbortController();
+    mockEndpoint = { signal: tor.signal };
+    const { exit } = heldTransport();
+    const client = open();
+    let drained = false;
+    client.closed.then(() => {
+      drained = true;
+    });
+    if (kind === 'explicit') client.close();
+    if (kind === 'parent') scope.close();
+    if (kind === 'tor') tor.abort();
+    expect(client.signal.aborted).toBe(true);
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    await drainedTurn();
+    expect(drained).toBe(false);
+    expect(mockRequest).not.toHaveBeenCalled();
+    exit.resolve();
+    await client.closed;
+    expect(drained).toBe(true);
+  }
+);
+test.each(['request-first', 'transport-first'])(
+  'source close drains ignored-cancellation request and transport independently: %s',
+  async (order) => {
+    const { exit } = heldTransport(),
+      reply = drainGate();
+    const normal = mockRequest.getMockImplementation();
+    mockRequest.mockImplementationOnce(async (...args) => {
+      await reply.promise;
+      return normal(...args);
+    });
+    const client = open();
+    let settled = false,
+      drained = false;
+    client.closed.then(() => {
+      drained = true;
+    });
+    const pending = client.acquire().then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    client.close();
+    try {
+      expect(mockRequest.mock.calls[0][2].signal.aborted).toBe(true);
+      if (order === 'request-first') reply.resolve();
+      else exit.resolve();
+      await drainedTurn();
+      expect(settled).toBe(false);
+      expect(drained).toBe(false);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+      if (order === 'request-first') exit.resolve();
+      else reply.resolve();
+      expect(await pending).toMatchObject({ error: { code: 'RAILGUN_POI_SOURCE_REFUSED' } });
+      await client.closed;
+      expect(drained).toBe(true);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      reply.resolve();
+      exit.resolve();
+      await pending;
+    }
+  }
+);
+test.each(['json', 'status', 'signature', 'root'])(
+  '%s response refusal waits transport drain after inner acquisition settles',
+  async (fault) => {
+    const { exit } = heldTransport();
+    const normal = mockRequest.getMockImplementation();
+    mockRequest.mockImplementation(async (...args) => {
+      const reply = await normal(...args),
+        method = JSON.parse(args[2].body).method;
+      if (fault === 'json') reply.body = Buffer.from('{');
+      if (fault === 'status' && method === 'ppoi_pois_per_list')
+        reply.body = Buffer.from(JSON.stringify({ ...JSON.parse(reply.body), result: {} }));
+      if (fault === 'signature' && method === 'ppoi_poi_events') {
+        const value = JSON.parse(reply.body);
+        value.result[0].signedPOIEvent.signature = '0'.repeat(128);
+        reply.body = Buffer.from(JSON.stringify(value));
+      }
+      if (fault === 'root' && method === 'ppoi_validate_poi_merkleroots')
+        reply.body = Buffer.from(JSON.stringify({ ...JSON.parse(reply.body), result: 'true' }));
+      return reply;
+    });
+    const client = open();
+    let settled = false;
+    const pending = client.acquire().then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      await drainedTurn();
+      expect(client.signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      exit.resolve();
+      expect(await pending).toMatchObject({
+        error: { code: 'RAILGUN_POI_SOURCE_REFUSED', message: 'Railgun POI source unavailable' },
+      });
+      await client.closed;
+    } finally {
+      exit.resolve();
+      await pending;
+    }
+  }
+);
+test.each(['throw', 'falsy', 'reentrant'])(
+  'synchronous %s request failure clears inner work before awaiting drain',
+  async (mode) => {
+    const { exit } = heldTransport();
+    const client = open();
+    mockRequest.mockImplementation(() => {
+      if (mode === 'reentrant') {
+        client.close();
+        return Promise.resolve({ status: 200, body: Buffer.from('{}') });
+      }
+      if (mode === 'falsy') throw undefined;
+      throw Error('PRIVATE transport failure');
+    });
+    let settled = false;
+    const pending = client.acquire().then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      await drainedTurn();
+      expect(client.signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      expect(mockRequest).toHaveBeenCalledTimes(1);
+      exit.resolve();
+      expect(await pending).toMatchObject({ error: { code: 'RAILGUN_POI_SOURCE_REFUSED' } });
+      await client.closed;
+    } finally {
+      exit.resolve();
+      await pending;
+    }
+  }
+);
+test('overlapping and malformed acquisition refusals preserve admitted work and healthy lifetime', async () => {
+  const reply = drainGate();
+  const normal = mockRequest.getMockImplementation();
+  mockRequest.mockImplementationOnce(async (...args) => {
+    await reply.promise;
+    return normal(...args);
+  });
+  const client = open(),
+    pending = client.acquire();
+  try {
+    await expect(client.acquire()).rejects.toMatchObject({ code: 'RAILGUN_POI_SOURCE_REFUSED' });
+    await expect(client.acquire({ timeoutMs: 0 })).rejects.toMatchObject({
+      code: 'RAILGUN_POI_SOURCE_REFUSED',
+    });
+    expect(client.signal.aborted).toBe(false);
+    expect(mockClose).not.toHaveBeenCalled();
+  } finally {
+    reply.resolve();
+  }
+  expect((await pending).observation.rootsAccepted).toBe(true);
+  client.close();
+  await client.closed;
+});
+test('deadline abort retains request and transport barriers without a self-wait', async () => {
+  jest.useFakeTimers();
+  const { exit } = heldTransport(),
+    reply = drainGate();
+  const normal = mockRequest.getMockImplementation();
+  mockRequest.mockImplementationOnce(async (...args) => {
+    await reply.promise;
+    return normal(...args);
+  });
+  const client = open();
+  let settled = false;
+  const pending = client.acquire({ timeoutMs: 10 }).then(
+    (value) => {
+      settled = true;
+      return { value };
+    },
+    (error) => {
+      settled = true;
+      return { error };
+    }
+  );
+  try {
+    await jest.advanceTimersByTimeAsync(10);
+    expect(client.signal.aborted).toBe(true);
+    expect(settled).toBe(false);
+    reply.resolve();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    exit.resolve();
+    expect(await pending).toMatchObject({ error: { code: 'RAILGUN_POI_SOURCE_REFUSED' } });
+    await client.closed;
+  } finally {
+    reply.resolve();
+    exit.resolve();
+    await pending;
+    jest.useRealTimers();
+  }
+});
+test('rejecting transport closure revokes the source but cannot become successful drain evidence', async () => {
+  const transport = {
+    request: mockRequest,
+    close: mockClose,
+    closed: Promise.reject(Error('PRIVATE impossible transport rejection')),
+  };
+  mockFactory.mockReturnValueOnce(transport);
+  const client = open();
+  let drained = false;
+  client.closed.then(() => {
+    drained = true;
+  });
+  await drainedTurn();
+  expect(client.signal.aborted).toBe(true);
+  expect(mockClose).toHaveBeenCalledTimes(1);
+  expect(drained).toBe(false);
+  client.close();
+  await drainedTurn();
+  expect(drained).toBe(false);
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+test('throwing synchronous transport close cannot bypass its held closure proof', async () => {
+  const { exit } = heldTransport();
+  mockClose.mockImplementation(() => {
+    throw Error('PRIVATE close failure');
+  });
+  const client = open();
+  let drained = false;
+  client.closed.then(() => {
+    drained = true;
+  });
+  expect(() => client.close()).not.toThrow();
+  expect(client.signal.aborted).toBe(true);
+  await drainedTurn();
+  expect(drained).toBe(false);
+  exit.resolve();
+  await client.closed;
+});
+test('transport factory failure revokes its newly allocated scope before throwing', () => {
+  const before = mockScopes.length;
+  mockFactory.mockImplementationOnce(() => {
+    throw Error('PRIVATE factory failure');
+  });
+  expect(open).toThrow();
+  expect(mockScopes.length).toBe(before + 1);
+  expect(mockScopes.at(-1).signal.aborted).toBe(true);
+  expect(scope.signal.aborted).toBe(false);
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+test('a returned transport without the genuine closed contract is refused and closed', () => {
+  mockFactory.mockReturnValueOnce({ request: mockRequest, close: mockClose });
+  expect(open).toThrow();
+  expect(mockScopes.at(-1).signal.aborted).toBe(true);
+  expect(mockClose).toHaveBeenCalledTimes(1);
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('parent cancellation during transport construction closes the returned resource and refuses', async () => {
+  const exit = drainGate();
+  mockFactory.mockImplementationOnce(() => {
+    scope.close();
+    return { request: mockRequest, close: mockClose, closed: exit.promise };
+  });
+  expect(open).toThrow('Railgun POI source unavailable');
+  expect(mockScopes.at(-1).signal.aborted).toBe(true);
+  expect(mockClose).toHaveBeenCalledTimes(1);
+  expect(mockRequest).not.toHaveBeenCalled();
+  exit.resolve();
+  await drainedTurn();
+});
+test('an already revoked parent refuses before transport construction', () => {
+  scope.close();
+  expect(open).toThrow();
+  expect(mockFactory).not.toHaveBeenCalled();
   expect(mockRequest).not.toHaveBeenCalled();
 });

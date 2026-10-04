@@ -1,9 +1,21 @@
-let mockEndpoint, mockJobMode, mockExit, mockReleaseJob;
+let mockEndpoint, mockJobMode, mockExit, mockReleaseJob, mockTransportExit, mockHoldTransport;
 const mockRequest = jest.fn(),
   mockTransportClose = jest.fn(),
   mockStart = jest.fn();
 jest.mock('../networks/wallet-tor-transport', () => ({
-  createWalletTorTransport: () => ({ request: mockRequest, close: mockTransportClose }),
+  createWalletTorTransport: () => {
+    const closed = new Promise((resolve) => {
+      mockTransportExit = resolve;
+    });
+    return {
+      request: mockRequest,
+      closed,
+      close: () => {
+        mockTransportClose();
+        if (!mockHoldTransport) mockTransportExit();
+      },
+    };
+  },
 }));
 jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint }));
 jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => true }));
@@ -38,6 +50,8 @@ let scope, handle, source, accepted, replyStatus;
 beforeEach(() => {
   jest.clearAllMocks();
   mockTransportClose.mockReset();
+  mockHoldTransport = false;
+  mockTransportExit = undefined;
   mockJobMode = null;
   mockExit = undefined;
   mockReleaseJob = undefined;
@@ -90,6 +104,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  mockTransportExit?.();
   mockTransportClose.mockReset();
   source.close();
   scope.close();
@@ -479,9 +494,11 @@ test('source cleanup throwing after revocation cannot skip task closure or expos
     expect(source.signal.aborted).toBe(true);
     expect(settled).toBe(false);
     state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+    mockTransportExit();
     expect(await pending).toMatchObject({ error: membershipRefusal });
   } finally {
     state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+    mockTransportExit();
     await pending;
   }
 });
@@ -531,4 +548,126 @@ test('a caught but unawaited malformed broker call after valid result cannot pub
   await expect(run(observed.receipt)).rejects.toMatchObject(membershipRefusal);
   expect(state.driverFinished).toBe(true);
   expect(state.task.close).toHaveBeenCalled();
+});
+
+test.each(['child-first', 'source-first'])(
+  'failed verifier waits for both child exit and source transport drain: %s',
+  async (order) => {
+    const observed = await source.acquire();
+    mockHoldTransport = true;
+    const state = adversarialTask(refusingProtocol('same-turn', 'json'), { delayedExit: true });
+    let settled = false;
+    const pending = run(observed.receipt).then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      await turn();
+      await turn();
+      expect(source.signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      if (order === 'child-first') state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+      else mockTransportExit();
+      await turn();
+      expect(settled).toBe(false);
+      if (order === 'child-first') mockTransportExit();
+      else state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+      expect(await pending).toMatchObject({ error: membershipRefusal });
+      await source.closed;
+    } finally {
+      state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+      mockTransportExit();
+      await pending;
+    }
+  }
+);
+test('healthy verification returns while its genuine source remains open and undrained', async () => {
+  mockHoldTransport = true;
+  const observed = await source.acquire();
+  let drained = false;
+  source.closed.then(() => {
+    drained = true;
+  });
+  const result = await run(observed.receipt);
+  expect(assertRailgunPoiMembership(result.receipt, handle)).toBe(result.observation);
+  await turn();
+  expect(drained).toBe(false);
+  expect(source.signal.aborted).toBe(false);
+  source.close();
+  expect(() => assertRailgunPoiMembership(result.receipt, handle)).toThrow();
+  await turn();
+  expect(drained).toBe(false);
+  mockTransportExit();
+  await source.closed;
+});
+test('throwing child close does not release failure before the source transport drains', async () => {
+  const observed = await source.acquire();
+  mockHoldTransport = true;
+  const state = adversarialTask(refusingProtocol('same-turn', 'json'), {
+    delayedExit: true,
+    throwingClose: true,
+  });
+  let settled = false;
+  const pending = run(observed.receipt).then(
+    (value) => {
+      settled = true;
+      return { value };
+    },
+    (error) => {
+      settled = true;
+      return { error };
+    }
+  );
+  try {
+    await turn();
+    state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+    await turn();
+    expect(settled).toBe(false);
+    mockTransportExit();
+    expect(await pending).toMatchObject({ error: membershipRefusal });
+  } finally {
+    state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+    mockTransportExit();
+    await pending;
+  }
+});
+test('late source expiry after successful child exit still awaits source transport closure', async () => {
+  const observed = await source.acquire();
+  mockHoldTransport = true;
+  const state = adversarialTask(
+    async (broker, value) => broker.dispatch(JSON.stringify({ id: 2, method: 'result', value })),
+    { delayedExit: true }
+  );
+  let settled = false;
+  const pending = run(observed.receipt).then(
+    (value) => {
+      settled = true;
+      return { value };
+    },
+    (error) => {
+      settled = true;
+      return { error };
+    }
+  );
+  try {
+    await turn();
+    await turn();
+    expect(state.task.close).toHaveBeenCalled();
+    source.close();
+    state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+    await turn();
+    expect(settled).toBe(false);
+    mockTransportExit();
+    expect(await pending).toMatchObject({ error: membershipRefusal });
+  } finally {
+    state.exit({ code: 'RAILGUN_PROCESS_CLOSED' });
+    mockTransportExit();
+    await pending;
+  }
 });

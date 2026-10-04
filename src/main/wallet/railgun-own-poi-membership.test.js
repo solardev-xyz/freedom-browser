@@ -81,7 +81,25 @@ const {
 } = require('./railgun-own-poi-membership');
 const copy = (v) => JSON.parse(JSON.stringify(v)),
   hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
-let scope, caller, coordinatorController, sourceController, options, opened;
+let scope, caller, coordinatorController, sourceController, options, opened, sourceExit, holdSource;
+function renewSourceLifetime() {
+  const controller = new AbortController();
+  let resolve;
+  const closed = new Promise((done) => {
+    resolve = done;
+  });
+  sourceController = controller;
+  sourceExit = resolve;
+  mockSource = {
+    ...mockSource,
+    signal: controller.signal,
+    closed,
+    close: jest.fn(() => {
+      controller.abort();
+      if (!holdSource) resolve();
+    }),
+  };
+}
 beforeEach(() => {
   jest.clearAllMocks();
   jest.useRealTimers();
@@ -93,6 +111,7 @@ beforeEach(() => {
   caller = new AbortController();
   coordinatorController = new AbortController();
   sourceController = new AbortController();
+  holdSource = false;
   mockCoordinator = { signal: coordinatorController.signal };
   mockEnrollment = {
     directory: '/synthetic-own-poi',
@@ -184,7 +203,7 @@ beforeEach(() => {
   };
   mockSource = {
     signal: sourceController.signal,
-    close: jest.fn(() => sourceController.abort()),
+    close: jest.fn(),
     acquire: jest.fn(async () => {
       expect(mockLease).toBeNull();
       mockCalls.push('acquire');
@@ -201,6 +220,7 @@ beforeEach(() => {
       return mockObserved;
     }),
   };
+  renewSourceLifetime();
   mockVerify.mockImplementation(async () => {
     expect(mockLease).not.toBeNull();
     mockCalls.push('verify');
@@ -215,12 +235,14 @@ beforeEach(() => {
     signal: caller.signal,
   };
 });
-afterEach(() => {
+afterEach(async () => {
   for (const op of opened) op.close?.();
   caller.abort();
   scope.close();
   coordinatorController.abort();
   sourceController.abort();
+  sourceExit();
+  await Promise.all(opened.map((op) => op.closed));
   jest.useRealTimers();
 });
 const run = async (input = options) => {
@@ -449,9 +471,9 @@ test('successful operation owns its slot until close; new operation gets a disti
     .operation;
   expect(await run()).toEqual({ status: 'refused', stage: 'context' });
   first.close();
+  await first.closed;
   // Fresh service lifetime, as the production factory provides on each open.
-  sourceController = new AbortController();
-  mockSource.signal = sourceController.signal;
+  renewSourceLifetime();
   const second = await run();
   expect(second.status).toBe('verified');
   expect(
@@ -525,8 +547,7 @@ test.each(['selector', 'membership-verify'])(
     if (stage === 'selector') expect(createRailgunPoiSource).not.toHaveBeenCalled();
     else {
       expect(mockSource.close).toHaveBeenCalled();
-      sourceController = new AbortController();
-      mockSource.signal = sourceController.signal;
+      renewSourceLifetime();
     }
     expect((await run()).status).toBe('verified');
   }
@@ -592,4 +613,154 @@ test('refused recovery capture prevents a query', async () => {
   mockCaptureRun.mockResolvedValueOnce({ status: 'refused', stage: 'journal' });
   expect(await run()).toEqual({ status: 'refused', stage: 'before-query' });
   expect(createRailgunPoiSource).not.toHaveBeenCalled();
+});
+
+const ownerTurn = () => new Promise((resolve) => setImmediate(resolve));
+const ownerGate = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+test('successful close retains its exact directory owner until source drain and permits healthy reopen afterward', async () => {
+  holdSource = true;
+  const first = await run(),
+    oldExit = sourceExit;
+  expect(first.status).toBe('verified');
+  let drained = false;
+  first.closed.then(() => {
+    drained = true;
+  });
+  expect(first.closed).toBe(first.closed);
+  await ownerTurn();
+  expect(drained).toBe(false);
+  first.close();
+  first.close();
+  expect(first.signal.aborted).toBe(true);
+  expect(() => attest(first.receipt, mockEnrollment, mockCoordinator)).toThrow();
+  await ownerTurn();
+  expect(drained).toBe(false);
+  expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+  expect(mockPreflightRun).toHaveBeenCalledTimes(1);
+  oldExit();
+  await first.closed;
+  expect(drained).toBe(true);
+  holdSource = false;
+  renewSourceLifetime();
+  const second = await run();
+  expect(second.status).toBe('verified');
+  first.close();
+  expect(second.signal.aborted).toBe(false);
+  expect(attest(second.receipt, mockEnrollment, mockCoordinator)).toBe(second.observation);
+  expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+});
+test.each(['acquire', 'status', 'verifier', 'recapture'])(
+  'failed %s open holds directory until source drain then releases without self-wait',
+  async (failure) => {
+    holdSource = true;
+    if (failure === 'acquire')
+      mockSource.acquire.mockRejectedValueOnce(Error('PRIVATE acquisition'));
+    if (failure === 'status') mockObserved.rootsAccepted = false;
+    if (failure === 'verifier') mockVerify.mockRejectedValueOnce(Error('PRIVATE verifier'));
+    if (failure === 'recapture')
+      mockCaptureRun
+        .mockImplementationOnce(async () => ({ status: 'captured', capture: copy(mockCapture) }))
+        .mockResolvedValueOnce({ status: 'refused', stage: 'private' });
+    let settled = false;
+    const pending = run().then((value) => {
+      settled = true;
+      return value;
+    });
+    try {
+      await ownerTurn();
+      expect(sourceController.signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      expect(mockLease).toBeNull();
+      const before = mockPreflightRun.mock.calls.length;
+      expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+      expect(mockPreflightRun).toHaveBeenCalledTimes(before);
+      sourceExit();
+      expect((await pending).status).toBe('refused');
+      holdSource = false;
+      renewSourceLifetime();
+      mockObserved.rootsAccepted = true;
+      expect((await run()).status).toBe('verified');
+    } finally {
+      sourceExit();
+      await pending;
+    }
+  }
+);
+test.each(['work-first', 'source-first'])(
+  'cancelled verification holds phase and owner until work and source drain: %s',
+  async (order) => {
+    holdSource = true;
+    const work = ownerGate(),
+      original = mockVerify.getMockImplementation();
+    mockVerify.mockImplementationOnce(async (...args) => {
+      const result = await original(...args);
+      await work.promise;
+      return result;
+    });
+    let settled = false;
+    const pending = run().then((value) => {
+      settled = true;
+      return value;
+    });
+    await waitFor(() => mockVerify.mock.calls.length === 1);
+    const held = mockLease;
+    caller.abort();
+    try {
+      expect(held.release).not.toHaveBeenCalled();
+      if (order === 'work-first') work.resolve();
+      else sourceExit();
+      await ownerTurn();
+      expect(settled).toBe(false);
+      if (order === 'source-first') expect(held.release).not.toHaveBeenCalled();
+      expect(await run({ ...options, signal: new AbortController().signal })).toEqual({
+        status: 'refused',
+        stage: 'context',
+      });
+      if (order === 'work-first') sourceExit();
+      else work.resolve();
+      expect((await pending).status).toBe('refused');
+      expect(held.release).toHaveBeenCalledTimes(1);
+      holdSource = false;
+      renewSourceLifetime();
+      expect((await run({ ...options, signal: new AbortController().signal })).status).toBe(
+        'verified'
+      );
+    } finally {
+      work.resolve();
+      sourceExit();
+      await pending;
+    }
+  }
+);
+test('idle operation expiry revokes receipt immediately but holds owner until source drain', async () => {
+  jest.useFakeTimers();
+  holdSource = true;
+  const first = await run();
+  let drained = false;
+  first.closed.then(() => {
+    drained = true;
+  });
+  await jest.advanceTimersByTimeAsync(60001);
+  expect(first.signal.aborted).toBe(true);
+  expect(drained).toBe(false);
+  expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+  sourceExit();
+  await first.closed;
+  holdSource = false;
+  renewSourceLifetime();
+  expect((await run()).status).toBe('verified');
+});
+test('a failed source constructor releases owner without inventing a drain resource', async () => {
+  createRailgunPoiSource.mockImplementationOnce(() => {
+    throw Error('PRIVATE constructor');
+  });
+  expect(await run()).toEqual({ status: 'refused', stage: 'source' });
+  expect(mockLease).toBeNull();
+  expect((await run()).status).toBe('verified');
 });
