@@ -20,8 +20,10 @@ This is detached evidence, with every overall authority flag false and explicit
 introduced archival anchor remains identified as unchecked, as in the existing
 preflight; later authorization must handle that condition. There is no ongoing
 journal writer exclusion. Transact creators can be extracted and classified, but
-post-transaction reconstruction still accepts only Shield inputs. This function
-does not imply that Transact-input POI proving is supported.
+at this qualification checkpoint, post-transaction reconstruction accepted only
+Shield inputs. [The later received-note extension](railgun-poi-transact-reconstruction-2026-10-04.md)
+qualifies Transact reconstruction and cryptography separately. These structural
+preflight fixtures do not qualify joined account/Transact-proof composition.
 
 The existing plain witness and own-transaction preflight exports retain their
 behavior and cannot enter POI mode through extra arguments or option properties.
@@ -59,6 +61,6 @@ source/root refusal and capsule drift. Lint is clean. The merged 9,669-test full
 regression predates this shared-function extension.
 
 Next: controlled viewing-only proof/key handoff with current membership and final
-account/source/root checks; Transact-input reconstruction and provenance composition;
+account/source/root checks and Transact creating-transaction provenance composition;
 then the disclosure controller and funded private qualification. The pending live
 owned-note disclosure authorization is unchanged.

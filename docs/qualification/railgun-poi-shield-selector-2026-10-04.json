@@ -1,0 +1,120 @@
+{
+  "fixture": "synthetic-shield-poi-selector",
+  "engineSha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a",
+  "sourceSha256": {
+    "scripts/qualify-railgun-poi-shield-selector.js": "89b1aeb4e97447933e3f6d1a16b2bc4cbd33933b1530892ee5fea7ecb07c9c04",
+    "scripts/fixtures/railgun-poi-shield-selector-input-job.js": "883386dc5ef80bb5b2359c474aaecf78aec9673d3751cc7eb7961eb586416f63",
+    "scripts/fixtures/railgun-own-txid-data.js": "f5d56ae07e13815d2c19a14fa4f6cec8b1c2979e80b81461d9705fdb26bf7683",
+    "scripts/fixtures/railgun-transact-data.js": "eb96647d3e82fe5d6995d125284c8bf43817180184be80890cf5e4c4c7ef0afb",
+    "src/main/wallet/railgun-poi-shield-selector.js": "5ef7e0caf3be72ee0612ff0662121dd2f74d8526cac50dd553eac4ab356b852c",
+    "src/main/wallet/railgun-poi-shield-selector.test.js": "269615a35f2783a8af16682d95262a60cda4c479d0b3d8ac2e0f034cc7f7ab34",
+    "src/main/wallet/railgun-poi-shield-selector-data.js": "735332aac17743c7e81db855af78d7d900f45f9388701e193455eca95697d755",
+    "src/main/wallet/railgun-poi-shield-selector-data.test.js": "c814edddfff0593d3c45f727f4b8974cc2fad168fcb1d21c5941f6f1e24c77d6",
+    "src/main/wallet/railgun-poi-shield-selector-job.js": "a9926e58b42e9b31e63081542c74679637c65fc090b10157ae31ed32d3eb3e6a",
+    "src/main/wallet/railgun-poi-shield-selector-job.test.js": "df8e505059d31adb4481d1e187e95a3e0562f7d827ef5caa21ce477e5352297f",
+    "src/main/wallet/railgun-private-capsule.js": "8ed3726d9f12e286a6b74dfc3d93104d33f8b7c6a998f0ff3ef41a2ae5899646",
+    "src/main/wallet/railgun-private-preparation.js": "4614b4c617fcc8e3e18399d1b505d54e402bf266ee127e62f163c200ba64abc3",
+    "src/main/wallet/railgun-private-intent.js": "5a5ae43e3b7c4384496e1e17caa1ddfb7bc11e555f28eb8df61d3170c94800b0",
+    "src/main/wallet/railgun-private-policy.js": "4422de6bcee5d087dc328652697e903dba92e41f117a07979375651b92312684",
+    "src/main/wallet/railgun-transact-intent.js": "a742e2b53a4da44e494854de28b80972c9035d7c2c591f8bcba721c502bb6954",
+    "src/main/wallet/railgun-transact-receipt.js": "8437ba47aa0705c6eb30402d0a601d7f0b7dce8d08d36b9114548d9a5114aca4",
+    "src/main/wallet/railgun-transact-resolution.js": "8126ddd49e1ff156bef755585ceac3ed7875d09d6639cd70ad88614bed88ca2c",
+    "src/main/wallet/privacy-journal-retention.js": "8c6193e6f403f6ac7cc1b1a4836dd4d1efddba6673922e11338f248baebcdfe6",
+    "src/main/wallet/railgun-owned-poi-records.js": "d591d52f31955c00bfa421b8b961d26adb94b2ebdcf709553bea8c4ef34b943f",
+    "src/main/wallet/railgun-poi-records.js": "c4511c0ea185835c67bbbc8b8ba74bec6271e4b3a457a2b6a1576b42593fd1ac",
+    "src/main/wallet/railgun-engine-runtime.js": "3dd0d43fc4cf9a766539986cd0779573ec49d39c261ebaa1c3906c81653bc860",
+    "src/main/wallet/railgun-process.js": "ca3a3435961300c7f513937a1da7dcd93ee3f4e39fb862010a7173f795e928e1",
+    "src/main/wallet/railgun-process-entry.js": "d17252bdfc9d7b93994eb4df04bdb4d6eff77fd89b1dc569a1b47ed1e0772f1e",
+    "src/main/wallet/railgun-process-guards.js": "f7bbf6220212b62ae7791f9b47c145d95abec9e499b26f7bfe854e950281d958",
+    "src/main/wallet/railgun-engine-manifest.json": "54a4d63dea94e17a542d7510c08e1f35ea71256c821639ba86da29b89f8c7f2c",
+    "src/main/wallet/railgun-shield-pins.json": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133"
+  },
+  "shieldCiphertextRoundtrip": true,
+  "structuralCapsules": true,
+  "creatingTransactionAuthenticated": false,
+  "viewingKeyReleased": false,
+  "runs": [
+    {
+      "vector": 0,
+      "nonzeroTree": false,
+      "boundaryPosition": false,
+      "maximumTree": false,
+      "preSpendProjectionCompared": true,
+      "selectorDerived": true,
+      "ciphertextMutationPreservesSelector": true,
+      "ciphertextMutationChangesBinding": true,
+      "exitsObserved": true,
+      "refusals": [
+        "npk-hash",
+        "different-note-same-position",
+        "creator-position",
+        "creator-tree",
+        "transact-type",
+        "note-hash-prefix",
+        "non-weth"
+      ],
+      "cryptographicRefusalsAfterNormalization": [
+        "npk-hash",
+        "different-note-same-position"
+      ],
+      "elapsedMs": 944,
+      "authorityGranted": false
+    },
+    {
+      "vector": 1,
+      "nonzeroTree": true,
+      "boundaryPosition": true,
+      "maximumTree": false,
+      "preSpendProjectionCompared": true,
+      "selectorDerived": true,
+      "ciphertextMutationPreservesSelector": true,
+      "ciphertextMutationChangesBinding": true,
+      "exitsObserved": true,
+      "refusals": [
+        "npk-hash",
+        "different-note-same-position",
+        "creator-position",
+        "creator-tree",
+        "transact-type",
+        "note-hash-prefix",
+        "non-weth"
+      ],
+      "cryptographicRefusalsAfterNormalization": [
+        "npk-hash",
+        "different-note-same-position"
+      ],
+      "elapsedMs": 870,
+      "authorityGranted": false
+    },
+    {
+      "vector": 2,
+      "nonzeroTree": true,
+      "boundaryPosition": true,
+      "maximumTree": true,
+      "preSpendProjectionCompared": true,
+      "selectorDerived": true,
+      "ciphertextMutationPreservesSelector": true,
+      "ciphertextMutationChangesBinding": true,
+      "exitsObserved": true,
+      "refusals": [
+        "npk-hash",
+        "different-note-same-position",
+        "creator-position",
+        "creator-tree",
+        "transact-type",
+        "note-hash-prefix",
+        "non-weth"
+      ],
+      "cryptographicRefusalsAfterNormalization": [
+        "npk-hash",
+        "different-note-same-position"
+      ],
+      "elapsedMs": 843,
+      "authorityGranted": false
+    }
+  ],
+  "liveQueries": 0,
+  "submissions": 0,
+  "authorityGranted": false
+}
