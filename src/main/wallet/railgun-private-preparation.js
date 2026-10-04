@@ -9,8 +9,13 @@ const shape = (v, keys) => {
   assert.deepEqual(Object.keys(v).sort(), [...keys].sort());
 };
 function selectRailgunPrivatePreparation(owned, request) {
-  shape(request, ['kind', 'noteId', 'recipient']);
-  assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(request.kind));
+  const partial = request?.kind === 'railgun-partial-unshield';
+  shape(request, ['kind', 'noteId', 'recipient', ...(partial ? ['unshieldAmount'] : [])]);
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      request.kind
+    )
+  );
   assert.equal(typeof request.noteId, 'string');
   const note = owned.read.received.find((v) => v.id === request.noteId);
   const record = owned.ownedPoi.find((v) => v.id === request.noteId);
@@ -23,15 +28,20 @@ function selectRailgunPrivatePreparation(owned, request) {
   );
   assert.equal(note.asset.__type, 'erc20');
   assert.equal(note.asset.contract, pins.wrappedNative);
-  if (request.kind === 'railgun-token-unshield') {
+  if (partial || request.kind === 'railgun-token-unshield') {
     assert.match(request.recipient, /^0x[0-9a-f]{40}$/);
     assert.ok(BigInt(request.recipient) > 0n);
   } else assert.equal(request.recipient, owned.read.instanceId);
+  if (partial) {
+    amount(request.unshieldAmount);
+    assert.ok(BigInt(request.unshieldAmount) < note.amount);
+  }
   return Object.freeze({
     kind: request.kind,
     tree: note.tree,
     position: note.position,
     recipient: request.recipient,
+    ...(partial ? { unshieldAmount: request.unshieldAmount } : {}),
   });
 }
 function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, trees }) {
@@ -46,14 +56,18 @@ function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, 
   assert.equal(note.asset.__type, 'erc20');
   assert.equal(note.asset.contract, pins.wrappedNative);
   assert.ok(note.amount > 0n && note.amount <= BigInt(pins.maxQualificationAmount));
-  assert.equal(value.amount, note.amount.toString());
+  const partial = selection.kind === 'railgun-partial-unshield';
+  assert.equal(partial ? value.inputAmount : value.amount, note.amount.toString());
   assert.equal(value.recipient, selection.recipient);
   const expected = value.expected;
   assert.equal(expected.kind, selection.kind);
   assert.equal(expected.tree, note.tree);
   assert.equal(expected.merkleRoot, tree.root);
   assert.equal(expected.nullifier, owned.nullifier);
-  if (expected.kind === 'railgun-token-unshield') {
+  if (partial) {
+    assert.equal(expected.recipient, selection.recipient);
+    assert.equal(expected.unshieldAmount, selection.unshieldAmount);
+  } else if (expected.kind === 'railgun-token-unshield') {
     assert.equal(expected.recipient, selection.recipient);
     assert.equal(expected.amount, value.amount);
   } else assert.equal(value.recipient, read.instanceId);
@@ -66,16 +80,39 @@ function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, 
     spendingEnabled: false,
   });
 }
+function amount(value) {
+  assert.equal(typeof value, 'string');
+  assert.match(value, /^[1-9][0-9]{0,16}$/);
+  assert.ok(BigInt(value) <= BigInt(pins.maxQualificationAmount));
+}
 // Structural broker data only. Ownership/value must still be checked against
 // the main-captured note before this offer can reach a spending-key gate.
+// Amount arithmetic does not authenticate the encrypted change commitment.
 function normalizeRailgunPrivateOffer(value, selection) {
-  shape(value, ['transaction', 'expected', 'expectedHash', 'recipient', 'amount']);
+  const partial = selection?.kind === 'railgun-partial-unshield';
+  if (partial) shape(selection, ['kind', 'tree', 'position', 'recipient', 'unshieldAmount']);
+  shape(value, [
+    'transaction',
+    'expected',
+    'expectedHash',
+    'recipient',
+    ...(partial ? ['inputAmount', 'unshieldAmount', 'changeAmount'] : ['amount']),
+  ]);
   const checked = validateRailgunPrivateSigningIntent(value.transaction, value.expected);
   assert.equal(checked.kind, selection.kind);
   assert.equal(checked.tree, selection.tree);
   assert.equal(value.recipient, selection.recipient);
-  assert.match(value.amount, /^[1-9][0-9]{0,16}$/);
-  assert.ok(BigInt(value.amount) <= BigInt(pins.maxQualificationAmount));
+  if (partial) {
+    for (const key of ['inputAmount', 'unshieldAmount', 'changeAmount']) amount(value[key]);
+    assert.ok(BigInt(value.unshieldAmount) < BigInt(value.inputAmount));
+    assert.equal(
+      BigInt(value.changeAmount),
+      BigInt(value.inputAmount) - BigInt(value.unshieldAmount)
+    );
+    assert.equal(checked.recipient, value.recipient);
+    assert.equal(checked.unshieldAmount, value.unshieldAmount);
+    assert.equal(selection.unshieldAmount, value.unshieldAmount);
+  } else amount(value.amount);
   if (checked.kind === 'railgun-token-unshield') {
     assert.equal(checked.recipient, value.recipient);
     assert.equal(checked.amount, value.amount);
@@ -91,7 +128,13 @@ function normalizeRailgunPrivateOffer(value, selection) {
     expectedHash: value.expectedHash,
     transactionDigest: checked.digest,
     recipient: value.recipient,
-    amount: value.amount,
+    ...(partial
+      ? {
+          inputAmount: value.inputAmount,
+          unshieldAmount: value.unshieldAmount,
+          changeAmount: value.changeAmount,
+        }
+      : { amount: value.amount }),
   });
 }
 function normalizeRailgunPrivateOperation(value, preparation) {

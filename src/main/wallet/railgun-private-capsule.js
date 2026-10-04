@@ -27,13 +27,19 @@ function normalizeRailgunPrivateCapsule(value) {
     'noteHash',
     'pathElements',
   ]);
-  assert.equal(value.version, 1);
+  const partial = value.selection?.kind === 'railgun-partial-unshield';
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      value.selection?.kind
+    )
+  );
+  assert.equal(value.version, partial ? 2 : 1);
   // Provenance only: recovery is defined by capsule version and revalidated
   // cryptography, so updating the runtime cannot strand an older capsule.
   assert.match(value.engineSha256, /^[0-9a-f]{64}$/);
   assert.match(value.walletId, /^[0-9a-f]{64}$/);
   const s = value.selection;
-  exact(s, ['kind', 'tree', 'position', 'recipient']);
+  exact(s, ['kind', 'tree', 'position', 'recipient', ...(partial ? ['unshieldAmount'] : [])]);
   for (const key of ['tree', 'position'])
     assert.ok(Number.isSafeInteger(s[key]) && s[key] >= 0 && s[key] <= 65535);
   assert.equal(typeof s.recipient, 'string');
@@ -44,6 +50,7 @@ function normalizeRailgunPrivateCapsule(value) {
     tree: s.tree,
     position: s.position,
     recipient: s.recipient,
+    ...(partial ? { unshieldAmount: s.unshieldAmount } : {}),
   });
   const offer = normalizeRailgunPrivateOffer(value.preparation, selection);
   const t = offer.transaction,
@@ -54,20 +61,32 @@ function normalizeRailgunPrivateCapsule(value) {
     tree: e.tree,
     merkleRoot: e.merkleRoot,
     nullifier: e.nullifier,
-    commitment: e.commitment,
+    ...(partial
+      ? { changeCommitment: e.changeCommitment, unshieldCommitment: e.unshieldCommitment }
+      : { commitment: e.commitment }),
     boundParamsHash: e.boundParamsHash,
-    ...(e.kind === 'railgun-token-unshield' ? { recipient: e.recipient, amount: e.amount } : {}),
+    ...(partial
+      ? { recipient: e.recipient, unshieldAmount: e.unshieldAmount }
+      : e.kind === 'railgun-token-unshield'
+        ? { recipient: e.recipient, amount: e.amount }
+        : {}),
   });
   const preparation = Object.freeze({
     transaction,
     expected,
     expectedHash: offer.expectedHash,
     recipient: offer.recipient,
-    amount: offer.amount,
+    ...(partial
+      ? {
+          inputAmount: offer.inputAmount,
+          unshieldAmount: offer.unshieldAmount,
+          changeAmount: offer.changeAmount,
+        }
+      : { amount: offer.amount }),
   });
   assert.ok(Array.isArray(value.pathElements) && value.pathElements.length === 16);
   return Object.freeze({
-    version: 1,
+    version: partial ? 2 : 1,
     walletId: value.walletId,
     engineSha256: value.engineSha256,
     selection,
@@ -79,7 +98,7 @@ function normalizeRailgunPrivateCapsule(value) {
 function digestRailgunPrivateCapsule(value) {
   const capsule = normalizeRailgunPrivateCapsule(value);
   return createHash('sha256')
-    .update('freedom:railgun:private-capsule-v1\0')
+    .update(`freedom:railgun:private-capsule-v${capsule.version}\0`)
     .update(JSON.stringify(capsule))
     .digest('hex');
 }
@@ -87,13 +106,29 @@ function digestRailgunPrivateCapsule(value) {
 // recovery still uses the versioned normalizer above, without a current-pin test.
 function normalizeRailgunNewCapsule(value, { walletId, selection, preparation, noteHash }) {
   const normalized = normalizeRailgunPrivateCapsule(value);
-  const { transaction, expected, expectedHash, recipient, amount } = preparation;
+  const partial = selection?.kind === 'railgun-partial-unshield';
+  const {
+    transaction,
+    expected,
+    expectedHash,
+    recipient,
+    amount,
+    inputAmount,
+    unshieldAmount,
+    changeAmount,
+  } = preparation;
   const expectedCapsule = normalizeRailgunPrivateCapsule({
-    version: 1,
+    version: partial ? 2 : 1,
     walletId,
     selection,
     engineSha256: require('./railgun-engine-manifest.json').sha256,
-    preparation: { transaction, expected, expectedHash, recipient, amount },
+    preparation: {
+      transaction,
+      expected,
+      expectedHash,
+      recipient,
+      ...(partial ? { inputAmount, unshieldAmount, changeAmount } : { amount }),
+    },
     noteHash: noteHash === undefined ? normalized.noteHash : noteHash,
     pathElements: normalized.pathElements,
   });

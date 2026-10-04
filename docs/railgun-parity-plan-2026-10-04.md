@@ -38,8 +38,11 @@ instance remains read-only; no generic Host or user-facing activation is added.
 
 The [public Shield milestone](railgun-kohaku-public-integration-2026-10-04.md)
 adds three controlled public-flow runs and requalifies the five private cases
-against the current shared facade. The current frozen regression passes 13,736
-tests; earlier regression/native counts above belong to their recorded checkpoint.
+against the shared facade at that checkpoint (13,736 regression tests).
+The [partial-unshield structural checkpoint](railgun-partial-structure-2026-10-04.md)
+adds the bounded version-2 model while refusing partial admission. Six fresh
+native runs preserve the existing private/public flows; the current frozen
+regression passes 13,872 tests. Earlier counts belong to their recorded sources.
 
 ## Next technical work
 
@@ -53,8 +56,9 @@ tests; earlier regression/native counts above belong to their recorded checkpoin
    ingestion through this facade remain distinct from these tests.
 2. **Add partial withdrawal with authenticated change.** PPv2 already has
    withdrawal/change recovery and second-spend evidence. Railgun's current
-   one-output policy cannot express the equivalent partial withdrawal. Extending
-   it requires coordinated proof shape, amount conservation, output decryption,
+   operation admission remains limited to full-note spends. The new structural
+   records express partial withdrawal, but enabling it still requires coordinated
+   proof shape, amount conservation, output decryption,
    reservation, receipt matching and post-transaction POI handling. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are

@@ -231,6 +231,12 @@ async function recover(options = {}, completed = false, submission, attempted = 
     timer = setTimeout(stop, Math.max(0, activeDeadline - performance.now()));
     timer.unref?.();
     stage = 'binding';
+    assert.equal(fresh.capture.capsule.version, 1);
+    assert.ok(
+      ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+        fresh.capture.capsule.selection.kind
+      )
+    );
     assert.deepEqual(fresh.publicIdentity, publicIdentity);
     assert.equal(fresh.observations.archiveAnchorChecked, true);
     assert.ok(['Shield', 'Transact'].includes(fresh.creatorClassification.type));

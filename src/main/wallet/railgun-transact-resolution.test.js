@@ -120,3 +120,33 @@ test('reverted has no private outcome and nonce-consumed cannot resolve', () => 
   record.observation.status = 'nonce-consumed';
   expect(valid(value, record)).toBe(false);
 });
+test('a wider intent parser cannot resolve partial withdrawals before both outcomes are supported', () => {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const { expected } = createRailgunPartialCapsuleData().capsule.preparation;
+  const { record, value } = sample(true);
+  const { kind, ...fields } = expected;
+  record.intent = {
+    kind: 'railgun-transact',
+    digest: record.intent.digest,
+    operation: kind,
+    ...fields,
+    intentDigest: record.intent.intentDigest,
+  };
+  expect(valid(value, record)).toBe(false);
+  record.observation.status = 'reverted';
+  value.outcome = 'reverted';
+  value.transact = null;
+  // Model later structural parser support independently of resolution support.
+  // This must not turn an unfinished partial recovery path into a resolution.
+  try {
+    jest.isolateModules(() => {
+      jest.doMock('./railgun-transact-intent', () => ({ validRailgunTransactIntent: () => true }));
+      const wider = require('./railgun-transact-resolution').validRailgunTransactResolution;
+      expect(wider(value, record)).toBe(false);
+    });
+  } finally {
+    jest.dontMock('./railgun-transact-intent');
+  }
+});

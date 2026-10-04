@@ -409,6 +409,19 @@ function enableTransact() {
     }),
   };
 }
+test('partial-unshield structure cannot enter production signing before connected qualification', async () => {
+  const owned = mock.owned;
+  const readOwned = jest.fn(() => owned);
+  Object.defineProperty(mock, 'owned', { get: readOwned });
+  const result = await prove({
+    ...options,
+    request: { ...options.request, kind: 'railgun-partial-unshield', unshieldAmount: '500' },
+  });
+  expect(result).toEqual({ status: 'refused', stage: 'local' });
+  expect(readOwned).not.toHaveBeenCalled();
+  expect(mock.events).toEqual([]);
+});
+
 test('durability, one-use key permission, B/A exits and C precede a saved proof and completion', async () => {
   await expect(prove(options)).resolves.toMatchObject({
     status: 'proved',

@@ -1,3 +1,10 @@
+jest.mock('./railgun-poi-shield-selector-data', () => {
+  const actual = jest.requireActual('./railgun-poi-shield-selector-data');
+  return {
+    ...actual,
+    normalizeRailgunPoiShieldInput: jest.fn(actual.normalizeRailgunPoiShieldInput),
+  };
+});
 let mock;
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (value) => value === mock.enrollment,
@@ -2541,5 +2548,36 @@ test.each(['missing', 'pending'])(
     expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(2);
     expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
     expect(JSON.stringify(mock.entry)).toBe(before);
+  }
+);
+
+test.each(['ordinary', 'completed', 'attempted'])(
+  '%s recovery refuses structural v2 preflight before final account or viewing work',
+  async (route) => {
+    const {
+      createRailgunPartialCapsuleData,
+    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+    const capsule = require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(
+      createRailgunPartialCapsuleData().capsule
+    );
+    // Preflight and retained authority are mocked. The normalized capsule is real.
+    mock.fresh.capture.capsule = capsule;
+    mock.fresh.poiPreparation.ownEvidence.capsule = capsule;
+    if (route === 'attempted') attemptRecord();
+    const before = copy(mock.entry);
+    const shield = require('./railgun-poi-shield-selector-data').normalizeRailgunPoiShieldInput;
+    shield.mockClear();
+    const result = await (route === 'ordinary'
+      ? run()
+      : route === 'completed'
+        ? runCompleted()
+        : runAttempted());
+    expect(result).toMatchObject({ status: 'refused', stage: 'binding' });
+    expect(mock.preflight).toHaveBeenCalledTimes(1);
+    expect(shield).not.toHaveBeenCalled();
+    expect(mock.recoveryStart).not.toHaveBeenCalled();
+    expect(mock.credential).not.toHaveBeenCalled();
+    expect(mock.tasks).toHaveLength(0);
+    expect(mock.entry).toEqual(before);
   }
 );

@@ -1,9 +1,15 @@
 # Bounded partial WETH unshield and change spending
 
-**Status: proposal; unimplemented and unqualified.** This plan comes from reading
-the current production modules and local upstream source/artifacts on 2026-10-04.
-It is not evidence of a deployed contract accepting this flow, a successful
-proof, a funded transaction, or live POI-service eligibility.
+**Status: structural records implemented; partial spending remains unavailable.**
+The bounded model now has a distinct `railgun-partial-unshield` kind and version-2
+capsule. Preparation and selection bind recovered input value, gross withdrawal
+and change separately. Public policy accepts only the exact one-input/two-output
+shape. These checks do not prove encrypted-output ownership or conservation.
+Existing operation, signing, recovery and POI entry points still refuse this new
+kind; reservations and the public EOA journal remain legacy-only. Actual 01x02
+preparation/proving, combined POI, authenticated change recovery and the second
+spend remain to be implemented and qualified. This is not evidence of deployed
+contract acceptance, a funded partial transaction or live service eligibility.
 
 ## Complete target
 
@@ -59,13 +65,15 @@ No new dependency or artifact is expected from this source inspection.
 All module names below refer to `src/main/wallet/`; keep the new capability
 unavailable until the connected qualification passes, including the second spend.
 
-1. **Define and bind the bounded model.** Evolve `railgun-private-preparation.js`,
+1. **Define and bind the bounded model (structural portion implemented).** Evolve `railgun-private-preparation.js`,
    `railgun-private-selection.js`, `railgun-private-policy.js`, and
-   `railgun-private-capsule.js` together with `railgun-transact-intent.js` and
-   `railgun-transact-resolution.js`. Derive the exact output shape and artifact
-   variant from validated intent. Selection currently equates unshield amount
-   with input value and declares `inputValueVerified`; preserve separate evidence
-   for recovered V and private output conservation. Reject all other shapes.
+   `railgun-private-capsule.js`. Public journal support in
+   `railgun-transact-intent.js` and `railgun-transact-resolution.js` moves with
+   connected receipt/submission support in stage 3; both currently refuse the new
+   kind. Derive the exact output shape and artifact variant from validated intent.
+   Partial selection now reports recovered V and expected C separately, with
+   `inputValueVerified` and `outputConservationVerified` both false. Preserve the
+   legacy full-input meaning and reject all other shapes.
 2. **Prepare, sign, prove and reconstruct the exact intent.** Update
    `railgun-private-witness.js`, `railgun-private-reconstruct.js`,
    `railgun-private-prover.js`, `railgun-private-verify-job.js`, and
@@ -109,6 +117,11 @@ unavailable until the connected qualification passes, including the second spend
    disclosure planning, cold validation and submission. Partial output recovery
    needs one viewing credential; full-unshield output recovery remains keyless.
    Disclosure descriptions must include both categories and actual inventories.
+   Update durable `railgun-poi-intent-store.js` records and the
+   `railgun-poi-submit-data.js`/verifier normalizers coherently: the current
+   payload parser is exclusive and the durable record has only a capsule digest,
+   not an authenticated operation-kind discriminator. Do not infer new authority
+   from a payload containing both fields or reinterpret existing attempted bytes.
 5. **Admit change as a supported creator, then spend it.** Current retained
    received-Transact joins require a creator with one commitment and no unshield.
    Extend `railgun-poi-creator.js`, `railgun-own-witness.js`,
@@ -122,6 +135,9 @@ unavailable until the connected qualification passes, including the second spend
    Transact-log policy unnecessarily.
    The second spend requires independently obtained typed Transact membership;
    generating or submitting the first POI is not evidence of list eligibility.
+   That second full unshield is still a version-1 operation, but its creating
+   transaction is partial. Creator support therefore cannot be gated solely on
+   the current operation's capsule version.
 
 The lower-level `railgun-private-creator.js`, `railgun-txid-events.js`, and
 `railgun-txid-note-witness.js` already represent optional unshield plus ordinary
@@ -136,6 +152,28 @@ policy, reject unexpected events, and qualify actual deployment behavior before
 claiming live support. Do not silently ignore Action based on the newer source.
 
 ## Durable compatibility and recovery
+
+The structural implementation preserves version-1 canonical bytes and digest
+domains. Version 2 is exclusive to `railgun-partial-unshield`, uses
+`freedom:railgun:private-capsule-v2\0`, and requires explicit `inputAmount`,
+`unshieldAmount` and `changeAmount` in the private preparation. Its public intent
+contains the gross `unshieldAmount`, ordered `changeCommitment` and
+`unshieldCommitment`; it does not disclose plaintext input/change values.
+The expected signature hash retains the circuit's Poseidon public-input order;
+it does not gain an application domain separator. Original encrypted calldata
+is retained, without adding plaintext output randomness to the capsule.
+
+A mixed-store test seeds a structural version-2 record through authenticated
+test storage and cold-reopens it beside a genuine version-1 record, preserving
+legacy bytes. This is not evidence that production can reserve, sign or persist
+a partial operation: those admission paths still refuse. Before enabling real
+version-2 records, explicitly handle downgrade compatibility: an older build
+cannot normalize the new record and may refuse the containing store. Do not
+rewrite signed records to make an older build accept them.
+The later public EOA journal extension needs its own downgrade decision: an
+older validator may refuse that address's entire journal, blocking ordinary
+sends as well as private-operation recovery. This checkpoint leaves its schema
+and accepted operation kinds unchanged.
 
 Use explicit capsule version/domain dispatch for the new partial shape; preserve
 v1 canonical bytes and digest behavior. Public journal intents and resolutions

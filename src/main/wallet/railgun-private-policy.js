@@ -1,4 +1,4 @@
-/** Narrow calldata policy for one-input, one-output Sepolia qualification.
+/** Narrow calldata policy for one-input Sepolia intents, including bounded partial unshield.
  * Main repeats public intent and bound-parameter checks without the engine.
  * Passing this policy does not verify a proof, decrypt an output, reserve an
  * input or authorize signing. No generic adapter, batch or override calls.
@@ -35,14 +35,17 @@ const bytes = (value, max) =>
   typeof value === 'string' && /^0x(?:[0-9a-f]{2})*$/.test(value) && value.length <= 2 + 2 * max;
 function validateRailgunPrivateTransaction(transaction, expected) {
   try {
-    const unshield = expected?.kind === 'railgun-token-unshield';
+    const partial = expected?.kind === 'railgun-partial-unshield';
+    const unshield = partial || expected?.kind === 'railgun-token-unshield';
     check(unshield || expected?.kind === 'railgun-private-transfer');
-    const keys = ['kind', 'tree', 'merkleRoot', 'nullifier', 'commitment', 'boundParamsHash'];
-    if (unshield) keys.push('recipient', 'amount');
+    const commitmentKeys = partial ? ['changeCommitment', 'unshieldCommitment'] : ['commitment'];
+    const keys = ['kind', 'tree', 'merkleRoot', 'nullifier', ...commitmentKeys, 'boundParamsHash'];
+    const amountKey = partial ? 'unshieldAmount' : 'amount';
+    if (unshield) keys.push('recipient', amountKey);
     check(shape(expected, keys));
     check(Number.isInteger(expected.tree) && expected.tree >= 0 && expected.tree <= 65535);
     check(
-      ['merkleRoot', 'nullifier', 'commitment', 'boundParamsHash'].every((key) =>
+      ['merkleRoot', 'nullifier', ...commitmentKeys, 'boundParamsHash'].every((key) =>
         field(expected[key])
       )
     );
@@ -51,9 +54,9 @@ function validateRailgunPrivateTransaction(transaction, expected) {
         typeof expected.recipient === 'string' &&
           /^0x[0-9a-f]{40}$/.test(expected.recipient) &&
           expected.recipient !== ZERO &&
-          typeof expected.amount === 'string' &&
-          /^[1-9][0-9]{0,16}$/.test(expected.amount) &&
-          BigInt(expected.amount) <= BigInt(pins.maxQualificationAmount)
+          typeof expected[amountKey] === 'string' &&
+          /^[1-9][0-9]{0,16}$/.test(expected[amountKey]) &&
+          BigInt(expected[amountKey]) <= BigInt(pins.maxQualificationAmount)
       );
     check(shape(transaction, ['chainId', 'to', 'value', 'data']));
     check(
@@ -73,15 +76,15 @@ function validateRailgunPrivateTransaction(transaction, expected) {
       tx.merkleRoot === expected.merkleRoot &&
         tx.nullifiers.length === 1 &&
         tx.nullifiers[0] === expected.nullifier &&
-        tx.commitments.length === 1 &&
-        tx.commitments[0] === expected.commitment &&
+        tx.commitments.length === commitmentKeys.length &&
+        commitmentKeys.every((key, index) => tx.commitments[index] === expected[key]) &&
         bound.treeNumber === BigInt(expected.tree) &&
         bound.minGasPrice === 0n &&
         bound.unshield === (unshield ? 1n : 0n) &&
         bound.chainID === BigInt(pins.chainId) &&
         bound.adaptContract.toLowerCase() === ZERO &&
         bound.adaptParams === ZERO32 &&
-        bound.commitmentCiphertext.length === (unshield ? 0 : 1)
+        bound.commitmentCiphertext.length === (unshield && !partial ? 0 : 1)
     );
     for (const cipher of bound.commitmentCiphertext) {
       check(bytes(cipher.annotationData, 256) && bytes(cipher.memo, 256));
@@ -100,7 +103,7 @@ function validateRailgunPrivateTransaction(transaction, expected) {
       check(
         BigInt(preimage.npk) === BigInt(expected.recipient) &&
           preimage.token.tokenAddress.toLowerCase() === pins.wrappedNative &&
-          preimage.value === BigInt(expected.amount)
+          preimage.value === BigInt(expected[amountKey])
       );
     else
       check(

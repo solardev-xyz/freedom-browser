@@ -3,7 +3,9 @@ const mockPublic = jest.fn(),
   mockVerify = jest.fn(),
   mockPoseidon = jest.fn(),
   mockNoteHash = jest.fn();
-jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: () => '/engine.asar' }));
+jest.mock('./railgun-engine-runtime', () => ({
+  verifyRailgunEngineRuntime: jest.fn(() => '/engine.asar'),
+}));
 jest.mock('./railgun-private-intent', () => ({ validateRailgunPrivateSigningIntent: jest.fn() }));
 jest.mock(
   '/engine.asar/node_modules/@railgun-community/engine/dist/utils/poseidon',
@@ -187,4 +189,23 @@ test('refuses a wrong result acknowledgement after wiping', async () => {
   context.request.mockResolvedValue(JSON.stringify({ id: 2, value: true }));
   await expect(invoke()).rejects.toThrow();
   expect([...bytes]).toEqual(Array(32).fill(0));
+});
+
+test('real partial signing-intent normalization cannot reach runtime hashing or key request', async () => {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const { preparation } = createRailgunPartialCapsuleData().capsule;
+  input.transaction = preparation.transaction;
+  input.expected = preparation.expected;
+  validateRailgunPrivateSigningIntent.mockImplementationOnce(
+    jest.requireActual('./railgun-private-intent').validateRailgunPrivateSigningIntent
+  );
+  await expect(invoke()).rejects.toThrow();
+  expect(require('./railgun-engine-runtime').verifyRailgunEngineRuntime).not.toHaveBeenCalled();
+  expect(mockPoseidon).not.toHaveBeenCalled();
+  expect(mockNoteHash).not.toHaveBeenCalled();
+  expect(context.requestKey).not.toHaveBeenCalled();
+  expect(context.request).not.toHaveBeenCalled();
+  expect(mockSign).not.toHaveBeenCalled();
 });

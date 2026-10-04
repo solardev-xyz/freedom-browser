@@ -206,6 +206,8 @@ async function openRailgunAccountWallet({
               before,
               request
             );
+      if (privateIntent)
+        check(['railgun-private-transfer', 'railgun-token-unshield'].includes(privateIntent.kind));
       const captured = checkpointHash(coordinator.assertSnapshot(checked.evidence));
       let privateWindow;
       const windowStarted = performance.now();

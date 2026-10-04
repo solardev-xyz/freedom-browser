@@ -169,3 +169,116 @@ test('refuses batches, trailing bytes, noncanonical encoding and outer transacti
   ])
     expect(() => validateRailgunPrivateTransaction(tx, f.expected)).toThrow();
 });
+
+const {
+  createRailgunPartialCapsuleData,
+} = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+const partialFixture = () => {
+  const f = createRailgunPartialCapsuleData();
+  return {
+    ...f,
+    expected: f.capsule.preparation.expected,
+    tx: () => ({ ...f.capsule.preparation.transaction, data: f.encode() }),
+  };
+};
+test('partial public intent binds two ordered commitments, one ciphertext and gross withdrawal only', () => {
+  const f = partialFixture();
+  const value = validateRailgunPrivateTransaction(f.tx(), f.expected);
+  expect(value).toMatchObject({
+    ...f.expected,
+    proofVerified: false,
+    recipientVerified: false,
+    spendingEnabled: false,
+  });
+  expect(value).not.toHaveProperty('inputAmount');
+  expect(value).not.toHaveProperty('changeAmount');
+  expect(value).not.toHaveProperty('commitment');
+  expect(Object.isFrozen(value)).toBe(true);
+});
+test.each([
+  ['swapped outputs', (f) => f.inner.commitments.reverse()],
+  ['missing unshield', (f) => f.inner.commitments.pop()],
+  ['extra output', (f) => f.inner.commitments.push(hex(20))],
+  ['changed change', (f) => (f.inner.commitments[0] = hex(20))],
+  ['changed unshield', (f) => (f.inner.commitments[1] = hex(20))],
+  ['extra input', (f) => f.inner.nullifiers.push(hex(20))],
+  ['missing ciphertext', (f) => (f.inner.boundParams.commitmentCiphertext = [])],
+  [
+    'extra ciphertext',
+    (f) =>
+      f.inner.boundParams.commitmentCiphertext.push(f.inner.boundParams.commitmentCiphertext[0]),
+  ],
+  ['no unshield flag', (f) => (f.inner.boundParams.unshield = 0)],
+  ['override', (f) => (f.inner.boundParams.unshield = 2)],
+  ['foreign chain', (f) => (f.inner.boundParams.chainID = 1)],
+  ['adapt contract', (f) => (f.inner.boundParams.adaptContract = pins.relayAdapt)],
+  ['adapt parameters', (f) => (f.inner.boundParams.adaptParams = hex(20))],
+  ['gas price', (f) => (f.inner.boundParams.minGasPrice = 1)],
+  ['foreign token', (f) => (f.inner.unshieldPreimage.token.tokenAddress = zero)],
+  ['token type', (f) => (f.inner.unshieldPreimage.token.tokenType = 1)],
+  ['token sub-id', (f) => (f.inner.unshieldPreimage.token.tokenSubID = 1)],
+  ['foreign recipient', (f) => (f.inner.unshieldPreimage.npk = hex(20))],
+  ['wrong amount', (f) => (f.inner.unshieldPreimage.value = 401)],
+  [
+    'oversized memo',
+    (f) => (f.inner.boundParams.commitmentCiphertext[0].memo = '0x' + '11'.repeat(257)),
+  ],
+  [
+    'oversized annotation',
+    (f) => (f.inner.boundParams.commitmentCiphertext[0].annotationData = '0x' + '11'.repeat(257)),
+  ],
+  [
+    'zero sender',
+    (f) => (f.inner.boundParams.commitmentCiphertext[0].blindedSenderViewingKey = hex(0)),
+  ],
+  [
+    'zero receiver',
+    (f) => (f.inner.boundParams.commitmentCiphertext[0].blindedReceiverViewingKey = hex(0)),
+  ],
+])('partial refuses %s even with a coherently recomputed bound hash', (_label, change) => {
+  const f = partialFixture();
+  change(f);
+  f.expected.boundParamsHash = hex(
+    BigInt(keccak256(AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [f.inner.boundParams]))) %
+      FIELD
+  );
+  expect(() => validateRailgunPrivateTransaction(f.tx(), f.expected)).toThrow(
+    'Railgun private transaction refused'
+  );
+});
+test.each([
+  '0',
+  '-1',
+  '0400',
+  '+400',
+  '400.0',
+  '4e2',
+  ' 400',
+  400,
+  400n,
+  null,
+  undefined,
+  '99999999999999999',
+])('partial refuses noncanonical or excessive public amount %s', (amount) => {
+  const f = partialFixture();
+  f.expected.unshieldAmount = amount;
+  expect(() => validateRailgunPrivateTransaction(f.tx(), f.expected)).toThrow();
+});
+test.each(['inputAmount', 'changeAmount', 'amount', 'commitment', 'authority'])(
+  'partial public expected refuses extra %s',
+  (key) => {
+    const f = partialFixture();
+    f.expected[key] = '1';
+    expect(() => validateRailgunPrivateTransaction(f.tx(), f.expected)).toThrow();
+  }
+);
+test.each(['changeCommitment', 'unshieldCommitment'])(
+  'partial validates %s field boundary and case',
+  (key) => {
+    for (const value of [hex(FIELD), '0x' + 'AB'.repeat(32), '0x01', 1]) {
+      const f = partialFixture();
+      f.expected[key] = value;
+      expect(() => validateRailgunPrivateTransaction(f.tx(), f.expected)).toThrow();
+    }
+  }
+);

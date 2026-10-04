@@ -497,3 +497,25 @@ test('staging is consumed once synchronously and its claim stays bound to the ex
   expect(claim.signal.aborted).toBe(true);
   expect(() => claim.assertCurrent()).toThrow();
 });
+
+test('valid partial request refuses before owned selection, handoff, TXID query or utility', async () => {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const fixture = createRailgunPartialCapsuleData();
+  require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(fixture.capsule);
+  expect(
+    require('./railgun-private-preparation').selectRailgunPrivatePreparation(
+      fixture.owned,
+      fixture.request
+    ).kind
+  ).toBe('railgun-partial-unshield');
+  const result = await stage({ request: fixture.request });
+  expect(result).toEqual({ status: 'refused', stage: 'local', originalAccountReusable: true });
+  expect(mockRead).not.toHaveBeenCalled();
+  expect(mockOpenTxid).not.toHaveBeenCalled();
+  expect(mockOpenWallet).not.toHaveBeenCalled();
+  expect(events).toEqual([]);
+  expect(mockOld.signal.aborted).toBe(false);
+  expect((await stage()).status).toBe('staged');
+});

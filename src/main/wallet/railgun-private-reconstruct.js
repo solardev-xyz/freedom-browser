@@ -20,6 +20,10 @@ async function reconstructRailgunPrivateWitness({
   const active = () => assert.ok(signal instanceof AbortSignal && !signal.aborted);
   active();
   const capsule = normalizeRailgunPrivateCapsule(input);
+  assert.equal(capsule.version, 1);
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
+  );
   const { selection, preparation, noteHash, pathElements } = capsule;
   assert.equal(capsule.walletId, descriptor.walletId);
   assert.equal(wallet.getAddress(), descriptor.instanceId);

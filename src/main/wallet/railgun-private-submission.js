@@ -38,6 +38,12 @@ async function submitRailgunPrivateTransaction({
     assert.ok(typeof maxGasFee === 'bigint' && maxGasFee > 0n && maxGasFee <= 2000000000000000n);
     claim = claimRailgunPrivateCompletion(completion, identity, enrollment);
     const snapshot = claim.assertCurrent();
+    assert.equal(snapshot.stored.capsule.version, 1);
+    assert.ok(
+      ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+        snapshot.stored.capsule.selection.kind
+      )
+    );
     const reservations = await enrollment.openReservations();
     const capsules = await enrollment.openPrivateCapsules();
     stage = 'recovery';

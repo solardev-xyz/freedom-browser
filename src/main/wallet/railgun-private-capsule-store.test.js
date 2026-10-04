@@ -403,6 +403,56 @@ test('tampered sequence and malformed nested data cannot reopen', async () => {
   await expect(open(false)).rejects.toThrow();
 });
 
+test('mixed structural capsule versions reopen without changing legacy records or granting a partial hold', async () => {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const {
+    normalizeRailgunPrivateCapsule,
+    digestRailgunPrivateCapsule,
+  } = require('./railgun-private-capsule');
+  const s = await open();
+  const legacy = capsule();
+  const saved = await s.put(await hold(legacy), legacy, signing.gatesDigest);
+  const legacyBytes = JSON.stringify(saved);
+  const partial = createRailgunPartialCapsuleData().capsule;
+  partial.walletId = options.walletId;
+  const normalized = normalizeRailgunPrivateCapsule(partial);
+  // Production reservation admission deliberately remains full-only. This test
+  // seeds authenticated structural storage, not a genuine v2 signing record.
+  await expect(hold(partial)).rejects.toThrow();
+  expect(reservations.signal.aborted).toBe(false);
+  expect(floor).toBe(1);
+  s.close();
+  const partialId = 'f'.repeat(64);
+  await createPrivacyStorage(options).update('railgun-private-capsules-v1', (text) => {
+    const value = JSON.parse(text);
+    expect(value.version).toBe(1);
+    expect(JSON.stringify(value.entries[0])).toBe(legacyBytes);
+    value.entries.push({
+      holdId: partialId,
+      factsDigest: 'd'.repeat(64),
+      authorizationDigest: signing.gatesDigest,
+      capsuleDigest: digestRailgunPrivateCapsule(normalized),
+      capsule: normalized,
+      signingDigest: null,
+      signature: null,
+      provedTransaction: null,
+    });
+    value.sequence++;
+    return JSON.stringify(value);
+  });
+  const cold = await open(false);
+  const beforeReads = fs.readFileSync(filename());
+  expect(await cold.inspect()).toEqual({ records: 2, signatures: 0, proofs: 0, capacity: 32 });
+  expect(JSON.stringify(await cold.get(saved.holdId))).toBe(legacyBytes);
+  expect((await cold.get(partialId)).capsule).toEqual(normalized);
+  await expect(cold.readSigned({})).rejects.toThrow();
+  expect(fs.readFileSync(filename())).toEqual(beforeReads);
+  expect(floor).toBe(2);
+  expect(cold.signal.aborted).toBe(false);
+});
+
 test('genuine reservations from a different directory or account cannot back the store', async () => {
   const foreignDirectory = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-foreign-capsules-'))

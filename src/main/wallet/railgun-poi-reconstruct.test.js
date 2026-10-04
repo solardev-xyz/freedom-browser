@@ -55,7 +55,7 @@ function args() {
     archive: mockArchive,
     descriptor: { spendingPublicKey: ['0'.repeat(64), '0'.repeat(64)] },
     viewingKey: Buffer.alloc(32, 7),
-    capsule: {},
+    capsule: { version: 1, selection: { kind: 'railgun-private-transfer' } },
     creator: {},
     signal: mockController.signal,
   };
@@ -104,5 +104,21 @@ test('abort during engine initialization prevents any key-derived work', async (
   mockResolvePoseidon();
   await expect(running).rejects.toThrow();
   expect(keys.getPublicViewingKey).not.toHaveBeenCalled();
+  expect(input.viewingKey.equals(Buffer.alloc(32, 7))).toBe(true);
+});
+
+test('normalized v2 partial capsule refuses before runtime and any owned viewing-key copy', async () => {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const capsule = jest
+    .requireActual('./railgun-private-capsule')
+    .normalizeRailgunPrivateCapsule(createRailgunPartialCapsuleData().capsule);
+  const input = { ...args(), capsule };
+  mockResolvePoseidon();
+  await expect(reconstructRailgunPoiNotes(input)).rejects.toThrow();
+  expect(runtime.verifyRailgunEngineRuntime).not.toHaveBeenCalled();
+  expect(keys.getPublicViewingKey).not.toHaveBeenCalled();
+  expect(mockSeenKey).toBeUndefined();
   expect(input.viewingKey.equals(Buffer.alloc(32, 7))).toBe(true);
 });

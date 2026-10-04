@@ -401,3 +401,31 @@ test('a child exit does not release identity exclusion until its durable callbac
   await refused;
   expect(settled).toBe(true);
 });
+
+test('valid partial signing intent refuses before a spending job, permit callback or key derivation', async () => {
+  const options = await signingFixture();
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const { preparation } = createRailgunPartialCapsuleData().capsule;
+  expect(
+    require('./railgun-private-intent').validateRailgunPrivateSigningIntent(
+      preparation.transaction,
+      preparation.expected
+    ).kind
+  ).toBe('railgun-partial-unshield');
+  const onKeyRequest = jest.fn();
+  const jobsBefore = mockInputs.length;
+  await expect(
+    signRailgunPrivateIntent({ ...options, ...preparation, onKeyRequest })
+  ).rejects.toMatchObject({ code: 'RAILGUN_PRIVATE_SIGNING_REFUSED' });
+  expect(mockInputs).toHaveLength(jobsBefore);
+  expect(mockDerived).toHaveLength(0);
+  expect(onKeyRequest).not.toHaveBeenCalled();
+  expect(assertRailgunIdentity(identity)).toBe(identity.descriptor);
+  // A rejected new kind does not occupy or revoke the genuine identity's signer slot.
+  await expect(signRailgunPrivateIntent(options)).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+  });
+  expect(mockInputs).toHaveLength(jobsBefore + 1);
+});

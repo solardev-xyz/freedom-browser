@@ -85,6 +85,7 @@ beforeEach(() => {
     },
     stored: {
       capsule: {
+        version: 1,
         selection: { kind: parsed.expected.kind, tree: 0 },
         preparation: { transaction: parsed.intent, expected: parsed.expected },
       },
@@ -390,3 +391,29 @@ test('submission inherits constrained completion and ignores caller attempt to r
   expect(mock.preflightConstraint).toBe(constraints.protocol);
   expect(mock.networkOptions.destinationConstraint).toBe(constraints.transaction);
 });
+
+// The completion registry is mocked; the v2 bytes pass the real capsule normalizer.
+test.each(['partial-v2', 'unknown-kind', 'legacy-v2'])(
+  'unsupported %s completion refuses before opening stores or proof/signing work',
+  async (kind) => {
+    const {
+      createRailgunPartialCapsuleData,
+    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+    const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
+    if (kind === 'partial-v2')
+      mock.snapshot.stored.capsule = normalizeRailgunPrivateCapsule(
+        createRailgunPartialCapsuleData().capsule
+      );
+    if (kind === 'unknown-kind') mock.snapshot.stored.capsule.selection.kind = 'unknown';
+    if (kind === 'legacy-v2') mock.snapshot.stored.capsule.version = 2;
+    const reservations = jest.spyOn(mock.enrollment, 'openReservations');
+    const capsules = jest.spyOn(mock.enrollment, 'openPrivateCapsules');
+    const address = jest.spyOn(mock.signer, 'getAddress');
+    expect(await submit(options)).toEqual({ status: 'recovery-required', stage: 'completion' });
+    expect(reservations).not.toHaveBeenCalled();
+    expect(capsules).not.toHaveBeenCalled();
+    expect(address).not.toHaveBeenCalled();
+    expect(mock.events).toEqual([]);
+    expect(mock.claimClosed).toBe(true);
+  }
+);

@@ -59,7 +59,10 @@ function openRailgunPrivateSelection({ wallet, identity, enrollment, coordinator
     check(checked.tree === note.tree && checked.nullifier === record.nullifier);
     check(checked.merkleRoot === '0x' + tree.root.replace(/^0x/, ''));
     if (checked.kind === 'railgun-token-unshield') check(BigInt(checked.amount) === note.amount);
-    // For a private transfer, conservation and receiver recovery are private
+    const partial = checked.kind === 'railgun-partial-unshield';
+    if (partial)
+      check(BigInt(checked.unshieldAmount) > 0n && BigInt(checked.unshieldAmount) < note.amount);
+    // For transfer and partial unshield, conservation and receiver recovery are private
     // witness checks. They are not inferred from the commitment alone.
     const value = Object.freeze({
       transaction: checked,
@@ -69,6 +72,13 @@ function openRailgunPrivateSelection({ wallet, identity, enrollment, coordinator
       creatingTxidRequired: record.type === 'Transact',
       creatingTxidVerified: false,
       inputValueVerified: checked.kind === 'railgun-token-unshield',
+      ...(partial
+        ? {
+            recoveredInputAmount: note.amount.toString(),
+            expectedChangeAmount: (note.amount - BigInt(checked.unshieldAmount)).toString(),
+            outputConservationVerified: false,
+          }
+        : {}),
       reservationsChecked: false,
       poiVerified: false,
       spendingEnabled: false,

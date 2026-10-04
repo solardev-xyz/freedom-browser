@@ -37,6 +37,12 @@ function normalizeRailgunOwnPoiProofInput(value) {
   shape(v.preparation, ['creator', 'ownEvidence', 'state', 'witness']);
   shape(v.preparation.ownEvidence, ['capsule', 'record', 'transaction', 'receipt', 'row']);
   const { creator, ownEvidence, state, witness } = v.preparation;
+  assert.equal(ownEvidence.capsule.version, 1);
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+      ownEvidence.capsule.selection.kind
+    )
+  );
   if (creator.type === 'Transact') {
     // Reuse the selector's exact current-format receiver input bounds. This
     // structural branch authenticates neither creator history nor typed POI.

@@ -21,6 +21,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
   ]);
   assert.ok(!signal.aborted);
   const checked = validateRailgunPrivateSigningIntent(input.transaction, input.expected);
+  assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(checked.kind));
   assert.ok(field(input.expectedHash));
   assert.ok(
     Array.isArray(input.spendingPublicKey) &&

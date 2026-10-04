@@ -167,6 +167,10 @@ async function captureRailgunOwnOperation(
           const stored = await capsules.readSigned(receipt);
           active();
           const { capsule, provedTransaction } = stored;
+          assert.equal(capsule.version, 1);
+          assert.ok(
+            ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
+          );
           assert.equal(capsule.walletId, enrollment.descriptor.walletId);
           const submitter = entry.signing.submitter;
           const intent = railgunTransactJournalIntent({ ...provedTransaction, from: submitter });

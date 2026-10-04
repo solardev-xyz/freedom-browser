@@ -178,3 +178,139 @@ test.each(['root', 'nullifier', 'amount', 'recipient', 'proof', 'message', 'witn
     expect(normalize).toThrow();
   }
 );
+
+const {
+  createRailgunPartialCapsuleData,
+} = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+test('partial request and offer separate recovered input, gross withdrawal and derived change', () => {
+  const f = createRailgunPartialCapsuleData();
+  const selected = selectRailgunPrivatePreparation(f.owned, f.request);
+  expect(selected).toEqual(f.capsule.selection);
+  const value = normalizeRailgunPrivatePreparation(f.capsule.preparation, {
+    ...f.owned,
+    selection: selected,
+  });
+  expect(value).toMatchObject({
+    inputAmount: '1000',
+    unshieldAmount: '400',
+    changeAmount: '600',
+    spendingEnabled: false,
+    recipientVerified: false,
+  });
+  expect(value).not.toHaveProperty('amount');
+  expect(value.expectedHash).toBe(f.capsule.preparation.expectedHash);
+  f.capsule.preparation.changeAmount = '1';
+  expect(value.changeAmount).toBe('600');
+});
+test.each(['0', '-1', '0400', '+400', '400.0', '4e2', 400, 400n, null, undefined, '1000', '1001'])(
+  'partial request rejects invalid or non-partial amount %s',
+  (amount) => {
+    const f = createRailgunPartialCapsuleData();
+    f.request.unshieldAmount = amount;
+    expect(() => selectRailgunPrivatePreparation(f.owned, f.request)).toThrow();
+  }
+);
+test.each(['inputAmount', 'unshieldAmount', 'changeAmount'])(
+  'partial offer enforces canonical positive capped %s',
+  (key) => {
+    for (const value of [
+      '0',
+      '-1',
+      '01',
+      '1.0',
+      '1e3',
+      1,
+      1n,
+      null,
+      undefined,
+      (BigInt(pins.maxQualificationAmount) + 1n).toString(),
+    ]) {
+      const f = createRailgunPartialCapsuleData();
+      f.capsule.preparation[key] = value;
+      expect(() =>
+        normalizeRailgunPrivateOffer(f.capsule.preparation, f.capsule.selection)
+      ).toThrow();
+    }
+  }
+);
+test.each([
+  'under-change',
+  'over-change',
+  'equal-input',
+  'above-input',
+  'selected-amount',
+  'public-amount',
+  'extra-amount',
+  'extra-public-input',
+  'extra-selection',
+])('partial offer refuses %s', (mode) => {
+  const f = createRailgunPartialCapsuleData(),
+    p = f.capsule.preparation;
+  if (mode === 'under-change') p.changeAmount = '599';
+  if (mode === 'over-change') p.changeAmount = '601';
+  if (mode === 'equal-input') p.inputAmount = '400';
+  if (mode === 'above-input') p.inputAmount = '399';
+  if (mode === 'selected-amount') f.capsule.selection.unshieldAmount = '399';
+  if (mode === 'public-amount') p.unshieldAmount = '399';
+  if (mode === 'extra-amount') p.amount = '1000';
+  if (mode === 'extra-public-input') p.expected.inputAmount = '1000';
+  if (mode === 'extra-selection') f.capsule.selection.amount = '1000';
+  expect(() => normalizeRailgunPrivateOffer(p, f.capsule.selection)).toThrow();
+});
+test('coherent private amounts remain untrusted until compared with the recovered note', () => {
+  const f = createRailgunPartialCapsuleData();
+  f.capsule.preparation.inputAmount = '1001';
+  f.capsule.preparation.changeAmount = '601';
+  expect(normalizeRailgunPrivateOffer(f.capsule.preparation, f.capsule.selection).inputAmount).toBe(
+    '1001'
+  );
+  expect(() =>
+    normalizeRailgunPrivatePreparation(f.capsule.preparation, {
+      ...f.owned,
+      selection: f.capsule.selection,
+    })
+  ).toThrow();
+});
+test.each(['1', (BigInt(pins.maxQualificationAmount) - 1n).toString()])(
+  'partial accepts bounded edge U=%s with cap V',
+  (unshieldAmount) => {
+    const f = createRailgunPartialCapsuleData({
+      inputAmount: pins.maxQualificationAmount,
+      unshieldAmount,
+    });
+    const selection = selectRailgunPrivatePreparation(f.owned, f.request);
+    expect(
+      normalizeRailgunPrivatePreparation(f.capsule.preparation, { ...f.owned, selection })
+        .inputAmount
+    ).toBe(pins.maxQualificationAmount);
+  }
+);
+test('legacy request cannot acquire a partial amount field', () => {
+  request.unshieldAmount = '400';
+  expect(() => selectRailgunPrivatePreparation(owned, request)).toThrow();
+});
+
+test('partial offer still refuses a nonzero proof in the pre-signing intent', () => {
+  const f = createRailgunPartialCapsuleData();
+  f.inner.proof.a.x = 1;
+  f.capsule.preparation.transaction.data = f.encode();
+  expect(() => normalizeRailgunPrivateOffer(f.capsule.preparation, f.capsule.selection)).toThrow();
+});
+test.each(['spent', 'wrong-token', 'missing-owned', 'wrong-root', 'wrong-nullifier', 'cap'])(
+  'partial preparation retains recovered input check: %s',
+  (mode) => {
+    const f = createRailgunPartialCapsuleData();
+    if (mode === 'spent') f.owned.read.received[0].spentTxid = hex(8);
+    if (mode === 'wrong-token') f.owned.read.received[0].asset.contract = '0x' + '34'.repeat(20);
+    if (mode === 'missing-owned') f.owned.ownedPoi = [];
+    if (mode === 'wrong-root') f.owned.trees[0].root = hex(8);
+    if (mode === 'wrong-nullifier') f.owned.ownedPoi[0].nullifier = hex(8);
+    if (mode === 'cap') f.owned.read.received[0].amount = BigInt(pins.maxQualificationAmount) + 1n;
+    expect(() =>
+      normalizeRailgunPrivatePreparation(f.capsule.preparation, {
+        ...f.owned,
+        selection: f.capsule.selection,
+      })
+    ).toThrow();
+  }
+);

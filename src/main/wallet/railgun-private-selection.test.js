@@ -10,6 +10,7 @@ jest.mock('./railgun-account-wallet', () => ({
   },
 }));
 jest.mock('./railgun-private-policy', () => ({
+  ...jest.requireActual('./railgun-private-policy'),
   validateRailgunPrivateTransaction: jest.fn((tx, expected) =>
     Object.freeze({ ...tx, ...expected })
   ),
@@ -155,4 +156,73 @@ test.each(['checkpoint', 'note', 'projection', 'tree'])(
 test('forged account and mismatched enrollment cannot obtain ownership observations', () => {
   expect(() => open({ wallet: { ...mockWallet } })).toThrow();
   expect(() => open({ enrollment: { ...mockOwners.enrollment } })).toThrow();
+});
+
+test.each(['Shield', 'Transact'])(
+  'partial selection for %s reports recovered V and expected C, never output conservation',
+  (type) => {
+    mockBaseline.ownedPoi[0].type = type;
+    const selection = open();
+    const result = selection.prepare(
+      {},
+      { ...expected, kind: 'railgun-partial-unshield', unshieldAmount: '400' }
+    );
+    expect(result.observation).toMatchObject({
+      recoveredInputAmount: '1000',
+      expectedChangeAmount: '600',
+      inputValueVerified: false,
+      outputConservationVerified: false,
+      creatingTxidRequired: type === 'Transact',
+      creatingTxidVerified: false,
+      spendingEnabled: false,
+    });
+    expect(Object.isFrozen(result.observation)).toBe(true);
+    expect(selection.assertResult(result.receipt)).toBe(result.observation);
+    controllers[0].abort();
+    expect(() => selection.assertResult(result.receipt)).toThrow();
+  }
+);
+test.each(['0', '1000', '1001'])(
+  'partial selection refuses withdrawal %s against actual recovered input',
+  (unshieldAmount) => {
+    expect(() =>
+      open().prepare({}, { ...expected, kind: 'railgun-partial-unshield', unshieldAmount })
+    ).toThrow();
+  }
+);
+test('legacy selection observations retain their exact public shape', () => {
+  const value = open().prepare({}, expected).observation;
+  expect(Object.keys(value)).toEqual([
+    'transaction',
+    'publicCheckpointHash',
+    'ownedInputAtSnapshot',
+    'inputType',
+    'creatingTxidRequired',
+    'creatingTxidVerified',
+    'inputValueVerified',
+    'reservationsChecked',
+    'poiVerified',
+    'spendingEnabled',
+  ]);
+});
+
+test('real partial calldata policy composes with captured selection without proving encrypted change', () => {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const f = createRailgunPartialCapsuleData();
+  mockBaseline.ownedPoi[0].nullifier = f.capsule.preparation.expected.nullifier;
+  mockBaseline.trees[0].root = f.capsule.preparation.expected.merkleRoot.slice(2);
+  require('./railgun-private-policy').validateRailgunPrivateTransaction.mockImplementationOnce(
+    jest.requireActual('./railgun-private-policy').validateRailgunPrivateTransaction
+  );
+  const value = open().prepare(
+    f.capsule.preparation.transaction,
+    f.capsule.preparation.expected
+  ).observation;
+  expect(value.recoveredInputAmount).toBe('1000');
+  expect(value.expectedChangeAmount).toBe('600');
+  expect(value.outputConservationVerified).toBe(false);
+  expect(value.transaction.proofVerified).toBe(false);
+  expect(value.transaction).not.toHaveProperty('inputAmount');
 });

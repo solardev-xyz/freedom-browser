@@ -24,6 +24,7 @@ function input(unshield = false) {
       creator: { type: 'Shield', position: 0 },
       ownEvidence: {
         capsule: {
+          version: 1,
           walletId: 'test-wallet',
           selection: {
             position: 0,
@@ -138,5 +139,25 @@ test.each(['list', 'poi-root', 'txid-root', 'checkpoint', 'marker', 'output-coun
     if (fault === 'output-count') v.blindedCommitmentsOut.push(hex(12));
     if (fault === 'proof-extra') v.proof.privateWitness = {};
     expect(() => bind(v, expected(input()))).toThrow();
+  }
+);
+
+test.each(['Shield', 'Transact'])(
+  'v2 partial %s input refuses before creator binding and public-field derivation',
+  (type) => {
+    const {
+      createRailgunPartialCapsuleData,
+    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+    const value = input();
+    value.preparation.ownEvidence.capsule =
+      require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(
+        createRailgunPartialCapsuleData().capsule
+      );
+    value.preparation.creator.type = type;
+    const shield = require('./railgun-poi-shield-selector-data').normalizeRailgunPoiShieldInput;
+    shield.mockClear();
+    expect(() => normalize(value)).toThrow();
+    expect(() => expected(value)).toThrow();
+    expect(shield).not.toHaveBeenCalled();
   }
 );

@@ -1,3 +1,7 @@
+jest.mock('./railgun-transact-intent', () => {
+  const actual = jest.requireActual('./railgun-transact-intent');
+  return { ...actual, railgunTransactJournalIntent: jest.fn(actual.railgunTransactJournalIntent) };
+});
 const mockDerive = jest.fn();
 jest.mock('./railgun-own-selector', () => ({
   deriveRailgunOwnSelector: (...args) => mockDerive(...args),
@@ -806,3 +810,30 @@ test.each([
   expect(inRecovery).toBe(false);
   expect(reservations.close).not.toHaveBeenCalled();
 });
+
+test.each(['capture', 'selector', 'recovery'])(
+  'valid structural v2 capsule refuses %s before journal, selector or callback',
+  async (route) => {
+    const {
+      createRailgunPartialCapsuleData,
+    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+    stored.capsule = require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(
+      createRailgunPartialCapsuleData().capsule
+    );
+    const use = jest.fn();
+    railgunTransactJournalIntent.mockClear();
+    const result = await (route === 'capture'
+      ? capture(input)
+      : route === 'selector'
+        ? captureSelector({ ...input, archive: '/engine.asar' })
+        : withRecovery(input, use));
+    expect(result).toMatchObject({ status: 'refused', stage: 'capsule' });
+    expect(capsules.readSigned).toHaveBeenCalledTimes(1);
+    expect(railgunTransactJournalIntent).not.toHaveBeenCalled();
+    expect(mockJournal.readSnapshot).not.toHaveBeenCalled();
+    expect(mockDerive).not.toHaveBeenCalled();
+    expect(use).not.toHaveBeenCalled();
+    expect(inRecovery).toBe(false);
+    expect(reservations.close).not.toHaveBeenCalled();
+  }
+);

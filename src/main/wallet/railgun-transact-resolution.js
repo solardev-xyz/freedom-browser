@@ -17,6 +17,7 @@ function validRailgunTransactResolution(value, record) {
       i = record.intent;
     if (
       !validRailgunTransactIntent(i) ||
+      !['railgun-private-transfer', 'railgun-token-unshield'].includes(i.operation) ||
       !hash(record.hash) ||
       !o ||
       !integer(o.blockNumber) ||

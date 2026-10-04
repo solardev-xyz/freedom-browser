@@ -26,6 +26,10 @@ async function reconstructRailgunPoiNotes({
   descriptor = copied.descriptor;
   const capsule = normalizeRailgunPrivateCapsule(copied.capsule),
     creator = copied.creator;
+  assert.equal(capsule.version, 1);
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
+  );
   assert.ok(viewingKey instanceof Uint8Array && viewingKey.byteLength === 32);
   // Own a working copy across awaits; the caller's key remains caller-owned.
   const key = Buffer.from(viewingKey);

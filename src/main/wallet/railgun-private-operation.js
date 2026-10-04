@@ -123,6 +123,9 @@ async function prove({
   stagingReceipt,
   destinationConstraints,
 }) {
+  // Structural partial-unshield records must not enable this controller before
+  // connected change recovery, POI and second-spend qualification is complete.
+  assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(request?.kind));
   if (destinationConstraints !== undefined) {
     assert.ok(destinationConstraints && !require('util').types.isProxy(destinationConstraints));
     assert.equal(Object.getPrototypeOf(destinationConstraints), Object.prototype);

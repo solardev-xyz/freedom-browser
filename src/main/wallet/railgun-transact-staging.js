@@ -72,6 +72,7 @@ async function stage(
     coordinator: suppliedOwners.coordinator,
   });
   const request = Object.freeze({ ...suppliedRequest });
+  assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(request.kind));
   const { identity, enrollment, coordinator } = owners;
   const baseline = selectionSnapshot(readRailgunAccountOwnedNotes(account, owners), request);
   archive = verifyRailgunEngineRuntime(archive);

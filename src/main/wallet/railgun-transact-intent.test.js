@@ -9,6 +9,42 @@ const { validateRailgunPrivateSigningIntent } = require('./railgun-private-inten
 const { fixture } = require('../../../scripts/fixtures/railgun-transact-data');
 const pins = require('./railgun-shield-pins.json');
 const abi = new Interface([TRANSACT_ABI]);
+test.each([
+  [false, '767d0c8d1a9b87dd853c606f58dc61272ee62dd6db99f3f7401182ab40796fb4'],
+  [true, 'e680d41f46b6d6cfced77cb3a8ced7a9f0fb96fcaf5ed5c9baf8e2719ed8ddce'],
+])('preserves legacy %s intent bytes from the pre-partial checkpoint', (unshield, expected) => {
+  const { createHash } = require('crypto');
+  // Captured at 3e68ccb9 before modifying the policy or journal classifier.
+  expect(
+    createHash('sha256')
+      .update(JSON.stringify(extract(fixture(unshield).transaction())))
+      .digest('hex')
+  ).toBe(expected);
+});
+test('partial structural support does not admit records to the shared EOA journal', () => {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const { preparation } = createRailgunPartialCapsuleData().capsule;
+  const checked = validateRailgunPrivateSigningIntent(
+    preparation.transaction,
+    preparation.expected
+  );
+  expect(checked.kind).toBe('railgun-partial-unshield');
+  expect(checked.spendingEnabled).toBe(false);
+  expect(() => extract(preparation.transaction)).toThrow('Railgun transact intent unavailable');
+  expect(() => binding(preparation.transaction)).toThrow('Railgun transact intent unavailable');
+  const { kind, ...fields } = preparation.expected;
+  expect(
+    valid({
+      kind: 'railgun-transact',
+      digest: '0x' + '1'.repeat(64),
+      operation: kind,
+      ...fields,
+      intentDigest: checked.digest,
+    })
+  ).toBe(false);
+});
 test.each([false, true])(
   'derives %s metadata and original intent from calldata only',
   async (unshield) => {
