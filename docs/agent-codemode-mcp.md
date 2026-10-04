@@ -9,9 +9,12 @@ Codemode is available automatically alongside ordinary tools. Ask Agent to do a
 multi-step task; it can use a short JavaScript script to chain tools and filter
 results. Small models may continue using ordinary tools.
 
-Open **Models & providers → Connect services**, enter a name and the service's
-MCP endpoint, and connect. If authentication is required, choose **Sign in** and
-finish in the browser. The connection card lists available tools. Reconnect
+Open **composer + → Connected services** in a new or existing chat. The list shows
+your connections, status and available tools; reconnect and disconnect live here.
+Choose **Add service**, enter a name and the service's MCP endpoint, and connect. Connecting returns to the service list; Back returns
+to your conversation without clearing the draft. Model settings remain separate.
+
+If authentication is required, choose **Sign in** and finish in the browser. The connection card lists available tools. Reconnect
 refreshes discovery; Disconnect removes the configuration and stored credentials.
 Saved connections connect lazily after restarting Freedom.
 

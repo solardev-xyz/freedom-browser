@@ -112,6 +112,7 @@ let approvalReadyAt = 0;
 let lastGuidanceSentAt = -Infinity;
 let panelOpen = false;
 let agentView = 'loading';
+let servicesReturnToAgentFirst = false;
 let approvalMode = APPROVAL_MODES.SENSITIVE_ACTIONS;
 let approvalModeMutationPending = false;
 let agentEventUnsubscribe = null;
@@ -656,15 +657,17 @@ function setAgentView(nextView) {
   agentView = nextView;
   elements.loadingView.hidden = nextView !== 'loading';
   elements.setupView.hidden = nextView !== 'setup';
+  elements.mcpPanel.hidden = nextView !== 'services';
   elements.workspaceView.hidden = nextView !== 'workspace';
   const setup = nextView === 'setup';
   elements.browserModeToggle.hidden = nextView !== 'workspace';
   elements.title.hidden = nextView === 'workspace';
   elements.subtitle.hidden = nextView === 'workspace';
-  const canReturn = setup && providerStatus?.configured === true;
+  const services = nextView === 'services';
+  const canReturn = services || (setup && providerStatus?.configured === true);
   elements.back.hidden = !canReturn;
-  elements.title.textContent = setup ? (canReturn ? 'Models' : 'Set up Agent') : 'Agent';
-  elements.subtitle.textContent = setup
+  elements.title.textContent = services ? 'Services' : setup ? (canReturn ? 'Models' : 'Set up Agent') : 'Agent';
+  elements.subtitle.textContent = services ? 'Connected tools and integrations' : setup
     ? canReturn
       ? 'Add or manage providers'
       : 'Connect a model to continue'
@@ -1504,7 +1507,6 @@ function uiModelAllowed(model, policy = 'standard') {
 }
 
 function showProviderScreen(screen) {
-  elements.mcpPanel.hidden = screen !== 'mcp';
   elements.providerHome.hidden = screen !== 'home';
   elements.providerBrowser.hidden = screen !== 'browser';
   elements.providerDetail.hidden = screen !== 'detail';
@@ -4738,7 +4740,13 @@ export function initAgentUi(options = {}) {
     { passive: false }
   );
   elements.sessionNewChat.addEventListener('click', startNewSessionFromSidebar);
-  elements.back.addEventListener('click', () => setAgentView('workspace'));
+  elements.back.addEventListener('click', () => {
+    if (agentView === 'services' && mcpPanel.back()) return;
+    const restoreAgentFirst = agentView === 'services' && servicesReturnToAgentFirst;
+    setAgentView('workspace');
+    if (restoreAgentFirst) setAgentFirstMode(true);
+    focusComposer();
+  });
   elements.provider.addEventListener('change', () => {
     elements.apiKey.value = '';
       elements.model.value = providerConnection(elements.provider.value)?.modelId || '';
@@ -4746,8 +4754,11 @@ export function initAgentUi(options = {}) {
     setMessage(elements.providerMessage, '');
   });
   const mcpPanel = createMcpConnectionsPanel(elements.mcpPanel, window.electronAPI);
-  byId('agent-mcp-open').addEventListener('click', () => { showProviderScreen('mcp'); mcpPanel.refresh(); });
-  byId('agent-mcp-back').addEventListener('click', () => showProviderScreen('home'));
+  byId('agent-mcp-open').addEventListener('click', () => {
+    servicesReturnToAgentFirst = agentFirstMode;
+    setAgentView('services');
+    mcpPanel.open();
+  });
   elements.providerAdd.addEventListener('click', () => { renderProviderOptions(); showProviderScreen('browser'); });
   elements.providerListBack.addEventListener('click', () => showProviderScreen('home'));
   elements.providerDetailBack.addEventListener('click', () => { if (!providerLoginPending) showProviderScreen('home'); });

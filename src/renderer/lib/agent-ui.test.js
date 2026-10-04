@@ -65,7 +65,7 @@ function createAgentElements() {
     'agent-process-compact-popover',
     'agent-process-compact-count',
     'agent-process-compact-list',
-    'agent-mcp-open', 'agent-mcp-back', 'agent-mcp-panel',
+    'agent-mcp-open', 'agent-mcp-panel',
     'agent-provider-home',
     'agent-provider-browser',
     'agent-provider-detail',
@@ -206,7 +206,9 @@ function createAgentElements() {
   const mcpForm = createElement('form');
   const mcpList = createElement('div');
   const mcpMessage = createElement('p');
-  elements['agent-mcp-panel'].querySelector = selector => ({ form: mcpForm, '[data-mcp-list]': mcpList, '[data-mcp-message]': mcpMessage })[selector];
+  const mcpHome = createElement('div');
+  const mcpAdd = createElement('button');
+  elements['agent-mcp-panel'].querySelector = selector => ({ form: mcpForm, '[data-mcp-list]': mcpList, '[data-mcp-message]': mcpMessage, '[data-mcp-home]': mcpHome, '[data-mcp-add]': mcpAdd })[selector];
   elements['agent-workspace-view'].hidden = true;
   elements['agent-process-panel'].hidden = true;
   elements['agent-process-compact'].hidden = true;

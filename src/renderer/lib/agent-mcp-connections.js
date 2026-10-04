@@ -2,6 +2,18 @@ export function createMcpConnectionsPanel(root, api) {
   const list = root.querySelector('[data-mcp-list]');
   const message = root.querySelector('[data-mcp-message]');
   const form = root.querySelector('form');
+  const home = root.querySelector('[data-mcp-home]');
+  const add = root.querySelector('[data-mcp-add]');
+  function showList() {
+    form.hidden = true;
+    home.hidden = false;
+  }
+  add.addEventListener('click', () => {
+    home.hidden = true;
+    form.hidden = false;
+    message.textContent = '';
+    form.elements.namedItem('connectionName').focus();
+  });
   const pending = new Map();
   let generation = 0;
   const element = (tag, text, className) => {
@@ -65,7 +77,7 @@ export function createMcpConnectionsPanel(root, api) {
       if (version !== generation) return;
       if (!response?.ok) throw new Error(response?.error?.message || 'Could not update connections. Try again.');
       connections = response.connections || [];
-      if (action === 'add') form.reset();
+      if (action === 'add') { form.reset(); showList(); add.focus(); }
     } catch (error) { if (version === generation) message.textContent = error.message; }
     finally {
       if (pending.get(input.id)?.version === version || (action === 'cancel' && pending.get(input.id)?.version < version)) pending.delete(input.id);
@@ -78,5 +90,14 @@ export function createMcpConnectionsPanel(root, api) {
     event.preventDefault();
     run('add', { name: form.elements.namedItem('connectionName').value, url: form.elements.namedItem('connectionUrl').value });
   });
-  return { refresh: () => run('list') };
+  return {
+    open: () => { showList(); add.focus(); return run('list'); },
+    back: () => {
+      if (form.hidden) return false;
+      showList();
+      message.textContent = '';
+      add.focus();
+      return true;
+    },
+  };
 }

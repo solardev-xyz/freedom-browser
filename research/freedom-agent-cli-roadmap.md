@@ -15,7 +15,8 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 Implemented on `experiment/agent-codemode-mcp` (branched from `6de3fa57`):
 
 - Pi's native QuickJS codemode tool on the main agent, alongside ordinary tools. Nested calls retain Freedom approvals, cancellation and activity. Known project/attachment readers can overlap; browser calls and writes execute in order. Background helpers provide isolated parallel browser work. Native classifier/image globals remain disabled.
-- Profile-owned remote MCP connections under **Models & providers → Connect services**: Streamable HTTP, tool/schema discovery, resource listing/reading, browser OAuth with encrypted credentials, reconnect and disconnect.
+- Profile-owned remote MCP connections under **composer + → Connected services**: Streamable HTTP, tool/schema discovery, resource listing/reading, browser OAuth with encrypted credentials, reconnect and disconnect.
+- Service management is separate from model settings and available in existing chats. The connections list and add-service form are separate screens; returning preserves the conversation and draft.
 - Every MCP invocation or resource request receives an explicit approval for the service and arguments. Server annotations do not grant authority; MCP servers cannot request local files, shell commands, model sampling, or ambient credentials.
 - No filesystem extension/config discovery, no new dependencies, and no requirement for another model account. Website WebMCP remains separate and unchanged.
 - Validation: **8,178 unit tests passed / 129 skipped**, lint clean; native Pi/HTTP/OAuth integration (including cancellation, refusal, non-replayed failures and partial script effects); Electron UI in both themes; native worker plus WebAssembly execution from an ASAR archive. Full packaged-app and third-party authenticated-service qualification remain pending.

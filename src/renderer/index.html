@@ -1597,23 +1597,7 @@
                 <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
               </div>
               <button id="agent-provider-add" class="agent-button secondary" type="button">＋ Add provider</button>
-              <button id="agent-mcp-open" class="agent-button secondary" type="button">Connect services</button>
             </div>
-            <section id="agent-mcp-panel" hidden aria-labelledby="agent-mcp-heading">
-              <button id="agent-mcp-back" class="agent-text-button" type="button">‹ Providers</button>
-              <div class="agent-setup-intro"><h3 id="agent-mcp-heading">Connected services</h3><p>Give Freedom Agent access to tools from your services using MCP.</p></div>
-              <div data-mcp-list></div>
-              <form class="agent-mcp-form">
-                <h4>Add a service</h4>
-                <label for="agent-mcp-name">Name</label>
-                <input id="agent-mcp-name" name="connectionName" type="text" maxlength="80" placeholder="My service" required />
-                <label for="agent-mcp-url">MCP server URL</label>
-                <input id="agent-mcp-url" name="connectionUrl" type="url" maxlength="2048" placeholder="https://example.com/mcp" required />
-                <p class="agent-catalog-status">Connections go directly to the service. You’ll approve each tool or resource request before it runs. Services that need an account offer browser sign-in.</p>
-                <button class="agent-button primary" type="submit">Connect service</button>
-              </form>
-              <p data-mcp-message class="agent-inline-message" role="status"></p>
-            </section>
             <div id="agent-provider-browser" hidden>
               <button id="agent-provider-list-back" class="agent-text-button" type="button">‹ Providers</button>
               <h3>Add a provider</h3>
@@ -1670,6 +1654,24 @@
             </section>
             <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
           </div>
+
+          <section id="agent-mcp-panel" class="agent-view agent-setup-view" hidden aria-labelledby="agent-mcp-heading">
+            <div data-mcp-home>
+              <div class="agent-setup-intro"><h3 id="agent-mcp-heading">Connected services</h3><p>Services available to Freedom Agent across your chats.</p></div>
+              <div data-mcp-list></div>
+              <button data-mcp-add class="agent-button primary" type="button">Add service</button>
+            </div>
+            <form class="agent-mcp-form" hidden>
+              <h4>Add a service</h4>
+              <label for="agent-mcp-name">Name</label>
+              <input id="agent-mcp-name" name="connectionName" type="text" maxlength="80" placeholder="My service" required />
+              <label for="agent-mcp-url">MCP server URL</label>
+              <input id="agent-mcp-url" name="connectionUrl" type="url" maxlength="2048" placeholder="https://example.com/mcp" required />
+              <p class="agent-catalog-status">Connections go directly to the service. You’ll approve each tool or resource request before it runs. Services that need an account offer browser sign-in.</p>
+              <button class="agent-button primary" type="submit">Connect service</button>
+            </form>
+            <p data-mcp-message class="agent-inline-message" role="status"></p>
+          </section>
 
           <div id="agent-workspace-view" class="agent-view agent-workspace-view" hidden>
             <div id="agent-workspace-body" class="agent-workspace-body">
@@ -1766,6 +1768,13 @@
                     <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
                   </svg>
                   <span><strong>Open project…</strong><small>Start a chat with an existing project</small></span>
+                </button>
+                <button id="agent-mcp-open" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                  </svg>
+                  <span><strong>Connected services…</strong><small>Manage tools and integrations</small></span>
                 </button>
               </div>
               <div id="agent-composer" class="agent-composer">

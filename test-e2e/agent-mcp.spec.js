@@ -3,9 +3,14 @@ const http = require('http');
 const path = require('path');
 const repositoryRoot = path.resolve(__dirname, '..');
 
-test('MCP connections discover real HTTP tools and render safely in both themes; Electron runs native codemode', async ({ window, electronApp }, testInfo) => {
+test('MCP services work in existing chats independently of model settings; Electron runs native codemode', async ({ window, electronApp }, testInfo) => {
   const server = http.createServer(async (req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'freedom-e2e-no-server' }] }));
+    if (req.url !== '/mcp') {
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: 'Model unavailable in discovery-only fixture' }));
+    }
     if (req.method !== 'POST') { res.statusCode = 405; return res.end(); }
     let body = '';
     for await (const part of req) body += part;
@@ -20,27 +25,71 @@ test('MCP connections discover real HTTP tools and render safely in both themes;
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
     await window.locator('[data-test="agent-toggle-btn"]').click();
+    await window.locator('#agent-provider-add').click();
+    await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+    await window.locator('#agent-provider-advanced > summary').click();
+    await window.locator('#agent-ollama-url').fill(`http://127.0.0.1:${server.address().port}/v1`);
+    await window.locator('#agent-provider-save').click();
+    await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+    await expect(window.locator('#agent-setup-view #agent-mcp-open')).toHaveCount(0);
+    await window.locator('#agent-sidebar-back').click();
+    await window.locator('#agent-prompt').fill('Hello');
+    await window.locator('#agent-run').click();
+    await expect(window.locator('#agent-run-status')).toHaveText('Provider issue', { timeout: 15_000 });
+    await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
+    await window.locator('#agent-prompt').fill('Keep this draft');
+    await window.locator('#agent-attachment-button').click();
     await window.locator('#agent-mcp-open').click();
+    await expect(window.locator('#agent-workspace-view')).toBeHidden();
+    await expect(window.locator('.agent-mcp-form')).toBeHidden();
     for (const theme of ['dark', 'light']) {
       await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
-      await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`mcp-${theme}-empty.png`) });
+      await window.locator('#agent-mcp-panel').screenshot({ path: testInfo.outputPath(`mcp-${theme}-empty.png`) });
+    }
+    await window.getByRole('button', { name: 'Add service', exact: true }).click();
+    await expect(window.locator('[data-mcp-home]')).toBeHidden();
+    await expect(window.locator('#agent-mcp-name')).toBeFocused();
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      await window.locator('#agent-mcp-panel').screenshot({ path: testInfo.outputPath(`mcp-${theme}-add.png`) });
     }
     await window.locator('#agent-mcp-name').fill('My notes');
     await window.locator('#agent-mcp-url').fill(`http://127.0.0.1:${server.address().port}/mcp`);
     await window.getByRole('button', { name: 'Connect service', exact: true }).click();
     const card = window.locator('.agent-mcp-card');
     await expect(card).toContainText('Connected');
+    await expect(window.locator('.agent-mcp-form')).toBeHidden();
+    await window.locator('#agent-sidebar-back').click();
+    await expect(window.locator('#agent-workspace-view')).toBeVisible();
+    await expect(window.locator('#agent-prompt')).toHaveValue('Keep this draft');
+    await expect(window.locator('.agent-user-message')).toHaveText('Hello');
+    await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
+    await window.locator('#agent-attachment-button').click();
+    await window.locator('#agent-mcp-open').click();
+    await window.getByRole('button', { name: 'Add service', exact: true }).click();
+    await window.locator('#agent-sidebar-back').click();
+    await expect(card).toBeVisible();
+    await expect(window.locator('.agent-mcp-form')).toBeHidden();
     await card.locator('summary').click();
     await expect(card).toContainText('find_notes');
     await expect(card.locator('img')).toHaveCount(0);
     for (const theme of ['dark', 'light']) {
       await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
-      await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`mcp-${theme}-connected.png`) });
+      await window.locator('#agent-mcp-panel').screenshot({ path: testInfo.outputPath(`mcp-${theme}-connected.png`) });
     }
     await card.getByRole('button', { name: 'Reconnect', exact: true }).click();
     await expect(card).toContainText('Connected');
     await card.getByRole('button', { name: 'Disconnect', exact: true }).click();
     await expect(card).toHaveCount(0);
+    await window.locator('#agent-sidebar-back').click();
+    await window.locator('#agent-first-toggle').click();
+    await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+    await window.locator('#agent-attachment-button').click();
+    await window.locator('#agent-mcp-open').click();
+    await expect(window.locator('#agent-mcp-panel')).toBeVisible();
+    await window.locator('#agent-sidebar-back').click();
+    await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+    await expect(window.locator('#agent-prompt')).toHaveValue('Keep this draft');
     const codemode = await electronApp.evaluate(async (_electron, root) => {
       const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
       const { loadPiSdk } = require(root + '/src/main/agent/pi-sdk');
