@@ -83,6 +83,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   invalidateTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:invalidate', { name }),
   // History
   getHistory: (options) => ipcRenderer.invoke('history:get', options),
+  // Address-bar suggestion candidates for what the user typed (#503).
+  autocompleteHistory: (query) => ipcRenderer.invoke('history:autocomplete', { query }),
   addHistory: (entry) => ipcRenderer.invoke('history:add', entry),
   removeHistory: (id) => ipcRenderer.invoke('history:remove', id),
   clearHistory: () => ipcRenderer.invoke('history:clear'),

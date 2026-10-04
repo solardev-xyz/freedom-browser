@@ -6,7 +6,18 @@ const clearBtn = document.getElementById('clear-btn');
 const sortSelect = document.getElementById('sort-select');
 const statsEl = document.getElementById('stats');
 
-let allHistory = [];
+// The list is loaded a page at a time (#503): before, this page pulled the
+// whole history table over IPC on every load, search keystroke aside. Search,
+// sort and paging run in main's history search worker (`history:page`).
+const PAGE_SIZE = 200;
+// What's loaded so far for the current search + sort, in display order.
+let loadedEntries = [];
+// Rows the current search matches (every row with no search), and all rows.
+let matchedCount = 0;
+let totalCount = 0;
+// Bumped by every new load, so a slower, older response never paints.
+let loadGeneration = 0;
+let searchTimer = null;
 let currentSort = localStorage.getItem('history-sort') || 'recent';
 
 // Initialize sort dropdown
@@ -91,28 +102,6 @@ function groupByDate(entries) {
   return groups;
 }
 
-// Sort entries based on current sort option
-function sortEntries(entries) {
-  const sorted = [...entries];
-  switch (currentSort) {
-    case 'visited':
-      sorted.sort((a, b) => b.visit_count - a.visit_count);
-      break;
-    case 'title':
-      sorted.sort((a, b) => {
-        const titleA = (a.title || a.url || '').toLowerCase();
-        const titleB = (b.title || b.url || '').toLowerCase();
-        return titleA.localeCompare(titleB);
-      });
-      break;
-    case 'recent':
-    default:
-      sorted.sort((a, b) => b.timestamp - a.timestamp);
-      break;
-  }
-  return sorted;
-}
-
 // Check if protocol needs a badge when favicon is present
 function needsProtocolBadge(protocol) {
   return protocol && !['http', 'https', 'unknown'].includes(protocol);
@@ -193,9 +182,25 @@ function formatCount(shown, total, singular, plural = `${singular}s`) {
   return shown === total ? `${total} ${noun}` : `${shown} of ${total} ${noun}`;
 }
 
-// Render history list with date grouping
+// "Show more" under the list while the search has rows not loaded yet.
+function renderShowMore() {
+  const remaining = matchedCount - loadedEntries.length;
+  if (remaining <= 0) return null;
+  const wrap = el('div', 'show-more');
+  const btn = el('button', 'btn', `Show more (${remaining.toLocaleString()} remaining)`);
+  btn.id = 'show-more-btn';
+  btn.type = 'button';
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    loadHistory({ append: true });
+  });
+  wrap.append(btn);
+  return wrap;
+}
+
+// Render history list with date grouping. `entries` arrive sorted by main.
 function renderHistory(entries) {
-  statsEl.textContent = formatCount(entries?.length || 0, allHistory.length, 'page');
+  statsEl.textContent = formatCount(matchedCount, totalCount, 'page');
   if (!entries || entries.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
@@ -209,12 +214,9 @@ function renderHistory(entries) {
     return;
   }
 
-  // Sort entries
-  const sorted = sortEntries(entries);
-
   // For "Most Recent" sort, group by date; otherwise show flat list
   if (currentSort === 'recent') {
-    const groups = groupByDate(sorted);
+    const groups = groupByDate(entries);
     const fragment = document.createDocumentFragment();
     for (const [groupName, groupEntries] of groups) {
       const group = el('div', 'date-group');
@@ -224,8 +226,10 @@ function renderHistory(entries) {
     container.replaceChildren(fragment);
   } else {
     // Flat list for other sort options
-    container.replaceChildren(renderList(sorted));
+    container.replaceChildren(renderList(entries));
   }
+  const showMore = renderShowMore();
+  if (showMore) container.append(showMore);
 
   // Attach click handlers
   container.querySelectorAll('.history-item').forEach((item) => {
@@ -244,8 +248,15 @@ function renderHistory(entries) {
       e.stopPropagation();
       const id = parseInt(btn.dataset.id, 10);
       if (id && freedomAPI?.removeHistory) {
-        await freedomAPI.removeHistory(id);
-        loadHistory();
+        const removed = await freedomAPI.removeHistory(id);
+        // Drop the row in place rather than reloading every page shown.
+        const before = loadedEntries.length;
+        loadedEntries = loadedEntries.filter((entry) => entry.id !== id);
+        if (removed && loadedEntries.length < before) {
+          matchedCount = Math.max(0, matchedCount - 1);
+          totalCount = Math.max(0, totalCount - 1);
+        }
+        renderHistory(loadedEntries);
       }
     });
   });
@@ -296,36 +307,40 @@ async function loadFavicons() {
   }
 }
 
-// Load history from main process
-async function loadHistory() {
+// Load the first page for the current search + sort, or with `append` the
+// next page after what's shown.
+async function loadHistory({ append = false } = {}) {
+  const generation = ++loadGeneration;
   try {
-    if (!freedomAPI?.getHistory) {
+    if (!freedomAPI?.getHistoryPage) {
       container.innerHTML = '<div class="empty-state"><p>History API not available</p></div>';
       return;
     }
 
-    allHistory = await freedomAPI.getHistory();
-    renderHistory(allHistory);
+    const page = await freedomAPI.getHistoryPage({
+      query: searchInput.value,
+      sort: currentSort,
+      offset: append ? loadedEntries.length : 0,
+      limit: PAGE_SIZE,
+    });
+    if (generation !== loadGeneration) return;
+
+    if (append) {
+      // A visit recorded since the last page shifts the offsets by a row;
+      // never show the same entry twice.
+      const seen = new Set(loadedEntries.map((entry) => entry.id));
+      loadedEntries = loadedEntries.concat(page.entries.filter((entry) => !seen.has(entry.id)));
+    } else {
+      loadedEntries = page.entries;
+    }
+    matchedCount = page.matched;
+    totalCount = page.total;
+    renderHistory(loadedEntries);
   } catch (err) {
+    if (generation !== loadGeneration) return;
     console.error('Failed to load history:', err);
     container.innerHTML = '<div class="empty-state"><p>Failed to load history</p></div>';
   }
-}
-
-// Search history
-function searchHistory(query) {
-  if (!query.trim()) {
-    renderHistory(allHistory);
-    return;
-  }
-
-  const q = query.toLowerCase();
-  const filtered = allHistory.filter(
-    (entry) =>
-      (entry.url && entry.url.toLowerCase().includes(q)) ||
-      (entry.title && entry.title.toLowerCase().includes(q))
-  );
-  renderHistory(filtered);
 }
 
 // Clear all history
@@ -343,15 +358,18 @@ async function clearAllHistory() {
 }
 
 // Event listeners
-searchInput.addEventListener('input', (e) => {
-  searchHistory(e.target.value);
+searchInput.addEventListener('input', () => {
+  // Each search is a query in main; don't send one per keystroke.
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => loadHistory(), 120);
 });
 
 sortSelect.addEventListener('change', (e) => {
   currentSort = e.target.value;
   localStorage.setItem('history-sort', currentSort);
-  // Re-render with current search filter
-  searchHistory(searchInput.value);
+  // Reload with the current search filter
+  clearTimeout(searchTimer);
+  loadHistory();
 });
 
 clearBtn.addEventListener('click', clearAllHistory);

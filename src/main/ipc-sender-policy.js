@@ -93,6 +93,7 @@ const INTERNAL_CHANNELS = [
   'history:add',
   'history:clear',
   'history:get',
+  'history:page',
   'history:remove',
   'internal:get-theme',
   'internal:open-url-in-new-tab',

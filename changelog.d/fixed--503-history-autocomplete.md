@@ -1,0 +1,3 @@
+- Opening a page no longer stalls the browser when the browsing history is large ([#503](https://github.com/solardev-xyz/freedom-browser/issues/503))
+  - Address-bar suggestions are looked up as you type, in a background thread
+  - The History page shows 200 entries at a time, with Show more

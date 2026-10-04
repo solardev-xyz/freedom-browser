@@ -14,8 +14,25 @@ function getBookmarksPath() {
   return path.join(app.getPath('userData'), BOOKMARKS_FILE);
 }
 
+// The parsed list, kept in memory so `bookmarks:get` — which the address
+// bar's suggestions call after every navigation — no longer re-reads and
+// re-parses the file synchronously on the main thread each time (#503).
+// Every write goes through saveBookmarks(), which replaces it; a failed write
+// drops it so the next read goes back to disk. Keyed by path in case the
+// userData directory moves. Edits made to the file by hand while the app is
+// running are not picked up until restart.
+let cache = null; // { filePath, bookmarks }
+
+// Callers get a copy: the IPC handlers below build new lists from it.
 function loadBookmarks() {
   const filePath = getBookmarksPath();
+  if (cache?.filePath !== filePath) {
+    cache = { filePath, bookmarks: readBookmarks(filePath) };
+  }
+  return Array.isArray(cache.bookmarks) ? [...cache.bookmarks] : cache.bookmarks;
+}
+
+function readBookmarks(filePath) {
   try {
     if (fs.existsSync(filePath)) {
       const data = fs.readFileSync(filePath, 'utf-8');
@@ -52,9 +69,11 @@ function saveBookmarks(bookmarks) {
       fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(filePath, JSON.stringify(bookmarks, null, 2), 'utf-8');
+    cache = { filePath, bookmarks: Array.isArray(bookmarks) ? [...bookmarks] : bookmarks };
     return true;
   } catch (err) {
     log.error('Failed to save bookmarks:', err);
+    cache = null;
     return false;
   }
 }

@@ -134,6 +134,10 @@ module.exports = {
 
   // History
   HISTORY_GET: 'history:get',
+  // Bounded queries, answered off the main thread (#503): address-bar
+  // suggestion candidates, and one page of the History page's list.
+  HISTORY_AUTOCOMPLETE: 'history:autocomplete',
+  HISTORY_PAGE: 'history:page',
   HISTORY_ADD: 'history:add',
   HISTORY_REMOVE: 'history:remove',
   HISTORY_CLEAR: 'history:clear',

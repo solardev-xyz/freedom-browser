@@ -162,6 +162,57 @@ test('history: a hostile title renders as text; search and delete work', async (
   expect(await cspViolations(electronApp)).toEqual([]);
 });
 
+// #503: the page loads 200 rows at a time from main's history search worker
+// instead of the whole table, and "Show more" appends the next page.
+test('history: a long history loads a page at a time with Show more', async ({
+  window,
+  electronApp,
+}) => {
+  const historyModule = require.resolve('../src/main/history');
+  await electronApp.evaluate((_electron, modulePath) => {
+    // The same module instance (and database) the app registered its IPC on.
+    const history = process.mainModule.require(modulePath);
+    history.getDb().transaction(() => {
+      for (let i = 0; i < 250; i++) {
+        history.addHistoryEntry({
+          url: `https://paged-${i}.example/`,
+          title: `Paged entry ${i}`,
+          protocol: 'https',
+        });
+      }
+    })();
+  }, historyModule);
+
+  await navigate(window, 'freedom://history');
+  const page = await pageFor(electronApp, '/pages/history.html');
+  const rows = page.locator('.history-item');
+  const showMore = page.locator('#show-more-btn');
+
+  await expect(rows).toHaveCount(200);
+  const total = Number((await page.locator('#stats').textContent()).match(/^(\d+) pages$/)[1]);
+  expect(total).toBeGreaterThanOrEqual(250);
+  await expect(showMore).toHaveText(`Show more (${total - 200} remaining)`);
+  await page.screenshot({ path: test.info().outputPath('history-paged.png') });
+
+  await showMore.click();
+  await expect(rows).toHaveCount(total);
+  await expect(showMore).toHaveCount(0);
+  // Newest first, each row once.
+  const urls = await rows.evaluateAll((items) => items.map((item) => item.dataset.url));
+  expect(new Set(urls).size).toBe(urls.length);
+  expect(urls.indexOf('https://paged-249.example/')).toBeLessThan(
+    urls.indexOf('https://paged-0.example/')
+  );
+
+  // Search is a query to main too; the counter says how many match.
+  await fillIn(page, '#search-input', 'paged entry 24');
+  await expect(rows).toHaveCount(11); // 24, 240-249
+  await expect(page.locator('#stats')).toHaveText(`11 of ${total} pages`);
+  await expect(showMore).toHaveCount(0);
+
+  expect(await cspViolations(electronApp)).toEqual([]);
+});
+
 test('downloads: a hostile filename renders as text; remove works', async ({
   window,
   electronApp,

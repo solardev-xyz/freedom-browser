@@ -939,6 +939,11 @@ window.addEventListener('blur', () => sendLinkStatusZone(false));
 contextBridge.exposeInMainWorld('freedomAPI', {
   // History
   getHistory: guardInternal('getHistory', (options) => ipcRenderer.invoke('history:get', options)),
+  // One page of the History page's list: `{ query, sort, offset, limit }` →
+  // `{ entries, matched, total }` (#503).
+  getHistoryPage: guardInternal('getHistoryPage', (options) =>
+    ipcRenderer.invoke('history:page', options)
+  ),
   addHistory: guardInternal('addHistory', (entry) => ipcRenderer.invoke('history:add', entry)),
   removeHistory: guardInternal('removeHistory', (id) => ipcRenderer.invoke('history:remove', id)),
   clearHistory: guardInternal('clearHistory', () => ipcRenderer.invoke('history:clear')),
