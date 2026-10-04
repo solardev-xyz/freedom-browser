@@ -7,6 +7,7 @@ const tls = require('tls');
 const net = require('net');
 const { connectIsolatedSocks } = require('./isolated-socks');
 const { getPrivacyContext, privacyError } = require('./privacy-context');
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 function createWalletTorTransport({
   getEndpoint = () => require('../tor-manager').getWalletSocksEndpoint(),
@@ -18,8 +19,36 @@ function createWalletTorTransport({
     throw privacyError('INVALID_PRIVATE_REQUEST', 'Invalid private transport idle timeout');
   }
   const groups = new Map();
+  // These outlive retired groups: release/replacement must not hide cleanup
+  // from the terminal close barrier. Destruction is not an observed close.
+  const sockets = new Set();
+  const requests = new Set();
   let closed = false;
   let inFlight = 0;
+  let connections = 0;
+  let resolveClosed;
+  const drained = new Promise((resolve) => {
+    resolveClosed = resolve;
+  });
+
+  function checkClosed() {
+    if (closed && !groups.size && !inFlight && !connections && !requests.size && !sockets.size)
+      resolveClosed();
+  }
+
+  function trackSocket(group, socket) {
+    if (sockets.has(socket)) return;
+    sockets.add(socket);
+    group.sockets.add(socket);
+    // Keep an error consumer even after handshake/request ownership ends.
+    socket.on('error', () => {});
+    socket.once('close', () => {
+      sockets.delete(socket);
+      group.sockets.delete(socket);
+      checkClosed();
+    });
+    if (closed || group.closed) socket.destroy();
+  }
 
   function closeGroup(handle, group) {
     if (group.closed) return;
@@ -32,6 +61,7 @@ function createWalletTorTransport({
     group.http.destroy();
     group.https.destroy();
     if (groups.get(handle) === group) groups.delete(handle);
+    checkClosed();
   }
 
   function makeAgent(group, secure) {
@@ -42,27 +72,45 @@ function createWalletTorTransport({
       maxFreeSockets: 1,
     });
     agent.createConnection = (options, callback) => {
-      connectIsolatedSocks({
-        endpoint: group.endpoint,
-        hostname: options.host,
-        port: Number(options.port),
-        token: group.context.isolationToken,
-        signal: options.privacySignal,
-      })
-        .then((socket) => {
-          if (group.closed || options.privacySignal.aborted) {
-            socket.destroy();
+      connections += 1;
+      let notified = false;
+      let socket;
+      let secured;
+      function notify(error, connected) {
+        if (notified) return;
+        notified = true;
+        try {
+          callback(error, connected);
+        } catch {
+          // A throwing agent callback must neither be called twice nor leave
+          // a connection unowned. Its request still has its bounded timeout.
+          secured?.destroy();
+          socket?.destroy();
+        }
+      }
+      async function connect() {
+        try {
+          if (closed || group.closed || options.privacySignal.aborted)
             throw privacyError('PRIVACY_REQUEST_ABORTED', 'Private request cancelled');
-          }
-          group.sockets.add(socket);
-          socket.once('close', () => group.sockets.delete(socket));
+          socket = await connectIsolatedSocks(
+            {
+              endpoint: group.endpoint,
+              hostname: options.host,
+              port: Number(options.port),
+              token: group.context.isolationToken,
+              signal: options.privacySignal,
+            },
+            (created) => trackSocket(group, created)
+          );
+          if (closed || group.closed || options.privacySignal.aborted)
+            throw privacyError('PRIVACY_REQUEST_ABORTED', 'Private request cancelled');
           if (!secure) {
-            callback(null, socket);
+            notify(null, socket);
             socket.resume();
             return;
           }
           // Never accept caller-supplied TLS overrides or disable validation.
-          const secured = tls.connect({
+          secured = tls.connect({
             socket,
             host: options.host,
             servername: net.isIP(options.host) ? undefined : options.host,
@@ -70,28 +118,41 @@ function createWalletTorTransport({
             ca,
             ALPNProtocols: ['http/1.1'],
           });
-          group.sockets.add(secured);
-          secured.once('close', () => group.sockets.delete(secured));
-          const abort = () =>
-            secured.destroy(privacyError('PRIVACY_REQUEST_ABORTED', 'Private request cancelled'));
-          options.privacySignal.addEventListener('abort', abort, { once: true });
-          let settled = false;
-          function finish(error) {
-            if (settled) return;
-            settled = true;
-            options.privacySignal.removeEventListener('abort', abort);
-            if (error) {
-              secured.destroy();
-              callback(privacyError('TOR_TLS_FAILED', 'Private TLS connection failed'));
-            } else callback(null, secured);
-          }
-          secured.once('secureConnect', () => finish());
-          secured.on('error', finish);
-          secured.once('close', () => finish(new Error('closed')));
-          if (options.privacySignal.aborted) abort();
-          socket.resume();
-        })
-        .catch((error) => callback(error));
+          await new Promise((resolve, reject) => {
+            let settled = false;
+            const abort = () => finish(true);
+            function finish(error) {
+              if (settled) return;
+              settled = true;
+              options.privacySignal.removeEventListener('abort', abort);
+              if (error) {
+                secured.destroy();
+                reject(privacyError('TOR_TLS_FAILED', 'Private TLS connection failed'));
+              } else resolve();
+            }
+            secured.once('secureConnect', () => finish());
+            secured.on('error', finish);
+            secured.once('close', () => finish(true));
+            options.privacySignal.addEventListener('abort', abort, { once: true });
+            trackSocket(group, secured);
+            if (closed || group.closed || options.privacySignal.aborted) abort();
+            socket.resume();
+          });
+          if (closed || group.closed || options.privacySignal.aborted)
+            throw privacyError('PRIVACY_REQUEST_ABORTED', 'Private request cancelled');
+          notify(null, secured);
+        } catch (error) {
+          secured?.destroy();
+          socket?.destroy();
+          notify(error);
+        } finally {
+          connections -= 1;
+          checkClosed();
+        }
+      }
+      // connect consumes every failure and retains ownership through the
+      // handshake and agent callback, even after the request rejected early.
+      void connect();
       // Agent waits for the callback: never return an unnegotiated socket.
       return undefined;
     };
@@ -133,7 +194,15 @@ function createWalletTorTransport({
   async function request(
     handle,
     input,
-    { method = 'GET', headers = {}, body, signal, timeoutMs = 30000 } = {}
+    {
+      method = 'GET',
+      headers = {},
+      body,
+      signal,
+      timeoutMs = 30000,
+      maxResponseBytes = MAX_RESPONSE_BYTES,
+      requireFramedResponse = false,
+    } = {}
   ) {
     if (closed) throw privacyError('TOR_TRANSPORT_CLOSED', 'Private transport is closed');
     const context = getPrivacyContext(handle);
@@ -162,7 +231,12 @@ function createWalletTorTransport({
       !['GET', 'POST'].includes(method) ||
       !Number.isFinite(timeoutMs) ||
       timeoutMs <= 0 ||
-      timeoutMs > 120000
+      timeoutMs > 120000 ||
+      !Number.isSafeInteger(maxResponseBytes) ||
+      maxResponseBytes < 1 ||
+      maxResponseBytes > MAX_RESPONSE_BYTES ||
+      typeof requireFramedResponse !== 'boolean' ||
+      (signal !== undefined && !(signal instanceof AbortSignal))
     ) {
       throw privacyError('INVALID_PRIVATE_REQUEST', 'Unsupported private HTTP request');
     }
@@ -210,6 +284,7 @@ function createWalletTorTransport({
     try {
       const result = await new Promise((resolve, reject) => {
         let settled = false,
+          socketAssigned = false,
           receivedResponse;
         const failure = () =>
           privacyError(
@@ -224,6 +299,11 @@ function createWalletTorTransport({
           if (settled) return;
           settled = true;
           combined.removeEventListener('abort', abort);
+          // A destroyed, never-assigned Agent queue entry may never emit
+          // close. It owns no physical socket. Connection continuations and
+          // every raw/TLS socket remain independently tracked until drained;
+          // assigned requests still require their actual close event.
+          if (error && !socketAssigned && !req.socket) requests.delete(req);
           if (error) reject(error);
           else resolve(value);
         };
@@ -232,8 +312,8 @@ function createWalletTorTransport({
           // closes. Revoke it directly rather than relying on a future Node
           // socket assignment to deliver the request's error event.
           const error = failure();
-          req.destroy(error);
           finish(error);
+          req.destroy(error);
         };
         const client = url.protocol === 'https:' ? https : http;
         const req = client.request(
@@ -247,9 +327,29 @@ function createWalletTorTransport({
           },
           (response) => {
             receivedResponse = response;
-            if (response.statusCode >= 300 && response.statusCode < 400) {
+            const failResponse = (error) => {
+              if (settled) return;
+              finish(error);
               response.destroy();
-              finish(
+            };
+            // Consumers precede every early destroy, including refusals in
+            // the headers callback and errors delivered after cancellation.
+            response.on('error', () =>
+              failResponse(privacyError('TOR_RESPONSE_FAILED', 'Private response failed'))
+            );
+            response.once('aborted', () =>
+              failResponse(privacyError('TOR_RESPONSE_FAILED', 'Private response failed'))
+            );
+            response.once('close', () => {
+              if (!response.complete)
+                finish(privacyError('TOR_RESPONSE_FAILED', 'Private response failed'));
+            });
+            if (settled) {
+              response.destroy();
+              return;
+            }
+            if (response.statusCode >= 300 && response.statusCode < 400) {
+              failResponse(
                 privacyError(
                   'PRIVATE_REDIRECT_REFUSED',
                   'Private redirects require a new approved request'
@@ -261,47 +361,82 @@ function createWalletTorTransport({
               response.headers['content-encoding'] &&
               response.headers['content-encoding'] !== 'identity'
             ) {
-              response.destroy();
-              finish(
+              failResponse(
                 privacyError('PRIVATE_ENCODING_REFUSED', 'Unsupported private response encoding')
               );
               return;
             }
+            if (requireFramedResponse) {
+              const length = response.headers['content-length'];
+              const encoding = response.headers['transfer-encoding'];
+              // Node's strict HTTP parser rejects conflicting/duplicate
+              // framing. Close-delimited completion alone is insufficient
+              // for callers that must classify a whole bounded response.
+              const framed =
+                (typeof length === 'string' && /^\d+$/.test(length) && encoding === undefined) ||
+                (length === undefined &&
+                  typeof encoding === 'string' &&
+                  /^chunked$/i.test(encoding));
+              if (!framed) {
+                failResponse(
+                  privacyError('PRIVATE_FRAMING_REFUSED', 'Unsupported private response framing')
+                );
+                return;
+              }
+            }
             let size = 0;
             const chunks = [];
             response.on('data', (chunk) => {
+              if (settled) return;
               size += chunk.length;
-              if (size > 4 * 1024 * 1024) {
-                response.destroy();
-                finish(privacyError('PRIVATE_RESPONSE_TOO_LARGE', 'Private response is too large'));
+              // Bound retained body chunks, not incoming chunks, wire bytes,
+              // headers, or the HTTP/TLS/socket implementation's buffers.
+              if (size > maxResponseBytes) {
+                failResponse(
+                  privacyError('PRIVATE_RESPONSE_TOO_LARGE', 'Private response is too large')
+                );
               } else chunks.push(chunk);
             });
-            response.on('error', () =>
-              finish(privacyError('TOR_RESPONSE_FAILED', 'Private response failed'))
-            );
-            response.on('end', () =>
+            response.on('end', () => {
+              if (settled) return;
+              if (!response.complete) {
+                failResponse(privacyError('TOR_RESPONSE_FAILED', 'Private response failed'));
+                return;
+              }
               finish(null, {
                 status: response.statusCode,
                 headers: response.headers,
                 body: Buffer.concat(chunks),
-              })
-            );
+              });
+            });
           }
         );
         // Retain the error consumer for errors delivered after cancellation.
         req.on('error', () => finish(failure()));
+        socketAssigned = Boolean(req.socket);
+        req.once('socket', () => {
+          socketAssigned = true;
+        });
+        requests.add(req);
         req.once('close', () => {
+          requests.delete(req);
           // A Connection: close response can be complete before its readable
           // end event is delivered. Let that event finish the body first.
           if (!receivedResponse?.complete) finish(failure());
+          checkClosed();
         });
         combined.addEventListener('abort', abort, { once: true });
         if (combined.aborted) {
           abort();
           return;
         }
-        if (bytes) req.write(bytes);
-        req.end();
+        try {
+          if (bytes) req.write(bytes);
+          req.end();
+        } catch {
+          finish(failure());
+          req.destroy();
+        }
       });
       getPrivacyContext(handle);
       if (combined.aborted || group.closed)
@@ -321,17 +456,22 @@ function createWalletTorTransport({
         group.idleTimer = setTimeout(group.revoke, idleMs);
         group.idleTimer.unref();
       }
+      checkClosed();
     }
   }
 
   function close() {
     closed = true;
     for (const [handle, group] of groups) closeGroup(handle, group);
+    checkClosed();
   }
 
   return Object.freeze({
     request,
     close,
+    // Never rejects; terminal close waits for observed cleanup, with no hard
+    // drain deadline. A fresh instance does not allocate a new Tor identity.
+    closed: drained,
     release(handle) {
       const group = groups.get(handle);
       if (group) closeGroup(handle, group);

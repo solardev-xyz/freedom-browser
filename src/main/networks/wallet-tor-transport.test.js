@@ -442,3 +442,341 @@ describe('wallet Tor transport', () => {
     ).rejects.toMatchObject({ code: 'SOCKS_TIMEOUT' });
   });
 });
+
+describe('wallet Tor response bounds and framing over loopback SOCKS', () => {
+  let server, socks, transport, scope, reply, handle;
+  let requests, work;
+  const send = (options = {}, route = '/') => {
+    const pending = transport.request(handle, 'http://response.example.test' + route, options);
+    work.push(pending);
+    return pending;
+  };
+  beforeEach(async () => {
+    requests = [];
+    work = [];
+    reply = (_req, res) => res.end('ok');
+    server = http.createServer((req, res) => {
+      requests.push({ route: req.url, method: req.method, headers: req.headers });
+      reply(req, res);
+    });
+    socks = await proxy(await listen(server));
+    scope = createPrivacyScope({
+      profileId: 'bounded-response-test',
+      signal: new AbortController().signal,
+    });
+    handle = scope.getContext({
+      kind: 'public-address',
+      principal: '0x' + '1'.repeat(40),
+      chainId: 1,
+      role: 'rpc',
+    });
+    transport = createWalletTorTransport({ getEndpoint: () => socks.endpoint, allowHttp: true });
+  });
+  afterEach(async () => {
+    transport.close();
+    await Promise.allSettled(work);
+    await transport.closed;
+    scope.close();
+    await socks.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    jest.restoreAllMocks();
+  });
+
+  test.each([0, 1, 2047, 2048])(
+    'accepts exactly %i response bytes under a 2048-byte POST cap',
+    async (length) => {
+      const body = Buffer.alloc(length, 0x61);
+      reply = (_req, res) => res.end(body);
+      const result = await send({
+        method: 'POST',
+        body: '{}',
+        maxResponseBytes: 2048,
+        requireFramedResponse: true,
+      });
+      expect(result.body).toEqual(body);
+      expect(result.status).toBe(200);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        method: 'POST',
+        headers: { 'accept-encoding': 'identity', 'content-length': '2' },
+      });
+    }
+  );
+  test('limit counts UTF-8 bytes rather than decoded characters', async () => {
+    reply = (_req, res) => res.end('é'.repeat(1024));
+    expect((await send({ maxResponseBytes: 2048 })).body.length).toBe(2048);
+    reply = (_req, res) => res.end('é'.repeat(1025));
+    await expect(send({ maxResponseBytes: 2048 })).rejects.toMatchObject({
+      code: 'PRIVATE_RESPONSE_TOO_LARGE',
+    });
+    expect(requests).toHaveLength(2);
+  });
+  test.each([undefined, 4 * 1024 * 1024])(
+    'default or explicit maximum %s still accepts 4 MiB',
+    async (maxResponseBytes) => {
+      reply = (_req, res) => res.end(Buffer.alloc(4 * 1024 * 1024));
+      expect((await send({ maxResponseBytes })).body.length).toBe(4 * 1024 * 1024);
+    }
+  );
+  test.each([
+    0,
+    -1,
+    1.5,
+    4 * 1024 * 1024 + 1,
+    Number.MAX_SAFE_INTEGER + 1,
+    NaN,
+    Infinity,
+    null,
+    false,
+    '2048',
+  ])(
+    'invalid response limit %s refuses before endpoint or socket creation',
+    async (maxResponseBytes) => {
+      transport.close();
+      await transport.closed;
+      const endpoint = jest.fn(() => socks.endpoint);
+      transport = createWalletTorTransport({ getEndpoint: endpoint, allowHttp: true });
+      const request = jest.spyOn(http, 'request');
+      await expect(send({ maxResponseBytes })).rejects.toMatchObject({
+        code: 'INVALID_PRIVATE_REQUEST',
+      });
+      expect(endpoint).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+      expect(socks.records).toEqual([]);
+    }
+  );
+  test.each([null, 0, 1, 'true', {}, []])(
+    'invalid framed-response option %# refuses before networking',
+    async (requireFramedResponse) => {
+      await expect(send({ requireFramedResponse })).rejects.toMatchObject({
+        code: 'INVALID_PRIVATE_REQUEST',
+      });
+      expect(socks.records).toEqual([]);
+      expect(requests).toEqual([]);
+    }
+  );
+  test('response limits remain per request when a shared pool handles concurrent requests', async () => {
+    reply = (req, res) => res.end(Buffer.alloc(req.url === '/small' ? 2049 : 4096));
+    const settled = await Promise.allSettled([
+      send({ maxResponseBytes: 2048 }, '/small'),
+      send({ maxResponseBytes: 4096 }, '/large'),
+    ]);
+    expect(settled[0]).toMatchObject({
+      status: 'rejected',
+      reason: { code: 'PRIVATE_RESPONSE_TOO_LARGE' },
+    });
+    expect(settled[1].status).toBe('fulfilled');
+    expect(settled[1].value.body.length).toBe(4096);
+    reply = (_req, res) => res.end('x');
+    expect((await send({ maxResponseBytes: 1 })).body.toString()).toBe('x');
+    expect(requests).toHaveLength(3);
+  });
+  test.each([200, 503])(
+    'oversized streaming status %i rejects before end and closes its response',
+    async (status) => {
+      let closed;
+      const peerClosed = new Promise((resolve) => {
+        closed = resolve;
+      });
+      reply = (_req, res) => {
+        res.once('close', closed);
+        res.writeHead(status, { 'Transfer-Encoding': 'chunked' });
+        res.write(Buffer.alloc(1024));
+        setImmediate(() => {
+          if (!res.destroyed) res.write(Buffer.alloc(1025));
+        });
+      };
+      await expect(
+        send({ maxResponseBytes: 2048, timeoutMs: 1000, requireFramedResponse: true })
+      ).rejects.toMatchObject({ code: 'PRIVATE_RESPONSE_TOO_LARGE' });
+      await peerClosed;
+      expect(requests).toHaveLength(1);
+      reply = (_req, res) => res.end('ok');
+      expect((await send({ maxResponseBytes: 2048 })).body.toString()).toBe('ok');
+    }
+  );
+  test.each(['chunked', 'ChUnKeD'])(
+    'explicit %s framing accepts a complete streamed body at the limit',
+    async (encoding) => {
+      reply = (_req, res) => {
+        res.writeHead(200, { 'Transfer-Encoding': encoding });
+        res.write(Buffer.alloc(1024, 0x61));
+        res.end(Buffer.alloc(1024, 0x62));
+      };
+      const result = await send({ maxResponseBytes: 2048, requireFramedResponse: true });
+      expect(result.body).toEqual(
+        Buffer.concat([Buffer.alloc(1024, 0x61), Buffer.alloc(1024, 0x62)])
+      );
+    }
+  );
+  test.each([false, undefined])(
+    'default-compatible unframed Connection: close body is accepted with %s',
+    async (requireFramedResponse) => {
+      reply = (_req, res) => res.socket.end('HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nok');
+      expect((await send({ requireFramedResponse, maxResponseBytes: 2048 })).body.toString()).toBe(
+        'ok'
+      );
+    }
+  );
+  test.each(['', 'Transfer-Encoding: identity\r\n', 'Transfer-Encoding: gzip, chunked\r\n'])(
+    'strict framing refuses absent or unsupported transfer framing %#',
+    async (framing) => {
+      reply = (_req, res) =>
+        res.socket.end(
+          'HTTP/1.1 200 OK\r\nConnection: close\r\n' + framing + '\r\n2\r\nok\r\n0\r\n\r\n'
+        );
+      await expect(
+        send({ requireFramedResponse: true, maxResponseBytes: 2048 })
+      ).rejects.toMatchObject({ code: expect.stringMatching(/^(PRIVATE_|TOR_)/) });
+      expect(requests).toHaveLength(1);
+    }
+  );
+  test.each([
+    ['declared length', 'Content-Length: 2048\r\n', 'x'.repeat(2047)],
+    ['no declared bytes', 'Content-Length: 1\r\n', ''],
+    ['missing final chunk', 'Transfer-Encoding: chunked\r\n', '2\r\nok\r\n'],
+    ['partial chunk', 'Transfer-Encoding: chunked\r\n', '3\r\nok'],
+  ])('incomplete %s refuses without returning a partial body', async (_name, framing, body) => {
+    reply = (_req, res) =>
+      res.socket.end('HTTP/1.1 200 OK\r\nConnection: close\r\n' + framing + '\r\n' + body);
+    const outcome = await send({ requireFramedResponse: true, maxResponseBytes: 2048 }).then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    );
+    expect(outcome.value).toBeUndefined();
+    expect(outcome.error).toMatchObject({ code: expect.stringMatching(/^TOR_/) });
+    expect(outcome.error.body).toBeUndefined();
+    expect(requests).toHaveLength(1);
+  });
+  test('a valid declared body above the request limit is still bounded', async () => {
+    reply = (_req, res) => res.end(Buffer.alloc(2049));
+    await expect(
+      send({ maxResponseBytes: 2048, requireFramedResponse: true })
+    ).rejects.toMatchObject({ code: 'PRIVATE_RESPONSE_TOO_LARGE' });
+  });
+  test('explicit framing does not allow compression or redirects and never retries', async () => {
+    reply = (_req, res) => {
+      res.writeHead(200, { 'Content-Encoding': 'gzip' });
+      res.end('PRIVATE compressed');
+    };
+    await expect(
+      send({
+        headers: { 'accept-encoding': 'gzip' },
+        maxResponseBytes: 2048,
+        requireFramedResponse: true,
+      })
+    ).rejects.toMatchObject({ code: 'PRIVATE_ENCODING_REFUSED' });
+    expect(requests[0].headers['accept-encoding']).toBe('identity');
+    reply = (_req, res) => {
+      res.writeHead(302, { location: 'https://PRIVATE.example/path' });
+      res.end('redirect');
+    };
+    await expect(
+      send({ maxResponseBytes: 2048, requireFramedResponse: true })
+    ).rejects.toMatchObject({ code: 'PRIVATE_REDIRECT_REFUSED' });
+    expect(requests).toHaveLength(2);
+  });
+  test.each(['abort', 'timeout'])(
+    'partial framed response %s fails, then transport.closed observes local drain',
+    async (reason) => {
+      const caller = new AbortController();
+      let written;
+      const partial = new Promise((resolve) => {
+        written = resolve;
+      });
+      reply = (_req, res) => {
+        res.writeHead(200, { 'Content-Length': '2048' });
+        res.write('partial');
+        written();
+      };
+      const pending = send({
+        signal: caller.signal,
+        timeoutMs: reason === 'timeout' ? 50 : 1000,
+        maxResponseBytes: 2048,
+        requireFramedResponse: true,
+      });
+      const result = pending.catch((error) => error);
+      await partial;
+      if (reason === 'abort') caller.abort();
+      expect(await result).toMatchObject({
+        code: reason === 'abort' ? 'PRIVACY_REQUEST_ABORTED' : 'TOR_REQUEST_TIMEOUT',
+      });
+      transport.close();
+      await expect(transport.closed).resolves.toBeUndefined();
+      expect(requests).toHaveLength(1);
+    }
+  );
+  test.each(['close', 'release-then-close'])(
+    'closed drains all eight real Agent requests after %s with six queued',
+    async (action) => {
+      const created = [],
+        original = http.request;
+      jest.spyOn(http, 'request').mockImplementation((...args) => {
+        const request = original(...args);
+        created.push(request);
+        return request;
+      });
+      let entered;
+      const occupied = new Promise((resolve) => {
+        entered = resolve;
+      });
+      reply = () => {
+        if (requests.length === 2) entered();
+      };
+      const first = Array.from({ length: 2 }, () => send({ timeoutMs: 2000 }));
+      await occupied;
+      const remaining = Array.from({ length: 6 }, () => send({ timeoutMs: 2000 }));
+      const results = Promise.allSettled([...first, ...remaining]);
+      expect(requests).toHaveLength(2);
+      expect(created).toHaveLength(8);
+      const agent = created[0].agent;
+      expect(created.every((request) => request.agent === agent)).toBe(true);
+      expect(
+        Object.values(agent.sockets).reduce((count, entries) => count + entries.length, 0)
+      ).toBe(2);
+      expect(
+        Object.values(agent.requests).reduce((count, entries) => count + entries.length, 0)
+      ).toBe(6);
+      if (action === 'release-then-close') transport.release(handle);
+      transport.close();
+      expect((await results).map((result) => result.reason.code)).toEqual(
+        Array(8).fill('PRIVACY_REQUEST_ABORTED')
+      );
+      let timer;
+      try {
+        await Promise.race([
+          transport.closed,
+          new Promise((_resolve, reject) => {
+            timer = setTimeout(() => reject(Error('TRANSPORT_DRAIN_TIMEOUT')), 300);
+          }),
+        ]);
+      } catch (error) {
+        // Failure cleanup only: release tracked requests whose real Agent
+        // never emitted close, so this regression cannot hang the next test.
+        for (const request of created) request.emit('close');
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+      expect(requests).toHaveLength(2);
+    }
+  );
+  test('closed is stable, remains pending while open and fulfills after idempotent close', async () => {
+    const closed = transport.closed;
+    expect(closed).toBeInstanceOf(Promise);
+    let settled = false;
+    closed.then(() => {
+      settled = true;
+    });
+    await send({ maxResponseBytes: 2048 });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    transport.close();
+    transport.close();
+    expect(transport.closed).toBe(closed);
+    await closed;
+    expect(settled).toBe(true);
+    await expect(send()).rejects.toMatchObject({ code: 'TOR_TRANSPORT_CLOSED' });
+  });
+});

@@ -4,7 +4,12 @@
 const net = require('net');
 const { privacyError } = require('./privacy-context');
 
-function connectIsolatedSocks({ endpoint, hostname, port, token, signal, timeoutMs = 10000 }) {
+// The optional observer is internal lifecycle plumbing, not a SOCKS option.
+// It sees every allocated socket before connect, including failed handshakes.
+function connectIsolatedSocks(
+  { endpoint, hostname, port, token, signal, timeoutMs = 10000 },
+  onSocketCreated
+) {
   return new Promise((resolve, reject) => {
     if (
       !endpoint ||
@@ -20,7 +25,8 @@ function connectIsolatedSocks({ endpoint, hostname, port, token, signal, timeout
       Buffer.byteLength(hostname) > 255 ||
       !/^[0-9a-f]{64}$/.test(token) ||
       !Number.isFinite(timeoutMs) ||
-      timeoutMs <= 0
+      timeoutMs <= 0 ||
+      (onSocketCreated !== undefined && typeof onSocketCreated !== 'function')
     ) {
       reject(privacyError('INVALID_SOCKS_REQUEST', 'Invalid isolated SOCKS request'));
       return;
@@ -106,11 +112,18 @@ function connectIsolatedSocks({ endpoint, hostname, port, token, signal, timeout
     socket.on('data', onData);
     socket.on('error', onError);
     socket.on('close', onClose);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    endpoint.signal?.addEventListener('abort', onAbort, { once: true });
-    if (signal?.aborted || endpoint.signal?.aborted) return onAbort();
-    socket.once('connect', () => socket.write(Buffer.from([5, 1, 2])));
-    socket.connect(endpoint.port, endpoint.host);
+    try {
+      onSocketCreated?.(socket);
+      if (settled) return;
+      if (socket.destroyed) return finish(error('SOCKS_CONNECTION_CLOSED'));
+      signal?.addEventListener('abort', onAbort, { once: true });
+      endpoint.signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted || endpoint.signal?.aborted) return onAbort();
+      socket.once('connect', () => socket.write(Buffer.from([5, 1, 2])));
+      socket.connect(endpoint.port, endpoint.host);
+    } catch {
+      finish(error('SOCKS_CONNECTION_FAILED'));
+    }
   });
 }
 
