@@ -394,6 +394,8 @@ test('isolates context, keeps the model connection and exposes only explicitly s
   expect(settings.model).toBe(f.options.model);
   expect(settings.modelRuntime).toBe(f.options.modelRuntime);
   expect(settings.enableBuiltInSkills).toBe(false);
+  expect(settings.enableCodemode).toBe(true);
+  expect(settings.codemodeRole).toBe('helper');
   expect(settings.restoredTranscript).toBeUndefined();
   expect(settings.customTools.map(tool => tool.name)).toEqual(['read', 'workspace_history']);
   expect(isTrustedBuiltInToolOverride(settings.customTools[0])).toBe(true);
@@ -526,7 +528,7 @@ test('does not drop user constraints to fit input or accept invalid assignments'
   expect((await f.run({ title: 'Review', task: '' })).details.subagent.state).toBe('failed');
 });
 
-test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six'])('installed Pi completes isolated delegation (%s) without an external provider', mode => {
+test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six', 'codemode', 'background-codemode'])('installed Pi completes isolated delegation (%s) without an external provider', mode => {
   const { execFileSync } = require('node:child_process');
   const script = `
     (async () => {
@@ -544,6 +546,7 @@ test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six']
       await runtime.setRuntimeApiKey('delegate-test', 'fixture-not-a-credential');
       const mode = ${JSON.stringify(mode)};
       const parallel = mode !== "single";
+      const codemode = mode.includes("codemode");
       const background = mode.startsWith("background");
       const count = mode === "single" ? 1 : mode.includes("six") ? 6 : mode === "three" ? 3 : 2;
       const requests = [];
@@ -555,7 +558,7 @@ test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six']
         const parent = body.tools.some(tool => tool.function.name === 'delegate_task');
         const hasResult = body.messages.some(message => message.role === 'tool');
         const call = !hasResult;
-        const args = parent ? (parallel ? { tasks: Array.from({ length: count }, (_, i) => ({ title: 'Topic ' + i, task: 'Read README.md', context: i === 0 ? 'context-first' : 'context-' + i })) } : { title: 'Inspect', task: 'Read README.md and report', context: 'selected context' }) : { path: 'README.md' };
+        const args = parent ? (parallel ? { tasks: Array.from({ length: count }, (_, i) => ({ title: 'Topic ' + i, task: 'Read README.md', context: i === 0 ? 'context-first' : 'context-' + i })) } : { title: 'Inspect', task: 'Read README.md and report', context: 'selected context' }) : codemode ? { code: 'const results = await Promise.allSettled([tools.read({path: "README.md"}), tools.read({path: "README.md"})]); for (const result of results) text(result);' } : { path: 'README.md' };
         if (!parent && call && parallel) {
           if (++childStarts === count && !background) release();
           await barrier; // All real Pi sessions must reach the transport concurrently.
@@ -563,7 +566,7 @@ test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six']
         if (parent && hasResult && background) release(); // Parent reaches its own next response while children are waiting.
         if (parent && background && call) args.background = true;
         const delta = call ? { tool_calls: [{ index: 0, id: 'call-' + index, type: 'function',
-          function: { name: parent ? 'delegate_task' : 'read', arguments: JSON.stringify(args) } }] }
+          function: { name: parent ? 'delegate_task' : codemode ? 'codemode' : 'read', arguments: JSON.stringify(args) } }] }
           : { content: parent ? 'The helpers inspected the README.' : 'README.md describes a solar-system app.' };
         const chunk = { id: 'response-' + index, object: 'chat.completion.chunk', created: 1, model: 'test',
           usage: { prompt_tokens: 80000, completion_tokens: 10, total_tokens: 80010 },
@@ -586,9 +589,9 @@ test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six']
         while (reports.length < count) reports.push(...await tool.collect(owner));
         await parent.session.sendCustomMessage({ customType: 'freedom_helper_reports', display: false, content: 'Untrusted helper reports: ' + JSON.stringify(reports) }, { triggerTurn: true });
       }
-      assert.equal(reads, count); assert.equal(requests.length, count * 2 + (background ? 3 : 2));
+      assert.equal(reads, count * (codemode ? 2 : 1)); assert.equal(requests.length, count * 2 + (background ? 3 : 2));
       const childRequests = requests.filter(request => !request.tools.some(tool => tool.function.name === 'delegate_task') && !request.messages.some(message => message.role === 'tool'));
-      assert.deepEqual(childRequests[0].tools.map(t => t.function.name), ['read']);
+      assert.deepEqual(childRequests[0].tools.map(t => t.function.name), ['read', 'codemode']);
       assert.ok(!JSON.stringify(childRequests[0]).includes('Parent-private transcript marker'));
       assert.ok(!JSON.stringify(childRequests[0]).includes('Parent-only system instructions'));
       assert.ok(JSON.stringify(childRequests[0]).includes(parallel ? 'context-first' : 'selected context'));
@@ -597,7 +600,7 @@ test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six']
         assert.ok(!JSON.stringify(childRequests[1]).includes('context-first'));
       }
       assert.equal(receipt.length, count);
-      assert.ok(receipt.every(item => item.state === 'completed' && item.toolCalls === 1));
+      assert.ok(receipt.every(item => item.state === 'completed' && item.toolCalls === (codemode ? 2 : 1)));
       assert.ok(receipt.every(item => item.totalTokens > 120000));
       assert.ok(JSON.stringify(requests.at(-1)).includes('README.md describes a solar-system app.'));
       owner.subagentAbortController.abort();

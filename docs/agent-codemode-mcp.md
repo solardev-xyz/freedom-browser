@@ -1,11 +1,12 @@
 # Codemode and connected MCP services
 
 Implemented on `experiment/agent-codemode-mcp`. These are capabilities of the
-embedded main agent, not another agent runtime or model-provider requirement.
+embedded Freedom Agent runtime, without another model-provider requirement.
 
 ## Using it
 
-Codemode is available automatically alongside ordinary tools. Ask Agent to do a
+Codemode is available automatically to the main agent and its read-only, editing
+and browser helpers, alongside ordinary tools. Ask Agent to do a
 multi-step task; it can use a short JavaScript script to chain tools and filter
 results. Small models may continue using ordinary tools.
 
@@ -76,8 +77,18 @@ MCP tools expose a structured `{ result }` to codemode; ordinary model calls see
 text content. Discovery initially returns server/tool summaries; specifying a
 server ID and query returns matching schemas. Output is bounded and reports
 truncation explicitly. Script `store/load` values are live-session state; they
-are not restored from Freedom's visible conversation history. Helpers do not
-inherit MCP tools or codemode in this first slice.
+are not restored from Freedom's visible conversation history.
+
+Helper codemode is added after the mode-specific tool filter and uses each helper's
+scoped executors. Read-only helpers cannot write; editing helpers retain exact
+file ownership and read-before-write checks; browser helpers retain assigned tabs
+and normal approval/freshness checks. Independent reads may overlap inside a
+helper; browser calls and writes stay ordered. Nested calls contribute to helper
+activity and receipts, including partial changes if a script fails. Stop cancels
+the helper's script and prevents queued actions without stopping siblings.
+Retained background sessions use fresh executor bindings on follow-up passes.
+Helpers still cannot delegate, run commands, expand access or use connected MCP
+services. The main agent handles those capabilities.
 
 ## Qualification
 
@@ -86,6 +97,8 @@ HTTP/OAuth server. It covers encrypted state, sign-in cancellation and retry,
 approval refusal, cancellation before and during requests, no mutation replay,
 parallel read batches, ordered nested writes, partial effects and interruption of a looping script.
 Service and IPC tests cover all permission modes and untrusted senders.
+Native Pi helper tests cover scoped tools, parallel reads, follow-up bindings,
+refusal, partial edits and Stop using a deterministic model transport.
 
 `test-e2e/agent-mcp.spec.js` exercises the connection UI in dark/light themes,
 inert service descriptions, real Electron codemode execution, and a worker/WASM

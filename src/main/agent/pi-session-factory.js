@@ -1,7 +1,7 @@
 'use strict';
 const { withToolErrorRecovery, isRecoveredToolResult } = require('./tool-error-recovery');
 
-const { createFreedomCodemode, serializeSessionTools, CODEMODE_PROMPT } = require('./pi-codemode');
+const { createFreedomCodemode, serializeSessionTools, CODEMODE_PROMPT, HELPER_CODEMODE_PROMPT } = require('./pi-codemode');
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 const { createBuiltInSkillReadTool, getBuiltInSkills } = require('./builtin-skills');
 const { isTrustedBuiltInToolOverride } = require('./pi-trusted-tools');
@@ -288,7 +288,8 @@ When asked which model or provider you are using, report these configured identi
     enableBuiltInSkills && !hasTrustedReadOverride ? [createBuiltInSkillReadTool(sdk)] : [];
   let sessionTools = [...customTools, ...builtInSkillTools].map(withToolErrorRecovery);
   if (enableBuiltInSkills && !hasTrustedReadOverride) toolNames.push('read');
-  const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt + (options.enableCodemode ? `\n\n${CODEMODE_PROMPT}` : ''), {
+  const codemodePrompt = options.codemodeRole === 'helper' ? HELPER_CODEMODE_PROMPT : CODEMODE_PROMPT;
+  const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt + (options.enableCodemode ? `\n\n${codemodePrompt}` : ''), {
     enableBuiltInSkills,
   });
   const settingsManager = sdk.SettingsManager.inMemory({

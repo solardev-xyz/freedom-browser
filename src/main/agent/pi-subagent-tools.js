@@ -348,7 +348,8 @@ function createSubagentTool(options) {
       }) : customTools;
       const created = job?.session ? { session: job.session } : await createSession({ sdk: options.sdk, model: options.model,
         modelRuntime: options.modelRuntime, thinkingLevel: options.thinkingLevel,
-        customTools: sessionTools, enableBuiltInSkills: false, systemPrompt: params.mode === 'browser' ? BROWSER_CHILD_SYSTEM_PROMPT : params.mode === 'edit' ? EDIT_CHILD_SYSTEM_PROMPT : CHILD_SYSTEM_PROMPT });
+        customTools: sessionTools, enableBuiltInSkills: false, enableCodemode: true, codemodeRole: 'helper',
+        systemPrompt: params.mode === 'browser' ? BROWSER_CHILD_SYSTEM_PROMPT : params.mode === 'edit' ? EDIT_CHILD_SYSTEM_PROMPT : CHILD_SYSTEM_PROMPT });
       session = created?.session;
       if (job) job.session = session;
       if (!isCurrent()) { dispose(session); return receipt('cancelled'); }
