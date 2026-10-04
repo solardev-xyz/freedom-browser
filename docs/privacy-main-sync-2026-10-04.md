@@ -1,5 +1,33 @@
 # Privacy branch main synchronization — October 4, 2026
 
+## GSOC worker continuation
+
+Main `cdd014f2` merged cleanly in `1c3dbce7`, after the account-POI cleanup
+milestone `08e81952`. The nine changed files introduce GSOC mining in a worker
+thread with per-origin scheduling, plus tests and its changelog fragment. They
+are byte-identical to main and do not overlap this branch's privacy changes.
+No wallet, privacy transport, policy input, dependency lockfile or node pin changes.
+Claude reviewed the integration: worker traffic uses the Bee node, and the new
+origin-bound IPC errors contain no wallet information. Concurrent mining can
+consume CPU; no privacy timing guarantee under platform load is implied.
+
+Ant 0.5.57 was explicitly reinstalled for all configured targets with pinned
+checksums. freedom-ipfs 0.4.3 and libradicle 0.7.1 host addons were reinstalled;
+Myotis 0.1.12 official artifacts passed ABI 32 checks, and its host supervisor was
+rebuilt. Installed Arti 2.6.0 with static-sqlite matches the unchanged pin and was
+retained. `npm run check-binaries` and lint pass. No npm reinstall was needed
+because the dependency lockfile is unchanged. No live node startup or funded
+profile operation was performed.
+
+Both account-drain native reports retain all 130 matching source hashes after
+the merge. They need no rerun for the unrelated Swarm change. The pre-merge full
+run was stopped and drained with exit 130 and is excluded. The combined merged
+tree regression passes **12,737 tests / 33 skipped**, across **490 passing suites /
+five skipped**, in **449.099 seconds**. Both account/private-operation production
+and test hashes stayed frozen. Native permissions, the existing OpenLV exclusion
+and requested `--forceExit` were used; this does not establish natural drainage
+of all application handles.
+
 ## Ant 0.5.57 continuation
 
 Main `6b5c2ea7` merged cleanly in `b9858be0` after the completed-snapshot

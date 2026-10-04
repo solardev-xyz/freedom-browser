@@ -52,10 +52,18 @@ barriers here do not establish physical socket closure or real Tor performance.
 Independent engineering review is not a security audit. Claude reviewed code and
 fixture scope; Codex supplied implementation and independent tests/controls.
 
-The preceding full regression (12,679 tests) predates this patch. A new combined
-run is deferred until the newly discovered main `cdd014f2` merge and explicit node
-refresh; the briefly started pre-merge run is excluded. No full-patch regression is
-claimed at this checkpoint.
+The combined regression after merging main `cdd014f2` in `1c3dbce7` passes
+**12,737 tests / 33 skipped**, across **490 passing suites / five skipped**, in
+**449.099 seconds**. Both production and test hashes stayed frozen. It used native
+permissions, the existing OpenLV exclusion and requested `--forceExit`; completion
+does not establish natural drainage of all application handles. The briefly started
+pre-merge run was interrupted and drained with exit 130; it is excluded.
+
+The [main synchronization](privacy-main-sync-2026-10-04.md) explicitly reinstalled
+Ant 0.5.57, freedom-ipfs 0.4.3, Myotis 0.1.12 and Radicle 0.7.1, rebuilt the Myotis
+supervisor and retained matching Arti 2.6.0. Binary checks/lint pass. No merged
+source overlaps the wallet patch or policy inputs; both native report inventories
+still match all 130 source hashes, so no merge-related native rerun was needed.
 
 ## Scope and next work
 
@@ -65,8 +73,7 @@ public policy `d454092c` and TXID policy `03a45fd1` remain unchanged. No depende
 key/job permission, IPC, UI or funded-profile change occurs. Earlier unrelated
 policy changes still require the reviewed live public-generation/mirror rebuild.
 
-Next: merge main, refresh pinned installations, and run the combined regression;
-then implement receiver-only Transact selector recovery, genuine typed membership,
+Next: implement receiver-only Transact selector recovery, genuine typed membership,
 actual proof/intent preparation and shared output recovery. Owned-note live
 disclosure remains separately pending; this patch grants no consent or spending
 authority.
