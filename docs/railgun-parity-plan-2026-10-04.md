@@ -51,6 +51,9 @@ reading a note never authorizes spending it.
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are
    already pinned in `railgun-artifacts.js`; the missing work is integration.
+   The [bounded partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md)
+   maps the complete change-recovery and second-spend path, including the
+   additional creator shape and combined output/unshield POI requirements.
 4. **Design a restricted return-to-origin recovery path.** The inspected engine
    and wallet SDK implement origin selection as client policy. The inspected
    contract's `validateTransaction` checks the ordinary unshield proof and
