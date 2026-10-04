@@ -14,6 +14,10 @@ let mockIdentity,
   mockResultMutation,
   mockDeferExit,
   mockStartError,
+  mockCloseError,
+  mockRejectExit,
+  mockStartup,
+  mockClosedRead,
   mockReattest,
   mockCredential,
   mockVerifier,
@@ -163,37 +167,51 @@ jest.mock('./railgun-process', () => ({
     let resolveReady,
       rejectReady,
       resolveExit,
-      exited = false;
+      rejectExit,
+      exited = false,
+      closedReads = 0;
     const ready = new Promise((resolve, reject) => {
       resolveReady = resolve;
       rejectReady = reject;
     });
-    const closed = new Promise((resolve) => {
+    const closed = new Promise((resolve, reject) => {
       resolveExit = resolve;
+      rejectExit = reject;
     });
+    closed.catch(() => {});
     const task = {
       ready,
-      closed,
+      get closed() {
+        mockClosedRead(++closedReads);
+        return closed;
+      },
       options,
       exit() {
         if (!exited) {
           exited = true;
           mockEvents.push('job-exit');
-          resolveExit({ code: 'RAILGUN_PROCESS_CLOSED' });
+          if (mockRejectExit) rejectExit(Error('sensitive exit details'));
+          else resolveExit({ code: 'RAILGUN_PROCESS_CLOSED' });
         }
       },
       close: jest.fn(() => {
         rejectReady(Error('utility closed'));
         if (!mockDeferExit) task.exit();
+        if (mockCloseError) throw Error('sensitive close details');
       }),
     };
-    options.broker.signal.addEventListener('abort', () => task.close(), { once: true });
+    // The real supervisor owns its shutdown; a deliberately throwing host
+    // close method must not create an unrelated mock abort-listener exception.
+    options.broker.signal.addEventListener('abort', () => rejectReady(Error('utility aborted')), {
+      once: true,
+    });
     // ready rejects on cancellation independently of borrowed dispatch work.
     // Its driver can still be awaiting a credential/store callback after exit.
     Promise.resolve()
       .then(() => mockScenario(options, task))
       .then(resolveReady, rejectReady);
     mockTask = task;
+    mockStartup(options, task);
     return task;
   }),
 }));
@@ -312,7 +330,8 @@ beforeEach(() => {
   mockCopies = [];
   mockTask = mockWindow = undefined;
   mockPhase = null;
-  mockDeferExit = mockStartError = false;
+  mockDeferExit = mockStartError = mockCloseError = mockRejectExit = false;
+  mockStartup = mockClosedRead = () => {};
   mockMembershipCurrent = mockIdentityCurrent = true;
   caller = new AbortController();
   identityController = new AbortController();
@@ -1136,5 +1155,226 @@ test.each([0, 1])(
     expect(
       historyOf(first, mockEnrollment, mockCoordinator).capture.historyPadding
     ).toBeUndefined();
+  }
+);
+
+const expectBrokerRefusal = (error) => {
+  expect(error).toBeInstanceOf(Error);
+  expect(error.code).toBe('RAILGUN_OWN_POI_PROOF_REFUSED');
+  expect(error.message).toBe('Railgun own POI proof unavailable');
+  expect(error.cause).toBeUndefined();
+  expect(Object.keys(error)).toEqual(['code']);
+};
+test.each(['same-turn', 'microtask'])(
+  'caught malformed broker request permanently refuses a valid %s rescue',
+  async (timing) => {
+    const errors = [];
+    let immediatelyAborted;
+    mockScenario = async (job) => {
+      const bad = job.broker.dispatch('{sensitive malformed wire').catch((e) => errors.push(e));
+      immediatelyAborted = job.broker.signal.aborted;
+      if (timing === 'microtask') await Promise.resolve();
+      await job.broker.dispatch(JSON.stringify(keyWire(job))).catch((e) => errors.push(e));
+      await bad;
+    };
+    const result = await run();
+    expect(immediatelyAborted).toBe(true);
+    expect(errors).toHaveLength(2);
+    errors.forEach(expectBrokerRefusal);
+    expect(result.status).toBe('refused');
+    expect(mockCredential).not.toHaveBeenCalled();
+    expect(mockVerifier).not.toHaveBeenCalled();
+    expect(() => historyOf(result, mockEnrollment, mockCoordinator)).toThrow();
+  }
+);
+
+test.each(['derive', 'first-reattest', 'second-reattest'])(
+  'sticky broker refusal drains held %s even after child exit',
+  async (where) => {
+    const gate = deferred(),
+      entered = deferred();
+    if (where === 'derive') {
+      const original = mockCredential.getMockImplementation();
+      mockCredential.mockImplementationOnce(async (use) => {
+        entered.resolve();
+        await gate.promise;
+        return original(use);
+      });
+    } else {
+      if (where === 'second-reattest') mockReattest.mockResolvedValueOnce(copy(mockCapture));
+      mockReattest.mockImplementationOnce(async () => {
+        entered.resolve();
+        await gate.promise;
+        return copy(mockCapture);
+      });
+    }
+    let settled = false;
+    const pending = run().then((result) => {
+      settled = true;
+      return result;
+    });
+    await entered.promise;
+    const task = mockTask;
+    const failure = await task.options.broker.dispatch('{invalid').catch((e) => e);
+    expectBrokerRefusal(failure);
+    expect(task.options.broker.signal.aborted).toBe(true);
+    await task.closed;
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(mockPhase).toBe('window');
+    expect((await run({ ...options, membershipReceipt: receipt() })).stage).toBe('context');
+    gate.resolve();
+    expect((await pending).status).toBe('refused');
+    expect(mockCopies).toHaveLength(0);
+    for (const key of mockBorrowed) expect(key).toEqual(Buffer.alloc(32));
+    expect(mockVerifier).not.toHaveBeenCalled();
+    expect(mockPhase).toBeNull();
+  }
+);
+
+test.each(['malformed', 'duplicate-result', 'extra-key'])(
+  'a valid result followed by caught %s cannot publish proof history',
+  async (fault) => {
+    let error, immediate;
+    mockScenario = async (job) => {
+      await sendKey(job);
+      await sendResult(job);
+      const wire =
+        fault === 'malformed'
+          ? '{invalid'
+          : JSON.stringify(fault === 'duplicate-result' ? resultWire(job) : keyWire(job));
+      const rejected = job.broker.dispatch(wire).catch((e) => {
+        error = e;
+      });
+      immediate = job.broker.signal.aborted;
+      await rejected;
+    };
+    expect((await run()).status).toBe('refused');
+    expect(immediate).toBe(true);
+    expectBrokerRefusal(error);
+    expect(mockCopies[0]).toEqual(Buffer.alloc(32));
+    expect(mockVerifier).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['success', 'refusal', 'abort', 'timer', 'startup'])(
+  'throwing task.close during %s is contained and still waits for exit',
+  async (when) => {
+    mockCloseError = mockDeferExit = true;
+    const entered = deferred();
+    let startupAborted, startupError;
+    if (when === 'startup') {
+      mockStartup = (job) => {
+        job.broker.dispatch('{invalid').catch((e) => {
+          startupError = e;
+        });
+        startupAborted = job.broker.signal.aborted;
+      };
+    }
+    mockScenario = async (job) => {
+      if (when === 'startup') return;
+      if (when === 'refusal') {
+        await job.broker.dispatch('{invalid').catch(() => {});
+        return;
+      }
+      await sendKey(job);
+      if (when === 'success') await sendResult(job);
+      entered.resolve();
+      if (when === 'abort' || when === 'timer') await deferred().promise;
+    };
+    let settled = false;
+    const pending = run().then((result) => {
+      settled = true;
+      return result;
+    });
+    if (when === 'abort' || when === 'timer') {
+      await entered.promise;
+      if (when === 'abort') expect(() => caller.abort()).not.toThrow();
+      else expect(() => jest.advanceTimersByTime(110000)).not.toThrow();
+    }
+    await waitFor(() => mockTask?.close.mock.calls.length === 1);
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(mockPhase).toBe('window');
+    if (when === 'startup') {
+      expect(startupAborted).toBe(true);
+      expectBrokerRefusal(startupError);
+    }
+    mockTask.exit();
+    expect((await pending).status).toBe('refused');
+    expect(mockTask.close).toHaveBeenCalledTimes(1);
+    expect(mockVerifier).not.toHaveBeenCalled();
+    for (const key of mockCopies) expect(key).toEqual(Buffer.alloc(32));
+  }
+);
+
+test('rejected child closure still drains a borrowed credential and wipes its buffer', async () => {
+  const gate = deferred(),
+    entered = deferred();
+  mockRejectExit = true;
+  mockReattest.mockResolvedValueOnce(copy(mockCapture));
+  mockReattest.mockImplementationOnce(async () => {
+    entered.resolve();
+    await gate.promise;
+    return copy(mockCapture);
+  });
+  let settled = false;
+  const pending = run().then((result) => {
+    settled = true;
+    return result;
+  });
+  await entered.promise;
+  caller.abort();
+  await mockTask.closed.catch(() => {});
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(mockPhase).toBe('window');
+  expect(mockBorrowed[0]).toEqual(Buffer.alloc(32, 7));
+  gate.resolve();
+  expect((await pending).status).toBe('refused');
+  expect(mockBorrowed[0]).toEqual(Buffer.alloc(32));
+  expect(mockCopies).toHaveLength(0);
+  expect(mockVerifier).not.toHaveBeenCalled();
+});
+
+test.each(['caller', 'deadline-without-timer', 'late-broker'])(
+  'valid result cannot publish after %s during cleanup',
+  async (fault) => {
+    mockDeferExit = true;
+    let settled = false;
+    const pending = run().then((result) => {
+      settled = true;
+      return result;
+    });
+    await waitFor(() => mockTask?.close.mock.calls.length === 1);
+    expect(settled).toBe(false);
+    if (fault === 'caller') caller.abort();
+    else if (fault === 'deadline-without-timer')
+      jest.spyOn(performance, 'now').mockReturnValue(110000);
+    else expectBrokerRefusal(await mockTask.options.broker.dispatch('{invalid').catch((e) => e));
+    mockTask.exit();
+    expect((await pending).status).toBe('refused');
+    expect(mockCopies[0]).toEqual(Buffer.alloc(32));
+    expect(mockVerifier).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['deadline', 'identity'])(
+  'final publication rechecks %s after the final cleanup barrier',
+  async (fault) => {
+    let injected = false;
+    mockClosedRead = (reads) => {
+      if (reads !== 2) return;
+      injected = true;
+      if (fault === 'deadline') jest.spyOn(performance, 'now').mockReturnValue(110000);
+      else mockIdentityCurrent = false;
+    };
+    const result = await run();
+    expect(injected).toBe(true);
+    expect(result.status).toBe('refused');
+    // Distinguish the inner post-cleanup check from a later outer recovery check.
+    expect(mockRecoveryPost).not.toHaveBeenCalled();
+    expect(mockVerifier).not.toHaveBeenCalled();
+    expect(mockCopies[0]).toEqual(Buffer.alloc(32));
   }
 );

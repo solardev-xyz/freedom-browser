@@ -29,6 +29,10 @@ const CLEANUP_MS = 10000,
   MIN_PROVE_MS = 10000,
   VERIFY_RESERVE_MS = 35000;
 const sha = (v) => createHash('sha256').update(v).digest('hex');
+const fail = () =>
+  Object.assign(new Error('Railgun own POI proof unavailable'), {
+    code: 'RAILGUN_OWN_POI_PROOF_REFUSED',
+  });
 const freeze = (value) => {
   if (value && typeof value === 'object') {
     Object.values(value).forEach(freeze);
@@ -159,33 +163,69 @@ async function proveRailgunOwnPoi(options = {}) {
           sequence = 0,
           keyReleased = false,
           stopped = false,
+          failed = false,
+          accepting = true,
+          taskCloseRequested = false,
           keyCopy;
         const pending = new Set();
         const jobCurrent = (margin = 0) => {
           current();
-          assert.ok(!stopped && !jobSignal.aborted && performance.now() + margin < jobDeadline);
+          assert.ok(
+            !stopped && !failed && !jobSignal.aborted && performance.now() + margin < jobDeadline
+          );
           window.assertCurrent(CLEANUP_MS + margin);
         };
         const jobMs = Math.floor(jobDeadline - performance.now());
         assert.ok(jobMs > MIN_PROVE_MS);
-        const earlyTimer = setTimeout(() => jobController.abort(), jobMs);
+        const closeTask = () => {
+          if (!task || taskCloseRequested) return;
+          taskCloseRequested = true;
+          try {
+            task.close();
+          } catch {
+            failed = true;
+          }
+        };
+        const closeJob = () => {
+          if (!stopped) {
+            stopped = true;
+            accepting = false;
+            jobController.abort();
+          }
+          // A synchronous broker refusal may precede start's returned handle.
+          // Re-entry after assignment must still close that late task exactly once.
+          closeTask();
+        };
+        const refuse = () => {
+          failed = true;
+          keyCopy?.fill(0);
+          closeJob();
+        };
+        jobSignal.addEventListener('abort', closeJob, { once: true });
+        const earlyTimer = setTimeout(closeJob, jobMs);
         earlyTimer.unref?.();
         const dispatch = async (wire) => {
-          jobCurrent();
-          assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 32768);
-          const message = JSON.parse(wire);
-          assert.equal(message.id, ++sequence);
-          assert.equal(result, undefined);
-          if (message.id === 1) {
-            assert.deepEqual(message, { id: 1, method: 'key', purpose: 'poi-prove', inputSha256 });
-            jobCurrent(MIN_PROVE_MS);
-            assert.ok(!consumed.has(membershipReceipt));
-            // A valid request consumes this receipt before its first await. A
-            // failed derivation/reattest cannot retry a partially executed handoff.
-            consumed.add(membershipReceipt);
-            assertRailgunOwnPoiCapture(await window.reattest(), observed.capture);
-            jobCurrent(MIN_PROVE_MS);
-            try {
+          try {
+            jobCurrent();
+            assert.ok(accepting);
+            assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 32768);
+            const message = JSON.parse(wire);
+            assert.equal(message.id, ++sequence);
+            assert.equal(result, undefined);
+            if (message.id === 1) {
+              assert.deepEqual(message, {
+                id: 1,
+                method: 'key',
+                purpose: 'poi-prove',
+                inputSha256,
+              });
+              jobCurrent(MIN_PROVE_MS);
+              assert.ok(!consumed.has(membershipReceipt));
+              // A valid request consumes this receipt before its first await. A
+              // failed derivation/reattest cannot retry a partially executed handoff.
+              consumed.add(membershipReceipt);
+              assertRailgunOwnPoiCapture(await window.reattest(), observed.capture);
+              jobCurrent(MIN_PROVE_MS);
               const output = await withRailgunViewingCredential(
                 identity,
                 async ({ viewingKey }) => {
@@ -202,50 +242,53 @@ async function proveRailgunOwnPoi(options = {}) {
               jobCurrent();
               keyReleased = true;
               return output;
-            } catch (error) {
-              keyCopy?.fill(0);
-              throw error;
             }
+            assert.equal(message.id, 2);
+            assert.equal(message.method, 'result');
+            shape(message, ['id', 'method', 'value']);
+            assert.equal(keyReleased, true);
+            const value = message.value;
+            shape(value, [
+              'inputSha256',
+              'payloadSha256',
+              'payload',
+              'locallyVerified',
+              'independentlyVerified',
+              'sourceAuthenticated',
+              'membershipAuthenticated',
+              'rootAccepted',
+              'disclosureEnabled',
+              'spendingEnabled',
+              'engineSha256',
+              'proverSha256',
+              'guards',
+            ]);
+            assert.equal(value.inputSha256, inputSha256);
+            assert.equal(value.locallyVerified, true);
+            for (const key of [
+              'independentlyVerified',
+              'sourceAuthenticated',
+              'membershipAuthenticated',
+              'rootAccepted',
+              'disclosureEnabled',
+              'spendingEnabled',
+            ])
+              assert.equal(value[key], false);
+            assert.equal(value.engineSha256, require('./railgun-engine-manifest.json').sha256);
+            assert.equal(value.proverSha256, require('./railgun-prover-manifest.json').sha256);
+            assertGuards(value.guards);
+            const payload = bindRailgunOwnPoiPayload(value.payload, expected);
+            const payloadSha256 = sha(JSON.stringify(payload));
+            assert.equal(value.payloadSha256, payloadSha256);
+            result = Object.freeze({ payload, payloadSha256, inputSha256 });
+            return JSON.stringify({ id: 2, value: null });
+          } catch {
+            // Latch synchronously: catching this rejected promise cannot admit
+            // another request or rescue a result while borrowed work is pending.
+            // Credential and capture assertion details never leave this broker.
+            refuse();
+            throw fail();
           }
-          assert.equal(message.id, 2);
-          assert.equal(message.method, 'result');
-          shape(message, ['id', 'method', 'value']);
-          assert.equal(keyReleased, true);
-          const value = message.value;
-          shape(value, [
-            'inputSha256',
-            'payloadSha256',
-            'payload',
-            'locallyVerified',
-            'independentlyVerified',
-            'sourceAuthenticated',
-            'membershipAuthenticated',
-            'rootAccepted',
-            'disclosureEnabled',
-            'spendingEnabled',
-            'engineSha256',
-            'proverSha256',
-            'guards',
-          ]);
-          assert.equal(value.inputSha256, inputSha256);
-          assert.equal(value.locallyVerified, true);
-          for (const key of [
-            'independentlyVerified',
-            'sourceAuthenticated',
-            'membershipAuthenticated',
-            'rootAccepted',
-            'disclosureEnabled',
-            'spendingEnabled',
-          ])
-            assert.equal(value[key], false);
-          assert.equal(value.engineSha256, require('./railgun-engine-manifest.json').sha256);
-          assert.equal(value.proverSha256, require('./railgun-prover-manifest.json').sha256);
-          assertGuards(value.guards);
-          const payload = bindRailgunOwnPoiPayload(value.payload, expected);
-          const payloadSha256 = sha(JSON.stringify(payload));
-          assert.equal(value.payloadSha256, payloadSha256);
-          result = Object.freeze({ payload, payloadSha256, inputSha256 });
-          return JSON.stringify({ id: 2, value: null });
         };
         try {
           jobCurrent();
@@ -273,22 +316,34 @@ async function proveRailgunOwnPoi(options = {}) {
               },
             },
           });
+          if (stopped) closeJob();
           await task.ready;
           jobCurrent();
           assert.ok(result);
-          task.close();
+          accepting = false;
+          closeTask();
           assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
           jobCurrent();
-          return result;
         } finally {
-          stopped = true;
           clearTimeout(earlyTimer);
-          jobController.abort();
-          task?.close();
-          if (task) await task.closed;
-          while (pending.size) await Promise.allSettled([...pending]);
-          keyCopy?.fill(0);
+          jobSignal.removeEventListener('abort', closeJob);
+          closeJob();
+          try {
+            if (task) await task.closed;
+          } finally {
+            try {
+              while (pending.size) await Promise.allSettled([...pending]);
+            } finally {
+              keyCopy?.fill(0);
+            }
+          }
         }
+        // Publication follows cleanup: a late borrowed refusal or close error
+        // must not disappear behind an earlier result/normal utility exit.
+        assert.ok(!failed && performance.now() < jobDeadline);
+        current();
+        window.assertCurrent(CLEANUP_MS);
+        return result;
       }
     );
     current();

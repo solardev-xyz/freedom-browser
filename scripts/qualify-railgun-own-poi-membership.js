@@ -2731,7 +2731,10 @@ async function main() {
           );
           const viewingExit = entryRefusal ? undefined : proofExits.at(-1);
           if (fault === 'early-timeout') {
-            assert.equal(viewingExit.cause, 'RAILGUN_SESSION_REVOKED');
+            // The hardened host's abort listener explicitly closes the child
+            // before the later supervisor broker-revocation listener runs.
+            console.log(JSON.stringify({ phase: 'proof-early-timeout-exit', ...viewingExit }));
+            assert.equal(viewingExit.cause, 'RAILGUN_PROCESS_CLOSED');
             // The host timer was armed just before start. Permit only scheduling
             // precision, not an unrelated early process closure, as the cause.
             assert.ok(viewingExit.elapsedMs >= viewingExit.budgetMs - 50);

@@ -662,3 +662,28 @@ test.each([
   ).toThrow();
   expect(mockFork).not.toHaveBeenCalled();
 });
+
+test.each(['service', 'public-address'])(
+  'otherwise exact POI proof binary tuple refuses %s context before worker launch',
+  (kind) => {
+    const handle = scope.getContext({
+      kind,
+      principal: kind === 'public-address' ? '0x' + '12'.repeat(20) : 'railgun:0',
+      protocol: 'railgun',
+      deployment: 'sepolia',
+      chainId: 11155111,
+      role: 'engine',
+      operation: 'poi-prove',
+    });
+    expect(() =>
+      startRailgunProcess({
+        handle,
+        filename: require.resolve('./railgun-own-poi-prove-job'),
+        input: '{}',
+        binaryKey: true,
+        broker: { signal: scope.signal, dispatch: async () => new Uint8Array(32) },
+      })
+    ).toThrow();
+    expect(mockFork).not.toHaveBeenCalled();
+  }
+);
