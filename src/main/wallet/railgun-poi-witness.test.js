@@ -70,6 +70,27 @@ beforeEach(() => {
     mockRelease = resolve;
   });
 });
+test('source-normalized list proof passes assembly shape checks before key work', async () => {
+  const input = args();
+  input.listProofs = require('./railgun-poi-records').normalizePoiProofs(
+    [
+      {
+        leaf: '0x' + zero,
+        root: '0x' + zero,
+        indices: '0x' + zero,
+        elements: Array(16).fill('0x' + zero),
+      },
+    ],
+    [{ blindedCommitment: '0x' + zero, type: 'Shield' }]
+  );
+  const pending = prepareRailgunPoiWitness(input);
+  mockRelease();
+  // This suite aborts in reconstruction. Reaching it proves format compatibility,
+  // not membership or witness validity; native qualification covers the crypto.
+  await expect(pending).rejects.toMatchObject({ code: 'RAILGUN_POI_WITNESS_REFUSED' });
+  expect(runtime.verifyRailgunEngineRuntime).toHaveBeenCalled();
+  expect(reconstruct).toHaveBeenCalledTimes(1);
+});
 test('assembly keeps one captured input and private key copy across async work and wipes on cancellation', async () => {
   const input = args();
   const promise = prepareRailgunPoiWitness(input);
