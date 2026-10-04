@@ -1524,8 +1524,8 @@ describe('durable attempted POI records', () => {
     }
   );
   describe.each(['before', 'after'])('%s attempt write account reattestation', (point) => {
-    test.each(driftCases)(
-      'detects %s drift and retains only committed state',
+    test.each(driftCases.filter(([name]) => name !== 'archive transition'))(
+      'detects stable %s drift and retains only committed state',
       async (_name, change) => {
         const store = await open();
         await prepare(store);
@@ -1539,6 +1539,56 @@ describe('durable attempted POI records', () => {
         expect(entry.state).toBe(point === 'before' ? 'prepared' : 'attempted');
         expect(minimum).toBe(point === 'before' ? 1 : 2);
         if (point === 'after') expect((await begin(store)).status).toBe('refused');
+      }
+    );
+  });
+  describe.each(['before', 'after'])('%s attempt write archive evolution', (point) => {
+    test.each(['active to archived', 'archived anchor refresh'])(
+      '%s is strict before persistence and stable after persistence',
+      async (transition) => {
+        const store = await open();
+        const issued =
+          transition === 'active to archived'
+            ? sample
+            : issue(1, 1, (history) => {
+                history.capture.record = {
+                  archivedAt: 1,
+                  finalized: { number: 300, hash: hex(300) },
+                };
+              });
+        await prepare(store, issued);
+        const prepared = await store.get(hex(1));
+        const before = fs.readFileSync(filename());
+        mock.reattest = async (n, capture) => {
+          if (n !== (point === 'before' ? 1 : 2)) return;
+          capture.record = {
+            archivedAt: 2,
+            finalized: { number: 301, hash: hex(301) },
+          };
+        };
+        const result = await begin(store, issued);
+        expect(result.status).toBe(point === 'before' ? 'refused' : 'attempted');
+        expect(store.signal.aborted).toBe(false);
+        expect((await store.inspect()).sequence).toBe(point === 'before' ? 1 : 2);
+        expect(minimum).toBe(point === 'before' ? 1 : 2);
+        if (point === 'before') {
+          expect(fs.readFileSync(filename())).toEqual(before);
+          expect(await store.get(hex(1))).toEqual(prepared);
+        } else {
+          const attempted = await store.get(hex(1));
+          assertAttempted(attempted, prepared);
+          expect(result.disclosureEnabled).toBe(false);
+          expect(result.spendingEnabled).toBe(false);
+          const committed = fs.readFileSync(filename());
+          expect((await begin(store, issued)).status).toBe('refused');
+          expect(fs.readFileSync(filename())).toEqual(committed);
+          store.close();
+          await store.closed;
+          const reopened = await open(false);
+          expect(await reopened.get(hex(1))).toEqual(attempted);
+          expect((await begin(reopened, issued)).status).toBe('refused');
+          expect(await reopened.get(hex(1))).toEqual(attempted);
+        }
       }
     );
   });

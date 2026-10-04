@@ -19,6 +19,7 @@ const {
 const { openRailgunAccountTxid } = require('./railgun-account-txid');
 const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
 const { observeRailgunOwnReceipt } = require('./railgun-own-receipt');
+const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { captureRailgunOwnSource, assertRailgunOwnSource } = require('./railgun-own-source-capture');
 const { verifyRailgunOwnTxid } = require('./railgun-own-txid-verifier');
 const {
@@ -40,7 +41,8 @@ async function captureRailgunOwnWitness(
   { enrollment, coordinator, archive, selector, signal, timeoutMs, sourceDestination } = {},
   preflight = false,
   poi = false,
-  completed = false
+  completed = false,
+  submission
 ) {
   let stage = 'context',
     timer,
@@ -52,6 +54,15 @@ async function captureRailgunOwnWitness(
     verificationPhase;
   const controller = new AbortController();
   try {
+    if (submission) {
+      assert.deepEqual(Object.keys(submission).sort(), ['capture', 'entry', 'observation']);
+      const text = JSON.stringify(submission);
+      assert.ok(Buffer.byteLength(text) <= 384 * 1024);
+      submission = freeze(JSON.parse(text));
+      assert.deepEqual(selector, submission.entry.selector);
+      assert.equal(submission.capture.capsuleDigest, submission.entry.capsuleDigest);
+      assert.equal(submission.capture.bindingDigest, submission.entry.bindingDigest);
+    }
     if (timeoutMs === undefined) timeoutMs = preflight ? 300000 : 180000;
     assert.ok(isRailgunAccountEnrollment(enrollment));
     assert.ok(signal instanceof AbortSignal && !signal.aborted);
@@ -115,13 +126,20 @@ async function captureRailgunOwnWitness(
       }
       const derived = first.derived;
       let chain, sourceObservation, verified, rootReceipt, rootObservation;
+      if (submission) {
+        assertRailgunOwnPoiCapture(first.capture, submission.capture);
+        chain = submission.observation;
+        assert.equal(chain.captureBindingDigest, first.capture.bindingDigest);
+        assert.equal(chain.transaction.hash, first.capture.projection.hash);
+        assert.equal(chain.receipt.transactionHash, first.capture.projection.hash);
+      }
       const captureSource = completed
         ? captureRailgunPoiSourceCompleted
         : poi
           ? captureRailgunPoiSource
           : captureRailgunOwnSource;
       const assertSource = poi ? assertRailgunPoiSource : assertRailgunOwnSource;
-      if (preflight) {
+      if (preflight && !submission) {
         stage = 'receipt';
         const observed = await observeRailgunOwnReceipt({
           enrollment,
@@ -393,4 +411,7 @@ module.exports = {
   preflightRailgunOwnTransaction: (options) => captureRailgunOwnWitness(options, true),
   preflightRailgunOwnPoi: (options) => captureRailgunOwnWitness(options, true, true),
   preflightRailgunOwnPoiCompleted: (options) => captureRailgunOwnWitness(options, true, true, true),
+  // Only output recovery's fixed submission branch supplies this private data.
+  preflightRailgunOwnPoiForSubmission: (options, input) =>
+    captureRailgunOwnWitness(options, true, true, true, input || {}),
 };

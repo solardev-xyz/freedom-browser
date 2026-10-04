@@ -15,6 +15,7 @@ const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const {
   preflightRailgunOwnPoi,
   preflightRailgunOwnPoiCompleted,
+  preflightRailgunOwnPoiForSubmission,
 } = require('./railgun-own-witness');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
@@ -53,7 +54,7 @@ function guards(value) {
   assert.equal(new Set(value.hooks).size, value.hooks.length);
   assert.equal(value.canaries, value.hooks.length);
 }
-async function recover(options = {}, completed = false) {
+async function recover(options = {}, completed = false, submission) {
   let stage = 'context',
     timer,
     directory,
@@ -82,6 +83,12 @@ async function recover(options = {}, completed = false) {
       sourceDestination,
       timeoutMs = TOTAL_MS,
     } = options;
+    if (submission) {
+      shape(submission, ['entry', 'capture', 'observation']);
+      const text = JSON.stringify(submission);
+      assert.ok(Buffer.byteLength(text) <= 384 * 1024);
+      submission = JSON.parse(text);
+    }
     assert.ok(isRailgunAccountEnrollment(enrollment));
     assert.ok(signal instanceof AbortSignal && !signal.aborted);
     assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= TOTAL_MS);
@@ -138,6 +145,7 @@ async function recover(options = {}, completed = false) {
     store.signal.addEventListener('abort', stop, { once: true });
     const entry = await store.get(capsuleDigest);
     current();
+    if (submission) assert.deepEqual(entry, submission.entry);
     assert.ok(entry && entry.state === 'prepared');
     assert.equal(entry.capsuleDigest, capsuleDigest);
     const payload = normalizeRailgunPoiPayload(entry.payload);
@@ -150,16 +158,23 @@ async function recover(options = {}, completed = false) {
       assert.equal(JSON.stringify(latest), storedText);
     };
     stage = 'preflight';
-    const preflight = completed ? preflightRailgunOwnPoiCompleted : preflightRailgunOwnPoi;
-    const fresh = await preflight({
-      enrollment,
-      coordinator,
-      archive,
-      selector: entry.selector,
-      signal: lifetime,
-      timeoutMs: remaining(PREFLIGHT_MS),
-      ...(completed ? { sourceDestination } : {}),
-    });
+    const preflight = submission
+      ? preflightRailgunOwnPoiForSubmission
+      : completed
+        ? preflightRailgunOwnPoiCompleted
+        : preflightRailgunOwnPoi;
+    const fresh = await preflight(
+      {
+        enrollment,
+        coordinator,
+        archive,
+        selector: entry.selector,
+        signal: lifetime,
+        timeoutMs: remaining(PREFLIGHT_MS),
+        ...(completed ? { sourceDestination } : {}),
+      },
+      ...(submission ? [submission] : [])
+    );
     if (completed && fresh.status !== 'captured') {
       stage = 'preflight:' + fresh.stage;
       sourceOutcome = fresh.sourceOutcome;
@@ -182,6 +197,7 @@ async function recover(options = {}, completed = false) {
     assert.equal(fresh.creatorClassification.legacy, false);
     assert.equal(fresh.capture.capsuleDigest, capsuleDigest);
     assert.equal(fresh.capture.bindingDigest, entry.bindingDigest);
+    if (submission) assertRailgunOwnPoiCapture(fresh.capture, submission.capture);
     assert.deepEqual(fresh.capture.selector, entry.selector);
     const { creator, ownEvidence, state, witness } = fresh.poiPreparation;
     assert.deepEqual(ownEvidence.capsule, fresh.capture.capsule);
@@ -434,4 +450,7 @@ async function recover(options = {}, completed = false) {
 module.exports = {
   recoverRailgunPoiOutput: (options) => recover(options),
   recoverRailgunPoiOutputCompleted: (options) => recover(options, true),
+  // Sole production caller: the retained submission validator. Receipt data
+  // is an invocation-local second argument, never a public options override.
+  recoverRailgunPoiOutputForSubmission: (options, input) => recover(options, true, input || {}),
 };

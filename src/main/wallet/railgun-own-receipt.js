@@ -54,6 +54,7 @@ function clean(state) {
   state.destination = null;
   state.handle = null;
   state.parent = null;
+  state.enrollment = null;
   state.scope = null;
   state.resolveClosed();
 }
@@ -150,6 +151,7 @@ function prepareRailgunOwnReceiptReader(value) {
       input,
       projection,
       parent,
+      enrollment,
       scope,
       handle,
       network,
@@ -186,6 +188,30 @@ function prepareRailgunOwnReceiptReader(value) {
     if (reader) revoke(reader);
     else scope?.close();
     return refused();
+  }
+}
+
+// Internal binding assertion, not consent or a receipt-result issuer. A mismatch
+// never consumes the reader; genuine lifetime expiry still revokes it normally.
+function assertPreparedRailgunOwnReceipt(reader, value) {
+  try {
+    const { enrollment, capture, destination } = options(value, [
+      'enrollment',
+      'capture',
+      'destination',
+    ]);
+    const state = readers.get(reader);
+    assert.ok(state && !state.claimed);
+    assert.ok(isRailgunAccountEnrollment(enrollment));
+    assert.equal(enrollment, state.enrollment);
+    assert.equal(enrollment.getContext('engine'), state.parent);
+    assert.equal(destination, state.destination);
+    assert.deepEqual(copy(capture), state.input);
+    current(state);
+  } catch {
+    throw Object.assign(new Error('Railgun prepared receipt unavailable'), {
+      code: 'RAILGUN_OWN_RECEIPT_REFUSED',
+    });
   }
 }
 
@@ -353,5 +379,6 @@ async function observeRailgunOwnReceipt({
 module.exports = {
   observeRailgunOwnReceipt,
   prepareRailgunOwnReceiptReader,
+  assertPreparedRailgunOwnReceipt,
   observePreparedRailgunOwnReceipt,
 };

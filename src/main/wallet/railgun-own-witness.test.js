@@ -82,6 +82,7 @@ const {
   preflightRailgunOwnTransaction: preflight,
   preflightRailgunOwnPoi: poiPreflight,
   preflightRailgunOwnPoiCompleted: poiCompleted,
+  preflightRailgunOwnPoiForSubmission: poiSubmission,
 } = require('./railgun-own-witness');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const copy = (v) => JSON.parse(JSON.stringify(v));
@@ -852,4 +853,173 @@ test('legacy POI preflight ignores extra route-selector arguments and keeps its 
   ).toBe('captured');
   expect(mockPoiCapture).toHaveBeenCalledTimes(1);
   expect(mockPoiCompletedCapture).not.toHaveBeenCalled();
+});
+
+describe('fixed submission witness/preflight core', () => {
+  let handoff;
+  function prepare() {
+    handoff = {
+      entry: {
+        selector: copy(options.selector),
+        capsuleDigest: first.capture.capsuleDigest,
+        bindingDigest: first.capture.bindingDigest,
+      },
+      capture: copy(first.capture),
+      observation: {
+        transaction: copy(fixture.transaction),
+        receipt: copy(fixture.receipt),
+        captureBindingDigest: first.capture.bindingDigest,
+        capturedRepresentation: 'active',
+        anchorsActuallyChecked: [],
+      },
+    };
+  }
+  const submit = (input = handoff) =>
+    poiSubmission({ ...options, sourceDestination: mockDestination }, input);
+  beforeEach(() => prepare());
+  test.each([false, true])(
+    'uses retained receipt without second RPC, kind %s',
+    async (unshield) => {
+      await setup(unshield);
+      prepare();
+      const result = await submit();
+      expect(result.status).toBe('captured');
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockPoiCapture).not.toHaveBeenCalled();
+      expect(mockPoiCompletedCapture).toHaveBeenCalledTimes(1);
+      expect(mockVerify).toHaveBeenCalledTimes(1);
+      expect(mockVerify.mock.calls[0][0].evidence).toMatchObject({
+        transaction: handoff.observation.transaction,
+        receipt: handoff.observation.receipt,
+      });
+      expect(events.indexOf('capture-selector-exited')).toBeLessThan(events.indexOf('txid-open'));
+      expect(events.indexOf('txid-drained')).toBeLessThan(events.indexOf('verify-exited'));
+      expect(events.indexOf('verify-exited')).toBeLessThan(events.indexOf('poi-source-completed'));
+      expect(events.indexOf('poi-source-completed')).toBeLessThan(events.indexOf('root'));
+      expect(result.disclosureEnabled).toBe(false);
+    }
+  );
+  test.each([undefined, null, false, {}])(
+    'missing input %p cannot fall back to a receipt read',
+    async (input) => {
+      expect(
+        (await poiSubmission({ ...options, sourceDestination: mockDestination }, input)).status
+      ).toBe('refused');
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+      expect(mockOpen).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['entry-selector', 'entry-capsule', 'entry-binding', 'extra'])(
+    'rejects malformed internal %s before capture',
+    async (field) => {
+      if (field === 'entry-selector') handoff.entry.selector.position++;
+      if (field === 'entry-capsule') handoff.entry.capsuleDigest = '9'.repeat(64);
+      if (field === 'entry-binding') handoff.entry.bindingDigest = '9'.repeat(64);
+      if (field === 'extra') handoff.authorized = true;
+      expect(await submit()).toEqual({ status: 'refused', stage: 'context' });
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+      expect(mockObserve).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['facts', 'projection', 'binding', 'transaction', 'receipt'])(
+    'binds actual capture and retained %s before opening TXID',
+    async (field) => {
+      if (field === 'facts' || field === 'projection') first.capture[field] = { changed: true };
+      if (field === 'binding') handoff.observation.captureBindingDigest = '9'.repeat(64);
+      if (field === 'transaction') handoff.observation.transaction.hash = '0x' + '9'.repeat(64);
+      if (field === 'receipt') handoff.observation.receipt.transactionHash = '0x' + '9'.repeat(64);
+      expect(await submit()).toEqual({ status: 'refused', stage: 'capture' });
+      expect(mockSelectorCapture).toHaveBeenCalledTimes(1);
+      expect(mockOpen).not.toHaveBeenCalled();
+      expect(mockObserve).not.toHaveBeenCalled();
+    }
+  );
+  test('wrong exact destination refuses before any capture or receipt work', async () => {
+    expect((await poiSubmission({ ...options, sourceDestination: {} }, handoff)).status).toBe(
+      'refused'
+    );
+    expect(mockSelectorCapture).not.toHaveBeenCalled();
+    expect(mockObserve).not.toHaveBeenCalled();
+  });
+  test('detaches private receipt data before first awaited capture', async () => {
+    let release, entered;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise((resolve) => {
+      entered = resolve;
+    });
+    mockSelectorCapture.mockImplementationOnce(async () => {
+      entered();
+      await gate;
+      return first;
+    });
+    const baseline = copy(handoff);
+    const pending = submit();
+    try {
+      await ready;
+      handoff.observation.transaction.hash = '0x' + '9'.repeat(64);
+      handoff.capture.facts = { changed: true };
+      handoff.entry.selector.position++;
+      release();
+      expect((await pending).status).toBe('captured');
+      expect(mockVerify.mock.calls[0][0].evidence).toMatchObject({
+        transaction: baseline.observation.transaction,
+        receipt: baseline.observation.receipt,
+      });
+      expect(mockObserve).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pending;
+    }
+  });
+  test('final account drift refuses after source/root and drains without another receipt read', async () => {
+    latest.capture.projection = { ...latest.capture.projection, hash: '0x' + '9'.repeat(64) };
+    expect(await submit()).toEqual({ status: 'refused', stage: 'recapture' });
+    expect(mockPoiCompletedCapture).toHaveBeenCalledTimes(1);
+    expect(mockRoots.acquire).toHaveBeenCalledTimes(1);
+    expect(mockRoots.close).toHaveBeenCalled();
+    expect(mockSource.close).toHaveBeenCalled();
+    expect(mockObserve).not.toHaveBeenCalled();
+  });
+  test('preserves late genuine source failure after cancel and waits for it', async () => {
+    let release, entered;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const sourceOutcome = Object.freeze({ fatal: true, reason: 'rpc', rpcFailure: 'response' });
+    mockPoiCompletedCapture.mockImplementationOnce(async () => {
+      entered();
+      await gate;
+      return { status: 'refused', stage: 'snapshot', sourceOutcome };
+    });
+    let settled = false;
+    const pending = submit().then((value) => {
+      settled = true;
+      return value;
+    });
+    try {
+      await ready;
+      caller.abort();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
+      expect(mockRoots.acquire).not.toHaveBeenCalled();
+      expect(mockObserve).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pending;
+    }
+  });
+  test('legacy completed preflight still observes its own receipt despite extra positional data', async () => {
+    expect(
+      (await poiCompleted({ ...options, sourceDestination: mockDestination }, handoff)).status
+    ).toBe('captured');
+    expect(mockObserve).toHaveBeenCalledTimes(1);
+  });
 });

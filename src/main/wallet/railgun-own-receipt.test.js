@@ -1,7 +1,7 @@
-let mockEnrollment, mockHandle, mockNetwork;
+let mockEnrollment, mockEnrollments, mockHandle, mockNetwork, mockDestinationCurrent;
 const mockDestination = Object.freeze({});
 jest.mock('./railgun-account-enrollment', () => ({
-  isRailgunAccountEnrollment: (v) => v === mockEnrollment,
+  isRailgunAccountEnrollment: (v) => mockEnrollments.has(v),
 }));
 jest.mock('./private-transaction-network', () => ({
   getPrivateTransactionNetwork: (handle) => {
@@ -10,17 +10,27 @@ jest.mock('./private-transaction-network', () => ({
   },
   getPrivateTransactionNetworkDestination: () => mockDestination,
   assertPrivateTransactionNetworkDestination: (network, handle, destination) => {
-    if (network !== mockNetwork || handle !== mockHandle || destination !== mockDestination)
+    if (
+      !mockDestinationCurrent ||
+      network !== mockNetwork ||
+      handle !== mockHandle ||
+      destination !== mockDestination
+    )
       throw Error('destination');
   },
 }));
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
 const { projectRailgunOwnRecord } = require('./railgun-own-txid');
-const { observeRailgunOwnReceipt: observe } = require('./railgun-own-receipt');
+const {
+  observeRailgunOwnReceipt: observe,
+  prepareRailgunOwnReceiptReader: prepareReader,
+  observePreparedRailgunOwnReceipt: observePrepared,
+  assertPreparedRailgunOwnReceipt: assertPrepared,
+} = require('./railgun-own-receipt');
 const copy = (v) => JSON.parse(JSON.stringify(v));
 const hex = (v) => '0x' + BigInt(v).toString(16).padStart(64, '0');
-let scope, caller, fixture, input, headers, finalized, calls;
+let scope, caller, fixture, input, headers, finalized, calls, preparedReaders;
 function setup(unshield = false, archived = false) {
   fixture = sample(unshield, archived);
   fixture.receipt.gasUsed = '0x10000';
@@ -78,6 +88,9 @@ function setup(unshield = false, archived = false) {
 }
 beforeEach(() => {
   mockHandle = undefined;
+  mockDestinationCurrent = true;
+  mockEnrollments = new WeakSet();
+  preparedReaders = [];
   scope = createPrivacyScope({ profileId: 'own-receipt', signal: new AbortController().signal });
   caller = new AbortController();
   mockEnrollment = {
@@ -92,11 +105,14 @@ beforeEach(() => {
         role: 'engine',
       }),
   };
+  mockEnrollments.add(mockEnrollment);
   setup();
 });
-afterEach(() => {
+afterEach(async () => {
   caller.abort();
   scope.close();
+  for (const prepared of preparedReaders) prepared.close();
+  await Promise.all(preparedReaders.map((prepared) => prepared.closed));
   jest.useRealTimers();
 });
 test.each([
@@ -241,3 +257,183 @@ test('bounds a received transaction before requesting a receipt', async () => {
   expect(await observe(input)).toEqual({ status: 'refused', stage: 'transaction' });
   expect(mockNetwork.request).toHaveBeenCalledTimes(1);
 });
+
+const prepared = (changes = {}) => {
+  const result = prepareReader({ ...input, ...changes });
+  expect(result.status).toBe('prepared');
+  preparedReaders.push(result);
+  return result;
+};
+const assertionOptions = (reader, changes = {}) => ({
+  enrollment: mockEnrollment,
+  capture: copy(input.capture),
+  destination: reader.destination,
+  ...changes,
+});
+describe('prepared own receipt assertion', () => {
+  test.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])('asserts without query or claim (unshield=%s archived=%s)', async (unshield, archived) => {
+    setup(unshield, archived);
+    const reader = prepared();
+    const options = assertionOptions(reader);
+    expect(assertPrepared(reader.reader, options)).toBeUndefined();
+    expect(assertPrepared(reader.reader, copyCaptureOptions(options))).toBeUndefined();
+    expect(mockNetwork.request).not.toHaveBeenCalled();
+    expect(reader.signal.aborted).toBe(false);
+    expect((await observePrepared(reader.reader)).status).toBe('observed');
+    expect(calls).toHaveLength(archived ? 16 : 15);
+    expect(() => assertPrepared(reader.reader, options)).toThrow();
+    expect((await observePrepared(reader.reader)).status).toBe('refused');
+    expect(calls).toHaveLength(archived ? 16 : 15);
+  });
+  test.each(['empty', 'spread', 'wrapper', 'null', 'primitive'])(
+    'forged %s reader cannot assert or disturb a genuine reader',
+    async (kind) => {
+      const reader = prepared();
+      const forged = {
+        empty: {},
+        spread: { ...reader.reader },
+        wrapper: reader,
+        null: null,
+        primitive: 'reader',
+      }[kind];
+      expect(() => assertPrepared(forged, assertionOptions(reader))).toThrow();
+      expect(mockNetwork.request).not.toHaveBeenCalled();
+      expect(assertPrepared(reader.reader, assertionOptions(reader))).toBeUndefined();
+      expect((await observePrepared(reader.reader)).status).toBe('observed');
+    }
+  );
+  test.each(['enrollment', 'destination', 'capture'])(
+    'wrong %s refuses without consuming or revoking the genuine reader',
+    async (kind) => {
+      const reader = prepared();
+      const options = assertionOptions(reader);
+      if (kind === 'enrollment') {
+        options.enrollment = { ...mockEnrollment };
+        mockEnrollments.add(options.enrollment);
+        expect(options.enrollment.getContext()).toBe(mockEnrollment.getContext());
+      }
+      if (kind === 'destination') options.destination = { ...reader.destination };
+      if (kind === 'capture') options.capture.bindingDigest = '2'.repeat(64);
+      expect(() => assertPrepared(reader.reader, options)).toThrow();
+      expect(reader.signal.aborted).toBe(false);
+      expect(mockNetwork.request).not.toHaveBeenCalled();
+      expect(assertPrepared(reader.reader, assertionOptions(reader))).toBeUndefined();
+      expect((await observePrepared(reader.reader)).status).toBe('observed');
+    }
+  );
+  test.each(['record', 'projection', 'transaction', 'additional metadata'])(
+    'assertion retains the entire prepared capture including %s',
+    async (field) => {
+      setup(false, true);
+      const reader = prepared();
+      const options = assertionOptions(reader);
+      if (field === 'record') options.capture.record.archivedAt++;
+      if (field === 'projection') options.capture.projection.blockHash = hex(999);
+      if (field === 'transaction') options.capture.provedTransaction.data = '0x';
+      if (field === 'additional metadata') options.capture.extra = 'new';
+      expect(() => assertPrepared(reader.reader, options)).toThrow();
+      expect(mockNetwork.request).not.toHaveBeenCalled();
+      expect(assertPrepared(reader.reader, assertionOptions(reader))).toBeUndefined();
+      expect((await observePrepared(reader.reader)).status).toBe('observed');
+    }
+  );
+  test('later caller mutation cannot rewrite the reader snapshot', async () => {
+    const original = copy(input.capture);
+    const reader = prepared();
+    input.capture.provedTransaction.data = '0x';
+    expect(() => assertPrepared(reader.reader, assertionOptions(reader))).toThrow();
+    expect(
+      assertPrepared(reader.reader, assertionOptions(reader, { capture: original }))
+    ).toBeUndefined();
+    expect(mockNetwork.request).not.toHaveBeenCalled();
+    expect((await observePrepared(reader.reader)).status).toBe('observed');
+  });
+  test('same enrollment rebound to another engine context does not match the retained parent', async () => {
+    const reader = prepared();
+    const original = mockEnrollment.getContext;
+    mockEnrollment.getContext = () =>
+      scope.getContext({
+        kind: 'private-account',
+        principal: 'another-account',
+        protocol: 'railgun',
+        deployment: 'sepolia',
+        chainId: 11155111,
+        role: 'engine',
+      });
+    try {
+      expect(() => assertPrepared(reader.reader, assertionOptions(reader))).toThrow();
+      expect(reader.signal.aborted).toBe(false);
+      expect(mockNetwork.request).not.toHaveBeenCalled();
+    } finally {
+      mockEnrollment.getContext = original;
+    }
+    expect(assertPrepared(reader.reader, assertionOptions(reader))).toBeUndefined();
+    expect((await observePrepared(reader.reader)).status).toBe('observed');
+  });
+  test.each(['missing', 'extra', 'accessor', 'null', 'undefined'])(
+    'malformed %s assertion does not claim or revoke the reader',
+    async (kind) => {
+      const reader = prepared();
+      let options = assertionOptions(reader);
+      const getter = jest.fn(() => mockEnrollment);
+      if (kind === 'missing') options = { enrollment: mockEnrollment, capture: input.capture };
+      if (kind === 'extra') options.extra = true;
+      if (kind === 'accessor')
+        Object.defineProperty(options, 'enrollment', { get: getter, enumerable: true });
+      if (kind === 'null') options = null;
+      if (kind === 'undefined') options = undefined;
+      expect(() => assertPrepared(reader.reader, options)).toThrow();
+      expect(getter).not.toHaveBeenCalled();
+      expect(reader.signal.aborted).toBe(false);
+      expect(mockNetwork.request).not.toHaveBeenCalled();
+      expect((await observePrepared(reader.reader)).status).toBe('observed');
+    }
+  );
+  test.each(['caller', 'enrollment', 'network', 'destination', 'close', 'expiry'])(
+    '%s revocation prevents assertion without any query',
+    async (kind) => {
+      jest.useFakeTimers();
+      const network = new AbortController();
+      mockNetwork.signal = network.signal;
+      const reader = prepared({ timeoutMs: 20 });
+      if (kind === 'caller') caller.abort();
+      if (kind === 'enrollment') scope.close();
+      if (kind === 'network') network.abort();
+      if (kind === 'destination') mockDestinationCurrent = false;
+      if (kind === 'close') reader.close();
+      if (kind === 'expiry') await jest.advanceTimersByTimeAsync(20);
+      expect(() => assertPrepared(reader.reader, assertionOptions(reader))).toThrow();
+      expect(mockNetwork.request).not.toHaveBeenCalled();
+      expect((await observePrepared(reader.reader)).status).toBe('refused');
+      expect(mockNetwork.request).not.toHaveBeenCalled();
+      await reader.closed;
+    }
+  );
+  test('claimed reader assertion refuses immediately without cancelling its pending observation', async () => {
+    const reader = prepared();
+    const original = mockNetwork.request.getMockImplementation();
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    mockNetwork.request.mockImplementationOnce(async (...args) => {
+      await gate;
+      return original(...args);
+    });
+    const pending = observePrepared(reader.reader);
+    try {
+      expect(() => assertPrepared(reader.reader, assertionOptions(reader))).toThrow();
+      expect(reader.signal.aborted).toBe(false);
+    } finally {
+      release();
+    }
+    expect((await pending).status).toBe('observed');
+    expect(calls).toHaveLength(15);
+  });
+});
+function copyCaptureOptions(options) {
+  return { ...options, capture: copy(options.capture) };
+}

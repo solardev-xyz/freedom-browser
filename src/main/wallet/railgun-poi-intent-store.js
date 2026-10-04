@@ -475,7 +475,10 @@ async function createRailgunPoiIntentStore({
       });
       currentAttempt();
       const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
-      const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
+      const {
+        assertRailgunOwnPoiCapture,
+        assertRailgunOwnPoiStableCapture,
+      } = require('./railgun-own-poi-binding');
       const bind = (capture) => {
         assert.equal(capture.capsuleDigest, baseline.capsuleDigest);
         assert.equal(capture.bindingDigest, baseline.bindingDigest);
@@ -534,7 +537,10 @@ async function createRailgunPoiIntentStore({
           const fresh = await window.reattest();
           check();
           bind(fresh);
-          assertRailgunOwnPoiCapture(fresh, window.capture);
+          // Persistence has already happened. Genuine recovery authenticates
+          // journal evolution; representation-only archival changes must not
+          // strand this attempt while all stable account facts still match.
+          assertRailgunOwnPoiStableCapture(fresh, window.capture);
           return { checked: true };
         }
       );

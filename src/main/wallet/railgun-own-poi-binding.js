@@ -1,8 +1,9 @@
-/** Stable POI account comparison. General recovery deliberately has a weaker
- * representation policy; POI callers also bind the checked archival anchor.
+/** POI account comparisons. Before an attempt, callers also bind the checked
+ * archival representation. After persistence, stable account facts remain bound
+ * while genuine recovery separately authenticates valid journal evolution.
  */
 const assert = require('assert/strict');
-function assertRailgunOwnPoiCapture(current, baseline) {
+function assertRailgunOwnPoiStableCapture(current, baseline) {
   for (const key of [
     'bindingDigest',
     'selector',
@@ -15,10 +16,13 @@ function assertRailgunOwnPoiCapture(current, baseline) {
     'projection',
   ])
     assert.deepEqual(current[key], baseline[key]);
+}
+function assertRailgunOwnPoiCapture(current, baseline) {
+  assertRailgunOwnPoiStableCapture(current, baseline);
   const anchor = (record) =>
     Object.hasOwn(record, 'archivedAt')
       ? { archived: true, finalized: record.finalized }
       : { archived: false };
   assert.deepEqual(anchor(current.record), anchor(baseline.record));
 }
-module.exports = { assertRailgunOwnPoiCapture };
+module.exports = { assertRailgunOwnPoiCapture, assertRailgunOwnPoiStableCapture };

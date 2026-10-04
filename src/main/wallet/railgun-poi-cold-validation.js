@@ -18,7 +18,12 @@ const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const {
   recoverRailgunPoiOutput,
   recoverRailgunPoiOutputCompleted,
+  recoverRailgunPoiOutputForSubmission,
 } = require('./railgun-poi-output-recovery');
+const {
+  assertPreparedRailgunOwnReceipt,
+  observePreparedRailgunOwnReceipt,
+} = require('./railgun-own-receipt');
 const { verifyRailgunPoiPayload } = require('./railgun-poi-verifier');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const {
@@ -43,8 +48,8 @@ const freeze = (value) => {
   return value;
 };
 const snapshot = (value) => freeze(JSON.parse(JSON.stringify(value)));
-async function validate(options, history) {
-  const maximum = history ? HISTORY_MS : TOTAL_MS;
+async function validate(options, history, submission) {
+  const maximum = submission ? HISTORY_MS + 60000 : history ? HISTORY_MS : TOTAL_MS;
   const historyReserve = history ? SELECTOR_MS + MIRROR_MS : 0;
   let stage = 'context',
     store,
@@ -116,8 +121,31 @@ async function validate(options, history) {
     const publicValue = getRailgunAccountPublicIdentity(coordinator, enrollment, policy);
     const publicIdentity = history ? snapshot(publicValue) : publicValue;
     const sourceDestination = history
-      ? getRailgunAccountPublicDestination(coordinator, enrollment, policy)
+      ? submission
+        ? submission.sourceDestination
+        : getRailgunAccountPublicDestination(coordinator, enrollment, policy)
       : undefined;
+    let submitted;
+    if (submission) {
+      assert.deepEqual(Object.keys(submission).sort(), [
+        'capture',
+        'destination',
+        'entry',
+        'reader',
+        'sourceDestination',
+      ]);
+      submitted = snapshot({ entry: submission.entry, capture: submission.capture });
+      submission = Object.freeze({
+        reader: submission.reader,
+        destination: submission.destination,
+        sourceDestination: submission.sourceDestination,
+      });
+      assert.equal(submitted.entry.capsuleDigest, capsuleDigest);
+      assert.equal(submitted.capture.capsuleDigest, capsuleDigest);
+      assert.equal(submitted.capture.bindingDigest, submitted.entry.bindingDigest);
+      assert.deepEqual(submitted.capture.selector, submitted.entry.selector);
+      assertRailgunAccountPublicDestination(coordinator, enrollment, sourceDestination, policy);
+    }
     // Load only for the fixed history export; Stage A keeps its old dependency
     // and phase behavior. Policy changes select another mirror, never a rebuild.
     const getTxidPolicy = history
@@ -129,6 +157,7 @@ async function validate(options, history) {
     owners.set(directory, owner);
     const started = performance.now(),
       deadline = started + timeoutMs;
+    let activeDeadline = deadline;
     lifetime = AbortSignal.any([
       signal,
       identity.signal,
@@ -142,7 +171,7 @@ async function validate(options, history) {
         !lifetime.aborted &&
           !store?.signal.aborted &&
           performance.now() >= started &&
-          performance.now() + margin < deadline
+          performance.now() + margin < activeDeadline
       );
       assert.equal(owners.get(directory), owner);
       if (history) assert.equal(getTxidPolicy(archive), txidPolicy);
@@ -156,7 +185,7 @@ async function validate(options, history) {
     };
     const remaining = (limit, reserve = 0) => {
       current(reserve);
-      const left = Math.min(limit, Math.floor(deadline - performance.now()) - reserve);
+      const left = Math.min(limit, Math.floor(activeDeadline - performance.now()) - reserve);
       assert.ok(left > 0);
       return left;
     };
@@ -170,6 +199,7 @@ async function validate(options, history) {
     const loaded = await store.get(capsuleDigest);
     current();
     const entry = history ? snapshot(loaded) : loaded;
+    if (submission) assert.deepEqual(entry, submitted.entry);
     assert.ok(entry && entry.state === 'prepared');
     assert.equal(entry.capsuleDigest, capsuleDigest);
     const payload = normalizeRailgunPoiPayload(entry.payload);
@@ -181,18 +211,58 @@ async function validate(options, history) {
       current();
       assert.equal(JSON.stringify(latest), stored);
     };
+    let receiptInput;
+    if (submission) {
+      stage = 'receipt';
+      // Admission reserves the full 60s receipt plus 240s output, 35s verifier,
+      // 225s selector/mirror and 15s final recovery before consuming the reader.
+      current(60000 + OUTPUT_MS + VERIFY_MS + historyReserve + FINAL_MS);
+      assertPreparedRailgunOwnReceipt(submission.reader, {
+        enrollment,
+        capture: submitted.capture,
+        destination: submission.destination,
+      });
+      // The claim is synchronous inside observe. No result supplied by a caller
+      // can take this branch or replace this invocation's actual observation.
+      const observed = await observePreparedRailgunOwnReceipt(submission.reader, {
+        timeoutMs: remaining(60000, OUTPUT_MS + VERIFY_MS + historyReserve + FINAL_MS),
+      });
+      current();
+      if (observed.status !== 'observed') {
+        stage = 'receipt:' + observed.stage;
+        throw Error('refused');
+      }
+      // Tighten, never renew: the receipt prelude does not give the historical
+      // validator more than its original540s admission allowance.
+      activeDeadline = Math.min(deadline, performance.now() + HISTORY_MS);
+      clearTimeout(timer);
+      timer = setTimeout(stop, Math.max(0, activeDeadline - performance.now()));
+      timer.unref?.();
+      assert.equal(observed.observation.captureBindingDigest, submitted.capture.bindingDigest);
+      assert.equal(observed.observation.transaction.hash, submitted.capture.projection.hash);
+      assert.equal(observed.observation.receipt.transactionHash, submitted.capture.projection.hash);
+      receiptInput = snapshot({ ...submitted, observation: observed.observation });
+      await readCurrent();
+    }
     stage = 'output';
-    const recoverOutput = history ? recoverRailgunPoiOutputCompleted : recoverRailgunPoiOutput;
-    const output = await recoverOutput({
-      identity,
-      enrollment,
-      coordinator,
-      archive,
-      capsuleDigest,
-      signal: lifetime,
-      timeoutMs: remaining(OUTPUT_MS, VERIFY_MS + historyReserve + FINAL_MS),
-      ...(history ? { sourceDestination } : {}),
-    });
+    const recoverOutput = submission
+      ? recoverRailgunPoiOutputForSubmission
+      : history
+        ? recoverRailgunPoiOutputCompleted
+        : recoverRailgunPoiOutput;
+    const output = await recoverOutput(
+      {
+        identity,
+        enrollment,
+        coordinator,
+        archive,
+        capsuleDigest,
+        signal: lifetime,
+        timeoutMs: remaining(OUTPUT_MS, VERIFY_MS + historyReserve + FINAL_MS),
+        ...(history ? { sourceDestination } : {}),
+      },
+      ...(submission ? [receiptInput] : [])
+    );
     if (history && output.status !== 'matched') {
       stage = 'output:' + output.stage;
       sourceOutcome = output.sourceOutcome;
@@ -272,6 +342,7 @@ async function validate(options, history) {
       }
       first = snapshot(captured);
       bind(first.capture);
+      if (submission) assertRailgunOwnPoiCapture(first.capture, submitted.capture);
       const derived = first.derived;
       assert.equal(derived.selectorDerived, true);
       assert.equal(derived.utilityExitObserved, true);
@@ -499,4 +570,8 @@ async function validate(options, history) {
 module.exports = {
   validateRailgunRetainedPoi: (options = {}) => validate(options, false),
   validateRailgunRetainedPoiHistory: (options = {}) => validate(options, true),
+  // Fixed plan-controller call site only. Unlike diagnostic exports this path
+  // consumes a genuine prepared reader; no observed-result option is accepted.
+  validateRailgunRetainedPoiForSubmission: (options, handoff) =>
+    validate(options, true, handoff || {}),
 };

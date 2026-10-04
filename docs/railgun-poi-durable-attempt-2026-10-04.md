@@ -1,5 +1,13 @@
 # Railgun durable POI attempt — October 4, 2026
 
+**Later October 4 continuation:** The [retained sender integration](railgun-retained-poi-sender-2026-10-04.md)
+factors a stable capture comparator and uses it only after attempt persistence.
+Before persistence, archive representation/anchor comparisons remain strict;
+afterward, all stable account facts remain bound while genuine recovery separately
+authenticates journal evolution. Existing reports below describe the earlier
+whole-source snapshot and are historical after this change. Native attempts-mode
+requalification is tracked with the sender integration.
+
 This slice adds persistence of an exact attempted request, without a sender,
 disclosure permission, live query,
 acknowledgement, retry or proof-registry restoration.

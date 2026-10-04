@@ -74,6 +74,7 @@ jest.mock('./railgun-engine-runtime', () => ({
 jest.mock('./railgun-own-witness', () => ({
   preflightRailgunOwnPoi: jest.fn((options) => mock.preflight(options)),
   preflightRailgunOwnPoiCompleted: jest.fn((options) => mock.preflight(options)),
+  preflightRailgunOwnPoiForSubmission: jest.fn((options, input) => mock.preflight(options, input)),
 }));
 jest.mock('./railgun-own-operation', () => ({
   withRailgunOwnOperationRecovery: jest.fn(async (options, use) => {
@@ -187,12 +188,14 @@ const { REQUIRED_LIST } = require('./railgun-poi-records');
 const {
   recoverRailgunPoiOutput,
   recoverRailgunPoiOutputCompleted,
+  recoverRailgunPoiOutputForSubmission,
 } = require('./railgun-poi-output-recovery');
 const { withRailgunViewingCredential } = require('./railgun-identity');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const {
   preflightRailgunOwnPoi,
   preflightRailgunOwnPoiCompleted,
+  preflightRailgunOwnPoiForSubmission,
 } = require('./railgun-own-witness');
 const { startRailgunProcess } = require('./railgun-process');
 const hex = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -1547,4 +1550,147 @@ test('completed output reduces preflight budget by elapsed retained-store work',
   ).toBe('matched');
   expect(preflightRailgunOwnPoiCompleted.mock.calls[0][0].timeoutMs).toBeLessThanOrEqual(230000);
   expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+});
+
+describe('fixed submission output core', () => {
+  let handoff;
+  const submit = (input = handoff, supplied = options) => {
+    const work = recoverRailgunPoiOutputForSubmission(
+      { ...supplied, sourceDestination: mock.destination },
+      input
+    );
+    operations.push(work);
+    return work;
+  };
+  function prepare(unshield = false) {
+    configure(unshield);
+    const evidence = sample(unshield);
+    handoff = {
+      entry: copy(mock.entry),
+      capture: copy(mock.capture),
+      observation: {
+        transaction: copy(evidence.transaction),
+        receipt: copy(evidence.receipt),
+        captureBindingDigest: mock.capture.bindingDigest,
+      },
+    };
+  }
+  beforeEach(() => prepare());
+  test.each([false, true])(
+    'only fixed preflight receives detached receipt data, kind %s',
+    async (unshield) => {
+      prepare(unshield);
+      expect((await submit()).status).toBe('matched');
+      expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+      expect(preflightRailgunOwnPoiCompleted).not.toHaveBeenCalled();
+      expect(preflightRailgunOwnPoiForSubmission).toHaveBeenCalledTimes(1);
+      const [supplied, privateInput] = preflightRailgunOwnPoiForSubmission.mock.calls[0];
+      expect(supplied.sourceDestination).toBe(mock.destination);
+      expect(privateInput).toEqual(handoff);
+      expect(privateInput).not.toBe(handoff);
+      expect(privateInput.observation).not.toBe(handoff.observation);
+      expect(mock.credential).toHaveBeenCalledTimes(unshield ? 0 : 1);
+    }
+  );
+  test.each([undefined, null, false, {}])(
+    'missing input %p refuses without ordinary preflight',
+    async (input) => {
+      expect(
+        (
+          await recoverRailgunPoiOutputForSubmission(
+            { ...options, sourceDestination: mock.destination },
+            input
+          )
+        ).status
+      ).toBe('refused');
+      expect(mock.preflight).not.toHaveBeenCalled();
+      expect(mock.credential).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['revision', 'payloadSha256', 'extra'])(
+    'requires exact stored handoff %s before preflight',
+    async (field) => {
+      if (field === 'revision') handoff.entry.revision++;
+      if (field === 'payloadSha256') handoff.entry.payloadSha256 = hex(99);
+      if (field === 'extra') handoff.observed = true;
+      expect((await submit()).status).toBe('refused');
+      expect(mock.preflight).not.toHaveBeenCalled();
+      expect(mock.credential).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['facts', 'projection', 'archived-anchor'])(
+    'fresh preflight %s drift refuses before keys',
+    async (field) => {
+      // Replace rather than mutate a previously frozen preflight value.
+      const changed = copy(mock.fresh);
+      if (field === 'archived-anchor') changed.capture.record = sample(false, true).record;
+      else changed.capture[field] = { changed: true };
+      mock.preflight.mockResolvedValue(changed);
+      expect((await submit()).status).toBe('refused');
+      expect(preflightRailgunOwnPoiForSubmission).toHaveBeenCalledTimes(1);
+      expect(mock.credential).not.toHaveBeenCalled();
+      expect(startRailgunProcess).not.toHaveBeenCalled();
+    }
+  );
+  test('copies internal handoff before asynchronous store open', async () => {
+    const gate = deferred(),
+      baseline = copy(handoff);
+    mock.enrollment.openPoiIntents.mockImplementationOnce(async () => {
+      await gate.promise;
+      return mock.store;
+    });
+    const pending = submit();
+    await waitFor(() => mock.enrollment.openPoiIntents.mock.calls.length === 1);
+    handoff.entry.revision++;
+    handoff.capture.facts = { changed: true };
+    handoff.observation.transaction.hash = prefixed(99);
+    gate.resolve();
+    expect((await pending).status).toBe('matched');
+    expect(preflightRailgunOwnPoiForSubmission.mock.calls[0][1]).toEqual(baseline);
+  });
+  test('late failed preflight drains, retains exclusion and preserves genuine inner outcome after abort', async () => {
+    const gate = deferred();
+    const sourceOutcome = Object.freeze({ fatal: true, reason: 'rpc', rpcFailure: 'response' });
+    mock.preflight.mockImplementationOnce(async () => {
+      await gate.promise;
+      return { status: 'refused', stage: 'source', sourceOutcome };
+    });
+    let settled = false;
+    const pending = submit().then((value) => {
+      settled = true;
+      return value;
+    });
+    await waitFor(() => mock.preflight.mock.calls.length === 1);
+    mock.caller.abort();
+    expect(
+      (await submit(handoff, { ...options, signal: new AbortController().signal })).status
+    ).toBe('refused');
+    expect(mock.preflight).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    gate.resolve();
+    expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
+    expect(mock.credential).not.toHaveBeenCalled();
+    expect(
+      (await submit(handoff, { ...options, signal: new AbortController().signal })).status
+    ).toBe('matched');
+  });
+  test('late completed result cannot authorize key release after cancellation', async () => {
+    const gate = deferred();
+    mock.preflight.mockImplementationOnce(async () => {
+      await gate.promise;
+      return copy(mock.fresh);
+    });
+    const pending = submit();
+    await waitFor(() => mock.preflight.mock.calls.length === 1);
+    mock.caller.abort();
+    gate.resolve();
+    expect((await pending).status).toBe('refused');
+    expect(mock.credential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+  });
+  test('legacy output ignores an extra positional handoff and retains original preflight', async () => {
+    expect((await recoverRailgunPoiOutput(options, handoff)).status).toBe('matched');
+    expect(preflightRailgunOwnPoi).toHaveBeenCalledTimes(1);
+    expect(preflightRailgunOwnPoiForSubmission).not.toHaveBeenCalled();
+  });
 });

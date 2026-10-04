@@ -82,6 +82,11 @@ jest.mock('./railgun-prover-runtime', () => ({
 jest.mock('./railgun-poi-output-recovery', () => ({
   recoverRailgunPoiOutput: jest.fn((options) => mock.output(options)),
   recoverRailgunPoiOutputCompleted: jest.fn((options) => mock.output(options)),
+  recoverRailgunPoiOutputForSubmission: jest.fn((options, input) => mock.output(options, input)),
+}));
+jest.mock('./railgun-own-receipt', () => ({
+  assertPreparedRailgunOwnReceipt: jest.fn((reader, input) => mock.assertReader(reader, input)),
+  observePreparedRailgunOwnReceipt: jest.fn((reader, input) => mock.observeReader(reader, input)),
 }));
 jest.mock('./railgun-poi-verifier', () => ({
   verifyRailgunPoiPayload: jest.fn((options) => mock.verify(options)),
@@ -183,6 +188,7 @@ const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const {
   validateRailgunRetainedPoi,
   validateRailgunRetainedPoiHistory,
+  validateRailgunRetainedPoiForSubmission,
 } = require('./railgun-poi-cold-validation');
 const { openRailgunAccountTxid } = require('./railgun-account-txid');
 const { captureRailgunOwnOperationSelector } = require('./railgun-own-operation');
@@ -435,6 +441,7 @@ test.each([false, true])(
     expect(Object.keys(require('./railgun-poi-cold-validation'))).toEqual([
       'validateRailgunRetainedPoi',
       'validateRailgunRetainedPoiHistory',
+      'validateRailgunRetainedPoiForSubmission',
     ]);
     expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
     expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
@@ -2022,4 +2029,229 @@ test('legacy Stage A neither captures a destination nor selects completed-only o
   expect(recoverRailgunPoiOutputCompleted).not.toHaveBeenCalled();
   expect(getRailgunAccountPublicDestination).not.toHaveBeenCalled();
   expect(assertRailgunAccountPublicDestination).not.toHaveBeenCalled();
+});
+
+describe('fixed submission receipt handoff', () => {
+  let handoff, observed;
+  const submit = (input = handoff, supplied = options) => {
+    const work = validateRailgunRetainedPoiForSubmission(supplied, input);
+    operations.push(work);
+    return work;
+  };
+  function prepare(unshield = false) {
+    configureHistory(unshield);
+    const evidence = sample(unshield);
+    mock.capture.projection.hash = evidence.transaction.hash;
+    handoff = {
+      entry: copy(mock.entry),
+      capture: copy(mock.capture),
+      sourceDestination: mock.destination,
+      destination: Object.freeze({}),
+      reader: Object.freeze({}),
+    };
+    const retained = { ...handoff, enrollment: mock.enrollment, capture: copy(handoff.capture) };
+    let claimed = false;
+    mock.assertReader = jest.fn((reader, input) => {
+      expect(reader).toBe(retained.reader);
+      expect(input.enrollment).toBe(retained.enrollment);
+      expect(input.destination).toBe(retained.destination);
+      expect(input.capture).toEqual(retained.capture);
+      if (claimed) throw Error('already claimed');
+      mock.events.push('receipt-assert');
+    });
+    observed = {
+      status: 'observed',
+      observation: {
+        transaction: copy(evidence.transaction),
+        receipt: copy(evidence.receipt),
+        captureBindingDigest: retained.capture.bindingDigest,
+      },
+    };
+    mock.observeReader = jest.fn((reader, input) => {
+      expect(reader).toBe(retained.reader);
+      expect(Object.keys(input)).toEqual(['timeoutMs']);
+      expect(input.timeoutMs).toBeGreaterThan(0);
+      expect(input.timeoutMs).toBeLessThanOrEqual(60000);
+      if (claimed) throw Error('already claimed');
+      claimed = true;
+      mock.events.push('receipt-consumed');
+      return mock.receiptWork();
+    });
+    mock.receiptWork = jest.fn(async () => copy(observed));
+  }
+  beforeEach(() => prepare());
+  test.each([false, true])(
+    'consumes retained reader before output/selector, kind %s',
+    async (unshield) => {
+      prepare(unshield);
+      expect((await submit()).status).toBe('validated');
+      expect(mock.assertReader).toHaveBeenCalledTimes(1);
+      expect(mock.observeReader).toHaveBeenCalledTimes(1);
+      expect(mock.events.indexOf('receipt-assert')).toBeLessThan(
+        mock.events.indexOf('receipt-consumed')
+      );
+      expect(mock.events.indexOf('receipt-consumed')).toBeLessThan(mock.events.indexOf('output'));
+      expect(mock.events.indexOf('output')).toBeLessThan(mock.events.indexOf('selector'));
+      const outputs = require('./railgun-poi-output-recovery');
+      expect(outputs.recoverRailgunPoiOutput).not.toHaveBeenCalled();
+      expect(outputs.recoverRailgunPoiOutputCompleted).not.toHaveBeenCalled();
+      expect(outputs.recoverRailgunPoiOutputForSubmission).toHaveBeenCalledTimes(1);
+      const [supplied, privateInput] = mock.output.mock.calls[0];
+      expect(supplied.sourceDestination).toBe(handoff.sourceDestination);
+      expect(privateInput).toEqual({
+        entry: handoff.entry,
+        capture: handoff.capture,
+        observation: observed.observation,
+      });
+      expect(privateInput.capture).not.toBe(handoff.capture);
+      expect(Object.isFrozen(privateInput.capture)).toBe(true);
+      expect(getRailgunAccountPublicDestination).not.toHaveBeenCalled();
+    }
+  );
+  test.each([undefined, null, false, {}])('missing handoff %p never falls back', async (input) => {
+    const result = await validateRailgunRetainedPoiForSubmission(options, input);
+    expect(result.status).toBe('refused');
+    expect(mock.observeReader).not.toHaveBeenCalled();
+    expect(mock.output).not.toHaveBeenCalled();
+    expect(mock.selector).not.toHaveBeenCalled();
+  });
+  test.each(['revision', 'payload', 'capture', 'selector', 'source', 'reader', 'destination'])(
+    'refuses mismatched handoff %s before consuming receipt',
+    async (field) => {
+      if (field === 'revision') handoff.entry.revision++;
+      if (field === 'payload') handoff.entry.payloadSha256 = hex(99);
+      if (field === 'capture') handoff.capture.bindingDigest = hex(99);
+      if (field === 'selector') handoff.capture.selector.position++;
+      if (field === 'source') handoff.sourceDestination = {};
+      if (field === 'reader') handoff.reader = {};
+      if (field === 'destination') handoff.destination = {};
+      expect((await submit()).status).toBe('refused');
+      expect(mock.observeReader).not.toHaveBeenCalled();
+      expect(mock.output).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['binding', 'transaction', 'receipt'])(
+    'checks observed %s binding before output',
+    async (field) => {
+      if (field === 'binding') observed.observation.captureBindingDigest = hex(99);
+      if (field === 'transaction') observed.observation.transaction.hash = prefixed(99);
+      if (field === 'receipt') observed.observation.receipt.transactionHash = prefixed(99);
+      expect(await submit()).toEqual({ status: 'refused', stage: 'receipt' });
+      expect(mock.observeReader).toHaveBeenCalledTimes(1);
+      expect(mock.output).not.toHaveBeenCalled();
+    }
+  );
+  test('refused prepared observation has no ordinary receipt retry', async () => {
+    mock.receiptWork.mockResolvedValue({ status: 'refused', stage: 'archive-anchor' });
+    expect(await submit()).toEqual({ status: 'refused', stage: 'receipt:archive-anchor' });
+    expect(mock.observeReader).toHaveBeenCalledTimes(1);
+    expect(mock.output).not.toHaveBeenCalled();
+  });
+  test('snapshots handoff before opening storage and retains exact reader identities', async () => {
+    const gate = deferred();
+    mock.enrollment.openPoiIntents.mockImplementationOnce(async () => {
+      await gate.promise;
+      return mock.store;
+    });
+    const baseline = copy({ entry: handoff.entry, capture: handoff.capture });
+    const pending = submit();
+    await until(() => mock.enrollment.openPoiIntents.mock.calls.length === 1);
+    handoff.reader = {};
+    handoff.destination = {};
+    handoff.sourceDestination = {};
+    handoff.capture.facts.kind = 'changed';
+    handoff.entry.revision++;
+    gate.resolve();
+    expect((await pending).status).toBe('validated');
+    expect(mock.output.mock.calls[0][1]).toMatchObject(baseline);
+  });
+  test('later genuine capture must still match the reviewed baseline', async () => {
+    mock.selectorWork.mockImplementation(async () => {
+      mock.capture.facts = { changed: true };
+    });
+    expect((await submit()).status).toBe('refused');
+    expect(mock.observeReader).toHaveBeenCalledTimes(1);
+    expect(mock.openTxid).not.toHaveBeenCalled();
+  });
+  test('cancellation holds owner until ignored-abort receipt work drains', async () => {
+    const gate = deferred();
+    mock.receiptWork.mockImplementationOnce(async () => {
+      await gate.promise;
+      return copy(observed);
+    });
+    let settled = false;
+    const pending = submit().then((result) => {
+      settled = true;
+      return result;
+    });
+    await until(() => mock.observeReader.mock.calls.length === 1);
+    mock.caller.abort();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect((await runHistory(freshOptions())).status).toBe('refused');
+    expect(mock.output).not.toHaveBeenCalled();
+    gate.resolve();
+    expect((await pending).status).toBe('refused');
+    expect((await runHistory(freshOptions())).status).toBe('validated');
+  });
+  test('early receipt tightens the remaining deadline to 540 seconds without releasing pending work', async () => {
+    const gate = deferred();
+    mock.receiptWork.mockImplementation(async () => {
+      jest.advanceTimersByTime(1000);
+      return copy(observed);
+    });
+    mock.output.mockImplementationOnce(async () => {
+      await gate.promise;
+      return copy(mock.outputResult);
+    });
+    let settled = false;
+    const pending = submit().then((result) => {
+      settled = true;
+      return result;
+    });
+    await until(() => mock.output.mock.calls.length === 1);
+    const signal = mock.output.mock.calls[0][0].signal;
+    jest.advanceTimersByTime(539999);
+    expect(signal.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(signal.aborted).toBe(true);
+    expect(settled).toBe(false);
+    gate.resolve();
+    expect((await pending).status).toBe('refused');
+    expect(mock.verify).not.toHaveBeenCalled();
+  });
+  test.each([515001, 574999, 575000])(
+    'refuses %s headroom before asserting or consuming reader',
+    async (timeoutMs) => {
+      expect(await submit(handoff, { ...options, timeoutMs })).toEqual({
+        status: 'refused',
+        stage: 'receipt',
+      });
+      expect(mock.assertReader).not.toHaveBeenCalled();
+      expect(mock.observeReader).not.toHaveBeenCalled();
+      expect(mock.output).not.toHaveBeenCalled();
+    }
+  );
+  test('575001ms admits full receipt budget; storage elapsed time counts against it', async () => {
+    expect((await submit(handoff, { ...options, timeoutMs: 575001 })).status).toBe('validated');
+    expect(mock.observeReader.mock.calls[0][1].timeoutMs).toBe(60000);
+    prepare();
+    mock.enrollment.openPoiIntents.mockImplementationOnce(async () => {
+      jest.advanceTimersByTime(1);
+      return mock.store;
+    });
+    expect(await submit(handoff, { ...options, timeoutMs: 575001 })).toEqual({
+      status: 'refused',
+      stage: 'receipt',
+    });
+    expect(mock.assertReader).not.toHaveBeenCalled();
+    expect(mock.observeReader).not.toHaveBeenCalled();
+  });
+  test('legacy history keeps its route and does not consume a prepared reader', async () => {
+    expect((await runHistory()).status).toBe('validated');
+    expect(mock.observeReader).not.toHaveBeenCalled();
+    expect(
+      require('./railgun-poi-output-recovery').recoverRailgunPoiOutputForSubmission
+    ).not.toHaveBeenCalled();
+  });
 });

@@ -3,7 +3,7 @@
  * spend proof/signature. No external transport or owned-note disclosure.
  * Real private RPC and destination/budget identities use simulated registry,
  * Tor endpoint and transport. Chain-ID handshakes are included in wire counts.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts|plans]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts|plans|submission]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -194,6 +194,7 @@ const sources = [
   'src/main/wallet/railgun-own-poi-membership.js',
   'src/main/wallet/railgun-own-poi-membership.test.js',
   'src/main/wallet/railgun-own-poi-binding.js',
+  'src/main/wallet/railgun-own-poi-binding.test.js',
   'src/main/wallet/railgun-own-poi-proof-data.js',
   'src/main/wallet/railgun-own-poi-proof-data.test.js',
   'src/main/wallet/railgun-own-poi-proof.js',
@@ -202,6 +203,7 @@ const sources = [
   'src/main/wallet/railgun-own-poi-checks.test.js',
   'src/main/wallet/railgun-poi-disclosure-plan.js',
   'src/main/wallet/railgun-poi-disclosure-plan.test.js',
+  'src/main/wallet/railgun-poi-submission.test.js',
   'src/main/wallet/railgun-poi-submit-data.js',
   'src/main/wallet/railgun-poi-submit-data.test.js',
   'src/main/wallet/railgun-poi-intent-store.js',
@@ -266,6 +268,7 @@ async function main() {
         'retained-history',
         'attempts',
         'plans',
+        'submission',
       ].includes(checksFlag)
     );
   const planMode = checksFlag === 'plans';
@@ -278,7 +281,20 @@ async function main() {
   const attemptWork = { utilities: 0, utilityKeyHandoffs: 0 };
   let attemptActive = false;
   const outputRecoveryMode = checksFlag === 'output-recovery';
-  const retainedHistoryMode = checksFlag === 'retained-history';
+  const submissionMode = checksFlag === 'submission';
+  const submissionRuns = [];
+  const submissionWire = { creates: 0, closes: 0, list: 0, txid: 0, post: 0, unexpected: 0 };
+  const submissionIsolation = new Set();
+  let submissionActive = false,
+    submissionPreparedEntry,
+    submissionPostDrain,
+    submissionOperation,
+    submissionReviewStage = 0,
+    submissionValidationCount = 0,
+    submissionRootReadChain = Promise.resolve(),
+    submissionRootReads = 0,
+    submissionRootReadPeak = 0;
+  const retainedHistoryMode = checksFlag === 'retained-history' || submissionMode;
   const coldValidationMode = checksFlag === 'cold-validation' || retainedHistoryMode;
   let laterMirror,
     mirrorAdvanced = false;
@@ -478,6 +494,7 @@ async function main() {
     '../src/main/wallet/railgun-txid-root',
     '../src/main/wallet/private-transaction-network',
     '../src/main/wallet/railgun-own-receipt',
+    '../src/main/wallet/railgun-poi-disclosure-plan',
     '../src/main/wallet/railgun-own-witness',
     '../src/main/wallet/railgun-own-poi-membership',
     '../src/main/wallet/railgun-own-poi-proof',
@@ -712,17 +729,179 @@ async function main() {
     clients.add(client);
     return client;
   };
+  const createFixtureSubmissionTransport = () => {
+    submissionWire.creates++;
+    let closed = false,
+      used = false,
+      postClient = false,
+      resolveClosed;
+    const client = {
+      closed: new Promise((resolve) => (resolveClosed = resolve)),
+      close() {
+        if (!closed) submissionWire.closes++;
+        closed = true;
+        if (postClient && submissionPostDrain) {
+          submissionPostDrain.reached = true;
+          submissionPostDrain.entered.resolve();
+          submissionPostDrain.release.promise.then(resolveClosed);
+        } else resolveClosed();
+      },
+      async request(handle, url, options) {
+        try {
+          assert.equal(submissionActive, true);
+          assert.equal(submissionReviewStage, 2);
+          assert.equal(closed, false);
+          assert.equal(used, false);
+          used = true;
+          assert.equal(url, 'https://ppoi.fdi.network');
+          const context = getPrivacyContext(handle);
+          assert.deepEqual(context.subject, {
+            kind: 'private-account',
+            principal: 'railgun:' + enrollment.descriptor.accountIndex,
+            protocol: 'railgun',
+            deployment: 'sepolia',
+            chainId: 11155111,
+            role: 'poi',
+            operation: context.subject.operation,
+          });
+          assert.match(context.subject.operation, /^poi:[0-9a-f]{64}$/);
+          submissionOperation ??= context.subject.operation;
+          assert.equal(context.subject.operation, submissionOperation);
+          assert.equal(submissionIsolation.has(context.isolationToken), false);
+          submissionIsolation.add(context.isolationToken);
+          assert.equal(context.requirements.origin, 'tor');
+          assert.equal(options.method, 'POST');
+          assert.deepEqual(options.headers, { 'content-type': 'application/json' });
+          assert.ok(options.signal instanceof AbortSignal && !options.signal.aborted);
+          const body = JSON.parse(options.body);
+          assert.equal(body.jsonrpc, '2.0');
+          assert.deepEqual(Object.keys(body).sort(), ['id', 'jsonrpc', 'method', 'params']);
+          const isPost = body.method === 'ppoi_submit_transact_proof';
+          postClient = isPost;
+          assert.deepEqual(Object.keys(options).sort(), [
+            'body',
+            'headers',
+            ...(isPost ? ['maxResponseBytes'] : []),
+            'method',
+            ...(isPost ? ['requireFramedResponse'] : []),
+            'signal',
+            'timeoutMs',
+          ]);
+          assert.ok(Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0);
+          assert.ok(options.timeoutMs <= (isPost ? 10000 : 15000));
+          if (isPost) {
+            submissionWire.post++;
+            assert.equal(submissionWire.post, 1);
+            assert.equal(submissionWire.list, 1);
+            assert.equal(submissionWire.txid, 1);
+            assert.equal(options.maxResponseBytes, 2048);
+            assert.equal(options.requireFramedResponse, true);
+            const durable = await intentStore.get(submissionPreparedEntry.capsuleDigest);
+            assert.equal(durable.state, 'attempted');
+            assert.equal(options.body, durable.attempt.submission.body);
+            assert.equal(body.id, durable.attempt.attemptedAt);
+            assert.equal(body.id, durable.attempt.submission.requestId);
+            assert.equal(sha(options.body), durable.attempt.submission.bodySha256);
+            assert.equal(durable.payloadSha256, submissionPreparedEntry.payloadSha256);
+            assert.equal(durable.revision, submissionPreparedEntry.revision);
+            // Independent wire expectation from the pre-attempt retained payload;
+            // do not use the production submission builder as this oracle.
+            const payload = submissionPreparedEntry.payload;
+            assert.equal(
+              options.body,
+              JSON.stringify({
+                jsonrpc: '2.0',
+                method: 'ppoi_submit_transact_proof',
+                params: {
+                  chainType: '0',
+                  chainID: '11155111',
+                  txidVersion: 'V2_PoseidonMerkle',
+                  listKey: payload.listKey,
+                  transactProofData: {
+                    snarkProof: payload.proof,
+                    poiMerkleroots: payload.poiMerkleroots,
+                    txidMerkleroot: payload.txidMerkleroot,
+                    txidMerklerootIndex: payload.txidMerklerootIndex,
+                    blindedCommitmentsOut: payload.blindedCommitmentsOut,
+                    railgunTxidIfHasUnshield: payload.railgunTxidIfHasUnshield,
+                  },
+                },
+                id: durable.attempt.attemptedAt,
+              })
+            );
+          } else {
+            // The service calls overlap; fixture-only store inspections must
+            // serialize because genuine store reads intentionally exclude each other.
+            submissionRootReads++;
+            submissionRootReadPeak = Math.max(submissionRootReadPeak, submissionRootReads);
+            const read = submissionRootReadChain.then(() =>
+              intentStore.get(submissionPreparedEntry.capsuleDigest)
+            );
+            submissionRootReadChain = read;
+            try {
+              assert.deepEqual(await read, submissionPreparedEntry);
+              assert.equal(submissionPreparedEntry.state, 'prepared');
+            } finally {
+              submissionRootReads--;
+            }
+            assert.equal(typeof body.id, 'string');
+            const list = body.method === 'ppoi_validate_poi_merkleroots';
+            assert.equal(
+              body.method,
+              list ? 'ppoi_validate_poi_merkleroots' : 'ppoi_validate_txid_merkleroot'
+            );
+            submissionWire[list ? 'list' : 'txid']++;
+            assert.equal(submissionWire[list ? 'list' : 'txid'], 1);
+            assert.deepEqual(body.params, {
+              chainType: '0',
+              chainID: '11155111',
+              txidVersion: 'V2_PoseidonMerkle',
+              ...(list
+                ? {
+                    listKey: REQUIRED_LIST,
+                    poiMerkleroots: [submissionPreparedEntry.payload.poiMerkleroots[0]],
+                  }
+                : {
+                    tree: 0,
+                    index: submissionPreparedEntry.payload.txidMerklerootIndex,
+                    merkleroot: submissionPreparedEntry.payload.txidMerkleroot,
+                  }),
+            });
+          }
+          return {
+            status: 200,
+            body: Buffer.from(
+              JSON.stringify({ jsonrpc: '2.0', id: body.id, result: isPost ? null : true })
+            ),
+          };
+        } catch (error) {
+          submissionWire.unexpected++;
+          const match = error?.stack?.match(/qualify-railgun-own-poi-membership\.js:(\d+):\d+/);
+          console.error(
+            JSON.stringify({ stage: 'submission-fixture', line: match ? Number(match[1]) : null })
+          );
+          throw error;
+        }
+      },
+    };
+    clients.add(client);
+    return client;
+  };
   // Route at the transport boundary. RPC clients and their destination/budget
   // registries stay genuine; all wire responses are local synthetic fixtures.
   transport.createWalletTorTransport = () => {
-    const checking = checksActive;
+    const checking = checksActive,
+      submitting = submissionActive;
     let poiTransport,
-      closed = false;
+      closed = false,
+      resolveClosed;
     return {
+      closed: new Promise((resolve) => (resolveClosed = resolve)),
       release() {},
       close() {
         closed = true;
         poiTransport?.close();
+        Promise.resolve(poiTransport?.closed).then(resolveClosed);
       },
       async request(handle, url, options) {
         assert.equal(closed, false);
@@ -743,7 +922,9 @@ async function main() {
             body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: wire.id, result })),
           };
         }
-        poiTransport ||= createFixturePoiTransport(checking);
+        poiTransport ||= submitting
+          ? createFixtureSubmissionTransport()
+          : createFixturePoiTransport(checking);
         return poiTransport.request(handle, url, options);
       },
     };
@@ -1215,7 +1396,9 @@ async function main() {
         assert.equal(outputRecoveryJobs[name], outputRecoveryJobs[name + 'Exit']);
       assert.equal(
         outputRecoveryJobs.viewing,
-        kind === 'transfer' ? coldValidationRuns.length + 1 : 0
+        kind === 'transfer'
+          ? coldValidationRuns.length + (submissionActive ? submissionValidationCount : 1)
+          : 0
       );
       assert.ok(outputRecoveryReplies.every((bytes) => bytes.every((v) => v === 0)));
       coldValidationVerifierJobs.inputChecks++;
@@ -3640,6 +3823,330 @@ async function main() {
       } else await exerciseOutputRecovery('healthy');
       assert.equal(outputRecoveryRuns.length, coldValidationMode ? 0 : kind === 'transfer' ? 2 : 1);
     }
+    if (submissionMode) {
+      const {
+        prepareRailgunPoiDisclosurePlan,
+        submitRailgunRetainedPoi,
+      } = require('../src/main/wallet/railgun-poi-disclosure-plan');
+      const { claimRailgunAccountPhase } = require('../src/main/wallet/railgun-account-phase');
+      const delta = (a, b) =>
+        Object.fromEntries(Object.keys(a).map((key) => [key, a[key] - b[key]]));
+      const preparedBaseline = copy(retainedIntent);
+      submissionPreparedEntry = preparedBaseline;
+      const beforeJournal = await journal.readSnapshot();
+      const invoke = async (mode) => {
+        phase = 'poi-submission-' + mode;
+        const beforeActivity = intentActivity();
+        const beforeMaintenance = copy(sourceMaintenance);
+        const beforeJobs = copy(outputRecoveryJobs);
+        const beforeVerifier = copy(coldValidationVerifierJobs);
+        const beforeWire = copy(submissionWire);
+        const preparedPlan = await prepareRailgunPoiDisclosurePlan({
+          identity,
+          enrollment,
+          coordinator: publicAccount.coordinator,
+          capsuleDigest: preparedBaseline.capsuleDigest,
+          signal: operationsController.signal,
+        });
+        assert.equal(preparedPlan.status, 'prepared');
+        planResults.push(preparedPlan);
+        assert.deepEqual(intentActivity(), beforeActivity);
+        const reviews = [];
+        submissionReviewStage = 0;
+        submissionPostDrain =
+          mode === 'accept' ? { entered: deferred(), release: deferred() } : undefined;
+        outputPublicPlanAdmitted = false;
+        outputRecoveryFault = 'healthy';
+        submissionActive = true;
+        outputRecoveryActive = true;
+        coldValidationActive = true;
+        const options = {
+          identity,
+          enrollment,
+          coordinator: publicAccount.coordinator,
+          archive,
+          proverArchive,
+          artifactDirectory,
+          plan: preparedPlan.plan,
+          signal: operationsController.signal,
+          async review(request, { signal }) {
+            assert.ok(signal instanceof AbortSignal && !signal.aborted);
+            assert.ok(Object.isFrozen(request));
+            reviews.push(request.purpose);
+            assert.equal(
+              request.purpose,
+              reviews.length === 1 ? 'validate-retained-poi' : 'submit-retained-poi'
+            );
+            const submitting = reviews.length === 2;
+            assert.ok(Buffer.byteLength(JSON.stringify(request)) <= 8192);
+            for (const flag of ['consentGranted', 'transportAuthorized', 'requestLimitsEnforced'])
+              assert.equal(request[flag], false);
+            assert.deepEqual(
+              request.destinations,
+              submitting
+                ? [{ role: 'poi-service', origin: 'https://ppoi.fdi.network' }]
+                : [
+                    { role: 'source-rpc', origin: new URL(rpcUrl).origin },
+                    { role: 'receipt-rpc', origin: new URL(rpcUrl).origin },
+                    { role: 'poi-service', origin: 'https://ppoi.fdi.network' },
+                  ]
+            );
+            assert.deepEqual(
+              request.requestInventory,
+              submitting
+                ? [
+                    { method: 'ppoi_validate_poi_merkleroots', maxRequests: 1 },
+                    { method: 'ppoi_validate_txid_merkleroot', maxRequests: 1 },
+                    { method: 'ppoi_submit_transact_proof', maxRequests: 1 },
+                  ]
+                : [
+                    { method: 'eth_getTransactionByHash', maxRequests: 1 },
+                    { method: 'eth_getTransactionReceipt', maxRequests: 1 },
+                    { method: 'eth_blockNumber', maxRequests: 2 },
+                    { method: 'eth_getBlockByNumber', maxRequests: 544 },
+                    { method: 'eth_getLogs', maxRequests: 1 },
+                    { method: 'eth_chainId', maxRequests: 2 },
+                    { method: 'ppoi_validated_txid', maxRequests: 6 },
+                    { method: 'ppoi_validate_txid_merkleroot', maxRequests: 6 },
+                  ]
+            );
+            // A review must never hold the account recovery/TXID phase.
+            const lease = claimRailgunAccountPhase(enrollment, 'recovery');
+            lease.release();
+            assert.deepEqual(
+              await intentStore.get(preparedBaseline.capsuleDigest),
+              preparedBaseline
+            );
+            if (reviews.length === 1) {
+              assert.deepEqual(intentActivity(), beforeActivity);
+              if (mode === 'deny-validation') return false;
+              submissionReviewStage = 1;
+              submissionValidationCount++;
+              return true;
+            }
+            assert.equal(reviews.length, 2);
+            assert.deepEqual(submissionWire, beforeWire);
+            for (const name of [
+              'ownSelector',
+              'ownTxid',
+              'mirrorInspect',
+              'mirrorWitness',
+              'mirrorHistorical',
+              'publicPlan',
+              'viewing',
+            ])
+              assert.equal(outputRecoveryJobs[name], outputRecoveryJobs[name + 'Exit']);
+            assert.equal(coldValidationVerifierJobs.started, coldValidationVerifierJobs.exited);
+            if (mode === 'deny-submission') return false;
+            submissionReviewStage = 2;
+            return true;
+          },
+        };
+        const work = submitRailgunRetainedPoi(options);
+        pendingOperations.add(work);
+        let senderSettled = false;
+        work.then(
+          () => {
+            senderSettled = true;
+          },
+          () => {
+            senderSettled = true;
+          }
+        );
+        let result;
+        try {
+          if (submissionPostDrain) {
+            await Promise.race([
+              submissionPostDrain.entered.promise,
+              work.then((early) => {
+                if (submissionPostDrain.reached) return;
+                console.error(
+                  JSON.stringify({
+                    stage: /^[a-z:-]{1,100}$/.test(early.stage) ? early.stage : 'unavailable',
+                    status: early.status === 'refused' ? 'refused' : 'recovery-required',
+                    wire: submissionWire,
+                  })
+                );
+                throw Error('Sender settled before POST drain');
+              }),
+            ]);
+            // Give unrelated post-check continuations a turn before checking
+            // the deliberately held close barrier, not merely its entry tick.
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            assert.equal(senderSettled, false);
+            let unexpectedLease;
+            try {
+              assert.throws(() => {
+                unexpectedLease = claimRailgunAccountPhase(enrollment, 'recovery');
+              });
+            } finally {
+              unexpectedLease?.release();
+            }
+            const overlap = await submitRailgunRetainedPoi(options);
+            assert.equal(overlap.status, 'refused');
+            assert.equal(overlap.stage, 'busy');
+            assert.equal(reviews.length, 2);
+            let planClosed = false;
+            preparedPlan.closed.then(() => {
+              planClosed = true;
+            });
+            await Promise.resolve();
+            assert.equal(planClosed, false);
+            submissionPostDrain.release.resolve();
+          }
+          result = await work;
+        } finally {
+          submissionPostDrain?.release.resolve();
+          await work.catch(() => {});
+          pendingOperations.delete(work);
+          submissionActive = false;
+          outputRecoveryActive = false;
+          coldValidationActive = false;
+        }
+        await preparedPlan.closed;
+        assert.equal(
+          result.stage,
+          mode === 'accept'
+            ? 'response'
+            : mode === 'deny-validation'
+              ? 'review-validation'
+              : 'review-submit'
+        );
+        assert.equal(Object.hasOwn(result, 'sourceOutcome'), false);
+        const validated = mode !== 'deny-validation';
+        const afterActivity = intentActivity();
+        const chainCalls = delta(afterActivity.rpcMethods, beforeActivity.rpcMethods);
+        const serviceCalls = delta(afterActivity.publicMethods, beforeActivity.publicMethods);
+        const maintenance = delta(sourceMaintenance, beforeMaintenance);
+        const jobs = delta(outputRecoveryJobs, beforeJobs);
+        const verifier = delta(coldValidationVerifierJobs, beforeVerifier);
+        const wire = delta(submissionWire, beforeWire);
+        assert.deepEqual(maintenance, { stages: 0, retains: 0, beforeAcquire: 0, applies: 0 });
+        assert.deepEqual(serviceCalls, {
+          latest: validated ? 6 : 0,
+          validate: validated ? 6 : 0,
+          page: 0,
+        });
+        assert.deepEqual(chainCalls, {
+          eth_chainId: Number(validated),
+          eth_getTransactionReceipt: Number(validated),
+          eth_getBlockByNumber: validated ? 34 : 0,
+          eth_blockNumber: validated ? 2 : 0,
+          eth_getTransactionByHash: Number(validated),
+          eth_getLogs: Number(validated),
+        });
+        assert.equal(jobs.publicPlan, Number(validated));
+        assert.equal(jobs.publicPlanExit, Number(validated));
+        assert.equal(jobs.unexpected, 0);
+        assert.equal(jobs.viewing, Number(validated && kind === 'transfer'));
+        assert.equal(jobs.viewingExit, jobs.viewing);
+        assert.equal(verifier.started, Number(validated));
+        assert.equal(verifier.exited, Number(validated));
+        for (const key of Object.keys(beforeActivity))
+          if (!['publicMethods', 'rpcMethods'].includes(key))
+            assert.deepEqual(afterActivity[key], beforeActivity[key]);
+        assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+        if (mode === 'accept') {
+          assert.equal(result.status, 'recovery-required');
+          assert.equal(result.response.classification, 'rpc-result');
+          assert.equal(result.response.matchingEnvelope, true);
+          for (const flag of [
+            'transportAuthenticated',
+            'acceptanceVerified',
+            'disclosureEnabled',
+            'spendingEnabled',
+          ])
+            assert.equal(result.response[flag], false);
+          assert.deepEqual(wire, {
+            creates: 3,
+            closes: 3,
+            list: 1,
+            txid: 1,
+            post: 1,
+            unexpected: 0,
+          });
+          assert.equal(submissionIsolation.size, 3);
+          assert.equal(submissionRootReadPeak, 2);
+          assert.equal(submissionRootReads, 0);
+          const attempted = await intentStore.get(preparedBaseline.capsuleDigest);
+          assert.equal(attempted.state, 'attempted');
+          assert.equal((await intentStore.inspect()).reservedTransitions, 2);
+          const reused = await submitRailgunRetainedPoi(options);
+          assert.equal(reused.status, 'refused');
+          assert.equal(reviews.length, 2);
+          assert.deepEqual(intentActivity(), afterActivity);
+          assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), attempted);
+        } else {
+          assert.equal(result.status, 'refused');
+          assert.deepEqual(wire, {
+            creates: 0,
+            closes: 0,
+            list: 0,
+            txid: 0,
+            post: 0,
+            unexpected: 0,
+          });
+          assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), preparedBaseline);
+          assert.equal(reviews.length, validated ? 2 : 1);
+        }
+        submissionRuns.push({
+          mode,
+          status: result.status,
+          stage: result.stage,
+          ...(result.response ? { responseClassification: result.response.classification } : {}),
+          reviewPurposes: reviews,
+          sourceMaintenance: maintenance,
+          chainCalls,
+          serviceCalls,
+          publicPlannerCalls: jobs.publicPlan,
+          viewingKeyReleases: jobs.viewing,
+          keylessVerifierCalls: verifier.started,
+          wire,
+          exactDurableBodyBeforePost: mode === 'accept',
+          heldPostDrainRetainsPlanExclusion: mode === 'accept',
+          separateRootAndPostIsolationCredentials: mode === 'accept',
+          overlappingRootRequests: mode === 'accept',
+          fixtureRootStoreReadsSerialized: mode === 'accept',
+          journalUnchanged: true,
+          syntheticReviewAdapter: true,
+          humanConsentQualified: false,
+          serviceAcceptanceQualified: false,
+          safeRetryEstablished: false,
+          liveQueries: 0,
+        });
+      };
+      await invoke('deny-validation');
+      await invoke('deny-submission');
+      await invoke('accept');
+      const attempted = await intentStore.get(preparedBaseline.capsuleDigest);
+      intentStore.close();
+      await intentStore.closed;
+      await publicAccount.close();
+      publicAccount = undefined;
+      enrollment.close();
+      enrollment = await openRailgunAccountEnrollment({ identity });
+      journal = openJournal();
+      publicAccount = await openRailgunAccountPublic({ enrollment, archive });
+      intentStore = await enrollment.openPoiIntents();
+      assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), attempted);
+      const beforeColdActivity = intentActivity();
+      const cold = await prepareRailgunPoiDisclosurePlan({
+        identity,
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        capsuleDigest: preparedBaseline.capsuleDigest,
+        signal: operationsController.signal,
+      });
+      assert.equal(cold.status, 'refused');
+      assert.deepEqual(intentActivity(), beforeColdActivity);
+      assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), attempted);
+      submissionRuns.push({
+        mode: 'cold-attempted-reuse',
+        status: 'refused',
+        durableAttemptRetained: true,
+        additionalQueries: 0,
+      });
+    }
     phase = 'final-journal-drift';
     mode = 'valid';
     onRoot = async () => {
@@ -3720,6 +4227,9 @@ async function main() {
       outputRecoveryMode,
       coldValidationMode,
       retainedHistoryMode,
+      submissionMode,
+      submissionRuns,
+      submissionWire,
       planMode,
       planRuns,
       planWork,
@@ -3785,7 +4295,18 @@ async function main() {
       unexpectedRpc,
       liveQueries: 0,
       submissions: 0,
+      syntheticPosts: submissionWire.post,
+      liveSubmissions: 0,
       overallAuthorityGranted: false,
+      ...(submissionMode
+        ? {
+            syntheticSubmissionQualified: true,
+            humanConsentQualified: false,
+            liveSubmissionQualified: false,
+            serviceAcceptanceQualified: false,
+            physicalSocketDrainQualified: false,
+          }
+        : {}),
     };
     assert.doesNotMatch(
       JSON.stringify(report),
@@ -3805,6 +4326,7 @@ async function main() {
   } finally {
     // Stop work, drain actual resources, then unconditionally restore fixture seams.
     operationsController.abort();
+    submissionPostDrain?.release.resolve();
     for (const value of planResults) value.close();
     intentStore?.close();
     for (const release of checksReleases) release.resolve();

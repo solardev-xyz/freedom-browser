@@ -479,10 +479,11 @@ test.each([false, true])(
     idle();
   }
 );
-test('exports only preparation and display revalidation, no issuer or sender', () => {
+test('exports preparation, display revalidation and fixed unwired sender without a generic issuer', () => {
   expect(Object.keys(require('./railgun-poi-disclosure-plan')).sort()).toEqual([
     'prepareRailgunPoiDisclosurePlan',
     'revalidateRailgunPoiDisclosurePlan',
+    'submitRailgunRetainedPoi',
   ]);
 });
 test.each([null, undefined, [], false, 1, 'PRIVATE'])(

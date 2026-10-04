@@ -1,25 +1,32 @@
-/** Genuine main-owned review inventory, not consent or a transport permit.
- * Registered coordinator policy is checked, not a pinned engine archive. No
- * selector derivation, utility, service query or logical intent mutation.
+/** Genuine main-owned review inventory and a fixed unwired submission controller.
+ * Inventory exports check registered policy without utility/network work or
+ * logical intent mutation. Submission separately pins runtime/validation and
+ * requires its trusted-main review dependency; no human-consent claim is made.
  * Existing encrypted-store opens retain normal lease/floor/key housekeeping.
  */
 const assert = require('assert/strict');
-const { createHash } = require('crypto');
-const { getPrivacyContext } = require('../networks/privacy-context');
+const { createHash, randomUUID } = require('crypto');
+const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { assertRailgunIdentity } = require('./railgun-identity');
 const {
   assertRailgunAccountPublic,
   getRailgunAccountPublicIdentity,
+  getRailgunAccountPublicDestination,
+  assertRailgunAccountPublicDestination,
 } = require('./railgun-account-public');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
-const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
+const {
+  assertRailgunOwnPoiCapture,
+  assertRailgunOwnPoiStableCapture,
+} = require('./railgun-own-poi-binding');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
 const plans = new WeakMap(),
   live = new Map(),
   operations = new Map();
 const TTL_MS = 120000;
+const POI_URL = 'https://ppoi.fdi.network';
 const freeze = (value) => {
   if (value && typeof value === 'object') {
     Object.values(value).forEach(freeze);
@@ -105,7 +112,10 @@ function current(state, deadline) {
   assert.ok(!state.revoked && !state.controller.signal.aborted);
   const now = performance.now();
   assert.ok(
-    Number.isFinite(now) && now >= state.lastNow && now < state.expiresAt && now < deadline
+    Number.isFinite(now) &&
+      now >= state.lastNow &&
+      (state.promoted || now < state.expiresAt) &&
+      now < deadline
   );
   state.lastNow = now;
   const b = state.bindings;
@@ -144,7 +154,7 @@ function summaryFor(state) {
     deployment: 'sepolia',
     chainId: 11155111,
     accountIndex: state.bindings.descriptor.accountIndex,
-    endpoint: 'https://ppoi.fdi.network',
+    endpoint: POI_URL,
     txidVersion: 'V2_PoseidonMerkle',
     listKey: REQUIRED_LIST,
     operation,
@@ -191,7 +201,9 @@ async function inspect(state, deadline, progress) {
   };
   const remaining = () => {
     check();
-    const left = Math.floor(Math.min(deadline, state.expiresAt) - performance.now());
+    const left = Math.floor(
+      (state.promoted ? deadline : Math.min(deadline, state.expiresAt)) - performance.now()
+    );
     assert.ok(left > 0);
     return left;
   };
@@ -378,6 +390,7 @@ async function revalidateRailgunPoiDisclosurePlan(input) {
     state = plans.get(plan);
     assert.ok(state && !state.revoked);
     if (operations.has(state.directory)) return refused('busy');
+    assert.ok(!state.claimed);
     const args = options(input, ['plan', 'identity', 'enrollment', 'coordinator', 'signal']);
     const b = state.bindings;
     assert.equal(args.identity, b.identity);
@@ -412,4 +425,490 @@ async function revalidateRailgunPoiDisclosurePlan(input) {
     }
   }
 }
-module.exports = { prepareRailgunPoiDisclosurePlan, revalidateRailgunPoiDisclosurePlan };
+// Fixed unwired main controller. The review adapter is a trusted integration
+// dependency, not evidence of a human gesture. No renderer/IPC route calls it.
+// The adapter must settle on signal abort. Its promise is always awaited: an
+// uncooperative adapter retains exclusion and cleanup indefinitely, with no
+// hard drain-latency guarantee.
+async function submitRailgunRetainedPoi(input) {
+  const started = performance.now();
+  let state,
+    args,
+    admitted = false,
+    protectedBusy = false,
+    timer,
+    stage = 'context',
+    possiblyCommitted = false,
+    response,
+    sourceOutcome,
+    prepared,
+    sourceDestination,
+    destinationDetails,
+    postScope,
+    postHandle,
+    list,
+    txid,
+    transport,
+    postUsed = false;
+  const closeOwned = (value) => {
+    try {
+      value?.close?.();
+    } catch {
+      // Drain promises remain mandatory even if immediate destruction throws.
+    }
+  };
+  try {
+    const plan = input && Object.getOwnPropertyDescriptor(input, 'plan')?.value;
+    state = plans.get(plan);
+    assert.ok(state && !state.revoked);
+    if (operations.has(state.directory)) {
+      protectedBusy = true;
+      return refused('busy');
+    }
+    args = options(input, [
+      'identity',
+      'enrollment',
+      'coordinator',
+      'archive',
+      'proverArchive',
+      'artifactDirectory',
+      'plan',
+      'review',
+      'signal',
+      ...(Object.hasOwn(input, 'timeoutMs') ? ['timeoutMs'] : []),
+    ]);
+    const { identity, enrollment, coordinator, signal, review, timeoutMs = 840000 } = args;
+    assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 790000 && timeoutMs <= 840000);
+    assert.ok(signal instanceof AbortSignal && !signal.aborted && typeof review === 'function');
+    assert.equal(identity, state.bindings.identity);
+    assert.equal(enrollment, state.bindings.enrollment);
+    assert.equal(coordinator, state.bindings.coordinator);
+    assert.ok(!state.claimed && live.get(state.directory) === plan);
+    const deadline = started + timeoutMs;
+    current(state, deadline);
+    assert.ok(state.expiresAt - performance.now() >= 60000);
+    // Synchronous claim before inspection/review. A denied or failed invocation
+    // cannot be restarted with the same plan, including after a late callback.
+    state.claimed = true;
+    state.pending++;
+    operations.set(state.directory, state.owner);
+    admitted = true;
+    watch(state, signal);
+    timer = setTimeout(() => revoke(plan), Math.max(0, deadline - performance.now()));
+    timer.unref?.();
+    const senderCurrent = (margin = 0) => {
+      assert.ok(Number.isSafeInteger(margin) && margin >= 0);
+      assert.equal(operations.get(state.directory), state.owner);
+      current(state, deadline - margin);
+      if (sourceDestination)
+        assertRailgunAccountPublicDestination(
+          coordinator,
+          enrollment,
+          sourceDestination,
+          state.bindings.policy
+        );
+    };
+    const remaining = (maximum, reserve = 0) => {
+      senderCurrent(reserve);
+      const end = state.promoted ? deadline : Math.min(deadline, state.expiresAt);
+      const left = Math.min(maximum, Math.floor(end - performance.now()) - reserve);
+      assert.ok(left > 0);
+      return left;
+    };
+    const stageRun = async (name, maximum, reserve, use) => {
+      stage = name;
+      const budget = remaining(maximum, reserve),
+        end = performance.now() + budget;
+      const check = (margin = 0) => {
+        senderCurrent(reserve + margin);
+        assert.ok(performance.now() + margin < end);
+      };
+      const timeout = setTimeout(() => revoke(plan), budget);
+      timeout.unref?.();
+      try {
+        check();
+        const value = await use(check, end);
+        check();
+        return value;
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+    const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
+    const { verifyRailgunProverRuntime } = require('./railgun-prover-runtime');
+    const { getRailgunPublicPolicy } = require('./railgun-public-policy');
+    const archive = verifyRailgunEngineRuntime(args.archive);
+    const proverArchive = verifyRailgunProverRuntime(args.proverArchive);
+    assert.equal(getRailgunPublicPolicy(archive), state.bindings.policy);
+    assert.ok(
+      typeof args.artifactDirectory === 'string' &&
+        require('path').isAbsolute(args.artifactDirectory) &&
+        Buffer.byteLength(args.artifactDirectory) <= 4096
+    );
+    await stageRun('prepare', 15000, 0, async (_check, end) => {
+      await inspect(state, end, { stage: 'context' });
+    });
+    stage = 'destinations';
+    sourceDestination = getRailgunAccountPublicDestination(
+      coordinator,
+      enrollment,
+      state.bindings.policy
+    );
+    const {
+      prepareRailgunOwnReceiptReader,
+      assertPreparedRailgunOwnReceipt,
+    } = require('./railgun-own-receipt');
+    prepared = prepareRailgunOwnReceiptReader({
+      enrollment,
+      capture: state.capture,
+      signal: state.controller.signal,
+    });
+    assert.equal(prepared.status, 'prepared');
+    const { getPrivateRpcDestinationDetails } = require('../networks/private-rpc');
+    destinationDetails = Object.freeze({
+      source: getPrivateRpcDestinationDetails(sourceDestination),
+      receipt: getPrivateRpcDestinationDetails(prepared.destination),
+    });
+    senderCurrent();
+    const requestFor = (purpose) => {
+      const submitting = purpose === 'submit-retained-poi';
+      const base = state.summary;
+      const request = freeze({
+        version: 1,
+        purpose,
+        protocol: base.protocol,
+        deployment: base.deployment,
+        chainId: base.chainId,
+        accountIndex: base.accountIndex,
+        listKey: base.listKey,
+        txidVersion: base.txidVersion,
+        operation: base.operation,
+        outputCount: base.outputCount,
+        unshieldIdCategory: base.unshieldIdCategory,
+        destinations: submitting
+          ? [{ role: 'poi-service', origin: new URL(POI_URL).origin }]
+          : [
+              { role: 'source-rpc', origin: new URL(destinationDetails.source.url).origin },
+              { role: 'receipt-rpc', origin: new URL(destinationDetails.receipt.url).origin },
+              { role: 'poi-service', origin: new URL(POI_URL).origin },
+            ],
+        requestInventory: submitting
+          ? [
+              { method: 'ppoi_validate_poi_merkleroots', maxRequests: 1 },
+              { method: 'ppoi_validate_txid_merkleroot', maxRequests: 1 },
+              { method: 'ppoi_submit_transact_proof', maxRequests: 1 },
+            ]
+          : [
+              { method: 'eth_getTransactionByHash', maxRequests: 1 },
+              { method: 'eth_getTransactionReceipt', maxRequests: 1 },
+              { method: 'eth_blockNumber', maxRequests: 2 },
+              { method: 'eth_getBlockByNumber', maxRequests: 544 },
+              { method: 'eth_getLogs', maxRequests: 1 },
+              { method: 'eth_chainId', maxRequests: 2 },
+              { method: 'ppoi_validated_txid', maxRequests: 6 },
+              { method: 'ppoi_validate_txid_merkleroot', maxRequests: 6 },
+            ],
+        disclosureCategories: submitting
+          ? base.disclosureCategories
+          : [
+              'journal-known-transaction',
+              'retained-public-proxy-range',
+              'current-txid-checkpoint',
+              'rpc-destination',
+              'network-session-linkability',
+              'transaction-linkability',
+              'query-timing',
+              ...(base.operation === 'transfer' ? ['local-viewing-key-output-check'] : []),
+            ],
+        uncertaintyCategories: base.uncertaintyCategories,
+        requestIdAllocation: base.requestIdAllocation,
+        consentGranted: false,
+        transportAuthorized: false,
+        requestLimitsEnforced: false,
+      });
+      assert.ok(Buffer.byteLength(JSON.stringify(request)) <= 8192);
+      return request;
+    };
+    await stageRun('review-validation', 30000, 0, async () => {
+      assert.equal(
+        await review(requestFor('validate-retained-poi'), { signal: state.controller.signal }),
+        true
+      );
+    });
+    // This is the ONLY post-review strict capture. Its actual recovery/post-
+    // attestation must settle inside display expiry before any network admission.
+    await stageRun('post-review', 15000, 0, async (_check, end) => {
+      await inspect(state, end, { stage: 'context' });
+      assertPreparedRailgunOwnReceipt(prepared.reader, {
+        enrollment,
+        capture: state.capture,
+        destination: prepared.destination,
+      });
+    });
+    senderCurrent();
+    assert.ok(performance.now() < state.expiresAt && !state.promoted);
+    // Reserve the complete 600s validation and 130s remaining stages before any
+    // network work; the original display lifetime must still be current here.
+    assert.ok(deadline - performance.now() >= 730000);
+    state.promoted = true;
+    clearTimeout(state.ttlTimer);
+    // The claimed plan never becomes reusable. Only this invocation advances
+    // under its original total deadline; reader120s freshness is not renewed.
+    const { validateRailgunRetainedPoiForSubmission } = require('./railgun-poi-cold-validation');
+    await stageRun('validation', 600000, 130000, async (_check, end) => {
+      const validated = await validateRailgunRetainedPoiForSubmission(
+        {
+          identity,
+          enrollment,
+          coordinator,
+          archive,
+          proverArchive,
+          artifactDirectory: args.artifactDirectory,
+          capsuleDigest: state.capsuleDigest,
+          signal: state.controller.signal,
+          timeoutMs: Math.max(1, Math.floor(end - performance.now())),
+        },
+        Object.freeze({
+          entry: state.entry,
+          capture: state.capture,
+          sourceDestination,
+          reader: prepared.reader,
+          destination: prepared.destination,
+        })
+      );
+      if (validated.status !== 'validated') {
+        sourceOutcome = validated.sourceOutcome;
+        stage = 'validation:' + validated.stage;
+        throw Error('refused');
+      }
+      senderCurrent();
+      assert.equal(validated.capsuleDigest, state.capsuleDigest);
+      assert.equal(validated.revision, state.entry.revision);
+      assert.equal(validated.payloadSha256, state.entry.payloadSha256);
+      for (const key of [
+        'outputMatched',
+        'proofVerified',
+        'independentlyVerified',
+        'verifierExitObserved',
+        'historicalRootMatchesLocalMirror',
+        'ownTxidIncludedBySavedIndex',
+        'localMirrorCheckpointMatched',
+      ])
+        assert.equal(validated[key], true);
+      for (const key of [
+        'originalRootsAccepted',
+        'rootAccepted',
+        'disclosureEnabled',
+        'spendingEnabled',
+      ])
+        assert.equal(validated[key], false);
+      assert.deepEqual(await state.store.get(state.capsuleDigest), state.entry);
+    });
+    await stageRun('review-submit', 60000, 70000, async () => {
+      assert.equal(
+        await review(requestFor('submit-retained-poi'), { signal: state.controller.signal }),
+        true
+      );
+    });
+    await stageRun('pre-root', 15000, 55000, async (_check, end) => {
+      await inspect(state, end, { stage: 'context' });
+    });
+    senderCurrent(55000);
+    const parent = getPrivacyContext(state.bindings.handle);
+    const operation =
+      'poi:' +
+      createHash('sha256')
+        .update(
+          JSON.stringify([
+            'freedom:railgun:retained-poi-submit-v1',
+            randomUUID(),
+            state.entry.payloadSha256,
+          ])
+        )
+        .digest('hex');
+    postScope = createPrivacyScope({
+      profileId: parent.profileId,
+      signal: state.controller.signal,
+      isCurrent: () => {
+        try {
+          senderCurrent();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    });
+    postHandle = postScope.getContext({ ...parent.subject, role: 'poi', operation });
+    const {
+      createRailgunPoiRootSource,
+      createRailgunPoiTxidRootSource,
+    } = require('./railgun-poi-root');
+    const payload = state.entry.payload;
+    list = createRailgunPoiRootSource({ handle: postHandle, root: payload.poiMerkleroots[0] });
+    txid = createRailgunPoiTxidRootSource({
+      handle: postHandle,
+      root: payload.txidMerkleroot,
+      index: payload.txidMerklerootIndex,
+    });
+    const acquired = await stageRun('roots', 15000, 40000, async (_check, end) => {
+      let failed = false;
+      const acquire = async (source) => {
+        try {
+          return await source.acquire({
+            timeoutMs: Math.max(1, Math.floor(end - performance.now())),
+          });
+        } catch {
+          failed = true;
+          list.close();
+          txid.close();
+          throw Error('refused');
+        }
+      };
+      const all = await Promise.allSettled([acquire(list), acquire(txid)]);
+      assert.ok(!failed && all.every((value) => value.status === 'fulfilled'));
+      return all.map((value) => value.value);
+    });
+    const assertRoots = (margin) => {
+      senderCurrent(margin);
+      assert.equal(list.assertResult(acquired[0].receipt, margin), acquired[0].observation);
+      assert.equal(txid.assertResult(acquired[1].receipt, margin), acquired[1].observation);
+    };
+    assertRoots(40000);
+    let begun;
+    await stageRun('attempt', 15000, 25000, async () => {
+      assertRoots(40000);
+      // Until a genuine precommit refusal returns, a thrown/lost result may
+      // follow persistence. No transport slot exists on that uncertain path.
+      possiblyCommitted = true;
+      begun = await state.store.beginAttempt({
+        capsuleDigest: state.capsuleDigest,
+        expectedRevision: state.entry.revision,
+        expectedPayloadSha256: state.entry.payloadSha256,
+        signal: state.controller.signal,
+      });
+      if (begun.status === 'refused') possiblyCommitted = false;
+      assert.equal(begun.status, 'attempted');
+      assertRoots(25000);
+    });
+    const {
+      normalizeRailgunPoiSubmission,
+      prepareRailgunPoiSubmission,
+      inspectRailgunPoiResponse,
+    } = require('./railgun-poi-submit-data');
+    let durable;
+    const readAttempt = async () => {
+      senderCurrent();
+      const value = await state.store.get(state.capsuleDigest);
+      senderCurrent();
+      const submission = prepareRailgunPoiSubmission({ payload, requestId: begun.attemptedAt });
+      assert.deepEqual(value, {
+        ...state.entry,
+        state: 'attempted',
+        attempt: { attemptedAt: begun.attemptedAt, submission },
+      });
+      assert.deepEqual(normalizeRailgunPoiSubmission(value.attempt.submission), submission);
+      assert.equal(begun.capsuleDigest, state.capsuleDigest);
+      assert.equal(begun.revision, state.entry.revision);
+      assert.equal(begun.payloadSha256, state.entry.payloadSha256);
+      assert.equal(begun.bodySha256, submission.bodySha256);
+      assert.equal(begun.disclosureEnabled, false);
+      assert.equal(begun.spendingEnabled, false);
+      if (durable) assert.deepEqual(value, durable);
+      else durable = snapshot(value);
+      return submission;
+    };
+    await stageRun('readback', 5000, 20000, async () => {
+      await readAttempt();
+      assertRoots(20000);
+    });
+    await stageRun('final-account', 20000, 0, async (check, end) => {
+      const used = await withRailgunOwnOperationRecovery(
+        {
+          enrollment,
+          selector: state.entry.selector,
+          signal: state.controller.signal,
+          timeoutMs: Math.max(1, Math.floor(end - performance.now())),
+        },
+        async (window) => {
+          const currentWindow = (margin = 0) => {
+            check(margin);
+            window.assertCurrent(margin);
+            assertRoots(margin);
+          };
+          currentWindow(12000);
+          assertRailgunOwnPoiStableCapture(window.capture, state.capture);
+          assertRailgunOwnPoiStableCapture(await window.reattest(), state.capture);
+          currentWindow(12000);
+          const submission = await readAttempt();
+          currentWindow(12000);
+          assert.equal(new URL(submission.endpoint).origin, new URL(POI_URL).origin);
+          const { createWalletTorTransport } = require('../networks/wallet-tor-transport');
+          transport = createWalletTorTransport();
+          currentWindow(12000);
+          assert.ok(!postUsed);
+          postUsed = true;
+          stage = 'post';
+          try {
+            const reply = await transport.request(postHandle, submission.endpoint, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: submission.body,
+              signal: state.controller.signal,
+              timeoutMs: 10000,
+              maxResponseBytes: 2048,
+              requireFramedResponse: true,
+            });
+            response = inspectRailgunPoiResponse({
+              submission,
+              evidence: { kind: 'response', httpStatus: reply.status, body: reply.body },
+            });
+          } catch {
+            response = inspectRailgunPoiResponse({
+              submission,
+              evidence: { kind: 'unavailable', reason: 'unavailable' },
+            });
+          } finally {
+            try {
+              transport.close();
+            } finally {
+              await transport.closed;
+            }
+          }
+          currentWindow();
+          assertRailgunOwnPoiStableCapture(await window.reattest(), state.capture);
+          await readAttempt();
+          currentWindow();
+          return { checked: true };
+        }
+      );
+      assert.equal(used.status, 'used');
+      assert.deepEqual(used.value, { checked: true });
+      assertRoots(0);
+    });
+    stage = 'response';
+  } catch {
+    // All errors are sanitized; uncertainty is never inferred from a service's
+    // error code, and no raw URL, body, ID, root or proof leaves this controller.
+  } finally {
+    clearTimeout(timer);
+    if (state && !protectedBusy) revoke(state.plan);
+    for (const value of [prepared, list, txid, postScope, transport]) closeOwned(value);
+    await Promise.allSettled([prepared?.closed, list?.closed, txid?.closed, transport?.closed]);
+    if (admitted) {
+      if (operations.get(state.directory) === state.owner) operations.delete(state.directory);
+      state.pending--;
+      clean(state);
+    }
+  }
+  return Object.freeze({
+    status: possiblyCommitted ? 'recovery-required' : 'refused',
+    stage,
+    ...(response ? { response } : {}),
+    ...(sourceOutcome ? { sourceOutcome } : {}),
+  });
+}
+module.exports = {
+  prepareRailgunPoiDisclosurePlan,
+  revalidateRailgunPoiDisclosurePlan,
+  submitRailgunRetainedPoi,
+};
