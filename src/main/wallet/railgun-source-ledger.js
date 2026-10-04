@@ -358,6 +358,72 @@ async function createRailgunSourceLedger({
       busy = false;
     }
   }
+  // Metadata presence only. Log contents remain authenticated by visitThrough.
+  // Absence is benign only after a complete, consistent retained metadata walk.
+  async function hasPrefix(sha256) {
+    active();
+    check(!busy && digest(sha256));
+    busy = true;
+    try {
+      const baseline = JSON.stringify(meta);
+      check(JSON.stringify(validateMeta(await get('source:meta'))) === baseline);
+      let previous = initial(),
+        count = 0;
+      for (let index = 0; index < meta.count; index++) {
+        const record = await get(rangeKey(index));
+        check(
+          exact(record, ['index', 'providersSha256', 'range', 'previous', 'sha256']) &&
+            record.index === index &&
+            digest(record.providersSha256) &&
+            record.previous === previous.sha256 &&
+            digest(record.sha256)
+        );
+        const range = record.range;
+        check(
+          exact(range, ['from', 'to', 'previousHash', 'logs']) &&
+            integer(range.from) &&
+            exact(range.to, ['number', 'hash']) &&
+            integer(range.to.number) &&
+            range.to.number >= range.from &&
+            hexHash(range.to.hash) &&
+            hexHash(range.previousHash) &&
+            exact(range.logs, ['count', 'sha256']) &&
+            integer(range.logs.count) &&
+            range.logs.count <= 4096 &&
+            digest(range.logs.sha256)
+        );
+        check(range.from === previous.to + 1 && range.previousHash === previous.blockHash);
+        check(record.sha256 === hash(record.previous + '\n' + JSON.stringify(range)));
+        count += range.logs.count;
+        check(count <= meta.logs && range.to.number <= meta.to);
+        previous = { sha256: record.sha256, to: range.to.number, blockHash: range.to.hash };
+        if (record.sha256 === sha256) {
+          if (index === meta.count - 1)
+            check(
+              count === meta.logs &&
+                previous.sha256 === meta.sha256 &&
+                previous.to === meta.to &&
+                previous.blockHash === meta.blockHash
+            );
+          check(JSON.stringify(validateMeta(await get('source:meta'))) === baseline);
+          return true;
+        }
+      }
+      check(
+        count === meta.logs &&
+          previous.sha256 === meta.sha256 &&
+          previous.to === meta.to &&
+          previous.blockHash === meta.blockHash
+      );
+      check(JSON.stringify(validateMeta(await get('source:meta'))) === baseline);
+      return false;
+    } catch {
+      close();
+      throw fail();
+    } finally {
+      busy = false;
+    }
+  }
   async function nextAfter(sha256) {
     active();
     check(!busy && digest(sha256));
@@ -461,6 +527,7 @@ async function createRailgunSourceLedger({
     stage,
     visit,
     visitThrough,
+    hasPrefix,
     retain,
     nextAfter,
     close,

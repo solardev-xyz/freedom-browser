@@ -3,11 +3,14 @@
  * Evidence is identity-bound, short-lived and never issued from engine cursors.
  */
 const { createHash } = require('crypto');
+const { isProxy } = require('util').types;
 const { getPrivacyContext } = require('../networks/privacy-context');
 const {
   createPrivateRpc,
   getPrivateRpcDestination,
   assertPrivateRpcDestination,
+  createPrivateRpcReadBudget,
+  getPrivateRpcReadBudgetOutcome,
 } = require('../networks/private-rpc');
 const sources = new WeakMap();
 const { plan: normalizePlan } = require('./railgun-scan-journal');
@@ -121,6 +124,38 @@ function normalizeLogs(values, from, to) {
   check(blocks.size <= 512);
   return { logs: freeze(result), blocks };
 }
+function exactOptions(value, keys) {
+  return (
+    value &&
+    !isProxy(value) &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    Reflect.ownKeys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(Object.getOwnPropertyDescriptor(value, key) || {}, 'value'))
+  );
+}
+function canonicalNumbers(range) {
+  return [
+    ...new Set([
+      range.anchor.number,
+      range.from,
+      range.to,
+      ...(range.from ? [range.from - 1] : []),
+    ]),
+  ];
+}
+function canonicalBoundaries(range, finalized, headers) {
+  const byNumber = new Map(headers.map((value) => [value.number, value]));
+  check(finalized.number >= range.anchor.number);
+  const anchor = byNumber.get(range.anchor.number);
+  check(anchor.hash === range.anchor.hash);
+  if (finalized.number === anchor.number) check(finalized.hash === anchor.hash);
+  const from = byNumber.get(range.from),
+    to = byNumber.get(range.to);
+  check(from.parentHash === range.previousHash);
+  if (range.from) check(byNumber.get(range.from - 1).hash === range.previousHash);
+  if (range.to === range.anchor.number) check(to.hash === anchor.hash);
+  return { from, to, anchor };
+}
 function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }) {
   check(beforeAcquire === undefined || typeof beforeAcquire === 'function');
   const context = getPrivacyContext(handle),
@@ -218,29 +253,12 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
       }
     }
     async function canonical() {
-      const numbers = [
-        ...new Set([
-          range.anchor.number,
-          range.from,
-          range.to,
-          ...(range.from ? [range.from - 1] : []),
-        ]),
-      ];
+      const numbers = canonicalNumbers(range);
       const [finalized, ...headers] = await together([
         async () => header(await read('eth_getBlockByNumber', ['finalized', false])),
         ...numbers.map((number) => () => readHeader(number)),
       ]);
-      const byNumber = new Map(headers.map((value) => [value.number, value]));
-      check(finalized.number >= range.anchor.number);
-      const anchor = byNumber.get(range.anchor.number);
-      check(anchor.hash === range.anchor.hash);
-      if (finalized.number === anchor.number) check(finalized.hash === anchor.hash);
-      const from = byNumber.get(range.from),
-        to = byNumber.get(range.to);
-      check(from.parentHash === range.previousHash);
-      if (range.from) check(byNumber.get(range.from - 1).hash === range.previousHash);
-      if (range.to === range.anchor.number) check(to.hash === anchor.hash);
-      return { from, to, anchor };
+      return canonicalBoundaries(range, finalized, headers);
     }
     return { read, eventHeaders, canonical };
   }
@@ -424,11 +442,418 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
       busy = false;
     }
   }
+  function matchesCompletedDestination(destination) {
+    active();
+    // Authenticate the retained client's lifetime before comparing identity.
+    // A mismatch is benign; a dead owner still throws rather than returning false.
+    return getPrivateRpcDestination(rpc, handle) === destination;
+  }
+  function openCompletedCheckpointRead(options) {
+    active();
+    check(!busy);
+    check(exactOptions(options, ['checkpoint', 'destination', 'signal', 'deadline']));
+    const { destination, signal, deadline } = options;
+    const started = performance.now();
+    check(!isProxy(signal) && signal instanceof AbortSignal && !signal.aborted);
+    check(
+      Number.isFinite(started) &&
+        Number.isFinite(deadline) &&
+        deadline > started &&
+        deadline - started <= MAX_RANGE_MS
+    );
+    check(typeof ledger.hasPrefix === 'function' && typeof ledger.visitThrough === 'function');
+    check(
+      typeof createPrivateRpcReadBudget === 'function' &&
+        typeof getPrivateRpcReadBudgetOutcome === 'function'
+    );
+    let plan = freeze(normalizePlan(options.checkpoint));
+    check(
+      plan.source.ledgerId === ledgerId &&
+        plan.to.number - plan.from < MAX_BLOCKS &&
+        plan.logs.count <= 4096
+    );
+    if (plan.from === 0) check(plan.previousHash === '0x' + '0'.repeat(64));
+    assertPrivateRpcDestination(rpc, handle, destination);
+    const range = {
+      from: plan.from,
+      to: plan.to.number,
+      previousHash: plan.previousHash,
+      anchor: plan.anchor,
+      storeId: plan.state.storeId,
+    };
+    const numbers = canonicalNumbers(range);
+    const budget = createPrivateRpcReadBudget({
+      client: rpc,
+      handle,
+      destination,
+      signal,
+      deadline,
+      envelope: {
+        headers: ['finalized', ...numbers.map(tag)].map((value) => ({
+          tag: value,
+          maxRequests: 4,
+        })),
+        logs: { address: PROXY, fromBlock: tag(range.from), toBlock: tag(range.to) },
+        eventHeaders: { fromBlock: tag(range.from), toBlock: tag(range.to), maxRequests: 512 },
+      },
+    });
+    busy = true;
+    const pending = new Set(),
+      operationEvidence = new Set();
+    const refusal = fail();
+    let phase = 'new',
+      working = false,
+      reason = null,
+      fatal = false,
+      draining = false,
+      first = null,
+      finalEvidence = null,
+      resolveClosed;
+    const closedPromise = new Promise((resolve) => {
+      resolveClosed = resolve;
+    });
+    const budgetOutcome = () => {
+      const outcome = getPrivateRpcReadBudgetOutcome(budget.budget);
+      if (outcome.fatal) {
+        fatal = true;
+        reason = 'fatal';
+      } else if (!reason && outcome.reason) reason = outcome.reason;
+      return outcome;
+    };
+    function drain() {
+      if (!reason || draining) return;
+      draining = true;
+      // All stage promises were registered before any stage could revoke us.
+      void (async () => {
+        await Promise.allSettled([...pending]);
+        budget.close();
+        await budget.closed;
+        const outcome = budgetOutcome();
+        for (const evidence of operationEvidence)
+          if (fatal || reason !== 'completed' || evidence !== finalEvidence)
+            observations.delete(evidence);
+        budget.signal.removeEventListener('abort', onAbort);
+        plan = first = finalEvidence = null;
+        busy = false;
+        if (fatal) close();
+        resolveClosed(Object.freeze({ fatal, reason, rpcFailure: outcome.failure }));
+      })();
+    }
+    function stop(value, failed = false) {
+      if (failed) {
+        fatal = true;
+        reason = 'fatal';
+      } else if (!reason) reason = value;
+      budget.close();
+      drain();
+    }
+    function onAbort() {
+      budgetOutcome();
+      drain();
+    }
+    budget.signal.addEventListener('abort', onAbort, { once: true });
+    function current() {
+      try {
+        active();
+      } catch {
+        stop('fatal', true);
+        throw refusal;
+      }
+      budgetOutcome();
+      if (reason) {
+        drain();
+        throw refusal;
+      }
+    }
+    function failIntegrity() {
+      stop('fatal', true);
+      return refusal;
+    }
+    function run(expected, next, action) {
+      current();
+      // Overlap is a nondestructive admission refusal for the current owner.
+      check(!working);
+      if (!expected.includes(phase)) {
+        stop('admission-refused');
+        throw refusal;
+      }
+      working = true;
+      const work = Promise.resolve().then(async () => {
+        current();
+        try {
+          const value = await action();
+          current();
+          phase = next;
+          return value;
+        } catch (error) {
+          if (error !== refusal) failIntegrity();
+          throw refusal;
+        }
+      });
+      pending.add(work);
+      work.then(
+        () => {
+          working = false;
+          pending.delete(work);
+          drain();
+        },
+        () => {
+          working = false;
+          pending.delete(work);
+          drain();
+        }
+      );
+      return work;
+    }
+    async function read(method, params, normalize, cell) {
+      current();
+      try {
+        await rpc.request(
+          method,
+          params,
+          (value) => {
+            // Validation has no local-currency gate. Admitted bad data stays fatal
+            // after cancellation, including constraints specific to this checkpoint.
+            cell.value = normalize(value);
+            cell.present = true;
+            return true;
+          },
+          budget.budget
+        );
+      } catch {
+        const outcome = budgetOutcome();
+        if (!outcome.reason) failIntegrity();
+        else drain();
+        throw refusal;
+      }
+    }
+    function checkedHeader(value, number) {
+      const result = header(value, number);
+      if (number === undefined) {
+        check(result.number >= plan.anchor.number);
+        if (result.number === plan.anchor.number) check(result.hash === plan.anchor.hash);
+      } else {
+        if (number === plan.anchor.number) check(result.hash === plan.anchor.hash);
+        if (number === plan.to.number) check(result.hash === plan.to.hash);
+        if (number === plan.from) check(result.parentHash === plan.previousHash);
+        if (plan.from && number === plan.from - 1) check(result.hash === plan.previousHash);
+        if (first) {
+          if (number === first.from.number)
+            check(JSON.stringify(result) === JSON.stringify(first.from));
+          if (number === first.to.number)
+            check(JSON.stringify(result) === JSON.stringify(first.to));
+          if (number === first.anchor.number)
+            check(JSON.stringify(result) === JSON.stringify(first.anchor));
+        }
+      }
+      return result;
+    }
+    async function canonical() {
+      current();
+      const at = performance.now();
+      const cells = Array.from({ length: numbers.length + 1 }, () => ({}));
+      const reads = [
+        read(
+          'eth_getBlockByNumber',
+          ['finalized', false],
+          (value) => checkedHeader(value),
+          cells[0]
+        ),
+        ...numbers.map((number, index) =>
+          read(
+            'eth_getBlockByNumber',
+            [tag(number), false],
+            (value) => checkedHeader(value, number),
+            cells[index + 1]
+          )
+        ),
+      ];
+      const results = await Promise.allSettled(reads);
+      let boundaries;
+      // Keep captured validator facts even when RPC refuses after valid decoding.
+      // Missing nonadmitted siblings alone are not evidence of corruption.
+      if (cells.every((cell) => cell.present)) {
+        try {
+          boundaries = canonicalBoundaries(
+            range,
+            cells[0].value,
+            cells.slice(1).map((cell) => cell.value)
+          );
+          if (first) check(JSON.stringify(boundaries) === JSON.stringify(first));
+        } catch {
+          throw failIntegrity();
+        }
+      }
+      budgetOutcome();
+      if (results.some((result) => result.status === 'rejected') && !reason) throw failIntegrity();
+      current();
+      check(boundaries && performance.now() >= at && performance.now() - at < MAX_AGE_MS);
+      return { boundaries, at };
+    }
+    async function eventHeaders(blocks) {
+      const entries = [...blocks];
+      for (let start = 0; start < entries.length; start += HEADER_CONCURRENCY) {
+        current();
+        const results = await Promise.allSettled(
+          entries.slice(start, start + HEADER_CONCURRENCY).map(([number, expectedHash]) =>
+            read(
+              'eth_getBlockByNumber',
+              [tag(number), false],
+              (value) => {
+                const result = checkedHeader(value, number);
+                check(result.hash === expectedHash);
+                return result;
+              },
+              {}
+            )
+          )
+        );
+        budgetOutcome();
+        if (results.some((result) => result.status === 'rejected') && !reason)
+          throw failIntegrity();
+        current();
+      }
+    }
+    function sourceEvidence(result) {
+      const evidence = issue(plan, result.boundaries, result.at);
+      operationEvidence.add(evidence);
+      return evidence;
+    }
+    const prepare = () =>
+      run(['new'], 'prepared', async () => {
+        if (plan.source.providersSha256 !== providersSha256) {
+          stop('provider-mismatch');
+          throw refusal;
+        }
+        const present = await ledger.hasPrefix(plan.source.ledgerSha256);
+        current();
+        if (!present) {
+          stop('prefix-unavailable');
+          throw refusal;
+        }
+        first = (await canonical()).boundaries; // Pass 1.
+        const logs = {};
+        await read(
+          'eth_getLogs',
+          [{ address: PROXY, fromBlock: tag(plan.from), toBlock: tag(plan.to.number) }],
+          (value) => {
+            const normalized = normalizeLogs(value, plan.from, plan.to.number);
+            const digest = createHash('sha256');
+            for (const log of normalized.logs) digest.update(JSON.stringify(log) + '\n');
+            check(
+              normalized.logs.length === plan.logs.count &&
+                digest.digest('hex') === plan.logs.sha256
+            );
+            return normalized;
+          },
+          logs
+        );
+        current();
+        await eventHeaders(logs.value.blocks);
+        current();
+        let visited = false,
+          visitCompleted = false,
+          acceptingFeed = true,
+          plannerFailed = false,
+          projected;
+        const feeds = [];
+        // The admitted planner retains the owner lifetime, not local cancellation.
+        // Its feed must finish the full authenticated prefix and observe child exit.
+        try {
+          projected = await projectRange(freeze({ range }), {
+            signal: rpc.signal,
+            visit: (visitor) => {
+              if (!acceptingFeed) throw refusal;
+              if (visited || typeof visitor !== 'function') throw failIntegrity();
+              visited = true;
+              // Register before invoking the ledger. Even a planner that discards
+              // this promise cannot release the stage's borrowed prefix work.
+              const feed = Promise.resolve().then(async () => {
+                let visitorFailed = false;
+                const result = await ledger.visitThrough(plan.source.ledgerSha256, async (log) => {
+                  if (visitorFailed) return;
+                  try {
+                    await visitor(log);
+                  } catch {
+                    visitorFailed = true;
+                  }
+                });
+                if (visitorFailed) throw failIntegrity();
+                visitCompleted = true;
+                return result;
+              });
+              feeds.push(feed);
+              pending.add(feed);
+              feed.then(
+                () => pending.delete(feed),
+                () => {
+                  failIntegrity();
+                  pending.delete(feed);
+                }
+              );
+              return feed;
+            },
+          });
+        } catch {
+          plannerFailed = true;
+          failIntegrity();
+        } finally {
+          acceptingFeed = false;
+          await Promise.allSettled(feeds);
+        }
+        if (plannerFailed || !visitCompleted) throw failIntegrity();
+        // Compare actual projection even if cancellation occurred during planning.
+        const reproduced = normalizePlan({ ...plan, state: projected });
+        check(JSON.stringify(reproduced) === JSON.stringify(plan));
+        current();
+        await canonical(); // Pass 2, after cold projection.
+        const prepared = await canonical(); // Pass 3, before the callback window.
+        return Object.freeze({ plan, evidence: sourceEvidence(prepared) });
+      });
+    const visitSource = (visitor) => {
+      check(typeof visitor === 'function');
+      return run(['prepared'], 'visited', async () => {
+        let visitorFailed = false;
+        const result = await ledger.visitThrough(plan.source.ledgerSha256, async (log) => {
+          if (reason || budget.signal.aborted || visitorFailed) return;
+          try {
+            await visitor(log);
+          } catch {
+            visitorFailed = true;
+          }
+        });
+        if (visitorFailed) throw failIntegrity();
+        current();
+        return result;
+      });
+    };
+    const finish = () =>
+      run(['prepared', 'visited'], 'finished', async () => {
+        const result = await canonical(); // Pass 4, with or without external visitation.
+        finalEvidence = sourceEvidence(result);
+        return Object.freeze({ plan, evidence: finalEvidence });
+      });
+    const closeOperation = () => {
+      budgetOutcome();
+      stop(phase === 'finished' ? 'completed' : 'cancelled');
+    };
+    if (budget.signal.aborted) onAbort();
+    return Object.freeze({
+      prepare,
+      visitSource,
+      finish,
+      close: closeOperation,
+      closed: closedPromise,
+      signal: budget.signal,
+    });
+  }
   instance = Object.freeze({
     acquire,
     refresh,
     assertSource,
     visitSnapshot,
+    matchesCompletedDestination,
+    openCompletedCheckpointRead,
     close,
     signal: rpc.signal,
     ledgerId,

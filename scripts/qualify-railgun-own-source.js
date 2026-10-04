@@ -168,11 +168,11 @@ const hashes = () =>
   );
 async function main() {
   const [directory, archive, kind] = process.argv.slice(2);
-  const watchdog = setTimeout(() => {
+  // Keep the watchdog referenced so a lost drain promise fails qualification.
+  setTimeout(() => {
     console.error(JSON.stringify({ phase, code: 'QUALIFICATION_TIMEOUT' }));
     app.exit(1);
   }, 90000);
-  watchdog.unref();
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   assert.ok(['transfer', 'unshield'].includes(kind));
   fs.mkdirSync(directory, { mode: 0o700 });
@@ -241,7 +241,8 @@ async function main() {
     failAfterVisit = false,
     injected = 0,
     cancelDuringVisit = null,
-    cancelledVisits = 0;
+    cancelledVisits = 0,
+    visitedLogs = 0;
   const methods = {};
   const registry = require('../src/main/networks/network-registry');
   const settings = require('../src/main/settings-store');
@@ -277,6 +278,8 @@ async function main() {
   for (const name of [
     '../src/main/networks/private-rpc',
     '../src/main/wallet/railgun-scan-source',
+    '../src/main/wallet/railgun-scan-journal',
+    '../src/main/wallet/railgun-scan-coordinator',
     '../src/main/wallet/railgun-account-public',
   ])
     assert.equal(require.cache[require.resolve(name)], undefined);
@@ -333,12 +336,73 @@ async function main() {
   };
   const ledgerModule = require('../src/main/wallet/railgun-source-ledger'),
     originalLedger = ledgerModule.createRailgunSourceLedger;
+  const completedWork = {
+    stages: 0,
+    retains: 0,
+    beforeAcquire: 0,
+    applies: 0,
+    planners: 0,
+    plannerSettlements: 0,
+    prefixChecks: 0,
+  };
+  const sourceModule = require('../src/main/wallet/railgun-scan-source'),
+    originalSource = sourceModule.createRailgunScanSource;
+  let retainedSource, retainedSourceHandle;
+  sourceModule.createRailgunScanSource = (options) => {
+    retainedSourceHandle = options.handle;
+    retainedSource = originalSource({
+      ...options,
+      projectRange: async (...args) => {
+        completedWork.planners++;
+        try {
+          return await options.projectRange(...args);
+        } finally {
+          completedWork.plannerSettlements++;
+        }
+      },
+      beforeAcquire: async (...args) => {
+        completedWork.beforeAcquire++;
+        return options.beforeAcquire?.(...args);
+      },
+    });
+    return retainedSource;
+  };
+  const journalModule = require('../src/main/wallet/railgun-scan-journal'),
+    originalJournal = journalModule.createRailgunScanJournal;
+  let retainedJournal;
+  journalModule.createRailgunScanJournal = async (options) => {
+    retainedJournal = await originalJournal(options);
+    return retainedJournal;
+  };
+  const coordinatorModule = require('../src/main/wallet/railgun-scan-coordinator'),
+    originalCoordinator = coordinatorModule.createRailgunScanCoordinator;
+  coordinatorModule.createRailgunScanCoordinator = (options) =>
+    originalCoordinator({
+      ...options,
+      applyRange: (...args) => {
+        completedWork.applies++;
+        return options.applyRange(...args);
+      },
+    });
   ledgerModule.createRailgunSourceLedger = async (options) => {
     const ledger = await originalLedger(options);
     return Object.freeze({
       ...ledger,
+      stage(...args) {
+        completedWork.stages++;
+        return ledger.stage(...args);
+      },
+      retain(...args) {
+        completedWork.retains++;
+        return ledger.retain(...args);
+      },
+      hasPrefix(...args) {
+        completedWork.prefixChecks++;
+        return ledger.hasPrefix(...args);
+      },
       async visitThrough(digest, visitor) {
         const result = await ledger.visitThrough(digest, async (log) => {
+          visitedLogs++;
           if (cancelDuringVisit) {
             cancelDuringVisit.abort();
             cancelDuringVisit = null;
@@ -370,7 +434,8 @@ async function main() {
     assertRailgunOwnSource,
   } = require('../src/main/wallet/railgun-own-source-capture');
   const runs = [],
-    destinationRuns = [];
+    destinationRuns = [],
+    completedRuns = [];
   const totalRequests = () => Object.values(methods).reduce((a, b) => a + b, 0);
   const preview = () => {
     const beforeRequests = totalRequests(),
@@ -420,6 +485,48 @@ async function main() {
     const beforeCandidate = totalRequests();
     assert.throws(() => getRailgunAccountPublicDestination(publicAccount.coordinator, enrollment));
     assert.equal(totalRequests(), beforeCandidate);
+    phase = 'completed-empty-checkpoint';
+    const beforeEmpty = { ...completedWork },
+      beforeEmptyJournal = await retainedJournal.readState();
+    let emptyOutcome;
+    await assert.rejects(
+      publicAccount.coordinator.withCompletedPublicSnapshot(
+        {
+          destination: sourceModule.getRailgunScanSourceDestination(
+            retainedSource,
+            retainedSourceHandle
+          ),
+          signal: new AbortController().signal,
+          timeoutMs: 30000,
+        },
+        () => assert.fail('Empty checkpoint admitted callback')
+      ),
+      (error) => {
+        emptyOutcome = coordinatorModule.getRailgunCompletedSnapshotOutcome(
+          publicAccount.coordinator,
+          error
+        );
+        return true;
+      }
+    );
+    assert.deepEqual(emptyOutcome, {
+      fatal: false,
+      reason: 'checkpoint-unavailable',
+      rpcFailure: null,
+    });
+    assert.deepEqual(completedWork, beforeEmpty);
+    assert.deepEqual(await retainedJournal.readState(), beforeEmptyJournal);
+    assert.equal(totalRequests(), beforeCandidate);
+    assert.equal(publicAccount.coordinator.signal.aborted, false);
+    completedRuns.push({
+      mode: phase,
+      outcome: emptyOutcome,
+      requests: 0,
+      sourceAndApplyWork: 0,
+      journalUnchanged: true,
+      coordinatorSurvived: true,
+    });
+    phase = 'public-advance';
     await publicAccount.advance({ to: 300, anchor: { number: 310, hash: blockHash(310) } });
     const retainedDestination = preview();
     selectedDestination = destinations[1];
@@ -559,6 +666,227 @@ async function main() {
       previousDestinationRefused: true,
       distinctClient: true,
     });
+    const completed = (caller, run) =>
+      publicAccount.coordinator.withCompletedPublicSnapshot(
+        {
+          destination: coldDestination,
+          signal: caller.signal,
+          timeoutMs: 30000,
+        },
+        run
+      );
+    const refused = async (promise, reason, fatal = false) => {
+      let rejection;
+      await assert.rejects(promise, (error) => {
+        rejection = error;
+        return true;
+      });
+      const owner = publicAccount.coordinator;
+      const outcome = coordinatorModule.getRailgunCompletedSnapshotOutcome(owner, rejection);
+      assert.deepEqual(outcome, { fatal, reason, rpcFailure: null });
+      assert.equal(Object.isFrozen(outcome), true);
+      for (const error of [{ ...rejection }, Error('Unknown'), { code: rejection.code }])
+        assert.throws(() => coordinatorModule.getRailgunCompletedSnapshotOutcome(owner, error));
+      assert.throws(() =>
+        coordinatorModule.getRailgunCompletedSnapshotOutcome({ ...owner }, rejection)
+      );
+      return { rejection, outcome };
+    };
+    const workSnapshot = () => ({
+      ...completedWork,
+      methods: { ...methods },
+      visited,
+      visitedLogs,
+    });
+    const workDelta = (beforeWork) => {
+      const delta = Object.fromEntries(
+        Object.keys(completedWork).map((key) => [key, completedWork[key] - beforeWork[key]])
+      );
+      for (const key of ['stages', 'retains', 'beforeAcquire', 'applies'])
+        assert.equal(delta[key], 0);
+      return {
+        ...delta,
+        visits: visited - beforeWork.visited,
+        logsVisited: visitedLogs - beforeWork.visitedLogs,
+        rpcMethods: Object.fromEntries(
+          Object.keys(methods).map((key) => [key, methods[key] - (beforeWork.methods[key] || 0)])
+        ),
+      };
+    };
+    let canonicalCount;
+    const eventBlocks = new Set(history.map((log) => log.blockNumber)).size;
+    const completedSuccess = async (visit, first = false) => {
+      const beforeWork = workSnapshot();
+      const beforeJournal = await retainedJournal.readState();
+      let delivered = 0;
+      const result = await completed(new AbortController(), async (window) => {
+        canonicalCount =
+          1 +
+          new Set([
+            window.checkpoint.anchor.number,
+            window.checkpoint.from,
+            window.checkpoint.to.number,
+            ...(window.checkpoint.from ? [window.checkpoint.from - 1] : []),
+          ]).size;
+        if (visit)
+          await window.visitSource(async () => {
+            delivered++;
+          });
+        return delivered;
+      });
+      const checkpoint = publicAccount.coordinator.assertSnapshot(result.evidence);
+      assert.deepEqual(await retainedJournal.readState(), beforeJournal);
+      assert.deepEqual(checkpoint, beforeJournal.checkpoint);
+      assert.equal(
+        require('../src/main/wallet/railgun-wallet-coverage').checkpointHash(checkpoint),
+        observation.checkpointHash
+      );
+      assert.equal(result.value, visit ? history.length : 0);
+      const work = workDelta(beforeWork);
+      assert.equal(work.planners, 1);
+      assert.equal(work.plannerSettlements, 1);
+      assert.equal(work.prefixChecks, 1);
+      assert.equal(work.visits, visit ? 2 : 1);
+      assert.equal(work.logsVisited, history.length * (visit ? 2 : 1));
+      assert.equal(work.rpcMethods.eth_chainId, first ? 1 : 0);
+      assert.equal(work.rpcMethods.eth_getBlockByNumber, canonicalCount * 4 + eventBlocks);
+      assert.equal(work.rpcMethods.eth_getLogs, 1);
+      completedRuns.push({
+        mode: first ? 'completed-cold' : visit ? 'completed-reuse' : 'completed-no-visit',
+        work,
+        callbackLogs: delivered,
+        snapshotAccepted: true,
+        journalAndProviderProvenanceUnchanged: true,
+      });
+      return result;
+    };
+    phase = 'completed-cold';
+    await completedSuccess(true, true);
+    phase = 'completed-no-visit';
+    await completedSuccess(false);
+    phase = 'completed-preabort';
+    {
+      const caller = new AbortController(),
+        beforeWork = workSnapshot();
+      caller.abort();
+      const { outcome } = await refused(
+        completed(caller, () => assert.fail('Preaborted callback ran')),
+        'cancelled'
+      );
+      const work = workDelta(beforeWork);
+      assert.equal(work.planners, 0);
+      assert.ok(Object.values(work.rpcMethods).every((count) => count === 0));
+      assert.equal(publicAccount.coordinator.signal.aborted, false);
+      completedRuns.push({ mode: phase, work, outcome, coordinatorSurvived: true });
+    }
+    phase = 'completed-copied-destination';
+    {
+      const beforeWork = workSnapshot();
+      const { outcome } = await refused(
+        publicAccount.coordinator.withCompletedPublicSnapshot(
+          {
+            destination: { ...coldDestination },
+            signal: new AbortController().signal,
+            timeoutMs: 30000,
+          },
+          () => assert.fail('Copied destination admitted callback')
+        ),
+        'destination-mismatch'
+      );
+      const work = workDelta(beforeWork);
+      assert.equal(work.planners, 0);
+      assert.ok(Object.values(work.rpcMethods).every((count) => count === 0));
+      assert.equal(publicAccount.coordinator.signal.aborted, false);
+      completedRuns.push({
+        mode: 'completed-copied-destination',
+        work,
+        outcome,
+        coordinatorSurvived: true,
+      });
+    }
+    phase = 'completed-planner-cancellation';
+    {
+      const caller = new AbortController(),
+        beforeWork = workSnapshot();
+      cancelDuringVisit = caller;
+      const { outcome } = await refused(
+        completed(caller, () => assert.fail('Cancelled planner admitted callback')),
+        'cancelled'
+      );
+      const work = workDelta(beforeWork);
+      assert.equal(work.planners, 1);
+      assert.equal(work.plannerSettlements, 1);
+      assert.equal(work.visits, 1);
+      assert.equal(work.logsVisited, history.length);
+      assert.equal(publicAccount.coordinator.signal.aborted, false);
+      completedRuns.push({
+        mode: phase,
+        work,
+        fullPlannerPrefixDelivered: true,
+        outcome,
+        coordinatorSurvived: true,
+      });
+    }
+    phase = 'completed-callback-cancellation';
+    {
+      const caller = new AbortController(),
+        beforeWork = workSnapshot();
+      let entered, release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      const firstLog = new Promise((resolve) => {
+        entered = resolve;
+      });
+      let delivered = 0,
+        settled = false,
+        outcome;
+      const rejected = refused(
+        completed(caller, async (window) => {
+          await window.visitSource(async () => {
+            delivered++;
+            caller.abort();
+            entered();
+            await gate;
+          });
+        }),
+        'cancelled'
+      ).then((result) => {
+        outcome = result.outcome;
+        settled = true;
+      });
+      try {
+        await firstLog;
+        await new Promise(setImmediate);
+        assert.equal(settled, false);
+        const beforeBusy = totalRequests();
+        await refused(
+          completed(new AbortController(), () => undefined),
+          'busy'
+        );
+        assert.equal(totalRequests(), beforeBusy);
+        assert.equal(publicAccount.coordinator.signal.aborted, false);
+      } finally {
+        release();
+      }
+      await rejected;
+      const work = workDelta(beforeWork);
+      assert.equal(delivered, 1);
+      assert.equal(work.visits, 2);
+      assert.equal(work.logsVisited, history.length * 2);
+      assert.equal(publicAccount.coordinator.signal.aborted, false);
+      completedRuns.push({
+        mode: phase,
+        work,
+        callbackLogs: delivered,
+        exclusionHeldThroughVisitor: true,
+        fullPrefixAuthenticated: true,
+        outcome,
+        coordinatorSurvived: true,
+      });
+    }
+    phase = 'completed-following-success';
+    await completedSuccess(true);
     captured = await capture();
     const restored = assertRailgunOwnSource(
       captured.receipt,
@@ -575,12 +903,79 @@ async function main() {
     runs.push({ mode: 'public-store-reopen', exactCheckpointAndGroup: true });
     captured.close();
     captured = null;
+    phase = 'completed-caught-broker-failure';
+    {
+      const beforeWork = workSnapshot();
+      let caught = false;
+      const { rejection, outcome } = await refused(
+        completed(new AbortController(), async (window) => {
+          await assert.rejects(
+            window.dispatch(JSON.stringify({ id: 999, method: 'get', args: [] }))
+          );
+          caught = true;
+          return 'consumer caught broker failure';
+        }),
+        'fatal',
+        true
+      );
+      assert.equal(caught, true);
+      assert.equal(publicAccount.coordinator.signal.aborted, true);
+      completedRuns.push({
+        mode: phase,
+        work: workDelta(beforeWork),
+        caughtFailureStayedFatal: true,
+        outcome,
+        coordinatorClosed: true,
+      });
+      await publicAccount.close();
+      publicAccount = null;
+      const beforeRequests = totalRequests();
+      selectedDestination = expectedDestination = 'https://different-rpc.example.test/source-c';
+      publicAccount = await openRailgunAccountPublic({ enrollment, archive });
+      assert.equal(totalRequests(), beforeRequests);
+      assert.throws(() =>
+        coordinatorModule.getRailgunCompletedSnapshotOutcome(publicAccount.coordinator, rejection)
+      );
+    }
+    phase = 'completed-provider-mismatch';
+    {
+      const destination = preview(),
+        beforeWork = workSnapshot(),
+        beforeJournal = await retainedJournal.readState();
+      const { outcome } = await refused(
+        publicAccount.coordinator.withCompletedPublicSnapshot(
+          { destination, signal: new AbortController().signal, timeoutMs: 30000 },
+          () => assert.fail('Changed provider admitted callback')
+        ),
+        'provider-mismatch'
+      );
+      const work = workDelta(beforeWork);
+      assert.equal(work.planners, 0);
+      assert.equal(work.prefixChecks, 0);
+      assert.ok(Object.values(work.rpcMethods).every((count) => count === 0));
+      assert.equal(publicAccount.coordinator.signal.aborted, false);
+      assert.deepEqual(await retainedJournal.readState(), beforeJournal);
+      completedRuns.push({
+        mode: phase,
+        work,
+        outcome,
+        journalAndProviderProvenanceUnchanged: true,
+        coordinatorSurvived: true,
+      });
+      await publicAccount.close();
+      publicAccount = null;
+      selectedDestination = expectedDestination = destinations[1];
+      const beforeRequests = totalRequests();
+      publicAccount = await openRailgunAccountPublic({ enrollment, archive });
+      assert.equal(totalRequests(), beforeRequests);
+    }
+    const torDestination = preview();
     phase = 'destination-tor-generation';
     const beforeTor = totalRequests(),
       beforeTorFactories = factoryCalls;
     endpoint = { signal: endpoints[1].signal };
     assert.throws(() => getRailgunAccountPublicDestination(publicAccount.coordinator, enrollment));
-    assert.throws(() => rpcModule.getPrivateRpcDestinationDetails(coldDestination));
+    assert.throws(() => rpcModule.getPrivateRpcDestinationDetails(torDestination));
     assert.equal(totalRequests(), beforeTor);
     assert.equal(factoryCalls, beforeTorFactories);
     destinationRuns.push({ mode: phase, requests: 0, replacementFactories: 0 });
@@ -600,10 +995,13 @@ async function main() {
           runs,
           rpcMethods: methods,
           destinationRuns,
+          completedRuns,
+          completedWork,
           factoryCalls,
           destinationCalls,
           realPrivateRpcWithSimulatedTransport: true,
           sourceVisits: visited,
+          sourceLogsVisited: visitedLogs,
           injectedPostVisitFailures: injected,
           cancelledVisits,
           externalAttempts,
@@ -630,6 +1028,9 @@ async function main() {
     rpcModule.createPrivateRpc = originalRpc;
     transport.createWalletTorTransport = originalTransport;
     ledgerModule.createRailgunSourceLedger = originalLedger;
+    sourceModule.createRailgunScanSource = originalSource;
+    coordinatorModule.createRailgunScanCoordinator = originalCoordinator;
+    journalModule.createRailgunScanJournal = originalJournal;
     Object.assign(registry, originalRegistry);
     settings.isWalletTorExperimentAvailable = originalAvailable;
     tor.getWalletSocksEndpoint = originalEndpoint;
