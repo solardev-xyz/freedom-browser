@@ -6,6 +6,8 @@ const {
   antShrinksLogScanOn,
   rankLogScanError,
   logScanRangeCap,
+  logScanIndexQuery,
+  XBZZ_TOKEN,
   antErrorReply,
   LOG_SCAN_ERROR_RANK,
 } = require('./ant-chain-bridge');
@@ -149,6 +151,7 @@ test('Ant reads are background work, and only the RPC quorum answers its log sca
     quorumTimeoutMs: 30000,
     rankError: rankLogScanError,
     rangeCapOf: logScanRangeCap,
+    indexQueryOf: logScanIndexQuery,
   });
   // Other reads are not ranked: Ant does not adapt them to the error.
   await post(bridge.url, rpc('eth_blockNumber', []));
@@ -354,6 +357,41 @@ test.each([
 ])('reads the block-range cap in a %s reply', (_name, code, message, cap) => {
   const error = Object.assign(new Error(message), code === undefined ? {} : { code });
   expect(logScanRangeCap(error)).toBe(cap);
+});
+
+// Only Ant's wallet scan qualifies for the Blockscout check (#484): the xBZZ
+// token's Transfer logs from one sender over a numeric block range.
+const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const WALLET_TOPIC = '0x0000000000000000000000002b7c998ae67905de2335d438e003dc5459b352e0';
+const scanFilter = (overrides = {}) => ({
+  address: '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da',
+  fromBlock: '0xfbfdca',
+  toBlock: '0x2e4e75c',
+  topics: [TRANSFER, WALLET_TOPIC],
+  ...overrides,
+});
+test.each([
+  [
+    "Ant's scan",
+    [scanFilter()],
+    { token: XBZZ_TOKEN, from: '0x2b7c998ae67905de2335d438e003dc5459b352e0' },
+  ],
+  ['another token', [scanFilter({ address: '0x0000000000000000000000000000000000000001' })], null],
+  ['a token list', [scanFilter({ address: [XBZZ_TOKEN] })], null],
+  ['a recipient topic too', [scanFilter({ topics: [TRANSFER, WALLET_TOPIC, WALLET_TOPIC] })], null],
+  ['no sender', [scanFilter({ topics: [TRANSFER] })], null],
+  ['another event', [scanFilter({ topics: [`0x${'1'.repeat(64)}`, WALLET_TOPIC] })], null],
+  ['a non-address topic', [scanFilter({ topics: [TRANSFER, `0x${'f'.repeat(64)}`] })], null],
+  ['a tag', [scanFilter({ toBlock: 'latest' })], null],
+  ['a block hash', [scanFilter({ blockHash: `0x${'2'.repeat(64)}` })], null],
+  ['no filter', [], null],
+])('the index check takes %s: %p', (_name, params, query) => {
+  expect(logScanIndexQuery(params)).toEqual(query);
+});
+
+test("the xBZZ token is the wallet's Gnosis BZZ token", () => {
+  const { CHAIN_METADATA } = require('../wallet/chains');
+  expect(CHAIN_METADATA[100].contracts.bzzToken.toLowerCase()).toBe(XBZZ_TOKEN);
 });
 
 test("Ant's shrink needles match v0.5.58 is_range_limit_error", () => {

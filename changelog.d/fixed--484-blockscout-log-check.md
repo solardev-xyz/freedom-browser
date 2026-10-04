@@ -1,0 +1,1 @@
+- The Swarm node's first scan of a wallet with history takes seconds instead of many minutes, checked against Blockscout's index of the wallet's transfers ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))

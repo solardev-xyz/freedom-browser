@@ -170,6 +170,35 @@ function logScanRangeCap(error) {
   return null;
 }
 
+// Ant's wallet scan: the xBZZ token's ERC-20 `Transfer` logs sent by the node
+// wallet (topics [Transfer, from]). When no quorum can serve its span, the
+// router checks one RPC's full-range answer against Blockscout's index of the
+// same transfers instead of refusing (#484). Nothing else Ant asks qualifies.
+const XBZZ_TOKEN = '0xdbf3ea6f5bee45c02255b2c26a16f300502f68da';
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const ADDRESS_TOPIC = /^0x0{24}([0-9a-f]{40})$/;
+const HEX_BLOCK = /^0x[0-9a-f]+$/;
+
+function logScanIndexQuery(params) {
+  const filter = params?.[0];
+  if (!filter || typeof filter !== 'object' || params.length !== 1) return null;
+  const topics = filter.topics;
+  const fromTopic = Array.isArray(topics) && topics.length === 2 ? String(topics[1]) : '';
+  const from = ADDRESS_TOPIC.exec(fromTopic.toLowerCase());
+  if (
+    typeof filter.address !== 'string' ||
+    filter.address.toLowerCase() !== XBZZ_TOKEN ||
+    String(topics?.[0]).toLowerCase() !== TRANSFER_TOPIC ||
+    !from ||
+    filter.blockHash !== undefined ||
+    !HEX_BLOCK.test(String(filter.fromBlock).toLowerCase()) ||
+    !HEX_BLOCK.test(String(filter.toBlock).toLowerCase())
+  ) {
+    return null;
+  }
+  return { token: XBZZ_TOKEN, from: `0x${from[1]}` };
+}
+
 // Router options for Ant's eth_getLogs (window-halving) scans. Only the RPC
 // quorum answers them: a log Ant does not receive is the one failure Ant
 // cannot detect (it re-reads every batch and chequebook it finds), so a scan
@@ -183,6 +212,7 @@ const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
   quorumTimeoutMs: LOG_SCAN_QUORUM_TIMEOUT_MS,
   rankError: rankLogScanError,
   rangeCapOf: logScanRangeCap,
+  indexQueryOf: logScanIndexQuery,
 });
 
 // The JSON-RPC error Ant receives for a failed routed request. This is the
@@ -463,6 +493,8 @@ module.exports = {
   antShrinksLogScanOn,
   rankLogScanError,
   logScanRangeCap,
+  logScanIndexQuery,
+  XBZZ_TOKEN,
   antErrorReply,
   LOG_SCAN_ROUTER_OPTIONS,
   LOG_SCAN_ERROR_RANK: RANK,

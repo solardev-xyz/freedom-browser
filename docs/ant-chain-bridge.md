@@ -62,6 +62,20 @@ range N`, without any endpoint being asked, and halves its window towards it.
 Only when no quorum can serve any span does Ant get an error it does not halve
 on, and it resumes the scan later from its saved progress.
 
+The full history is wider than any quorum of keyless Gnosis RPCs can serve:
+only Tenderly answers it, and the other backends stop at 10,000 blocks. For
+Ant's wallet scan (the xBZZ token's `Transfer` logs from the node wallet;
+`logScanIndexQuery` in the bridge), the router then checks one RPC's
+full-range answer against Blockscout's index of the same transfers (the
+`indexer` endpoint source, `gnosisscan.io/api/v2`, which runs its own nodes;
+`blockscout-index.js`) instead of refusing: same block, transaction, log
+index, sender, recipient and value for every transfer, nothing extra on
+either side. The check stops 64 blocks below Blockscout's indexed height; the
+blocks above go through the quorum. It reads at most 100 pages of 50
+transfers, each within 15 s and all within 60 s. Any disagreement, failure or
+timeout falls back to the refusal above, so Ant narrows its window. Blockscout
+sees the node wallet's address for this.
+
 ### Which error Ant sees: one ranking rule
 
 Ant's `scan_logs` halves its `eth_getLogs` window when the error text matches

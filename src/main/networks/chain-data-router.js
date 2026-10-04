@@ -1,6 +1,7 @@
 const log = require('../logger');
 const registry = require('./network-registry');
 const myotis = require('../myotis/myotis-manager');
+const blockscout = require('./blockscout-index');
 
 const READ_METHODS = new Set([
   'eth_blockNumber',
@@ -397,6 +398,173 @@ function noteLogRangeFailure(chainId, url, span, error, { capOf, rank }, now) {
     return;
   }
   logRangeState.set(key, entry);
+}
+
+// A log scan checked against an indexer stops this many blocks below the
+// indexer's height (a reorg margin, as Ant's own rescan tail); the blocks
+// above go through the quorum.
+const INDEX_REORG_MARGIN = 64;
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const blockHex = (number) => `0x${number.toString(16)}`;
+const addressTopic = (address) => `0x${address.toLowerCase().replace(/^0x/, '').padStart(64, '0')}`;
+
+// The first endpoint able to serve the whole span answers it alone; the
+// indexer is what verifies it. Endpoints that fail are learned from as in a
+// quorum round.
+async function fullRangeLogs(chainId, params, span, logRange, timeoutMs, signal) {
+  for (const url of registry.getEndpoints(chainId, 'rpc')) {
+    if (servableLogSpan(chainId, url, Date.now()) < span) continue;
+    try {
+      const logs = await requestRpcUrl(url, 'eth_getLogs', params, timeoutMs, { signal });
+      if (!Array.isArray(logs)) throw new Error('eth_getLogs answered no list');
+      noteLogRangeAnswer(chainId, url, span);
+      return { url, logs };
+    } catch (err) {
+      signal?.throwIfAborted();
+      noteLogRangeFailure(chainId, url, span, err, logRange, Date.now());
+    }
+  }
+  return null;
+}
+
+// Whether an RPC's Transfer logs and the indexer's transfers are the same
+// set: same block, transaction, log index, sender, recipient and value for
+// every one, nothing extra on either side.
+function sameTransfers(logs, items, { token, from, fromBlock, throughBlock }) {
+  const fromTopic = addressTopic(from);
+  const rpcKeys = [];
+  for (const entry of logs) {
+    const block = blockNumberOf(entry?.blockNumber);
+    if (
+      String(entry?.address).toLowerCase() !== token ||
+      !Array.isArray(entry.topics) ||
+      entry.topics.length !== 3 ||
+      String(entry.topics[0]).toLowerCase() !== TRANSFER_TOPIC ||
+      String(entry.topics[1]).toLowerCase() !== fromTopic ||
+      block === null ||
+      block < fromBlock ||
+      block > throughBlock
+    ) {
+      return false;
+    }
+    let value;
+    try {
+      value = BigInt(entry.data).toString();
+    } catch {
+      return false;
+    }
+    rpcKeys.push(
+      [
+        block,
+        String(entry.transactionHash).toLowerCase(),
+        blockNumberOf(entry.logIndex),
+        `0x${String(entry.topics[2]).slice(-40).toLowerCase()}`,
+        value,
+      ].join('|')
+    );
+  }
+  const indexKeys = items
+    .filter((item) => {
+      const itemToken = String(item?.token?.address_hash || item?.token?.address || '');
+      return (
+        itemToken.toLowerCase() === token &&
+        item.block_number >= fromBlock &&
+        item.block_number <= throughBlock
+      );
+    })
+    .map((item) =>
+      String(item.from?.hash).toLowerCase() === from
+        ? [
+            item.block_number,
+            String(item.transaction_hash).toLowerCase(),
+            item.log_index,
+            String(item.to?.hash).toLowerCase(),
+            String(item.total?.value),
+          ].join('|')
+        : null
+    );
+  if (indexKeys.includes(null) || indexKeys.length !== rpcKeys.length) return false;
+  rpcKeys.sort();
+  indexKeys.sort();
+  return rpcKeys.every((key, index) => key === indexKeys[index]);
+}
+
+// A range-capped log scan that no quorum can serve, answered by an RPC that
+// can serve the whole span and verified against the indexer's own record of
+// the same token transfers (an independent provider). Only for the queries
+// the caller's indexQueryOf recognises (Ant's xBZZ `Transfer(from)` scan).
+// The blocks above the indexer's height, less a reorg margin, go through the
+// quorum. Returns null when anything is missing, slow or disagrees: the
+// caller then refuses the span as before.
+async function answerFromIndex(chainId, method, params, options) {
+  const { logRange, includeTrust = false, quorumTimeoutMs = null, signal } = options;
+  let query;
+  try {
+    query = logRange.indexQueryOf(params);
+  } catch {
+    query = null;
+  }
+  const [indexer] = registry.getEndpoints(chainId, 'indexer');
+  if (!query || !indexer) return null;
+  const token = String(query.token).toLowerCase();
+  const from = String(query.from).toLowerCase();
+  const fromBlock = blockNumberOf(params[0].fromBlock);
+  const toBlock = blockNumberOf(params[0].toBlock);
+  const network = registry.getNetwork(chainId) || {};
+  const configuredTimeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+  const timeoutMs = Number.isFinite(quorumTimeoutMs)
+    ? Math.max(configuredTimeoutMs, quorumTimeoutMs)
+    : configuredTimeoutMs;
+  try {
+    const height = await blockscout.indexedHeight(indexer, { signal });
+    const throughBlock = Math.min(toBlock, height - INDEX_REORG_MARGIN);
+    if (throughBlock < fromBlock) return null;
+    const span = throughBlock - fromBlock + 1;
+    const head = [{ ...params[0], toBlock: blockHex(throughBlock) }];
+    const [rpc, items] = await Promise.all([
+      fullRangeLogs(chainId, head, span, logRange, timeoutMs, signal),
+      blockscout.tokenTransfersFrom(indexer, { from, token, signal }),
+    ]);
+    if (!rpc) return null;
+    if (!sameTransfers(rpc.logs, items, { token, from, fromBlock, throughBlock })) {
+      log.warn?.(
+        `[chain-data] ${chainId} eth_getLogs over ${span} blocks: ${endpointHost(rpc.url)} ` +
+          `(${rpc.logs.length} logs) and Blockscout disagree; not answering it`
+      );
+      return null;
+    }
+    let tail = [];
+    if (toBlock > throughBlock) {
+      const tailParams = [{ ...params[0], fromBlock: blockHex(throughBlock + 1) }];
+      tail = await requestQuorum(chainId, method, tailParams, {
+        ...options,
+        includeTrust: false,
+        logRange: { ...logRange, span: toBlock - throughBlock, indexQueryOf: null },
+      });
+    }
+    const result = [...rpc.logs, ...tail];
+    log.verbose(
+      `[chain-data] ${chainId} eth_getLogs ${span} blocks verified by ${endpointHost(rpc.url)} ` +
+        `+ Blockscout (${rpc.logs.length} logs, indexed to ${throughBlock})`
+    );
+    if (!includeTrust) return result;
+    return {
+      result,
+      trust: {
+        level: 'verified',
+        method: 'indexer',
+        block: null,
+        agreed: [endpointHost(rpc.url), endpointHost(indexer)].filter(Boolean),
+        dissented: [],
+        queried: [endpointHost(rpc.url), endpointHost(indexer)].filter(Boolean),
+        quorum: { k: 2, m: 2, achieved: true },
+      },
+    };
+  } catch (err) {
+    signal?.throwIfAborted();
+    log.verbose(`[chain-data] ${chainId} eth_getLogs index check failed: ${safeErrorMessage(err)}`);
+    return null;
+  }
 }
 
 // What a range-capped log scan gets when no quorum can serve its span: a
@@ -1130,6 +1298,12 @@ async function requestQuorum(chainId, method, params, options = {}) {
       lastError = err;
     }
   }
+  // A span wider than any quorum can serve may still be verified against an
+  // independent index of the same transfers.
+  if (logRange.indexQueryOf && quorumLogSpan(chainId, endpoints, m, Date.now()) < logRange.span) {
+    const indexed = await answerFromIndex(chainId, method, params, { ...options, keeper });
+    if (indexed !== null) return indexed;
+  }
   throw noQuorum(lastError);
 }
 
@@ -1281,6 +1455,7 @@ async function requestSource(
       keeper,
       quorumTimeoutMs,
       logRange,
+      signal,
     });
   }
   if (source === 'direct') {
@@ -1321,6 +1496,9 @@ async function request(
     // range a range-capped log scan: the quorum learns each endpoint's cap
     // and asks only endpoints that can serve the span (see logRangeState).
     rangeCapOf = null,
+    // Optional params -> { token, from } for a log scan an indexer can verify
+    // (an ERC-20 Transfer(from) filter), or null (see answerFromIndex).
+    indexQueryOf = null,
   } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
@@ -1345,7 +1523,15 @@ async function request(
     typeof rangeCapOf === 'function' && typeof rankError === 'function'
       ? logQuerySpan(method, params)
       : null;
-  const logRange = span === null ? null : { span, capOf: rangeCapOf, rank: rankError };
+  const logRange =
+    span === null
+      ? null
+      : {
+          span,
+          capOf: rangeCapOf,
+          rank: rankError,
+          indexQueryOf: typeof indexQueryOf === 'function' ? indexQueryOf : null,
+        };
   // Only a page-driven read (an app supplies its routing context) trades
   // verification for interactive latency. Wallet-internal reads have no user
   // watching a frame and keep the chain's configured timeout.

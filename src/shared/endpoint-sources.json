@@ -1,4 +1,11 @@
 {
+  "gnosis-blockscout": {
+    "role": "indexer",
+    "keyed": false,
+    "name": "Blockscout",
+    "coverage": { "100": "https://gnosisscan.io/api/v2" }
+  },
+
   "colibri-corpus": {
     "role": "prover",
     "keyed": false,

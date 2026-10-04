@@ -54,6 +54,7 @@ const {
   LOG_SCAN_ROUTER_OPTIONS,
   LOG_SCAN_ERROR_RANK,
   ANT_LOG_SCAN_SHRINK_NEEDLES,
+  XBZZ_TOKEN,
   antErrorReply,
   antShrinksLogScanOn,
 } = require('./ant-chain-bridge');
@@ -106,9 +107,11 @@ function rpcReply(body) {
 // One fetch behaviour. `{ kind, after }` delays it by `after` ms; a function
 // of the requested block span returns the behaviour for that span.
 function behave(step, signal) {
-  const { kind, after = 0 } = typeof step === 'string' ? { kind: step } : step;
+  const { kind, after = 0, result } = typeof step === 'string' ? { kind: step } : step;
   const now = () => {
     switch (kind) {
+      case 'result':
+        return rpcReply({ result });
       case 'range':
         return rpcReply({ error: RANGE });
       case 'timeoutReply':
@@ -171,29 +174,33 @@ let start = 0;
 // per-call behaviours (the last repeats), each a behaviour or a function of
 // the requested span. Myotis is ready and Colibri answers, so a case shows
 // that neither is asked.
-function useEndpoints(rpcs) {
+function useEndpoints(rpcs, { indexer = null } = {}) {
   const urls = Object.keys(rpcs).map((name) => `https://${name}.example`);
   mockRegistry.getNetwork.mockReturnValue({
     access: { readOrder: ['myotis', 'colibri', 'quorum', 'direct'] },
     quorum: { k: 3, m: 2, timeoutMs: QUORUM_MS },
   });
-  mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
-    role === 'prover' ? ['https://prover.example'] : urls
-  );
+  mockRegistry.getEndpoints.mockImplementation((_chainId, role) => {
+    if (role === 'prover') return ['https://prover.example'];
+    if (role === 'indexer') return indexer ? [INDEX_URL] : [];
+    return urls;
+  });
   mockMyotis.isReady.mockReturnValue(true);
   mockColibri.mockResolvedValue(LOGS);
   const calls = new Map();
-  global.fetch = jest.fn((url, { body, signal }) => {
+  global.fetch = jest.fn((url, { body, signal } = {}) => {
+    if (String(url).startsWith(INDEX_URL)) {
+      fetches.push(`index@${Date.now() - start}`);
+      return indexer(new URL(url), signal);
+    }
     const name = host(url);
     const n = calls.get(name) || 0;
     calls.set(name, n + 1);
     fetches.push(`${name}@${Date.now() - start}`);
     const script = [].concat(rpcs[name]);
     const step = script[Math.min(n, script.length - 1)];
-    return behave(
-      typeof step === 'function' ? step(spanOf(JSON.parse(body).params)) : step,
-      signal
-    );
+    const { params } = JSON.parse(body);
+    return behave(typeof step === 'function' ? step(spanOf(params), params) : step, signal);
   });
 }
 
@@ -643,5 +650,168 @@ describe('range caps (#484)', () => {
     expect(again).toMatchObject({ shrinks: false, at: 0 });
     expect(again.fetches).toEqual([]);
     expect(again.message).toContain('No RPC quorum available');
+  });
+});
+
+// The Blockscout check (#484): a span no RPC quorum can serve, answered by an
+// RPC that serves it whole and verified against Blockscout's index of the
+// same transfers. The xBZZ Transfer(from) logs of one wallet, as the RPC and
+// Blockscout report them.
+const INDEX_URL = 'https://index.example/api/v2';
+const WALLET = '0x2b7c998ae67905de2335d438e003dc5459b352e0';
+const RECIPIENT = '0x45a1502382541cd610cc9068e88727426b696293';
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const topicOf = (address) => `0x${address.slice(2).padStart(64, '0')}`;
+const transfer = (block, index) => ({
+  address: XBZZ_TOKEN,
+  topics: [TRANSFER_TOPIC, topicOf(WALLET), topicOf(RECIPIENT)],
+  data: `0x${(34_078_720_000_000_000n * BigInt(index + 1)).toString(16).padStart(64, '0')}`,
+  blockNumber: `0x${block.toString(16)}`,
+  transactionHash: `0x${(index + 1).toString(16).padStart(64, '0')}`,
+  logIndex: `0x${index.toString(16)}`,
+});
+const asItem = (log) => ({
+  block_number: parseInt(log.blockNumber, 16),
+  transaction_hash: log.transactionHash,
+  log_index: parseInt(log.logIndex, 16),
+  from: { hash: '0x2B7c998aE67905de2335d438E003dC5459b352E0' },
+  to: { hash: '0x45A1502382541cD610CC9068e88727426b696293' },
+  total: { value: BigInt(log.data).toString(), decimals: '16' },
+  token: { address_hash: '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da' },
+  type: 'token_transfer',
+});
+const TRANSFERS = [17_000_000, 30_000_000, 48_000_000, HEAD - 100].map(transfer);
+const LATE = transfer(HEAD - 1000, 9);
+const inRange = (logs, params) =>
+  logs.filter((log) => {
+    const block = parseInt(log.blockNumber, 16);
+    return block >= parseInt(params[0].fromBlock, 16) && block <= parseInt(params[0].toBlock, 16);
+  });
+// RPC behaviours that answer the transfers in the requested range.
+const serves =
+  (logs, cap = Infinity) =>
+  (span, params) =>
+    span > cap ? 'rangesOver' : { kind: 'result', result: inRange(logs, params) };
+const PUBLICNODE_T = (logs) => (span, params) =>
+  span > 50_000 ? 'publicnodeCap' : span > 10_000 ? 'nethermindCap' : serves(logs)(span, params);
+const scanOver = (span) => [
+  {
+    address: '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da',
+    topics: [TRANSFER_TOPIC, topicOf(WALLET)],
+    fromBlock: `0x${(HEAD - span + 1).toString(16)}`,
+    toBlock: `0x${HEAD.toString(16)}`,
+  },
+];
+const json = (body) => Promise.resolve({ ok: true, status: 200, json: async () => body });
+// A Blockscout stand-in: its indexed height and the items it lists.
+const blockscoutIndex =
+  ({ height = HEAD, items = TRANSFERS.map(asItem), endless = false, down = false } = {}) =>
+  (url) => {
+    if (down) return Promise.reject(new TypeError('fetch failed'));
+    if (url.pathname.endsWith('/main-page/blocks')) return json([{ height }]);
+    expect(url.pathname).toBe(`/api/v2/addresses/${WALLET}/token-transfers`);
+    expect(url.searchParams.get('token')).toBe(XBZZ_TOKEN);
+    expect(url.searchParams.get('filter')).toBe('from');
+    if (endless) return json({ items: [], next_page_params: { block_number: 1, index: 0 } });
+    return json({ items, next_page_params: null });
+  };
+const indexCalls = (got) => got.fetches.filter((entry) => entry.startsWith('index@')).length;
+
+describe('Blockscout check (#484)', () => {
+  test('the full history is one answer, verified by an RPC and Blockscout', async () => {
+    useEndpoints(
+      { a: serves(TRANSFERS), b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      { indexer: blockscoutIndex() }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got).toMatchObject({ result: TRANSFERS, source: 'quorum', at: 0 });
+    expect(indexCalls(got)).toBe(2);
+    // A second scan knows b's and c's caps and goes straight to the check.
+    const again = await scanOnce(scanOver(FULL_HISTORY));
+    expect(again).toMatchObject({ result: TRANSFERS, at: 0 });
+    expect(again.fetches.map((entry) => entry.split('@')[0])).toEqual([
+      'index',
+      'a',
+      'index',
+      'a',
+      'b',
+      'c',
+    ]);
+  });
+
+  test("blocks above Blockscout's height come from the quorum", async () => {
+    const all = [...TRANSFERS.slice(0, 3), LATE];
+    useEndpoints(
+      { a: serves(all), b: PUBLICNODE_T(all), c: serves(all, 10_000) },
+      {
+        indexer: blockscoutIndex({
+          height: HEAD - 5000,
+          items: TRANSFERS.slice(0, 3).map(asItem),
+        }),
+      }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got).toMatchObject({ result: all, at: 0 });
+  });
+
+  test.each([
+    ['disagrees (a transfer missing)', { items: TRANSFERS.slice(1).map(asItem) }],
+    [
+      'disagrees (a different value)',
+      {
+        items: TRANSFERS.map((log, i) => ({
+          ...asItem(log),
+          total: { value: i === 0 ? '1' : BigInt(log.data).toString() },
+        })),
+      },
+    ],
+    ['is down', { down: true }],
+    ['lists more than 100 pages', { endless: true }],
+  ])('when Blockscout %s, Ant is told to narrow', async (_name, index) => {
+    useEndpoints(
+      { a: serves(TRANSFERS), b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      { indexer: blockscoutIndex(index) }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got.result).toBeUndefined();
+    expect(got).toMatchObject({ shrinks: true, at: 0 });
+  });
+
+  test('more than 100 pages are not read', async () => {
+    useEndpoints(
+      { a: serves(TRANSFERS), b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      { indexer: blockscoutIndex({ endless: true }) }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    // The height, then 100 pages.
+    expect(indexCalls(got)).toBe(101);
+  });
+
+  test('without an RPC that serves the whole span, nothing is answered', async () => {
+    useEndpoints(
+      { a: 'down', b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      { indexer: blockscoutIndex() }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got.result).toBeUndefined();
+    expect(got.shrinks).toBe(true);
+  });
+
+  test("a query that isn't Ant's wallet scan is never checked", async () => {
+    useEndpoints({ a: FULL, b: PUBLICNODE, c: DRPC }, { indexer: blockscoutIndex() });
+    const got = await scanOnce(logsOver(FULL_HISTORY));
+    expect(got.result).toBeUndefined();
+    expect(indexCalls(got)).toBe(0);
+  });
+
+  test('without a configured indexer, the span is refused as before', async () => {
+    useEndpoints({
+      a: serves(TRANSFERS),
+      b: PUBLICNODE_T(TRANSFERS),
+      c: serves(TRANSFERS, 10_000),
+    });
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got).toMatchObject({ shrinks: true });
+    expect(indexCalls(got)).toBe(0);
   });
 });
