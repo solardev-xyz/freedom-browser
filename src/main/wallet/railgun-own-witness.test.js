@@ -1,3 +1,5 @@
+const mockPoiCapture = jest.fn();
+let mockPoiObservation;
 const mockObserve = jest.fn(),
   mockSourceCapture = jest.fn(),
   mockVerify = jest.fn(),
@@ -16,6 +18,18 @@ jest.mock('./railgun-own-source-capture', () => ({
     )
       throw Error('source expired');
     return mockSourceObservation;
+  },
+}));
+jest.mock('./railgun-poi-source-capture', () => ({
+  captureRailgunPoiSource: (...args) => mockPoiCapture(...args),
+  assertRailgunPoiSource: (receipt) => {
+    if (
+      receipt !== mockSource.receipt ||
+      !mockSourceCurrent ||
+      (mockSourceAt !== undefined && performance.now() - mockSourceAt >= 60000)
+    )
+      throw Error('poi source expired');
+    return mockPoiObservation;
   },
 }));
 jest.mock('./railgun-own-txid-verifier', () => ({
@@ -55,6 +69,7 @@ const { projectRailgunOwnRecord } = require('./railgun-own-txid');
 const {
   captureRailgunOwnWitness: capture,
   preflightRailgunOwnTransaction: preflight,
+  preflightRailgunOwnPoi: poiPreflight,
 } = require('./railgun-own-witness');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const copy = (v) => JSON.parse(JSON.stringify(v));
@@ -151,6 +166,24 @@ async function setup(unshield = false, mutateRow = () => {}) {
   mockSource = { receipt: {}, close: jest.fn(), signal: scope.signal };
   mockSourceCapture.mockImplementation(async () => {
     events.push('source');
+    mockSourceAt = performance.now();
+    return mockSource;
+  });
+  mockPoiObservation = {
+    sourceAuthenticated: true,
+    own: mockSourceObservation,
+    creator: {
+      creator: {
+        type: 'Shield',
+        tree: fixture.capsule.selection.tree,
+        position: fixture.capsule.selection.position,
+        preimage: { value: '1000' },
+      },
+      origin: { blockNumber: 5944700 },
+    },
+  };
+  mockPoiCapture.mockImplementation(async () => {
+    events.push('poi-source');
     mockSourceAt = performance.now();
     return mockSource;
   });
@@ -509,4 +542,91 @@ test('source acquisition budget includes a long visit before snapshot freshness 
   });
   expect((await preflight(options)).status).toBe('captured');
   expect(mockSourceCapture.mock.calls[0][0].timeoutMs).toBe(180000);
+});
+
+test('POI preflight joins the genuine capsule and one combined source receipt after verification', async () => {
+  const result = await poiPreflight({ ...options, capsule: { forged: true } });
+  expect(result.status).toBe('captured');
+  expect(events).toEqual([
+    'capture-selector-exited',
+    'receipt',
+    'txid-open',
+    'witness',
+    'txid-drained',
+    'verify-exited',
+    'poi-source',
+    'root',
+    'recapture',
+  ]);
+  expect(mockSourceCapture).not.toHaveBeenCalled();
+  expect(mockPoiCapture.mock.calls[0][0]).toMatchObject({
+    capsule: first.capture.capsule,
+    record: first.capture.record,
+    transaction: fixture.transaction,
+    receipt: fixture.receipt,
+  });
+  expect(result.poiPreparation).toEqual({
+    creator: mockPoiObservation.creator.creator,
+    ownEvidence: {
+      capsule: latest.capture.capsule,
+      record: latest.capture.record,
+      transaction: fixture.transaction,
+      receipt: fixture.receipt,
+      row: witness.row,
+    },
+    state,
+    witness,
+  });
+  expect(result.sourceAuthenticated).toBe(false);
+  expect(result.poiVerified).toBe(false);
+  expect(result.disclosureEnabled).toBe(false);
+  expect(result.spendingEnabled).toBe(false);
+  expect(result.poiPreparation.receipt).toBeUndefined();
+  expect(Object.isFrozen(result.poiPreparation.ownEvidence.capsule)).toBe(true);
+  expect(mockSource.close).toHaveBeenCalledTimes(1);
+});
+test.each([
+  [5944699, true],
+  [5944700, false],
+  [5944701, false],
+])(
+  'classifies creator block %s as legacy=%s without selecting list proofs',
+  async (number, legacy) => {
+    mockPoiObservation.creator.origin.blockNumber = number;
+    const result = await poiPreflight(options);
+    expect(result.creatorClassification).toEqual({ type: 'Shield', blockNumber: number, legacy });
+    expect(result.poiPreparation.listProofs).toBeUndefined();
+  }
+);
+test('existing exports cannot select POI mode through extra arguments or properties', async () => {
+  expect((await capture({ ...options, poi: true }, true, true)).poiPreparation).toBeUndefined();
+  expect((await preflight({ ...options, poi: true }, true)).poiPreparation).toBeUndefined();
+  expect(mockPoiCapture).not.toHaveBeenCalled();
+});
+test.each(['source', 'expired-source', 'root', 'capsule-drift'])(
+  'POI preflight refuses %s without returning preparation',
+  async (mode) => {
+    if (mode === 'source') mockPoiCapture.mockRejectedValue(Error('source refused'));
+    if (mode === 'expired-source')
+      mockCapture.mockImplementation(async () => {
+        mockSourceCurrent = false;
+        return latest;
+      });
+    if (mode === 'root') mockRoots.acquire.mockRejectedValue(Error('root refused'));
+    if (mode === 'capsule-drift') latest.capture.capsule.noteHash = '0x' + '1'.repeat(64);
+    const result = await poiPreflight(options);
+    expect(result.status).toBe('refused');
+    expect(result.poiPreparation).toBeUndefined();
+    if (mode !== 'source') expect(mockSource.close).toHaveBeenCalled();
+  }
+);
+test('POI source stays late after slow verifier and retains the 180-second acquisition budget', async () => {
+  jest.useFakeTimers();
+  mockVerify.mockImplementation(async () => {
+    await jest.advanceTimersByTimeAsync(50001);
+    return { pathVerified: true };
+  });
+  expect((await poiPreflight(options)).status).toBe('captured');
+  expect(mockSourceAt).toBeGreaterThan(45000);
+  expect(mockPoiCapture.mock.calls[0][0].timeoutMs).toBe(180000);
 });

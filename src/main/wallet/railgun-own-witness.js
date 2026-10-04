@@ -18,6 +18,8 @@ const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
 const { observeRailgunOwnReceipt } = require('./railgun-own-receipt');
 const { captureRailgunOwnSource, assertRailgunOwnSource } = require('./railgun-own-source-capture');
 const { verifyRailgunOwnTxid } = require('./railgun-own-txid-verifier');
+const { captureRailgunPoiSource, assertRailgunPoiSource } = require('./railgun-poi-source-capture');
+const { POI_LAUNCH_BLOCK } = require('./railgun-owned-poi-records');
 const { createRailgunTxidRootSource } = require('./railgun-txid-root');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const freeze = (value) => {
@@ -29,7 +31,8 @@ const freeze = (value) => {
 };
 async function captureRailgunOwnWitness(
   { enrollment, coordinator, archive, selector, signal, timeoutMs } = {},
-  preflight = false
+  preflight = false,
+  poi = false
 ) {
   let stage = 'context',
     timer,
@@ -96,6 +99,8 @@ async function captureRailgunOwnWitness(
       }
       const derived = first.derived;
       let chain, sourceObservation, verified, rootReceipt, rootObservation;
+      const captureSource = poi ? captureRailgunPoiSource : captureRailgunOwnSource;
+      const assertSource = poi ? assertRailgunPoiSource : assertRailgunOwnSource;
       if (preflight) {
         stage = 'receipt';
         const observed = await observeRailgunOwnReceipt({
@@ -173,19 +178,20 @@ async function captureRailgunOwnWitness(
       }
       if (preflight) {
         stage = 'source';
-        source = await captureRailgunOwnSource({
+        source = await captureSource({
           enrollment,
           coordinator,
           record: first.capture.record,
+          ...(poi ? { capsule: first.capture.capsule } : {}),
           transaction: chain.transaction,
           receipt: chain.receipt,
           signal: lifetime,
           timeoutMs: remaining(180000),
         });
         current();
-        sourceObservation = assertRailgunOwnSource(source.receipt, enrollment, coordinator);
+        sourceObservation = assertSource(source.receipt, enrollment, coordinator);
         assert.deepEqual(
-          sourceObservation.suppliedOutcome,
+          (poi ? sourceObservation.own : sourceObservation).suppliedOutcome,
           first.capture.projection.railgun.transact
         );
         stage = 'root';
@@ -269,10 +275,7 @@ async function captureRailgunOwnWitness(
       let observations;
       if (preflight) {
         stage = 'observations';
-        assert.deepEqual(
-          assertRailgunOwnSource(source.receipt, enrollment, coordinator),
-          sourceObservation
-        );
+        assert.deepEqual(assertSource(source.receipt, enrollment, coordinator), sourceObservation);
         assert.deepEqual(
           roots.assertRoot(rootReceipt, { index: state.count - 1, root: state.root }),
           rootObservation
@@ -306,6 +309,28 @@ async function captureRailgunOwnWitness(
       return freeze({
         status: 'captured',
         ...(observations ? { observations } : {}),
+        ...(poi
+          ? {
+              poiPreparation: {
+                creator: sourceObservation.creator.creator,
+                ownEvidence: {
+                  capsule: latest.capture.capsule,
+                  record: latest.capture.record,
+                  transaction: chain.transaction,
+                  receipt: chain.receipt,
+                  row: witness.row,
+                },
+                state,
+                witness,
+              },
+              creatorClassification: {
+                type: sourceObservation.creator.creator.type,
+                blockNumber: sourceObservation.creator.origin.blockNumber,
+                legacy: sourceObservation.creator.origin.blockNumber < POI_LAUNCH_BLOCK,
+              },
+              disclosureEnabled: false,
+            }
+          : {}),
         capture: latest.capture,
         state,
         witness,
@@ -338,4 +363,5 @@ async function captureRailgunOwnWitness(
 module.exports = {
   captureRailgunOwnWitness: (options) => captureRailgunOwnWitness(options),
   preflightRailgunOwnTransaction: (options) => captureRailgunOwnWitness(options, true),
+  preflightRailgunOwnPoi: (options) => captureRailgunOwnWitness(options, true, true),
 };
