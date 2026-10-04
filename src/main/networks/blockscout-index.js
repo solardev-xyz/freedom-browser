@@ -46,13 +46,21 @@ async function getJson(url, signal) {
 }
 
 /**
- * The newest block Blockscout has indexed.
+ * The newest block Blockscout has indexed, when its block indexing is
+ * complete. Blockscout indexes new blocks as they come and catches up on
+ * history separately: until it reports that catch-up finished, an old
+ * transfer may be missing although the newest block is current, so the index
+ * cannot vouch for a range and IndexUnavailableError is thrown.
  */
 async function indexedHeight(baseUrl, { signal } = {}) {
-  const blocks = await getJson(
-    `${baseUrl}/main-page/blocks`,
-    signal || new AbortController().signal
-  );
+  const live = signal || new AbortController().signal;
+  const [status, blocks] = await Promise.all([
+    getJson(`${baseUrl}/main-page/indexing-status`, live),
+    getJson(`${baseUrl}/main-page/blocks`, live),
+  ]);
+  if (status?.finished_indexing_blocks !== true) {
+    throw new IndexUnavailableError('Blockscout has not finished indexing blocks');
+  }
   const height = Number(blocks?.[0]?.height);
   if (!Number.isSafeInteger(height) || height <= 0) {
     throw new IndexUnavailableError('Blockscout reported no indexed height');

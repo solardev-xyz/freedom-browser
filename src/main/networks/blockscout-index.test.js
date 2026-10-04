@@ -16,11 +16,41 @@ afterEach(() => {
   global.fetch = originalFetch;
 });
 
+// What gnosisscan.io answers (2026-10-04).
+const FINISHED = {
+  finished_indexing: true,
+  finished_indexing_blocks: true,
+  indexed_blocks_ratio: '1.00',
+  indexed_internal_transactions_ratio: '1.00',
+};
+const indexAnswers =
+  ({ status = FINISHED, blocks = [{ height: 48588282 }, { height: 48588281 }] } = {}) =>
+  (url) =>
+    String(url).endsWith('/main-page/indexing-status') ? status() : blocks();
+
 describe('indexedHeight', () => {
-  test('is the newest block Blockscout lists', async () => {
-    global.fetch = jest.fn(() => reply([{ height: 48588282 }, { height: 48588281 }]));
+  test('is the newest block Blockscout lists, once it has indexed every block', async () => {
+    global.fetch = jest.fn(
+      indexAnswers({ status: () => reply(FINISHED), blocks: () => reply([{ height: 48588282 }]) })
+    );
     await expect(indexedHeight(BASE)).resolves.toBe(48588282);
-    expect(global.fetch.mock.calls[0][0]).toBe(`${BASE}/main-page/blocks`);
+    expect(global.fetch.mock.calls.map(([url]) => url).sort()).toEqual([
+      `${BASE}/main-page/blocks`,
+      `${BASE}/main-page/indexing-status`,
+    ]);
+  });
+
+  test.each([
+    [
+      'still catching up on blocks',
+      { ...FINISHED, finished_indexing_blocks: false, indexed_blocks_ratio: '0.98' },
+    ],
+    ['no block status', { finished_indexing: true }],
+  ])('cannot vouch for a range while %s', async (_name, status) => {
+    global.fetch = jest.fn(
+      indexAnswers({ status: () => reply(status), blocks: () => reply([{ height: 48588282 }]) })
+    );
+    await expect(indexedHeight(BASE)).rejects.toThrow('has not finished indexing blocks');
   });
 
   test.each([
@@ -29,7 +59,7 @@ describe('indexedHeight', () => {
     ['HTTP 503', () => reply({}, 503)],
     ['a network failure', () => Promise.reject(new TypeError('fetch failed'))],
   ])('fails as unavailable on %s', async (_name, answer) => {
-    global.fetch = jest.fn(answer);
+    global.fetch = jest.fn(indexAnswers({ status: () => reply(FINISHED), blocks: answer }));
     await expect(indexedHeight(BASE)).rejects.toBeInstanceOf(IndexUnavailableError);
   });
 });

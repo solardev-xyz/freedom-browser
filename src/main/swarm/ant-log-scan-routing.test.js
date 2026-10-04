@@ -705,9 +705,18 @@ const scanOver = (span) => [
 const json = (body) => Promise.resolve({ ok: true, status: 200, json: async () => body });
 // A Blockscout stand-in: its indexed height and the items it lists.
 const blockscoutIndex =
-  ({ height = HEAD, items = TRANSFERS.map(asItem), endless = false, down = false } = {}) =>
+  ({
+    height = HEAD,
+    items = TRANSFERS.map(asItem),
+    endless = false,
+    down = false,
+    catchingUp = false,
+  } = {}) =>
   (url) => {
     if (down) return Promise.reject(new TypeError('fetch failed'));
+    if (url.pathname.endsWith('/main-page/indexing-status')) {
+      return json({ finished_indexing: !catchingUp, finished_indexing_blocks: !catchingUp });
+    }
     if (url.pathname.endsWith('/main-page/blocks')) return json([{ height }]);
     expect(url.pathname).toBe(`/api/v2/addresses/${WALLET}/token-transfers`);
     expect(url.searchParams.get('token')).toBe(XBZZ_TOKEN);
@@ -725,11 +734,13 @@ describe('Blockscout check (#484)', () => {
     );
     const got = await scanOnce(scanOver(FULL_HISTORY));
     expect(got).toMatchObject({ result: TRANSFERS, source: 'quorum', at: 0 });
-    expect(indexCalls(got)).toBe(2);
+    // Indexing status and height, then the transfers.
+    expect(indexCalls(got)).toBe(3);
     // A second scan knows b's and c's caps and goes straight to the check.
     const again = await scanOnce(scanOver(FULL_HISTORY));
     expect(again).toMatchObject({ result: TRANSFERS, at: 0 });
     expect(again.fetches.map((entry) => entry.split('@')[0])).toEqual([
+      'index',
       'index',
       'a',
       'index',
@@ -766,6 +777,7 @@ describe('Blockscout check (#484)', () => {
       },
     ],
     ['is down', { down: true }],
+    ['is still catching up on old blocks', { catchingUp: true }],
     ['lists more than 100 pages', { endless: true }],
   ])('when Blockscout %s, Ant is told to narrow', async (_name, index) => {
     useEndpoints(
@@ -783,8 +795,8 @@ describe('Blockscout check (#484)', () => {
       { indexer: blockscoutIndex({ endless: true }) }
     );
     const got = await scanOnce(scanOver(FULL_HISTORY));
-    // The height, then 100 pages.
-    expect(indexCalls(got)).toBe(101);
+    // The indexing status and height, then 100 pages.
+    expect(indexCalls(got)).toBe(102);
   });
 
   test('without an RPC that serves the whole span, nothing is answered', async () => {

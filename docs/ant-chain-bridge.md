@@ -71,7 +71,10 @@ full-range answer against Blockscout's index of the same transfers (the
 `blockscout-index.js`) instead of refusing: same block, transaction, log
 index, sender, recipient and value for every transfer, nothing extra on
 either side. The check stops 64 blocks below Blockscout's indexed height; the
-blocks above go through the quorum. It reads at most 100 pages of 50
+blocks above go through the quorum (refused when wider than a quorum can
+serve). It is only used while Blockscout reports its block indexing finished
+(`/main-page/indexing-status`): while it is still catching up on history, an
+old transfer could be missing although its newest block is current. It reads at most 100 pages of 50
 transfers, each within 15 s and all within 60 s. Any disagreement, failure or
 timeout falls back to the refusal above, so Ant narrows its window. Blockscout
 sees the node wallet's address for this.
