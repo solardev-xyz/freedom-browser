@@ -2,6 +2,7 @@
 
 const path = require('path');
 const { loadPiSdk } = require('./pi-sdk');
+const { loginChatGPT } = require('./chatgpt-login');
 const {
   PROVIDER_DEFINITIONS,
   CUSTOM_PROVIDERS,
@@ -254,6 +255,12 @@ class AgentProviderResolver {
     const runtime = await this.#createRuntime(providerId);
     if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
+    }
+    if (providerId === 'openai-chatgpt') {
+      const provider = runtime.getProvider('openai');
+      runtime.registerNativeProvider({ ...provider,
+        auth: { ...provider.auth, oauth: { ...provider.auth.oauth, login: loginChatGPT } },
+      });
     }
     await runtime.login(runtimeProviderId(providerId), 'oauth', interaction,
       providerId === 'openai-chatgpt' ? { getDeviceId: () => this.store.getDeviceId() } : undefined);

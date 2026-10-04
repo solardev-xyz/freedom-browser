@@ -134,6 +134,7 @@ test('native ChatGPT login, refresh and Meta Responses stay separate from API ke
           scope: 'openid chatgpt.tokens.use.direct' });
       };
       let authorization;
+      let callbackPage;
       await resolver.loginSubscription({ providerId: 'openai-chatgpt', modelId: 'gpt-6.1-sol' }, {
         signal: new AbortController().signal,
         notify: event => { if (event.type === 'auth_url') authorization = new URL(event.url); },
@@ -141,9 +142,21 @@ test('native ChatGPT login, refresh and Meta Responses stay separate from API ke
           assert.equal(prompt.type, 'manual_code');
           assert.equal(authorization.origin, 'https://auth.openai.com');
           assert.equal(authorization.searchParams.get('code_challenge_method'), 'S256');
-          return 'http://127.0.0.1:1455/auth/callback?code=test-code&client_id=issued-client&state=' + authorization.searchParams.get('state');
+          assert.equal(authorization.searchParams.get('agent_name_hint'), 'Freedom Browser');
+          callbackPage = new Promise((resolve, reject) => {
+            require('http').get('http://127.0.0.1:1455/auth/callback?code=test-code&client_id=issued-client&state=' + authorization.searchParams.get('state'), response => {
+              let body = '';
+              response.on('data', chunk => body += chunk);
+              response.on('end', () => resolve({ status: response.statusCode, body }));
+            }).on('error', reject);
+          });
+          return new Promise((_resolve, reject) => prompt.signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true }));
         },
       });
+      const page = await callbackPage;
+      assert.equal(page.status, 200);
+      assert(page.body.includes('ChatGPT connected'));
+      assert(page.body.includes('alt="Freedom Browser"'));
       assert.equal(requests[0].body.get('client_id'), 'issued-client');
       assert(requests[0].body.get('code_verifier'));
       const deviceId = store.getDeviceId();

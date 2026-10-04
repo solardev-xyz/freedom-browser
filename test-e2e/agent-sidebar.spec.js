@@ -28,6 +28,43 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+test('ChatGPT callback uses Freedom branding and a declined login can be retried', async ({ electronApp, window }, testInfo) => {
+  await electronApp.evaluate(({ shell }) => {
+    shell.openExternal = async url => { globalThis.chatGPTAuthorization = url; };
+  });
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await window.locator('#agent-provider-chatgpt').click();
+  await window.locator('#agent-provider-login').click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.chatGPTAuthorization)).toBeTruthy();
+  const authorization = new URL(await electronApp.evaluate(() => globalThis.chatGPTAuthorization));
+  expect(authorization.searchParams.get('agent_name_hint')).toBe('Freedom Browser');
+  const callback = new URL(authorization.searchParams.get('redirect_uri'));
+  callback.search = new URLSearchParams({ state: authorization.searchParams.get('state'), error: 'access_denied' }).toString();
+  const callbackWindow = electronApp.waitForEvent('window');
+  await electronApp.evaluate(({ BrowserWindow, session }, url) => {
+    // This test visits only the local callback, which the harness normally blocks.
+    session.defaultSession.protocol.unhandle('http');
+    const callback = new BrowserWindow({ width: 720, height: 560, show: false,
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    void callback.loadURL(url);
+  }, callback.toString());
+  const page = await callbackWindow;
+  await expect(page.getByRole('heading', { name: 'Connection cancelled' })).toBeVisible();
+  await expect(page.getByRole('img', { name: 'Freedom Browser' })).toBeVisible();
+  for (const colorScheme of ['dark', 'light']) {
+    await page.emulateMedia({ colorScheme });
+    await page.screenshot({ path: testInfo.outputPath(`chatgpt-cancelled-${colorScheme}.png`) });
+  }
+  await expect(window.locator('#agent-provider-login')).toBeVisible();
+  await window.locator('#agent-provider-login').click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.chatGPTAuthorization)).not.toBe(authorization.toString());
+  await window.locator('#agent-provider-cancel-login').click();
+  await expect(window.locator('#agent-provider-login')).toBeVisible();
+  await page.close();
+});
+
 test('model picker collapses providers while keeping favorites and searchable models in both themes', async ({ electronApp, window }, testInfo) => {
   await electronApp.evaluate((_electron, root) => {
     const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
