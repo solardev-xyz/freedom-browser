@@ -141,6 +141,7 @@ function issue(n = 1, revision = 1, change = () => {}) {
     railgunTxidIfHasUnshield: '0x00',
   });
   const history = {
+    preparation: { creator: { type: 'Shield' } },
     payload,
     expected: { ...payload, outputCount: 1 },
     payloadSha256: sha(payload),
@@ -2038,5 +2039,52 @@ describe.each(['caller', 'window'])(
         expect(minimum).toBe(point === 'update-callback' ? 1 : 2);
       }
     );
+  }
+);
+
+test.each(['empty', 'prepared', 'attempted'])(
+  'mock-registry Transact proof refuses before recovery and leaves %s encrypted store unchanged',
+  async (state) => {
+    const store = await open();
+    if (state !== 'empty') expect((await prepare(store)).status).toBe('prepared');
+    if (state === 'attempted') expect((await begin(store)).status).toBe('attempted');
+    const inspect = await store.inspect(),
+      list = await store.list();
+    const ciphertext = fs.readFileSync(filename());
+    const floor = minimum,
+      advances = options.advanceFloor.mock.calls.length;
+    const recoveries = withRailgunOwnOperationRecovery.mock.calls.length;
+    const issued = issue(2, 1, (history) => {
+      history.preparation.creator.type = 'Transact';
+    });
+    expect(await prepare(store, issued)).toEqual({ status: 'refused', stage: 'context' });
+    expect(withRailgunOwnOperationRecovery).toHaveBeenCalledTimes(recoveries);
+    expect(options.advanceFloor).toHaveBeenCalledTimes(advances);
+    expect(minimum).toBe(floor);
+    expect(await store.inspect()).toEqual(inspect);
+    expect(await store.list()).toEqual(list);
+    expect(fs.readFileSync(filename())).toEqual(ciphertext);
+    expect(await store.get(hex(2))).toBeNull();
+    expect(store.signal.aborted).toBe(false);
+    // The rejected mutation released ownership; no reset/reopen is needed.
+    expect((await prepare(store, issue(2))).status).toBe('prepared');
+  }
+);
+test.each(['missing-preparation', 'missing-creator', 'unknown-type'])(
+  'incomplete mock proof history %s cannot write an intent',
+  async (fault) => {
+    const store = await open();
+    const issued = issue(2, 1, (history) => {
+      if (fault === 'missing-preparation') delete history.preparation;
+      if (fault === 'missing-creator') delete history.preparation.creator;
+      if (fault === 'unknown-type') history.preparation.creator.type = 'Other';
+    });
+    const ciphertext = fs.readFileSync(filename()),
+      floor = minimum;
+    expect(await prepare(store, issued)).toEqual({ status: 'refused', stage: 'context' });
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(fs.readFileSync(filename())).toEqual(ciphertext);
+    expect(minimum).toBe(floor);
+    expect((await prepare(store)).status).toBe('prepared');
   }
 );

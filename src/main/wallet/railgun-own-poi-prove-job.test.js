@@ -191,3 +191,190 @@ test('cancellation drains the proof before wiping and never sends a payload', as
   expect(bytes.equals(Buffer.alloc(32))).toBe(true);
   expect(request).not.toHaveBeenCalled();
 });
+
+// Structural fixture only: real capsule/receipt/row/schema checks, synthetic
+// Merkle fields. It does not establish cryptographic path/proof correctness.
+function makeTransactProofFixture(unshield = false) {
+  const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+  const hash = (v) =>
+    require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
+  const evidence = require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
+  const descriptor = {
+    walletId: evidence.capsule.walletId,
+    instanceId: '0zk1' + 'q'.repeat(123),
+    masterPublicKey: h(3).slice(2),
+    spendingPublicKey: [h(4).slice(2), h(5).slice(2)],
+    viewingPublicKey: h(6).slice(2),
+    accountIndex: 0,
+  };
+  const creator = {
+    type: 'Transact',
+    tree: evidence.capsule.selection.tree,
+    position: evidence.capsule.selection.position,
+    hash: evidence.capsule.noteHash,
+    ciphertext: {
+      ciphertext: [h(7), h(8), h(9), h(10)],
+      blindedSenderViewingKey: h(11),
+      blindedReceiverViewingKey: h(12),
+      annotationData: '0x',
+      memo: '0x',
+    },
+  };
+  const state = { count: 2, root: h(15).slice(2), transcript: h(16).slice(2), breaks: [] };
+  const witnessFor = (row, index) => ({
+    row: JSON.parse(JSON.stringify(row)),
+    leaf: h(17 + index).slice(2),
+    railgunTxid: h(19 + index).slice(2),
+    rowSha256: hash(row),
+    index,
+    elements: Array(16).fill(h(0).slice(2)),
+    root: state.root,
+    checkpointIndex: 1,
+    transcript: state.transcript,
+    continuity: require('./railgun-txid-omissions').classifyRailgunTxidContinuity(1, []),
+    globalTxidCompleteness: false,
+  });
+  const blockNumber = evidence.row.blockNumber - 1;
+  const creatorRow = {
+    version: 'V2',
+    graphID: h(blockNumber) + h(2).slice(2) + h(0).slice(2),
+    commitments: [creator.hash],
+    nullifiers: [h(700)],
+    boundParamsHash: h(701),
+    blockNumber,
+    txid: h(706).slice(2),
+    timestamp: blockNumber,
+    utxoTreeIn: creator.tree,
+    utxoTreeOut: creator.tree,
+    utxoBatchStartPositionOut: creator.position,
+    verificationHash: evidence.row.verificationHash,
+  };
+  const note = {
+    type: 'Transact',
+    tree: creator.tree,
+    position: creator.position,
+    hash: creator.hash,
+    txid: h(706),
+    blockNumber,
+  };
+  const input = {
+    archive: '/engine.asar',
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    descriptor,
+    preparation: { creator, ownEvidence: evidence, state, witness: witnessFor(evidence.row, 1) },
+    listProofs: [
+      {
+        leaf: h(21).slice(2),
+        root: h(22).slice(2),
+        indices: h(0).slice(2),
+        elements: Array(16).fill(h(0).slice(2)),
+      },
+    ],
+  };
+  const selectorInput =
+    require('./railgun-poi-transact-selector-data').prepareRailgunPoiTransactSelectorInput({
+      archive: input.archive,
+      descriptor,
+      capsule: evidence.capsule,
+      creator,
+    });
+  return {
+    input,
+    selector: {
+      blindedCommitment: h(21),
+      bindingDigest: selectorInput.bindingDigest,
+      inputSha256: hash(selectorInput),
+    },
+    creatorProvenance: {
+      note,
+      noteWitness: {
+        note,
+        outputIndex: 0,
+        witness: witnessFor(creatorRow, 0),
+        ownershipVerified: false,
+        eventCoverageVerified: false,
+        rootAccepted: false,
+        spendingEnabled: false,
+      },
+      verification: {
+        utilityExitObserved: true,
+        pathVerified: true,
+        suppliedCreatorEventsMatched: true,
+        coverage: { matchedRows: 1, knownOmissions: 0 },
+      },
+    },
+  };
+}
+
+function useActualTransactInput(unshield = false) {
+  const actual = jest.requireActual('./railgun-own-poi-proof-data');
+  const mocked = require('./railgun-own-poi-proof-data');
+  mockInput = makeTransactProofFixture(unshield).input;
+  mocked.normalizeRailgunOwnPoiProofInput.mockImplementation(
+    actual.normalizeRailgunOwnPoiProofInput
+  );
+  mocked.expectedRailgunOwnPoiFields.mockImplementation(actual.expectedRailgunOwnPoiFields);
+  mockExpected = actual.expectedRailgunOwnPoiFields(
+    actual.normalizeRailgunOwnPoiProofInput(mockInput)
+  );
+  mockPayload = {
+    ...mockExpected,
+    proof: {
+      pi_a: ['1', '2'],
+      pi_b: [
+        ['3', '4'],
+        ['5', '6'],
+      ],
+      pi_c: ['7', '8'],
+    },
+    blindedCommitmentsOut: unshield ? [] : [hex(1)],
+  };
+  delete mockPayload.outputCount;
+  text = JSON.stringify(mockInput);
+}
+test.each([false, true])(
+  'worker applies actual Transact input normalization before one key: unshield=%s',
+  async (unshield) => {
+    useActualTransactInput(unshield);
+    request.mockImplementation(async (wire) => {
+      expect(bytes).toEqual(Buffer.alloc(32));
+      const result = JSON.parse(wire);
+      expect(result.value.payload).toEqual(mockPayload);
+      expect(result.value.sourceAuthenticated).toBe(false);
+      expect(result.value.rootAccepted).toBe(false);
+      return JSON.stringify({ id: 2, value: null });
+    });
+    await run(text, context());
+    expect(requestKey).toHaveBeenCalledTimes(1);
+    expect(mockProve).toHaveBeenCalledTimes(1);
+    expect(mockProve.mock.calls[0][0].creator).toEqual(mockInput.preparation.creator);
+    expect(mockProve.mock.calls[0][0].witness).toEqual(mockInput.preparation.witness);
+    expect(mockProve.mock.calls[0][0].descriptor).toEqual(mockInput.descriptor);
+    await expect(run(text, context())).rejects.toMatchObject({
+      code: 'RAILGUN_OWN_POI_PROOF_REFUSED',
+    });
+    expect(requestKey).toHaveBeenCalledTimes(1);
+  }
+);
+test.each(['creator', 'descriptor', 'capsule', 'witness', 'list', 'extra'])(
+  'worker real Transact normalizer rejects %s before artifacts or key',
+  async (fault) => {
+    useActualTransactInput();
+    if (fault === 'creator') mockInput.preparation.creator.ciphertext.ciphertext.pop();
+    if (fault === 'descriptor') mockInput.descriptor.instanceId = '0zk1' + 'p'.repeat(123);
+    if (fault === 'capsule') mockInput.preparation.ownEvidence.capsule.pathElements.pop();
+    if (fault === 'witness') mockInput.preparation.witness.elements.pop();
+    if (fault === 'list') mockInput.listProofs[0].elements.pop();
+    if (fault === 'extra') mockInput.preparation.privateWitness = {};
+    text = JSON.stringify(mockInput);
+    await expect(run(text, context())).rejects.toMatchObject({
+      code: 'RAILGUN_OWN_POI_PROOF_REFUSED',
+      message: 'Railgun own POI proof unavailable',
+    });
+    expect(require('./railgun-artifacts').loadRailgunArtifacts).not.toHaveBeenCalled();
+    expect(requestKey).not.toHaveBeenCalled();
+    expect(mockProve).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  }
+);

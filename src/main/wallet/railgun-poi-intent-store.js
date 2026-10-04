@@ -365,6 +365,10 @@ async function createRailgunPoiIntentStore({
       const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
       const lifetime = AbortSignal.any([signal, scope.signal]);
       const history = assertRailgunOwnPoiProof(proof, enrollment, coordinator);
+      // Prepared records do not encode creator type. Until Transact output and
+      // validation are qualified together, refuse here before recovery/write so
+      // a local proof cannot enter that still-Shield-only disclosure path.
+      assert.equal(history.preparation.creator.type, 'Shield');
       const payload = bindRailgunOwnPoiPayload(history.payload, history.expected);
       assert.equal(hash(JSON.stringify(payload)), history.payloadSha256);
       const currentProof = () => {

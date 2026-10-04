@@ -6,6 +6,7 @@ const path = require('path');
 const { matchRailgunOwnTxid } = require('./railgun-own-txid');
 const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
+const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
 const { normalizePoiProofs, REQUIRED_LIST } = require('./railgun-poi-records');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const freeze = (v) => {
@@ -36,9 +37,27 @@ function normalizeRailgunOwnPoiProofInput(value) {
   shape(v.preparation, ['creator', 'ownEvidence', 'state', 'witness']);
   shape(v.preparation.ownEvidence, ['capsule', 'record', 'transaction', 'receipt', 'row']);
   const { creator, ownEvidence, state, witness } = v.preparation;
-  normalizeRailgunPoiShieldInput(ownEvidence.capsule, creator);
+  if (creator.type === 'Transact') {
+    // Reuse the selector's exact current-format receiver input bounds. This
+    // structural branch authenticates neither creator history nor typed POI.
+    const normalized = prepareRailgunPoiTransactSelectorInput({
+      archive: v.archive,
+      descriptor: v.descriptor,
+      capsule: ownEvidence.capsule,
+      creator,
+    });
+    assert.deepEqual(normalized.capsule, ownEvidence.capsule);
+    v.descriptor = normalized.descriptor;
+    v.preparation.creator = normalized.creator;
+  } else {
+    normalizeRailgunPoiShieldInput(ownEvidence.capsule, creator);
+  }
   assert.equal(v.descriptor.walletId, ownEvidence.capsule.walletId);
   const matched = matchRailgunOwnTxid(ownEvidence);
+  if (creator.type === 'Transact') {
+    assert.equal(matched.row.nullifiers.length, 1);
+    assert.equal(matched.row.commitments.length, 1);
+  }
   const normalizedWitness = normalizeRailgunTxidWitness(witness, state);
   assert.deepEqual(normalizedWitness.row, matched.row);
   assert.ok(Array.isArray(v.listProofs) && v.listProofs.length === 1);
@@ -46,7 +65,7 @@ function normalizeRailgunOwnPoiProofInput(value) {
   v.listProofs = normalizePoiProofs(v.listProofs, [
     {
       blindedCommitment: '0x' + v.listProofs[0].leaf.replace(/^0x/, ''),
-      type: 'Shield',
+      type: creator.type,
     },
   ]);
   return freeze(v);

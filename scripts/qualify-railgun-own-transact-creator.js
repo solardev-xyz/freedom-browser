@@ -1,6 +1,7 @@
 /** Genuine encrypted enrolled Transact-creator preflight with synthetic chain
  * and service transport. Actual current-format self/foreign input encryption;
- * structural spend proof/signature only. No owned-note query or live request.
+ * structural spend proof/signature only. Optional intercepted typed membership
+ * and actual local POI proving; no live request or proof submission.
  * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield self|foreign
  */
 const { app } = require('electron');
@@ -38,6 +39,17 @@ const sources = [
   'src/main/wallet/railgun-poi-job.js',
   'src/main/wallet/railgun-own-poi-proof.js',
   'src/main/wallet/railgun-own-poi-proof-data.js',
+  'src/main/wallet/railgun-own-poi-proof-data.test.js',
+  'src/main/wallet/railgun-own-transact-poi-proof-data.test.js',
+  'src/main/wallet/railgun-own-poi-proof.test.js',
+  'src/main/wallet/railgun-own-poi-prove-job.js',
+  'src/main/wallet/railgun-own-poi-prove-job.test.js',
+  'src/main/wallet/railgun-poi-prover.js',
+  'src/main/wallet/railgun-poi-verifier.js',
+  'src/main/wallet/railgun-poi-verify-job.js',
+  'src/main/wallet/railgun-poi-intent-store.js',
+  'src/main/wallet/railgun-poi-intent-store.test.js',
+  'src/main/wallet/railgun-prover-manifest.json',
   'scripts/fixtures/railgun-own-poi-membership-input-job.js',
   'src/main/wallet/railgun-poi-transact-selector.js',
   'src/main/wallet/railgun-poi-transact-selector-data.js',
@@ -59,7 +71,6 @@ const sources = [
   'src/main/wallet/railgun-poi-source-evidence.test.js',
   'src/main/wallet/railgun-poi-source-capture.test.js',
   'src/main/wallet/railgun-private-creator.test.js',
-
   'src/main/wallet/railgun-own-receipt.js',
   'src/main/wallet/railgun-own-txid-verifier.js',
   'src/main/wallet/railgun-own-txid-job.js',
@@ -112,7 +123,6 @@ const sources = [
   'src/main/wallet/railgun-private-operate-job.js',
   'src/main/wallet/railgun-private-prover.js',
   'src/main/wallet/railgun-prover-runtime.js',
-  'src/main/wallet/railgun-prover-manifest.json',
   'src/main/wallet/railgun-artifacts.js',
   'src/main/wallet/privacy-artifacts.js',
   'src/main/wallet/railgun-spend-sign-job.js',
@@ -205,22 +215,61 @@ const sources = [
   'src/main/wallet/railgun-own-operation.js',
   'scripts/qualify-railgun-own-transact-creator.js',
   'src/main/wallet/railgun-poi-records.js',
+  'src/main/wallet/railgun-own-txid-verifier.test.js',
+  'src/main/wallet/railgun-own-selector.test.js',
+  'src/main/networks/network-registry.js',
+  'src/main/settings-store.js',
+  'src/main/tor-manager.js',
+  'src/main/wallet/railgun-own-operation.test.js',
+  'scripts/qualify-railgun-poi-preflight.js',
+  'scripts/qualify-railgun-own-poi-membership.js',
+  'src/main/wallet/railgun-own-poi-binding.js',
+  'src/main/wallet/railgun-own-poi-binding.test.js',
+  'src/main/wallet/railgun-own-poi-checks.js',
+  'src/main/wallet/railgun-own-poi-checks.test.js',
+  'src/main/wallet/railgun-poi-disclosure-plan.js',
+  'src/main/wallet/railgun-poi-disclosure-plan.test.js',
+  'src/main/wallet/railgun-poi-submission.test.js',
+  'src/main/wallet/railgun-poi-submit-data.js',
+  'src/main/wallet/railgun-poi-submit-data.test.js',
+  'scripts/fixtures/railgun-retained-history-job.js',
+  'src/main/wallet/railgun-poi-cold-validation.js',
+  'src/main/wallet/railgun-poi-cold-validation.test.js',
+  'src/main/wallet/railgun-poi-output-recovery.js',
+  'src/main/wallet/railgun-poi-output-recovery.test.js',
+  'src/main/wallet/railgun-poi-output-recovery-data.js',
+  'src/main/wallet/railgun-poi-output-recovery-data.test.js',
+  'src/main/wallet/railgun-poi-output-recover-job.js',
+  'src/main/wallet/railgun-poi-output-recover-job.test.js',
+  'src/main/wallet/railgun-poi-root.js',
+  'src/main/wallet/railgun-poi-root.test.js',
+  'src/main/wallet/railgun-poi-payload.js',
+  'src/main/wallet/railgun-account-enrollment.test.js',
+  'src/main/wallet/railgun-poi-witness.test.js',
+  'src/main/wallet/railgun-poi-shield-selector.js',
+  'src/main/wallet/railgun-poi-shield-selector-job.js',
+  'src/main/networks/wallet-tor-transport.js',
 ];
 const hashes = () =>
   Object.fromEntries(
     sources.map((file) => [file, sha(fs.readFileSync(path.join(__dirname, '..', file)))])
   );
 async function main() {
-  const [directory, archive, kind, senderKind, proverArchive, artifactDirectory] = process.argv.slice(2);
+  const [directory, archive, kind, senderKind, proverArchive, artifactDirectory] =
+    process.argv.slice(2);
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   assert.ok(['transfer', 'unshield'].includes(kind));
   assert.ok(['self', 'foreign'].includes(senderKind));
   const selectorQualification = process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR === '1';
   assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR));
-  const membershipQualification = process.env.FREEDOM_RAILGUN_TRANSACT_MEMBERSHIP === '1';
+  const proofQualification = process.env.FREEDOM_RAILGUN_TRANSACT_PROOF === '1';
+  assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_TRANSACT_PROOF));
+  const membershipQualification =
+    proofQualification || process.env.FREEDOM_RAILGUN_TRANSACT_MEMBERSHIP === '1';
   assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_TRANSACT_MEMBERSHIP));
   assert.ok(!(selectorQualification && membershipQualification));
-  if (membershipQualification) assert.ok(path.isAbsolute(proverArchive) && path.isAbsolute(artifactDirectory));
+  if (membershipQualification)
+    assert.ok(path.isAbsolute(proverArchive) && path.isAbsolute(artifactDirectory));
   assert.equal(require.cache[require.resolve('../src/main/wallet/railgun-poi-records')], undefined);
   const signature = membershipQualification
     ? require('./fixtures/railgun-own-poi-membership-signature').install()
@@ -247,12 +296,21 @@ async function main() {
     rejectValidation = null,
     finalizedOverride = null,
     history;
-  let membershipActive = false, membershipFault = 'healthy', rootStartedAt;
-  const membershipOperations = new Set(), poiClients = new Set();
-  const membershipRuns = [], rootAdmissionAges = [], postAcquisitionVerifierEntryAges = [], rootAcquisitions = [];
+  let membershipActive = false,
+    membershipFault = 'healthy',
+    rootStartedAt;
+  const membershipOperations = new Set(),
+    poiClients = new Set();
+  const proofRuns = [];
+  const membershipRuns = [],
+    rootAdmissionAges = [],
+    postAcquisitionVerifierEntryAges = [],
+    rootAcquisitions = [];
   const poiMethods = {
-    ppoi_pois_per_list: 0, ppoi_merkle_proofs: 0,
-    ppoi_poi_events: 0, ppoi_validate_poi_merkleroots: 0,
+    ppoi_pois_per_list: 0,
+    ppoi_merkle_proofs: 0,
+    ppoi_poi_events: 0,
+    ppoi_validate_poi_merkleroots: 0,
   };
   const serviceMethods = { latest: 0, validate: 0, page: 0 };
   const methods = {};
@@ -294,7 +352,10 @@ async function main() {
   tor.getWalletSocksEndpoint = () => endpoint;
   settings.isWalletTorExperimentAvailable = () => true;
   transport.createWalletTorTransport = () => {
-    let closed = false, poiCursor = 0, poiOperation, resolveClosed;
+    let closed = false,
+      poiCursor = 0,
+      poiOperation,
+      resolveClosed;
     const drained = new Promise((resolve) => (resolveClosed = resolve));
     const client = {
       closed: drained,
@@ -311,7 +372,10 @@ async function main() {
           if (membershipActive && url === 'https://ppoi.fdi.network' && role === 'poi') {
             poiClients.add(client);
             assert.equal(context.subject.kind, 'private-account');
-            assert.equal(context.subject.principal, 'railgun:' + enrollment.descriptor.accountIndex);
+            assert.equal(
+              context.subject.principal,
+              'railgun:' + enrollment.descriptor.accountIndex
+            );
             assert.equal(context.subject.protocol, 'railgun');
             assert.equal(context.subject.deployment, 'sepolia');
             assert.equal(context.subject.chainId, 11155111);
@@ -322,7 +386,7 @@ async function main() {
             assert.ok(!options.signal.aborted);
             assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 30000);
             const body = JSON.parse(options.body);
-            assert.deepEqual(Object.keys(body).sort(), ['id','jsonrpc','method','params']);
+            assert.deepEqual(Object.keys(body).sort(), ['id', 'jsonrpc', 'method', 'params']);
             assert.equal(body.jsonrpc, '2.0');
             assert.equal(typeof body.id, 'string');
             assert.equal(body.method, Object.keys(poiMethods)[poiCursor++]);
@@ -333,26 +397,57 @@ async function main() {
             const base = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
             const note = { blindedCommitment: payload.blindedCommitment, type: 'Transact' };
             const proof = JSON.parse(JSON.stringify(payload.proof));
-            if (membershipFault === 'path') proof.elements[0] = hex(BigInt('0x' + proof.elements[0]) + 1n).slice(2);
+            if (membershipFault === 'path')
+              proof.elements[0] = hex(BigInt('0x' + proof.elements[0]) + 1n).slice(2);
             const index = Number(BigInt('0x' + proof.indices));
             let result;
             if (body.method === 'ppoi_pois_per_list') {
-              assert.deepEqual(body.params, {...base,listKeys:[REQUIRED_LIST],blindedCommitmentDatas:[note]});
-              result = {[note.blindedCommitment]:{[REQUIRED_LIST]:'Valid'}};
+              assert.deepEqual(body.params, {
+                ...base,
+                listKeys: [REQUIRED_LIST],
+                blindedCommitmentDatas: [note],
+              });
+              result = { [note.blindedCommitment]: { [REQUIRED_LIST]: 'Valid' } };
             } else if (body.method === 'ppoi_merkle_proofs') {
-              assert.deepEqual(body.params, {...base,listKey:REQUIRED_LIST,blindedCommitments:[note.blindedCommitment]});
+              assert.deepEqual(body.params, {
+                ...base,
+                listKey: REQUIRED_LIST,
+                blindedCommitments: [note.blindedCommitment],
+              });
               result = [proof];
             } else if (body.method === 'ppoi_poi_events') {
-              assert.deepEqual(body.params, {...base,listKey:REQUIRED_LIST,startIndex:index,endIndex:index});
-              const event = {index,blindedCommitment:note.blindedCommitment,type:membershipFault === 'type' ? 'Shield' : 'Transact'};
+              assert.deepEqual(body.params, {
+                ...base,
+                listKey: REQUIRED_LIST,
+                startIndex: index,
+                endIndex: index,
+              });
+              const event = {
+                index,
+                blindedCommitment: note.blindedCommitment,
+                type: membershipFault === 'type' ? 'Shield' : 'Transact',
+              };
               let signed = signature.sign(event);
-              if (membershipFault === 'signature') signed = (signed[0] === '0' ? '1' : '0') + signed.slice(1);
-              result = [{signedPOIEvent:{...event,signature:signed},validatedMerkleroot:proof.root}];
+              if (membershipFault === 'signature')
+                signed = (signed[0] === '0' ? '1' : '0') + signed.slice(1);
+              result = [
+                {
+                  signedPOIEvent: { ...event, signature: signed },
+                  validatedMerkleroot: proof.root,
+                },
+              ];
             } else {
-              assert.deepEqual(body.params, {...base,listKey:REQUIRED_LIST,poiMerkleroots:[proof.root]});
+              assert.deepEqual(body.params, {
+                ...base,
+                listKey: REQUIRED_LIST,
+                poiMerkleroots: [proof.root],
+              });
               result = membershipFault !== 'list-root';
             }
-            return {status:200,body:Buffer.from(JSON.stringify({jsonrpc:'2.0',id:body.id,result}))};
+            return {
+              status: 200,
+              body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })),
+            };
           }
           if (url !== rpcUrl || !['transaction-rpc', 'protocol-rpc'].includes(role)) {
             externalAttempts++;
@@ -471,14 +566,17 @@ async function main() {
   const originalRoots = rootsModule.createRailgunTxidRootSource;
   rootsModule.createRailgunTxidRootSource = (...args) => {
     const roots = originalRoots(...args);
-    return Object.freeze({...roots, acquire(point) {
-      if (membershipActive) {
-        rootStartedAt = performance.now();
-        rootAcquisitions.push(serviceMethods.latest);
-        assert.deepEqual(point,{index:payload.state.count-1,root:payload.state.root});
-      }
-      return roots.acquire(point);
-    }});
+    return Object.freeze({
+      ...roots,
+      acquire(point) {
+        if (membershipActive) {
+          rootStartedAt = performance.now();
+          rootAcquisitions.push(serviceMethods.latest);
+          assert.deepEqual(point, { index: payload.state.count - 1, root: payload.state.root });
+        }
+        return roots.acquire(point);
+      },
+    });
   };
   const processModule = require('../src/main/wallet/railgun-process');
   const originalStart = processModule.startRailgunProcess;
@@ -487,7 +585,10 @@ async function main() {
     corruptSelectorKey = false,
     selectorKeyReplies = 0,
     selectorResults = 0,
-    selectorTimingStart;
+    selectorTimingStart,
+    proofKeyReplies = 0,
+    proofResults = 0;
+  const proofKeyBuffers = [];
   const selectorKeyBuffers = [],
     selectorKeyTimings = [];
   processModule.startRailgunProcess = (options) => {
@@ -528,6 +629,26 @@ async function main() {
               assert.equal(guards.attempts, 0);
               counts.guardReports++;
             }
+          }
+          if (name === 'railgun-own-poi-prove-job.js' && message.method === 'result') {
+            assert.ok(proofQualification);
+            proofResults++;
+          }
+          if (name === 'railgun-poi-verify-job.js') assert.equal(options.binaryKey, undefined);
+          if (name === 'railgun-own-poi-prove-job.js' && message.method === 'key') {
+            assert.ok(proofQualification);
+            assert.deepEqual(message, {
+              id: 1,
+              method: 'key',
+              purpose: 'poi-prove',
+              inputSha256: sha(options.input),
+            });
+            return Promise.resolve(options.broker.dispatch(wire)).then((bytes) => {
+              assert.ok(bytes instanceof Uint8Array && bytes.byteLength === 32);
+              proofKeyReplies++;
+              proofKeyBuffers.push(bytes);
+              return bytes;
+            });
           }
           if (name === 'railgun-poi-transact-selector-job.js' && message.method === 'result') {
             assert.equal(message.value.type, 'Transact');
@@ -1447,27 +1568,52 @@ async function main() {
         openRailgunOwnPoiMembership: openShield,
         assertRailgunOwnPoiMembership: assertMembership,
       } = require('../src/main/wallet/railgun-own-poi-membership');
-      const { deriveRailgunOwnTransactPoiSelector: diagnostic } = require('../src/main/wallet/railgun-poi-transact-selector');
-      const { proveRailgunOwnPoi } = require('../src/main/wallet/railgun-own-poi-proof');
-      const { normalizeRailgunOwnPoiProofInput } = require('../src/main/wallet/railgun-own-poi-proof-data');
-      const options = {identity,enrollment,coordinator:publicAccount.coordinator,archive,selector,signal:enrollment.signal};
+      const {
+        deriveRailgunOwnTransactPoiSelector: diagnostic,
+      } = require('../src/main/wallet/railgun-poi-transact-selector');
+      const {
+        proveRailgunOwnPoi,
+        assertRailgunOwnPoiProof,
+      } = require('../src/main/wallet/railgun-own-poi-proof');
+      const {
+        normalizeRailgunOwnPoiProofInput,
+        expectedRailgunOwnPoiFields,
+        bindRailgunOwnPoiPayload,
+      } = require('../src/main/wallet/railgun-own-poi-proof-data');
+      const options = {
+        identity,
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        archive,
+        selector,
+        signal: enrollment.signal,
+      };
       const durableSnapshot = async () => {
-        const reservations = await enrollment.openReservations(), capsules = await enrollment.openPrivateCapsules(), entries = [];
+        const reservations = await enrollment.openReservations(),
+          capsules = await enrollment.openPrivateCapsules(),
+          entries = [];
         await reservations.withSigningRecovery(async (records, context) => {
-          for (const {entry,receipt} of records) {
-            context.assertCurrent(); entries.push({entry,stored:await capsules.readSigned(receipt)});
+          for (const { entry, receipt } of records) {
+            context.assertCurrent();
+            entries.push({ entry, stored: await capsules.readSigned(receipt) });
           }
           context.assertCurrent();
         });
-        return {entries,journal:await journal.readSnapshot()};
+        return { entries, journal: await journal.readSnapshot() };
       };
       const runMembership = async (name, fault = 'healthy') => {
         phase = name;
-        const beforeDurable = await durableSnapshot(), beforeServices = {...serviceMethods},
-          beforePoi = Object.values(poiMethods), beforeRpc = rpcSnapshot(),
-          beforeKeys = selectorKeyReplies, beforeResults = selectorResults,
-          beforeJobs = JSON.parse(JSON.stringify(jobs)), beforeMaintenance = {...sourceMaintenance},
-          beforeAcquisitions = rootAcquisitions.length, beforeAges = rootAdmissionAges.length, beforeCompletions = postAcquisitionVerifierEntryAges.length;
+        const beforeDurable = await durableSnapshot(),
+          beforeServices = { ...serviceMethods },
+          beforePoi = Object.values(poiMethods),
+          beforeRpc = rpcSnapshot(),
+          beforeKeys = selectorKeyReplies,
+          beforeResults = selectorResults,
+          beforeJobs = JSON.parse(JSON.stringify(jobs)),
+          beforeMaintenance = { ...sourceMaintenance },
+          beforeAcquisitions = rootAcquisitions.length,
+          beforeAges = rootAdmissionAges.length,
+          beforeCompletions = postAcquisitionVerifierEntryAges.length;
         selectorTimingStart = phaseTimings.length;
         preflightActive = membershipActive = true;
         membershipFault = fault;
@@ -1477,72 +1623,304 @@ async function main() {
         try {
           value = await openTransact(options);
           const healthy = fault === 'healthy';
-          assert.equal(value.status, healthy ? 'verified' : 'refused', 'membership stage ' + value.stage);
-          if (!healthy) assert.equal(value.stage, fault === 'fifth-root' ? 'root' : ['type','signature'].includes(fault) ? 'acquire' : fault === 'path' ? 'membership-verify' : 'membership-status');
+          assert.equal(
+            value.status,
+            healthy ? 'verified' : 'refused',
+            'membership stage ' + value.stage
+          );
+          if (!healthy)
+            assert.equal(
+              value.stage,
+              fault === 'fifth-root'
+                ? 'root'
+                : ['type', 'signature'].includes(fault)
+                  ? 'acquire'
+                  : fault === 'path'
+                    ? 'membership-verify'
+                    : 'membership-status'
+            );
           if (healthy) {
             membershipOperations.add(value);
-            const observed = assertMembership(value.receipt,enrollment,publicAccount.coordinator,1000);
-            assert.equal(observed,value.observation);
-            assert.equal(observed.inputType,'Transact');
-            assert.equal(observed.poiPreparation.creator.type,'Transact');
-            assert.deepEqual(observed.membership.proofs,[payload.proof]);
-            assert.equal(observed.membership.membershipVerified,true);
-            assert.equal(observed.selector.blindedCommitment,payload.blindedCommitment);
-            for (const flag of ['accountAuthenticated','sourceAuthenticated','currentFinalityVerified','disclosureEnabled','spendingEnabled']) assert.equal(observed[flag],false);
-            assert.throws(() => assertMembership({},enrollment,publicAccount.coordinator));
-            assert.throws(() => assertMembership(value.receipt,{},publicAccount.coordinator));
-            const heldJobs = JSON.stringify(jobs), heldKeys = selectorKeyReplies, heldTraffic = JSON.stringify({serviceMethods,poiMethods,methods});
-            for (const call of [() => diagnostic(options),() => openTransact(options),() => {
-              const {identity:_identity,...shieldOptions} = options; return openShield(shieldOptions);
-            }]) {
-              const blocked = await call(); assert.equal(blocked.status,'refused'); assert.ok(['context','busy'].includes(blocked.stage));
+            const observed = assertMembership(
+              value.receipt,
+              enrollment,
+              publicAccount.coordinator,
+              1000
+            );
+            assert.equal(observed, value.observation);
+            assert.equal(observed.inputType, 'Transact');
+            assert.equal(observed.poiPreparation.creator.type, 'Transact');
+            assert.deepEqual(observed.membership.proofs, [payload.proof]);
+            assert.equal(observed.membership.membershipVerified, true);
+            assert.equal(observed.selector.blindedCommitment, payload.blindedCommitment);
+            for (const flag of [
+              'accountAuthenticated',
+              'sourceAuthenticated',
+              'currentFinalityVerified',
+              'disclosureEnabled',
+              'spendingEnabled',
+            ])
+              assert.equal(observed[flag], false);
+            assert.throws(() => assertMembership({}, enrollment, publicAccount.coordinator));
+            assert.throws(() => assertMembership(value.receipt, {}, publicAccount.coordinator));
+            const heldJobs = JSON.stringify(jobs),
+              heldKeys = selectorKeyReplies,
+              heldTraffic = JSON.stringify({ serviceMethods, poiMethods, methods });
+            for (const call of [
+              () => diagnostic(options),
+              () => openTransact(options),
+              () => {
+                const { identity: _identity, ...shieldOptions } = options;
+                return openShield(shieldOptions);
+              },
+            ]) {
+              const blocked = await call();
+              assert.equal(blocked.status, 'refused');
+              assert.ok(['context', 'busy'].includes(blocked.stage));
             }
-            // Actual normalizer pins the reason; actual controller consumes the
-            // genuine registry receipt and must fail before incremental key work.
-            assert.throws(() => normalizeRailgunOwnPoiProofInput({archive,proverArchive,artifactDirectory,descriptor:enrollment.descriptor,preparation:observed.poiPreparation,listProofs:observed.membership.proofs}));
-            const proof = await proveRailgunOwnPoi({identity,enrollment,coordinator:publicAccount.coordinator,archive,proverArchive,artifactDirectory,membershipReceipt:value.receipt,signal:enrollment.signal});
-            assert.deepEqual(proof,{status:'refused',stage:'context'});
-            assert.equal(JSON.stringify(jobs),heldJobs);
-            assert.equal(selectorKeyReplies,heldKeys);
-            assert.equal(JSON.stringify({serviceMethods,poiMethods,methods}),heldTraffic);
-            assert.equal(assertMembership(value.receipt,enrollment,publicAccount.coordinator),observed);
+            assert.equal(JSON.stringify(jobs), heldJobs);
+            assert.equal(selectorKeyReplies, heldKeys);
+            assert.equal(JSON.stringify({ serviceMethods, poiMethods, methods }), heldTraffic);
+            if (proofQualification && name === 'membership-healthy') {
+              const normalized = normalizeRailgunOwnPoiProofInput({
+                archive,
+                proverArchive,
+                artifactDirectory,
+                descriptor: enrollment.descriptor,
+                preparation: observed.poiPreparation,
+                listProofs: observed.membership.proofs,
+              });
+              const expected = expectedRailgunOwnPoiFields(normalized);
+              const traffic = () =>
+                JSON.stringify({ serviceMethods, poiMethods, methods, roleMethods });
+              const proofTraffic = traffic(),
+                proofStarted = performance.now();
+              const proofOptions = {
+                identity,
+                enrollment,
+                coordinator: publicAccount.coordinator,
+                archive,
+                proverArchive,
+                artifactDirectory,
+                membershipReceipt: value.receipt,
+                signal: enrollment.signal,
+              };
+              const proof = await proveRailgunOwnPoi(proofOptions);
+              assert.equal(proof.status, 'proved', 'proof stage ' + proof.stage);
+              assert.equal(proof.separatelyVerified, true);
+              assert.equal(proof.utilityExitObserved, true);
+              const history = assertRailgunOwnPoiProof(
+                proof,
+                enrollment,
+                publicAccount.coordinator
+              );
+              assert.deepEqual(history.preparation.creator, normalized.preparation.creator);
+              assert.equal(Object.hasOwn(history, 'creatorProvenance'), false);
+              assert.deepEqual(bindRailgunOwnPoiPayload(proof.payload, expected), proof.payload);
+              assert.equal(proof.payloadSha256, sha(JSON.stringify(proof.payload)));
+              assert.equal(proof.inputSha256, sha(JSON.stringify(normalized)));
+              for (const flag of [
+                'accountAuthenticated',
+                'sourceAuthenticated',
+                'currentFinalityVerified',
+                'membershipAuthenticated',
+                'rootAccepted',
+                'disclosureEnabled',
+                'spendingEnabled',
+              ])
+                assert.equal(proof[flag], false);
+              assert.equal(traffic(), proofTraffic);
+              assert.equal(proofKeyReplies, 1);
+              assert.equal(proofResults, 1);
+              for (const job of ['railgun-own-poi-prove-job.js', 'railgun-poi-verify-job.js']) {
+                assert.equal(jobs[job].starts, 1);
+                assert.equal(jobs[job].exits, 1);
+              }
+              assert.equal(jobs['railgun-poi-verify-job.js'].keyHandoffs, 0);
+              const jobsAfter = JSON.stringify(jobs);
+              assert.deepEqual(await proveRailgunOwnPoi(proofOptions), {
+                status: 'refused',
+                stage: 'context',
+              });
+              assert.equal(JSON.stringify(jobs), jobsAfter);
+              assert.equal(proofKeyReplies, 1);
+              assert.equal(traffic(), proofTraffic);
+              assert.ok(
+                proofKeyBuffers.every(
+                  (key) => key.byteLength === 32 && key.every((byte) => byte === 0)
+                )
+              );
+              // Open real encrypted storage before the baseline. Refusal must
+              // preserve both ciphertext and the account manifest retention floor.
+              let store = await enrollment.openPoiIntents();
+              try {
+                const { getPrivacyStoragePath } = require('../src/main/wallet/privacy-storage');
+                const intentFile = getPrivacyStoragePath(
+                  enrollment.getContext(
+                    'storage',
+                    'railgun-poi-intents-v1:' + enrollment.descriptor.walletId
+                  ),
+                  enrollment.directory
+                );
+                const manifestFile = path.join(
+                  path.dirname(enrollment.directory),
+                  path.basename(enrollment.directory).replace(/^account-/, '') + '.json'
+                );
+                assert.ok(fs.existsSync(manifestFile));
+                const snapshot = async () => ({
+                  inspect: await store.inspect(),
+                  list: await store.list(),
+                  intent: fs.existsSync(intentFile) ? sha(fs.readFileSync(intentFile)) : null,
+                  manifest: sha(fs.readFileSync(manifestFile)),
+                });
+                const prior = await snapshot();
+                assert.deepEqual(prior.list, []);
+                const operation = require('../src/main/wallet/railgun-own-operation');
+                const originalRecovery = operation.withRailgunOwnOperationRecovery;
+                let recoveries = 0;
+                operation.withRailgunOwnOperationRecovery = (...args) => {
+                  recoveries++;
+                  return originalRecovery(...args);
+                };
+                try {
+                  assert.deepEqual(
+                    await store.prepare({
+                      proof,
+                      coordinator: publicAccount.coordinator,
+                      signal: enrollment.signal,
+                    }),
+                    { status: 'refused', stage: 'context' }
+                  );
+                } finally {
+                  operation.withRailgunOwnOperationRecovery = originalRecovery;
+                }
+                assert.equal(recoveries, 0);
+                assert.deepEqual(await snapshot(), prior);
+                store.close();
+                await store.closed;
+                store = await enrollment.openPoiIntents();
+                // Reopen deliberately rotates the encrypted store lease and
+                // rewrites its manifest floor; only logical state is invariant.
+                assert.deepEqual(await store.inspect(), prior.inspect);
+                assert.deepEqual(await store.list(), prior.list);
+                assert.equal(JSON.stringify(jobs), jobsAfter);
+                assert.equal(traffic(), proofTraffic);
+              } finally {
+                store.close();
+                await store.closed;
+              }
+              proofRuns.push({
+                mode: 'genuine-transact-proof',
+                elapsedMs: Math.round(performance.now() - proofStarted),
+                viewingKeyReplies: 1,
+                proofResults: 1,
+                independentKeylessVerifiers: 1,
+                registeredProof: true,
+                payloadMetadataComparedPrivately: true,
+                noExtraServiceTraffic: true,
+                reusedMembershipRefused: true,
+                prepareRefusedBeforeRecovery: true,
+                encryptedIntentAndManifestUnchanged: true,
+                reopenLogicalStateUnchanged: true,
+                keyBuffersWiped: true,
+                allChildrenExited: true,
+              });
+            }
+            assert.equal(
+              assertMembership(value.receipt, enrollment, publicAccount.coordinator),
+              observed
+            );
           }
-          const expectedList = fault === 'fifth-root' ? [0,0,0,0] : ['signature','type'].includes(fault) ? [1,1,1,0] : [1,1,1,1];
-          assert.deepEqual(Object.values(poiMethods).map((n,i)=>n-beforePoi[i]),expectedList);
-          assert.deepEqual(serviceMethods,{latest:beforeServices.latest+5,validate:beforeServices.validate+5,page:beforeServices.page});
-          assert.deepEqual(rootAcquisitions.slice(beforeAcquisitions),Array.from({length:5},(_,i)=>beforeServices.latest+i));
-          assertCaptureRpc(beforeRpc,true);
-          assert.deepEqual(sourceMaintenance,beforeMaintenance);
-          assert.equal(selectorKeyReplies-beforeKeys,1);
-          assert.equal(selectorResults-beforeResults,1);
-          const expectedMembership = ['healthy','path'].includes(fault) ? 1 : 0;
-          const memberJob = jobs['railgun-poi-job.js'] || {starts:0,exits:0};
-          assert.equal(memberJob.starts-(beforeJobs['railgun-poi-job.js']?.starts ?? 0),expectedMembership);
-          assert.equal(memberJob.exits-(beforeJobs['railgun-poi-job.js']?.exits ?? 0),expectedMembership);
-          assert.equal(rootAdmissionAges.length-beforeAges,expectedList.reduce((a,b)=>a+b,0));
-          assert.equal(postAcquisitionVerifierEntryAges.length-beforeCompletions,['healthy','path'].includes(fault) ? 1 : 0);
-          membershipRuns.push({mode:name,fault,verified:healthy,elapsedMs:Math.round(performance.now()-began),viewingKeyReplies:1,selectorResults:1,rootPairs:5,sourceCalls:expectedList,membershipJobs:expectedMembership,genuineRegistryAndTypedMembership:healthy,proofBoundaryRefusesWithoutKey:healthy,sharedOwnerExclusion:healthy,durableStateUnchanged:true,allChildrenExited:true,keyBuffersWiped:true});
+          const expectedList =
+            fault === 'fifth-root'
+              ? [0, 0, 0, 0]
+              : ['signature', 'type'].includes(fault)
+                ? [1, 1, 1, 0]
+                : [1, 1, 1, 1];
+          assert.deepEqual(
+            Object.values(poiMethods).map((n, i) => n - beforePoi[i]),
+            expectedList
+          );
+          assert.deepEqual(serviceMethods, {
+            latest: beforeServices.latest + 5,
+            validate: beforeServices.validate + 5,
+            page: beforeServices.page,
+          });
+          assert.deepEqual(
+            rootAcquisitions.slice(beforeAcquisitions),
+            Array.from({ length: 5 }, (_, i) => beforeServices.latest + i)
+          );
+          assertCaptureRpc(beforeRpc, true);
+          assert.deepEqual(sourceMaintenance, beforeMaintenance);
+          assert.equal(selectorKeyReplies - beforeKeys, 1);
+          assert.equal(selectorResults - beforeResults, 1);
+          const expectedMembership = ['healthy', 'path'].includes(fault) ? 1 : 0;
+          const memberJob = jobs['railgun-poi-job.js'] || { starts: 0, exits: 0 };
+          assert.equal(
+            memberJob.starts - (beforeJobs['railgun-poi-job.js']?.starts ?? 0),
+            expectedMembership
+          );
+          assert.equal(
+            memberJob.exits - (beforeJobs['railgun-poi-job.js']?.exits ?? 0),
+            expectedMembership
+          );
+          assert.equal(
+            rootAdmissionAges.length - beforeAges,
+            expectedList.reduce((a, b) => a + b, 0)
+          );
+          assert.equal(
+            postAcquisitionVerifierEntryAges.length - beforeCompletions,
+            ['healthy', 'path'].includes(fault) ? 1 : 0
+          );
+          membershipRuns.push({
+            mode: name,
+            fault,
+            verified: healthy,
+            elapsedMs: Math.round(performance.now() - began),
+            viewingKeyReplies: 1,
+            selectorResults: 1,
+            rootPairs: 5,
+            sourceCalls: expectedList,
+            membershipJobs: expectedMembership,
+            genuineRegistryAndTypedMembership: healthy,
+            localProofQualified: healthy && proofQualification && name === 'membership-healthy',
+            sharedOwnerExclusion: healthy,
+            durableStateUnchanged: true,
+            allChildrenExited: true,
+            keyBuffersWiped: true,
+          });
         } finally {
           if (value?.status === 'verified') {
-            value.close(); await value.closed; membershipOperations.delete(value);
-            assert.throws(() => assertMembership(value.receipt,enrollment,publicAccount.coordinator));
+            value.close();
+            await value.closed;
+            membershipOperations.delete(value);
+            assert.throws(() =>
+              assertMembership(value.receipt, enrollment, publicAccount.coordinator)
+            );
           }
           // A refused public open already awaits its admitted-work/source drain.
           preflightActive = membershipActive = false;
-          membershipFault = 'healthy'; rejectValidation = null;
+          membershipFault = 'healthy';
+          rejectValidation = null;
         }
-        for (const counts of Object.values(jobs)) assert.equal(counts.starts,counts.exits);
-        assert.ok(selectorKeyBuffers.every((key)=>key.byteLength===32&&key.every((byte)=>byte===0)));
-        assert.deepEqual(await durableSnapshot(),beforeDurable);
+        for (const counts of Object.values(jobs)) assert.equal(counts.starts, counts.exits);
+        assert.ok(
+          selectorKeyBuffers.every(
+            (key) => key.byteLength === 32 && key.every((byte) => byte === 0)
+          )
+        );
+        assert.deepEqual(await durableSnapshot(), beforeDurable);
         for (const client of poiClients) await client.closed;
-        assert.equal(externalAttempts,0); assert.equal(unexpectedRpc,0);
+        assert.equal(externalAttempts, 0);
+        assert.equal(unexpectedRpc, 0);
       };
       await runMembership('membership-healthy');
-      for (const fault of ['fifth-root','type','signature','path','list-root']) {
-        await runMembership('membership-'+fault,fault);
-        await runMembership('membership-after-'+fault);
+      for (const fault of ['fifth-root', 'type', 'signature', 'path', 'list-root']) {
+        await runMembership('membership-' + fault, fault);
+        await runMembership('membership-after-' + fault);
       }
-      assert.equal(membershipRuns.length,11);
+      assert.equal(membershipRuns.length, 11);
+      assert.equal(proofRuns.length, proofQualification ? 1 : 0);
     }
 
     phase = 'unresolved-sibling';
@@ -1585,11 +1963,15 @@ async function main() {
           typedMembershipVerified: membershipQualification,
           membershipQualification,
           membershipRuns,
+          proofQualification,
+          proofRuns,
+          proofKeyReplies,
+          proofResults,
           poiMethods,
           rootAdmissionAges,
           postAcquisitionVerifierEntryAges,
           serviceSignatureTrust: membershipQualification ? 'disposable-fixture-key' : null,
-          viewingKeyReleases: selectorKeyReplies,
+          viewingKeyReleases: selectorKeyReplies + proofKeyReplies,
           selectorQualification,
           selectorRuns,
           selectorKeyTimings,

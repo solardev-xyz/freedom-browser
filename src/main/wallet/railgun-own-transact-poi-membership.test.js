@@ -779,7 +779,7 @@ test('cancelled root acquisition ignores cancellation but retains owner until ac
   }
   expect((await pending).status).toBe('refused');
 });
-test('actual Shield-only proof data refuses genuine Transact receipt before additional credential or utility', async () => {
+test('genuine registry origin cannot make incomplete synthetic preparation valid proof input', async () => {
   const op = await run();
   expect(op.status).toBe('verified');
   expect(attest(op.receipt, mock.enrollment, mock.coordinator)).toBe(op.observation);
@@ -792,6 +792,10 @@ test('actual Shield-only proof data refuses genuine Transact receipt before addi
     preparation: op.observation.poiPreparation,
     listProofs: op.observation.membership.proofs,
   };
+  // This boundary fixture supplies only a partial state and an empty witness.
+  // Native qualification owns the complete genuine M-to-proof positive.
+  expect(input.preparation.state).not.toHaveProperty('transcript');
+  expect(input.preparation.witness).toEqual({});
   expect(() => data.normalizeRailgunOwnPoiProofInput(input)).toThrow();
   const jobs = mock.jobs.length,
     credentials = mock.credential.mock.calls.length,

@@ -197,6 +197,7 @@ const sources = [
   'src/main/wallet/railgun-own-poi-binding.test.js',
   'src/main/wallet/railgun-own-poi-proof-data.js',
   'src/main/wallet/railgun-own-poi-proof-data.test.js',
+  'src/main/wallet/railgun-own-transact-poi-proof-data.test.js',
   'src/main/wallet/railgun-own-poi-proof.js',
   'src/main/wallet/railgun-own-poi-proof.test.js',
   'src/main/wallet/railgun-own-poi-checks.js',

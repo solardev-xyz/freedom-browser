@@ -13,6 +13,8 @@ const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { verifyRailgunProverRuntime } = require('./railgun-prover-runtime');
 const { assertRailgunOwnPoiMembership } = require('./railgun-own-poi-membership');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
+const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
+const { normalizeRailgunNoteTxidWitness } = require('./railgun-txid-note-witness');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const { startRailgunProcess } = require('./railgun-process');
@@ -106,6 +108,54 @@ async function proveRailgunOwnPoi(options = {}) {
       preparation: observed.poiPreparation,
       listProofs: observed.membership.proofs,
     });
+    assert.equal(observed.inputType ?? 'Shield', input.preparation.creator.type);
+    if (input.preparation.creator.type === 'Transact') {
+      // Only the genuine shared M registry supplies this historical evidence.
+      // Cross-bind it before recovery/key admission; no external diagnostic or
+      // caller type switch is adopted, and no extra history member is retained.
+      assert.equal(observed.inputType, 'Transact');
+      assert.deepEqual(input.preparation.ownEvidence.capsule, observed.capture.capsule);
+      const selectorInput = prepareRailgunPoiTransactSelectorInput({
+        archive,
+        descriptor,
+        capsule: observed.capture.capsule,
+        creator: input.preparation.creator,
+      });
+      assert.equal(observed.selector.bindingDigest, selectorInput.bindingDigest);
+      assert.equal(observed.selector.inputSha256, sha(JSON.stringify(selectorInput)));
+      const provenance = observed.creatorProvenance;
+      const creator = input.preparation.creator;
+      for (const key of ['type', 'tree', 'position', 'hash'])
+        assert.equal(provenance.note[key], creator[key]);
+      assert.deepEqual(provenance.publicIdentity, publicIdentity);
+      const creating = normalizeRailgunNoteTxidWitness(
+        provenance.noteWitness,
+        input.preparation.state,
+        provenance.note
+      );
+      assert.equal(creating.outputIndex, 0);
+      assert.equal(creating.witness.row.unshield, undefined);
+      assert.equal(creating.witness.row.nullifiers.length, 1);
+      assert.equal(creating.witness.row.commitments.length, 1);
+      assert.ok(creating.witness.index < input.preparation.witness.index);
+      assert.equal(provenance.verification.utilityExitObserved, true);
+      assert.equal(provenance.verification.pathVerified, true);
+      assert.equal(provenance.verification.suppliedCreatorEventsMatched, true);
+      assert.equal(provenance.verification.coverage.matchedRows, 1);
+      assert.equal(provenance.verification.coverage.knownOmissions, 0);
+      assert.ok(Array.isArray(observed.membership.events));
+      assert.equal(observed.membership.events.length, 1);
+      const event = observed.membership.events[0].signedPOIEvent;
+      assert.equal(event.type, 'Transact');
+      assert.equal(
+        '0x' + event.blindedCommitment.replace(/^0x/, ''),
+        observed.selector.blindedCommitment
+      );
+      assert.equal(event.index, Number(BigInt('0x' + input.listProofs[0].indices)));
+    }
+    // Membership was asserted live above. Proving uses that bounded immutable
+    // preparation as history; root/list currency is not extended through the
+    // job. Fresh account recovery and identity/generation remain live below.
     const expected = expectedRailgunOwnPoiFields(input);
     const inputText = JSON.stringify(input),
       inputSha256 = sha(inputText);

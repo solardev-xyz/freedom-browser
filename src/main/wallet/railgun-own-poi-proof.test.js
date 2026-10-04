@@ -369,7 +369,10 @@ beforeEach(() => {
   };
   mockObserved = {
     capture: copy(mockCapture),
-    poiPreparation: { ownEvidence: { capsule: copy(mockCapture.capsule) } },
+    poiPreparation: {
+      creator: { type: 'Shield' },
+      ownEvidence: { capsule: copy(mockCapture.capsule) },
+    },
     selector: { blindedCommitment: hex(4) },
     membership: {
       membershipVerified: true,
@@ -1378,3 +1381,284 @@ test.each(['deadline', 'identity'])(
     expect(mockCopies[0]).toEqual(Buffer.alloc(32));
   }
 );
+
+// Structural fixture only: real capsule/receipt/row/schema checks, synthetic
+// Merkle fields. It does not establish cryptographic path/proof correctness.
+function makeTransactProofFixture(unshield = false) {
+  const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+  const hash = (v) =>
+    require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
+  const evidence = require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
+  const descriptor = {
+    walletId: evidence.capsule.walletId,
+    instanceId: '0zk1' + 'q'.repeat(123),
+    masterPublicKey: h(3).slice(2),
+    spendingPublicKey: [h(4).slice(2), h(5).slice(2)],
+    viewingPublicKey: h(6).slice(2),
+    accountIndex: 0,
+  };
+  const creator = {
+    type: 'Transact',
+    tree: evidence.capsule.selection.tree,
+    position: evidence.capsule.selection.position,
+    hash: evidence.capsule.noteHash,
+    ciphertext: {
+      ciphertext: [h(7), h(8), h(9), h(10)],
+      blindedSenderViewingKey: h(11),
+      blindedReceiverViewingKey: h(12),
+      annotationData: '0x',
+      memo: '0x',
+    },
+  };
+  const state = { count: 2, root: h(15).slice(2), transcript: h(16).slice(2), breaks: [] };
+  const witnessFor = (row, index) => ({
+    row: JSON.parse(JSON.stringify(row)),
+    leaf: h(17 + index).slice(2),
+    railgunTxid: h(19 + index).slice(2),
+    rowSha256: hash(row),
+    index,
+    elements: Array(16).fill(h(0).slice(2)),
+    root: state.root,
+    checkpointIndex: 1,
+    transcript: state.transcript,
+    continuity: require('./railgun-txid-omissions').classifyRailgunTxidContinuity(1, []),
+    globalTxidCompleteness: false,
+  });
+  const blockNumber = evidence.row.blockNumber - 1;
+  const creatorRow = {
+    version: 'V2',
+    graphID: h(blockNumber) + h(2).slice(2) + h(0).slice(2),
+    commitments: [creator.hash],
+    nullifiers: [h(700)],
+    boundParamsHash: h(701),
+    blockNumber,
+    txid: h(706).slice(2),
+    timestamp: blockNumber,
+    utxoTreeIn: creator.tree,
+    utxoTreeOut: creator.tree,
+    utxoBatchStartPositionOut: creator.position,
+    verificationHash: evidence.row.verificationHash,
+  };
+  const note = {
+    type: 'Transact',
+    tree: creator.tree,
+    position: creator.position,
+    hash: creator.hash,
+    txid: h(706),
+    blockNumber,
+  };
+  const input = {
+    archive: '/engine.asar',
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    descriptor,
+    preparation: { creator, ownEvidence: evidence, state, witness: witnessFor(evidence.row, 1) },
+    listProofs: [
+      {
+        leaf: h(21).slice(2),
+        root: h(22).slice(2),
+        indices: h(0).slice(2),
+        elements: Array(16).fill(h(0).slice(2)),
+      },
+    ],
+  };
+  const selectorInput =
+    require('./railgun-poi-transact-selector-data').prepareRailgunPoiTransactSelectorInput({
+      archive: input.archive,
+      descriptor,
+      capsule: evidence.capsule,
+      creator,
+    });
+  return {
+    input,
+    selector: {
+      blindedCommitment: h(21),
+      bindingDigest: selectorInput.bindingDigest,
+      inputSha256: hash(selectorInput),
+    },
+    creatorProvenance: {
+      note,
+      noteWitness: {
+        note,
+        outputIndex: 0,
+        witness: witnessFor(creatorRow, 0),
+        ownershipVerified: false,
+        eventCoverageVerified: false,
+        rootAccepted: false,
+        spendingEnabled: false,
+      },
+      verification: {
+        utilityExitObserved: true,
+        pathVerified: true,
+        suppliedCreatorEventsMatched: true,
+        coverage: { matchedRows: 1, knownOmissions: 0 },
+      },
+    },
+  };
+}
+
+test('Transact-tagged mocked receipt cannot enter the otherwise valid Shield branch', async () => {
+  mockObserved.inputType = 'Transact';
+  expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+  expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  expect(startRailgunProcess).not.toHaveBeenCalled();
+  delete mockObserved.inputType;
+  expect((await run()).status).toBe('proved');
+});
+
+describe('Transact host cross-binding with real normalization and mocked membership authority', () => {
+  const actualData = jest.requireActual('./railgun-own-poi-proof-data');
+  const mockedData = require('./railgun-own-poi-proof-data');
+  function install(unshield = false) {
+    const fixture = makeTransactProofFixture(unshield);
+    mockIdentity.descriptor = fixture.input.descriptor;
+    mockEnrollment.descriptor = fixture.input.descriptor;
+    mockCapture.capsule = copy(fixture.input.preparation.ownEvidence.capsule);
+    mockCapture.selector = copy(mockCapture.capsule.selection);
+    mockCapture.capsuleDigest = require('./railgun-private-capsule').digestRailgunPrivateCapsule(
+      mockCapture.capsule
+    );
+    mockObserved = {
+      inputType: 'Transact',
+      capture: copy(mockCapture),
+      poiPreparation: fixture.input.preparation,
+      selector: fixture.selector,
+      creatorProvenance: { ...fixture.creatorProvenance, publicIdentity: copy(mockPublicIdentity) },
+      membership: {
+        membershipVerified: true,
+        proofs: fixture.input.listProofs,
+        events: [
+          {
+            signedPOIEvent: {
+              type: 'Transact',
+              index: 0,
+              blindedCommitment: fixture.selector.blindedCommitment,
+            },
+          },
+        ],
+      },
+    };
+    mockedData.normalizeRailgunOwnPoiProofInput.mockImplementation(
+      actualData.normalizeRailgunOwnPoiProofInput
+    );
+    mockedData.expectedRailgunOwnPoiFields.mockImplementation(
+      actualData.expectedRailgunOwnPoiFields
+    );
+    mockExpected = actualData.expectedRailgunOwnPoiFields(
+      actualData.normalizeRailgunOwnPoiProofInput(fixture.input)
+    );
+    return fixture;
+  }
+  afterEach(() => {
+    mockedData.normalizeRailgunOwnPoiProofInput.mockImplementation((v) => copy(v));
+    mockedData.expectedRailgunOwnPoiFields.mockImplementation(() => copy(mockExpected));
+  });
+  test.each([false, true])(
+    'complete structurally valid Transact transfer/unshield %s reaches both proof stages',
+    async (unshield) => {
+      const fixture = install(unshield);
+      const result = await run();
+      expect(result.status).toBe('proved');
+      expect(mockCredential).toHaveBeenCalledTimes(1);
+      expect(mockVerifier).toHaveBeenCalledTimes(1);
+      const input = JSON.parse(startRailgunProcess.mock.calls[0][0].input);
+      expect(input).toEqual(fixture.input);
+      const history = historyOf(result, mockEnrollment, mockCoordinator);
+      expect(history.preparation.creator.type).toBe('Transact');
+      expect(history).not.toHaveProperty('creatorProvenance');
+      expect(history.selector.bindingDigest).toBe(fixture.selector.bindingDigest);
+      expect(history.selector.inputSha256).toBe(fixture.selector.inputSha256);
+      expect(result.rootAccepted).toBe(false);
+      expect(result.membershipAuthenticated).toBe(false);
+    }
+  );
+  test.each([
+    'missing-type',
+    'wrong-type',
+    'selector-binding',
+    'selector-input',
+    'archive',
+    'capture-capsule',
+    'provenance-type',
+    'provenance-tree',
+    'provenance-position',
+    'provenance-hash',
+    'public-identity',
+    'creator-root',
+    'creator-checkpoint',
+    'creator-transcript',
+    'creator-after-own',
+    'creator-output',
+    'creator-extra-input',
+    'creator-extra-output',
+    'creator-exit',
+    'creator-path',
+    'creator-events',
+    'matched-rows',
+    'known-omission',
+    'events-missing',
+    'events-many',
+    'event-type',
+    'event-leaf',
+    'event-index',
+  ])('pre-key %s mismatch refuses without consuming mocked membership receipt', async (fault) => {
+    install();
+    const original = copy(mockObserved),
+      originalArchive = options.archive;
+    const provenance = mockObserved.creatorProvenance;
+    const witness = provenance.noteWitness.witness;
+    if (fault === 'missing-type') delete mockObserved.inputType;
+    if (fault === 'wrong-type') mockObserved.inputType = 'Shield';
+    if (fault === 'selector-binding') mockObserved.selector.bindingDigest = '0'.repeat(64);
+    if (fault === 'selector-input') mockObserved.selector.inputSha256 = '0'.repeat(64);
+    if (fault === 'archive') options.archive = '/other-engine.asar';
+    if (fault === 'capture-capsule') mockObserved.capture.capsule.operationId = 'changed';
+    if (fault === 'provenance-type') provenance.note.type = 'Shield';
+    if (fault === 'provenance-tree') provenance.note.tree++;
+    if (fault === 'provenance-position') provenance.note.position++;
+    if (fault === 'provenance-hash') provenance.note.hash = hex(99);
+    if (fault === 'public-identity') provenance.publicIdentity.generationId = 'another';
+    if (fault === 'creator-root') witness.root = hex(99).slice(2);
+    if (fault === 'creator-checkpoint') witness.checkpointIndex = 0;
+    if (fault === 'creator-transcript') witness.transcript = hex(99).slice(2);
+    if (fault === 'creator-after-own') witness.index = 1;
+    if (fault === 'creator-output') provenance.noteWitness.outputIndex = 1;
+    if (fault === 'creator-extra-input') witness.row.nullifiers.push(hex(99));
+    if (fault === 'creator-extra-output') witness.row.commitments.push(hex(99));
+    if (fault === 'creator-extra-input' || fault === 'creator-extra-output')
+      witness.rowSha256 = sha(JSON.stringify(witness.row));
+    if (fault === 'creator-exit') provenance.verification.utilityExitObserved = false;
+    if (fault === 'creator-path') provenance.verification.pathVerified = false;
+    if (fault === 'creator-events') provenance.verification.suppliedCreatorEventsMatched = false;
+    if (fault === 'matched-rows') provenance.verification.coverage.matchedRows = 2;
+    if (fault === 'known-omission') provenance.verification.coverage.knownOmissions = 1;
+    if (fault === 'events-missing') delete mockObserved.membership.events;
+    if (fault === 'events-many')
+      mockObserved.membership.events.push(copy(mockObserved.membership.events[0]));
+    if (fault === 'event-type') mockObserved.membership.events[0].signedPOIEvent.type = 'Shield';
+    if (fault === 'event-leaf')
+      mockObserved.membership.events[0].signedPOIEvent.blindedCommitment = hex(99);
+    if (fault === 'event-index') mockObserved.membership.events[0].signedPOIEvent.index = 1;
+    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(mockCredential).not.toHaveBeenCalled();
+    expect(mockVerifier).not.toHaveBeenCalled();
+    mockObserved = original;
+    options.archive = originalArchive;
+    expect((await run()).status).toBe('proved');
+  });
+  test('historical typed membership may close after entry without extending root or list authority', async () => {
+    install();
+    mockRecoveryStart.mockImplementationOnce(async () => {
+      mockMembershipCurrent = false;
+    });
+    const result = await run();
+    expect(result.status).toBe('proved');
+    expect(result.rootAccepted).toBe(false);
+    expect(result.membershipAuthenticated).toBe(false);
+    expect(historyOf(result, mockEnrollment, mockCoordinator).preparation.creator.type).toBe(
+      'Transact'
+    );
+  });
+});
