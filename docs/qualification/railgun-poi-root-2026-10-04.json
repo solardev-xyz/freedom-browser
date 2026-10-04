@@ -1,0 +1,191 @@
+{
+  "fixture": "synthetic-poi-fixed-root-host",
+  "elapsedMs": 69,
+  "sourceSha256": {
+    "scripts/qualify-railgun-poi-root.js": "c79205d5a1777f4d572e445ed9ce8e8b605d6097ffdee9f429194dd8509dba3b",
+    "src/main/wallet/railgun-poi-root.js": "3de11234f4431807967c3f16aa06db6b9673c304fb67377f0fcdff4e88a4ce53",
+    "src/main/wallet/railgun-poi-root.test.js": "ddfb2891475b037fa376528c776e131e8d0c2da729d7369c8a8a7f92bd6371c7",
+    "src/main/wallet/railgun-poi-records.js": "c4511c0ea185835c67bbbc8b8ba74bec6271e4b3a457a2b6a1576b42593fd1ac",
+    "src/main/wallet/railgun-process-guards.js": "f7bbf6220212b62ae7791f9b47c145d95abec9e499b26f7bfe854e950281d958",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133",
+    "src/main/networks/wallet-tor-transport.js": "54c552a4c89c7e1068b4677286d5fe99d47f5b059ffa372a4d5b969719138bc9"
+  },
+  "runs": [
+    {
+      "mode": "accepted-renewed-forgery-refused",
+      "requests": 2,
+      "drained": true
+    },
+    {
+      "mode": "false",
+      "refused": true,
+      "drained": true
+    },
+    {
+      "mode": "id",
+      "refused": true,
+      "drained": true
+    },
+    {
+      "mode": "extra",
+      "refused": true,
+      "drained": true
+    },
+    {
+      "mode": "error",
+      "refused": true,
+      "drained": true
+    },
+    {
+      "mode": "http",
+      "refused": true,
+      "drained": true
+    },
+    {
+      "mode": "oversized",
+      "refused": true,
+      "drained": true
+    },
+    {
+      "mode": "overlap-preserves-pending-read",
+      "drained": true
+    },
+    {
+      "mode": "explicit-close",
+      "refused": true,
+      "pendingTransportDrained": true
+    },
+    {
+      "mode": "parent-close",
+      "refused": true,
+      "pendingTransportDrained": true
+    },
+    {
+      "mode": "endpoint-abort",
+      "refused": true,
+      "pendingTransportDrained": true
+    },
+    {
+      "mode": "endpoint-change",
+      "refused": true,
+      "pendingTransportDrained": true
+    },
+    {
+      "mode": "timeout",
+      "refused": true,
+      "pendingTransportDrained": true,
+      "timeoutMs": 30,
+      "revokedAfterMs": 32
+    }
+  ],
+  "transportCreates": 13,
+  "transportCloses": 13,
+  "simulatedRequests": 14,
+  "validatedRequests": 14,
+  "guards": {
+    "hooks": [
+      "global.fetch",
+      "global.WebSocket",
+      "process.dlopen",
+      "http.request",
+      "http.get",
+      "https.request",
+      "https.get",
+      "net.connect",
+      "net.createConnection",
+      "tls.connect",
+      "http2.connect",
+      "dgram.createSocket",
+      "worker_threads.Worker",
+      "child_process.spawn",
+      "child_process.spawnSync",
+      "child_process.exec",
+      "child_process.execSync",
+      "child_process.execFile",
+      "child_process.execFileSync",
+      "child_process.fork",
+      "net.Socket.connect",
+      "dgram.Socket.send",
+      "dgram.Socket.connect",
+      "dgram.Socket.bind",
+      "dns.lookup",
+      "dns.lookupService",
+      "dns.resolve",
+      "dns.resolve4",
+      "dns.resolve6",
+      "dns.resolveAny",
+      "dns.resolveCaa",
+      "dns.resolveCname",
+      "dns.resolveMx",
+      "dns.resolveNaptr",
+      "dns.resolveNs",
+      "dns.resolvePtr",
+      "dns.resolveSoa",
+      "dns.resolveSrv",
+      "dns.resolveTlsa",
+      "dns.resolveTxt",
+      "dns.reverse",
+      "dns.Resolver.resolveAny",
+      "dns.Resolver.resolve4",
+      "dns.Resolver.resolve6",
+      "dns.Resolver.resolveCaa",
+      "dns.Resolver.resolveCname",
+      "dns.Resolver.resolveMx",
+      "dns.Resolver.resolveNs",
+      "dns.Resolver.resolveTlsa",
+      "dns.Resolver.resolveTxt",
+      "dns.Resolver.resolveSrv",
+      "dns.Resolver.resolvePtr",
+      "dns.Resolver.resolveNaptr",
+      "dns.Resolver.resolveSoa",
+      "dns.Resolver.reverse",
+      "dns.Resolver.resolve",
+      "dns.promises.lookup",
+      "dns.promises.lookupService",
+      "dns.promises.resolve",
+      "dns.promises.resolve4",
+      "dns.promises.resolve6",
+      "dns.promises.resolveAny",
+      "dns.promises.resolveCaa",
+      "dns.promises.resolveCname",
+      "dns.promises.resolveMx",
+      "dns.promises.resolveNaptr",
+      "dns.promises.resolveNs",
+      "dns.promises.resolvePtr",
+      "dns.promises.resolveSoa",
+      "dns.promises.resolveSrv",
+      "dns.promises.resolveTlsa",
+      "dns.promises.resolveTxt",
+      "dns.promises.reverse",
+      "dns.promises.Resolver.resolveAny",
+      "dns.promises.Resolver.resolve4",
+      "dns.promises.Resolver.resolve6",
+      "dns.promises.Resolver.resolveCaa",
+      "dns.promises.Resolver.resolveCname",
+      "dns.promises.Resolver.resolveMx",
+      "dns.promises.Resolver.resolveNs",
+      "dns.promises.Resolver.resolveTlsa",
+      "dns.promises.Resolver.resolveTxt",
+      "dns.promises.Resolver.resolveSrv",
+      "dns.promises.Resolver.resolvePtr",
+      "dns.promises.Resolver.resolveNaptr",
+      "dns.promises.Resolver.resolveSoa",
+      "dns.promises.Resolver.reverse",
+      "dns.promises.Resolver.resolve",
+      "electron.net.WebSocket",
+      "electron.net.request",
+      "electron.net.fetch",
+      "electron.net.resolveHost"
+    ],
+    "canaries": 92,
+    "attempts": 0
+  },
+  "realPrivacyScopesAndTimers": true,
+  "torSocketsExercised": false,
+  "accountEnrollmentExercised": false,
+  "membershipVerified": false,
+  "disclosureEnabled": false,
+  "spendingEnabled": false,
+  "liveQueries": 0,
+  "submissions": 0
+}
