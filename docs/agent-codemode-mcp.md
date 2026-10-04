@@ -10,6 +10,12 @@ and browser helpers, alongside ordinary tools. Ask Agent to do a
 multi-step task; it can use a short JavaScript script to chain tools and filter
 results. Small models may continue using ordinary tools.
 
+To see usage, expand a helper card: its detail line includes the recorded script
+count, for example **6 tool calls · 2 tool scripts**. Scripts count execution
+attempts, including failed or stopped scripts; nested tool calls are counted
+separately. Counts accumulate across follow-ups and remain in saved conversations.
+Older reports without script counts keep their existing tool-call display.
+
 Open **composer + → Connected services** in a new or existing chat. The list shows
 your connections, status and available tools; reconnect and disconnect live here.
 Choose **Add service**, enter a name and the service's MCP endpoint, and connect. Connecting returns to the service list; Back returns

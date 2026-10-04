@@ -601,6 +601,7 @@ test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six',
       }
       assert.equal(receipt.length, count);
       assert.ok(receipt.every(item => item.state === 'completed' && item.toolCalls === (codemode ? 2 : 1)));
+      assert.ok(receipt.every(item => item.toolScripts === (codemode ? 1 : 0)));
       assert.ok(receipt.every(item => item.totalTokens > 120000));
       assert.ok(JSON.stringify(requests.at(-1)).includes('README.md describes a solar-system app.'));
       owner.subagentAbortController.abort();

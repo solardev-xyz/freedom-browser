@@ -13,11 +13,12 @@ const { AgentSessionHistoryStore, DB_FILE, normalizeActivity } = require('./sess
 
 test('retains complete helper text without runtime objects or extra fields', () => {
   const [item] = normalizeActivity([{ operation: 'delegate_task', status: 'succeeded', subagent: {
-    taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', toolCalls: 3,
+    taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', toolCalls: 3, toolScripts: 2,
     report: 'x'.repeat(13000), credential: 'not persisted', session: { live: true },
   } }]);
   expect(item.subagent.report.length).toBe(13000);
   expect(item.subagent.toolCalls).toBe(3);
+  expect(item.subagent.toolScripts).toBe(2);
   expect(item.subagent.credential).toBeUndefined();
   expect(item.subagent.session).toBeUndefined();
 });
@@ -554,13 +555,14 @@ test('real SQLite stores complete reports once, migrates legacy text, and reads 
       store.startTurn({ conversationId: id, runId: `run_${id}`, userText: 'Review', approvalMode: 'every_interaction', startedAt: 100 });
     }
     const text = '😀important finding\n'.repeat(3000) + 'Final recommendation';
-    const value = { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: text };
+    const value = { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: text, toolScripts: 2 };
     const receipt = store.saveHelperReport('one', 'run_one', value);
     expect(receipt.report.length).toBeLessThan(1000);
     expect(receipt.reportTruncated).toBe(false);
     expect(store.saveHelperReport('one', 'run_one', value).reportId).toBe(receipt.reportId);
     store.finishTurn({ conversationId: 'one', runId: 'run_one', status: 'completed', activity: [{ operation: 'delegate_task', subagent: receipt }] });
     expect(JSON.stringify(store.getSession('one')).length).toBeLessThan(3000);
+    expect(store.getSession('one').transcript[0].activity[0].subagent.toolScripts).toBe(2);
     expect(store.getDb().prepare('SELECT count(*) AS n FROM agent_helper_reports').get().n).toBe(1);
     expect(store.helperReports('two', { action: 'read', reportId: receipt.reportId }).error).toMatch(/not found/);
     expect(store.helperReports('two').reports).toEqual([]);
@@ -584,6 +586,7 @@ test('real SQLite stores complete reports once, migrates legacy text, and reads 
     store.getDb().prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ?').run(JSON.stringify([{ operation: 'delegate_task', subagent: legacy }]), 'run_two');
     store.getDb().pragma('user_version = 4'); store.close();
     store = new AgentSessionHistoryStore({ userDataDir: dir, Database: SqliteAdapter });
+    expect(store.getSession('one').transcript[0].activity[0].subagent.toolScripts).toBe(2);
     const old = store.getSession('two').transcript[0].activity[0].subagent;
     expect(old.reportId).toMatch(/^report_/);
     expect(store.helperReports('two', { action: 'read', reportId: old.reportId })).toMatchObject({ text: 'legacy text', reportTruncated: true });

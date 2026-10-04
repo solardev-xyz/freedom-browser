@@ -22,6 +22,7 @@ function normalizeSubagentReceipt(value) {
     state: value.state,
     ...(value.state === 'running' && typeof value.activity === 'string' && { activity: value.activity.replace(/\p{Cc}/gu, ' ').slice(0, 160) }),
     toolCalls: count('toolCalls'),
+    toolScripts: count('toolScripts'),
     totalTokens: count('totalTokens'),
     durationMs: count('durationMs'),
     ...(value.mode === 'edit' && {

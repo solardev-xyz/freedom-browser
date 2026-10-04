@@ -144,7 +144,7 @@ test('native helper scripts retain scoped tools, approval, activity, follow-up b
     const started = await tool.execute('start', params);
     const taskId = started.details.subagent.taskId;
     const [report] = await tool.collect(owner);
-    assert.equal(report.state, 'completed'); assert.equal(report.toolCalls, 2, mode + ': ' + lastResult);
+    assert.equal(report.state, 'completed'); assert.equal(report.toolScripts, 1); assert.equal(report.toolCalls, 2, mode + ': ' + lastResult);
     assert(progress.length > 0);
     if (mode !== 'edit') {
       for (const name of absent) assert(lastResult.includes(name + '=blocked'), lastResult);
@@ -165,6 +165,7 @@ test('native helper scripts retain scoped tools, approval, activity, follow-up b
       await tool.controlTools[0].execute('follow-up', { action: 'message', taskId, message: 'Continue with the current scope' });
       const [followUp] = await tool.collect(owner);
       assert.equal(followUp.state, 'completed');
+      assert.equal(followUp.toolScripts, 2);
       if (mode === 'read') {
         assert(lastResult.includes('retained') && lastResult.includes('scope-2'), lastResult);
         assert.equal(followUp.toolCalls, 3);
@@ -177,6 +178,7 @@ test('native helper scripts retain scoped tools, approval, activity, follow-up b
         assert.equal(await tool.stop(owner, taskId), true);
         const [stopped] = await tool.collect(owner);
         assert.equal(stopped.state, 'cancelled');
+        assert.equal(stopped.toolScripts, 3);
         assert.equal(owner.subagentAbortController.signal.aborted, false);
         await tool.settle(owner);
         assert.equal(calls.filter(call => call[0] === 'approval').length, approvalsBeforeStop);

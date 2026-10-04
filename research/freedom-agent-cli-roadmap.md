@@ -15,6 +15,7 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 Implemented on `experiment/agent-codemode-mcp` (branched from `6de3fa57`):
 
 - Pi's native QuickJS codemode tool on the main agent and all helper modes, alongside ordinary tools. Both receive guidance to choose it without an explicit user request when batching or filtering helps. Nested calls retain Freedom approvals, cancellation and activity. Known project/attachment readers can overlap; browser calls and writes execute in order. Background helpers provide isolated parallel browser work. Native classifier/image globals remain disabled.
+- Expanded helper cards show recorded tool-script counts alongside nested tool calls, including failed/stopped scripts and cumulative follow-up usage; counts survive conversation history.
 - Helper codemode retains mode-specific tool allowlists, exact editing files and assigned browser tabs. Nested calls retain helper attribution, approvals, Stop and partial-effect receipts; background follow-ups use fresh scope bindings. Helpers still cannot run commands, expand access, delegate or invoke MCP services.
 - Profile-owned remote MCP connections under **composer + → Connected services**: Streamable HTTP, tool/schema discovery, resource listing/reading, browser OAuth with encrypted credentials, reconnect and disconnect.
 - Service management is separate from model settings and available in existing chats. The connections list and add-service form are separate screens; returning preserves the conversation and draft.

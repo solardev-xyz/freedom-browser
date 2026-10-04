@@ -3516,7 +3516,8 @@ function finishToolRow(event) {
       for (const child of [...details.children]) if (child !== summary) child.remove();
       const note = document.createElement('p');
       const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
-      note.textContent = `${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
+      const scripts = Number.isSafeInteger(receipt.toolScripts) && receipt.toolScripts > 0 ? receipt.toolScripts : 0;
+      note.textContent = `${calls} tool ${calls === 1 ? 'call' : 'calls'}${scripts ? ` · ${scripts} tool ${scripts === 1 ? 'script' : 'scripts'}` : ''} · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
       const report = document.createElement('div');
       report.className = 'agent-helper-report-body';
       report.textContent = typeof receipt.report === 'string' && receipt.report

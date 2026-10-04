@@ -505,9 +505,9 @@ test('delegated reports are expandable, inert and coherent in both themes and la
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
     emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '2 reports received',
-      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', toolCalls: 3,
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', toolCalls: 3, toolScripts: 2,
         report: '### Findings\n- **Playback controls** are wired correctly in `app/SolarScene.tsx`.\n- Keyboard focus needs a visible style.\n\nNo tests were run.\n<img src="https://invalid.test/tracker"> <script>globalThis.helperInjection = true</script>' },
-        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' },
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, toolScripts: 1, report: 'Add a visible keyboard focus style.' },
         ...Array.from({ length: 4 }, (_, i) => ({ taskId: 'delegate_' + String(i).repeat(24), title: `Research topic ${i + 3}`, state: 'completed', toolCalls: 2, report: `Findings for topic ${i + 3}.` }))] });
     emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
     emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
@@ -521,6 +521,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await window.locator('.agent-turn-activity > summary').click();
   const report = window.locator('.agent-subagent-report').first();
   await expect(report).toHaveAttribute('open', '');
+  await expect(report).toContainText('3 tool calls · 2 tool scripts');
   await expect(report.locator('p').last()).toBeVisible();
   await expect(report.locator('img, script')).toHaveCount(0);
   await expect(report.locator('.agent-helper-report-body strong')).toHaveText('Playback controls');

@@ -504,11 +504,13 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', intent: 'Delegating two read-only tasks' });
     ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'failed',
       label: '1 report received · 1 task stopped', subagents: [
-        { title: 'Structure', state: 'completed', report: '<script>untrusted()</script>', toolCalls: 2 },
-        { title: 'Accessibility', state: 'cancelled', report: '', toolCalls: 1 },
+        { title: 'Structure', state: 'completed', report: '<script>untrusted()</script>', toolCalls: 2, toolScripts: 2 },
+        { title: 'Accessibility', state: 'cancelled', report: '', toolCalls: 1, toolScripts: 1 },
       ] });
     const reports = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
     expect(reports.length).toBe(2);
+    expect(reports[0].children[1].textContent).toBe('2 tool calls · 2 tool scripts · Model-generated findings');
+    expect(reports[1].children[1].textContent).toBe('1 tool call · 1 tool script · Model-generated findings');
     expect(reports[0].querySelector('.agent-helper-title').textContent).toBe('Structure');
     expect(reports[0].querySelector('.agent-helper-status').textContent).toContain('Completed');
     expect(reports[1].querySelector('.agent-helper-status').textContent).toContain('Stopped');

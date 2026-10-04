@@ -261,6 +261,7 @@ function createSubagentTool(options) {
     const taskId = job?.taskId || `delegate_${crypto.randomBytes(12).toString('hex')}`;
     const startedAt = Date.now();
     let toolCalls = job?.stats?.toolCalls || 0;
+    let toolScripts = job?.stats?.toolScripts || 0;
     let totalTokens = job?.stats?.totalTokens || 0;
     const priorDurationMs = job?.stats?.durationMs || 0;
     let session;
@@ -282,7 +283,7 @@ function createSubagentTool(options) {
         browserPending: browser?.evidence().browserPending === true }), ...(params.mode === 'edit' && { mode: 'edit',
         changedFiles: [...new Set([...(job?.edits?.changedFiles || []), ...(writer?.evidence().changedFiles || [])])],
         attemptedFiles: [...new Set([...(job?.edits?.attemptedFiles || []), ...(writer?.evidence().attemptedFiles || [])])],
-        writesPending: writer?.evidence().writesPending === true }), toolCalls, totalTokens, durationMs: priorDurationMs + Date.now() - startedAt });
+        writesPending: writer?.evidence().writesPending === true }), toolCalls, toolScripts, totalTokens, durationMs: priorDurationMs + Date.now() - startedAt });
     const interrupted = new Promise(resolve => { cancel = state => {
       resolve(receipt(state));
       childAbort.abort();
@@ -368,7 +369,18 @@ function createSubagentTool(options) {
           const text = (message.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
           finalText = text;
         }
-        if (event.type === 'tool_execution_start') options.onProgress?.(owner, params.title, toolCalls);
+        if (event.type === 'tool_execution_start') {
+          if (event.toolName === 'codemode') {
+            toolScripts++;
+            activity = 'Running tool script';
+            if (job) publish(owner, job);
+          }
+          options.onProgress?.(owner, params.title, toolCalls);
+        }
+        if (event.type === 'tool_execution_end' && event.toolName === 'codemode') {
+          activity = 'Thinking…';
+          if (job) publish(owner, job);
+        }
       });
       // Follow-ups are delivered between passes, with no concurrent prompt calls.
       // The retained Pi session preserves earlier evidence within this user turn.
@@ -391,7 +403,7 @@ function createSubagentTool(options) {
       closed = true;
       if (job && outcome?.mode === 'browser') job.browserEvidence = { tabIds: outcome.tabIds, browserActions: outcome.browserActions };
       if (job && outcome?.mode === 'edit') job.edits = { changedFiles: outcome.changedFiles, attemptedFiles: outcome.attemptedFiles };
-      if (job) job.stats = { toolCalls, totalTokens, durationMs: priorDurationMs + Date.now() - startedAt };
+      if (job) job.stats = { toolCalls, toolScripts, totalTokens, durationMs: priorDurationMs + Date.now() - startedAt };
       if (outcome?.state === 'completed') browser?.release({ stopLoading: false });
       childAbort.abort();
       writer?.release();
