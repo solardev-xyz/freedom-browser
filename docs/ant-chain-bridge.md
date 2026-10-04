@@ -19,7 +19,16 @@ persisted. External, disabled and reused nodes are not reconfigured.
 The bridge fixes the chain to Gnosis (100), accepts the eight methods Ant's
 chain module issues, and forwards the original params and JSON-RPC id. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
-→ direct RPC). Ant's reads are background work: they use Myotis only when its
+→ direct RPC), with one exception: `eth_getLogs` never reaches Colibri, for
+Ant or any other caller (the router's `COLIBRI_EXCLUDED_METHODS`; the bridge
+also passes `excludeSources: ['colibri']` for its log scans). Colibri's WASM
+verifier runs synchronously on the main thread, so verifying a wide log range
+froze the whole browser for 20-30 s, and it answers a range its RPC refuses
+with only the latest blocks' logs, marked verified. Ant's log scans therefore
+go Myotis (which does not serve logs) → quorum → direct. A page's
+`eth_getLogs` therefore comes back `verified: true` when RPC quorum agrees and
+`verified: false` only when it falls through to direct RPC. Ant's reads
+are background work: they use Myotis only when its
 single in-flight slot is idle and never queue for it, so the node's polling
 cannot push interactive wallet/app reads into queue-full fallback.
 
@@ -43,7 +52,7 @@ exceeded`. It depends on the query, not the endpoint. Ant's needles alone
      reply that matches them without naming the query's size is at most a
      possible range cap (below).
    - _Timeout_: a client timeout (`RPC query timeout after Nms`), a source
-     deadline (Colibri, quorum) or an upstream `query timeout` reply. Ant
+     deadline (quorum) or an upstream `query timeout` reply. Ant
      halves on it too, but another endpoint or a longer attempt may answer.
    - _Possible range cap_: any other coded reply whose text matches Ant's
      needles and names neither a throttle nor a lagging endpoint, e.g. a cap
@@ -66,7 +75,8 @@ executed block N (node is still syncing)` — they name a range but a synced
      code, whose text would match Ant's needles is replaced with `endpoint
 unavailable`, so Ant does not halve its window on a throttle.
 2. **Keep the most useful failure seen so far**, across every tier (Myotis,
-   Colibri, each quorum member, each Direct attempt and retry). A later
+   each quorum member, each Direct attempt and retry; Colibri is never asked
+   for logs). A later
    failure replaces it only if it ranks strictly higher, so a range limit
    survives a later timeout or 429, a timeout survives a later `-32601`, and
    a possible range cap survives a later 429 or refused connection.
@@ -166,9 +176,10 @@ startup. Router tests ensure cancellation
 prevents later fallback or a second direct broadcaster.
 `ant-log-scan-routing.test.js` pins the ranking rule as a matrix over the
 real router with the bridge's own options and error mapping, under fake
-timers: tier (Myotis, Colibri, quorum with all or one of three members, Direct
+timers: tier (Myotis, quorum with all or one of three members, Direct
 untried endpoint, Direct widened retry) × error class (range limit, timeout
-reply, endpoint-dependent, hang, success), plus arrival-order cases. Each case
+reply, endpoint-dependent, hang, success), plus arrival-order cases and a
+case asserting Colibri is never asked, whatever it would answer. Each case
 asserts what Ant receives, whether Ant's needles match it and the elapsed
 time. The review findings that led to the rule (PR #419 R1-F1 … R6-F1) are
 named cases there. `ant-chain-bridge.router.test.js` runs the real router
@@ -186,7 +197,8 @@ stop/restart. See the PR for measurements and current test results.
 ### macOS arm64 observations, 2026-09-25
 
 The completed live run used the actual managed daemon, not an external node.
-Startup log scans (`eth_getLogs`) and `eth_blockNumber` went through Colibri.
+Startup log scans (`eth_getLogs`) and `eth_blockNumber` went through Colibri
+(log scans no longer do since PR #494; see *Routing and authority*).
 `/wallet` returned HTTP 200 in **699 ms** using Colibri balance/contract calls;
 `/chainstate` returned HTTP 200 in **436 ms** using Colibri and RPC quorum.
 After stop/start, `/wallet` again returned HTTP 200. The whole campaign,

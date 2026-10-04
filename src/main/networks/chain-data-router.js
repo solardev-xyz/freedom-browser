@@ -30,6 +30,12 @@ const COLIBRI_UNSUPPORTED = new Set([
   'eth_uninstallFilter',
 ]);
 const DIRECT_ONLY_METHODS = new Set([...COLIBRI_UNSUPPORTED, 'web3_clientVersion', 'web3_sha3']);
+// Methods never routed to Colibri, whoever asks. Its WASM verifier runs
+// synchronously on the main thread: verifying a wide eth_getLogs range froze
+// the whole browser for 20-30 s, and it answers a range the RPC refuses with
+// only the most recent blocks' logs, marked verified. That reaches Ant's log
+// scans and any connected page's window.ethereum eth_getLogs alike.
+const COLIBRI_EXCLUDED_METHODS = new Set(['eth_getLogs']);
 READ_METHODS.add('web3_clientVersion');
 READ_METHODS.add('web3_sha3');
 
@@ -1131,6 +1137,9 @@ async function request(
     // failure across every tier and retry is kept and reported, and a
     // REQUEST-ranked one ends the request (see createErrorKeeper).
     rankError = null,
+    // Sources this caller must never be routed to, e.g. Colibri for Ant's log
+    // scans (its verifier runs on the main thread).
+    excludeSources = [],
   } = {}
 ) {
   if (privacyContext !== null) {
@@ -1146,9 +1155,20 @@ async function request(
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
   const params = normalizeParams(method, rawParams);
   const supportsMyotis = myotis.NETWORKS?.has(Number(chainId)) === true;
-  const order =
+  const configuredOrder =
     network.access?.readOrder ||
     (supportsMyotis ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER);
+  const excluded = new Set(excludeSources);
+  if (COLIBRI_EXCLUDED_METHODS.has(method)) excluded.add('colibri');
+  const order = configuredOrder.filter((source) => !excluded.has(source));
+  const dropped = configuredOrder.filter((source) => excluded.has(source));
+  const excludedNote = dropped.length ? `excluded for this request: ${dropped.join(', ')}` : null;
+  if (order.length === 0) {
+    throw new Error(
+      `No chain source left for ${method} on chain ${chainId}: read order ` +
+        `[${configuredOrder.join(', ')}], ${excludedNote}`
+    );
+  }
   // Only a page-driven read (an app supplies its routing context) trades
   // verification for interactive latency. Wallet-internal reads have no user
   // watching a frame and keep the chain's configured timeout.
@@ -1226,7 +1246,10 @@ async function request(
   }
   if (keeper.error) throw keeper.error;
   if (lastRpcError) throw lastRpcError;
-  throw new Error(`All chain sources failed for ${method} (${failures.join('; ')})`);
+  throw new Error(
+    `All chain sources failed for ${method} ` +
+      `(${[...failures, excludedNote].filter(Boolean).join('; ')})`
+  );
 }
 
 async function getFeeQuote(chainId) {

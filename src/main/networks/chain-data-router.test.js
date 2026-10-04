@@ -672,6 +672,83 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
   });
 
+  test('never routes to an excluded source', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockRequestViaColibri.mockResolvedValue('0xcolibri');
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+
+    await expect(
+      request(100, 'eth_call', [{}, 'latest'], { excludeSources: ['colibri'] })
+    ).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+
+    await expect(request(100, 'eth_call', [{}, 'latest'])).resolves.toMatchObject({
+      result: '0xcolibri',
+      source: 'colibri',
+    });
+  });
+
+  // Colibri verifies on the main thread and truncates wide ranges, so no
+  // caller's eth_getLogs reaches it, including a page's window.ethereum read
+  // (wallet:chain-request passes only a routingContext).
+  test('never routes eth_getLogs to Colibri, even for a page-driven read', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockRequestViaColibri.mockResolvedValue(['0xtruncated']);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: ['0xlog'] }),
+    });
+
+    await expect(
+      request(100, 'eth_getLogs', [{ fromBlock: '0x0', toBlock: 'latest' }], {
+        routingContext: { origin: 'https://app.example' },
+      })
+    ).resolves.toMatchObject({ result: ['0xlog'], source: 'direct', verified: false });
+    await expect(request(100, 'eth_getLogs', [{}])).resolves.toMatchObject({
+      source: 'direct',
+    });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+  });
+
+  test('names the exclusion when it leaves no source to ask', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    global.fetch = jest.fn();
+
+    await expect(request(100, 'eth_getLogs', [{}])).rejects.toThrow(
+      'No chain source left for eth_getLogs on chain 100: read order [colibri], ' +
+        'excluded for this request: colibri'
+    );
+    await expect(
+      request(100, 'eth_call', [{}, 'latest'], { excludeSources: ['colibri'] })
+    ).rejects.toThrow(/No chain source left for eth_call .*excluded for this request: colibri/);
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('names the exclusion when every remaining source fails', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'myotis'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockMyotis.isReady.mockReturnValue(false);
+
+    await expect(request(100, 'eth_getLogs', [{}])).rejects.toThrow(
+      /All chain sources failed for eth_getLogs \(myotis: .*; excluded for this request: colibri\)/
+    );
+  });
+
   test('falls through after two seconds and temporarily bypasses a timed-out Myotis route', async () => {
     jest.useFakeTimers({ now: 1_000_000 });
     mockRegistry.getNetwork.mockReturnValue({

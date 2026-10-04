@@ -139,13 +139,14 @@ test('range-limit and timeout failures keep wording Ant shrinks its log scan on'
   expect(antShrinks(timedOut.body.error.message)).toBe(true);
 });
 
-test('Ant reads are background work and wide log scans get a longer direct budget', async () => {
+test('Ant reads are background work and wide log scans get a longer direct budget, never Colibri', async () => {
   await post(bridge.url, rpc('eth_getLogs', [{}]));
   expect(router.request).toHaveBeenLastCalledWith(100, 'eth_getLogs', [{}], {
     signal: expect.any(AbortSignal),
     background: true,
     directTimeoutMs: 60000,
     rankError: rankLogScanError,
+    excludeSources: ['colibri'],
   });
   // Other reads are not ranked: Ant does not adapt them to the error.
   await post(bridge.url, rpc('eth_blockNumber', []));

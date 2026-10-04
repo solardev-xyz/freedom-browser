@@ -1,6 +1,6 @@
 // Ant's eth_getLogs scan through the real chain-data router, as a matrix:
-// tier (myotis / colibri / quorum k-of-n / direct untried / direct widened
-// retry) x error class (range limit / timeout reply / endpoint-dependent /
+// tier (myotis / quorum k-of-n / direct untried / direct widened retry; Colibri
+// is never asked) x error class (range limit / timeout reply / endpoint-dependent /
 // hang / success) x arrival order; the possible-range-cap rank is covered by
 // the named review cases at the end. Each case asserts what Ant receives (the
 // bridge's own antErrorReply over the router's error), whether Ant's
@@ -257,7 +257,6 @@ const TIERS = {
   // Myotis v0.1.11 does not serve eth_getLogs: ready or not, it is an
   // unavailable source Ant's scan falls straight through.
   myotis: (kind) => ({ myotisReady: true, rpcs: { a: down, b: down, c: down, d: kind } }),
-  colibri: (kind) => ({ colibri: kind, rpcs: { a: down, b: down, c: down, d: down } }),
   // k-of-n: all three quorum members answer alike.
   'quorum 3/3': (kind) => ({ rpcs: { a: kind, b: kind, c: kind, d: down } }),
   // k-of-n: one member carries the class, the other two refuse.
@@ -274,23 +273,6 @@ const MATRIX = {
     endpoint: [gotUnactionable, 0, ['a', 'b', 'c', 'd']],
     hang: [gotTimeout(60000), 60000, ['a', 'b', 'c', 'd']],
     success: [gotLogs, 0, ['a', 'b', 'c', 'd']],
-  },
-  colibri: {
-    // A range limit is final: no RPC is asked.
-    range: [gotRange, 0, []],
-    timeoutReply: [gotTimeoutReply, 0, ['a', 'b', 'c', 'd']],
-    endpoint: [gotUnactionable, 0, ['a', 'b', 'c', 'd']],
-    // Colibri's 5 s source deadline is a timeout; the RPCs then refuse.
-    hang: [
-      {
-        code: -32002,
-        message: 'Chain request failed: Colibri exceeded its 5000ms interactive deadline',
-        shrinks: true,
-      },
-      5000,
-      ['a', 'b', 'c', 'd'],
-    ],
-    success: [gotLogs, 0, []],
   },
   'quorum 3/3': {
     // Final: Direct's untried d is never asked.
@@ -344,6 +326,20 @@ describe('tier x error class', () => {
     expect(got).toMatchObject({ ...expected, at });
     expect(got.fetches.map((entry) => entry.split('@')[0])).toEqual(order);
   });
+});
+
+// Colibri verifies on the main thread, so Ant's scans skip it whatever it
+// would have answered; with every RPC refusing, Ant gets nothing to act on.
+describe('Colibri', () => {
+  test.each(['range', 'timeoutReply', 'endpoint', 'hang', 'success'])(
+    'is never asked, even when it would answer %s',
+    async (kind) => {
+      const got = await scan({ colibri: kind, rpcs: { a: down, b: down, c: down, d: down } });
+      expect(mockColibri).not.toHaveBeenCalled();
+      expect(got).toMatchObject({ ...gotUnactionable, at: 0 });
+      expect(got.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c', 'd']);
+    }
+  );
 });
 
 // Arrival order: which error lands first must not change which one Ant gets.
@@ -402,9 +398,9 @@ describe('arrival order', () => {
       colibri: 'hang',
       rpcs: { a: ['hang', 'success'], b: 'endpoint', c: 'timeoutReply', d: '429' },
     });
-    // Colibri 5 s, quorum 5 s, d 429, then a's widened retry answers.
-    expect(got).toMatchObject({ ...gotLogs, at: 10000 });
-    expect(got.fetches).toEqual(['a@5000', 'b@5000', 'c@5000', 'd@10000', 'a@10000']);
+    // Colibri skipped, quorum 5 s, d 429, then a's widened retry answers.
+    expect(got).toMatchObject({ ...gotLogs, at: 5000 });
+    expect(got.fetches).toEqual(['a@0', 'b@0', 'c@0', 'd@5000', 'a@5000']);
   });
 });
 
