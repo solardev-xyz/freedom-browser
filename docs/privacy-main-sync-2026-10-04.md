@@ -1,5 +1,33 @@
 # Privacy branch main synchronization — October 4, 2026
 
+## Ant 0.5.58 and vendored license continuation
+
+Main `3b4f62df` merged cleanly in `08eb732c`, after the qualified Shield
+prerequisite commit `b86c6dad`. Its 12 files update the Ant pin/checksum,
+associated tests/comments/license/changelog material, and replace a per-build
+GPL text download with a committed, hash-verified copy. No wallet, privacy
+transport, protocol policy, dependency or lockfile changes overlap this work.
+All 60 native Shield inventory hashes still match after the merge. Claude
+reviewed the integration scope.
+
+Ant 0.5.58 was explicitly installed for all configured targets; the host reports
+`antd 0.5.58`. freedom-ipfs 0.4.3 and libradicle 0.7.1 host addons were refreshed.
+Myotis 0.1.12 official artifacts were reinstalled for all five supported targets,
+passed ABI 32 constructor checks without networking, and the host supervisor was
+rebuilt. Matching Arti 2.6.0/static-sqlite was verified and retained under the
+bundled-binaries playbook. `npm run check-binaries` and lint pass. The installed
+adblock GPL text and new vendored copy have the same pinned SHA-256
+`3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986`;
+filter and scriptlet requirements did not change. The unchanged lockfile required
+no npm reinstall.
+
+Seven focused suites pass **230 tests** in **5.056 seconds**, including the
+real-binary Bee-to-Ant migration, Ant/adblock fetching, license audit,
+changelog assembly and chain bridge/router. The 13,658-test full regression
+belongs to the immediately preceding `b86c6dad` milestone, not this merged tree;
+it was not repeated for these unrelated changes. No live node startup smoke or
+funded profile activity was performed for this synchronization.
+
 ## Bounded history search continuation
 
 Main `cc82c715` merged cleanly in `117bdab8`, following the private RPC
