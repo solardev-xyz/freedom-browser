@@ -26,6 +26,18 @@ const tag = (n) => '0x' + n.toString(16);
 let lock,
   phase = 'setup';
 const sources = [
+  'scripts/fixtures/railgun-own-poi-membership-signature.js',
+  'src/main/wallet/railgun-own-poi-membership.js',
+  'src/main/wallet/railgun-own-poi-membership.test.js',
+  'src/main/wallet/railgun-own-transact-poi-membership.test.js',
+  'src/main/wallet/railgun-own-transact-poi-admission.test.js',
+  'src/main/wallet/railgun-poi-source.js',
+  'src/main/wallet/railgun-poi-source.test.js',
+  'src/main/wallet/railgun-poi-membership.js',
+  'src/main/wallet/railgun-poi-membership.test.js',
+  'src/main/wallet/railgun-poi-job.js',
+  'src/main/wallet/railgun-own-poi-proof.js',
+  'src/main/wallet/railgun-own-poi-proof-data.js',
   'scripts/fixtures/railgun-own-poi-membership-input-job.js',
   'src/main/wallet/railgun-poi-transact-selector.js',
   'src/main/wallet/railgun-poi-transact-selector-data.js',
@@ -199,12 +211,21 @@ const hashes = () =>
     sources.map((file) => [file, sha(fs.readFileSync(path.join(__dirname, '..', file)))])
   );
 async function main() {
-  const [directory, archive, kind, senderKind] = process.argv.slice(2);
+  const [directory, archive, kind, senderKind, proverArchive, artifactDirectory] = process.argv.slice(2);
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   assert.ok(['transfer', 'unshield'].includes(kind));
   assert.ok(['self', 'foreign'].includes(senderKind));
   const selectorQualification = process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR === '1';
   assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR));
+  const membershipQualification = process.env.FREEDOM_RAILGUN_TRANSACT_MEMBERSHIP === '1';
+  assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_TRANSACT_MEMBERSHIP));
+  assert.ok(!(selectorQualification && membershipQualification));
+  if (membershipQualification) assert.ok(path.isAbsolute(proverArchive) && path.isAbsolute(artifactDirectory));
+  assert.equal(require.cache[require.resolve('../src/main/wallet/railgun-poi-records')], undefined);
+  const signature = membershipQualification
+    ? require('./fixtures/railgun-own-poi-membership-signature').install()
+    : null;
+  const { REQUIRED_LIST } = require('../src/main/wallet/railgun-poi-records');
   fs.mkdirSync(directory, { mode: 0o700 });
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
     env: { FREEDOM_TEST_USER_DATA: path.join(directory, 'profile') },
@@ -226,6 +247,13 @@ async function main() {
     rejectValidation = null,
     finalizedOverride = null,
     history;
+  let membershipActive = false, membershipFault = 'healthy', rootStartedAt;
+  const membershipOperations = new Set(), poiClients = new Set();
+  const membershipRuns = [], rootAdmissionAges = [], postAcquisitionVerifierEntryAges = [], rootAcquisitions = [];
+  const poiMethods = {
+    ppoi_pois_per_list: 0, ppoi_merkle_proofs: 0,
+    ppoi_poi_events: 0, ppoi_validate_poi_merkleroots: 0,
+  };
   const serviceMethods = { latest: 0, validate: 0, page: 0 };
   const methods = {};
   const roleMethods = { 'transaction-rpc': {}, 'protocol-rpc': {} };
@@ -235,6 +263,12 @@ async function main() {
     '../src/main/wallet/railgun-own-receipt',
     '../src/main/wallet/railgun-own-witness',
     '../src/main/wallet/railgun-scan-source',
+    '../src/main/wallet/railgun-own-poi-membership',
+    '../src/main/wallet/railgun-poi-transact-selector',
+    '../src/main/wallet/railgun-poi-membership',
+    '../src/main/wallet/railgun-txid-root',
+    '../src/main/wallet/railgun-account-txid',
+    '../src/main/wallet/railgun-own-poi-proof',
   ])
     assert.equal(require.cache[require.resolve(name)], undefined);
   transport.createWalletTorTransport = () => {
@@ -260,18 +294,66 @@ async function main() {
   tor.getWalletSocksEndpoint = () => endpoint;
   settings.isWalletTorExperimentAvailable = () => true;
   transport.createWalletTorTransport = () => {
-    let closed = false;
-    return {
-      closed: Promise.resolve(),
+    let closed = false, poiCursor = 0, poiOperation, resolveClosed;
+    const drained = new Promise((resolve) => (resolveClosed = resolve));
+    const client = {
+      closed: drained,
       release() {},
       close() {
         closed = true;
+        resolveClosed();
       },
       async request(handle, url, options) {
         try {
           assert.equal(closed, false);
           const context = getPrivacyContext(handle),
             role = context.subject.role;
+          if (membershipActive && url === 'https://ppoi.fdi.network' && role === 'poi') {
+            poiClients.add(client);
+            assert.equal(context.subject.kind, 'private-account');
+            assert.equal(context.subject.principal, 'railgun:' + enrollment.descriptor.accountIndex);
+            assert.equal(context.subject.protocol, 'railgun');
+            assert.equal(context.subject.deployment, 'sepolia');
+            assert.equal(context.subject.chainId, 11155111);
+            assert.match(context.subject.operation, /^poi:[0-9a-f]{64}$/);
+            poiOperation ??= context.subject.operation;
+            assert.equal(context.subject.operation, poiOperation);
+            assert.equal(options.method, 'POST');
+            assert.ok(!options.signal.aborted);
+            assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 30000);
+            const body = JSON.parse(options.body);
+            assert.deepEqual(Object.keys(body).sort(), ['id','jsonrpc','method','params']);
+            assert.equal(body.jsonrpc, '2.0');
+            assert.equal(typeof body.id, 'string');
+            assert.equal(body.method, Object.keys(poiMethods)[poiCursor++]);
+            const age = Math.ceil(performance.now() - rootStartedAt);
+            assert.ok(age >= 0 && age < 55000);
+            rootAdmissionAges.push(age);
+            poiMethods[body.method]++;
+            const base = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
+            const note = { blindedCommitment: payload.blindedCommitment, type: 'Transact' };
+            const proof = JSON.parse(JSON.stringify(payload.proof));
+            if (membershipFault === 'path') proof.elements[0] = hex(BigInt('0x' + proof.elements[0]) + 1n).slice(2);
+            const index = Number(BigInt('0x' + proof.indices));
+            let result;
+            if (body.method === 'ppoi_pois_per_list') {
+              assert.deepEqual(body.params, {...base,listKeys:[REQUIRED_LIST],blindedCommitmentDatas:[note]});
+              result = {[note.blindedCommitment]:{[REQUIRED_LIST]:'Valid'}};
+            } else if (body.method === 'ppoi_merkle_proofs') {
+              assert.deepEqual(body.params, {...base,listKey:REQUIRED_LIST,blindedCommitments:[note.blindedCommitment]});
+              result = [proof];
+            } else if (body.method === 'ppoi_poi_events') {
+              assert.deepEqual(body.params, {...base,listKey:REQUIRED_LIST,startIndex:index,endIndex:index});
+              const event = {index,blindedCommitment:note.blindedCommitment,type:membershipFault === 'type' ? 'Shield' : 'Transact'};
+              let signed = signature.sign(event);
+              if (membershipFault === 'signature') signed = (signed[0] === '0' ? '1' : '0') + signed.slice(1);
+              result = [{signedPOIEvent:{...event,signature:signed},validatedMerkleroot:proof.root}];
+            } else {
+              assert.deepEqual(body.params, {...base,listKey:REQUIRED_LIST,poiMerkleroots:[proof.root]});
+              result = membershipFault !== 'list-root';
+            }
+            return {status:200,body:Buffer.from(JSON.stringify({jsonrpc:'2.0',id:body.id,result}))};
+          }
           if (url !== rpcUrl || !['transaction-rpc', 'protocol-rpc'].includes(role)) {
             externalAttempts++;
             throw Error('External transport forbidden');
@@ -343,6 +425,7 @@ async function main() {
         }
       },
     };
+    return client;
   };
   const serviceModule = require('../src/main/wallet/railgun-public-services');
   const originalServices = serviceModule.createRailgunPublicServices;
@@ -383,6 +466,19 @@ async function main() {
         return { transactions: [payload.creatorRow, payload.row] };
       },
     };
+  };
+  const rootsModule = require('../src/main/wallet/railgun-txid-root');
+  const originalRoots = rootsModule.createRailgunTxidRootSource;
+  rootsModule.createRailgunTxidRootSource = (...args) => {
+    const roots = originalRoots(...args);
+    return Object.freeze({...roots, acquire(point) {
+      if (membershipActive) {
+        rootStartedAt = performance.now();
+        rootAcquisitions.push(serviceMethods.latest);
+        assert.deepEqual(point,{index:payload.state.count-1,root:payload.state.root});
+      }
+      return roots.acquire(point);
+    }});
   };
   const processModule = require('../src/main/wallet/railgun-process');
   const originalStart = processModule.startRailgunProcess;
@@ -478,6 +574,16 @@ async function main() {
       counts.elapsedMs += Math.round(performance.now() - jobStarted);
     });
     return task;
+  };
+  const membershipModule = require('../src/main/wallet/railgun-poi-membership');
+  const originalMembershipVerify = membershipModule.verifyRailgunPoiMembership;
+  membershipModule.verifyRailgunPoiMembership = (options) => {
+    if (membershipActive) {
+      const age = Math.ceil(performance.now() - rootStartedAt);
+      assert.ok(age >= 0 && age < 55000);
+      postAcquisitionVerifierEntryAges.push(age);
+    }
+    return originalMembershipVerify(options);
   };
   const sourceMaintenance = { stages: 0, retains: 0, beforeAcquire: 0, applies: 0 };
   const ledgerModule = require('../src/main/wallet/railgun-source-ledger');
@@ -1335,6 +1441,110 @@ async function main() {
         ]
       );
     }
+    if (membershipQualification) {
+      const {
+        openRailgunOwnTransactPoiMembership: openTransact,
+        openRailgunOwnPoiMembership: openShield,
+        assertRailgunOwnPoiMembership: assertMembership,
+      } = require('../src/main/wallet/railgun-own-poi-membership');
+      const { deriveRailgunOwnTransactPoiSelector: diagnostic } = require('../src/main/wallet/railgun-poi-transact-selector');
+      const { proveRailgunOwnPoi } = require('../src/main/wallet/railgun-own-poi-proof');
+      const { normalizeRailgunOwnPoiProofInput } = require('../src/main/wallet/railgun-own-poi-proof-data');
+      const options = {identity,enrollment,coordinator:publicAccount.coordinator,archive,selector,signal:enrollment.signal};
+      const durableSnapshot = async () => {
+        const reservations = await enrollment.openReservations(), capsules = await enrollment.openPrivateCapsules(), entries = [];
+        await reservations.withSigningRecovery(async (records, context) => {
+          for (const {entry,receipt} of records) {
+            context.assertCurrent(); entries.push({entry,stored:await capsules.readSigned(receipt)});
+          }
+          context.assertCurrent();
+        });
+        return {entries,journal:await journal.readSnapshot()};
+      };
+      const runMembership = async (name, fault = 'healthy') => {
+        phase = name;
+        const beforeDurable = await durableSnapshot(), beforeServices = {...serviceMethods},
+          beforePoi = Object.values(poiMethods), beforeRpc = rpcSnapshot(),
+          beforeKeys = selectorKeyReplies, beforeResults = selectorResults,
+          beforeJobs = JSON.parse(JSON.stringify(jobs)), beforeMaintenance = {...sourceMaintenance},
+          beforeAcquisitions = rootAcquisitions.length, beforeAges = rootAdmissionAges.length, beforeCompletions = postAcquisitionVerifierEntryAges.length;
+        selectorTimingStart = phaseTimings.length;
+        preflightActive = membershipActive = true;
+        membershipFault = fault;
+        rejectValidation = fault === 'fifth-root' ? serviceMethods.validate + 5 : null;
+        const began = performance.now();
+        let value;
+        try {
+          value = await openTransact(options);
+          const healthy = fault === 'healthy';
+          assert.equal(value.status, healthy ? 'verified' : 'refused', 'membership stage ' + value.stage);
+          if (!healthy) assert.equal(value.stage, fault === 'fifth-root' ? 'root' : ['type','signature'].includes(fault) ? 'acquire' : fault === 'path' ? 'membership-verify' : 'membership-status');
+          if (healthy) {
+            membershipOperations.add(value);
+            const observed = assertMembership(value.receipt,enrollment,publicAccount.coordinator,1000);
+            assert.equal(observed,value.observation);
+            assert.equal(observed.inputType,'Transact');
+            assert.equal(observed.poiPreparation.creator.type,'Transact');
+            assert.deepEqual(observed.membership.proofs,[payload.proof]);
+            assert.equal(observed.membership.membershipVerified,true);
+            assert.equal(observed.selector.blindedCommitment,payload.blindedCommitment);
+            for (const flag of ['accountAuthenticated','sourceAuthenticated','currentFinalityVerified','disclosureEnabled','spendingEnabled']) assert.equal(observed[flag],false);
+            assert.throws(() => assertMembership({},enrollment,publicAccount.coordinator));
+            assert.throws(() => assertMembership(value.receipt,{},publicAccount.coordinator));
+            const heldJobs = JSON.stringify(jobs), heldKeys = selectorKeyReplies, heldTraffic = JSON.stringify({serviceMethods,poiMethods,methods});
+            for (const call of [() => diagnostic(options),() => openTransact(options),() => {
+              const {identity:_identity,...shieldOptions} = options; return openShield(shieldOptions);
+            }]) {
+              const blocked = await call(); assert.equal(blocked.status,'refused'); assert.ok(['context','busy'].includes(blocked.stage));
+            }
+            // Actual normalizer pins the reason; actual controller consumes the
+            // genuine registry receipt and must fail before incremental key work.
+            assert.throws(() => normalizeRailgunOwnPoiProofInput({archive,proverArchive,artifactDirectory,descriptor:enrollment.descriptor,preparation:observed.poiPreparation,listProofs:observed.membership.proofs}));
+            const proof = await proveRailgunOwnPoi({identity,enrollment,coordinator:publicAccount.coordinator,archive,proverArchive,artifactDirectory,membershipReceipt:value.receipt,signal:enrollment.signal});
+            assert.deepEqual(proof,{status:'refused',stage:'context'});
+            assert.equal(JSON.stringify(jobs),heldJobs);
+            assert.equal(selectorKeyReplies,heldKeys);
+            assert.equal(JSON.stringify({serviceMethods,poiMethods,methods}),heldTraffic);
+            assert.equal(assertMembership(value.receipt,enrollment,publicAccount.coordinator),observed);
+          }
+          const expectedList = fault === 'fifth-root' ? [0,0,0,0] : ['signature','type'].includes(fault) ? [1,1,1,0] : [1,1,1,1];
+          assert.deepEqual(Object.values(poiMethods).map((n,i)=>n-beforePoi[i]),expectedList);
+          assert.deepEqual(serviceMethods,{latest:beforeServices.latest+5,validate:beforeServices.validate+5,page:beforeServices.page});
+          assert.deepEqual(rootAcquisitions.slice(beforeAcquisitions),Array.from({length:5},(_,i)=>beforeServices.latest+i));
+          assertCaptureRpc(beforeRpc,true);
+          assert.deepEqual(sourceMaintenance,beforeMaintenance);
+          assert.equal(selectorKeyReplies-beforeKeys,1);
+          assert.equal(selectorResults-beforeResults,1);
+          const expectedMembership = ['healthy','path'].includes(fault) ? 1 : 0;
+          const memberJob = jobs['railgun-poi-job.js'] || {starts:0,exits:0};
+          assert.equal(memberJob.starts-(beforeJobs['railgun-poi-job.js']?.starts ?? 0),expectedMembership);
+          assert.equal(memberJob.exits-(beforeJobs['railgun-poi-job.js']?.exits ?? 0),expectedMembership);
+          assert.equal(rootAdmissionAges.length-beforeAges,expectedList.reduce((a,b)=>a+b,0));
+          assert.equal(postAcquisitionVerifierEntryAges.length-beforeCompletions,['healthy','path'].includes(fault) ? 1 : 0);
+          membershipRuns.push({mode:name,fault,verified:healthy,elapsedMs:Math.round(performance.now()-began),viewingKeyReplies:1,selectorResults:1,rootPairs:5,sourceCalls:expectedList,membershipJobs:expectedMembership,genuineRegistryAndTypedMembership:healthy,proofBoundaryRefusesWithoutKey:healthy,sharedOwnerExclusion:healthy,durableStateUnchanged:true,allChildrenExited:true,keyBuffersWiped:true});
+        } finally {
+          if (value?.status === 'verified') {
+            value.close(); await value.closed; membershipOperations.delete(value);
+            assert.throws(() => assertMembership(value.receipt,enrollment,publicAccount.coordinator));
+          }
+          // A refused public open already awaits its admitted-work/source drain.
+          preflightActive = membershipActive = false;
+          membershipFault = 'healthy'; rejectValidation = null;
+        }
+        for (const counts of Object.values(jobs)) assert.equal(counts.starts,counts.exits);
+        assert.ok(selectorKeyBuffers.every((key)=>key.byteLength===32&&key.every((byte)=>byte===0)));
+        assert.deepEqual(await durableSnapshot(),beforeDurable);
+        for (const client of poiClients) await client.closed;
+        assert.equal(externalAttempts,0); assert.equal(unexpectedRpc,0);
+      };
+      await runMembership('membership-healthy');
+      for (const fault of ['fifth-root','type','signature','path','list-root']) {
+        await runMembership('membership-'+fault,fault);
+        await runMembership('membership-after-'+fault);
+      }
+      assert.equal(membershipRuns.length,11);
+    }
+
     phase = 'unresolved-sibling';
     await journal.begin(hex(101), 4);
     await refusedCapture(selector, 'capture:journal');
@@ -1372,7 +1582,13 @@ async function main() {
           jobs,
           phaseTimings,
           captureEvidence,
-          membershipAdmitted: false,
+          typedMembershipVerified: membershipQualification,
+          membershipQualification,
+          membershipRuns,
+          poiMethods,
+          rootAdmissionAges,
+          postAcquisitionVerifierEntryAges,
+          serviceSignatureTrust: membershipQualification ? 'disposable-fixture-key' : null,
           viewingKeyReleases: selectorKeyReplies,
           selectorQualification,
           selectorRuns,
@@ -1411,6 +1627,10 @@ async function main() {
   } finally {
     try {
       restoreClock?.();
+      for (const operation of membershipOperations) operation.close();
+      await Promise.all([...membershipOperations].map((operation) => operation.closed));
+      for (const client of poiClients) client.close();
+      await Promise.all([...poiClients].map((client) => client.closed));
       task?.close();
       if (task) await task.closed;
       if (txid) await txid.close();
@@ -1433,6 +1653,9 @@ async function main() {
       settings.isWalletTorExperimentAvailable = originalAvailable;
       endpointController.abort();
       transport.createWalletTorTransport = originalTransport;
+      rootsModule.createRailgunTxidRootSource = originalRoots;
+      membershipModule.verifyRailgunPoiMembership = originalMembershipVerify;
+      signature?.close();
     }
   }
 }

@@ -1,3 +1,21 @@
+jest.mock('./railgun-identity', () => ({
+  assertRailgunIdentity: () => {
+    throw Error('Shield needs no identity credential');
+  },
+  withRailgunViewingCredential: () => {
+    throw Error('Shield selector is keyless');
+  },
+}));
+jest.mock('./railgun-process', () => ({
+  startRailgunProcess: () => {
+    throw Error('Shield uses existing selector seam');
+  },
+}));
+jest.mock('./railgun-txid-root', () => ({
+  createRailgunTxidRootSource: () => {
+    throw Error('Shield adds no fifth root');
+  },
+}));
 let mockEnrollment,
   mockCoordinator,
   mockPublicIdentity,
@@ -763,4 +781,32 @@ test('a failed source constructor releases owner without inventing a drain resou
   expect(await run()).toEqual({ status: 'refused', stage: 'source' });
   expect(mockLease).toBeNull();
   expect((await run()).status).toBe('verified');
+});
+
+test('Shield derived scope converts a throwing retained parent predicate into revocation', async () => {
+  scope.close();
+  let stale = false,
+    authenticationError;
+  scope = createPrivacyScope({
+    profileId: 'shield-parent-currentness',
+    signal: new AbortController().signal,
+    isCurrent: () => {
+      if (stale) throw Error('PRIVATE parent predicate');
+      return true;
+    },
+  });
+  mockEnrollment.signal = scope.signal;
+  mockSource.acquire.mockImplementation(async () => {
+    stale = true;
+    try {
+      getPrivacyContext(createRailgunPoiSource.mock.calls[0][0].handle);
+    } catch (error) {
+      authenticationError = error;
+      throw error;
+    }
+  });
+  expect((await run()).status).toBe('refused');
+  expect(authenticationError).toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
+  expect(authenticationError.message).not.toContain('PRIVATE');
+  expect(mockSource.signal.aborted).toBe(true);
 });

@@ -118,9 +118,25 @@ jest.mock('./railgun-process', () => ({
     return task;
   }),
 }));
-jest.mock('./railgun-poi-source', () => {
-  throw Error('No owned-list source');
-});
+jest.mock('./railgun-poi-source', () => ({
+  MAX_AGE_MS: 60000,
+  createRailgunPoiSource: () => {
+    throw Error('No owned-list source');
+  },
+}));
+jest.mock('./railgun-txid-root', () => ({
+  createRailgunTxidRootSource: () => {
+    throw Error('No extra root');
+  },
+}));
+jest.mock('./railgun-poi-membership', () => ({
+  verifyRailgunPoiMembership: () => {
+    throw Error('No membership');
+  },
+  assertRailgunPoiMembership: () => {
+    throw Error('No membership');
+  },
+}));
 jest.mock('./railgun-poi-prover', () => {
   throw Error('No prover');
 });
@@ -607,7 +623,7 @@ test('export and production import inventory keep the historical producer unwire
     )
     .map((file) => path.basename(file))
     .sort();
-  expect(consumers).toEqual(['railgun-own-witness.js', 'railgun-poi-transact-selector.js']);
+  expect(consumers).toEqual(['railgun-own-poi-membership.js', 'railgun-own-witness.js']);
 });
 
 test.each(['type', 'tree', 'position', 'hash'])(
