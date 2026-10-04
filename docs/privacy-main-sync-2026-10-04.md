@@ -1,5 +1,30 @@
 # Privacy branch main synchronization — October 4, 2026
 
+## Bounded history search continuation
+
+Main `cc82c715` merged cleanly in `117bdab8`, following the private RPC
+destination restriction commit `dd6a3ca8`. Its 24 files move history search into
+a local worker and bound autocomplete/page queries. No wallet, network, Tor,
+dependency lockfile or bundled-node pin changes overlap the privacy work.
+Claude reviewed the merge: the new autocomplete IPC is chrome-only, history
+paging retains the internal-page guard, and the worker has no network path.
+None of these merged files intersects the existing native source inventories;
+the independent privacy implementation changes have their own qualification.
+
+Ant 0.5.57 was explicitly reinstalled for all configured targets;
+freedom-ipfs 0.4.3 and libradicle 0.7.1 host addons were reinstalled. Myotis
+0.1.12 official artifacts passed ABI 32 constructor checks and the host
+supervisor was rebuilt. The unchanged Arti 2.6.0 build reports static-sqlite
+support and was retained under the bundled-binaries playbook. Host binary
+checks pass. The unchanged dependency lockfile required no npm reinstall.
+
+The eight focused history, bookmarks, sender-policy and renderer suites pass
+94 tests in 2.627 seconds. The connected Kohaku milestone additionally passes
+the merged-tree regression: 13,496 tests / 33 skipped, 500 passing suites / five
+skipped, 520.067 seconds, with native permissions, the existing OpenLV exclusion
+and explicit force-exit. Its source/test manifest stays unchanged. No live node startup,
+funded profile or new privacy UI was exercised for this synchronization.
+
 ## GSOC worker continuation
 
 Main `cdd014f2` merged cleanly in `1c3dbce7`, after the account-POI cleanup

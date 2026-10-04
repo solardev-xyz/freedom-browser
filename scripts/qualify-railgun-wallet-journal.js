@@ -32,6 +32,25 @@ async function main() {
   } else app.setPath('userData', path.join(directory, 'electron'));
   app.dock?.hide();
   await app.whenReady();
+  const kohakuMode = process.env.FREEDOM_RAILGUN_KOHAKU;
+  if (kohakuMode) {
+    assert.ok(composition === 'enrolled' && proverArchive);
+    for (const name of [
+      'FREEDOM_RAILGUN_PRIVATE_OPERATION',
+      'FREEDOM_RAILGUN_PRIVATE_SUBMISSION',
+      'FREEDOM_RAILGUN_TRANSACT_STAGING',
+      'FREEDOM_RAILGUN_TRANSACT_CONTROLLER',
+      'FREEDOM_RAILGUN_SIMULATE_LOST_ACK',
+    ])
+      assert.equal(process.env[name], undefined);
+  } else {
+    assert.equal(process.env.FREEDOM_RAILGUN_KOHAKU_LOST_ACK, undefined);
+    assert.equal(process.env.FREEDOM_RAILGUN_KOHAKU_CANCEL_TRANSACTION_REVIEW, undefined);
+  }
+  const kohaku = kohakuMode
+    ? require('./fixtures/railgun-kohaku-integration').install(kohakuMode)
+    : null;
+  let kohakuQualification;
   let accountIdentity, accountParent, accountProfileId, enrollment;
   const vault = accountArchive ? require('../src/main/identity/vault') : null;
   let lockOnViewingKey = false,
@@ -258,7 +277,7 @@ async function main() {
   const originalSourceBytes = fs.readFileSync(sourceFilename);
   let sourceBytes = originalSourceBytes,
     stagingRow;
-  if (stagingQualification) {
+  if (stagingQualification || kohaku?.inputType === 'Transact') {
     const derived = require('./fixtures/railgun-transact-staging-source').derive(
       JSON.parse(originalSourceBytes)
     );
@@ -288,7 +307,7 @@ async function main() {
   const privateRpc = require('../src/main/networks/private-rpc');
   let requests = 0,
     provider = 'archived-source-a.invalid';
-  privateRpc.createPrivateRpc = (handle, _role, { signal }) => {
+  const archivedRpc = (handle, _role, { signal }) => {
     const lifetime = AbortSignal.any([getPrivacyContext(handle).signal, signal]);
     const active = () => {
       getPrivacyContext(handle);
@@ -339,6 +358,8 @@ async function main() {
       },
     };
   };
+  if (kohaku) kohaku.configureArchive(archivedRpc);
+  else privateRpc.createPrivateRpc = archivedRpc;
   const { createRailgunSourceLedger } = require('../src/main/wallet/railgun-source-ledger');
   const { createRailgunScanSource } = require('../src/main/wallet/railgun-scan-source');
   const { startRailgunSessionWorker } = require('../src/main/wallet/railgun-session-worker');
@@ -482,6 +503,13 @@ async function main() {
     'src/main/wallet/railgun-public-run.js',
     'src/main/wallet/railgun-public-policy.js',
     'scripts/qualify-railgun-wallet-journal.js',
+    ...(kohaku
+      ? [
+          'scripts/fixtures/railgun-kohaku-integration.js',
+          'src/main/wallet/railgun-kohaku-plugin.js',
+          'src/main/wallet/railgun-kohaku-broadcaster.js',
+        ]
+      : []),
     'src/main/wallet/railgun-account-wallet.js',
     'src/main/wallet/railgun-private-creator.js',
     'src/main/wallet/railgun-wallet-policy.js',
@@ -1869,6 +1897,32 @@ async function main() {
         additionalControllerSigningPreserved: !!retainedController,
       });
     }
+    if (kohaku) {
+      const account =
+        await require('../src/main/wallet/railgun-account-wallet').openRailgunAccountWallet({
+          identity: accountIdentity,
+          enrollment,
+          archive: accountArchive,
+          coordinator,
+          mode: 'active',
+        });
+      try {
+        kohakuQualification = await kohaku.qualify({
+          account,
+          owners: { identity: accountIdentity, enrollment, coordinator },
+          archive: accountArchive,
+          proverArchive,
+          artifactDirectory,
+          row: stagingRow,
+          observeKeys: (observer) => {
+            spendingReplyObserver = observer;
+          },
+          readKeyCounts: () => ({ privateViewingKeys, privateReceiveKeys }),
+        });
+      } finally {
+        await account.close();
+      }
+    }
     if (process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION) {
       const kind = process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION;
       assert.ok(
@@ -1978,6 +2032,7 @@ async function main() {
           enrolledPublicComposition: !!enrollment,
           privateOperationJobs,
           productionPrivateOperation,
+          ...(kohaku ? { kohakuQualification } : {}),
           cancelledViewingProcess,
           cancelledViewingMessages: accountIdentity ? cancelledViewingMessages : null,
           viewingKeyTransferCancelled: accountIdentity ? cancelledViewingProcessClosed : null,
@@ -1994,7 +2049,7 @@ async function main() {
           submissions: 0,
           anchor: capture.report.anchor,
           logSetSha256: capture.logSetSha256,
-          ...(stagingQualification
+          ...(stagingQualification || kohaku?.inputType === 'Transact'
             ? {
                 originalInputSha256: sha(originalSourceBytes),
                 derivedInputSha256: sha(sourceBytes),
@@ -2019,6 +2074,7 @@ async function main() {
     enrollment?.close();
     accountIdentity?.close();
     vault?.lockVault();
+    kohaku?.close();
   }
 }
 main().then(

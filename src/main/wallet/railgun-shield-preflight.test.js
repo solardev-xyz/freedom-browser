@@ -1,5 +1,6 @@
 let mockEnrollment, mockMode, mockEndpoint;
-const mockRequest = jest.fn(),
+const mockRpcOptions = jest.fn(),
+  mockRequest = jest.fn(),
   mockRelease = jest.fn();
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
@@ -15,7 +16,8 @@ jest.mock('./railgun-shield-pins.json', () => {
   };
 });
 jest.mock('../networks/private-rpc', () => ({
-  createPrivateRpc: (handle, role) => {
+  createPrivateRpc: (handle, role, options) => {
+    mockRpcOptions(options);
     const { getPrivacyContext } = require('../networks/privacy-context');
     const context = getPrivacyContext(handle);
     expect(role).toBe('protocol-rpc');
@@ -231,3 +233,18 @@ test('foreign enrollment cannot use a genuine receipt', async () => {
   expect(() => assertRailgunShieldPreflight(source, result.receipt, mockEnrollment)).toThrow();
   mockEnrollment = original;
 });
+
+test('optional protocol constraint reaches deployment RPC before first query', () => {
+  const constraint = Object.freeze({});
+  source.close();
+  source = createRailgunShieldPreflight(mockEnrollment, { destinationConstraint: constraint });
+  expect(mockRpcOptions).toHaveBeenLastCalledWith({ destinationConstraint: constraint });
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+test.each([null, false, { destinationConstraint: {}, bypass: true }])(
+  'malformed preflight options refuse without network work',
+  (options) => {
+    expect(() => createRailgunShieldPreflight(mockEnrollment, options)).toThrow();
+    expect(mockRequest).not.toHaveBeenCalled();
+  }
+);

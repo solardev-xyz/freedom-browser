@@ -54,7 +54,12 @@ function selection(input) {
     minimumBlock: input.minimumBlock,
   });
 }
-function createRailgunPrivatePreflight({ enrollment, input, artifactDirectory }) {
+function createRailgunPrivatePreflight({
+  enrollment,
+  input,
+  artifactDirectory,
+  destinationConstraint,
+}) {
   check(isRailgunAccountEnrollment(enrollment) && !enrollment.signal.aborted);
   const selected = selection(input);
   check(typeof artifactDirectory === 'string' && require('path').isAbsolute(artifactDirectory));
@@ -85,8 +90,15 @@ function createRailgunPrivatePreflight({ enrollment, input, artifactDirectory })
     rpc?.release();
   };
   try {
-    deployment = createRailgunShieldPreflight(enrollment);
-    rpc = createPrivateRpc(handle, 'protocol-rpc');
+    deployment = createRailgunShieldPreflight(
+      enrollment,
+      ...(destinationConstraint !== undefined ? [{ destinationConstraint }] : [])
+    );
+    rpc = createPrivateRpc(
+      handle,
+      'protocol-rpc',
+      ...(destinationConstraint !== undefined ? [{ destinationConstraint }] : [])
+    );
     rpc.signal.addEventListener('abort', close, { once: true });
     deployment.signal.addEventListener('abort', close, { once: true });
     check(!rpc.signal.aborted && !deployment.signal.aborted, 'inactive');

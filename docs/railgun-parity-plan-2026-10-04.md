@@ -28,22 +28,23 @@ submitter. This is an integration restriction, not a statement about Railgun's
 general capabilities. Balance reads continue to report unverified amounts;
 reading a note never authorizes spending it.
 
+The [connected Kohaku private instance](railgun-kohaku-private-integration-2026-10-04.md)
+now owns account replacement, one-use completion and wallet drainage before
+submission. Five native controlled runs cover both input types and operations,
+two lost acknowledgments and held transaction-review cancellation. They pass
+with the real controllers/provers/signers but simulated POI, preflight and RPC
+authority. The merged regression passes 13,496 tests. The original read-only
+instance remains read-only; no generic Host or user-facing activation is added.
+
 ## Next technical work
 
-1. **Connect the Kohaku private-operation boundary.** The existing
-   `railgun-kohaku-read` instance deliberately exposes only reads. Private
-   controllers already implement proving and submission separately. Add a
-   capability-selected main-owned instance/broadcaster that owns their actual
-   lifecycle: replace the account after Transact staging, retain opaque one-use
-   completions, and close/drain the wallet before entering submission recovery.
-   Do not add preparation methods to an existing viewing-only instance.
-2. **Qualify the connected spend lifecycle on current sources.** Existing
-   controller, submission and completion reports predate subsequent source
-   changes. The controlled Transact-input signing/proving-to-journal refresh
-   below now passes; exercise it through the new Kohaku boundary next. Preserve acknowledged and
-   uncertain results, journal-before-send ordering, restart recovery and refusal
-   of duplicate operations. A mocked-controller test alone is insufficient.
-3. **Add partial withdrawal with authenticated change.** PPv2 already has
+1. **Connect the separate public Shield lane.** The
+   [bounded implementation plan](railgun-kohaku-public-shield-plan-2026-10-04.md)
+   reuses native ETH-to-WETH preparation, receiver verification, submission and
+   recovery. First harden host cancellation/phase ownership and bind reviewed
+   destinations; then expose a genuine public-operation token and a separate
+   main-owned submitter. The private broadcaster must not accept Shield.
+2. **Add partial withdrawal with authenticated change.** PPv2 already has
    withdrawal/change recovery and second-spend evidence. Railgun's current
    one-output policy cannot express the equivalent partial withdrawal. Extending
    it requires coordinated proof shape, amount conservation, output decryption,
@@ -54,7 +55,7 @@ reading a note never authorizes spending it.
    The [bounded partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md)
    maps the complete change-recovery and second-spend path, including the
    additional creator shape and combined output/unshield POI requirements.
-4. **Design a restricted return-to-origin recovery path.** The inspected engine
+3. **Design a restricted return-to-origin recovery path.** The inspected engine
    and wallet SDK implement origin selection as client policy. The inspected
    contract's `validateTransaction` checks the ordinary unshield proof and
    recipient commitment, without an origin or POI field/check. This source
@@ -67,7 +68,7 @@ reading a note never authorizes spending it.
    resulting public linkage. It would still query the selected nullifier and
    simulate the unshield at the RPC; it does not avoid disclosure review. This
    follows partial withdrawal in priority. No POI bypass is enabled.
-5. **Complete live private qualification.** Refresh the funded profile under
+4. **Complete live private qualification.** Refresh the funded profile under
    current policies before spending, then qualify a private transfer, its output
    recovery/POI and a subsequent spend or unshield. Review external disclosures
    before the first query. A self-broadcast consumes public EOA gas and does not
@@ -79,7 +80,13 @@ The order above starts with work that does not require funded-profile access.
 Partial withdrawal and return-to-origin need their own bounded designs and
 qualification; they are not claimed by the current milestone.
 
-## Current-source spend lifecycle refresh
+## Historical spend lifecycle refresh at `ba507f73`
+
+The two reports below were current when committed in `5effd124`. The later
+destination-restriction and Kohaku-controller changes alter their source
+inventories, so they are now historical. The connected Kohaku native matrix
+qualifies the new controller composition separately; it does not refresh the
+entire retained POI native matrix from `ba507f73`.
 
 Two unchanged enrolled native fixtures pass against the 130-file source
 inventories recorded in the [transfer report](qualification/railgun-spend-lifecycle-transact-transfer-2026-10-04.json)
@@ -125,17 +132,18 @@ operations. Its separate broadcaster interface accepts a private operation and a
 specialized result. This is a pinned local source check, not a claim about the
 latest upstream revision.
 
-The first private instance should require an explicit selected note identifier,
-exact asset and full amount; it must not invent coin selection. Preparation
-review must precede input-specific POI disclosure and private signing. The later
+The private instance requires an explicit selected note identifier,
+exact asset and full amount; it does not invent coin selection. Preparation
+review precedes input-specific POI disclosure and private signing. The later
 Ethereum transaction review cannot retroactively authorize those earlier
-actions. Denied review must perform no subsequent staging, query or proving.
-The retained public source and later private-preflight/submission clients do not
-currently share a single reviewed destination constraint. New clients select
-their RPC from the registry. The connected boundary must enforce the reviewed
-destination at every later acquisition/admission; listing a registry snapshot in
-the review is insufficient. This is implementation work, not an established
-privacy guarantee.
+actions. Denied review performs no subsequent staging, query or proving.
+The retained public source keeps its authenticated destination assertion. New
+private-preflight and submission clients now carry genuine protocol/transaction
+restrictions from the reviewed previews, enforced at construction and admission.
+The pair remains private to the genuine completion registry. POI/TXID origins are
+pinned separately, and later cold recovery requires a fresh destination review.
+This establishes endpoint restriction under the stated controlled qualification;
+it does not establish authenticated chain state or physical Tor isolation.
 Cancellation must revoke new admissions while already admitted work and
 callbacks drain. Expiry, a copied operation or a restart cannot mint another
 completion, discard a signing hold or permit an automatic retry.

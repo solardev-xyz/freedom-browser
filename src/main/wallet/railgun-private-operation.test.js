@@ -1,4 +1,11 @@
 let mock, mockStep, mockSign;
+jest.mock('../networks/private-rpc', () => ({
+  createPrivateRpc: (handle, role, options) => {
+    mock.protocolAdmission = { handle, role, options };
+    if (options.destinationConstraint !== mock.constraints?.protocol) throw Error('constraint');
+    return { assertActive() {}, release() {} };
+  },
+}));
 jest.mock('./railgun-transact-staging', () => ({
   assertRailgunTransactStagingAvailable: (receipt) => {
     if (!mock.staging || receipt !== mock.staging.receipt || mock.staging.consumed)
@@ -103,7 +110,8 @@ jest.mock('./railgun-account-poi', () => ({
   },
 }));
 jest.mock('./railgun-private-preflight', () => ({
-  createRailgunPrivatePreflight: () => {
+  createRailgunPrivatePreflight: (options) => {
+    mock.preflightOptions = options;
     mockStep('preflight-open');
     return mock.preflight;
   },
@@ -136,7 +144,8 @@ jest.mock('./signers', () => ({
   },
 }));
 jest.mock('./private-transaction-network', () => ({
-  getPrivateTransactionNetwork: () => {
+  getPrivateTransactionNetwork: (_handle, options) => {
+    mock.networkOptions = options;
     mockStep('network');
     return {
       assertCanSubmit: async () => mockStep('journal'),
@@ -1029,3 +1038,46 @@ test.each(['missing', 'rejected'])(
     expect(JSON.stringify(result)).not.toContain('PRIVATE');
   }
 );
+
+test('reviewed constraints reach early protocol admission, EOA, preflight and private completion only', async () => {
+  mock.constraints = { protocol: Object.freeze({}), transaction: Object.freeze({}) };
+  const result = await prove({ ...options, destinationConstraints: mock.constraints });
+  expect(result.status).toBe('proved');
+  expect(mock.protocolAdmission.role).toBe('protocol-rpc');
+  expect(mock.protocolAdmission.options.destinationConstraint).toBe(mock.constraints.protocol);
+  expect(mock.preflightOptions.destinationConstraint).toBe(mock.constraints.protocol);
+  expect(mock.networkOptions.destinationConstraint).toBe(mock.constraints.transaction);
+  const claimed = claim(
+    result.completion.receipt,
+    options.owners.identity,
+    options.owners.enrollment
+  );
+  expect(claimed.destinationConstraints.protocol).toBe(mock.constraints.protocol);
+  expect(claimed.destinationConstraints.transaction).toBe(mock.constraints.transaction);
+  expect(Object.isFrozen(claimed.destinationConstraints)).toBe(true);
+  expect(claimed.assertCurrent()).not.toHaveProperty('destinationConstraints');
+  claimed.close();
+});
+test.each([
+  {},
+  { protocol: {} },
+  { protocol: {}, transaction: undefined },
+  { protocol: {}, transaction: {}, injected: true },
+])(
+  'incomplete constraint pair refuses before stores or disclosures',
+  async (destinationConstraints) => {
+    expect((await prove({ ...options, destinationConstraints })).status).toBe('refused');
+    expect(mock.events).not.toContain('POI');
+    expect(mock.events).not.toContain('available');
+  }
+);
+test('forged protocol constraint refuses before owned-note POI and key', async () => {
+  mock.constraints = { protocol: {}, transaction: {} };
+  const result = await prove({
+    ...options,
+    destinationConstraints: { protocol: {}, transaction: mock.constraints.transaction },
+  });
+  expect(result.status).toBe('refused');
+  expect(mock.events).not.toContain('POI');
+  expect(mock.events).not.toContain('key');
+});

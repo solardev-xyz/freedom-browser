@@ -1,5 +1,7 @@
 let mockEnrollment, mockEndpoint, mockDeployment, mockBase, mockMode;
-const mockRequest = jest.fn(),
+const mockRpcOptions = jest.fn(),
+  mockDeploymentOptions = jest.fn(),
+  mockRequest = jest.fn(),
   mockRelease = jest.fn(),
   mockLoad = jest.fn(),
   mockVerifier = jest.fn();
@@ -8,7 +10,10 @@ jest.mock('./railgun-account-enrollment', () => ({
 }));
 jest.mock('./railgun-shield-preflight', () => ({
   MAX_AGE_MS: 60000,
-  createRailgunShieldPreflight: () => mockDeployment,
+  createRailgunShieldPreflight: (enrollment, options) => {
+    mockDeploymentOptions(enrollment, options);
+    return mockDeployment;
+  },
   assertRailgunShieldPreflight: (source, receipt, enrollment) => {
     if (
       source !== mockDeployment ||
@@ -25,7 +30,8 @@ jest.mock('./railgun-artifacts', () => ({
   assertRailgunArtifactVerifier: (...args) => mockVerifier(...args),
 }));
 jest.mock('../networks/private-rpc', () => ({
-  createPrivateRpc: (handle, role) => {
+  createPrivateRpc: (handle, role, options) => {
+    mockRpcOptions(options);
     const { getPrivacyContext } = require('../networks/privacy-context');
     const context = getPrivacyContext(handle);
     expect(role).toBe('protocol-rpc');
@@ -356,4 +362,18 @@ test('revocation during verifier comparison is inactive, not a governance mismat
     throw Error('revoked artifact');
   });
   await expect(source.acquire()).rejects.toMatchObject({ reason: 'inactive', step: 'verifier' });
+});
+
+test('one protocol restriction reaches both deployment and selected-nullifier clients', () => {
+  const constraint = Object.freeze({});
+  source = createRailgunPrivatePreflight({
+    enrollment: mockEnrollment,
+    input: input(),
+    artifactDirectory: '/fixture/artifacts',
+    destinationConstraint: constraint,
+  });
+  expect(mockDeploymentOptions).toHaveBeenLastCalledWith(mockEnrollment, {
+    destinationConstraint: constraint,
+  });
+  expect(mockRpcOptions).toHaveBeenLastCalledWith({ destinationConstraint: constraint });
 });

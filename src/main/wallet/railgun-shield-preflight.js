@@ -29,7 +29,18 @@ const MAX_BLOCK_AGE_SECONDS = 120;
 // Floor from the reviewed Sepolia deployment qualification. This is a lower
 // bound, not authenticated finality or a replacement for the public scan.
 const MIN_BLOCK = 11833631n;
-function createRailgunShieldPreflight(enrollment) {
+function createRailgunShieldPreflight(enrollment, options = {}) {
+  check(
+    options &&
+      !require('util').types.isProxy(options) &&
+      Object.getPrototypeOf(options) === Object.prototype
+  );
+  check(Reflect.ownKeys(options).every((key) => key === 'destinationConstraint'));
+  check(
+    !Object.hasOwn(options, 'destinationConstraint') ||
+      Object.hasOwn(Object.getOwnPropertyDescriptor(options, 'destinationConstraint'), 'value')
+  );
+  const { destinationConstraint } = options;
   check(isRailgunAccountEnrollment(enrollment) && !enrollment.signal.aborted);
   const parent = enrollment.getContext('protocol-rpc', 'shield-preflight');
   const context = getPrivacyContext(parent);
@@ -48,7 +59,11 @@ function createRailgunShieldPreflight(enrollment) {
   const handle = scope.getContext(context.subject);
   let rpc;
   try {
-    rpc = createPrivateRpc(handle, 'protocol-rpc');
+    rpc = createPrivateRpc(
+      handle,
+      'protocol-rpc',
+      ...(destinationConstraint !== undefined ? [{ destinationConstraint }] : [])
+    );
   } catch (error) {
     scope.close();
     throw error;

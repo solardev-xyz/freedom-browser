@@ -64,6 +64,7 @@ function complete({
   entry,
   stored,
   minimumBlock,
+  destinationConstraints,
 }) {
   const started = performance.now(),
     deadline = started + 120000;
@@ -102,7 +103,14 @@ function complete({
     return evidence;
   };
   assertCurrent();
-  completions.set(receipt, { identity, enrollment, assertCurrent, close, signal: scope.signal });
+  completions.set(receipt, {
+    identity,
+    enrollment,
+    assertCurrent,
+    close,
+    signal: scope.signal,
+    destinationConstraints,
+  });
   return Object.freeze({ receipt, close, signal: scope.signal });
 }
 async function prove({
@@ -113,7 +121,20 @@ async function prove({
   proverArchive,
   artifactDirectory,
   stagingReceipt,
+  destinationConstraints,
 }) {
+  if (destinationConstraints !== undefined) {
+    assert.ok(destinationConstraints && !require('util').types.isProxy(destinationConstraints));
+    assert.equal(Object.getPrototypeOf(destinationConstraints), Object.prototype);
+    assert.deepEqual(Reflect.ownKeys(destinationConstraints).sort(), ['protocol', 'transaction']);
+    for (const key of ['protocol', 'transaction']) {
+      assert.ok(
+        Object.hasOwn(Object.getOwnPropertyDescriptor(destinationConstraints, key), 'value')
+      );
+      assert.ok(destinationConstraints[key] && typeof destinationConstraints[key] === 'object');
+    }
+    destinationConstraints = Object.freeze({ ...destinationConstraints });
+  }
   owners = Object.freeze({ ...owners });
   request = Object.freeze({ ...request });
   const { identity, enrollment, coordinator } = owners;
@@ -169,6 +190,20 @@ async function prove({
     getPrivacyContext(parent);
   };
   try {
+    if (destinationConstraints) {
+      // Query-free genuine token admission before POI or any other disclosure.
+      const destinationRpc = require('../networks/private-rpc').createPrivateRpc(
+        scope.getContext({
+          ...getPrivacyContext(parent).subject,
+          role: 'protocol-rpc',
+          operation: 'private-destination',
+        }),
+        'protocol-rpc',
+        { destinationConstraint: destinationConstraints.protocol }
+      );
+      destinationRpc.assertActive();
+      destinationRpc.release();
+    }
     reservations = await enrollment.openReservations();
     capsules = await enrollment.openPrivateCapsules();
     active();
@@ -200,7 +235,12 @@ async function prove({
       chainId: pins.chainId,
       role: 'transaction-rpc',
     });
-    const network = require('./private-transaction-network').getPrivateTransactionNetwork(handle);
+    const network = require('./private-transaction-network').getPrivateTransactionNetwork(
+      handle,
+      ...(destinationConstraints
+        ? [{ destinationConstraint: destinationConstraints.transaction }]
+        : [])
+    );
     await network.assertCanSubmit(scope.signal);
     active();
     assert.equal(
@@ -363,6 +403,9 @@ async function prove({
               enrollment,
               artifactDirectory,
               input: preflightInput,
+              ...(destinationConstraints
+                ? { destinationConstraint: destinationConstraints.protocol }
+                : {}),
             });
             const preflightTimer = setTimeout(() => preflight.close(), remaining);
             preflightTimer.unref?.();
@@ -596,6 +639,7 @@ async function prove({
       entry,
       stored,
       minimumBlock: baseline.read.readiness.to.number,
+      destinationConstraints,
     });
     return Object.freeze({ status: 'proved', holdId, completion, submissionEnabled: false });
   } catch {
@@ -642,6 +686,9 @@ function claimRailgunPrivateCompletion(receipt, identity, enrollment) {
       assertCurrent: value.assertCurrent,
       close: value.close,
       signal: value.signal,
+      ...(value.destinationConstraints
+        ? { destinationConstraints: value.destinationConstraints }
+        : {}),
     });
   } catch {
     throw fail();

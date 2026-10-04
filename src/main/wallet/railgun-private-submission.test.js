@@ -22,7 +22,8 @@ jest.mock('./railgun-private-proof', () => ({
   },
 }));
 jest.mock('./railgun-private-preflight', () => ({
-  createRailgunPrivatePreflight: ({ input }) => {
+  createRailgunPrivatePreflight: ({ input, destinationConstraint }) => {
+    mock.preflightConstraint = destinationConstraint;
     mock.step('preflight-open');
     mock.preflightInput = input;
     return mock.preflight;
@@ -34,7 +35,10 @@ jest.mock('./railgun-private-preflight', () => ({
 }));
 jest.mock('./signers', () => ({ getSigner: () => mock.signer }));
 jest.mock('./private-transaction-network', () => ({
-  getPrivateTransactionNetwork: () => mock.network,
+  getPrivateTransactionNetwork: (_handle, options) => {
+    mock.networkOptions = options;
+    return mock.network;
+  },
 }));
 jest.mock('./transaction-service', () => ({
   signAndSendTransaction: (...args) => mock.send(...args),
@@ -372,4 +376,17 @@ test('cancellation drains a pending EOA signer and prevents another signing atte
   release();
   expect((await pending).status).toBe('recovery-required');
   expect(mock.phase).toBe(false);
+});
+
+test('submission inherits constrained completion and ignores caller attempt to replace restrictions', async () => {
+  const constraints = Object.freeze({
+    protocol: Object.freeze({}),
+    transaction: Object.freeze({}),
+  });
+  mock.claim.destinationConstraints = constraints;
+  expect(
+    await submit({ ...options, destinationConstraints: { protocol: {}, transaction: {} } })
+  ).toEqual({ hash: '0x' + 'c'.repeat(64) });
+  expect(mock.preflightConstraint).toBe(constraints.protocol);
+  expect(mock.networkOptions.destinationConstraint).toBe(constraints.transaction);
 });

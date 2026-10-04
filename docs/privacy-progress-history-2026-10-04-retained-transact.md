@@ -1,0 +1,26 @@
+## October 4 continuation: retained operations with received Railgun inputs
+
+**Funded Shield and finalized reconciliation are complete; funded private transfer/unshield remains unfinished.** The funded note remains unreserved/unspent and PPv2 state is intact. Earlier policy changes still require reviewed public-generation/mirror rebuilding. [Previous progress](https://github.com/solardev-xyz/freedom-browser/blob/ba507f73247184b486ff8b8c7204827c0be12170/docs/privacy-progress-history-2026-10-04-transact-proof.md).
+
+**Latest:** Received Transact inputs now use the same prepared-output, proof-history, cold-validation, submission and attempted-output paths as Shield inputs. Genuine Shield or Transact proof history may prepare; missing/unknown creator history refuses. The guard is removed only together with this downstream binding. Supported scope remains one current-format pinned-WETH input and one self-transfer output or full EOA unshield. [Contract and evidence](https://github.com/solardev-xyz/freedom-browser/blob/ba507f73247184b486ff8b8c7204827c0be12170/docs/railgun-retained-transact-integration-2026-10-04.md).
+
+**Fresh binding:** Each invocation derives creator type from one authenticated completed source snapshot. Transact requires the bounded one-by-one creating event group, creator-before-own ordering and own/creating witnesses at the same checkpoint. Separate keyless verifiers, a late root check and final recapture follow. Records gain no caller-supplied type or authority. Submission consumes the genuine prepared reader's existing private handoff; it cannot fall back to a second receipt query. Transfer output uses one viewing job; unshield remains keyless.
+
+**Recovery behavior:** Ordinary output, checks and cold Stage A now use completed-only source reads, also on warm calls. A pending or missing checkpoint refuses without implicit maintenance. A fixture-injected interruption between real scan-journal prepare and apply makes reads refuse after reopen; explicit recovery replays it, then reads succeed. One keyless selector job and archived receipt RPC may run first; mirror/root/viewing/proving work does not. An eight-second budget now refuses before the mandatory 55-second source tail; held-root cancellation remains natively tested, while held-root deadline expiry is unit coverage. Shield now shares this reserve, which can refuse slow paths; local speed does not establish Tor practicality.
+
+**Disclosure and attempts:** Untyped records make validation review list up to seven current-TXID root pairs and 565 logical calls (Shield uses six pairs, at most 563): upper bounds, not minimums or transport enforcement. Original-root checks and the final single POST keep separate inventories. Attempted output recovery preserves the exact request, revision, payload and two remaining transitions; matching output grants no acceptance, eligibility, resolution or retry permission.
+
+**Qualification:** 601 source/preflight compatibility tests, 243 encrypted-store tests and 1,061 consumer/compatibility tests pass, with independent mutation controls and documented crypto/registry mocks. Full regression: 13,312 passed / 33 skipped, 496 passing suites / five skipped, 501.085 s; existing OpenLV exclusion and explicit force-exit. Its nine-production/eleven-test manifest remains exact; standalone native scripts were finalized afterward and have separate source inventories. Lint is clean. Native: four Transact (self/foreign x transfer/unshield; 19/17 connected cases) and six Shield runs pass with exact counts, timings and source hashes.
+
+The connected fixture uses genuine proof preparation, encrypted restart, deliberately corrupted output/SNARK/history, denied review callbacks, one simulated POST, held-close ownership and cold attempted-output checks. Private reservation/capsule stores complete normal lease/floor initialization before measured byte baselines; logical records stay equal across reopening, and measured reads preserve exact bytes. No account recovery, source/mirror or network warmup is hidden there. One initial native attempt per qualifier is excluded and documented with its fixture-only failure.
+
+Actual pinned POI cryptography, receiver reconstruction, stores and process exits are exercised. Chain/root/list services, required-list signature trust and the trusted-main review callback are simulated; saved spending proof/signature is structural. No live eligibility, human consent, mined spend, service acceptance or production readiness follows. Engineering review is not an external security audit.
+
+**Main/policy:** Main cdd014f2 remains merged with the explicit bundled-node refresh. All 24 public/TXID and 30 wallet policy inputs remain unchanged. No dependency, runtime/artifact pin, UI, IPC or funded-profile change. Earlier selector, proof-only, Stage A and checks reports remain historical.
+
+**Live disclosure remains pending:** Owned/output-note queries, proof-specific root checks and live nullifier preflight await authorization. Selectors can link interest to the public deposit despite Tor. No live private query or POI submission occurred.
+
+[Roadmap](https://github.com/solardev-xyz/freedom-browser/blob/ba507f73247184b486ff8b8c7204827c0be12170/research/privacy-roadmap.md). Issue #475 and draft PR #476 track the same work.
+
+---
+

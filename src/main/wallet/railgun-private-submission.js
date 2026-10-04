@@ -98,7 +98,14 @@ async function submitRailgunPrivateTransaction({
             checkpointHash: snapshot.entry.facts.checkpointHash,
             minimumBlock: snapshot.minimumBlock,
           };
-          preflight = createRailgunPrivatePreflight({ enrollment, artifactDirectory, input });
+          preflight = createRailgunPrivatePreflight({
+            enrollment,
+            artifactDirectory,
+            input,
+            ...(claim.destinationConstraints
+              ? { destinationConstraint: claim.destinationConstraints.protocol }
+              : {}),
+          });
           const stop = () => preflight.close();
           const signal = AbortSignal.any([claim.signal, context.signal]);
           signal.addEventListener('abort', stop, { once: true });
@@ -145,7 +152,12 @@ async function submitRailgunPrivateTransaction({
             chainId: pins.chainId,
             role: 'transaction-rpc',
           });
-          network = require('./private-transaction-network').getPrivateTransactionNetwork(handle);
+          network = require('./private-transaction-network').getPrivateTransactionNetwork(
+            handle,
+            ...(claim.destinationConstraints
+              ? [{ destinationConstraint: claim.destinationConstraints.transaction }]
+              : [])
+          );
           intent = railgunTransactJournalIntent({ ...tx, from: owner });
           assert.equal(intent.intentDigest, snapshot.entry.facts.intentDigest);
           submissions.set(handle, { intent, assertCurrent });

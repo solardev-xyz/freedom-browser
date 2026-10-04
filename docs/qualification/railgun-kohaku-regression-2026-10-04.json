@@ -1,0 +1,43 @@
+{
+  "qualifiedParent": "117bdab8b137122581577c349116f7e9d15fa736",
+  "workingTreeMilestone": "Connected Railgun Kohaku private operations",
+  "command": "npm run test:coverage -- --runInBand --forceExit --testPathIgnorePatterns=openlv-protocol.test.js --reporters=default",
+  "exitCode": 0,
+  "tests": {
+    "passed": 13496,
+    "skipped": 33,
+    "total": 13529
+  },
+  "suites": {
+    "passed": 500,
+    "skipped": 5,
+    "total": 505
+  },
+  "elapsedSeconds": 520.067,
+  "nativePermissions": true,
+  "excludedTestPattern": "openlv-protocol.test.js",
+  "forceExit": true,
+  "naturalApplicationHandleDrainQualified": false,
+  "frozenSourceTestConfigFiles": 1487,
+  "beforeAfterManifestSha256": "bc871d0887f08a837f0b2953e6a1bcc003d5c1e9e5b95fec4c11a3c300d939c6",
+  "sourceSha256": {
+    "src/main/wallet/railgun-kohaku-plugin.js": "062a3a8817051631a97ec93afa1ac02ce2b7e65e16511b6f9222ee8161ea9ed5",
+    "src/main/wallet/railgun-kohaku-broadcaster.js": "5754901ec618fdbceef357029261b02f1043691debe580aa09ffd7b257a159c4",
+    "src/main/wallet/railgun-private-operation.js": "cd59848213384684bb98298e7fd3f4344927fdb2d9fd4b8be5ec8a743892917d",
+    "src/main/wallet/railgun-private-preflight.js": "89fc3e85e62447ab183c37379ee84156e97c52ca049b702d67b19e2b8ac4256f",
+    "src/main/wallet/railgun-private-submission.js": "09d3da1ae4edb369a06ebb242b35fa918edae816f01b6a12b900aa4fc83135ef",
+    "src/main/wallet/railgun-shield-preflight.js": "7e92e50d96c2ba247fcfb5e7d6aab03e2b5204bcfd31d1822f18de0c583ec709",
+    "src/main/wallet/railgun-kohaku-plugin.test.js": "bc9e500ae05bbcabe63c2f058dc135822827d3a50df3b2bf8eb58ac6bc22b279",
+    "src/main/wallet/railgun-kohaku-broadcaster.test.js": "e340df43fc1a4bd1d8886baa68d1f21f2153696bc90277f6ed8091360ba33fa2",
+    "src/main/wallet/railgun-private-operation.test.js": "322463c733274180eff12abb49a8b24e94b9aa27450dc2109c018a6e12eb71b1",
+    "src/main/wallet/railgun-private-preflight.test.js": "4e372e42a89f0951e9e4a05132bd13166f7b0918ed80cfd6e97db0b668d97591",
+    "src/main/wallet/railgun-private-submission.test.js": "df15aa050142662c344c65eb2f78665108b44daba5de2ee3dae41dfc67b5efc6",
+    "src/main/wallet/railgun-shield-preflight.test.js": "f355b409482d5dc74fb3643d361706c6c3ea6dd8b79a6752c6a4083e87ef9f81",
+    "src/main/networks/private-rpc.js": "3ea3f28fca398cc7f9cd588eb1fed690cfa1308d28dc3a21c7f71f08e7973542",
+    "src/main/networks/private-rpc.test.js": "221edc7175bf9e64369486aafc7ab02bfa24c4e209df95edf59902c453c7d0f0",
+    "src/main/wallet/private-transaction-network.js": "77faa72bd3373b427777d5bd8575f4198ac883e9275a8621c4d0d25ab62b03a4",
+    "src/main/wallet/private-transaction-network.test.js": "ed0d7d0c9a654db3a37b8bdaf074ee891305cba719c82ee84486d8d8fbe6261f"
+  },
+  "nativeQualificationSeparate": true,
+  "liveQualification": false
+}
