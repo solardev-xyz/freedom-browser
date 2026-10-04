@@ -9,6 +9,8 @@ const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 exports.run = async function run(text, { request, signal, guardReport }) {
   const input = JSON.parse(text);
   assert.ok(['transfer', 'unshield'].includes(input.kind));
+  const creatorKind = input.creatorKind ?? 'Shield';
+  assert.ok(['Shield', 'Transact'].includes(creatorKind));
   const archive =
     require('../../src/main/wallet/railgun-engine-runtime').verifyRailgunEngineRuntime(
       input.archive
@@ -17,7 +19,8 @@ exports.run = async function run(text, { request, signal, guardReport }) {
   const imp = (name) => require(path.join(engine, name));
   await imp('utils/poseidon').initPoseidonPromise;
   const { poseidon } = imp('utils/poseidon');
-  const { getPublicViewingKey } = imp('utils/keys-utils');
+  const { getPublicViewingKey, getNoteBlindingKeys, getSharedSymmetricKey } =
+    imp('utils/keys-utils');
   const { WalletNode } = imp('key-derivation/wallet-node');
   const { ShieldNoteERC20 } = imp('note/erc20/shield-note-erc20');
   const { Transaction } = imp('transaction/transaction');
@@ -30,9 +33,23 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
   );
   const derive = require('../../src/main/identity/railgun-key-derivation').deriveRailgunKey;
-  const spendKey = derive(seed, "m/44'/1984'/0'/0'/0'");
-  const viewingKey = derive(seed, "m/420'/1984'/0'/0'/0'");
+  // Distinct public-test keys for the new mode; the historical Shield vector stays unchanged.
+  const keyIndex = creatorKind === 'Transact' ? 2 : 0;
+  const spendKey = derive(seed, `m/44'/1984'/0'/0'/${keyIndex}'`);
+  const viewingKey = derive(seed, `m/420'/1984'/0'/0'/${keyIndex}'`);
+  const foreignSpendKey = derive(seed, "m/44'/1984'/0'/0'/3'");
+  const foreignViewingKey = derive(seed, "m/420'/1984'/0'/0'/3'");
   seed.fill(0);
+  const foreignPublicKey = imp('utils/keys-utils').getPublicSpendingKey(foreignSpendKey);
+  foreignSpendKey.fill(0);
+  const foreignAddressKeys = {
+    masterPublicKey: WalletNode.getMasterPublicKey(
+      foreignPublicKey,
+      poseidon([BigInt('0x' + foreignViewingKey.toString('hex'))])
+    ),
+    viewingPublicKey: await getPublicViewingKey(foreignViewingKey),
+  };
+  if (creatorKind === 'Shield') foreignViewingKey.fill(0);
   const publicKey = imp('utils/keys-utils').getPublicSpendingKey(spendKey);
   const nullifyingKey = poseidon([BigInt('0x' + viewingKey.toString('hex'))]);
   const viewingPublicKey = await getPublicViewingKey(viewingKey);
@@ -40,13 +57,36 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     masterPublicKey: WalletNode.getMasterPublicKey(publicKey, nullifyingKey),
     viewingPublicKey,
   };
-  const note = new ShieldNoteERC20(
-    addressKeys.masterPublicKey,
-    '01'.repeat(16),
-    1000n,
-    pins.wrappedNative
-  );
-  const leaf = ShieldNoteERC20.getShieldNoteHash(note.notePublicKey, note.tokenHash, note.value);
+  imp('wallet/wallet-info').default.setWalletSource('freedom');
+  const tokenData = imp('note/note-util').getTokenDataERC20(pins.wrappedNative);
+  const note =
+    creatorKind === 'Transact'
+      ? TransactNote.createTransfer(
+          addressKeys,
+          foreignAddressKeys,
+          1000n,
+          tokenData,
+          true,
+          0,
+          'public fixture'
+        )
+      : new ShieldNoteERC20(
+          addressKeys.masterPublicKey,
+          '01'.repeat(16),
+          1000n,
+          pins.wrappedNative
+        );
+  if (creatorKind === 'Transact') {
+    assert.notEqual(foreignAddressKeys.masterPublicKey, addressKeys.masterPublicKey);
+    assert.notDeepEqual(foreignAddressKeys.viewingPublicKey, addressKeys.viewingPublicKey);
+    assert.equal(note.receiverAddressData.masterPublicKey, addressKeys.masterPublicKey);
+    assert.equal(note.senderAddressData.masterPublicKey, foreignAddressKeys.masterPublicKey);
+    assert.equal(note.senderRandom, imp('models/transaction-constants').MEMO_SENDER_RANDOM_NULL);
+  }
+  const leaf =
+    creatorKind === 'Transact'
+      ? note.hash
+      : ShieldNoteERC20.getShieldNoteHash(note.notePublicKey, note.tokenHash, note.value);
   const position = 10245;
   let merkleRoot = leaf;
   for (let i = 0; i < 16; i++)
@@ -68,7 +108,6 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     viewingKeyPair,
     addressKeys,
   };
-  imp('wallet/wallet-info').default.setWalletSource('freedom');
   const unshield = input.kind === 'unshield';
   const outputs = unshield
     ? []
@@ -223,24 +262,247 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       noteHash: hex(leaf),
       pathElements: Array(16).fill(hex(0n)),
     };
-    const shieldKey = Buffer.alloc(32, 6);
-    let encrypted;
-    try {
-      encrypted = await note.serialize(shieldKey, viewingPublicKey);
-    } finally {
-      shieldKey.fill(0);
-    }
-    const creator = {
-      type: 'Shield',
-      tree: 0,
-      position,
-      preimage: {
-        npk: hex(note.notePublicKey),
-        value: note.value.toString(),
-        token: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0n) },
-      },
-      ciphertext: encrypted.ciphertext,
+    // Current V2 encryption only. This fixture does not construct or qualify legacy ciphertext.
+    const encryptCreator = async (
+      inputNote,
+      senderAddressKeys = addressKeys,
+      senderViewingKey = viewingKey
+    ) => {
+      const blind = getNoteBlindingKeys(
+        senderAddressKeys.viewingPublicKey,
+        inputNote.receiverAddressData.viewingPublicKey,
+        inputNote.random,
+        inputNote.senderRandom
+      );
+      const key = await getSharedSymmetricKey(senderViewingKey, blind.blindedReceiverViewingKey);
+      assert.ok(key);
+      try {
+        const encrypted = inputNote.encryptV2(
+          'V2_PoseidonMerkle',
+          key,
+          senderAddressKeys.masterPublicKey,
+          inputNote.senderRandom,
+          senderViewingKey
+        );
+        return {
+          type: 'Transact',
+          tree: 0,
+          position,
+          hash: hex(inputNote.hash),
+          ciphertext: {
+            ciphertext: [
+              '0x' + encrypted.noteCiphertext.iv + encrypted.noteCiphertext.tag,
+              ...encrypted.noteCiphertext.data.map((v) => '0x' + v),
+            ],
+            blindedSenderViewingKey:
+              '0x' + Buffer.from(blind.blindedSenderViewingKey).toString('hex'),
+            blindedReceiverViewingKey:
+              '0x' + Buffer.from(blind.blindedReceiverViewingKey).toString('hex'),
+            annotationData: '0x' + encrypted.annotationData.replace(/^0x/, ''),
+            memo: '0x' + encrypted.noteMemo.replace(/^0x/, ''),
+          },
+        };
+      } finally {
+        key.fill(0);
+      }
     };
+    let creator;
+    if (creatorKind === 'Transact') {
+      try {
+        // Synthetic received creator only; no creating transaction is proved or mined here.
+        creator = await encryptCreator(note, foreignAddressKeys, foreignViewingKey);
+      } finally {
+        foreignViewingKey.fill(0);
+      }
+    } else {
+      const shieldKey = Buffer.alloc(32, 6);
+      let encrypted;
+      try {
+        encrypted = await note.serialize(shieldKey, viewingPublicKey);
+      } finally {
+        shieldKey.fill(0);
+      }
+      creator = {
+        type: 'Shield',
+        tree: 0,
+        position,
+        preimage: {
+          npk: hex(note.notePublicKey),
+          value: note.value.toString(),
+          token: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0n) },
+        },
+        ciphertext: encrypted.ciphertext,
+      };
+    }
+    const reconstruct =
+      require('../../src/main/wallet/railgun-poi-reconstruct').reconstructRailgunPoiNotes;
+    const reconstructionArgs = () => ({
+      archive,
+      descriptor: structuredClone(descriptor),
+      viewingKey,
+      capsule: structuredClone(capsule),
+      creator: structuredClone(creator),
+      signal,
+    });
+    const recovered = await reconstruct(reconstructionArgs());
+    assert.deepEqual(recovered.spendingPublicKey, txRequest.privateInputs.publicKey);
+    assert.equal(recovered.nullifyingKey, txRequest.privateInputs.nullifyingKey);
+    assert.equal(
+      BigInt('0x' + recovered.token.replace(/^0x/, '')),
+      txRequest.privateInputs.tokenAddress
+    );
+    assert.deepEqual(
+      recovered.randomsIn.map((v) => BigInt('0x' + v)),
+      txRequest.privateInputs.randomIn
+    );
+    assert.deepEqual(recovered.valuesIn, txRequest.privateInputs.valueIn);
+    assert.deepEqual(recovered.utxoPositionsIn.map(BigInt), txRequest.privateInputs.leavesIndices);
+    assert.equal(recovered.utxoTreeIn, 0);
+    assert.equal(recovered.inputNpk, note.notePublicKey);
+    assert.deepEqual(recovered.npksOut, unshield ? [] : txRequest.privateInputs.npkOut);
+    assert.deepEqual(recovered.valuesOut, unshield ? [] : txRequest.privateInputs.valueOut);
+    const reconstructionControls = [];
+    const rejectReconstruction = async (name, mutate) => {
+      const altered = reconstructionArgs();
+      await mutate(altered);
+      // Every control reaches reconstruction with a structurally valid capsule.
+      require('../../src/main/wallet/railgun-private-capsule').normalizeRailgunPrivateCapsule(
+        altered.capsule
+      );
+      try {
+        await assert.rejects(() => reconstruct(altered));
+      } finally {
+        if (altered.viewingKey !== viewingKey) altered.viewingKey.fill(0);
+      }
+      reconstructionControls.push(name);
+    };
+    await rejectReconstruction('wrong-viewing-key', (v) => {
+      v.viewingKey = Buffer.alloc(32, 9);
+    });
+    await rejectReconstruction('creator-position', (v) => {
+      v.creator.position++;
+    });
+    await rejectReconstruction('position-nullifier', (v) => {
+      v.creator.position++;
+      v.capsule.selection.position++;
+    });
+    await rejectReconstruction('nullifier-binding', (v) => {
+      const [[original]] = abi.decodeFunctionData(
+        'transact',
+        v.capsule.preparation.transaction.data
+      );
+      const alteredTx = original.toArray(true);
+      alteredTx[2] = [hex(123n)];
+      v.capsule.preparation.transaction.data = abi.encodeFunctionData('transact', [[alteredTx]]);
+      const decoded =
+        require('../../src/main/wallet/railgun-transact-intent').extractRailgunTransactIntent(
+          v.capsule.preparation.transaction
+        );
+      v.capsule.preparation.expected = decoded.expected;
+      const e = decoded.expected;
+      v.capsule.preparation.expectedHash = hex(
+        poseidon([e.merkleRoot, e.boundParamsHash, e.nullifier, e.commitment].map(BigInt))
+      );
+    });
+    const flip = (v, index) =>
+      v.slice(0, index) + (v[index] === '0' ? '1' : '0') + v.slice(index + 1);
+    await rejectReconstruction('ciphertext-data', (v) => {
+      const words =
+        creatorKind === 'Transact'
+          ? v.creator.ciphertext.ciphertext
+          : v.creator.ciphertext.encryptedBundle;
+      words[1] = flip(words[1], 2);
+    });
+    if (creatorKind === 'Transact') {
+      await rejectReconstruction('ciphertext-tag', (v) => {
+        v.creator.ciphertext.ciphertext[0] = flip(v.creator.ciphertext.ciphertext[0], 34);
+      });
+      await rejectReconstruction('creator-hash', (v) => {
+        v.creator.hash = hex(1n);
+      });
+    }
+    await rejectReconstruction('note-hash', (v) => {
+      v.capsule.noteHash = hex(1n);
+      if (creatorKind === 'Transact') v.creator.hash = hex(1n);
+    });
+    if (creatorKind === 'Transact') {
+      const changedNote = (receiver, value, token) =>
+        TransactNote.createTransfer(
+          receiver,
+          addressKeys,
+          value,
+          token,
+          false,
+          0,
+          'public control'
+        );
+      for (const [name, inputNote] of [
+        ['sent-only-foreign-recipient', changedNote(foreignAddressKeys, note.value, tokenData)],
+        ['amount', changedNote(addressKeys, note.value - 1n, tokenData)],
+        [
+          'non-weth',
+          changedNote(
+            addressKeys,
+            note.value,
+            imp('note/note-util').getTokenDataERC20('0x' + '34'.repeat(20))
+          ),
+        ],
+      ]) {
+        const otherCreator = await encryptCreator(inputNote);
+        if (name === 'sent-only-foreign-recipient') {
+          // Prove this is a readable sent note, not merely damaged ciphertext.
+          const c = otherCreator.ciphertext;
+          const sender = Buffer.from(c.blindedSenderViewingKey.slice(2), 'hex');
+          const receiver = Buffer.from(c.blindedReceiverViewingKey.slice(2), 'hex');
+          const shared = await getSharedSymmetricKey(viewingKey, receiver);
+          assert.ok(shared);
+          try {
+            const sent = await TransactNote.decrypt(
+              'V2_PoseidonMerkle',
+              { type: 0, id: pins.chainId },
+              addressKeys,
+              {
+                iv: c.ciphertext[0].slice(2, 34),
+                tag: c.ciphertext[0].slice(34),
+                data: c.ciphertext.slice(1).map((v) => v.slice(2)),
+              },
+              shared,
+              c.memo,
+              c.annotationData,
+              viewingKey,
+              receiver,
+              sender,
+              true,
+              false,
+              { getTokenDataFromHash: async () => inputNote.tokenData },
+              undefined,
+              undefined
+            );
+            assert.equal(sent.hash, inputNote.hash);
+            assert.notEqual(sent.receiverAddressData.masterPublicKey, addressKeys.masterPublicKey);
+          } finally {
+            shared.fill(0);
+          }
+        }
+        await rejectReconstruction(name, (v) => {
+          v.creator = otherCreator;
+          v.capsule.noteHash = otherCreator.hash;
+        });
+      }
+    } else {
+      await rejectReconstruction('amount', (v) => {
+        v.creator.preimage.value = '999';
+      });
+      await rejectReconstruction('non-weth', (v) => {
+        v.creator.preimage.token.tokenAddress = '0x' + '34'.repeat(20);
+      });
+    }
+    await rejectReconstruction('creator-shape', (v) => {
+      v.creator.extra = true;
+    });
+    await rejectReconstruction('ciphertext-shape', (v) => {
+      v.creator.ciphertext.extra = true;
+    });
     const { ownEvidence, state, witness } =
       await require('./railgun-poi-witness-data').createPoiWitnessData({
         archive,
@@ -392,6 +654,12 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     const value = {
       payload: result.payload,
       kind: input.kind,
+      creatorKind,
+      creatorSender: creatorKind === 'Transact' ? 'foreign' : null,
+      creatorSenderVisible: creatorKind === 'Transact',
+      reconstructionControls,
+      reconstructionCompared: true,
+      legacyEncryptionQualified: false,
       verified: true,
       transactionProofVerified: true,
       controls,
@@ -416,6 +684,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
   } finally {
     spendKey.fill(0);
     viewingKey.fill(0);
+    foreignViewingKey.fill(0);
     loaded.forEach((a) => {
       a.wasm.fill(0);
       a.zkey.fill(0);

@@ -1,6 +1,7 @@
 /** Offline separate-process POI verification. All proof payloads remain in memory;
  * only selected redacted evidence is reported. No disclosure authority.
- * Usage: electron script ENGINE_ASAR PROVER_ASAR ARTIFACTS NEW_DIR
+ * Usage: electron script ENGINE_ASAR PROVER_ASAR ARTIFACTS NEW_DIR [Shield|Transact]
+ * Transact mode qualifies current V2 encryption, not legacy encrypted creators.
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -8,8 +9,10 @@ const fs = require('fs'),
   assert = require('assert/strict');
 const { createHash } = require('crypto');
 async function main() {
-  const [archive, proverArchive, artifactDirectory, directory] = process.argv.slice(2);
-  assert.equal(process.argv.length, 6);
+  const [archive, proverArchive, artifactDirectory, directory, creatorKind = 'Shield'] =
+    process.argv.slice(2);
+  assert.ok(process.argv.length === 6 || process.argv.length === 7);
+  assert.ok(['Shield', 'Transact'].includes(creatorKind));
   for (const p of [archive, proverArchive, artifactDirectory, directory])
     assert.ok(path.isAbsolute(p));
   assert.ok(!fs.existsSync(directory));
@@ -89,11 +92,25 @@ async function main() {
   let task;
   try {
     for (const kind of ['transfer', 'unshield']) {
-      let payload;
+      let payload, provingMs;
+      const reconstructionControls = [
+        'wrong-viewing-key',
+        'creator-position',
+        'position-nullifier',
+        'nullifier-binding',
+        'ciphertext-data',
+        ...(creatorKind === 'Transact' ? ['ciphertext-tag', 'creator-hash'] : []),
+        'note-hash',
+        ...(creatorKind === 'Transact' ? ['sent-only-foreign-recipient'] : []),
+        'amount',
+        'non-weth',
+        'creator-shape',
+        'ciphertext-shape',
+      ];
       task = require('../src/main/wallet/railgun-process').startRailgunProcess({
         handle,
         filename: require.resolve('./fixtures/railgun-poi-verifier-input-job'),
-        input: JSON.stringify({ archive, proverArchive, artifactDirectory, kind }),
+        input: JSON.stringify({ archive, proverArchive, artifactDirectory, kind, creatorKind }),
         startupMs: 120000,
         lifetimeMs: 180000,
         heapMb: 256,
@@ -113,6 +130,12 @@ async function main() {
               [
                 'payload',
                 'kind',
+                'creatorKind',
+                'creatorSender',
+                'creatorSenderVisible',
+                'reconstructionControls',
+                'reconstructionCompared',
+                'legacyEncryptionQualified',
                 'verified',
                 'transactionProofVerified',
                 'controls',
@@ -132,6 +155,30 @@ async function main() {
               ].sort()
             );
             assert.equal(v.kind, kind);
+            assert.equal(v.creatorKind, creatorKind);
+            assert.equal(v.creatorSender, creatorKind === 'Transact' ? 'foreign' : null);
+            assert.equal(v.creatorSenderVisible, creatorKind === 'Transact');
+            assert.equal(v.reconstructionCompared, true);
+            assert.equal(v.legacyEncryptionQualified, false);
+            assert.deepEqual(v.reconstructionControls, reconstructionControls);
+            assert.deepEqual(v.controls, [
+              'caller-marker',
+              'caller-output-position',
+              'wrong-membership-leaf',
+              'wrong-membership-root',
+              'membership-index-overflow',
+              'extra-membership',
+              'wrong-output-row',
+              'wrong-kind',
+              'wrong-checkpoint-index',
+              'wrong-txid-path',
+              'wrong-capsule',
+              'extra-evidence',
+            ]);
+            assert.ok(
+              Number.isSafeInteger(v.elapsedMs) && v.elapsedMs >= 0 && v.elapsedMs <= 180000
+            );
+            provingMs = v.elapsedMs;
             for (const k of [
               'verified',
               'transactionProofVerified',
@@ -204,6 +251,19 @@ async function main() {
       }
       runs.push({
         kind,
+        creatorKind,
+        creatorSender: creatorKind === 'Transact' ? 'foreign' : null,
+        creatorSenderVisible: creatorKind === 'Transact',
+        reconstructionCompared: true,
+        reconstructionControls,
+        legacyEncryptionQualified: false,
+        actualTransactionProof: true,
+        localPoiProofVerified: true,
+        assemblyRefusals: 12,
+        alteredPublicSignalsRefused: 8,
+        secondProvingAttemptRefused: true,
+        // Local POI proving plus its same-process verification/control checks.
+        provingMs,
         proofVerified: true,
         separateProcess: true,
         proverExitObserved: true,
@@ -223,6 +283,8 @@ async function main() {
       JSON.stringify(
         {
           fixture: 'synthetic-poi-separate-verifier',
+          creatorKind,
+          legacyEncryptionQualified: false,
           proverSha256: require('../src/main/wallet/railgun-prover-manifest.json').sha256,
           vkeySha256: require('../src/main/wallet/railgun-artifacts').manifest.POI_3x3.find(
             (v) => v.kind === 'vkey'

@@ -1,4 +1,4 @@
-/** Utility-only post-transaction reconstruction for a Shield input and one
+/** Utility-only post-transaction reconstruction for a Shield/Transact input and one
  * self-transfer/full-unshield output. Caller owns the viewing key. Returned
  * witness secrets must remain inside that utility, never serialized to main.
  * Supplied creator/capsule data is not authenticated source or spending authority.
@@ -74,48 +74,140 @@ async function reconstructRailgunPoiNotes({
     );
     assert.equal(capsule.walletId, descriptor.walletId);
     const { selection, preparation, noteHash } = capsule;
-    assert.deepEqual(Object.keys(creator).sort(), [
-      'ciphertext',
-      'position',
-      'preimage',
-      'tree',
-      'type',
-    ]);
-    assert.equal(creator.type, 'Shield');
+    const { getTokenDataERC20, getTokenDataHash } = imp('note/note-util');
+    const tokenData = getTokenDataERC20(pins.wrappedNative);
+    const tokenHash = getTokenDataHash(tokenData);
+    const assertToken = (note) => {
+      assert.equal(note.tokenHash, tokenHash);
+      assert.equal(note.tokenData.tokenType, 0);
+      assert.equal(BigInt(note.tokenData.tokenAddress), BigInt(pins.wrappedNative));
+      assert.equal(BigInt(note.tokenData.tokenSubID), 0n);
+    };
+    // Both event ciphertext and calldata ciphertext use this receiver-only path.
+    // Successful decryption does not authenticate the creating transaction or POI.
+    const decryptReceived = async (bundle) => {
+      assert.ok(Array.isArray(bundle.ciphertext) && bundle.ciphertext.length === 4);
+      for (const v of [
+        ...bundle.ciphertext,
+        bundle.blindedSenderViewingKey,
+        bundle.blindedReceiverViewingKey,
+      ])
+        assert.match(v, /^0x[0-9a-f]{64}$/);
+      for (const v of [bundle.annotationData, bundle.memo]) assert.match(v, /^0x(?:[0-9a-f]{2})*$/);
+      const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex');
+      const receiver = Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex');
+      try {
+        shared = await getSharedSymmetricKey(key, sender);
+        active();
+        assert.ok(shared);
+        const note = await TransactNote.decrypt(
+          'V2_PoseidonMerkle',
+          { type: 0, id: pins.chainId },
+          wallet.addressKeys,
+          {
+            iv: bundle.ciphertext[0].slice(2, 34),
+            tag: bundle.ciphertext[0].slice(34),
+            data: bundle.ciphertext.slice(1).map((v) => v.slice(2)),
+          },
+          shared,
+          bundle.memo,
+          bundle.annotationData,
+          key,
+          receiver,
+          sender,
+          false,
+          false,
+          {
+            getTokenDataFromHash: async (_v, _c, hash) => {
+              assert.equal(BigInt('0x' + hash.replace(/^0x/, '')), BigInt('0x' + tokenHash));
+              return tokenData;
+            },
+          },
+          undefined,
+          undefined
+        );
+        active();
+        assertToken(note);
+        assert.equal(
+          imp('note/shield-note').ShieldNote.getNotePublicKey(wallet.masterPublicKey, note.random),
+          note.notePublicKey
+        );
+        assert.equal(
+          TransactNote.getHash(note.notePublicKey, note.tokenHash, note.value),
+          note.hash
+        );
+        return note;
+      } finally {
+        shared?.fill(0);
+        shared = undefined;
+      }
+    };
     assert.equal(creator.tree, selection.tree);
     assert.equal(creator.position, selection.position);
-    const { preimage, ciphertext } = creator;
-    assert.deepEqual(Object.keys(preimage).sort(), ['npk', 'token', 'value']);
-    assert.deepEqual(Object.keys(preimage.token).sort(), [
-      'tokenAddress',
-      'tokenSubID',
-      'tokenType',
-    ]);
-    assert.equal(preimage.token.tokenType, 0);
-    assert.equal(preimage.token.tokenAddress, pins.wrappedNative);
-    assert.equal(preimage.token.tokenSubID, hex(0n));
-    assert.match(preimage.value, /^[1-9][0-9]*$/);
-    assert.equal(preimage.value, preparation.amount);
-    assert.deepEqual(Object.keys(ciphertext).sort(), ['encryptedBundle', 'shieldKey']);
-    assert.ok(Array.isArray(ciphertext.encryptedBundle) && ciphertext.encryptedBundle.length === 3);
-    for (const v of [...ciphertext.encryptedBundle, ciphertext.shieldKey])
-      assert.match(v, /^0x[0-9a-f]{64}$/);
-    shared = await getSharedSymmetricKey(key, Buffer.from(ciphertext.shieldKey.slice(2), 'hex'));
-    active();
-    assert.ok(shared);
-    const random = ShieldNoteERC20.decryptRandom(ciphertext.encryptedBundle, shared);
-    shared.fill(0);
-    shared = undefined;
-    // This is an event preimage: value is already net of the shield fee.
-    const note = new ShieldNoteERC20(
-      wallet.masterPublicKey,
-      random,
-      BigInt(preimage.value),
-      pins.wrappedNative
-    );
-    assert.equal(hex(note.notePublicKey), preimage.npk);
+    let note;
+    if (creator.type === 'Shield') {
+      assert.deepEqual(Object.keys(creator).sort(), [
+        'ciphertext',
+        'position',
+        'preimage',
+        'tree',
+        'type',
+      ]);
+      const { preimage, ciphertext } = creator;
+      assert.deepEqual(Object.keys(preimage).sort(), ['npk', 'token', 'value']);
+      assert.deepEqual(Object.keys(preimage.token).sort(), [
+        'tokenAddress',
+        'tokenSubID',
+        'tokenType',
+      ]);
+      assert.equal(preimage.token.tokenType, 0);
+      assert.equal(preimage.token.tokenAddress, pins.wrappedNative);
+      assert.equal(preimage.token.tokenSubID, hex(0n));
+      assert.match(preimage.value, /^[1-9][0-9]*$/);
+      assert.equal(preimage.value, preparation.amount);
+      assert.deepEqual(Object.keys(ciphertext).sort(), ['encryptedBundle', 'shieldKey']);
+      assert.ok(
+        Array.isArray(ciphertext.encryptedBundle) && ciphertext.encryptedBundle.length === 3
+      );
+      for (const v of [...ciphertext.encryptedBundle, ciphertext.shieldKey])
+        assert.match(v, /^0x[0-9a-f]{64}$/);
+      shared = await getSharedSymmetricKey(key, Buffer.from(ciphertext.shieldKey.slice(2), 'hex'));
+      active();
+      assert.ok(shared);
+      const random = ShieldNoteERC20.decryptRandom(ciphertext.encryptedBundle, shared);
+      shared.fill(0);
+      shared = undefined;
+      // This is an event preimage: value is already net of the shield fee.
+      note = new ShieldNoteERC20(
+        wallet.masterPublicKey,
+        random,
+        BigInt(preimage.value),
+        pins.wrappedNative
+      );
+      assert.equal(hex(note.notePublicKey), preimage.npk);
+    } else {
+      assert.equal(creator.type, 'Transact');
+      assert.deepEqual(Object.keys(creator).sort(), [
+        'ciphertext',
+        'hash',
+        'position',
+        'tree',
+        'type',
+      ]);
+      assert.equal(creator.hash, noteHash);
+      assert.deepEqual(Object.keys(creator.ciphertext).sort(), [
+        'annotationData',
+        'blindedReceiverViewingKey',
+        'blindedSenderViewingKey',
+        'ciphertext',
+        'memo',
+      ]);
+      note = await decryptReceived(creator.ciphertext);
+      assert.equal(note.value.toString(), preparation.amount);
+    }
+    assertToken(note);
     assert.equal(
-      hex(ShieldNoteERC20.getShieldNoteHash(note.notePublicKey, note.tokenHash, note.value)),
+      hex(TransactNote.getHash(note.notePublicKey, note.tokenHash, note.value)),
       noteHash
     );
     const nullifyingKey = wallet.getNullifyingKey();
@@ -133,41 +225,7 @@ async function reconstructRailgunPoiNotes({
       assert.equal(selection.recipient, descriptor.instanceId);
       assert.equal(tx.boundParams.commitmentCiphertext.length, 1);
       const bundle = tx.boundParams.commitmentCiphertext[0];
-      const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex');
-      const receiver = Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex');
-      shared = await getSharedSymmetricKey(key, sender);
-      active();
-      assert.ok(shared);
-      const output = await TransactNote.decrypt(
-        'V2_PoseidonMerkle',
-        { type: 0, id: pins.chainId },
-        wallet.addressKeys,
-        {
-          iv: bundle.ciphertext[0].slice(2, 34),
-          tag: bundle.ciphertext[0].slice(34),
-          data: bundle.ciphertext.slice(1).map((v) => v.slice(2)),
-        },
-        shared,
-        bundle.memo,
-        bundle.annotationData,
-        key,
-        receiver,
-        sender,
-        false,
-        false,
-        {
-          getTokenDataFromHash: async (_v, _c, hash) => {
-            assert.equal(
-              BigInt('0x' + hash.replace(/^0x/, '')),
-              BigInt('0x' + note.tokenHash.replace(/^0x/, ''))
-            );
-            return note.tokenData;
-          },
-        },
-        undefined,
-        undefined
-      );
-      active();
+      const output = await decryptReceived(bundle);
       assert.equal(output.value, note.value);
       assert.equal(output.tokenHash, note.tokenHash);
       assert.equal(output.hash, BigInt(preparation.expected.commitment));
