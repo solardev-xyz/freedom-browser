@@ -5,6 +5,7 @@ const assert = require('assert/strict');
 const path = require('path');
 const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
+const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
 const { matchRailgunOwnTxid } = require('./railgun-own-txid');
 const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -61,7 +62,19 @@ function normalizeRailgunPoiOutputRecoveryInput(value) {
   shape(input.preparation, ['creator', 'ownEvidence', 'state', 'witness']);
   const { creator, ownEvidence, state, witness } = input.preparation;
   shape(ownEvidence, ['capsule', 'record', 'transaction', 'receipt', 'row']);
-  normalizeRailgunPoiShieldInput(ownEvidence.capsule, creator);
+  if (creator.type === 'Transact') {
+    const normalized = prepareRailgunPoiTransactSelectorInput({
+      archive: input.archive,
+      descriptor: input.descriptor,
+      capsule: ownEvidence.capsule,
+      creator,
+    });
+    assert.deepEqual(normalized.capsule, ownEvidence.capsule);
+    input.descriptor = normalized.descriptor;
+    input.preparation.creator = normalized.creator;
+  } else {
+    normalizeRailgunPoiShieldInput(ownEvidence.capsule, creator);
+  }
   assert.equal(ownEvidence.capsule.selection.kind, 'railgun-private-transfer');
   assert.equal(input.descriptor.walletId, ownEvidence.capsule.walletId);
   assert.equal(ownEvidence.capsule.selection.recipient, input.descriptor.instanceId);

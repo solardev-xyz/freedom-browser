@@ -7,6 +7,7 @@ const { collectRailgunOwnSource } = require('./railgun-own-source');
 const {
   collectRailgunPoiCreator,
   collectRailgunPoiTransactCreator,
+  collectRailgunPoiRetainedCreator,
 } = require('./railgun-poi-creator');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { railgunTransactIntentBinding } = require('./railgun-transact-intent');
@@ -16,7 +17,8 @@ const fail = () =>
   });
 async function collect(
   { capsule, record, transaction, receipt, checkpoint, visit, assertCurrent },
-  transact = false
+  transact = false,
+  retained = false
 ) {
   assert.ok(typeof visit === 'function' && typeof assertCurrent === 'function');
   const text = JSON.stringify({ capsule, record, transaction, receipt, checkpoint });
@@ -42,8 +44,13 @@ async function collect(
   const common = { checkpoint: input.checkpoint, visit: register, assertCurrent };
   // These collectors register synchronously, before their first await. Observe
   // both promises immediately, including refusal before visitor registration.
+  const collectCreator = retained
+    ? collectRailgunPoiRetainedCreator
+    : transact
+      ? collectRailgunPoiTransactCreator
+      : collectRailgunPoiCreator;
   const settled = Promise.allSettled([
-    (transact ? collectRailgunPoiTransactCreator : collectRailgunPoiCreator)({
+    collectCreator({
       ...common,
       capsule: input.capsule,
     }),
@@ -102,6 +109,14 @@ exports.collectRailgunPoiSourceEvidence = async (options) => {
 exports.collectRailgunPoiTransactSourceEvidence = async (options) => {
   try {
     return await collect(options, true);
+  } catch {
+    throw fail();
+  }
+};
+
+exports.collectRailgunPoiRetainedSourceEvidence = async (options) => {
+  try {
+    return await collect(options, false, true);
   } catch {
     throw fail();
   }

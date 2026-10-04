@@ -1,4 +1,31 @@
 const assert = require('assert/strict');
+jest.mock('./railgun-public-policy', () => ({
+  getRailgunPublicPolicy: jest.fn((archive) => {
+    if (archive !== '/engine') throw Error('policy');
+    return 'fixture-policy';
+  }),
+}));
+jest.mock('./railgun-account-public', () => ({
+  getRailgunAccountPublicDestination: jest.fn((coordinator, enrollment, policy) => {
+    if (
+      coordinator !== mock.coordinator ||
+      enrollment !== mock.enrollment ||
+      policy !== 'fixture-policy'
+    )
+      throw Error('destination owner');
+    return mock.destination;
+  }),
+  assertRailgunAccountPublicDestination: jest.fn((coordinator, enrollment, destination, policy) => {
+    if (
+      coordinator !== mock.coordinator ||
+      enrollment !== mock.enrollment ||
+      destination !== mock.destination ||
+      policy !== 'fixture-policy'
+    )
+      throw Error('destination changed');
+    return destination;
+  }),
+}));
 let mock;
 jest.mock('./railgun-engine-runtime', () => ({
   verifyRailgunEngineRuntime: (value) => {
@@ -22,7 +49,7 @@ jest.mock('./railgun-own-poi-proof', () => ({
   },
 }));
 jest.mock('./railgun-own-witness', () => ({
-  preflightRailgunOwnPoi: jest.fn((options) => mock.preflight(options)),
+  preflightRailgunRetainedPoiCompleted: jest.fn((options) => mock.preflight(options)),
 }));
 jest.mock('./railgun-own-operation', () => {
   const assert = require('assert/strict');
@@ -62,7 +89,7 @@ const { createHash } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
-const { preflightRailgunOwnPoi } = require('./railgun-own-witness');
+const { preflightRailgunRetainedPoiCompleted } = require('./railgun-own-witness');
 const {
   createRailgunPoiRootSource,
   createRailgunPoiTxidRootSource,
@@ -97,6 +124,7 @@ beforeEach(() => {
     coordinator: { signal: new AbortController().signal },
     coordinatorAbort: new AbortController(),
     historyActive: true,
+    destination: Object.freeze({}),
     proof: {},
     events: [],
     roots: {},
@@ -160,8 +188,8 @@ beforeEach(() => {
     capture,
     publicIdentity: { generation: 'stable-policy' },
     preparation: {
-      creator: { hash: hex(10) },
-      ownEvidence: { row: { txid: hex(11) } },
+      creator: { type: 'Shield', hash: hex(10) },
+      ownEvidence: { capsule: clone(capture.capsule), row: { txid: hex(11) } },
       witness: { railgunTxid: hex(12), leaf: hex(13), index: 3, rowSha256: hex(14) },
     },
   };
@@ -266,7 +294,7 @@ const assertReceipt = (result, margin = 0) =>
 test('fresh checks use original roots with advanced mirror data and grant no authority', async () => {
   const result = await run();
   expect(result).toMatchObject({ status: 'checked' });
-  expect(preflightRailgunOwnPoi).toHaveBeenCalledWith(
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledWith(
     expect.objectContaining({ selector: mock.history.capture.selector, archive: '/engine' })
   );
   expect(mock.roots.list.input.root).toBe(hex(5));
@@ -303,7 +331,7 @@ test.each([null, [], {}, { extra: true }])(
   'malformed options refuse without opening sources %#',
   async (value) => {
     expect((await open(value)).status).toBe('refused');
-    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(preflightRailgunRetainedPoiCompleted).not.toHaveBeenCalled();
     expect(createRailgunPoiRootSource).not.toHaveBeenCalled();
   }
 );
@@ -311,7 +339,7 @@ test.each([0, -1, 240001, 1.5, NaN])(
   'invalid timeout %s refuses before preflight',
   async (timeoutMs) => {
     expect((await run({ timeoutMs })).status).toBe('refused');
-    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(preflightRailgunRetainedPoiCompleted).not.toHaveBeenCalled();
   }
 );
 test.each(['proof', 'archive', 'payload', 'signal', 'tree'])(
@@ -324,7 +352,7 @@ test.each(['proof', 'archive', 'payload', 'signal', 'tree'])(
     if (kind === 'signal') mock.caller.abort();
     if (kind === 'tree') mock.history.txidTree = 1;
     expect((await run(change)).status).toBe('refused');
-    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(preflightRailgunRetainedPoiCompleted).not.toHaveBeenCalled();
     expect(createRailgunPoiTxidRootSource).not.toHaveBeenCalled();
   }
 );
@@ -401,7 +429,7 @@ test('root queries start together; root rejection cancels its sibling but retain
   await until(() => mock.roots.txid.signal.aborted);
   expect(settled).toBe(false);
   expect((await run()).status).toBe('refused');
-  expect(preflightRailgunOwnPoi).toHaveBeenCalledTimes(1);
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
   mock.rootDelays.txid.resolve();
   expect(await pending).toEqual({ status: 'refused', stage: 'list-root-rejected' });
   expect(mock.events).not.toContain('recovery');
@@ -419,7 +447,7 @@ test('caller cancellation drains a late preflight and never opens roots', async 
     settled = true;
     return v;
   });
-  await until(() => preflightRailgunOwnPoi.mock.calls.length === 1);
+  await until(() => preflightRailgunRetainedPoiCompleted.mock.calls.length === 1);
   mock.caller.abort();
   expect(settled).toBe(false);
   expect((await run({ signal: new AbortController().signal })).status).toBe('refused');
@@ -465,7 +493,7 @@ test('explicit 60-second total budget includes preflight latency and strict rema
     return clone(mock.fresh);
   };
   const pending = run({ timeoutMs: 60000 });
-  await until(() => preflightRailgunOwnPoi.mock.calls.length === 1);
+  await until(() => preflightRailgunRetainedPoiCompleted.mock.calls.length === 1);
   await jest.advanceTimersByTimeAsync(40000);
   gate.resolve();
   const result = await pending;
@@ -486,8 +514,8 @@ test('default budget permits a long bounded preflight then grants at most 60 sec
     return clone(mock.fresh);
   };
   const pending = run();
-  await until(() => preflightRailgunOwnPoi.mock.calls.length === 1);
-  const input = preflightRailgunOwnPoi.mock.calls[0][0];
+  await until(() => preflightRailgunRetainedPoiCompleted.mock.calls.length === 1);
+  const input = preflightRailgunRetainedPoiCompleted.mock.calls[0][0];
   expect(input.timeoutMs).toBe(180000);
   await jest.advanceTimersByTimeAsync(90000);
   expect(input.signal.aborted).toBe(false);
@@ -514,8 +542,8 @@ test('post-preflight freshness cannot extend a caller-shortened original total d
     return clone(mock.fresh);
   };
   const pending = run({ timeoutMs: 70000 });
-  await until(() => preflightRailgunOwnPoi.mock.calls.length === 1);
-  expect(preflightRailgunOwnPoi.mock.calls[0][0].timeoutMs).toBe(70000);
+  await until(() => preflightRailgunRetainedPoiCompleted.mock.calls.length === 1);
+  expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0].timeoutMs).toBe(70000);
   await jest.advanceTimersByTimeAsync(40000);
   gate.resolve();
   const result = await pending;
@@ -557,18 +585,18 @@ test('healthy admission and a live checks receipt exclude competitors without ca
   await until(() => !!signal);
   expect(await run()).toEqual({ status: 'refused', stage: 'proof-history' });
   expect(signal.aborted).toBe(false);
-  expect(preflightRailgunOwnPoi).toHaveBeenCalledTimes(1);
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
   gate.resolve();
   const first = await pending;
   expect(first.status).toBe('checked');
   expect(await run()).toEqual({ status: 'refused', stage: 'proof-history' });
   expect(first.signal.aborted).toBe(false);
   expect(() => assertReceipt(first)).not.toThrow();
-  expect(preflightRailgunOwnPoi).toHaveBeenCalledTimes(1);
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
   first.close();
   await first.closed;
   expect((await run()).status).toBe('checked');
-  expect(preflightRailgunOwnPoi).toHaveBeenCalledTimes(2);
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(2);
 });
 test.each(['list', 'txid'])(
   '%s source failures are redacted and revoke both readers',
@@ -604,7 +632,7 @@ test('bound payload cannot change original roots even when its digest is recompu
     .update(JSON.stringify(mock.history.payload))
     .digest('hex');
   expect(await run()).toEqual({ status: 'refused', stage: 'proof-history' });
-  expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+  expect(preflightRailgunRetainedPoiCompleted).not.toHaveBeenCalled();
 });
 test('preflight timeout revokes immediately but waits for its late callback before returning', async () => {
   jest.useFakeTimers();
@@ -645,3 +673,265 @@ test('root closure during final reattestation revokes authority and waits for re
   expect((await pending).status).toBe('refused');
   expect(mock.phase).toBe(false);
 });
+
+// Structural joins only; genuine source authentication and crypto are native qualifications.
+function makeTransactProofFixture(unshield = false) {
+  const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+  const hash = (v) =>
+    require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
+  const evidence = require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
+  const descriptor = {
+    walletId: evidence.capsule.walletId,
+    instanceId: '0zk1' + 'q'.repeat(123),
+    masterPublicKey: h(3).slice(2),
+    spendingPublicKey: [h(4).slice(2), h(5).slice(2)],
+    viewingPublicKey: h(6).slice(2),
+    accountIndex: 0,
+  };
+  const creator = {
+    type: 'Transact',
+    tree: evidence.capsule.selection.tree,
+    position: evidence.capsule.selection.position,
+    hash: evidence.capsule.noteHash,
+    ciphertext: {
+      ciphertext: [h(7), h(8), h(9), h(10)],
+      blindedSenderViewingKey: h(11),
+      blindedReceiverViewingKey: h(12),
+      annotationData: '0x',
+      memo: '0x',
+    },
+  };
+  const state = { count: 2, root: h(15).slice(2), transcript: h(16).slice(2), breaks: [] };
+  const witnessFor = (row, index) => ({
+    row: JSON.parse(JSON.stringify(row)),
+    leaf: h(17 + index).slice(2),
+    railgunTxid: h(19 + index).slice(2),
+    rowSha256: hash(row),
+    index,
+    elements: Array(16).fill(h(0).slice(2)),
+    root: state.root,
+    checkpointIndex: 1,
+    transcript: state.transcript,
+    continuity: require('./railgun-txid-omissions').classifyRailgunTxidContinuity(1, []),
+    globalTxidCompleteness: false,
+  });
+  const blockNumber = evidence.row.blockNumber - 1;
+  const creatorRow = {
+    version: 'V2',
+    graphID: h(blockNumber) + h(2).slice(2) + h(0).slice(2),
+    commitments: [creator.hash],
+    nullifiers: [h(700)],
+    boundParamsHash: h(701),
+    blockNumber,
+    txid: h(706).slice(2),
+    timestamp: blockNumber,
+    utxoTreeIn: creator.tree,
+    utxoTreeOut: creator.tree,
+    utxoBatchStartPositionOut: creator.position,
+    verificationHash: evidence.row.verificationHash,
+  };
+  const note = {
+    type: 'Transact',
+    tree: creator.tree,
+    position: creator.position,
+    hash: creator.hash,
+    txid: h(706),
+    blockNumber,
+  };
+  const input = {
+    archive: '/engine.asar',
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    descriptor,
+    preparation: { creator, ownEvidence: evidence, state, witness: witnessFor(evidence.row, 1) },
+    listProofs: [
+      {
+        leaf: h(21).slice(2),
+        root: h(22).slice(2),
+        indices: h(0).slice(2),
+        elements: Array(16).fill(h(0).slice(2)),
+      },
+    ],
+  };
+  const selectorInput =
+    require('./railgun-poi-transact-selector-data').prepareRailgunPoiTransactSelectorInput({
+      archive: input.archive,
+      descriptor,
+      capsule: evidence.capsule,
+      creator,
+    });
+  return {
+    input,
+    selector: {
+      blindedCommitment: h(21),
+      bindingDigest: selectorInput.bindingDigest,
+      inputSha256: hash(selectorInput),
+    },
+    creatorProvenance: {
+      note,
+      noteWitness: {
+        note,
+        outputIndex: 0,
+        witness: witnessFor(creatorRow, 0),
+        ownershipVerified: false,
+        eventCoverageVerified: false,
+        rootAccepted: false,
+        spendingEnabled: false,
+      },
+      verification: {
+        utilityExitObserved: true,
+        pathVerified: true,
+        suppliedCreatorEventsMatched: true,
+        coverage: { matchedRows: 1, knownOmissions: 0 },
+      },
+    },
+  };
+}
+function configureTransactChecks() {
+  const fixture = makeTransactProofFixture();
+  fixture.input.preparation.state.count = 5;
+  for (const witness of [
+    fixture.input.preparation.witness,
+    fixture.creatorProvenance.noteWitness.witness,
+  ]) {
+    witness.checkpointIndex = 4;
+    witness.continuity = require('./railgun-txid-omissions').classifyRailgunTxidContinuity(4, []);
+  }
+  const capsule = fixture.input.preparation.ownEvidence.capsule;
+  mock.history.capture.capsule = clone(capsule);
+  mock.history.capture.capsuleDigest =
+    require('./railgun-private-capsule').digestRailgunPrivateCapsule(capsule);
+  mock.fresh.capture = clone(mock.history.capture);
+  mock.history.preparation = clone(fixture.input.preparation);
+  mock.fresh.poiPreparation = clone(fixture.input.preparation);
+  mock.fresh.witness = clone(fixture.input.preparation.witness);
+  mock.fresh.creatorClassification.type = 'Transact';
+  mock.fresh.txidPolicy = 'fixture-txid-policy';
+  const origin = {
+    blockNumber: 12,
+    blockHash: '0x' + hex(123),
+    transactionHash: '0x' + hex(124),
+    logIndex: 0,
+  };
+  mock.fresh.observations.source = { checkpointHash: hex(125), creator: { origin } };
+  mock.fresh.creatorProvenance = {
+    ...fixture.creatorProvenance,
+    publicIdentity: clone(mock.history.publicIdentity),
+    txidPolicy: mock.fresh.txidPolicy,
+    checkpointHash: hex(125),
+    origin: clone(origin),
+  };
+}
+test('fresh Transact checks bind retained creator and common checkpoint before the separate original roots', async () => {
+  configureTransactChecks();
+  const result = await run();
+  expect(result.status).toBe('checked');
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
+  expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0].sourceDestination).toBe(
+    mock.destination
+  );
+  expect(createRailgunPoiRootSource).toHaveBeenCalledTimes(1);
+  expect(createRailgunPoiTxidRootSource).toHaveBeenCalledTimes(1);
+  expect(result).not.toHaveProperty('sourceOutcome');
+});
+test.each([
+  'type',
+  'note',
+  'identity',
+  'policy',
+  'checkpoint',
+  'origin',
+  'witness-root',
+  'witness-count',
+  'output-index',
+  'not-before-own',
+  'exit',
+  'path',
+  'events',
+  'coverage-count',
+  'coverage-omissions',
+  'capsule',
+])(
+  'retained Transact checks %s mismatch refuses before either original-root request',
+  async (fault) => {
+    configureTransactChecks();
+    const fresh = mock.fresh,
+      provenance = fresh.creatorProvenance;
+    if (fault === 'type') fresh.creatorClassification.type = 'Shield';
+    if (fault === 'note') provenance.note.hash = '0x' + hex(777);
+    if (fault === 'identity') provenance.publicIdentity = {};
+    if (fault === 'policy') provenance.txidPolicy = 'other';
+    if (fault === 'checkpoint') provenance.checkpointHash = hex(777);
+    if (fault === 'origin') provenance.origin.logIndex++;
+    if (fault === 'witness-root') provenance.noteWitness.witness.root = hex(777);
+    if (fault === 'witness-count') provenance.noteWitness.witness.checkpointIndex--;
+    if (fault === 'output-index') provenance.noteWitness.outputIndex = 1;
+    if (fault === 'not-before-own') provenance.noteWitness.witness.index = fresh.witness.index;
+    if (fault === 'exit') provenance.verification.utilityExitObserved = false;
+    if (fault === 'path') provenance.verification.pathVerified = false;
+    if (fault === 'events') provenance.verification.suppliedCreatorEventsMatched = false;
+    if (fault === 'coverage-count') provenance.verification.coverage.matchedRows = 2;
+    if (fault === 'coverage-omissions') provenance.verification.coverage.knownOmissions = 1;
+    if (fault === 'capsule') fresh.poiPreparation.ownEvidence.capsule.noteHash = '0x' + hex(777);
+    const result = await run();
+    expect(createRailgunPoiRootSource).not.toHaveBeenCalled();
+    expect(createRailgunPoiTxidRootSource).not.toHaveBeenCalled();
+    expect(result.status).toBe('refused');
+    expect(result.stage).toBe('history-binding');
+  }
+);
+test('checks preserve bounded preflight refusal stage after cancellation without adding sourceOutcome', async () => {
+  mock.preflight = async () => {
+    mock.caller.abort();
+    return {
+      status: 'refused',
+      stage: 'source:pending',
+      sourceOutcome: { fatal: false, reason: 'pending', rpcFailure: null },
+    };
+  };
+  expect(await run()).toEqual({ status: 'refused', stage: 'preflight:source:pending' });
+  expect(createRailgunPoiRootSource).not.toHaveBeenCalled();
+  expect(createRailgunPoiTxidRootSource).not.toHaveBeenCalled();
+});
+test('checks destination drift before roots refuses without a replacement observation', async () => {
+  const original = mock.destination;
+  mock.preflight = async () => {
+    mock.destination = Object.freeze({});
+    return clone(mock.fresh);
+  };
+  expect((await run()).status).toBe('refused');
+  expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0].sourceDestination).toBe(original);
+  expect(
+    require('./railgun-account-public').getRailgunAccountPublicDestination
+  ).toHaveBeenCalledTimes(1);
+  expect(createRailgunPoiRootSource).not.toHaveBeenCalled();
+  expect(createRailgunPoiTxidRootSource).not.toHaveBeenCalled();
+});
+
+test('pinned destination revocation invalidates downstream root contexts and issued checks', async () => {
+  const result = await run();
+  expect(result.status).toBe('checked');
+  const handle = mock.roots.list.input.handle;
+  expect(() => getPrivacyContext(handle)).not.toThrow();
+  mock.destination = Object.freeze({});
+  expect(() => getPrivacyContext(handle)).toThrow();
+  expect(() => assertReceipt(result)).toThrow();
+});
+
+test.each(['missing', 'pending'])(
+  'retained checks refuse %s completed source and allow a later independently completed source',
+  async (reason) => {
+    const complete = mock.preflight;
+    mock.preflight = async () => ({
+      status: 'refused',
+      stage: 'source:' + reason,
+      sourceOutcome: { fatal: false, reason, rpcFailure: null },
+    });
+    expect(await run()).toEqual({ status: 'refused', stage: 'preflight:source:' + reason });
+    expect(createRailgunPoiRootSource).not.toHaveBeenCalled();
+    expect(createRailgunPoiTxidRootSource).not.toHaveBeenCalled();
+    mock.preflight = complete;
+    expect((await run()).status).toBe('checked');
+    expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(2);
+  }
+);

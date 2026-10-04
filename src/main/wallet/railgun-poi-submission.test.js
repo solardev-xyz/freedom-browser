@@ -90,6 +90,12 @@ jest.mock('./railgun-own-poi-proof', () => ({
   }),
 }));
 jest.mock('./railgun-own-witness', () => ({
+  preflightRailgunRetainedPoiCompleted: jest.fn(() => {
+    throw Error('unexpected retained preflight');
+  }),
+  preflightRailgunRetainedPoiForSubmission: jest.fn(() => {
+    throw Error('unexpected retained submission preflight');
+  }),
   preflightRailgunOwnPoi: jest.fn(() => {
     throw Error('unexpected preflight');
   }),
@@ -403,6 +409,8 @@ afterEach(async () => {
     ['./railgun-process', 'startRailgunProcess'],
     ['./railgun-own-poi-proof', 'proveRailgunOwnPoi'],
     ['./railgun-own-witness', 'preflightRailgunOwnPoi'],
+    ['./railgun-own-witness', 'preflightRailgunRetainedPoiCompleted'],
+    ['./railgun-own-witness', 'preflightRailgunRetainedPoiForSubmission'],
     ['../networks/private-rpc', 'createPrivateRpc'],
   ])
     expect(require(file)[name]).not.toHaveBeenCalled();
@@ -1240,7 +1248,11 @@ test('review inventories expose origins and bounded scopes, with no raw endpoint
     { role: 'receipt-rpc', origin: 'https://receipt.example' },
     { role: 'poi-service', origin: 'https://ppoi.fdi.network' },
   ]);
-  expect(first.requestInventory.reduce((count, item) => count + item.maxRequests, 0)).toBe(563);
+  expect(first.requestInventory.reduce((count, item) => count + item.maxRequests, 0)).toBe(565);
+  expect(first.requestInventory.filter((item) => item.method.startsWith('ppoi_'))).toEqual([
+    { method: 'ppoi_validated_txid', maxRequests: 7 },
+    { method: 'ppoi_validate_txid_merkleroot', maxRequests: 7 },
+  ]);
   expect(second.requestInventory).toEqual([
     { method: 'ppoi_validate_poi_merkleroots', maxRequests: 1 },
     { method: 'ppoi_validate_txid_merkleroot', maxRequests: 1 },
@@ -1343,9 +1355,18 @@ test('fixed sender and submission cores remain unwired outside their explicit pr
       'recoverRailgunPoiOutputForSubmission',
       ['main/wallet/railgun-poi-cold-validation.js', 'main/wallet/railgun-poi-output-recovery.js'],
     ],
+    ['preflightRailgunOwnPoiForSubmission', ['main/wallet/railgun-own-witness.js']],
     [
-      'preflightRailgunOwnPoiForSubmission',
+      'preflightRailgunRetainedPoiForSubmission',
       ['main/wallet/railgun-own-witness.js', 'main/wallet/railgun-poi-output-recovery.js'],
+    ],
+    [
+      'preflightRailgunRetainedPoiCompleted',
+      [
+        'main/wallet/railgun-own-witness.js',
+        'main/wallet/railgun-poi-output-recovery.js',
+        'main/wallet/railgun-own-poi-checks.js',
+      ],
     ],
   ]) {
     const actual = files

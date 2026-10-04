@@ -2042,34 +2042,6 @@ describe.each(['caller', 'window'])(
   }
 );
 
-test.each(['empty', 'prepared', 'attempted'])(
-  'mock-registry Transact proof refuses before recovery and leaves %s encrypted store unchanged',
-  async (state) => {
-    const store = await open();
-    if (state !== 'empty') expect((await prepare(store)).status).toBe('prepared');
-    if (state === 'attempted') expect((await begin(store)).status).toBe('attempted');
-    const inspect = await store.inspect(),
-      list = await store.list();
-    const ciphertext = fs.readFileSync(filename());
-    const floor = minimum,
-      advances = options.advanceFloor.mock.calls.length;
-    const recoveries = withRailgunOwnOperationRecovery.mock.calls.length;
-    const issued = issue(2, 1, (history) => {
-      history.preparation.creator.type = 'Transact';
-    });
-    expect(await prepare(store, issued)).toEqual({ status: 'refused', stage: 'context' });
-    expect(withRailgunOwnOperationRecovery).toHaveBeenCalledTimes(recoveries);
-    expect(options.advanceFloor).toHaveBeenCalledTimes(advances);
-    expect(minimum).toBe(floor);
-    expect(await store.inspect()).toEqual(inspect);
-    expect(await store.list()).toEqual(list);
-    expect(fs.readFileSync(filename())).toEqual(ciphertext);
-    expect(await store.get(hex(2))).toBeNull();
-    expect(store.signal.aborted).toBe(false);
-    // The rejected mutation released ownership; no reset/reopen is needed.
-    expect((await prepare(store, issue(2))).status).toBe('prepared');
-  }
-);
 test.each(['missing-preparation', 'missing-creator', 'unknown-type'])(
   'incomplete mock proof history %s cannot write an intent',
   async (fault) => {
@@ -2086,5 +2058,217 @@ test.each(['missing-preparation', 'missing-creator', 'unknown-type'])(
     expect(fs.readFileSync(filename())).toEqual(ciphertext);
     expect(minimum).toBe(floor);
     expect((await prepare(store)).status).toBe('prepared');
+  }
+);
+
+// The proof registry is explicitly mocked here; encryption, file replacement,
+// floor accounting, record validation and persistence are real. Native tests
+// separately establish preparation from genuine local proof history.
+test.each([
+  ['empty', 1, 1, 3, 124, 1],
+  ['prepared', 2, 2, 6, 120, 1],
+  ['attempted', 2, 3, 5, 120, 2],
+])(
+  'mock-registry Transact preparation joins %s storage without rewriting old entries',
+  async (state, records, sequence, reservedTransitions, freeTransitions, version) => {
+    const store = await open();
+    if (state !== 'empty') expect((await prepare(store)).status).toBe('prepared');
+    if (state === 'attempted') expect((await begin(store)).status).toBe('attempted');
+    const before = await store.get(hex(1));
+    const priorDocument = await readDocument();
+    const priorBytes = fs.readFileSync(filename());
+    const floorCalls = options.advanceFloor.mock.calls.length;
+    const recoveries = withRailgunOwnOperationRecovery.mock.calls.length;
+    const issued = issue(2, 1, (history) => {
+      history.preparation.creator.type = 'Transact';
+    });
+    expect(
+      require('./railgun-own-poi-proof').assertRailgunOwnPoiProof(
+        issued.proof,
+        options.enrollment,
+        mock.coordinator
+      )
+    ).toBe(issued.history);
+    const result = await prepare(store, issued);
+    expect(result).toEqual({
+      status: 'prepared',
+      capsuleDigest: hex(2),
+      payloadSha256: issued.history.payloadSha256,
+      revision: 1,
+      proofAuthenticated: false,
+      disclosureEnabled: false,
+      spendingEnabled: false,
+    });
+    expect(withRailgunOwnOperationRecovery).toHaveBeenCalledTimes(recoveries + 1);
+    expect(options.advanceFloor).toHaveBeenCalledTimes(floorCalls + 1);
+    expect(minimum).toBe(sequence);
+    expect(await store.inspect()).toEqual({
+      records,
+      sequence,
+      capacity: 32,
+      reservedTransitions,
+      freeTransitions,
+    });
+    const saved = await store.get(hex(2));
+    expect(saved).toEqual({
+      state: 'prepared',
+      revision: 1,
+      capsuleDigest: hex(2),
+      bindingDigest: issued.history.capture.bindingDigest,
+      selector: issued.history.capture.selector,
+      payload: issued.history.payload,
+      payloadSha256: issued.history.payloadSha256,
+      inputSha256: issued.history.inputSha256,
+    });
+    expect(await store.get(hex(1))).toEqual(before);
+    const document = await readDocument();
+    expect(document.version).toBe(version);
+    expect(document.sequence).toBe(priorDocument.sequence + 1);
+    expect(document.entries).toEqual([...priorDocument.entries, saved]);
+    const bytes = fs.readFileSync(filename());
+    expect(bytes).not.toEqual(priorBytes);
+    for (const sensitive of [issued.history.payloadSha256, hex(2), 'prepared', 'Transact', 'pi_a'])
+      expect(bytes.toString()).not.toContain(sensitive);
+    // Idempotency must not create even a temporary encrypted rewrite or floor advance.
+    const write = jest.spyOn(fs, 'writeFileSync'),
+      rename = jest.spyOn(fs, 'renameSync');
+    try {
+      expect(await prepare(store, issued)).toEqual(result);
+      expect(write).not.toHaveBeenCalled();
+      expect(rename).not.toHaveBeenCalled();
+    } finally {
+      write.mockRestore();
+      rename.mockRestore();
+    }
+    expect(options.advanceFloor).toHaveBeenCalledTimes(floorCalls + 1);
+    expect(minimum).toBe(sequence);
+    expect(fs.readFileSync(filename())).toEqual(bytes);
+    expect(await store.inspect()).toEqual({
+      records,
+      sequence,
+      capacity: 32,
+      reservedTransitions,
+      freeTransitions,
+    });
+    expect(await store.get(hex(1))).toEqual(before);
+    expect(store.signal.aborted).toBe(false);
+    store.close();
+    await store.closed;
+    const cold = await open(false);
+    expect(await cold.get(hex(2))).toEqual(saved);
+    expect(await cold.get(hex(1))).toEqual(before);
+  }
+);
+
+describe.each(['Shield', 'Transact'])(
+  'attempted %s record remains irreversible across allowed creator types',
+  (creatorType) => {
+    test.each(['identical', 'changed', 'other-type'])(
+      'a current mocked-registry %s proof cannot reprepare/reset its attempted capsule',
+      async (kind) => {
+        const store = await open();
+        const issued = issue(1, 1, (history) => {
+          history.preparation.creator.type = creatorType;
+        });
+        expect((await prepare(store, issued)).status).toBe('prepared');
+        expect((await begin(store, issued)).status).toBe('attempted');
+        const candidate =
+          kind === 'identical'
+            ? issued
+            : issue(1, kind === 'changed' ? 2 : 1, (history) => {
+                history.preparation.creator.type =
+                  kind === 'other-type'
+                    ? creatorType === 'Shield'
+                      ? 'Transact'
+                      : 'Shield'
+                    : creatorType;
+              });
+        expect(
+          require('./railgun-own-poi-proof').assertRailgunOwnPoiProof(
+            candidate.proof,
+            options.enrollment,
+            mock.coordinator
+          )
+        ).toBe(candidate.history);
+        const entry = await store.get(hex(1)),
+          inspect = await store.inspect(),
+          bytes = fs.readFileSync(filename());
+        const calls = options.advanceFloor.mock.calls.length,
+          floor = minimum;
+        const now = jest.spyOn(Date, 'now'),
+          write = jest.spyOn(fs, 'writeFileSync'),
+          rename = jest.spyOn(fs, 'renameSync');
+        try {
+          expect(await prepare(store, candidate)).toEqual({ status: 'refused', stage: 'persist' });
+          expect(now).not.toHaveBeenCalled();
+          expect(write).not.toHaveBeenCalled();
+          expect(rename).not.toHaveBeenCalled();
+        } finally {
+          now.mockRestore();
+          write.mockRestore();
+          rename.mockRestore();
+        }
+        expect(await store.get(hex(1))).toEqual(entry);
+        expect(await store.inspect()).toEqual(inspect);
+        expect(fs.readFileSync(filename())).toEqual(bytes);
+        expect(options.advanceFloor).toHaveBeenCalledTimes(calls);
+        expect(minimum).toBe(floor);
+        expect(entry.attempt.submission).toEqual(
+          normalizeRailgunPoiSubmission(entry.attempt.submission)
+        );
+        expect(store.signal.aborted).toBe(false);
+      }
+    );
+  }
+);
+
+test.each(['prepared', 'attempted'])(
+  'mock-registry Transact nullifier collision preserves existing %s Shield record and reserves',
+  async (state) => {
+    const store = await open();
+    expect((await prepare(store)).status).toBe('prepared');
+    if (state === 'attempted') expect((await begin(store)).status).toBe('attempted');
+    const before = await store.get(hex(1)),
+      accounting = await store.inspect(),
+      document = await readDocument(),
+      bytes = fs.readFileSync(filename()),
+      floor = minimum,
+      advances = options.advanceFloor.mock.calls.length;
+    const collision = issue(2, 1, (history) => {
+      history.preparation.creator.type = 'Transact';
+      history.capture.selector.nullifier = sample.history.capture.selector.nullifier;
+    });
+    // Explicitly mocked origin; production must still enforce the durable
+    // account-wide nullifier constraint across both admitted creator types.
+    expect(
+      require('./railgun-own-poi-proof').assertRailgunOwnPoiProof(
+        collision.proof,
+        options.enrollment,
+        mock.coordinator
+      )
+    ).toBe(collision.history);
+    const writes = jest.spyOn(fs, 'writeFileSync'),
+      renames = jest.spyOn(fs, 'renameSync');
+    try {
+      expect(await prepare(store, collision)).toEqual({ status: 'refused', stage: 'persist' });
+      expect(writes).not.toHaveBeenCalled();
+      expect(renames).not.toHaveBeenCalled();
+    } finally {
+      writes.mockRestore();
+      renames.mockRestore();
+    }
+    expect(await store.get(hex(1))).toEqual(before);
+    expect(await store.get(hex(2))).toBeNull();
+    expect(await store.inspect()).toEqual(accounting);
+    expect(await readDocument()).toEqual(document);
+    expect(fs.readFileSync(filename())).toEqual(bytes);
+    expect(minimum).toBe(floor);
+    expect(options.advanceFloor).toHaveBeenCalledTimes(advances);
+    expect(store.signal.aborted).toBe(false);
+    const independent = issue(2, 1, (history) => {
+      history.preparation.creator.type = 'Transact';
+    });
+    expect((await prepare(store, independent)).status).toBe('prepared');
+    expect(await store.get(hex(1))).toEqual(before);
   }
 );

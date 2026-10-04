@@ -24,7 +24,12 @@ const freeze = (v) => {
   }
   return v;
 };
-async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }, transact = false) {
+async function collect(
+  { capsule: supplied, checkpoint, visit, assertCurrent },
+  transact = false,
+  retained = false
+) {
+  const retainTransaction = transact || retained;
   assert.ok(typeof visit === 'function' && typeof assertCurrent === 'function');
   const text = JSON.stringify({ capsule: supplied, checkpoint });
   assert.ok(Buffer.byteLength(text) <= 128 * 1024);
@@ -87,7 +92,7 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }, 
           log.topics.length <= 4 &&
           log.topics.every(hash)
       );
-      if (transact) {
+      if (retainTransaction) {
         if (
           !group ||
           group.hash !== log.transactionHash ||
@@ -195,7 +200,7 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }, 
           },
         };
       }
-      if (transact) selectedGroup = group;
+      if (retainTransaction) selectedGroup = group;
       selected = {
         creator,
         origin: {
@@ -223,8 +228,8 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }, 
     input.checkpoint.state.trees.map((t) => t.length)
   );
   let transaction;
-  if (transact) {
-    assert.equal(selected.creator.type, 'Transact');
+  if (transact) assert.equal(selected.creator.type, 'Transact');
+  if (retainTransaction && selected.creator.type === 'Transact') {
     assert.ok(
       selectedGroup &&
         !selectedGroup.overflow &&
@@ -286,6 +291,19 @@ exports.collectRailgunPoiCreator = async (options) => {
 exports.collectRailgunPoiTransactCreator = async (options) => {
   try {
     return await collect(options, true);
+  } catch {
+    throw Object.assign(new Error('Railgun POI creator unavailable'), {
+      code: 'RAILGUN_POI_CREATOR_REFUSED',
+    });
+  }
+};
+
+// Fixed retained-input variant: the selected source event determines the type;
+// authentication belongs to the genuine capture wrapper. Shield keeps its
+// preimage shape; Transact requires the complete bounded creating group.
+exports.collectRailgunPoiRetainedCreator = async (options) => {
+  try {
+    return await collect(options, false, true);
   } catch {
     throw Object.assign(new Error('Railgun POI creator unavailable'), {
       code: 'RAILGUN_POI_CREATOR_REFUSED',

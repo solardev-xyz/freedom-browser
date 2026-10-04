@@ -198,3 +198,73 @@ test.each(['empty', 'two', 'marker', 'wide-zero', 'extra'])(
     expect(() => output(v)).toThrow();
   }
 );
+function transactInput() {
+  const value = input(),
+    capsule = value.preparation.ownEvidence.capsule;
+  value.preparation.creator = {
+    type: 'Transact',
+    tree: capsule.selection.tree,
+    position: capsule.selection.position,
+    hash: capsule.noteHash,
+    ciphertext: {
+      ciphertext: [hex(7), hex(8), hex(9), hex(10)],
+      blindedSenderViewingKey: hex(11),
+      blindedReceiverViewingKey: hex(12),
+      annotationData: '0x',
+      memo: '0x',
+    },
+  };
+  return value;
+}
+test('actual Transact output normalizer detaches canonical data without saved output or proof authority', () => {
+  const value = transactInput();
+  const result = normalize(value);
+  expect(result).toEqual(value);
+  expect(Object.isFrozen(result.preparation.creator.ciphertext.ciphertext)).toBe(true);
+  value.preparation.creator.ciphertext.ciphertext[0] = hex(900);
+  expect(result.preparation.creator.ciphertext.ciphertext[0]).toBe(hex(7));
+  expect(result).not.toHaveProperty('proofVerified');
+  expect(result).not.toHaveProperty('blindedCommitmentsOut');
+});
+test.each([
+  'unknown',
+  'missing',
+  'tree',
+  'position',
+  'hash',
+  'cipher-count',
+  'cipher-extra',
+  'memo-odd',
+  'annotation-limit',
+  'descriptor-wallet',
+  'descriptor-recipient',
+  'capsule',
+  'witness',
+  'saved-output',
+])('actual Transact output input refuses %s before credential access', (fault) => {
+  const value = transactInput(),
+    creator = value.preparation.creator;
+  if (fault === 'unknown') creator.type = 'Unknown';
+  if (fault === 'missing') delete creator.type;
+  if (fault === 'tree') creator.tree++;
+  if (fault === 'position') creator.position++;
+  if (fault === 'hash') creator.hash = hex(900);
+  if (fault === 'cipher-count') creator.ciphertext.ciphertext.pop();
+  if (fault === 'cipher-extra') creator.ciphertext.legacy = true;
+  if (fault === 'memo-odd') creator.ciphertext.memo = '0x1';
+  if (fault === 'annotation-limit') creator.ciphertext.annotationData = '0x' + '11'.repeat(3521);
+  if (fault === 'descriptor-wallet') value.descriptor.walletId = 'a'.repeat(64);
+  if (fault === 'descriptor-recipient') value.descriptor.instanceId = '0zk1' + 'p'.repeat(123);
+  if (fault === 'capsule') value.preparation.ownEvidence.capsule.noteHash = hex(900);
+  if (fault === 'witness') value.preparation.witness.checkpointIndex++;
+  if (fault === 'saved-output') value.blindedCommitmentsOut = [hex(900)];
+  expect(() => normalize(value)).toThrow();
+});
+test('Transact output input retains the exact 64KiB whole-message boundary', () => {
+  const value = transactInput();
+  value.archive += 'x'.repeat(65536 - Buffer.byteLength(JSON.stringify(value)));
+  expect(Buffer.byteLength(JSON.stringify(value))).toBe(65536);
+  expect(normalize(value).archive).toBe(value.archive);
+  value.archive += 'x';
+  expect(() => normalize(value)).toThrow();
+});

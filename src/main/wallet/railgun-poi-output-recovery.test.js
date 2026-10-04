@@ -83,9 +83,13 @@ jest.mock('./railgun-engine-runtime', () => ({
   }),
 }));
 jest.mock('./railgun-own-witness', () => ({
-  preflightRailgunOwnPoi: jest.fn((options) => mock.preflight(options)),
-  preflightRailgunOwnPoiCompleted: jest.fn((options) => mock.preflight(options)),
-  preflightRailgunOwnPoiForSubmission: jest.fn((options, input) => mock.preflight(options, input)),
+  preflightRailgunOwnPoi: jest.fn(() => {
+    throw Error('legacy preflight forbidden');
+  }),
+  preflightRailgunRetainedPoiCompleted: jest.fn((options) => mock.preflight(options)),
+  preflightRailgunRetainedPoiForSubmission: jest.fn((options, input) =>
+    mock.preflight(options, input)
+  ),
 }));
 jest.mock('./railgun-own-operation', () => ({
   withRailgunOwnOperationRecovery: jest.fn(async (options, use) => {
@@ -206,8 +210,8 @@ const { withRailgunViewingCredential } = require('./railgun-identity');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const {
   preflightRailgunOwnPoi,
-  preflightRailgunOwnPoiCompleted,
-  preflightRailgunOwnPoiForSubmission,
+  preflightRailgunRetainedPoiCompleted,
+  preflightRailgunRetainedPoiForSubmission,
 } = require('./railgun-own-witness');
 const { startRailgunProcess } = require('./railgun-process');
 const hex = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -1452,9 +1456,9 @@ test.each([false, true])(
     configure(unshield);
     const result = await runCompleted();
     expect(result.status).toBe('matched');
-    expect(preflightRailgunOwnPoiCompleted).toHaveBeenCalledTimes(1);
+    expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
     expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
-    expect(preflightRailgunOwnPoiCompleted.mock.calls[0][0]).toMatchObject({
+    expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0]).toMatchObject({
       sourceDestination: mock.destination,
       coordinator: mock.coordinator,
       enrollment: mock.enrollment,
@@ -1471,7 +1475,7 @@ test.each([undefined, null, {}])(
   'completed output refuses copied/absent destination %# before preflight/key/utility',
   async (sourceDestination) => {
     expect((await runCompleted({ ...options, sourceDestination })).status).toBe('refused');
-    expect(preflightRailgunOwnPoiCompleted).not.toHaveBeenCalled();
+    expect(preflightRailgunRetainedPoiCompleted).not.toHaveBeenCalled();
     expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
     expect(startRailgunProcess).not.toHaveBeenCalled();
     expect(withRailgunViewingCredential).not.toHaveBeenCalled();
@@ -1508,7 +1512,7 @@ test('cancelled completed preflight is drained and late fatal diagnostic survive
     settled = true;
     return result;
   });
-  await waitFor(() => preflightRailgunOwnPoiCompleted.mock.calls.length === 1);
+  await waitFor(() => preflightRailgunRetainedPoiCompleted.mock.calls.length === 1);
   mock.caller.abort();
   await Promise.resolve();
   expect(settled).toBe(false);
@@ -1521,7 +1525,7 @@ test('cancelled completed preflight is drained and late fatal diagnostic survive
       })
     ).status
   ).toBe('refused');
-  expect(preflightRailgunOwnPoiCompleted).toHaveBeenCalledTimes(1);
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
   gate.resolve();
   expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
   expect(withRailgunViewingCredential).not.toHaveBeenCalled();
@@ -1570,7 +1574,9 @@ test('completed output reduces preflight budget by elapsed retained-store work',
     (await runCompleted({ ...options, sourceDestination: mock.destination, timeoutMs: 240000 }))
       .status
   ).toBe('matched');
-  expect(preflightRailgunOwnPoiCompleted.mock.calls[0][0].timeoutMs).toBeLessThanOrEqual(230000);
+  expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0].timeoutMs).toBeLessThanOrEqual(
+    230000
+  );
   expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
 });
 
@@ -1604,9 +1610,9 @@ describe('fixed submission output core', () => {
       prepare(unshield);
       expect((await submit()).status).toBe('matched');
       expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
-      expect(preflightRailgunOwnPoiCompleted).not.toHaveBeenCalled();
-      expect(preflightRailgunOwnPoiForSubmission).toHaveBeenCalledTimes(1);
-      const [supplied, privateInput] = preflightRailgunOwnPoiForSubmission.mock.calls[0];
+      expect(preflightRailgunRetainedPoiCompleted).not.toHaveBeenCalled();
+      expect(preflightRailgunRetainedPoiForSubmission).toHaveBeenCalledTimes(1);
+      const [supplied, privateInput] = preflightRailgunRetainedPoiForSubmission.mock.calls[0];
       expect(supplied.sourceDestination).toBe(mock.destination);
       expect(privateInput).toEqual(handoff);
       expect(privateInput).not.toBe(handoff);
@@ -1649,7 +1655,7 @@ describe('fixed submission output core', () => {
       else changed.capture[field] = { changed: true };
       mock.preflight.mockResolvedValue(changed);
       expect((await submit()).status).toBe('refused');
-      expect(preflightRailgunOwnPoiForSubmission).toHaveBeenCalledTimes(1);
+      expect(preflightRailgunRetainedPoiForSubmission).toHaveBeenCalledTimes(1);
       expect(mock.credential).not.toHaveBeenCalled();
       expect(startRailgunProcess).not.toHaveBeenCalled();
     }
@@ -1668,7 +1674,7 @@ describe('fixed submission output core', () => {
     handoff.observation.transaction.hash = prefixed(99);
     gate.resolve();
     expect((await pending).status).toBe('matched');
-    expect(preflightRailgunOwnPoiForSubmission.mock.calls[0][1]).toEqual(baseline);
+    expect(preflightRailgunRetainedPoiForSubmission.mock.calls[0][1]).toEqual(baseline);
   });
   test('late failed preflight drains, retains exclusion and preserves genuine inner outcome after abort', async () => {
     const gate = deferred();
@@ -1710,10 +1716,11 @@ describe('fixed submission output core', () => {
     expect(mock.credential).not.toHaveBeenCalled();
     expect(startRailgunProcess).not.toHaveBeenCalled();
   });
-  test('legacy output ignores an extra positional handoff and retains original preflight', async () => {
+  test('ordinary output ignores an extra positional handoff and uses completed retained preflight', async () => {
     expect((await recoverRailgunPoiOutput(options, handoff)).status).toBe('matched');
-    expect(preflightRailgunOwnPoi).toHaveBeenCalledTimes(1);
-    expect(preflightRailgunOwnPoiForSubmission).not.toHaveBeenCalled();
+    expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(preflightRailgunRetainedPoiForSubmission).not.toHaveBeenCalled();
   });
 });
 
@@ -1777,12 +1784,12 @@ describe('attempted-only retained output recovery', () => {
       expect(Object.isFrozen(result)).toBe(true);
       expect(JSON.stringify(mock.entry)).toBe(entry);
       expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
-      expect(preflightRailgunOwnPoiCompleted).toHaveBeenCalledTimes(1);
-      expect(preflightRailgunOwnPoiCompleted.mock.calls[0][0].sourceDestination).toBe(
+      expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
+      expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0].sourceDestination).toBe(
         mock.destination
       );
       expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
-      expect(preflightRailgunOwnPoiForSubmission).not.toHaveBeenCalled();
+      expect(preflightRailgunRetainedPoiForSubmission).not.toHaveBeenCalled();
       expect(withRailgunViewingCredential).toHaveBeenCalledTimes(Number(!unshield));
       expect(mock.borrowed.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
       expect(mock.copies.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
@@ -2180,3 +2187,359 @@ describe.each(['prepared', 'attempted'])('%s cleanup exception drain', (route) =
     }
   );
 });
+
+// Structural joins only; genuine source authentication and crypto are native qualifications.
+function makeTransactProofFixture(unshield = false) {
+  const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+  const hash = (v) =>
+    require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
+  const evidence = require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
+  const descriptor = {
+    walletId: evidence.capsule.walletId,
+    instanceId: '0zk1' + 'q'.repeat(123),
+    masterPublicKey: h(3).slice(2),
+    spendingPublicKey: [h(4).slice(2), h(5).slice(2)],
+    viewingPublicKey: h(6).slice(2),
+    accountIndex: 0,
+  };
+  const creator = {
+    type: 'Transact',
+    tree: evidence.capsule.selection.tree,
+    position: evidence.capsule.selection.position,
+    hash: evidence.capsule.noteHash,
+    ciphertext: {
+      ciphertext: [h(7), h(8), h(9), h(10)],
+      blindedSenderViewingKey: h(11),
+      blindedReceiverViewingKey: h(12),
+      annotationData: '0x',
+      memo: '0x',
+    },
+  };
+  const state = { count: 2, root: h(15).slice(2), transcript: h(16).slice(2), breaks: [] };
+  const witnessFor = (row, index) => ({
+    row: JSON.parse(JSON.stringify(row)),
+    leaf: h(17 + index).slice(2),
+    railgunTxid: h(19 + index).slice(2),
+    rowSha256: hash(row),
+    index,
+    elements: Array(16).fill(h(0).slice(2)),
+    root: state.root,
+    checkpointIndex: 1,
+    transcript: state.transcript,
+    continuity: require('./railgun-txid-omissions').classifyRailgunTxidContinuity(1, []),
+    globalTxidCompleteness: false,
+  });
+  const blockNumber = evidence.row.blockNumber - 1;
+  const creatorRow = {
+    version: 'V2',
+    graphID: h(blockNumber) + h(2).slice(2) + h(0).slice(2),
+    commitments: [creator.hash],
+    nullifiers: [h(700)],
+    boundParamsHash: h(701),
+    blockNumber,
+    txid: h(706).slice(2),
+    timestamp: blockNumber,
+    utxoTreeIn: creator.tree,
+    utxoTreeOut: creator.tree,
+    utxoBatchStartPositionOut: creator.position,
+    verificationHash: evidence.row.verificationHash,
+  };
+  const note = {
+    type: 'Transact',
+    tree: creator.tree,
+    position: creator.position,
+    hash: creator.hash,
+    txid: h(706),
+    blockNumber,
+  };
+  const input = {
+    archive: '/engine.asar',
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    descriptor,
+    preparation: { creator, ownEvidence: evidence, state, witness: witnessFor(evidence.row, 1) },
+    listProofs: [
+      {
+        leaf: h(21).slice(2),
+        root: h(22).slice(2),
+        indices: h(0).slice(2),
+        elements: Array(16).fill(h(0).slice(2)),
+      },
+    ],
+  };
+  const selectorInput =
+    require('./railgun-poi-transact-selector-data').prepareRailgunPoiTransactSelectorInput({
+      archive: input.archive,
+      descriptor,
+      capsule: evidence.capsule,
+      creator,
+    });
+  return {
+    input,
+    selector: {
+      blindedCommitment: h(21),
+      bindingDigest: selectorInput.bindingDigest,
+      inputSha256: hash(selectorInput),
+    },
+    creatorProvenance: {
+      note,
+      noteWitness: {
+        note,
+        outputIndex: 0,
+        witness: witnessFor(creatorRow, 0),
+        ownershipVerified: false,
+        eventCoverageVerified: false,
+        rootAccepted: false,
+        spendingEnabled: false,
+      },
+      verification: {
+        utilityExitObserved: true,
+        pathVerified: true,
+        suppliedCreatorEventsMatched: true,
+        coverage: { matchedRows: 1, knownOmissions: 0 },
+      },
+    },
+  };
+}
+function configureTransactOutput(unshield = false) {
+  configure(unshield);
+  const fixture = makeTransactProofFixture(unshield);
+  fixture.input.preparation.state.count = 5;
+  for (const witness of [
+    fixture.input.preparation.witness,
+    fixture.creatorProvenance.noteWitness.witness,
+  ]) {
+    witness.checkpointIndex = 4;
+    witness.continuity = classifyRailgunTxidContinuity(4, []);
+  }
+  mock.fresh.creatorClassification.type = 'Transact';
+  mock.fresh.poiPreparation = fixture.input.preparation;
+  mock.fresh.witness = normalizeRailgunTxidWitness(
+    fixture.input.preparation.witness,
+    fixture.input.preparation.state
+  );
+  mock.fresh.txidPolicy = 'fixture-txid-policy';
+  const origin = {
+    blockNumber: 12,
+    blockHash: prefixed(123),
+    transactionHash: prefixed(124),
+    logIndex: 0,
+  };
+  mock.fresh.observations.source = { checkpointHash: hex(125), creator: { origin } };
+  mock.fresh.creatorProvenance = {
+    ...fixture.creatorProvenance,
+    publicIdentity: copy(mock.publicIdentity),
+    txidPolicy: mock.fresh.txidPolicy,
+    checkpointHash: hex(125),
+    origin: copy(origin),
+  };
+  if (unshield)
+    changePayload((payload) => {
+      payload.railgunTxidIfHasUnshield = '0x' + fixture.input.preparation.witness.railgunTxid;
+    });
+}
+test.each([false, true])(
+  'retained source-selected Transact output %s keeps saved bytes and releases only the needed viewing credential',
+  async (unshield) => {
+    configureTransactOutput(unshield);
+    const before = JSON.stringify(mock.entry);
+    expect(await run()).toMatchObject({
+      status: 'matched',
+      viewingKeyReleases: Number(!unshield),
+      viewingUtilityExitObserved: !unshield,
+    });
+    expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
+    expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0].sourceDestination).toBe(
+      mock.destination
+    );
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(preflightRailgunRetainedPoiForSubmission).not.toHaveBeenCalled();
+    expect(mock.credential).toHaveBeenCalledTimes(Number(!unshield));
+    expect(JSON.stringify(mock.entry)).toBe(before);
+  }
+);
+test.each([
+  'type',
+  'creator-type',
+  'note-type',
+  'note-tree',
+  'note-position',
+  'note-hash',
+  'identity',
+  'policy',
+  'checkpoint',
+  'origin',
+  'state-root',
+  'state-count',
+  'note-path',
+  'note-row',
+  'output-index',
+  'not-before-own',
+  'verification-exit',
+  'verification-path',
+  'verification-events',
+  'coverage-count',
+  'coverage-omissions',
+  'capsule',
+])(
+  'Transact retained %s mismatch refuses before recovery, viewing key or utility',
+  async (fault) => {
+    configureTransactOutput();
+    const fresh = mock.fresh,
+      provenance = fresh.creatorProvenance;
+    if (fault === 'type') fresh.creatorClassification.type = 'Shield';
+    if (fault === 'creator-type') fresh.poiPreparation.creator.type = 'Shield';
+    if (fault.startsWith('note-') && ['type', 'tree', 'position', 'hash'].includes(fault.slice(5)))
+      provenance.note[fault.slice(5)] = 'changed';
+    if (fault === 'identity') provenance.publicIdentity = {};
+    if (fault === 'policy') provenance.txidPolicy = 'other';
+    if (fault === 'checkpoint') provenance.checkpointHash = hex(777);
+    if (fault === 'origin') provenance.origin.logIndex++;
+    if (fault === 'state-root') provenance.noteWitness.witness.root = hex(777);
+    if (fault === 'state-count') provenance.noteWitness.witness.checkpointIndex--;
+    if (fault === 'note-path') provenance.noteWitness.witness.elements.pop();
+    if (fault === 'note-row') provenance.noteWitness.witness.row.commitments[0] = prefixed(777);
+    if (fault === 'output-index') provenance.noteWitness.outputIndex = 1;
+    if (fault === 'not-before-own') provenance.noteWitness.witness.index = fresh.witness.index;
+    if (fault === 'verification-exit') provenance.verification.utilityExitObserved = false;
+    if (fault === 'verification-path') provenance.verification.pathVerified = false;
+    if (fault === 'verification-events')
+      provenance.verification.suppliedCreatorEventsMatched = false;
+    if (fault === 'coverage-count') provenance.verification.coverage.matchedRows = 2;
+    if (fault === 'coverage-omissions') provenance.verification.coverage.knownOmissions = 1;
+    if (fault === 'capsule') fresh.poiPreparation.ownEvidence.capsule.noteHash = prefixed(777);
+    const before = JSON.stringify(mock.entry);
+    expect(await run()).toMatchObject({ status: 'refused', stage: 'binding' });
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(JSON.stringify(mock.entry)).toBe(before);
+  }
+);
+test('ordinary source refusal survives cancellation and never falls back to legacy recovery', async () => {
+  const sourceOutcome = Object.freeze({ fatal: false, reason: 'pending', rpcFailure: null });
+  mock.preflight.mockImplementationOnce(async () => {
+    mock.caller.abort();
+    return { status: 'refused', stage: 'source:pending', sourceOutcome };
+  });
+  expect(await run()).toMatchObject({
+    status: 'refused',
+    stage: 'preflight:source:pending',
+    sourceOutcome,
+  });
+  expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
+  expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+  expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  expect(mock.credential).not.toHaveBeenCalled();
+});
+test.each(['preflight', 'recovery'])(
+  'ordinary pinned destination replacement at %s refuses without reselection',
+  async (point) => {
+    if (point === 'preflight')
+      mock.preflight.mockImplementationOnce(async () => {
+        mock.destination = Object.freeze({});
+        return copy(mock.fresh);
+      });
+    else
+      mock.recoveryStart.mockImplementationOnce(async () => {
+        mock.destination = Object.freeze({});
+      });
+    expect((await run()).status).toBe('refused');
+    expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(mock.credential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+  }
+);
+
+test.each([
+  ['completed', false],
+  ['completed', true],
+  ['attempted', false],
+  ['attempted', true],
+  ['submission', false],
+  ['submission', true],
+])(
+  'Transact %s output kind %s preserves its fixed route and exact stored state',
+  async (route, unshield) => {
+    configureTransactOutput(unshield);
+    if (route === 'attempted') attemptRecord();
+    const before = JSON.stringify(mock.entry);
+    let result;
+    if (route === 'submission') {
+      const evidence = mock.fresh.poiPreparation.ownEvidence;
+      const handoff = {
+        entry: copy(mock.entry),
+        capture: copy(mock.capture),
+        observation: {
+          transaction: copy(evidence.transaction),
+          receipt: copy(evidence.receipt),
+          captureBindingDigest: mock.capture.bindingDigest,
+        },
+      };
+      const work = recoverRailgunPoiOutputForSubmission(
+        { ...options, sourceDestination: mock.destination },
+        handoff
+      );
+      operations.push(work);
+      result = await work;
+      expect(preflightRailgunRetainedPoiForSubmission).toHaveBeenCalledTimes(1);
+      const [supplied, received] = preflightRailgunRetainedPoiForSubmission.mock.calls[0];
+      expect(supplied.sourceDestination).toBe(mock.destination);
+      expect(received).toEqual(handoff);
+      expect(received).not.toBe(handoff);
+      expect(preflightRailgunRetainedPoiCompleted).not.toHaveBeenCalled();
+    } else {
+      result = await (route === 'attempted' ? runAttempted() : runCompleted());
+      expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(1);
+      expect(preflightRailgunRetainedPoiCompleted.mock.calls[0][0].sourceDestination).toBe(
+        mock.destination
+      );
+      expect(preflightRailgunRetainedPoiForSubmission).not.toHaveBeenCalled();
+    }
+    expect(result).toMatchObject({
+      status: 'matched',
+      viewingKeyReleases: Number(!unshield),
+      outputMatched: true,
+    });
+    if (route === 'attempted')
+      expect(result).toMatchObject({
+        recordState: 'attempted',
+        eligibilityEstablished: false,
+        attemptOutcomeKnown: false,
+        submissionAccepted: false,
+        retryEnabled: false,
+      });
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(mock.credential).toHaveBeenCalledTimes(Number(!unshield));
+    expect(JSON.stringify(mock.entry)).toBe(before);
+  }
+);
+
+test.each(['missing', 'pending'])(
+  'ordinary retained output refuses %s completed source until independent maintenance makes it ready',
+  async (reason) => {
+    const sourceOutcome = Object.freeze({ fatal: false, reason, rpcFailure: null });
+    mock.preflight.mockResolvedValueOnce({
+      status: 'refused',
+      stage: 'source:' + reason,
+      sourceOutcome,
+    });
+    const before = JSON.stringify(mock.entry);
+    expect(await run()).toMatchObject({
+      status: 'refused',
+      stage: 'preflight:source:' + reason,
+      sourceOutcome,
+    });
+    expect(mock.credential).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(JSON.stringify(mock.entry)).toBe(before);
+    // The fixture's next completed-source response models separate maintenance;
+    // the refused output invocation has no repair/replay call of its own.
+    expect((await run()).status).toBe('matched');
+    expect(preflightRailgunRetainedPoiCompleted).toHaveBeenCalledTimes(2);
+    expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+    expect(JSON.stringify(mock.entry)).toBe(before);
+  }
+);

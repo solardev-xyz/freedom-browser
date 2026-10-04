@@ -15,17 +15,20 @@ const {
 } = require('./railgun-account-public');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const {
-  preflightRailgunOwnPoi,
-  preflightRailgunOwnPoiCompleted,
-  preflightRailgunOwnPoiForSubmission,
+  preflightRailgunRetainedPoiCompleted,
+  preflightRailgunRetainedPoiForSubmission,
 } = require('./railgun-own-witness');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { normalizeRailgunPoiSubmission } = require('./railgun-poi-submit-data');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
+const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
 const { matchRailgunOwnTxid } = require('./railgun-own-txid');
-const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
+const {
+  normalizeRailgunTxidWitness,
+  normalizeRailgunNoteTxidWitness,
+} = require('./railgun-txid-note-witness');
 const {
   normalizeRailgunPoiOutputRecoveryInput,
   normalizeRailgunRecoveredPoiOutput,
@@ -135,9 +138,12 @@ async function recover(options = {}, completed = false, submission, attempted = 
     }
     assert.ok(!owners.has(directory));
     owners.set(directory, owner);
-    const sourceDestination = attempted
-      ? getRailgunAccountPublicDestination(coordinator, enrollment, policy)
-      : suppliedDestination;
+    // Ordinary/attempted callers have no destination option; pin once here.
+    // Completed/submission callers retain their exact reviewed observation.
+    const sourceDestination =
+      attempted || !completed
+        ? getRailgunAccountPublicDestination(coordinator, enrollment, policy)
+        : suppliedDestination;
     const current = (margin = 0) => {
       assert.ok(Number.isSafeInteger(margin) && margin >= 0 && margin < POST_MS);
       const now = performance.now();
@@ -154,8 +160,7 @@ async function recover(options = {}, completed = false, submission, attempted = 
         getRailgunAccountPublicIdentity(coordinator, enrollment, policy),
         publicIdentity
       );
-      if (completed)
-        assertRailgunAccountPublicDestination(coordinator, enrollment, sourceDestination, policy);
+      assertRailgunAccountPublicDestination(coordinator, enrollment, sourceDestination, policy);
     };
     const remaining = (max) => {
       current();
@@ -165,7 +170,7 @@ async function recover(options = {}, completed = false, submission, attempted = 
     };
     timer = setTimeout(stop, timeoutMs);
     timer.unref?.();
-    if (completed) current();
+    current();
     stage = 'stored';
     store = await enrollment.openPoiIntents({ existingOnly: true });
     current();
@@ -200,10 +205,8 @@ async function recover(options = {}, completed = false, submission, attempted = 
     };
     stage = 'preflight';
     const preflight = submission
-      ? preflightRailgunOwnPoiForSubmission
-      : completed
-        ? preflightRailgunOwnPoiCompleted
-        : preflightRailgunOwnPoi;
+      ? preflightRailgunRetainedPoiForSubmission
+      : preflightRailgunRetainedPoiCompleted;
     const fresh = await preflight(
       {
         enrollment,
@@ -212,20 +215,16 @@ async function recover(options = {}, completed = false, submission, attempted = 
         selector: entry.selector,
         signal: lifetime,
         timeoutMs: remaining(PREFLIGHT_MS),
-        ...(completed ? { sourceDestination } : {}),
+        sourceDestination,
       },
       ...(submission ? [submission] : [])
     );
-    if (completed && fresh.status !== 'captured') {
+    if (fresh.status !== 'captured') {
       stage = 'preflight:' + fresh.stage;
       sourceOutcome = fresh.sourceOutcome;
       throw fail();
     }
     current(MIN_JOB_MS);
-    if (fresh.status !== 'captured') {
-      stage = 'preflight:' + fresh.stage;
-      throw fail();
-    }
     const preflightDurationMs = Math.ceil(performance.now() - started);
     activeDeadline = Math.min(deadline, performance.now() + POST_MS);
     clearTimeout(timer);
@@ -234,7 +233,7 @@ async function recover(options = {}, completed = false, submission, attempted = 
     stage = 'binding';
     assert.deepEqual(fresh.publicIdentity, publicIdentity);
     assert.equal(fresh.observations.archiveAnchorChecked, true);
-    assert.equal(fresh.creatorClassification.type, 'Shield');
+    assert.ok(['Shield', 'Transact'].includes(fresh.creatorClassification.type));
     assert.equal(fresh.creatorClassification.legacy, false);
     assert.equal(fresh.capture.capsuleDigest, capsuleDigest);
     assert.equal(fresh.capture.bindingDigest, entry.bindingDigest);
@@ -242,7 +241,42 @@ async function recover(options = {}, completed = false, submission, attempted = 
     assert.deepEqual(fresh.capture.selector, entry.selector);
     const { creator, ownEvidence, state, witness } = fresh.poiPreparation;
     assert.deepEqual(ownEvidence.capsule, fresh.capture.capsule);
-    normalizeRailgunPoiShieldInput(ownEvidence.capsule, creator);
+    assert.equal(creator.type, fresh.creatorClassification.type);
+    if (creator.type === 'Transact') {
+      prepareRailgunPoiTransactSelectorInput({
+        archive,
+        descriptor,
+        capsule: ownEvidence.capsule,
+        creator,
+      });
+      // Rebind only this invocation's genuine completed preflight. No saved
+      // provenance or caller diagnostic substitutes for creating-TXID checks.
+      const provenance = fresh.creatorProvenance;
+      for (const key of ['type', 'tree', 'position', 'hash'])
+        assert.equal(provenance.note[key], creator[key]);
+      assert.deepEqual(provenance.publicIdentity, publicIdentity);
+      assert.equal(provenance.txidPolicy, fresh.txidPolicy);
+      assert.equal(provenance.checkpointHash, fresh.observations.source.checkpointHash);
+      assert.deepEqual(provenance.origin, fresh.observations.source.creator.origin);
+      const creating = normalizeRailgunNoteTxidWitness(
+        provenance.noteWitness,
+        state,
+        provenance.note
+      );
+      assert.equal(creating.outputIndex, 0);
+      assert.equal(creating.witness.row.unshield, undefined);
+      assert.equal(creating.witness.row.nullifiers.length, 1);
+      assert.equal(creating.witness.row.commitments.length, 1);
+      assert.ok(creating.witness.index < witness.index);
+      assert.equal(provenance.verification.utilityExitObserved, true);
+      assert.equal(provenance.verification.pathVerified, true);
+      assert.equal(provenance.verification.suppliedCreatorEventsMatched, true);
+      assert.equal(provenance.verification.coverage.matchedRows, 1);
+      assert.equal(provenance.verification.coverage.knownOmissions, 0);
+    } else {
+      assert.equal(fresh.creatorProvenance, undefined);
+      normalizeRailgunPoiShieldInput(ownEvidence.capsule, creator);
+    }
     const matched = matchRailgunOwnTxid(ownEvidence);
     const normalizedWitness = normalizeRailgunTxidWitness(witness, state);
     assert.deepEqual(normalizedWitness, fresh.witness);

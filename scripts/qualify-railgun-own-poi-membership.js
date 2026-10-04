@@ -419,6 +419,44 @@ async function main() {
     ].map((method) => [method, 0])
   );
   const publicMethods = { latest: 0, validate: 0, page: 0 };
+  const pendingCheckpointRuns = [];
+  let pendingCheckpointActivity;
+  const pendingUtilityNames = [
+    'ownSelector',
+    'ownTxid',
+    'mirrorInspect',
+    'mirrorWitness',
+    'mirrorHistorical',
+    'publicPlan',
+    'publicApply',
+    'unexpected',
+  ];
+  const pendingRpcNames = [
+    'eth_chainId',
+    'eth_getLogs',
+    'eth_getTransactionReceipt',
+    'eth_getTransactionByHash',
+    'eth_getBlockByNumber',
+    'eth_blockNumber',
+  ];
+  const pendingUtilityName = (options) => {
+    const file = path.basename(options.filename ?? '');
+    if (file === 'railgun-own-selector-job.js') return 'ownSelector';
+    if (file === 'railgun-own-txid-job.js') return 'ownTxid';
+    if (file === 'railgun-txid-job.js' || file === 'railgun-public-job.js') {
+      const mode = JSON.parse(options.input).mode;
+      if (file === 'railgun-txid-job.js')
+        return (
+          {
+            inspect: 'mirrorInspect',
+            witness: 'mirrorWitness',
+            'historical-root': 'mirrorHistorical',
+          }[mode] || 'unexpected'
+        );
+      return { plan: 'publicPlan', apply: 'publicApply' }[mode] || 'unexpected';
+    }
+    return 'unexpected';
+  };
   const rpcMethods = {},
     jobs = { membership: 0, membershipExit: 0, selector: 0, selectorExit: 0 };
   let unexpectedTransport = 0,
@@ -499,6 +537,7 @@ async function main() {
     '../src/main/wallet/railgun-own-poi-checks',
     '../src/main/wallet/railgun-scan-source',
     '../src/main/wallet/railgun-scan-coordinator',
+    '../src/main/wallet/railgun-scan-journal',
     '../src/main/wallet/railgun-source-ledger',
     '../src/main/wallet/railgun-txid-root',
     '../src/main/wallet/private-transaction-network',
@@ -987,6 +1026,14 @@ async function main() {
   let rpcClientCreates = 0;
   originals.services = serviceModule.createRailgunPublicServices;
   processModule.startRailgunProcess = (options) => {
+    const pendingActivity = pendingCheckpointActivity;
+    const pendingName = pendingActivity ? pendingUtilityName(options) : undefined;
+    if (pendingActivity) {
+      pendingActivity.utilityStarts[pendingName]++;
+      if (options.binaryKey) pendingActivity.binaryJobs++;
+      assert.notEqual(pendingName, 'unexpected');
+      assert.ok(!options.binaryKey);
+    }
     if (planActive) {
       planWork.utilities++;
       if (options.binaryKey) planWork.utilityKeyHandoffs++;
@@ -1091,12 +1138,7 @@ async function main() {
       }
       if (outputPublicPlan) {
         const input = JSON.parse(options.input);
-        if (
-          input.mode !== 'plan' ||
-          outputPublicPlanAdmitted ||
-          (!retainedHistoryMode && outputRecoveryRuns.length + coldValidationRuns.length !== 0)
-        )
-          refuseOutputUtility();
+        if (input.mode !== 'plan' || outputPublicPlanAdmitted) refuseOutputUtility();
         outputPublicPlanAdmitted = true;
         outputRecoveryJobs.publicPlan++;
         const {
@@ -1643,9 +1685,25 @@ async function main() {
         },
       };
     }
+    if (pendingActivity && patched.broker) {
+      const broker = patched.broker;
+      patched = {
+        ...patched,
+        broker: {
+          ...broker,
+          dispatch(wire) {
+            const message = JSON.parse(wire);
+            if (message.method === 'key') pendingActivity.keyRequests++;
+            assert.notEqual(message.method, 'key');
+            return broker.dispatch(wire);
+          },
+        },
+      };
+    }
     const jobStarted = performance.now();
     real = originals.start(patched);
     real.closed.then((exit) => {
+      if (pendingActivity) pendingActivity.utilityExits[pendingName]++;
       if (coldVerifying) {
         coldValidationVerifierJobs.exited++;
         coldValidationVerifierTimings.push({
@@ -1737,6 +1795,10 @@ async function main() {
     assert.ok(['transaction-rpc', 'protocol-rpc'].includes(role));
     if (role === 'transaction-rpc')
       assert.equal(context.subject.principal, fixture.transaction.from);
+    if (pendingCheckpointActivity) {
+      if (pendingRpcNames.includes(method)) pendingCheckpointActivity.rpcByRole[role][method]++;
+      else pendingCheckpointActivity.unexpectedRpc++;
+    }
     rpcMethods[method] = (rpcMethods[method] ?? 0) + 1;
     if (
       ![
@@ -1826,6 +1888,20 @@ async function main() {
     };
   };
   const sourceMaintenance = { stages: 0, retains: 0, beforeAcquire: 0, applies: 0 };
+  let currentScanJournal,
+    interruptAfterPrepare = false,
+    preparedInterruption;
+  let preparedInterruptionFires = 0,
+    delegatedApplies = 0;
+  // Capture the genuine journal without replacing any method, return value,
+  // storage, or outcome. Install before the coordinator captures its factory.
+  const scanJournalModule = require('../src/main/wallet/railgun-scan-journal');
+  originals.scanJournal = scanJournalModule.createRailgunScanJournal;
+  scanJournalModule.createRailgunScanJournal = async (options) => {
+    const journal = await originals.scanJournal(options);
+    currentScanJournal = journal;
+    return journal;
+  };
   for (const file of ['./railgun-account-store', './railgun-account-public'])
     assert.equal(require.cache[require.resolve('../src/main/wallet/' + file.slice(2))], undefined);
   const ledgerModule = require('../src/main/wallet/railgun-source-ledger'),
@@ -1859,11 +1935,80 @@ async function main() {
   coordinatorModule.createRailgunScanCoordinator = (options) =>
     originals.coordinator({
       ...options,
-      applyRange: (...args) => {
+      applyRange: async (...args) => {
         sourceMaintenance.applies++;
+        if (interruptAfterPrepare) {
+          interruptAfterPrepare = false;
+          preparedInterruptionFires++;
+          preparedInterruption = await currentScanJournal.readState();
+          assert.ok(preparedInterruption.pending && preparedInterruption.checkpoint);
+          throw Error('Fixture interrupted after real scan preparation');
+        }
+        delegatedApplies++;
         return options.applyRange(...args);
       },
     });
+  // Observe real retained preflight/source durations without replacing source
+  // observations or clock authority. The canonical timestamp stays internal.
+  const retainedPreflightTimings = [],
+    retainedRestorations = [];
+  let activeRetainedTiming;
+  const retainedCapture = require('../src/main/wallet/railgun-poi-source-capture');
+  const originalRetainedCapture = retainedCapture.captureRailgunPoiSourceForRetainedInput;
+  retainedCapture.captureRailgunPoiSourceForRetainedInput = async (options) => {
+    const entry = activeRetainedTiming;
+    assert.ok(entry);
+    assert.equal(entry.sourceCalls++, 0);
+    const started = performance.now();
+    entry.sourceStartMs = Math.round(started - entry.started);
+    entry.sourceScopeBudgetMs = options.timeoutMs;
+    entry.sourceSnapshotBudgetMs = Math.min(180000, options.timeoutMs - 55000);
+    assert.ok(entry.sourceSnapshotBudgetMs > 0 && options.timeoutMs <= 180000);
+    try {
+      return await originalRetainedCapture(options);
+    } finally {
+      entry.sourceReturned = performance.now();
+      entry.sourceElapsedMs = Math.round(entry.sourceReturned - started);
+    }
+  };
+  retainedRestorations.push(() => {
+    retainedCapture.captureRailgunPoiSourceForRetainedInput = originalRetainedCapture;
+  });
+  const retainedWitness = require('../src/main/wallet/railgun-own-witness');
+  for (const name of [
+    'preflightRailgunRetainedPoiCompleted',
+    'preflightRailgunRetainedPoiForSubmission',
+  ]) {
+    const original = retainedWitness[name];
+    retainedWitness[name] = async (...args) => {
+      assert.equal(activeRetainedTiming, undefined);
+      const entry = { started: performance.now(), sourceCalls: 0 };
+      activeRetainedTiming = entry;
+      try {
+        return await original(...args);
+      } finally {
+        const finished = performance.now();
+        retainedPreflightTimings.push({
+          mode: name === 'preflightRailgunRetainedPoiForSubmission' ? 'submission' : 'completed',
+          sourceCalls: entry.sourceCalls,
+          ...(entry.sourceReturned === undefined
+            ? {}
+            : {
+                sourceStartMs: entry.sourceStartMs,
+                sourceScopeBudgetMs: entry.sourceScopeBudgetMs,
+                sourceSnapshotBudgetMs: entry.sourceSnapshotBudgetMs,
+                sourceElapsedMs: entry.sourceElapsedMs,
+                sourceReturnToCompletionMs: Math.round(finished - entry.sourceReturned),
+              }),
+          elapsedMs: Math.round(finished - entry.started),
+        });
+        activeRetainedTiming = undefined;
+      }
+    };
+    retainedRestorations.push(() => {
+      retainedWitness[name] = original;
+    });
+  }
   const vault = require('../src/main/identity/vault');
   const { openRailgunIdentity } = require('../src/main/wallet/railgun-identity');
   const { openRailgunAccountEnrollment } = require('../src/main/wallet/railgun-account-enrollment');
@@ -2866,11 +3011,12 @@ async function main() {
         const caller = new AbortController(),
           before = snapshots(),
           beforeJournal = await journal.readSnapshot(),
+          beforeTimings = retainedPreflightTimings.length,
           started = performance.now();
         let value,
           diagnostics = {};
         try {
-          const held = ['cancel-drain', 'timeout-drain'].includes(fault);
+          const held = fault === 'cancel-drain';
           if (held) {
             checksHold = {
               entered: deferred(),
@@ -2887,7 +3033,7 @@ async function main() {
           const pending = invokeChecks({
             signal: AbortSignal.any([caller.signal, operationsController.signal]),
             ...(fault === 'forged-proof' ? { proof: { ...savedProof } } : {}),
-            ...(fault === 'timeout-drain' ? { timeoutMs: 8000 } : {}),
+            ...(fault === 'short-source-budget' ? { timeoutMs: 8000 } : {}),
           }).then((result) => {
             settled = true;
             return result;
@@ -2907,18 +3053,13 @@ async function main() {
             assert.notEqual(checksHold.requests.list.isolation, checksHold.requests.txid.isolation);
             for (const request of Object.values(checksHold.requests))
               assert.equal(request.signal.aborted, false);
-            if (fault === 'cancel-drain') caller.abort();
+            caller.abort();
             await Promise.race([checksHold.revoked.promise, premature, transportFailed]);
             for (const request of Object.values(checksHold.requests))
               assert.equal(request.signal.aborted, true);
             assert.equal(settled, false);
             assert.equal(checksRoots.pending - before.checksRoots.pending, 2);
             await refuseCompetingOwner();
-            if (fault === 'timeout-drain') {
-              const elapsed = Math.min(...Object.values(checksHold.aborted)) - started;
-              assert.ok(elapsed >= 7950 && elapsed < 13000);
-              diagnostics = { timeoutMs: 8000, revokedAfterMs: Math.round(elapsed) };
-            }
             checksHold.release.list.resolve();
             await checksHold.finished.list.promise;
             await new Promise((resolve) => setImmediate(resolve));
@@ -3007,18 +3148,37 @@ async function main() {
             } else {
               const expectedStage = {
                 'forged-proof': 'proof-history',
+                'short-source-budget': 'preflight:source',
                 'list-reject': 'list-root-rejected',
                 'txid-reject': 'txid-root-rejected',
                 'malformed-list': 'list-root-unavailable',
               }[fault];
               assert.ok(expectedStage);
               assert.deepEqual(value, { status: 'refused', stage: expectedStage });
+              if (fault === 'short-source-budget') {
+                // The own selector and archived receipt complete before the
+                // source-first route refuses its mandatory 55-second tail.
+                // This is admission refusal, not a held-root deadline test.
+                assert.equal(retainedPreflightTimings.length, beforeTimings + 1);
+                const timing = retainedPreflightTimings.at(-1);
+                assert.equal(timing.mode, 'completed');
+                assert.equal(timing.sourceCalls, 0);
+                diagnostics = {
+                  timeoutMs: 8000,
+                  elapsedMs: Math.round(performance.now() - started),
+                  sourceTailReserveMs: 55000,
+                  sourceSnapshotAdmitted: false,
+                  deadlineExpiryQualified: false,
+                  originalRootDeadlineDrainQualified: false,
+                };
+              }
             }
           }
           assert.deepEqual(await journal.readSnapshot(), beforeJournal);
           assert.equal((await capture()).status, 'captured');
           const after = snapshots(),
-            queried = fault !== 'forged-proof' ? 1 : 0;
+            queried = fault !== 'forged-proof' ? 1 : 0,
+            completedPreflight = queried && fault !== 'short-source-budget' ? 1 : 0;
           for (const key of [
             'proofJobs',
             'checksForbiddenJobs',
@@ -3038,36 +3198,41 @@ async function main() {
           const rootDelta = delta(after.checksRoots, before.checksRoots),
             jobDelta = delta(after.checksJobs, before.checksJobs);
           assert.deepEqual(rootDelta, {
-            creates: 2 * queried,
-            closes: 2 * queried,
-            attempted: 2 * queried,
-            validated: 2 * queried,
-            list: queried,
-            txid: queried,
+            creates: 2 * completedPreflight,
+            closes: 2 * completedPreflight,
+            attempted: 2 * completedPreflight,
+            validated: 2 * completedPreflight,
+            list: completedPreflight,
+            txid: completedPreflight,
             pending: 0,
           });
           assert.deepEqual(jobDelta, {
             ownSelector: queried,
             ownSelectorExit: queried,
-            ownTxid: queried,
-            ownTxidExit: queried,
+            ownTxid: completedPreflight,
+            ownTxidExit: completedPreflight,
           });
           const guardReports = after.checksGuards.reports - before.checksGuards.reports;
           const canaryChecks = after.checksGuards.canaryChecks - before.checksGuards.canaryChecks;
-          assert.equal(guardReports, 2 * queried);
+          assert.equal(guardReports, queried + completedPreflight);
           assert.equal(after.checksGuards.attempts, 0);
-          if (queried) assert.ok(canaryChecks >= 2 && canaryChecks <= 512);
+          if (queried)
+            assert.ok(canaryChecks >= guardReports && canaryChecks <= 256 * guardReports);
           else assert.deepEqual(after.checksGuards, before.checksGuards);
           const publicDelta = delta(after.publicMethods, before.publicMethods);
-          assert.deepEqual(publicDelta, { latest: 3 * queried, validate: 3 * queried, page: 0 });
+          assert.deepEqual(publicDelta, {
+            latest: 3 * completedPreflight,
+            validate: 3 * completedPreflight,
+            page: 0,
+          });
           const rpcDelta = delta(after.rpcMethods, before.rpcMethods);
           assert.deepEqual(rpcDelta, {
             eth_chainId: queried,
             eth_getTransactionReceipt: queried,
-            eth_getBlockByNumber: 22 * queried,
+            eth_getBlockByNumber: 12 * queried + 22 * completedPreflight,
             eth_blockNumber: 2 * queried,
             eth_getTransactionByHash: queried,
-            eth_getLogs: 0,
+            eth_getLogs: completedPreflight,
           });
           checksRuns.push({
             mode: fault,
@@ -3106,28 +3271,28 @@ async function main() {
         'txid-reject',
         'malformed-list',
         'cancel-drain',
-        'timeout-drain',
+        'short-source-budget',
         'healthy-after-refusals',
       ])
         await exercise(fault);
       assert.equal(checksRuns.length, 8);
       assert.deepEqual(checksRoots, {
-        creates: 14,
-        closes: 14,
-        attempted: 14,
-        validated: 14,
-        list: 7,
-        txid: 7,
+        creates: 12,
+        closes: 12,
+        attempted: 12,
+        validated: 12,
+        list: 6,
+        txid: 6,
         pending: 0,
       });
       assert.deepEqual(checksJobs, {
         ownSelector: 7,
         ownSelectorExit: 7,
-        ownTxid: 7,
-        ownTxidExit: 7,
+        ownTxid: 6,
+        ownTxidExit: 6,
       });
       assert.deepEqual(checksForbiddenJobs, { binaryKey: 0, poiProver: 0, poiVerifier: 0 });
-      assert.equal(checksGuards.reports, 14);
+      assert.equal(checksGuards.reports, 13);
       assert.equal(checksGuards.attempts, 0);
     }
     let retainedIntent;
@@ -3819,7 +3984,7 @@ async function main() {
         const coldPublicRestore = Number(
             outputRecoveryRuns.length + coldValidationRuns.length === 0
           ),
-          sourcePlanning = Number(retainedHistoryMode || coldPublicRestore),
+          sourcePlanning = 1,
           invalidSnark = coldValidationMode && fault === 'invalid-snark',
           historyFault = fault === 'substituted-history-root',
           historyReached = retainedHistoryMode && !invalidSnark,
@@ -3865,13 +4030,12 @@ async function main() {
         }
         const viewing = Number(kind === 'transfer');
         const maintenanceDelta = delta(sourceMaintenance, beforeSourceMaintenance);
-        if (retainedHistoryMode)
-          assert.deepEqual(maintenanceDelta, {
-            stages: 0,
-            retains: 0,
-            beforeAcquire: 0,
-            applies: 0,
-          });
+        assert.deepEqual(maintenanceDelta, {
+          stages: 0,
+          retains: 0,
+          beforeAcquire: 0,
+          applies: 0,
+        });
         if (
           (substituted &&
             (recovered.status !== 'refused' || recovered.stage !== 'recovery:callback')) ||
@@ -4235,8 +4399,8 @@ async function main() {
                     { method: 'eth_getBlockByNumber', maxRequests: 544 },
                     { method: 'eth_getLogs', maxRequests: 1 },
                     { method: 'eth_chainId', maxRequests: 2 },
-                    { method: 'ppoi_validated_txid', maxRequests: 6 },
-                    { method: 'ppoi_validate_txid_merkleroot', maxRequests: 6 },
+                    { method: 'ppoi_validated_txid', maxRequests: 7 },
+                    { method: 'ppoi_validate_txid_merkleroot', maxRequests: 7 },
                   ]
             );
             // A review must never hold the account recovery/TXID phase.
@@ -4511,6 +4675,232 @@ async function main() {
       retainedIntent = attempted;
       await exerciseAttemptedOutput();
     }
+    if (outputRecoveryMode || coldValidationMode) {
+      const {
+        getRailgunAccountPublicDestination,
+      } = require('../src/main/wallet/railgun-account-public');
+      const generation = publicAccount.generationId;
+      const privateBaseline = await journal.readSnapshot();
+      const intentBaseline = await intentStore.inspect();
+      const retainedBaseline = await intentStore.get(retainedIntent.capsuleDigest);
+      const delta = (after, before) =>
+        Object.fromEntries(Object.keys(after).map((key) => [key, after[key] - before[key]]));
+      const zeroMaintenance = { stages: 0, retains: 0, beforeAcquire: 0, applies: 0 };
+      const zeroRpc = () => Object.fromEntries(pendingRpcNames.map((name) => [name, 0]));
+      const beginPhase = (name) => {
+        phase = 'pending-checkpoint-' + name;
+        assert.equal(pendingCheckpointActivity, undefined);
+        const activity = {
+          mode: name,
+          rpcByRole: { 'transaction-rpc': zeroRpc(), 'protocol-rpc': zeroRpc() },
+          utilityStarts: Object.fromEntries(pendingUtilityNames.map((name) => [name, 0])),
+          utilityExits: Object.fromEntries(pendingUtilityNames.map((name) => [name, 0])),
+          binaryJobs: 0,
+          keyRequests: 0,
+          unexpectedRpc: 0,
+        };
+        const started = performance.now();
+        const before = copy({ sourceMaintenance, publicMethods, poiMethods, delegatedApplies });
+        pendingCheckpointActivity = activity;
+        return (extra = {}) => {
+          assert.equal(pendingCheckpointActivity, activity);
+          pendingCheckpointActivity = undefined;
+          assert.deepEqual(activity.utilityExits, activity.utilityStarts);
+          assert.equal(activity.binaryJobs, 0);
+          assert.equal(activity.keyRequests, 0);
+          assert.equal(activity.unexpectedRpc, 0);
+          assert.equal(activity.utilityStarts.unexpected, 0);
+          const report = {
+            ...activity,
+            elapsedMs: Math.round(performance.now() - started),
+            sourceMaintenance: delta(sourceMaintenance, before.sourceMaintenance),
+            publicServices: delta(publicMethods, before.publicMethods),
+            ownedPoiQueries: delta(poiMethods, before.poiMethods),
+            delegatedApplies: delegatedApplies - before.delegatedApplies,
+            ...extra,
+          };
+          assert.ok(Object.values(report.ownedPoiQueries).every((count) => count === 0));
+          pendingCheckpointRuns.push(report);
+          return report;
+        };
+      };
+      const assertUtilities = (actual, expected) => {
+        assert.deepEqual(actual, {
+          ...Object.fromEntries(pendingUtilityNames.map((name) => [name, 0])),
+          ...expected,
+        });
+      };
+      const assertUntouchedPrivateState = async () => {
+        assert.deepEqual(await journal.readSnapshot(), privateBaseline);
+        assert.deepEqual(await intentStore.inspect(), intentBaseline);
+        assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), retainedBaseline);
+      };
+      const originalScan = await currentScanJournal.readState();
+      assert.equal(originalScan.pending, null);
+      assert.equal(originalScan.checkpoint.to.number, OWN_BLOCK);
+      const nextBlock = originalScan.checkpoint.to.number + 1;
+      assert.ok(nextBlock < FINALIZED);
+      assert.equal(
+        history.filter((log) => Number(BigInt(log.blockNumber)) === nextBlock).length,
+        0
+      );
+      let finishPhase = beginPhase('interrupt-after-prepare');
+      const beforeDelegated = delegatedApplies;
+      interruptAfterPrepare = true;
+      await assert.rejects(
+        publicAccount.advance({
+          to: nextBlock,
+          anchor: { number: FINALIZED, hash: blockHash(FINALIZED) },
+        })
+      );
+      assert.equal(publicAccount.coordinator.signal.aborted, true);
+      await publicAccount.close();
+      publicAccount = undefined;
+      assert.equal(preparedInterruptionFires, 1);
+      assert.equal(interruptAfterPrepare, false);
+      assert.equal(delegatedApplies, beforeDelegated);
+      assert.deepEqual(preparedInterruption.checkpoint, originalScan.checkpoint);
+      assert.equal(preparedInterruption.pending.from, nextBlock);
+      assert.equal(preparedInterruption.pending.to.number, nextBlock);
+      assert.equal(preparedInterruption.pending.logs.count, 0);
+      const interrupted = finishPhase({
+        oneShotFires: preparedInterruptionFires,
+        pendingWrittenBeforeApply: true,
+        accountClosed: true,
+        advancedEmptyBlocks: 1,
+      });
+      assert.equal(interrupted.sourceMaintenance.applies, 1);
+      assert.equal(interrupted.delegatedApplies, 0);
+      assert.equal(interrupted.utilityStarts.publicApply, 0);
+
+      finishPhase = beginPhase('reopen-with-pending');
+      publicAccount = await openRailgunAccountPublic({ enrollment, archive });
+      assert.equal(publicAccount.generationId, generation);
+      const pendingState = await currentScanJournal.readState();
+      // Opening rotates a journal lease; compare authenticated plans, not raw
+      // ciphertext/lease bytes. The refusal below must preserve the entire state.
+      assert.deepEqual(pendingState.pending, preparedInterruption.pending);
+      assert.deepEqual(pendingState.checkpoint, originalScan.checkpoint);
+      const reopened = finishPhase({
+        sameGeneration: true,
+        pendingPlanUnchangedAcrossReopen: true,
+      });
+      assert.deepEqual(reopened.sourceMaintenance, zeroMaintenance);
+      assert.deepEqual(reopened.rpcByRole, {
+        'transaction-rpc': zeroRpc(),
+        'protocol-rpc': zeroRpc(),
+      });
+      assert.deepEqual(reopened.publicServices, { latest: 0, validate: 0, page: 0 });
+      assertUtilities(reopened.utilityStarts, {});
+      const destination = getRailgunAccountPublicDestination(
+        publicAccount.coordinator,
+        enrollment,
+        publicAccount.policy
+      );
+      const retainedPreflight = () =>
+        retainedWitness.preflightRailgunRetainedPoiCompleted({
+          enrollment,
+          coordinator: publicAccount.coordinator,
+          archive,
+          selector,
+          sourceDestination: destination,
+          signal: operationsController.signal,
+        });
+      finishPhase = beginPhase('retained-refused');
+      const refused = await retainedPreflight();
+      assert.deepEqual(refused, {
+        status: 'refused',
+        stage: 'source:snapshot',
+        sourceOutcome: { fatal: false, reason: 'checkpoint-unavailable', rpcFailure: null },
+      });
+      assert.deepEqual(await currentScanJournal.readState(), pendingState);
+      assert.equal(publicAccount.signal.aborted, false);
+      assert.equal(publicAccount.coordinator.signal.aborted, false);
+      const refusal = finishPhase({
+        status: 'refused',
+        sourceOutcome: refused.sourceOutcome,
+        journalStateUnchangedByRefusal: true,
+      });
+      assert.deepEqual(refusal.sourceMaintenance, zeroMaintenance);
+      assert.deepEqual(refusal.publicServices, { latest: 0, validate: 0, page: 0 });
+      assert.deepEqual(refusal.rpcByRole['protocol-rpc'], zeroRpc());
+      const transactionCalls = {
+        ...zeroRpc(),
+        eth_chainId: 1,
+        eth_getTransactionReceipt: 1,
+        eth_getTransactionByHash: 1,
+        eth_getBlockByNumber: 12,
+        eth_blockNumber: 2,
+      };
+      assert.deepEqual(refusal.rpcByRole['transaction-rpc'], transactionCalls);
+      assertUtilities(refusal.utilityStarts, { ownSelector: 1 });
+      await assertUntouchedPrivateState();
+
+      finishPhase = beginPhase('explicit-recovery');
+      await publicAccount.coordinator.recover();
+      const completedState = await currentScanJournal.readState();
+      assert.equal(completedState.pending, null);
+      assert.deepEqual(completedState.checkpoint, pendingState.pending);
+      assert.equal(publicAccount.generationId, generation);
+      const maintenance = finishPhase({
+        pendingCleared: true,
+        sameGeneration: true,
+        completedExactPendingPlan: true,
+      });
+      assert.equal(maintenance.delegatedApplies, 1);
+      assert.equal(maintenance.sourceMaintenance.applies, 1);
+      for (const name of ['stages', 'retains', 'beforeAcquire'])
+        assert.ok(maintenance.sourceMaintenance[name] > 0);
+      assert.equal(maintenance.utilityStarts.publicApply, 1);
+      await assertUntouchedPrivateState();
+
+      finishPhase = beginPhase('retained-healthy-after-recovery');
+      const healthy = await retainedPreflight();
+      assert.equal(
+        healthy.status,
+        'captured',
+        'Recovered retained preflight stage ' + healthy.stage
+      );
+      assert.equal(healthy.creatorClassification.type, 'Shield');
+      assert.equal(healthy.creatorClassification.legacy, false);
+      assert.equal(healthy.creatorProvenance, undefined);
+      assert.equal(healthy.capture.bindingDigest, baseline.capture.bindingDigest);
+      for (const flag of [
+        'accountAuthenticated',
+        'sourceAuthenticated',
+        'currentFinalityVerified',
+        'txidPathVerified',
+        'txidRootAccepted',
+        'poiVerified',
+        'spendingEnabled',
+        'disclosureEnabled',
+      ])
+        assert.equal(healthy[flag], false);
+      const finalState = await currentScanJournal.readState();
+      assert.equal(finalState.pending, null);
+      assert.deepEqual(finalState.checkpoint, completedState.checkpoint);
+      const success = finishPhase({
+        status: 'captured',
+        completedPlanUnchanged: true,
+        allAuthorityFlagsFalse: true,
+      });
+      assert.deepEqual(success.sourceMaintenance, zeroMaintenance);
+      assert.deepEqual(success.publicServices, { latest: 3, validate: 3, page: 0 });
+      assert.deepEqual(success.rpcByRole['transaction-rpc'], transactionCalls);
+      assert.deepEqual(success.rpcByRole['protocol-rpc'], {
+        ...zeroRpc(),
+        eth_getBlockByNumber: 16,
+        eth_getLogs: 1,
+      });
+      assertUtilities(success.utilityStarts, {
+        ownSelector: 1,
+        ownTxid: 1,
+        mirrorInspect: 2,
+        mirrorWitness: 1,
+        publicPlan: 1,
+      });
+      await assertUntouchedPrivateState();
+    }
     phase = 'final-journal-drift';
     mode = 'valid';
     onRoot = async () => {
@@ -4600,6 +4990,8 @@ async function main() {
       proofRuns,
       proofJobs,
       checksMode,
+      retainedPreflightTimings,
+      pendingCheckpointRuns,
       intentsMode,
       intentRuns,
       outputRecoveryMode,
@@ -4746,6 +5138,8 @@ async function main() {
         ledgerModule.createRailgunSourceLedger = originals.ledger;
         sourceModule.createRailgunScanSource = originals.source;
         coordinatorModule.createRailgunScanCoordinator = originals.coordinator;
+        scanJournalModule.createRailgunScanJournal = originals.scanJournal;
+        for (const restore of retainedRestorations.reverse()) restore();
         Object.assign(registry, originalRegistry);
         serviceModule.createRailgunPublicServices = originals.services;
         processModule.startRailgunProcess = originals.start;

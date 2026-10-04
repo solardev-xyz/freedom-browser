@@ -1,9 +1,11 @@
-const mockTransactCreator = jest.fn(),
+const mockRetainedCreator = jest.fn(),
+  mockTransactCreator = jest.fn(),
   mockCreator = jest.fn(),
   mockOwn = jest.fn();
 jest.mock('./railgun-poi-creator', () => ({
   collectRailgunPoiCreator: (...args) => mockCreator(...args),
   collectRailgunPoiTransactCreator: (...args) => mockTransactCreator(...args),
+  collectRailgunPoiRetainedCreator: (...args) => mockRetainedCreator(...args),
 }));
 jest.mock('./railgun-own-source', () => ({
   collectRailgunOwnSource: (...args) => mockOwn(...args),
@@ -38,6 +40,7 @@ beforeEach(() => {
     };
   mockCreator.mockImplementation(collector(0));
   mockTransactCreator.mockImplementation(collector(0));
+  mockRetainedCreator.mockImplementation(collector(0));
   mockOwn.mockImplementation(collector(1));
   options = {
     ...sample(),
@@ -215,3 +218,94 @@ test('fixed Transact source evidence cannot return after a late authenticated-pr
     [0, 1, 2],
   ]);
 });
+
+const collectRetained =
+  require('./railgun-poi-source-evidence').collectRailgunPoiRetainedSourceEvidence;
+test('fixed retained source evidence selects its full-group collector in exactly one shared visit', async () => {
+  const value = await collectRetained(options);
+  expect(mockRetainedCreator).toHaveBeenCalledTimes(1);
+  expect(mockCreator).not.toHaveBeenCalled();
+  expect(mockOwn).toHaveBeenCalledTimes(1);
+  expect(options.visit).toHaveBeenCalledTimes(1);
+  expect(seen).toEqual([
+    [0, 1, 2],
+    [0, 1, 2],
+  ]);
+  expect(value).toMatchObject({
+    sourceAuthenticated: false,
+    disclosureEnabled: false,
+    spendingEnabled: false,
+  });
+});
+test.each(['early-0', 'early-1', 'semantic-0', 'semantic-1', 'resource-0', 'resource-1'])(
+  'fixed retained source evidence drains/refuses %s without legacy fallback',
+  async (fault) => {
+    mode = fault;
+    await expect(collectRetained(options)).rejects.toMatchObject({
+      code: 'RAILGUN_POI_SOURCE_EVIDENCE_REFUSED',
+    });
+    expect(mockCreator).not.toHaveBeenCalled();
+    if (fault.startsWith('early')) expect(options.visit).not.toHaveBeenCalled();
+    if (fault.startsWith('semantic')) {
+      expect(ended).toBe(true);
+      expect(seen).toEqual([
+        [0, 1, 2],
+        [0, 1, 2],
+      ]);
+    }
+  }
+);
+test('fixed retained source evidence cannot return after a late authenticated-prefix failure', async () => {
+  options.visit.mockImplementation(async (fn) => {
+    for (let i = 0; i < 3; i++) await fn(i);
+    throw Error('private suffix corruption');
+  });
+  await expect(collectRetained(options)).rejects.toMatchObject({
+    code: 'RAILGUN_POI_SOURCE_EVIDENCE_REFUSED',
+  });
+  expect(seen).toEqual([
+    [0, 1, 2],
+    [0, 1, 2],
+  ]);
+});
+
+test.each(['Shield', 'Transact'])(
+  'retained evidence uses one source/checkpoint for authenticated selected %s',
+  async (type) => {
+    const original = mockRetainedCreator.getMockImplementation();
+    mockRetainedCreator.mockImplementation(async (args) => ({
+      ...(await original(args)),
+      creator: { type },
+    }));
+    const result = await collectRetained(options);
+    expect(result.creator.creator.type).toBe(type);
+    expect(options.visit).toHaveBeenCalledTimes(1);
+    expect(mockRetainedCreator.mock.calls[0][0].checkpoint).toEqual(
+      mockOwn.mock.calls[0][0].checkpoint
+    );
+    expect(mockTransactCreator).not.toHaveBeenCalled();
+    expect(mockCreator).not.toHaveBeenCalled();
+  }
+);
+test.each(['checkpoint', 'source', 'future-creator', 'same-transaction'])(
+  'retained multiplexing refuses %s after full prefix drain',
+  async (fault) => {
+    const original = mockRetainedCreator.getMockImplementation();
+    mockRetainedCreator.mockImplementation(async (args) => {
+      const result = { ...(await original(args)) };
+      if (fault === 'checkpoint') result.checkpointHash = 'other';
+      if (fault === 'source') result.source = { ledgerId: 'other' };
+      if (fault === 'future-creator') result.origin = { blockNumber: 3, transactionIndex: 0 };
+      if (fault === 'same-transaction') result.origin = { blockNumber: 2, transactionIndex: 4 };
+      return result;
+    });
+    await expect(collectRetained(options)).rejects.toMatchObject({
+      code: 'RAILGUN_POI_SOURCE_EVIDENCE_REFUSED',
+    });
+    expect(ended).toBe(true);
+    expect(seen).toEqual([
+      [0, 1, 2],
+      [0, 1, 2],
+    ]);
+  }
+);

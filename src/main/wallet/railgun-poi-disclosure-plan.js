@@ -675,8 +675,8 @@ async function submitRailgunRetainedPoi(input) {
               { method: 'eth_getBlockByNumber', maxRequests: 544 },
               { method: 'eth_getLogs', maxRequests: 1 },
               { method: 'eth_chainId', maxRequests: 2 },
-              { method: 'ppoi_validated_txid', maxRequests: 6 },
-              { method: 'ppoi_validate_txid_merkleroot', maxRequests: 6 },
+              { method: 'ppoi_validated_txid', maxRequests: 7 },
+              { method: 'ppoi_validate_txid_merkleroot', maxRequests: 7 },
             ],
         disclosureCategories: submitting
           ? base.disclosureCategories

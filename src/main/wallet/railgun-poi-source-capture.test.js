@@ -1,6 +1,7 @@
 let mockEnrollment, mockCoordinator, mockGeneration, mockDestination, mockOutcomes;
 const mockCollect = jest.fn(),
-  mockTransactCollect = jest.fn();
+  mockTransactCollect = jest.fn(),
+  mockRetainedCollect = jest.fn();
 let canonicalAt;
 jest.mock('./railgun-account-public', () => ({
   assertRailgunAccountPublic: (coordinator, enrollment, policy) => {
@@ -34,6 +35,7 @@ jest.mock('./railgun-scan-coordinator', () => ({
 jest.mock('./railgun-poi-source-evidence', () => ({
   collectRailgunPoiSourceEvidence: (...args) => mockCollect(...args),
   collectRailgunPoiTransactSourceEvidence: (...args) => mockTransactCollect(...args),
+  collectRailgunPoiRetainedSourceEvidence: (...args) => mockRetainedCollect(...args),
 }));
 jest.mock('./railgun-wallet-coverage', () => ({
   checkpointHash: (value) => JSON.stringify(value),
@@ -128,6 +130,7 @@ beforeEach(() => {
     });
   });
   mockTransactCollect.mockImplementation((...args) => mockCollect(...args));
+  mockRetainedCollect.mockImplementation((...args) => mockCollect(...args));
   input = {
     enrollment: mockEnrollment,
     coordinator: mockCoordinator,
@@ -461,4 +464,118 @@ test('fixed Transact cancelled snapshot retains exclusion until ignored final au
   expect((await pending).status).toBe('refused');
   deferred = false;
   expect((await startTransact({ signal: new AbortController().signal })).status).toBe('captured');
+});
+
+const captureRetained =
+  require('./railgun-poi-source-capture').captureRailgunPoiSourceForRetainedInput;
+const startRetained = async (changes = {}) => {
+  const result = await captureRetained({ ...input, destination: mockDestination, ...changes });
+  if (result.status === 'captured') captures.push(result);
+  return result;
+};
+test.each([
+  [undefined, 180000],
+  [235000, 180000],
+  [100000, 45000],
+  [55001, 1],
+])(
+  'fixed retained capture reserves55s from total %s and uses snapshot budget%i',
+  async (timeoutMs, budget) => {
+    jest.useFakeTimers();
+    const result = await startRetained({ timeoutMs });
+    expect(result.status).toBe('captured');
+    expect(mockRetainedCollect).toHaveBeenCalledTimes(1);
+    expect(mockCoordinator.withCompletedPublicSnapshot.mock.calls[0][0].timeoutMs).toBe(budget);
+    expect(mockCoordinator.withPublicSnapshot).not.toHaveBeenCalled();
+    expect(mockCoordinator.recover).not.toHaveBeenCalled();
+    expect(attest(result.receipt, mockEnrollment, mockCoordinator)).toBe(result.observation);
+  }
+);
+test.each([null, false, 0, 55000, 235001, Infinity, NaN, 60000.5])(
+  'fixed retained capture refuses invalid total %p before snapshot work',
+  async (timeoutMs) => {
+    expect(await startRetained({ timeoutMs })).toEqual({ status: 'refused', stage: 'context' });
+    expect(mockCoordinator.withCompletedPublicSnapshot).not.toHaveBeenCalled();
+    expect(mockRetainedCollect).not.toHaveBeenCalled();
+  }
+);
+test.each(['destination', 'generation'])(
+  'fixed retained capture refuses changed %s after full snapshot completion',
+  async (field) => {
+    const original = mockRetainedCollect.getMockImplementation();
+    mockRetainedCollect.mockImplementationOnce(async (...args) => {
+      const value = await original(...args);
+      if (field === 'destination') mockDestination = Object.freeze({});
+      else mockGeneration = 'changed';
+      return value;
+    });
+    expect((await startRetained()).status).toBe('refused');
+    expect(mockCoordinator.withPublicSnapshot).not.toHaveBeenCalled();
+  }
+);
+test('fixed retained capture retains actual canonical age instead of promising fresh60s at return', async () => {
+  jest.useFakeTimers();
+  const original = mockRetainedCollect.getMockImplementation();
+  mockRetainedCollect.mockImplementationOnce(async (...args) => {
+    await jest.advanceTimersByTimeAsync(120000);
+    const value = await original(...args);
+    canonicalAt = performance.now();
+    await jest.advanceTimersByTimeAsync(20000); // Authenticated snapshot cleanup consumes age.
+    return value;
+  });
+  const result = await startRetained();
+  expect(result.status).toBe('captured');
+  await jest.advanceTimersByTimeAsync(39999);
+  expect(attest(result.receipt, mockEnrollment, mockCoordinator)).toBe(result.observation);
+  await jest.advanceTimersByTimeAsync(1);
+  expect(() => attest(result.receipt, mockEnrollment, mockCoordinator)).toThrow();
+});
+test('fixed retained cancelled snapshot retains exclusion until ignored final authentication drains', async () => {
+  deferred = true;
+  let settled = false;
+  const pending = startRetained().then((value) => {
+    settled = true;
+    return value;
+  });
+  try {
+    for (let n = 0; n < 30 && !finalize; n++) await Promise.resolve();
+    expect(finalize).toEqual(expect.any(Function));
+    controller.abort();
+    expect(settled).toBe(false);
+    expect((await startRetained({ signal: new AbortController().signal })).status).toBe('refused');
+    expect(mockCoordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(1);
+  } finally {
+    finalize?.();
+  }
+  expect((await pending).status).toBe('refused');
+  deferred = false;
+  expect((await startRetained({ signal: new AbortController().signal })).status).toBe('captured');
+});
+
+test.each([false, true])(
+  'only authenticated retained completed-snapshot error propagates fatal=%s diagnostic',
+  async (fatal) => {
+    const error = Object.assign(Error('private diagnostic'), {
+      code: 'RAILGUN_SCAN_COORDINATOR_REFUSED',
+    });
+    const outcome = Object.freeze({
+      fatal,
+      reason: fatal ? 'fatal' : 'checkpoint-unavailable',
+      rpcFailure: fatal ? 'response' : null,
+    });
+    mockOutcomes.set(error, outcome);
+    mockCoordinator.withCompletedPublicSnapshot.mockRejectedValueOnce(error);
+    const result = await startRetained();
+    expect(result).toEqual({ status: 'refused', stage: 'snapshot', sourceOutcome: outcome });
+    expect(Object.isFrozen(result.sourceOutcome)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('private diagnostic');
+  }
+);
+test('copied public error fields cannot manufacture a source outcome', async () => {
+  const error = Object.assign(Error('private diagnostic'), {
+    code: 'RAILGUN_SCAN_COORDINATOR_REFUSED',
+    sourceOutcome: { fatal: false, reason: 'cancelled', rpcFailure: null },
+  });
+  mockCoordinator.withCompletedPublicSnapshot.mockRejectedValueOnce(error);
+  expect(await startRetained()).toEqual({ status: 'refused', stage: 'snapshot' });
 });

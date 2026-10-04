@@ -83,6 +83,12 @@ jest.mock('./railgun-own-poi-proof', () => ({
   }),
 }));
 jest.mock('./railgun-own-witness', () => ({
+  preflightRailgunRetainedPoiCompleted: jest.fn(() => {
+    throw Error('unexpected retained preflight');
+  }),
+  preflightRailgunRetainedPoiForSubmission: jest.fn(() => {
+    throw Error('unexpected retained submission preflight');
+  }),
   preflightRailgunOwnPoi: jest.fn(() => {
     throw Error('unexpected preflight');
   }),
@@ -366,6 +372,8 @@ afterEach(async () => {
     ['./railgun-process', 'startRailgunProcess'],
     ['./railgun-own-poi-proof', 'proveRailgunOwnPoi'],
     ['./railgun-own-witness', 'preflightRailgunOwnPoi'],
+    ['./railgun-own-witness', 'preflightRailgunRetainedPoiCompleted'],
+    ['./railgun-own-witness', 'preflightRailgunRetainedPoiForSubmission'],
     ['../networks/private-rpc', 'createPrivateRpc'],
   ])
     expect(require(file)[name]).not.toHaveBeenCalled();

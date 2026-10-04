@@ -7,7 +7,13 @@ const { createHash, randomUUID } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { assertRailgunOwnPoiProof } = require('./railgun-own-poi-proof');
-const { preflightRailgunOwnPoi } = require('./railgun-own-witness');
+const { preflightRailgunRetainedPoiCompleted } = require('./railgun-own-witness');
+const { getRailgunPublicPolicy } = require('./railgun-public-policy');
+const {
+  getRailgunAccountPublicDestination,
+  assertRailgunAccountPublicDestination,
+} = require('./railgun-account-public');
+const { normalizeRailgunNoteTxidWitness } = require('./railgun-txid-note-witness');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const {
@@ -43,9 +49,36 @@ function compareHistory(current, history) {
     assertRailgunOwnPoiCapture(after, { ...before, record: after.record });
   } else assertRailgunOwnPoiCapture(after, before);
   assert.deepEqual(current.publicIdentity, history.publicIdentity);
-  assert.equal(current.creatorClassification.type, 'Shield');
+  assert.ok(['Shield', 'Transact'].includes(current.creatorClassification.type));
+  assert.equal(current.creatorClassification.type, history.preparation.creator.type);
   assert.equal(current.creatorClassification.legacy, false);
   assert.deepEqual(current.poiPreparation.creator, history.preparation.creator);
+  assert.deepEqual(current.poiPreparation.ownEvidence.capsule, after.capsule);
+  if (current.creatorClassification.type === 'Transact') {
+    const creator = current.poiPreparation.creator,
+      provenance = current.creatorProvenance;
+    for (const key of ['type', 'tree', 'position', 'hash'])
+      assert.equal(provenance.note[key], creator[key]);
+    assert.deepEqual(provenance.publicIdentity, current.publicIdentity);
+    assert.equal(provenance.txidPolicy, current.txidPolicy);
+    assert.equal(provenance.checkpointHash, current.observations.source.checkpointHash);
+    assert.deepEqual(provenance.origin, current.observations.source.creator.origin);
+    const creating = normalizeRailgunNoteTxidWitness(
+      provenance.noteWitness,
+      current.poiPreparation.state,
+      provenance.note
+    );
+    assert.equal(creating.outputIndex, 0);
+    assert.equal(creating.witness.row.unshield, undefined);
+    assert.equal(creating.witness.row.nullifiers.length, 1);
+    assert.equal(creating.witness.row.commitments.length, 1);
+    assert.ok(creating.witness.index < current.witness.index);
+    assert.equal(provenance.verification.utilityExitObserved, true);
+    assert.equal(provenance.verification.pathVerified, true);
+    assert.equal(provenance.verification.suppliedCreatorEventsMatched, true);
+    assert.equal(provenance.verification.coverage.matchedRows, 1);
+    assert.equal(provenance.verification.coverage.knownOmissions, 0);
+  } else assert.equal(current.creatorProvenance, undefined);
   assert.deepEqual(current.poiPreparation.ownEvidence.row, history.preparation.ownEvidence.row);
   for (const key of ['railgunTxid', 'leaf', 'index', 'rowSha256'])
     assert.deepEqual(current.witness[key], history.preparation.witness[key]);
@@ -107,6 +140,8 @@ async function openRailgunOwnPoiChecks(options = {}) {
     const history = assertRailgunOwnPoiProof(proof, enrollment, coordinator);
     assert.equal(history.archive, archive);
     assert.equal(history.txidTree, 0);
+    const policy = getRailgunPublicPolicy(archive);
+    const sourceDestination = getRailgunAccountPublicDestination(coordinator, enrollment, policy);
     const payload = bindRailgunOwnPoiPayload(history.payload, history.expected);
     const payloadSha256 = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     assert.equal(payloadSha256, history.payloadSha256);
@@ -122,8 +157,13 @@ async function openRailgunOwnPoiChecks(options = {}) {
       profileId: context.profileId,
       signal: AbortSignal.any([signal, enrollment.signal, coordinator.signal, controller.signal]),
       isCurrent: () => {
-        getPrivacyContext(parent);
-        return true;
+        try {
+          getPrivacyContext(parent);
+          assertRailgunAccountPublicDestination(coordinator, enrollment, sourceDestination, policy);
+          return true;
+        } catch {
+          return false;
+        }
       },
     });
     scope.signal.addEventListener('abort', close, { once: true });
@@ -134,6 +174,7 @@ async function openRailgunOwnPoiChecks(options = {}) {
       assert.ok(now >= started && now + margin < freshnessDeadline);
       assert.equal(assertRailgunOwnPoiProof(proof, enrollment, coordinator), history);
       getPrivacyContext(parent);
+      assertRailgunAccountPublicDestination(coordinator, enrollment, sourceDestination, policy);
     };
     const remaining = (max) => {
       current();
@@ -144,19 +185,20 @@ async function openRailgunOwnPoiChecks(options = {}) {
     timer = setTimeout(close, timeoutMs);
     timer.unref?.();
     stage = 'preflight';
-    const fresh = await preflightRailgunOwnPoi({
+    const fresh = await preflightRailgunRetainedPoiCompleted({
       enrollment,
       coordinator,
       archive,
       selector: history.capture.selector,
+      sourceDestination,
       signal: scope.signal,
       timeoutMs: remaining(MAX_PREFLIGHT_MS),
     });
-    current(MARGIN_MS);
     if (fresh.status !== 'captured') {
       stage = 'preflight:' + fresh.stage;
       throw fail();
     }
+    current(MARGIN_MS);
     // Preflight ends with a fresh private recapture and checks its source/root
     // receipts before returning. Its latency is not a renewable root receipt:
     // the next window starts once, remains capped by the original total budget,

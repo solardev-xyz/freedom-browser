@@ -325,3 +325,56 @@ test('ignored reconstruction abort drains before settlement and cannot emit a la
   expect(bytes.every((v) => v === 0)).toBe(true);
   expect(request).not.toHaveBeenCalled();
 });
+function useTransactCreator() {
+  const capsule = input.preparation.ownEvidence.capsule;
+  input.preparation.creator = {
+    type: 'Transact',
+    tree: capsule.selection.tree,
+    position: capsule.selection.position,
+    hash: capsule.noteHash,
+    ciphertext: {
+      ciphertext: [hex(7), hex(8), hex(9), hex(10)],
+      blindedSenderViewingKey: hex(11),
+      blindedReceiverViewingKey: hex(12),
+      annotationData: '0x',
+      memo: '0x',
+    },
+  };
+}
+test('Transact output worker uses actual input/path validators before one key and retains output-only result shape', async () => {
+  useTransactCreator();
+  text = JSON.stringify(input);
+  await run(text, context());
+  expect(requestKey).toHaveBeenCalledTimes(1);
+  expect(mockReconstruct).toHaveBeenCalledWith(
+    expect.objectContaining({
+      creator: input.preparation.creator,
+      capsule: input.preparation.ownEvidence.capsule,
+    })
+  );
+  expect(request).toHaveBeenCalledTimes(1);
+  const output = JSON.parse(request.mock.calls[0][0]).value;
+  expect(output.output.blindedCommitmentsOut).toHaveLength(1);
+  expect(output.output.railgunTxidIfHasUnshield).toBe('0x00');
+  expect(output.sourceAuthenticated).toBe(false);
+  expect(output.proofVerified).toBe(false);
+  expect(bytes.every((value) => value === 0)).toBe(true);
+});
+test.each(['unknown', 'hash', 'position', 'memo', 'receiver', 'path', 'saved-output'])(
+  'actual Transact worker normalizer/path refuses %s before key or reconstruction',
+  async (fault) => {
+    useTransactCreator();
+    if (fault === 'unknown') input.preparation.creator.type = 'Unknown';
+    if (fault === 'hash') input.preparation.creator.hash = hex(900);
+    if (fault === 'position') input.preparation.creator.position++;
+    if (fault === 'memo') input.preparation.creator.ciphertext.memo = '0x1';
+    if (fault === 'receiver') input.descriptor.instanceId = '0zk1' + 'p'.repeat(123);
+    if (fault === 'path') input.preparation.witness.elements[0] = hex(900).slice(2);
+    if (fault === 'saved-output') input.blindedCommitmentsOut = [hex(900)];
+    text = JSON.stringify(input);
+    await expect(run(text, context())).rejects.toMatchObject(failure);
+    expect(requestKey).not.toHaveBeenCalled();
+    expect(mockReconstruct).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  }
+);

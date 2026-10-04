@@ -31,6 +31,7 @@ const {
   captureRailgunPoiSource,
   captureRailgunPoiSourceCompleted,
   captureRailgunPoiSourceForTransactMembership,
+  captureRailgunPoiSourceForRetainedInput,
   assertRailgunPoiSource,
 } = require('./railgun-poi-source-capture');
 const { POI_LAUNCH_BLOCK } = require('./railgun-owned-poi-records');
@@ -49,8 +50,11 @@ async function captureRailgunOwnWitness(
   poi = false,
   completed = false,
   submission,
-  transactMembership = false
+  transactMembership = false,
+  retainedInput = false
 ) {
+  const sourceFirst = transactMembership || retainedInput;
+  let creatorRequired = transactMembership;
   let stage = 'context',
     timer,
     tailTimer,
@@ -106,8 +110,7 @@ async function captureRailgunOwnWitness(
       );
       // The real canonical timestamp, not time since snapshot return, decides
       // whether the retained source remains current throughout the tail.
-      if (transactMembership && source)
-        assertRailgunPoiSource(source.receipt, enrollment, coordinator);
+      if (sourceFirst && source) assertRailgunPoiSource(source.receipt, enrollment, coordinator);
       assert.deepEqual(
         getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
         publicIdentity
@@ -178,13 +181,15 @@ async function captureRailgunOwnWitness(
         assert.equal(chain.transaction.hash, first.capture.projection.hash);
         assert.equal(chain.receipt.transactionHash, first.capture.projection.hash);
       }
-      const captureSource = transactMembership
-        ? captureRailgunPoiSourceForTransactMembership
-        : completed
-          ? captureRailgunPoiSourceCompleted
-          : poi
-            ? captureRailgunPoiSource
-            : captureRailgunOwnSource;
+      const captureSource = retainedInput
+        ? captureRailgunPoiSourceForRetainedInput
+        : transactMembership
+          ? captureRailgunPoiSourceForTransactMembership
+          : completed
+            ? captureRailgunPoiSourceCompleted
+            : poi
+              ? captureRailgunPoiSource
+              : captureRailgunOwnSource;
       const assertSource = poi ? assertRailgunPoiSource : assertRailgunOwnSource;
       if (preflight && !submission) {
         stage = 'receipt';
@@ -204,7 +209,7 @@ async function captureRailgunOwnWitness(
       const readSource = async () => {
         stage = 'source';
         let sourceBudget = remaining(180000);
-        if (transactMembership) {
+        if (sourceFirst) {
           sourceBudget = Math.min(180000, Math.floor(deadline - performance.now()) - 55000);
           assert.ok(sourceBudget > 0);
           sourceBudget += 55000; // Scope includes the tail; snapshot reserves it.
@@ -226,7 +231,7 @@ async function captureRailgunOwnWitness(
           throw Error('source refused');
         }
         source = capturedSource;
-        if (transactMembership) {
+        if (sourceFirst) {
           tailDeadline = Math.min(deadline, performance.now() + 55000);
           tailTimer = setTimeout(
             () => controller.abort(),
@@ -241,26 +246,33 @@ async function captureRailgunOwnWitness(
           first.capture.projection.railgun.transact
         );
       };
-      if (transactMembership) {
+      if (sourceFirst) {
         await readSource();
         stage = 'creator-source';
         const captured = sourceObservation.creator;
-        assert.equal(captured.creator.type, 'Transact');
+        if (retainedInput) {
+          assert.ok(['Shield', 'Transact'].includes(captured.creator.type));
+          // Classify only after the genuine snapshot and full source suffix
+          // authentication; retained records do not carry a creator type.
+          creatorRequired = captured.creator.type === 'Transact';
+        } else assert.equal(captured.creator.type, 'Transact');
         assert.ok(captured.origin.blockNumber >= POI_LAUNCH_BLOCK);
-        assert.deepEqual(captured.transaction.note, {
-          type: 'Transact',
-          txid: captured.origin.transactionHash,
-          hash: first.capture.capsule.noteHash,
-          tree: first.capture.capsule.selection.tree,
-          position: first.capture.capsule.selection.position,
-          blockNumber: captured.origin.blockNumber,
-        });
-        assert.deepEqual(
-          captured.transaction.events.map((event) => event.name),
-          ['Nullified', 'Transact']
-        );
-        assert.equal(captured.transaction.events[0].values.length, 1);
-        assert.equal(captured.transaction.events[1].hashes.length, 1);
+        if (creatorRequired) {
+          assert.deepEqual(captured.transaction.note, {
+            type: 'Transact',
+            txid: captured.origin.transactionHash,
+            hash: first.capture.capsule.noteHash,
+            tree: first.capture.capsule.selection.tree,
+            position: first.capture.capsule.selection.position,
+            blockNumber: captured.origin.blockNumber,
+          });
+          assert.deepEqual(
+            captured.transaction.events.map((event) => event.name),
+            ['Nullified', 'Transact']
+          );
+          assert.equal(captured.transaction.events[0].values.length, 1);
+          assert.equal(captured.transaction.events[1].hashes.length, 1);
+        }
         current();
       }
       const readMirror = async () => {
@@ -279,9 +291,7 @@ async function captureRailgunOwnWitness(
         assert.equal(txid.policy, txidPolicy);
         assert.deepEqual(txid.publicIdentity, publicIdentity);
         const inspected = await txid.inspect();
-        const before = transactMembership
-          ? freeze(JSON.parse(JSON.stringify(inspected)))
-          : inspected;
+        const before = sourceFirst ? freeze(JSON.parse(JSON.stringify(inspected))) : inspected;
         current();
         assert.ok(before.checkpoint && !before.pending);
         stage = before.capacityReached ? 'txid-capacity' : 'txid-behind';
@@ -295,7 +305,7 @@ async function captureRailgunOwnWitness(
         const found = await txid.witness(derived.railgunTxid);
         current();
         const witness = normalizeRailgunTxidWitness(found.witness, state, derived.railgunTxid);
-        if (transactMembership) {
+        if (creatorRequired) {
           stage = 'creator-txid-witness';
           const captured = sourceObservation.creator;
           const foundCreator = await txid.witnessNote(captured.transaction.note);
@@ -333,7 +343,7 @@ async function captureRailgunOwnWitness(
         current();
         return { state, witness };
       };
-      const { state, witness } = transactMembership
+      const { state, witness } = sourceFirst
         ? await tailStage(20000, 14000, readMirror)
         : await readMirror();
       if (preflight) {
@@ -362,10 +372,10 @@ async function captureRailgunOwnWitness(
           verificationPhase.release();
           verificationPhase = undefined;
         };
-        if (transactMembership) await tailStage(10000, 13000, verifyOwn);
+        if (sourceFirst) await tailStage(10000, 13000, verifyOwn);
         else await verifyOwn(remaining(30000));
       }
-      if (transactMembership) {
+      if (creatorRequired) {
         stage = 'creator-verify';
         await tailStage(10000, 12000, async (budget) => {
           verificationPhase = claimRailgunAccountPhase(enrollment, 'recovery');
@@ -393,7 +403,7 @@ async function captureRailgunOwnWitness(
         });
       }
       if (preflight) {
-        if (!transactMembership) await readSource();
+        if (!sourceFirst) await readSource();
         const acquireRoot = async () => {
           stage = 'root';
           rootScope = createPrivacyScope({
@@ -421,7 +431,7 @@ async function captureRailgunOwnWitness(
             root: state.root,
           });
         };
-        if (transactMembership) await tailStage(10000, 7000, acquireRoot);
+        if (sourceFirst) await tailStage(10000, 7000, acquireRoot);
         else await acquireRoot();
       }
       stage = 'recapture';
@@ -432,7 +442,7 @@ async function captureRailgunOwnWitness(
           signal: lifetime,
           timeoutMs: budget,
         });
-      const latest = transactMembership
+      const latest = sourceFirst
         ? await tailStage(10000, 2000, recapture)
         : await recapture(remaining(45000));
       current();
@@ -453,7 +463,7 @@ async function captureRailgunOwnWitness(
       ]) {
         assert.deepEqual(latest.capture[key], first.capture[key]);
       }
-      if (transactMembership) assertRailgunOwnPoiCapture(latest.capture, first.capture);
+      if (sourceFirst) assertRailgunOwnPoiCapture(latest.capture, first.capture);
       stage = 'row';
       const { row } = witness,
         { projection, intent } = latest.capture;
@@ -504,7 +514,7 @@ async function captureRailgunOwnWitness(
               anchor.number === finalArchive.number &&
               anchor.hash === finalArchive.hash
           );
-        if (transactMembership) assert.equal(archiveAnchorChecked, true);
+        if (sourceFirst) assert.equal(archiveAnchorChecked, true);
         observations = {
           chain,
           source: sourceObservation,
@@ -518,7 +528,7 @@ async function captureRailgunOwnWitness(
       }
       return freeze({
         status: 'captured',
-        ...(transactMembership
+        ...(creatorRequired
           ? {
               creatorProvenance: {
                 note: sourceObservation.creator.transaction.note,
@@ -682,3 +692,100 @@ module.exports.captureRailgunOwnTransactPoiMembershipInput = async (options) => 
     return Object.freeze({ status: 'refused', stage });
   }
 };
+
+// Fixed retained preflight. Its caller supplies an already pinned genuine
+// destination, never a creator type, and owns any disclosure authorization.
+// These wrappers return completed private data, not a reusable authority token.
+async function preflightRetained(options, input, submissionMode = false) {
+  let stage = 'context';
+  try {
+    assert.ok(options && typeof options === 'object' && !Array.isArray(options));
+    assert.deepEqual(
+      Object.keys(options).sort(),
+      [
+        'enrollment',
+        'coordinator',
+        'archive',
+        'selector',
+        'sourceDestination',
+        'signal',
+        ...(Object.hasOwn(options, 'timeoutMs') ? ['timeoutMs'] : []),
+      ].sort()
+    );
+    const {
+      enrollment,
+      coordinator,
+      selector,
+      sourceDestination,
+      signal,
+      timeoutMs = 180000,
+    } = options;
+    assert.ok(isRailgunAccountEnrollment(enrollment));
+    assert.ok(signal instanceof AbortSignal && !signal.aborted);
+    assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 180000);
+    const archive = verifyRailgunEngineRuntime(options.archive);
+    const publicPolicy = getRailgunPublicPolicy(archive);
+    const txidPolicy = getRailgunTxidPolicy(archive);
+    const identity = freeze(
+      JSON.parse(
+        JSON.stringify(getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy))
+      )
+    );
+    const parent = enrollment.getContext('engine');
+    const started = performance.now(),
+      deadline = started + timeoutMs;
+    const current = () => {
+      getPrivacyContext(parent);
+      assert.ok(!signal.aborted && !enrollment.signal.aborted && !coordinator.signal.aborted);
+      assert.ok(performance.now() >= started && performance.now() < deadline);
+      assert.deepEqual(
+        getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
+        identity
+      );
+      assertRailgunAccountPublicDestination(
+        coordinator,
+        enrollment,
+        sourceDestination,
+        publicPolicy
+      );
+    };
+    current();
+    stage = 'preflight';
+    const budget = Math.floor(deadline - performance.now());
+    assert.ok(budget > 0);
+    const result = await captureRailgunOwnWitness(
+      { enrollment, coordinator, archive, selector, signal, timeoutMs: budget, sourceDestination },
+      true,
+      true,
+      true,
+      submissionMode ? input || {} : undefined,
+      false,
+      true
+    );
+    // Do not erase genuine source failure provenance with a later currency check.
+    if (result.status !== 'captured') return result;
+    stage = 'completion';
+    // The private core has closed its scopes and drained admitted work. This is
+    // an owner/deadline check, not a renewal of source or service-root freshness.
+    current();
+    assert.equal(result.publicPolicy, publicPolicy);
+    assert.equal(result.txidPolicy, txidPolicy);
+    assert.deepEqual(result.publicIdentity, identity);
+    assert.equal(result.observations.archiveAnchorChecked, true);
+    assert.ok(['Shield', 'Transact'].includes(result.creatorClassification.type));
+    assert.equal(result.creatorClassification.legacy, false);
+    if (result.creatorClassification.type === 'Transact') {
+      assert.deepEqual(result.creatorProvenance.publicIdentity, identity);
+      assert.equal(result.creatorProvenance.txidPolicy, txidPolicy);
+    } else assert.equal(result.creatorProvenance, undefined);
+    return freeze(result);
+  } catch {
+    return Object.freeze({ status: 'refused', stage });
+  }
+}
+module.exports.preflightRailgunRetainedPoiCompleted = (options) => preflightRetained(options);
+// Future sole consumer: output recovery's fixed submission branch, downstream
+// of the validator's genuine prepared-reader consumption. No observed-result
+// options field or fallback to a new receipt query is introduced.
+module.exports.preflightRailgunRetainedPoiForSubmission = (options, input) =>
+  preflightRetained(options, input, true);

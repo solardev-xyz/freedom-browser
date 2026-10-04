@@ -13,6 +13,7 @@ const { getRailgunCompletedSnapshotOutcome } = require('./railgun-scan-coordinat
 const {
   collectRailgunPoiSourceEvidence,
   collectRailgunPoiTransactSourceEvidence,
+  collectRailgunPoiRetainedSourceEvidence,
 } = require('./railgun-poi-source-evidence');
 const { checkpointHash } = require('./railgun-wallet-coverage');
 const receipts = new WeakMap();
@@ -34,14 +35,16 @@ async function capture(
     destination,
   },
   completed = false,
-  transact = false
+  transact = false,
+  retained = false
 ) {
+  const withTail = transact || retained;
   assert.ok(signal instanceof AbortSignal && !signal.aborted);
-  if (timeoutMs === undefined) timeoutMs = transact ? 235000 : 45000;
+  if (timeoutMs === undefined) timeoutMs = withTail ? 235000 : 45000;
   assert.ok(
     Number.isSafeInteger(timeoutMs) &&
-      timeoutMs > (transact ? 55000 : 0) &&
-      timeoutMs <= (transact ? 235000 : 180000)
+      timeoutMs > (withTail ? 55000 : 0) &&
+      timeoutMs <= (withTail ? 235000 : 180000)
   );
   const policy = assertRailgunAccountPublic(coordinator, enrollment);
   const publicIdentity = getRailgunAccountPublicIdentity(coordinator, enrollment, policy);
@@ -100,9 +103,11 @@ async function capture(
           current();
           assert.ok(!window.signal.aborted);
         };
-        const collect = transact
-          ? collectRailgunPoiTransactSourceEvidence
-          : collectRailgunPoiSourceEvidence;
+        const collect = retained
+          ? collectRailgunPoiRetainedSourceEvidence
+          : transact
+            ? collectRailgunPoiTransactSourceEvidence
+            : collectRailgunPoiSourceEvidence;
         const value = await collect({
           ...supplied,
           checkpoint: window.checkpoint,
@@ -123,7 +128,7 @@ async function capture(
       if (completed) {
         const remaining = Math.min(
           180000,
-          Math.floor(deadline - performance.now()) - (transact ? 55000 : 0)
+          Math.floor(deadline - performance.now()) - (withTail ? 55000 : 0)
         );
         assert.ok(remaining > 0);
         snapshot = await coordinator.withCompletedPublicSnapshot(
@@ -218,6 +223,16 @@ exports.assertRailgunPoiSource = (receipt, enrollment, coordinator) => {
 exports.captureRailgunPoiSourceForTransactMembership = async (options) => {
   try {
     return await capture(options, true, true);
+  } catch {
+    return Object.freeze({ status: 'refused', stage: 'context' });
+  }
+};
+
+// Retain exactly the supplied genuine destination; never select a replacement.
+// The selected authenticated creator decides whether creating-TXID data exists.
+exports.captureRailgunPoiSourceForRetainedInput = async (options) => {
+  try {
+    return await capture(options, true, false, true);
   } catch {
     return Object.freeze({ status: 'refused', stage: 'context' });
   }

@@ -1,6 +1,7 @@
 const mockPoiCapture = jest.fn(),
   mockPoiCompletedCapture = jest.fn(),
   mockPoiTransactCapture = jest.fn(),
+  mockPoiRetainedCapture = jest.fn(),
   mockVerifyCreator = jest.fn();
 let mockPoiObservation;
 const mockObserve = jest.fn(),
@@ -30,6 +31,7 @@ jest.mock('./railgun-poi-source-capture', () => ({
   captureRailgunPoiSource: (...args) => mockPoiCapture(...args),
   captureRailgunPoiSourceCompleted: (...args) => mockPoiCompletedCapture(...args),
   captureRailgunPoiSourceForTransactMembership: (...args) => mockPoiTransactCapture(...args),
+  captureRailgunPoiSourceForRetainedInput: (...args) => mockPoiRetainedCapture(...args),
   assertRailgunPoiSource: (receipt) => {
     if (
       receipt !== mockSource.receipt ||
@@ -57,10 +59,10 @@ jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) =
 jest.mock('./railgun-public-policy', () => ({ getRailgunPublicPolicy: () => 'public' }));
 jest.mock('./railgun-txid-policy', () => ({ getRailgunTxidPolicy: () => mockPolicy }));
 jest.mock('./railgun-account-public', () => ({
-  getRailgunAccountPublicDestination: (c, e) => {
+  getRailgunAccountPublicDestination: jest.fn((c, e) => {
     if (c !== mockCoordinator || e !== mockEnrollment) throw Error('owner');
     return mockDestination;
-  },
+  }),
   assertRailgunAccountPublicDestination: (c, e, destination) => {
     if (c !== mockCoordinator || e !== mockEnrollment || destination !== mockDestination)
       throw Error('destination');
@@ -91,6 +93,8 @@ const {
   preflightRailgunOwnPoiForSubmission: poiSubmission,
   preflightRailgunOwnTransactPoiMembership: poiTransact,
   captureRailgunOwnTransactPoiMembershipInput: transactInput,
+  preflightRailgunRetainedPoiCompleted: poiRetained,
+  preflightRailgunRetainedPoiForSubmission: poiRetainedSubmission,
 } = require('./railgun-own-witness');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const copy = (v) => JSON.parse(JSON.stringify(v));
@@ -1752,6 +1756,755 @@ test('witness exports fixed historical producer with no claim, registration or a
       'preflightRailgunOwnPoiForSubmission',
       'preflightRailgunOwnTransactPoiMembership',
       'preflightRailgunOwnTransaction',
+      'preflightRailgunRetainedPoiCompleted',
+      'preflightRailgunRetainedPoiForSubmission',
     ].sort()
+  );
+});
+
+async function setupRetainedTransact(unshield = false) {
+  await setupTransact(unshield);
+  mockPoiRetainedCapture.mockImplementation(async () => {
+    events.push('poi-source-retained');
+    mockSourceAt = performance.now();
+    return { ...mockSource, status: 'captured' };
+  });
+}
+const retainedTransact = (input = options) =>
+  poiRetained({
+    ...input,
+    sourceDestination: Object.hasOwn(input, 'sourceDestination')
+      ? input.sourceDestination
+      : mockDestination,
+  });
+describe('fixed source-first retained Transact preflight', () => {
+  beforeEach(async () => {
+    await setupRetainedTransact();
+  });
+  test.each([false, true])(
+    'joins both independent paths in one cold mirror, unshield=%s',
+    async (unshield) => {
+      await setupRetainedTransact(unshield);
+      const result = await retainedTransact(options);
+      expect(result.status).toBe('captured');
+      expect(events).toEqual([
+        'capture-selector-exited',
+        'receipt',
+        'poi-source-retained',
+        'txid-open',
+        'witness',
+        'creator-witness',
+        'txid-drained',
+        'verify-exited',
+        'creator-verify-exited',
+        'root',
+        'recapture',
+      ]);
+      expect(mockOpen).toHaveBeenCalledTimes(1);
+      expect(mockOpen).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: false,
+          checkpointOnly: true,
+          signal: expect.any(AbortSignal),
+        })
+      );
+      expect(txid.inspect).toHaveBeenCalledTimes(2);
+      expect(txid.witness).toHaveBeenCalledTimes(1);
+      expect(txid.witnessNote).toHaveBeenCalledWith(mockPoiObservation.creator.transaction.note);
+      expect(mockObserve).toHaveBeenCalledTimes(1);
+      expect(mockPoiCapture).not.toHaveBeenCalled();
+      expect(mockPoiCompletedCapture).not.toHaveBeenCalled();
+      expect(mockPoiRetainedCapture.mock.calls[0][0].destination).toBe(mockDestination);
+      expect(mockVerify.mock.calls[0][0].state).toEqual(mockVerifyCreator.mock.calls[0][0].state);
+      expect(mockVerify.mock.calls[0][0].witness.index).toBe(1);
+      expect(mockVerifyCreator.mock.calls[0][0].noteWitness.witness.index).toBe(0);
+      expect(result.creatorProvenance).toMatchObject({
+        note: mockPoiObservation.creator.transaction.note,
+        noteWitness: creatorNoteWitness,
+        origin: mockPoiObservation.creator.origin,
+        logsSha256: 'b'.repeat(64),
+        checkpointHash: 'a'.repeat(64),
+        txidPolicy: mockPolicy,
+        publicIdentity: mockPublicIdentity,
+        boundParamsChecked: false,
+        globalTxidCompleteness: false,
+        disclosureEnabled: false,
+        spendingEnabled: false,
+      });
+      expect(Object.isFrozen(result.creatorProvenance.noteWitness.witness.row)).toBe(true);
+      for (const key of [
+        'accountAuthenticated',
+        'sourceAuthenticated',
+        'currentFinalityVerified',
+        'txidPathVerified',
+        'txidRootAccepted',
+        'poiVerified',
+        'disclosureEnabled',
+        'spendingEnabled',
+      ])
+        expect(result[key]).toBe(false);
+    }
+  );
+});
+
+describe('retained Transact refusal and lifetime boundaries', () => {
+  beforeEach(async () => {
+    await setupRetainedTransact();
+  });
+  test.each(['sourceDestination', 'creator', 'observation', 'transport', 'submission'])(
+    'rejects caller-supplied %s before any operation',
+    async (key) => {
+      expect(await retainedTransact({ ...options, [key]: {} })).toEqual({
+        status: 'refused',
+        stage: 'context',
+      });
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockOpen).not.toHaveBeenCalled();
+    }
+  );
+  test.each([0, -1, 180001, 1.5, null, false, Infinity, NaN])(
+    'rejects timeout %s before capture',
+    async (timeoutMs) => {
+      expect((await retainedTransact({ ...options, timeoutMs })).status).toBe('refused');
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['Unknown', 'prelaunch', 'note', 'two-inputs', 'two-outputs', 'unshield'])(
+    'rejects source creator %s before mirror opening',
+    async (fault) => {
+      const c = mockPoiObservation.creator;
+      if (fault === 'Unknown') c.creator.type = 'Unknown';
+      if (fault === 'prelaunch') c.origin.blockNumber = 5944699;
+      if (fault === 'note') c.transaction.note.position = 2;
+      if (fault === 'two-inputs') c.transaction.events[0].values.push(prefixed(999));
+      if (fault === 'two-outputs') c.transaction.events[1].hashes.push(prefixed(999));
+      if (fault === 'unshield') c.transaction.events.splice(1, 0, { name: 'Unshield' });
+      expect((await retainedTransact(options)).status).toBe('refused');
+      expect(mockOpen).not.toHaveBeenCalled();
+      expect(mockVerifyCreator).not.toHaveBeenCalled();
+      expect(mockRootCreate).not.toHaveBeenCalled();
+      expect(mockSource.close).toHaveBeenCalledTimes(1);
+    }
+  );
+  test.each(['index', 'graph-index', 'root', 'checkpoint', 'note', 'two-inputs', 'two-outputs'])(
+    'rejects independently malformed creator witness %s before either verifier',
+    async (fault) => {
+      const c = copy(creatorNoteWitness);
+      if (fault === 'index') c.witness.index = witness.index;
+      if (fault === 'graph-index')
+        c.witness.row.graphID = prefixed(5944701) + prefixed(3).slice(2) + prefixed(0).slice(2);
+      if (fault === 'root') c.witness.root = hash('wrong root');
+      if (fault === 'checkpoint') c.witness.checkpointIndex = 0;
+      if (fault === 'note') c.note.position = 2;
+      if (fault === 'two-inputs') c.witness.row.nullifiers.push(prefixed(999));
+      if (fault === 'two-outputs') c.witness.row.commitments.push(prefixed(999));
+      c.witness.rowSha256 = createHash('sha256')
+        .update(JSON.stringify(c.witness.row))
+        .digest('hex');
+      txid.witnessNote.mockResolvedValue({ noteWitness: c });
+      expect((await retainedTransact(options)).status).toBe('refused');
+      expect(mockVerify).not.toHaveBeenCalled();
+      expect(mockVerifyCreator).not.toHaveBeenCalled();
+      expect(mockRootCreate).not.toHaveBeenCalled();
+      expect(txid.close).toHaveBeenCalled();
+    }
+  );
+  test.each(['own', 'creator', 'path', 'exit', 'events', 'omissions', 'bound-params', 'global'])(
+    'refuses verification %s before service-root acquisition',
+    async (fault) => {
+      if (fault === 'own') mockVerify.mockRejectedValue(Error('path failed'));
+      else if (fault === 'creator') mockVerifyCreator.mockRejectedValue(Error('path failed'));
+      else {
+        const valid = mockVerifyCreator.getMockImplementation();
+        mockVerifyCreator.mockImplementation(async (...args) => {
+          const result = await valid(...args);
+          if (fault === 'path') result.pathVerified = false;
+          if (fault === 'exit') result.utilityExitObserved = false;
+          if (fault === 'events') result.suppliedCreatorEventsMatched = false;
+          if (fault === 'omissions') result.coverage.knownOmissions = 1;
+          if (fault === 'bound-params') result.coverage.boundParamsChecked = true;
+          if (fault === 'global') result.coverage.globalTxidCompleteness = true;
+          return result;
+        });
+      }
+      expect((await retainedTransact(options)).status).toBe('refused');
+      expect(mockRootCreate).not.toHaveBeenCalled();
+      expect(mockCapture).not.toHaveBeenCalled();
+      const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+      phase.release();
+    }
+  );
+  test.each(['destination', 'generation', 'policy'])(
+    'rejects %s replacement after source without silently reopening it',
+    async (fault) => {
+      const original = txid.witnessNote.getMockImplementation();
+      txid.witnessNote.mockImplementation(async (...args) => {
+        const result = await original(...args);
+        if (fault === 'destination') mockDestination = Object.freeze({});
+        if (fault === 'generation')
+          mockPublicIdentity = { ...mockPublicIdentity, generationId: '9'.repeat(64) };
+        if (fault === 'policy') txid.policy = 'replacement-policy';
+        return result;
+      });
+      // A session's policy is checked on opening. Change the actual policy before
+      // open, rather than emulating a mutable policy on an already-frozen session.
+      if (fault === 'policy')
+        mockOpen.mockImplementation(async () => ({ ...txid, policy: 'replacement-policy' }));
+      expect((await retainedTransact(options)).status).toBe('refused');
+      expect(mockVerify).not.toHaveBeenCalled();
+      expect(mockRootCreate).not.toHaveBeenCalled();
+      expect(mockPoiRetainedCapture).toHaveBeenCalledTimes(1);
+    }
+  );
+  test('detaches the first mirror checkpoint before borrowed reads can mutate it', async () => {
+    const mutable = { checkpoint: { state: copy(state) }, pending: null, capacityReached: false };
+    txid.inspect.mockResolvedValue(mutable);
+    txid.witnessNote.mockImplementation(async () => {
+      mutable.checkpoint.state.transcript = '9'.repeat(64);
+      return { noteWitness: copy(creatorNoteWitness) };
+    });
+    expect((await retainedTransact(options)).status).toBe('refused');
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(txid.close).toHaveBeenCalled();
+  });
+  test.each(['own', 'creator'])(
+    'holds the actual recovery phase until cancelled %s verifier exits',
+    async (which) => {
+      const entered = deferredGate(),
+        gate = deferredGate();
+      const verify = which === 'own' ? mockVerify : mockVerifyCreator;
+      const original = verify.getMockImplementation();
+      verify.mockImplementation(async (...args) => {
+        entered.resolve();
+        await gate.promise;
+        return original(...args);
+      });
+      let settled = false;
+      const pending = retainedTransact(options).then((result) => {
+        settled = true;
+        return result;
+      });
+      await entered.promise;
+      try {
+        caller.abort();
+        await Promise.resolve();
+        expect(verify.mock.calls[0][0].signal.aborted).toBe(true);
+        expect(settled).toBe(false);
+        expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+        expect(mockRootCreate).not.toHaveBeenCalled();
+      } finally {
+        gate.resolve();
+      }
+      expect((await pending).status).toBe('refused');
+      const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+      phase.release();
+      expect(scope.signal.aborted).toBe(false);
+    }
+  );
+  test.each(['cancel', 'deadline'])(
+    'drains late mirror opening and closing after %s before returning',
+    async (kind) => {
+      jest.useFakeTimers();
+      const entered = deferredGate(),
+        open = deferredGate(),
+        closing = deferredGate(),
+        close = deferredGate();
+      mockOpen.mockImplementation(async () => {
+        entered.resolve();
+        await open.promise;
+        return txid;
+      });
+      txid.close.mockImplementation(async () => {
+        closing.resolve();
+        await close.promise;
+      });
+      let settled = false;
+      const pending = retainedTransact(options).then((result) => {
+        settled = true;
+        return result;
+      });
+      await entered.promise;
+      try {
+        if (kind === 'cancel') caller.abort();
+        else await jest.advanceTimersByTimeAsync(20000);
+        expect(mockOpen.mock.calls[0][0].signal.aborted).toBe(true);
+        expect(settled).toBe(false);
+        open.resolve();
+        await closing.promise;
+        expect(settled).toBe(false);
+        expect(txid.inspect).not.toHaveBeenCalled();
+        expect(mockVerify).not.toHaveBeenCalled();
+      } finally {
+        open.resolve();
+        close.resolve();
+      }
+      expect((await pending).status).toBe('refused');
+      expect(scope.signal.aborted).toBe(false);
+    }
+  );
+  test('source canonical age includes completion cleanup and expires during a fresh tail', async () => {
+    jest.useFakeTimers();
+    mockPoiRetainedCapture.mockImplementation(async () => {
+      mockSourceAt = performance.now();
+      await jest.advanceTimersByTimeAsync(50000);
+      return { ...mockSource, status: 'captured' };
+    });
+    txid.witnessNote.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(10000);
+      return { noteWitness: copy(creatorNoteWitness) };
+    });
+    expect((await retainedTransact(options)).status).toBe('refused');
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  });
+  test('preserves a late authenticated source failure even after caller cancellation', async () => {
+    const entered = deferredGate(),
+      gate = deferredGate();
+    const sourceOutcome = Object.freeze({ fatal: true, reason: 'fatal', rpcFailure: 'response' });
+    mockPoiRetainedCapture.mockImplementation(async () => {
+      entered.resolve();
+      await gate.promise;
+      return { status: 'refused', stage: 'snapshot', sourceOutcome };
+    });
+    const pending = retainedTransact(options);
+    await entered.promise;
+    caller.abort();
+    gate.resolve();
+    expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
+    expect(mockOpen).not.toHaveBeenCalled();
+  });
+  test.each(['archive', 'anchor', 'capsule', 'projection'])(
+    'refuses final strict capture %s drift',
+    async (fault) => {
+      if (fault === 'archive') latest.capture.record.archivedAt = 123;
+      if (fault === 'anchor') {
+        first.capture.record.archivedAt = latest.capture.record.archivedAt = 123;
+        first.capture.record.finalized = { blockNumber: 5944712, blockHash: prefixed(5944712) };
+        latest.capture.record.finalized = { blockNumber: 5944713, blockHash: prefixed(5944713) };
+      }
+      if (fault === 'capsule') latest.capture.capsuleDigest = '9'.repeat(64);
+      if (fault === 'projection') latest.capture.projection.blockNumber++;
+      expect((await retainedTransact(options)).status).toBe('refused');
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(mockRoots.close).toHaveBeenCalled();
+    }
+  );
+  test('does not renew the original total budget while reserving source and tail', async () => {
+    jest.useFakeTimers();
+    mockSelectorCapture.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(20000);
+      return first;
+    });
+    const result = await retainedTransact({ ...options, timeoutMs: 100000 });
+    expect(result.status).toBe('captured');
+    expect(mockPoiRetainedCapture.mock.calls[0][0].timeoutMs).toBe(80000);
+    expect(mockVerify.mock.calls[0][0].timeoutMs).toBe(10000);
+    expect(mockVerifyCreator.mock.calls[0][0].timeoutMs).toBe(10000);
+    expect(mockCapture.mock.calls[0][0].timeoutMs).toBe(10000);
+  });
+  test('reserves later tail stages from the same deadline after slow earlier stages', async () => {
+    jest.useFakeTimers();
+    mockOpen.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(19000);
+      return txid;
+    });
+    const own = mockVerify.getMockImplementation(),
+      creator = mockVerifyCreator.getMockImplementation();
+    mockVerify.mockImplementation(async (...args) => {
+      await jest.advanceTimersByTimeAsync(9000);
+      return own(...args);
+    });
+    mockVerifyCreator.mockImplementation(async (...args) => {
+      await jest.advanceTimersByTimeAsync(9000);
+      return creator(...args);
+    });
+    mockRoots.acquire.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(9000);
+      return {};
+    });
+    expect((await retainedTransact(options)).status).toBe('captured');
+    expect(mockCapture.mock.calls[0][0].timeoutMs).toBe(7000);
+  });
+});
+
+describe('retained Transact final admission and cleanup', () => {
+  beforeEach(async () => {
+    await setupRetainedTransact();
+  });
+  test.each(['own', 'creator'])(
+    'the %s verifier timeout revokes but retains its phase through exit',
+    async (which) => {
+      jest.useFakeTimers();
+      const gate = deferredGate(),
+        entered = deferredGate();
+      const verify = which === 'own' ? mockVerify : mockVerifyCreator;
+      const original = verify.getMockImplementation();
+      verify.mockImplementation(async (...args) => {
+        entered.resolve();
+        await gate.promise;
+        return original(...args);
+      });
+      let settled = false;
+      const pending = retainedTransact(options).then((value) => {
+        settled = true;
+        return value;
+      });
+      await entered.promise;
+      try {
+        await jest.advanceTimersByTimeAsync(10000);
+        expect(verify.mock.calls[0][0].signal.aborted).toBe(true);
+        expect(settled).toBe(false);
+        expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+        expect(mockRootCreate).not.toHaveBeenCalled();
+      } finally {
+        gate.resolve();
+      }
+      expect((await pending).status).toBe('refused');
+      const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+      phase.release();
+      expect(scope.signal.aborted).toBe(false);
+    }
+  );
+  test('root timeout drains acquisition and refuses any recapture or result', async () => {
+    jest.useFakeTimers();
+    const entered = deferredGate(),
+      gate = deferredGate();
+    mockRoots.acquire.mockImplementation(async () => {
+      entered.resolve();
+      await gate.promise;
+      return {};
+    });
+    let settled = false;
+    const pending = retainedTransact(options).then((value) => {
+      settled = true;
+      return value;
+    });
+    await entered.promise;
+    try {
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(settled).toBe(false);
+      expect(mockCapture).not.toHaveBeenCalled();
+      expect(mockRoots.close).not.toHaveBeenCalled();
+    } finally {
+      gate.resolve();
+    }
+    expect((await pending).status).toBe('refused');
+    expect(mockRoots.close).toHaveBeenCalledTimes(1);
+    expect(mockSource.close).toHaveBeenCalledTimes(1);
+  });
+  test('mirror closing remains covered by the mirror deadline and fully drains', async () => {
+    jest.useFakeTimers();
+    const entered = deferredGate(),
+      gate = deferredGate();
+    txid.close.mockImplementation(async () => {
+      entered.resolve();
+      await gate.promise;
+    });
+    let settled = false;
+    const pending = retainedTransact(options).then((value) => {
+      settled = true;
+      return value;
+    });
+    await entered.promise;
+    try {
+      await jest.advanceTimersByTimeAsync(20000);
+      expect(mockOpen.mock.calls[0][0].signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      expect(mockVerify).not.toHaveBeenCalled();
+    } finally {
+      gate.resolve();
+    }
+    expect((await pending).status).toBe('refused');
+    expect(scope.signal.aborted).toBe(false);
+  });
+  test.each([false, true])(
+    'a stable archived capture requires its exact actually checked anchor, checked=%s',
+    async (checked) => {
+      const archive = { blockNumber: 5944712, blockHash: prefixed(5944712) };
+      for (const capture of [first.capture, latest.capture]) {
+        capture.record.archivedAt = 123;
+        capture.record.finalized = { ...archive };
+      }
+      const observe = mockObserve.getMockImplementation();
+      mockObserve.mockImplementation(async (...args) => {
+        const result = await observe(...args);
+        result.observation.capturedRepresentation = 'archived';
+        result.observation.anchorsActuallyChecked = checked
+          ? [{ kind: 'archive', number: archive.blockNumber, hash: archive.blockHash }]
+          : [];
+        return result;
+      });
+      const result = await retainedTransact(options);
+      expect(result.status).toBe(checked ? 'captured' : 'refused');
+      if (checked) expect(result.observations.archiveAnchorChecked).toBe(true);
+    }
+  );
+  test.each(['source', 'own', 'creator', 'root', 'recapture'])(
+    'exact destination replacement at %s cannot be blessed by later success',
+    async (at) => {
+      const boundary = {
+        source: mockPoiRetainedCapture,
+        own: mockVerify,
+        creator: mockVerifyCreator,
+        root: mockRoots.acquire,
+        recapture: mockCapture,
+      }[at];
+      const original = boundary.getMockImplementation();
+      boundary.mockImplementation(async (...args) => {
+        const result = await original(...args);
+        mockDestination = Object.freeze({});
+        return result;
+      });
+      expect((await retainedTransact(options)).status).toBe('refused');
+      if (at === 'source') expect(mockOpen).not.toHaveBeenCalled();
+      if (['source', 'own', 'creator'].includes(at)) expect(mockRootCreate).not.toHaveBeenCalled();
+      if (at !== 'recapture') expect(mockCapture).not.toHaveBeenCalled();
+    }
+  );
+});
+
+async function setupRetainedShield(unshield = false) {
+  await setup(unshield);
+  txid.witnessNote = jest.fn(() => {
+    throw Error('unexpected Shield creator witness');
+  });
+  mockPoiRetainedCapture.mockImplementation(async () => {
+    events.push('poi-source-retained');
+    mockSourceAt = performance.now();
+    return { ...mockSource, status: 'captured' };
+  });
+}
+describe('retained source-derived Shield branch', () => {
+  beforeEach(async () => setupRetainedShield());
+  test.each([false, true])(
+    'Shield unshield=%s uses source first and no creator witness/verification',
+    async (unshield) => {
+      await setupRetainedShield(unshield);
+      const result = await retainedTransact();
+      expect(result.status).toBe('captured');
+      expect(result.creatorClassification.type).toBe('Shield');
+      expect(result).not.toHaveProperty('creatorProvenance');
+      expect(events).toEqual([
+        'capture-selector-exited',
+        'receipt',
+        'poi-source-retained',
+        'txid-open',
+        'witness',
+        'txid-drained',
+        'verify-exited',
+        'root',
+        'recapture',
+      ]);
+      expect(mockOpen).toHaveBeenCalledTimes(1);
+      expect(txid.inspect).toHaveBeenCalledTimes(2);
+      expect(txid.witnessNote).not.toHaveBeenCalled();
+      expect(mockVerifyCreator).not.toHaveBeenCalled();
+      expect(mockPoiTransactCapture).not.toHaveBeenCalled();
+      expect(mockPoiCompletedCapture).not.toHaveBeenCalled();
+      expect(
+        require('./railgun-account-public').getRailgunAccountPublicDestination
+      ).not.toHaveBeenCalled();
+    }
+  );
+  test('legacy POI preflight preserves mirror-before-source order', async () => {
+    expect((await poiPreflight(options)).status).toBe('captured');
+    expect(events.indexOf('txid-open')).toBeLessThan(events.indexOf('poi-source'));
+    expect(events.indexOf('verify-exited')).toBeLessThan(events.indexOf('poi-source'));
+    expect(mockPoiRetainedCapture).not.toHaveBeenCalled();
+  });
+  test.each([undefined, null, {}, false])(
+    'missing/copied destination %p refuses without replacement selection',
+    async (sourceDestination) => {
+      expect(await poiRetained({ ...options, sourceDestination })).toEqual({
+        status: 'refused',
+        stage: 'context',
+      });
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockPoiRetainedCapture).not.toHaveBeenCalled();
+      expect(
+        require('./railgun-account-public').getRailgunAccountPublicDestination
+      ).not.toHaveBeenCalled();
+    }
+  );
+  test('authenticated source type requires creator work even if record carries misleading type metadata', async () => {
+    mockPoiObservation.creator.creator.type = 'Transact';
+    first.capture.record.creatorType = 'Shield';
+    latest.capture.record.creatorType = 'Shield';
+    expect((await retainedTransact()).status).toBe('refused');
+    expect(mockOpen).not.toHaveBeenCalled();
+  });
+  test('Shield source allowance reserves55s from original180s after earlier work', async () => {
+    jest.useFakeTimers();
+    mockSelectorCapture.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(20000);
+      return first;
+    });
+    const result = await retainedTransact();
+    expect(result.status).toBe('captured');
+    // Capture's scope includes the tail; its completed snapshot gets105s at most.
+    expect(mockPoiRetainedCapture.mock.calls[0][0].timeoutMs).toBe(160000);
+    expect(mockVerify.mock.calls[0][0].timeoutMs).toBe(10000);
+    expect(mockVerifyCreator).not.toHaveBeenCalled();
+  });
+  test.each(['archive', 'anchor'])(
+    'Shield strict final capture rejects %s drift',
+    async (fault) => {
+      if (fault === 'archive') latest.capture.record.archivedAt = 123;
+      else {
+        for (const c of [first.capture, latest.capture]) c.record.archivedAt = 123;
+        first.capture.record.finalized = { blockNumber: 5944712, blockHash: prefixed(5944712) };
+        latest.capture.record.finalized = { blockNumber: 5944713, blockHash: prefixed(5944713) };
+      }
+      expect((await retainedTransact()).status).toBe('refused');
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(mockSource.close).toHaveBeenCalledTimes(1);
+    }
+  );
+  test.each(['generation', 'destination', 'deadline'])(
+    'outer completion rejects %s drift during source cleanup',
+    async (fault) => {
+      if (fault === 'deadline') jest.useFakeTimers();
+      mockSource.close.mockImplementation(() => {
+        if (fault === 'generation')
+          mockPublicIdentity = { ...mockPublicIdentity, generationId: '9'.repeat(64) };
+        if (fault === 'destination') mockDestination = Object.freeze({});
+        if (fault === 'deadline') jest.spyOn(performance, 'now').mockReturnValue(180000);
+      });
+      try {
+        expect(await retainedTransact()).toEqual({ status: 'refused', stage: 'completion' });
+      } finally {
+        jest.restoreAllMocks();
+      }
+    }
+  );
+});
+
+describe.each(['Shield', 'Transact'])('fixed retained %s submission handoff', (type) => {
+  let handoff;
+  async function prepare(unshield = false) {
+    if (type === 'Shield') await setupRetainedShield(unshield);
+    else await setupRetainedTransact(unshield);
+    handoff = {
+      entry: {
+        selector: copy(options.selector),
+        capsuleDigest: first.capture.capsuleDigest,
+        bindingDigest: first.capture.bindingDigest,
+      },
+      capture: copy(first.capture),
+      observation: {
+        transaction: copy(fixture.transaction),
+        receipt: copy(fixture.receipt),
+        captureBindingDigest: first.capture.bindingDigest,
+        capturedRepresentation: 'active',
+        anchorsActuallyChecked: [],
+      },
+    };
+  }
+  const submit = (input = handoff) =>
+    poiRetainedSubmission({ ...options, sourceDestination: mockDestination }, input);
+  beforeEach(async () => prepare());
+  test.each([false, true])(
+    'one supplied receipt suffices for unshield=%s without fallback',
+    async (unshield) => {
+      await prepare(unshield);
+      const result = await submit();
+      expect(result.status).toBe('captured');
+      expect(result.creatorClassification.type).toBe(type);
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockPoiRetainedCapture).toHaveBeenCalledTimes(1);
+      expect(mockPoiCompletedCapture).not.toHaveBeenCalled();
+      expect(mockPoiTransactCapture).not.toHaveBeenCalled();
+      expect(mockOpen).toHaveBeenCalledTimes(1);
+      expect(mockVerify).toHaveBeenCalledTimes(1);
+      expect(mockVerifyCreator).toHaveBeenCalledTimes(type === 'Shield' ? 0 : 1);
+      expect(mockVerify.mock.calls[0][0].evidence).toMatchObject({
+        transaction: handoff.observation.transaction,
+        receipt: handoff.observation.receipt,
+      });
+      expect(events.indexOf('poi-source-retained')).toBeLessThan(events.indexOf('txid-open'));
+      expect(
+        require('./railgun-account-public').getRailgunAccountPublicDestination
+      ).not.toHaveBeenCalled();
+    }
+  );
+  test.each([undefined, null, false, {}])(
+    'missing handoff %p refuses with zero receipt/selector/mirror work',
+    async (input) => {
+      expect(
+        (await poiRetainedSubmission({ ...options, sourceDestination: mockDestination }, input))
+          .status
+      ).toBe('refused');
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+      expect(mockPoiRetainedCapture).not.toHaveBeenCalled();
+      expect(mockOpen).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['selector', 'capsule', 'binding', 'extra'])(
+    'malformed handoff %s refuses before capture',
+    async (fault) => {
+      if (fault === 'selector') handoff.entry.selector.position++;
+      if (fault === 'capsule') handoff.entry.capsuleDigest = '9'.repeat(64);
+      if (fault === 'binding') handoff.entry.bindingDigest = '9'.repeat(64);
+      if (fault === 'extra') handoff.authorized = true;
+      expect(await submit()).toEqual({ status: 'refused', stage: 'context' });
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['capture', 'digest', 'transaction', 'receipt'])(
+    'supplied observation %s is joined before source/mirror admission',
+    async (fault) => {
+      if (fault === 'capture') first.capture.facts.changed = true;
+      if (fault === 'digest') handoff.observation.captureBindingDigest = '9'.repeat(64);
+      if (fault === 'transaction') handoff.observation.transaction.hash = prefixed(999);
+      if (fault === 'receipt') handoff.observation.receipt.transactionHash = prefixed(999);
+      expect((await submit()).status).toBe('refused');
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockPoiRetainedCapture).not.toHaveBeenCalled();
+      expect(mockOpen).not.toHaveBeenCalled();
+    }
+  );
+  test('ordinary retained wrapper ignores positional diagnostic and still observes itself', async () => {
+    expect(
+      (await poiRetained({ ...options, sourceDestination: mockDestination }, handoff)).status
+    ).toBe('captured');
+    expect(mockObserve).toHaveBeenCalledTimes(1);
+  });
+  test.each([false, true])(
+    'late sourceOutcome fatal=%s survives aborted caller after borrowed work drains',
+    async (fatal) => {
+      const entered = deferredGate(),
+        gate = deferredGate();
+      const sourceOutcome = Object.freeze({
+        fatal,
+        reason: fatal ? 'fatal' : 'cancelled',
+        rpcFailure: fatal ? 'response' : null,
+      });
+      mockPoiRetainedCapture.mockImplementation(async () => {
+        entered.resolve();
+        await gate.promise;
+        return { status: 'refused', stage: 'snapshot', sourceOutcome };
+      });
+      let settled = false;
+      const pending = submit().then((value) => {
+        settled = true;
+        return value;
+      });
+      await entered.promise;
+      try {
+        caller.abort();
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        expect(mockOpen).not.toHaveBeenCalled();
+      } finally {
+        gate.resolve();
+      }
+      expect(await pending).toMatchObject({ status: 'refused', sourceOutcome });
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockVerify).not.toHaveBeenCalled();
+    }
   );
 });
