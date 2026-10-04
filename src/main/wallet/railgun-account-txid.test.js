@@ -603,3 +603,270 @@ test('a failed handoff opening drains its worker but leaves reservation ownershi
     handoff.release();
   }
 });
+
+function historicalCheckpoint(count = 5) {
+  existingCheckpoint();
+  state.checkpoint.state = {
+    version: 1,
+    count,
+    root: '1'.repeat(64),
+    after: '0x' + count.toString(16).padStart(64, '0') + '0'.repeat(128),
+    verificationHash: '0x' + '0'.repeat(64),
+    branches: Array(16).fill(null),
+    breaks: [],
+    transcript: '3'.repeat(64),
+  };
+}
+function historicalFacts(index = 1, checkpoint = state.checkpoint.state) {
+  return {
+    version: 1,
+    tree: 0,
+    index,
+    root: index === checkpoint.count - 1 ? checkpoint.root : '0'.repeat(64),
+    checkpointIndex: checkpoint.count - 1,
+    checkpointRoot: checkpoint.root,
+    transcript: checkpoint.transcript,
+    localPrefixComputed: true,
+    globalTxidCompleteness: false,
+    ownershipVerified: false,
+    eventCoverageVerified: false,
+    rootAccepted: false,
+    spendingEnabled: false,
+  };
+}
+test('historical root uses only fixed index/current checkpoint and returns detached diagnostics', async () => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  const facts = historicalFacts();
+  mockRunner.assertResult.mockReturnValue({ historicalRoot: facts });
+  events.length = 0;
+  const result = await value.historicalRoot(1);
+  expect(events).toEqual(['root', 'inspect', 'revalidate', 'historical-root']);
+  expect(mockRunner.run).toHaveBeenLastCalledWith('historical-root', {
+    state: state.checkpoint.state,
+    index: 1,
+  });
+  expect(mockRunner.assertResult).toHaveBeenLastCalledWith(
+    { mode: 'historical-root' },
+    'historical-root',
+    { state: state.checkpoint.state, index: 1 }
+  );
+  expect(result).toEqual(facts);
+  expect(result).not.toBe(facts);
+  expect(Object.isFrozen(result)).toBe(true);
+  expect(result).not.toHaveProperty('receipt');
+  expect(result).not.toHaveProperty('expectedRoot');
+  facts.root = '2'.repeat(64);
+  expect(result.root).toBe('0'.repeat(64));
+  expect(mockServices.txidPage).not.toHaveBeenCalled();
+  expect(mockJournal.prepare).not.toHaveBeenCalled();
+  expect(mockJournal.resume).not.toHaveBeenCalled();
+  expect(mockJournal.complete).not.toHaveBeenCalled();
+});
+test.each([0, 4, 7999])('historical root handles boundary index %i', async (index) => {
+  historicalCheckpoint(index === 7999 ? 8000 : 5);
+  const value = await open({ create: false, checkpointOnly: true });
+  mockRunner.assertResult.mockReturnValue({ historicalRoot: historicalFacts(index) });
+  expect((await value.historicalRoot(index)).index).toBe(index);
+});
+test.each([undefined, null, '1', 1n, -1, 0.5, NaN, Infinity, 8000, {}, { valueOf: () => 1 }])(
+  'historical root rejects invalid primitive index %p before scheduling work',
+  async (index) => {
+    historicalCheckpoint();
+    const value = await open({ create: false, checkpointOnly: true });
+    mockRunner.run.mockClear();
+    mockRoots.acquire.mockClear();
+    await expect(Promise.resolve().then(() => value.historicalRoot(index))).rejects.toThrow();
+    expect(mockRunner.run).not.toHaveBeenCalled();
+    expect(mockRoots.acquire).not.toHaveBeenCalled();
+    expect(value.signal.aborted).toBe(false);
+  }
+);
+test('historical root refuses index beyond the current checkpoint before historical computation', async () => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  mockRunner.run.mockClear();
+  await expect(value.historicalRoot(5)).rejects.toThrow();
+  expect(mockRunner.run.mock.calls.some(([mode]) => mode === 'historical-root')).toBe(false);
+});
+test.each([
+  ['version', 2],
+  ['tree', 1],
+  ['index', 2],
+  ['checkpointIndex', 5],
+  ['checkpointRoot', '2'.repeat(64)],
+  ['transcript', '4'.repeat(64)],
+  ['root', '0x' + '0'.repeat(64)],
+  ['root', 'A'.repeat(64)],
+  ['root', '30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001'],
+  ['root', 'f'.repeat(64)],
+  ['localPrefixComputed', false],
+  ...[
+    'globalTxidCompleteness',
+    'ownershipVerified',
+    'eventCoverageVerified',
+    'rootAccepted',
+    'spendingEnabled',
+  ].map((name) => [name, true]),
+  ['localPrefixComputed', 1],
+  ['rootAccepted', 0],
+])('historical result refuses malformed/mismatched %s=%p', async (key, replacement) => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  mockRunner.assertResult.mockReturnValue({
+    historicalRoot: { ...historicalFacts(), [key]: replacement },
+  });
+  await expect(value.historicalRoot(1)).rejects.toMatchObject({
+    code: 'RAILGUN_ACCOUNT_TXID_REFUSED',
+  });
+  expect(value.signal.aborted).toBe(true);
+});
+test.each(['extra', 'missing', 'array', 'null', 'oversize'])(
+  'historical result rejects %s shape',
+  async (kind) => {
+    historicalCheckpoint();
+    const value = await open({ create: false, checkpointOnly: true });
+    let facts = historicalFacts();
+    if (kind === 'extra') facts.expectedRoot = facts.root;
+    if (kind === 'missing') delete facts.rootAccepted;
+    if (kind === 'array') facts = [facts];
+    if (kind === 'null') facts = null;
+    if (kind === 'oversize') facts.root = '0'.repeat(4097);
+    mockRunner.assertResult.mockReturnValue({ historicalRoot: facts });
+    await expect(value.historicalRoot(1)).rejects.toThrow();
+  }
+);
+test('latest historical root must equal the current authenticated root', async () => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  mockRunner.assertResult.mockReturnValue({
+    historicalRoot: { ...historicalFacts(4), root: '0'.repeat(64) },
+  });
+  await expect(value.historicalRoot(4)).rejects.toThrow();
+});
+test('historical root refuses an otherwise shaped stale runner receipt', async () => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  mockRunner.assertResult.mockImplementation(() => {
+    throw Error('stale job observation');
+  });
+  await expect(value.historicalRoot(1)).rejects.toThrow('stale job observation');
+  expect(value.signal.aborted).toBe(true);
+});
+test.each(['pending', 'checkpoint', 'metadata'])(
+  'historical checkpoint-only read rejects newly changed %s before root refresh',
+  async (kind) => {
+    historicalCheckpoint();
+    state.checkpoint.store = { identity: 'original' };
+    const value = await open({ create: false, checkpointOnly: true });
+    if (kind === 'pending') state.pending = { work: { expected: state.checkpoint.state } };
+    else if (kind === 'metadata') state.checkpoint.store.identity = 'replacement';
+    else state.checkpoint.state.transcript = '4'.repeat(64);
+    mockRunner.run.mockClear();
+    mockRoots.acquire.mockClear();
+    await expect(value.historicalRoot(1)).rejects.toThrow();
+    expect(mockRunner.run).not.toHaveBeenCalled();
+    expect(mockRoots.acquire).not.toHaveBeenCalled();
+  }
+);
+test('historical checkpoint-only rechecks the pin on the second journal read', async () => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  let calls = 0;
+  mockJournal.readState.mockImplementation(async () => {
+    const current = structuredClone(state);
+    if (++calls === 2) current.checkpoint.state.transcript = '4'.repeat(64);
+    return current;
+  });
+  mockRunner.run.mockClear();
+  await expect(value.historicalRoot(1)).rejects.toThrow();
+  expect(mockRunner.run.mock.calls.map(([mode]) => mode)).toEqual(['inspect']);
+});
+test('historical reader cannot open an old-policy-only store as the new policy', async () => {
+  const oldPolicy = 'a'.repeat(64);
+  const oldFile = path.join(directory, 'txid-' + oldPolicy + '.sqlite');
+  const oldJournal = getPrivacyStoragePath(
+    mockEnrollment.getContext('storage', 'railgun-txid-v1:' + oldPolicy),
+    directory
+  );
+  fs.writeFileSync(oldFile, 'old-policy-sentinel');
+  fs.writeFileSync(oldJournal, 'old-policy-journal');
+  await expect(open({ create: false, checkpointOnly: true })).rejects.toThrow();
+  expect(mockOpen).not.toHaveBeenCalled();
+  expect(mockKey).not.toHaveBeenCalled();
+  expect(mockRunner.run).not.toHaveBeenCalled();
+  expect(fs.readFileSync(oldFile, 'utf8')).toBe('old-policy-sentinel');
+  expect(fs.readFileSync(oldJournal, 'utf8')).toBe('old-policy-journal');
+  expect(fs.existsSync(path.join(directory, 'txid-' + 'e'.repeat(64) + '.sqlite'))).toBe(false);
+});
+test('historical computation retains phase until ignored job and storage worker drain', async () => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  let finish, entered;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const original = mockRunner.run.getMockImplementation();
+  mockRunner.run.mockImplementation((mode, input) => {
+    if (mode !== 'historical-root') return original(mode, input);
+    entered();
+    return new Promise((resolve) => {
+      finish = () => resolve({ value: { historicalRoot: historicalFacts() }, receipt: { mode } });
+    });
+  });
+  mockSession.close.mockImplementation(() => {});
+  const pending = value.historicalRoot(1);
+  const refused = expect(pending).rejects.toThrow();
+  let settled = false;
+  try {
+    await ready;
+    publicController.abort();
+    const closing = value.close().then(() => {
+      settled = true;
+    });
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+    finish();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+    expect(mockRunner.assertResult).not.toHaveBeenCalled();
+    finishWorker();
+    await closing;
+    await refused;
+    const phase = claimRailgunAccountPhase(mockEnrollment, 'wallet');
+    phase.release();
+  } finally {
+    finish?.();
+    finishWorker();
+    await refused;
+  }
+});
+test('overlapping historical reader refuses without closing the first computation', async () => {
+  historicalCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  let finish, entered;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const original = mockRunner.run.getMockImplementation();
+  mockRunner.assertResult.mockReturnValue({ historicalRoot: historicalFacts() });
+  mockRunner.run.mockImplementation((mode, input) => {
+    if (mode !== 'historical-root') return original(mode, input);
+    entered();
+    return new Promise((resolve) => {
+      finish = () => resolve({ value: {}, receipt: { mode } });
+    });
+  });
+  const pending = value.historicalRoot(1);
+  try {
+    await ready;
+    await expect(value.historicalRoot(1)).rejects.toThrow();
+    expect(value.signal.aborted).toBe(false);
+    expect(mockSession.close).not.toHaveBeenCalled();
+    finish();
+    expect(await pending).toEqual(historicalFacts());
+  } finally {
+    finish?.();
+    await pending.catch(() => {});
+  }
+});

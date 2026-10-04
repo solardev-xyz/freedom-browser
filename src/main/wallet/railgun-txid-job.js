@@ -11,7 +11,15 @@ async function run(text, { request, signal, guardReport }) {
   const input = JSON.parse(text);
   assert.deepEqual(Object.keys(input).sort(), ['archive', 'mode']);
   assert.ok(
-    ['project', 'apply', 'witness', 'note-witness', 'inspect', 'coverage'].includes(input.mode)
+    [
+      'project',
+      'apply',
+      'witness',
+      'note-witness',
+      'historical-root',
+      'inspect',
+      'coverage',
+    ].includes(input.mode)
   );
   const archive = require('./railgun-engine-runtime').verifyRailgunEngineRuntime(input.archive);
   const r = createRequire(path.join(archive, 'package.json')),
@@ -100,6 +108,18 @@ async function run(text, { request, signal, guardReport }) {
     assert.deepEqual(Object.keys(payload).sort(), ['state', 'txid']);
     assert.deepEqual(current, payload.state);
     value = { witness: await projection.witness(current, payload.txid, read) };
+  } else if (input.mode === 'historical-root') {
+    // The expected historical root stays in main. Compute only from the exact
+    // authenticated current checkpoint and the requested prefix boundary.
+    assert.deepEqual(Object.keys(payload).sort(), ['index', 'state']);
+    assert.deepEqual(current, payload.state);
+    assert.ok(
+      Number.isSafeInteger(payload.index) &&
+        payload.index >= 0 &&
+        payload.index <= 7999 &&
+        payload.index < current.count
+    );
+    value = { historicalRoot: await projection.historicalRoot(current, payload.index, read) };
   } else {
     assert.deepEqual(
       Object.keys(payload).sort(),

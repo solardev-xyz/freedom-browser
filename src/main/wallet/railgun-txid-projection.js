@@ -264,6 +264,52 @@ function createRailgunTxidProjection({ hashPair, transactionHash, verificationHa
       globalTxidCompleteness: false,
     });
   }
+  async function historicalRoot(input, index, read) {
+    const current = state(JSON.parse(JSON.stringify(input)));
+    check(
+      current.count > 0 &&
+        current.count <= 8000 &&
+        integer(index, 7999) &&
+        index < current.count &&
+        typeof read === 'function'
+    );
+    const boundary = inspectRecord(await read(`txid:row:${index}`));
+    // Authenticate the complete current path, including right subtrees that
+    // contain later rows and must be discarded from the historical prefix.
+    const proof = await witness(current, boundary.railgunTxid, read);
+    check(
+      proof.index === index &&
+        proof.rowSha256 === boundary.rowSha256 &&
+        proof.railgunTxid === boundary.railgunTxid &&
+        proof.root === current.root &&
+        proof.checkpointIndex === current.count - 1 &&
+        proof.transcript === current.transcript
+    );
+    let node = proof.leaf,
+      cursor = index;
+    for (let level = 0; level < 16; level++) {
+      // Left siblings of an odd cursor were already complete at index + 1.
+      // A right sibling is entirely beyond that prefix, so use the pinned zero.
+      node = cursor & 1 ? pair(proof.elements[level], node) : pair(node, zeros[level]);
+      cursor >>= 1;
+    }
+    check(cursor === 0 && (index !== current.count - 1 || node === current.root));
+    return freeze({
+      version: 1,
+      tree: 0,
+      index,
+      root: node,
+      checkpointIndex: current.count - 1,
+      checkpointRoot: current.root,
+      transcript: current.transcript,
+      localPrefixComputed: true,
+      globalTxidCompleteness: false,
+      ownershipVerified: false,
+      eventCoverageVerified: false,
+      rootAccepted: false,
+      spendingEnabled: false,
+    });
+  }
   // Detached public evidence: no store or lookup authority survives a phase
   // switch. Recompute the row and path instead of trusting a prior job's flags.
   function verifyWitness(input, value) {
@@ -295,6 +341,7 @@ function createRailgunTxidProjection({ hashPair, transactionHash, verificationHa
     empty,
     append,
     witness,
+    historicalRoot,
     inspectRecord,
     verifyWitness,
     inspect: (value) => freeze(state(JSON.parse(JSON.stringify(value)))),

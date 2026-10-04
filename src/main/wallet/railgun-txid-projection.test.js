@@ -230,3 +230,230 @@ test.each([
   }
   expect(() => p.verifyWitness(state, proof)).toThrow();
 });
+
+// Dense prefix oracle: build whole levels from leaves, independent of the
+// historical boundary-path algorithm and the append frontier.
+function prefixRoot(input, count) {
+  let nodes = input.slice(0, count).map((item) => transaction(item).hash);
+  for (let level = 0; level < 16; level++) {
+    if (nodes.length % 2) nodes.push(zeros[level]);
+    const parents = [];
+    for (let i = 0; i < nodes.length; i += 2) parents.push(pair(nodes[i], nodes[i + 1]));
+    nodes = parents;
+  }
+  return nodes[0];
+}
+async function historicalFixture(count, factory = create) {
+  const input = rows(count),
+    db = store();
+  let state = factory().empty();
+  for (let i = 0; i < input.length; i += 100) {
+    const result = await factory().append(state, input.slice(i, i + 100), db.read);
+    db.apply(result);
+    state = result.state;
+  }
+  return { input, db, state };
+}
+test('every historical prefix matches an independent dense oracle after later rows overwrite ancestors', async () => {
+  const { input, db, state } = await historicalFixture(257);
+  const before = [...db.values];
+  for (let index = 0; index < input.length; index++) {
+    const reads = [];
+    const result = await create().historicalRoot(state, index, async (key) => {
+      reads.push(key);
+      return db.read(key);
+    });
+    expect(result).toEqual({
+      version: 1,
+      tree: 0,
+      index,
+      root: prefixRoot(input, index + 1),
+      checkpointIndex: 256,
+      checkpointRoot: state.root,
+      transcript: state.transcript,
+      localPrefixComputed: true,
+      globalTxidCompleteness: false,
+      ownershipVerified: false,
+      eventCoverageVerified: false,
+      rootAccepted: false,
+      spendingEnabled: false,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(reads.length).toBeLessThanOrEqual(19);
+    expect(reads.filter((key) => key.startsWith('txid:row:'))).toEqual([
+      `txid:row:${index}`,
+      `txid:row:${index}`,
+    ]);
+  }
+  expect([...db.values]).toEqual(before);
+});
+test('old prefix roots stay equal across coherent append checkpoints while current roots advance', async () => {
+  const early = await historicalFixture(5),
+    later = await historicalFixture(105);
+  expect(early.state.root).not.toBe(later.state.root);
+  for (let index = 0; index < 5; index++) {
+    const first = await create().historicalRoot(early.state, index, early.db.read);
+    const second = await create().historicalRoot(later.state, index, later.db.read);
+    expect(second.root).toBe(first.root);
+    expect(second.checkpointRoot).not.toBe(first.checkpointRoot);
+    expect(second.transcript).not.toBe(first.transcript);
+  }
+});
+test('maximum historical capacity matches the oracle with synthetic continuity classification', async () => {
+  // The production continuity policy requires the exact live omission at 4188.
+  // This synthetic capacity/crypto test isolates only that classification;
+  // all other tests above/below use the real policy, and no source is changed.
+  let capacityCreate;
+  jest.isolateModules(() => {
+    jest.doMock('./railgun-txid-omissions', () => ({
+      classifyRailgunTxidContinuity: () => ({
+        status: 'synthetic-capacity-fixture',
+        globalTxidCompleteness: false,
+      }),
+    }));
+    const { createRailgunTxidProjection: factory } = require('./railgun-txid-projection');
+    capacityCreate = () =>
+      factory({
+        hashPair: pair,
+        transactionHash: transaction,
+        verificationHash: verification,
+        zeroNodes: zeros,
+      });
+  });
+  jest.dontMock('./railgun-txid-omissions');
+  const { input, db, state } = await historicalFixture(8000, capacityCreate);
+  for (const index of [4095, 4096, 7998, 7999]) {
+    const result = await capacityCreate().historicalRoot(state, index, db.read);
+    expect(result.root).toBe(prefixRoot(input, index + 1));
+    expect(result.checkpointIndex).toBe(7999);
+    if (index === 7999) expect(result.root).toBe(state.root);
+  }
+  const read = jest.fn();
+  await expect(capacityCreate().historicalRoot(state, 8000, read)).rejects.toThrow();
+  await expect(
+    capacityCreate().historicalRoot({ ...state, count: 8001 }, 7999, read)
+  ).rejects.toThrow();
+  expect(read).not.toHaveBeenCalled();
+  // The ordinary production factory still refuses an uninterrupted synthetic
+  // checkpoint beyond the pinned omission; the isolated mock did not escape.
+  await expect(create().historicalRoot(state, 7999, read)).rejects.toThrow();
+});
+test('real continuity admits the pre-omission boundary and refuses an unqualified later checkpoint', async () => {
+  const { input, db, state } = await historicalFixture(4188);
+  expect((await create().historicalRoot(state, 4187, db.read)).root).toBe(prefixRoot(input, 4188));
+  const read = jest.fn();
+  await expect(
+    create().historicalRoot({ ...state, count: 4189 }, 4187, read)
+  ).rejects.toMatchObject({ code: 'RAILGUN_TXID_CONTINUITY_REFUSED' });
+  expect(read).not.toHaveBeenCalled();
+});
+test.each([-1, 0.5, NaN, Infinity, '0', null, undefined, 3, 7999, 8000])(
+  'invalid or beyond-checkpoint historical index %s refuses before reading',
+  async (index) => {
+    const { state } = await historicalFixture(3),
+      read = jest.fn();
+    await expect(create().historicalRoot(state, index, read)).rejects.toThrow();
+    expect(read).not.toHaveBeenCalled();
+  }
+);
+test.each(['empty', 'over-capacity', 'malformed', 'no-reader'])(
+  'historical root refuses %s context before reading',
+  async (kind) => {
+    const { state } = await historicalFixture(3),
+      changed = structuredClone(state),
+      read = jest.fn();
+    if (kind === 'over-capacity') changed.count = 8001;
+    if (kind === 'malformed') changed.extra = true;
+    await expect(
+      create().historicalRoot(
+        kind === 'empty' ? create().empty() : changed,
+        0,
+        kind === 'no-reader' ? null : read
+      )
+    ).rejects.toThrow();
+    expect(read).not.toHaveBeenCalled();
+  }
+);
+test.each([
+  'missing-row',
+  'changed-row',
+  'changed-leaf',
+  'missing-lookup',
+  'wrong-lookup',
+  'wrong-root',
+  'valid-other-boundary',
+])('historical root refuses %s even when deriving a prefix', async (kind) => {
+  const { db, state } = await historicalFixture(5),
+    changed = structuredClone(state),
+    text = db.values.get('txid:row:1'),
+    record = JSON.parse(text);
+  if (kind === 'missing-row') db.values.set('txid:row:1', null);
+  if (kind === 'changed-row') {
+    record.row.timestamp++;
+    db.values.set('txid:row:1', JSON.stringify(record));
+  }
+  if (kind === 'changed-leaf') {
+    record.leaf = hash('changed');
+    db.values.set('txid:row:1', JSON.stringify(record));
+  }
+  if (kind === 'missing-lookup') db.values.set('txid:lookup:' + record.railgunTxid, null);
+  if (kind === 'wrong-lookup') db.values.set('txid:lookup:' + record.railgunTxid, '2');
+  if (kind === 'wrong-root') changed.root = hash('changed');
+  // A genuine record/path for index 3 still cannot answer a request for 1.
+  if (kind === 'valid-other-boundary') db.values.set('txid:row:1', db.values.get('txid:row:3'));
+  await expect(create().historicalRoot(changed, 1, db.read)).rejects.toThrow();
+});
+test.each([0, 1, 2, 3, 4, 5, 6, 7, 8])(
+  'historical index zero still authenticates discarded current right sibling at level %i',
+  async (level) => {
+    const { db, state } = await historicalFixture(257);
+    db.values.set(`txid:node:${level}:1`, hash('corrupt-right'));
+    await expect(create().historicalRoot(state, 0, db.read)).rejects.toThrow();
+  }
+);
+test('historical root authenticates a completed left subtree and ignores mutable caller state', async () => {
+  const { input, db, state } = await historicalFixture(5),
+    mutable = structuredClone(state);
+  let first = true;
+  const result = await create().historicalRoot(mutable, 3, async (key) => {
+    if (first) {
+      first = false;
+      mutable.root = hash('changed');
+      mutable.count = 1;
+      mutable.transcript = hash('changed');
+    }
+    return db.read(key);
+  });
+  expect(result.root).toBe(prefixRoot(input, 4));
+  expect(result.checkpointRoot).toBe(state.root);
+  db.values.set('txid:node:1:0', hash('corrupt-left'));
+  await expect(create().historicalRoot(state, 3, db.read)).rejects.toThrow();
+});
+test('historical computation awaits borrowed reads and propagates their refusal without writes', async () => {
+  const { db, state } = await historicalFixture(3),
+    before = [...db.values];
+  let rejectRead,
+    settled = false;
+  const pending = create().historicalRoot(
+    state,
+    0,
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectRead = reject;
+      })
+  );
+  const observed = pending.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  rejectRead(Error('read refused'));
+  await expect(pending).rejects.toThrow('read refused');
+  await observed;
+  expect([...db.values]).toEqual(before);
+});

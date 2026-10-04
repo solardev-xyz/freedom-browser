@@ -69,7 +69,16 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
   async function run(mode, payload, source) {
     active();
     check(
-      !busy && ['inspect', 'project', 'apply', 'witness', 'note-witness', 'coverage'].includes(mode)
+      !busy &&
+        [
+          'inspect',
+          'project',
+          'apply',
+          'witness',
+          'note-witness',
+          'historical-root',
+          'coverage',
+        ].includes(mode)
     );
     check(
       mode === 'coverage'
@@ -83,7 +92,24 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
     const text = JSON.stringify(payload);
     check(typeof text === 'string' && Buffer.byteLength(text) <= 2 * 1024 * 1024 - 128);
     payload = JSON.parse(text);
+    if (mode === 'historical-root') {
+      check(
+        payload &&
+          !Array.isArray(payload) &&
+          Object.keys(payload).length === 2 &&
+          Object.hasOwn(payload, 'state') &&
+          Object.hasOwn(payload, 'index') &&
+          Number.isSafeInteger(payload.state?.count) &&
+          payload.state.count > 0 &&
+          payload.state.count <= 8000 &&
+          Number.isSafeInteger(payload.index) &&
+          payload.index >= 0 &&
+          payload.index <= 7999 &&
+          payload.index < payload.state.count
+      );
+    }
     busy = true;
+    const pendingDispatches = new Set();
     let sequence = 0,
       supplied = false,
       result,
@@ -112,83 +138,102 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
         lifetimeMs: 180000,
         broker: {
           signal: runSignal,
-          async dispatch(wire) {
-            active();
-            check(!runSignal.aborted);
-            check(typeof wire === 'string' && Buffer.byteLength(wire) <= 2 * 1024 * 1024);
-            const message = JSON.parse(wire);
-            check(message?.id === ++sequence && !result && !storageBusy && !reading);
-            if (message.method === 'input') {
-              check(!supplied && Object.keys(message).length === 2);
-              supplied = true;
-              return JSON.stringify({ id: message.id, value: payload });
-            }
-            check(supplied);
-            if (message.method === 'sourceNext') {
-              check(mode === 'coverage' && !eof && Object.keys(message).length === 2);
-              reading = true;
+          dispatch(wire) {
+            const work = (async () => {
               try {
-                const logs = await feed.next();
-                eof = logs === null;
-                return JSON.stringify({ id: message.id, value: logs });
-              } finally {
-                reading = false;
+                active();
+                check(!runSignal.aborted);
+                check(typeof wire === 'string' && Buffer.byteLength(wire) <= 2 * 1024 * 1024);
+                const message = JSON.parse(wire);
+                check(message?.id === ++sequence && !result && !storageBusy && !reading);
+                if (message.method === 'input') {
+                  check(!supplied && Object.keys(message).length === 2);
+                  supplied = true;
+                  return JSON.stringify({ id: message.id, value: payload });
+                }
+                check(supplied);
+                if (message.method === 'sourceNext') {
+                  check(mode === 'coverage' && !eof && Object.keys(message).length === 2);
+                  reading = true;
+                  try {
+                    const logs = await feed.next();
+                    active();
+                    check(!runSignal.aborted);
+                    eof = logs === null;
+                    return JSON.stringify({ id: message.id, value: logs });
+                  } finally {
+                    reading = false;
+                  }
+                }
+                if (message.method === 'result') {
+                  check(
+                    Object.keys(message).length === 3 &&
+                      message.value?.guards?.attempts === 0 &&
+                      message.value.inventory === inventory &&
+                      transaction === null &&
+                      (mode !== 'coverage' || eof)
+                  );
+                  result = message.value;
+                  return JSON.stringify({ id: message.id, value: null });
+                }
+                check(
+                  Object.keys(message).length === 3 &&
+                    (message.method === 'get' ||
+                      (mode === 'apply' &&
+                        ['txBegin', 'txStage', 'txCommit', 'txAbort', 'txRead'].includes(
+                          message.method
+                        )))
+                );
+                if (message.method === 'txStage')
+                  check(
+                    Array.isArray(message.args?.operations) &&
+                      message.args.operations.every((op) => op.type === 'put')
+                  );
+                if (message.method === 'txBegin') check(transaction === null);
+                else if (message.method === 'get') {
+                  check(transaction === null);
+                  keyAllowed(message.args?.key);
+                } else {
+                  check(transaction !== null && message.args?.transaction === transaction);
+                  if (message.method === 'txStage')
+                    message.args.operations.forEach((op) => keyAllowed(op.key));
+                  if (message.method === 'txRead') {
+                    check(message.args?.method === 'get');
+                    keyAllowed(message.args.args?.key);
+                  }
+                }
+                const id = ++serial;
+                storageBusy = true;
+                try {
+                  const reply = JSON.parse(
+                    await dispatch.dispatch(JSON.stringify({ ...message, id }))
+                  );
+                  active();
+                  check(!runSignal.aborted);
+                  check(reply.id === id);
+                  if (message.method === 'txBegin') {
+                    check(Number.isSafeInteger(reply.value) && reply.value > 0);
+                    transaction = reply.value;
+                  }
+                  if (['txCommit', 'txAbort'].includes(message.method)) {
+                    check(reply.value === null);
+                    transaction = null;
+                  }
+                  return JSON.stringify({ ...reply, id: message.id });
+                } finally {
+                  storageBusy = false;
+                }
+              } catch (error) {
+                // A refused job cannot be rescued by a later message
+                // before the supervisor processes this rejected promise.
+                close();
+                throw error;
               }
-            }
-            if (message.method === 'result') {
-              check(
-                Object.keys(message).length === 3 &&
-                  message.value?.guards?.attempts === 0 &&
-                  message.value.inventory === inventory &&
-                  transaction === null &&
-                  (mode !== 'coverage' || eof)
-              );
-              result = message.value;
-              return JSON.stringify({ id: message.id, value: null });
-            }
-            check(
-              Object.keys(message).length === 3 &&
-                (message.method === 'get' ||
-                  (mode === 'apply' &&
-                    ['txBegin', 'txStage', 'txCommit', 'txAbort', 'txRead'].includes(
-                      message.method
-                    )))
-            );
-            if (message.method === 'txStage')
-              check(
-                Array.isArray(message.args?.operations) &&
-                  message.args.operations.every((op) => op.type === 'put')
-              );
-            if (message.method === 'txBegin') check(transaction === null);
-            else if (message.method === 'get') {
-              check(transaction === null);
-              keyAllowed(message.args?.key);
-            } else {
-              check(transaction !== null && message.args?.transaction === transaction);
-              if (message.method === 'txStage')
-                message.args.operations.forEach((op) => keyAllowed(op.key));
-              if (message.method === 'txRead') {
-                check(message.args?.method === 'get');
-                keyAllowed(message.args.args?.key);
-              }
-            }
-            const id = ++serial;
-            storageBusy = true;
-            try {
-              const reply = JSON.parse(await dispatch.dispatch(JSON.stringify({ ...message, id })));
-              check(reply.id === id);
-              if (message.method === 'txBegin') {
-                check(Number.isSafeInteger(reply.value) && reply.value > 0);
-                transaction = reply.value;
-              }
-              if (['txCommit', 'txAbort'].includes(message.method)) {
-                check(reply.value === null);
-                transaction = null;
-              }
-              return JSON.stringify({ ...reply, id: message.id });
-            } finally {
-              storageBusy = false;
-            }
+            })();
+            pendingDispatches.add(work);
+            const observed = () => pendingDispatches.delete(work);
+            work.then(observed, observed);
+            return work;
           },
         },
       });
@@ -218,6 +263,9 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
     } finally {
       task?.close();
       if (task) await task.closed;
+      // The supervisor can exit before a borrowed store read ignores revocation
+      // and settles. Keep this run busy until every admitted dispatch drains.
+      await Promise.allSettled([...pendingDispatches]);
       feed?.close();
       if (feed) await feed.done.catch(() => {});
       task = null;

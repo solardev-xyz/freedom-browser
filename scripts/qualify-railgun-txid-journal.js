@@ -27,6 +27,8 @@ async function main() {
         require('../docs/qualification/railgun-txid-storage-2026-10-03.json').sourceSha256
       ),
       'src/main/wallet/railgun-txid-journal.js',
+      'src/main/wallet/railgun-txid-runner.test.js',
+      'src/main/wallet/railgun-txid-job.test.js',
       'src/main/wallet/privacy-storage.js',
     ]),
   ];
@@ -130,6 +132,45 @@ async function main() {
       create,
     });
   }
+  const processes = require('../src/main/wallet/railgun-process'),
+    originalStart = processes.startRailgunProcess;
+  assert.equal(require.cache[require.resolve('../src/main/wallet/railgun-txid-runner')], undefined);
+  let fault;
+  const faultRecoveries = [];
+  processes.startRailgunProcess = (options) => {
+    const selected = fault;
+    if (!selected) return originalStart(options);
+    assert.equal(JSON.parse(options.input).mode, 'apply');
+    assert.ok(!options.binaryKey);
+    const broker = options.broker;
+    const task = originalStart({
+      ...options,
+      broker: {
+        signal: broker.signal,
+        async dispatch(wire) {
+          const message = JSON.parse(wire);
+          if (message.method === 'result') selected.results++;
+          const reply = await broker.dispatch(wire);
+          if (message.method === selected.method && !selected.injected) {
+            selected.injected = true;
+            // The real storage operation has completed. Reject a broker message
+            // before acknowledging it to the child, simulating this exact gap.
+            const rejected = broker.dispatch(
+              JSON.stringify({ id: message.id + 1, method: 'forbidden', args: {} })
+            );
+            selected.immediateAbort = broker.signal.aborted;
+            await assert.rejects(rejected);
+            assert.equal(selected.immediateAbort, true);
+          }
+          return reply;
+        },
+      },
+    });
+    task.closed.then((exit) => {
+      selected.exit = exit.code;
+    });
+    return task;
+  };
   try {
     await open(true);
     let inspected = await runner.run('inspect', {}),
@@ -160,7 +201,48 @@ async function main() {
         token = await journal.resume(inspected.receipt, issueRoot(payload.expected));
         recoveries.push('after-prepare-before-apply');
       }
-      let applied = await runner.run('apply', payload);
+      let applied;
+      if (page === 3 || page === 4) {
+        const beforeStore = await worker.inspectWalletState();
+        fault = {
+          method: page === 3 ? 'txStage' : 'txCommit',
+          injected: false,
+          results: 0,
+        };
+        const attempted = fault;
+        await assert.rejects(runner.run('apply', payload));
+        fault = undefined;
+        assert.equal(attempted.injected, true);
+        assert.equal(attempted.immediateAbort, true);
+        assert.equal(attempted.results, 0);
+        assert.ok(attempted.exit && attempted.exit !== 'RAILGUN_PROCESS_CLOSED');
+        await close();
+        await open(false);
+        const pending = await journal.readState();
+        assert.deepEqual(pending.pending.work, payload);
+        assert.deepEqual(pending.checkpoint.state, payload.base);
+        inspected = await runner.run('inspect', {});
+        assert.deepEqual(inspected.value.state, page === 3 ? payload.base : payload.expected);
+        const recoveredStore = await worker.inspectWalletState();
+        if (page === 3) assert.deepEqual(recoveredStore, beforeStore);
+        token = await journal.resume(inspected.receipt, issueRoot(payload.expected));
+        applied = await runner.run('apply', payload);
+        assert.equal(applied.value.replayed, page === 4);
+        assert.deepEqual(applied.value.state, payload.expected);
+        if (page === 4) assert.deepEqual(await worker.inspectWalletState(), recoveredStore);
+        faultRecoveries.push({
+          point: page === 3 ? 'staged-before-commit' : 'committed-before-reply',
+          immediateRefusal: true,
+          childExit: attempted.exit,
+          resultMessages: attempted.results,
+          pendingJournalRetained: true,
+          oldCheckpointRetainedBeforeRecovery: true,
+          storeBeforeRecovery: page === 3 ? 'unchanged-base' : 'complete-new-state',
+          recoveredWithoutDuplication: true,
+          ...(page === 4 ? { replayStoreUnchanged: true } : {}),
+          replayed: applied.value.replayed,
+        });
+      } else applied = await runner.run('apply', payload);
       if (page === 2) {
         await close();
         await open(false);
@@ -178,6 +260,7 @@ async function main() {
     }
     assert.equal(state.root, source.checkpoint.root);
     assert.equal(state.count, source.checkpoint.index + 1);
+    assert.equal(faultRecoveries.length, 2);
     const before = await journal.readState();
     await close();
     await open(false);
@@ -191,6 +274,7 @@ async function main() {
       captureSha256: sha(sourceBytes),
       checkpoint: restored,
       recoveries,
+      faultRecoveries,
       coldRestore: true,
       rootValidation: 'controlled-fixture-receipts',
       enrolledAccountQualified: false,
@@ -206,6 +290,7 @@ async function main() {
     });
     return 0;
   } finally {
+    processes.startRailgunProcess = originalStart;
     await close();
     scope.close();
   }

@@ -29,6 +29,69 @@ const fail = () =>
 const check = (v) => {
   if (!v) throw fail();
 };
+// This validates diagnostic shape and checkpoint binding, not Poseidon. The
+// guarded job computes the prefix; its receipt remains inside the TXID phase.
+function normalizeHistoricalRoot(value, state, index) {
+  const keys = [
+    'version',
+    'tree',
+    'index',
+    'root',
+    'checkpointIndex',
+    'checkpointRoot',
+    'transcript',
+    'localPrefixComputed',
+    'globalTxidCompleteness',
+    'ownershipVerified',
+    'eventCoverageVerified',
+    'rootAccepted',
+    'spendingEnabled',
+  ];
+  check(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === keys.length &&
+      keys.every((key) => Object.hasOwn(value, key))
+  );
+  const text = JSON.stringify(value);
+  check(Buffer.byteLength(text) <= 4096);
+  const result = JSON.parse(text);
+  const digest = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+  const field = (v) =>
+    digest(v) &&
+    BigInt('0x' + v) <
+      21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  check(
+    result.version === 1 &&
+      result.tree === 0 &&
+      Number.isSafeInteger(index) &&
+      index >= 0 &&
+      index <= 7999 &&
+      result.index === index &&
+      Number.isSafeInteger(state?.count) &&
+      state.count > 0 &&
+      state.count <= 8000 &&
+      index < state.count &&
+      result.checkpointIndex === state.count - 1 &&
+      field(result.root) &&
+      field(result.checkpointRoot) &&
+      result.checkpointRoot === state.root &&
+      digest(result.transcript) &&
+      result.transcript === state.transcript &&
+      result.localPrefixComputed === true
+  );
+  for (const key of [
+    'globalTxidCompleteness',
+    'ownershipVerified',
+    'eventCoverageVerified',
+    'rootAccepted',
+    'spendingEnabled',
+  ])
+    check(result[key] === false);
+  if (index === state.count - 1) check(result.root === state.root);
+  return Object.freeze(result);
+}
 function exists(filename) {
   try {
     const stat = fs.lstatSync(filename);
@@ -206,9 +269,12 @@ async function openRailgunAccountTxid({
     assertCheckpoint(current);
     check(current.checkpoint && !current.pending);
     const payload = { state: current.checkpoint.state, ...input };
+    if (mode === 'historical-root') check(input.index < payload.state.count);
     const computed = await runner.run(mode, payload);
     active();
     const value = runner.assertResult(computed.receipt, mode, payload);
+    if (mode === 'historical-root')
+      return normalizeHistoricalRoot(value.historicalRoot, payload.state, input.index);
     // These immutable values may outlive this phase, but the runner's receipt
     // may not. A spending composition must re-verify the path, owned selection,
     // canonical event relation and fresh service root under its own lifetime.
@@ -345,6 +411,10 @@ async function openRailgunAccountTxid({
       cover: () => exclusive(cover),
       witness: (txid) => selectWitness('witness', { txid }),
       witnessNote: (note) => selectWitness('note-witness', { note }),
+      historicalRoot: (index) => {
+        check(Number.isSafeInteger(index) && index >= 0 && index <= 7999);
+        return selectWitness('historical-root', { index });
+      },
       inspect: () => exclusive(diagnostic),
     });
   } catch (error) {
