@@ -10,7 +10,8 @@ const {
 } = require('../networks/private-rpc');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const { validIntent, transactionIntent } = require('./private-transaction-intent');
-const clients = new WeakMap();
+const clients = new WeakMap(),
+  constraints = new WeakMap();
 const instances = new WeakMap();
 const destinationFailure = () =>
   privacyError(
@@ -44,12 +45,38 @@ const hash = (value) => typeof value === 'string' && /^0x[0-9a-f]{64}$/i.test(va
 const data = (value) =>
   typeof value === 'string' && /^0x(?:[0-9a-f]{2})*$/i.test(value) && value.length <= 131074;
 
-function getPrivateTransactionNetwork(handle) {
+function getPrivateTransactionNetwork(handle, options = {}) {
   getPrivacyContext(handle);
+  if (
+    !options ||
+    require('util').types.isProxy(options) ||
+    Object.getPrototypeOf(options) !== Object.prototype ||
+    Reflect.ownKeys(options).some((key) => key !== 'destinationConstraint') ||
+    (Object.hasOwn(options, 'destinationConstraint') &&
+      !Object.hasOwn(Object.getOwnPropertyDescriptor(options, 'destinationConstraint'), 'value'))
+  )
+    throw destinationFailure();
+  const requested = options.destinationConstraint;
+  const bound = constraints.has(handle),
+    retained = constraints.get(handle);
+  if (bound && requested !== undefined && requested !== retained) throw destinationFailure();
+  const constraint = bound ? retained : requested;
   const cached = clients.get(handle);
-  if (cached && !cached.signal.aborted) return cached;
+  if (cached) {
+    // Never retrofit or silently remove a restriction on an existing client.
+    if (instances.get(cached).constraint !== constraint) throw destinationFailure();
+    if (constraint !== undefined) {
+      cached.assertActive();
+      return cached;
+    }
+    if (!cached.signal.aborted) return cached;
+  }
   clients.delete(handle);
-  const rpc = createPrivateRpc(handle, 'transaction-rpc');
+  // Bind before construction: a refused first build must not turn an omitted
+  // retry into an unconstrained client. Invalid tokens also fail this handle
+  // closed; an existing healthy unconstrained cache was handled above.
+  if (constraint !== undefined) constraints.set(handle, constraint);
+  const rpc = createPrivateRpc(handle, 'transaction-rpc', { destinationConstraint: constraint });
   const context = getPrivacyContext(handle);
   const { chainId, principal } = context.subject;
   const journal = () => require('./private-submission-journal').getPrivateSubmissionJournal(handle);
@@ -269,7 +296,10 @@ function getPrivateTransactionNetwork(handle) {
         lifetime: rpc.signal,
         readTransaction: async (hash, signal) =>
           (
-            await createPrivateRpc(handle, 'transaction-rpc', { signal }).request(
+            await createPrivateRpc(handle, 'transaction-rpc', {
+              signal,
+              destinationConstraint: constraint,
+            }).request(
               'eth_getTransactionByHash',
               [hash],
               (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -281,7 +311,7 @@ function getPrivateTransactionNetwork(handle) {
     archiveResolvedSubmissions: (policy) => reconciliation().archiveResolved(policy),
   });
   clients.set(handle, client);
-  instances.set(client, { handle, rpc });
+  instances.set(client, { handle, rpc, constraint });
   return client;
 }
 

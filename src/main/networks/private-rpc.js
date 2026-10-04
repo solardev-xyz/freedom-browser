@@ -42,6 +42,104 @@ function getPrivateRpcDestinationDetails(observation) {
   }
 }
 
+// Operation-local restrictions derived from genuine observations. They grant no
+// consent or method authority and never disclose a URL through their token.
+const destinationConstraints = new WeakMap();
+const stableSubject = (subject) =>
+  JSON.stringify(
+    Object.fromEntries(
+      Object.entries(subject)
+        .filter(([key]) => key !== 'operation')
+        .sort(([left], [right]) => left.localeCompare(right))
+    )
+  );
+function createPrivateRpcDestinationConstraint(options) {
+  let close;
+  try {
+    plain(options, ['observation', 'signal', 'deadline']);
+    const { observation, signal, deadline } = options;
+    const entry = destinations.get(observation);
+    if (!entry || isProxy(signal) || !(signal instanceof AbortSignal) || signal.aborted)
+      throw destinationFailure();
+    entry.assertActive();
+    const started = performance.now();
+    if (
+      !Number.isFinite(started) ||
+      !Number.isFinite(deadline) ||
+      deadline <= started ||
+      deadline - started > 900000
+    )
+      throw destinationFailure();
+    const controller = new AbortController(),
+      constraint = Object.freeze({});
+    let closed = false,
+      timer,
+      lastNow = started;
+    close = () => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', close);
+      entry.signal.removeEventListener('abort', close);
+      controller.abort();
+    };
+    const current = () => {
+      try {
+        const now = performance.now();
+        if (
+          closed ||
+          signal.aborted ||
+          entry.signal.aborted ||
+          !Number.isFinite(now) ||
+          now < lastNow ||
+          now >= deadline
+        )
+          throw destinationFailure();
+        lastNow = now;
+        entry.assertActive();
+        const checkedAt = performance.now();
+        if (
+          closed ||
+          signal.aborted ||
+          controller.signal.aborted ||
+          !Number.isFinite(checkedAt) ||
+          checkedAt < lastNow ||
+          checkedAt >= deadline
+        )
+          throw destinationFailure();
+        lastNow = checkedAt;
+      } catch {
+        close();
+        throw destinationFailure();
+      }
+    };
+    signal.addEventListener('abort', close, { once: true });
+    entry.signal.addEventListener('abort', close, { once: true });
+    timer = setTimeout(close, Math.max(1, Math.ceil(deadline - performance.now())));
+    timer.unref?.();
+    current();
+    destinationConstraints.set(constraint, { entry, current, signal: controller.signal });
+    return Object.freeze({ constraint, signal: controller.signal, close });
+  } catch {
+    close?.();
+    throw destinationFailure();
+  }
+}
+function destinationConstraint(value, context, role, url) {
+  if (value === undefined) return;
+  const state = destinationConstraints.get(value);
+  if (!state) throw destinationFailure();
+  state.current();
+  if (
+    state.entry.profileId !== context.profileId ||
+    state.entry.subject !== stableSubject(context.subject) ||
+    state.entry.details.role !== role ||
+    (url !== undefined && state.entry.details.url !== new URL(url).href)
+  )
+    throw destinationFailure();
+  return state;
+}
+
 // Budgets restrict admission; they establish neither consent nor response trust.
 const readBudgets = new WeakMap();
 const budgetFailure = () =>
@@ -297,8 +395,9 @@ function chargeBudget(state, method, params, consume = true) {
   }
 }
 
-function createPrivateRpc(handle, role, { signal } = {}) {
+function createPrivateRpc(handle, role, { signal, destinationConstraint: constraint } = {}) {
   const context = getPrivacyContext(handle);
+  const restriction = destinationConstraint(constraint, context, role);
   const { subject, requirements } = context;
   if (!require('../settings-store').isWalletTorExperimentAvailable()) {
     throw privacyError(
@@ -353,11 +452,17 @@ function createPrivateRpc(handle, role, { signal } = {}) {
   });
   if (!url)
     throw privacyError('PRIVATE_SOURCE_UNAVAILABLE', 'No eligible unkeyed HTTPS RPC endpoint');
+  destinationConstraint(constraint, context, role, url);
   const tor = require('../tor-manager');
   const endpoint = tor.getWalletSocksEndpoint();
   if (!endpoint || endpoint.signal.aborted)
     throw privacyError('TOR_NOT_READY', 'Managed Tor is not ready');
-  const lifetime = AbortSignal.any([context.signal, endpoint.signal, ...(signal ? [signal] : [])]);
+  const lifetime = AbortSignal.any([
+    context.signal,
+    endpoint.signal,
+    ...(signal ? [signal] : []),
+    ...(restriction ? [restriction.signal] : []),
+  ]);
   const trust = Object.freeze({
     level: 'unverified',
     method: 'direct',
@@ -375,7 +480,9 @@ function createPrivateRpc(handle, role, { signal } = {}) {
   let chainCheck;
   function assertActive() {
     getPrivacyContext(handle);
-    if (lifetime.aborted || endpoint !== tor.getWalletSocksEndpoint()) {
+    const currentEndpoint = tor.getWalletSocksEndpoint();
+    restriction?.current();
+    if (lifetime.aborted || endpoint !== currentEndpoint) {
       throw privacyError('PRIVACY_REQUEST_ABORTED', 'Private RPC lifetime ended');
     }
   }
@@ -404,6 +511,14 @@ function createPrivateRpc(handle, role, { signal } = {}) {
       timeoutMs: Math.min(120000, Math.max(500, Number(network.quorum?.timeoutMs) || 30000)),
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
     };
+    // Factory and JSON serialization can synchronously revoke the operation.
+    // Check again at the last admission boundary, including hidden chain-ID.
+    try {
+      assertActive();
+    } catch (error) {
+      failed('revoked');
+      throw error;
+    }
     // This is the last gate before transport admission, including hidden ready().
     if (budgetState) {
       try {
@@ -574,9 +689,12 @@ function createPrivateRpc(handle, role, { signal } = {}) {
     privacy,
     release: () => transport?.release(handle),
   });
+  if (restriction) assertActive();
   const observation = Object.freeze({});
   const entry = {
     handle,
+    profileId: context.profileId,
+    subject: stableSubject(subject),
     signal: lifetime,
     assertActive,
     observation,
@@ -599,6 +717,7 @@ function isQuantity(value) {
 
 module.exports = {
   createPrivateRpc,
+  createPrivateRpcDestinationConstraint,
   createPrivateRpcReadBudget,
   getPrivateRpcReadBudgetOutcome,
   isQuantity,

@@ -2,8 +2,8 @@ jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => tr
 jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint }));
 jest.mock('../networks/network-registry', () => ({
   getNetwork: () => ({}),
-  getEndpoints: () => ['https://rpc.example'],
-  getEndpointSources: () => [{ keyed: false, coverage: { 11155111: 'https://rpc.example' } }],
+  getEndpoints: () => [mockUrl],
+  getEndpointSources: () => [{ keyed: false, coverage: { 11155111: mockUrl } }],
 }));
 jest.mock('../networks/wallet-tor-transport', () => ({
   createWalletTorTransport: () => ({ request: mockRequest }),
@@ -22,7 +22,7 @@ const os = require('os');
 const path = require('path');
 const { createSubmissionJournal } = jest.requireActual('./private-submission-journal');
 const mockRequest = jest.fn();
-let mockEndpoint;
+let mockEndpoint, mockUrl;
 const { Wallet, Transaction } = require('ethers');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const {
@@ -48,6 +48,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   tor = new AbortController();
   mockEndpoint = { signal: tor.signal };
+  mockUrl = 'https://rpc.example';
   scope = createPrivacyScope({ profileId: 'test', signal: new AbortController().signal });
   handle = scope.getContext({
     kind: 'public-address',
@@ -728,3 +729,225 @@ test('destination observation does not authorize an arbitrary transaction hash',
   scope.close();
   expect(() => assertPrivateTransactionNetworkDestination(network, handle, observed)).toThrow();
 });
+
+const { createPrivateRpcDestinationConstraint } = require('../networks/private-rpc');
+function reviewedConstraint() {
+  return createPrivateRpcDestinationConstraint({
+    observation: getPrivateTransactionNetworkDestination(network, handle),
+    signal: scope.signal,
+    deadline: performance.now() + 60000,
+  });
+}
+function restrictedNetwork() {
+  const grant = reviewedConstraint();
+  const child = createPrivacyScope({ profileId: 'test', signal: scope.signal });
+  handle = child.getContext({
+    kind: 'public-address',
+    principal: wallet.address,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  mockJournals.set(
+    handle,
+    createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) })
+  );
+  network = getPrivateTransactionNetwork(handle, { destinationConstraint: grant.constraint });
+  return { grant, child };
+}
+test('per-handle destination restriction survives omitted cache lookups and dispatches only its pinned URL', async () => {
+  const { grant, child } = restrictedNetwork();
+  try {
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(getPrivateTransactionNetwork(handle, {})).toBe(network);
+    expect(getPrivateTransactionNetwork(handle, { destinationConstraint: undefined })).toBe(
+      network
+    );
+    mockUrl = 'https://different.example/path';
+    await network.request(11155111, 'eth_getCode', [wallet.address, 'pending']);
+    expect(mockRequest.mock.calls.map(([, url]) => url)).toEqual([
+      'https://rpc.example',
+      'https://rpc.example',
+    ]);
+    expect(() => getPrivateTransactionNetwork(handle, { destinationConstraint: {} })).toThrow();
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+test('a second genuine same-URL constraint cannot replace a bound token', () => {
+  const other = reviewedConstraint();
+  const { grant, child } = restrictedNetwork();
+  try {
+    expect(() =>
+      getPrivateTransactionNetwork(handle, { destinationConstraint: other.constraint })
+    ).toThrow();
+    expect(other.signal.aborted).toBe(false);
+    expect(grant.signal.aborted).toBe(false);
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(mockRequest).not.toHaveBeenCalled();
+  } finally {
+    other.close();
+    grant.close();
+    child.close();
+  }
+});
+test.each(['close', 'deadline', 'tor-replacement'])(
+  'revoked %s restriction never creates an unconstrained replacement',
+  async (reason) => {
+    if (reason === 'deadline') jest.useFakeTimers();
+    const { grant, child } = restrictedNetwork();
+    try {
+      if (reason === 'close') grant.close();
+      if (reason === 'deadline') jest.advanceTimersByTime(60000);
+      if (reason === 'tor-replacement') mockEndpoint = { signal: new AbortController().signal };
+      for (const options of [
+        undefined,
+        {},
+        { destinationConstraint: undefined },
+        { destinationConstraint: grant.constraint },
+      ])
+        expect(() => getPrivateTransactionNetwork(handle, options)).toThrow();
+      await expect(
+        network.request(11155111, 'eth_getCode', [wallet.address, 'pending'])
+      ).rejects.toThrow();
+      expect(mockRequest).not.toHaveBeenCalled();
+      expect(grant.signal.aborted).toBe(true);
+    } finally {
+      grant.close();
+      child.close();
+      jest.useRealTimers();
+    }
+  }
+);
+test('adding a constraint to an existing unconstrained client refuses rather than retrofitting it', () => {
+  const grant = reviewedConstraint();
+  try {
+    expect(() =>
+      getPrivateTransactionNetwork(handle, { destinationConstraint: grant.constraint })
+    ).toThrow();
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(grant.signal.aborted).toBe(false);
+    expect(mockRequest).not.toHaveBeenCalled();
+  } finally {
+    grant.close();
+  }
+});
+test.each([null, { extra: true }, new Proxy({}, {})])(
+  'invalid network options refuse without harming cached client %p',
+  (options) => {
+    expect(() => getPrivateTransactionNetwork(handle, options)).toThrow();
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(mockRequest).not.toHaveBeenCalled();
+  }
+);
+test('constraint reaches fee, nonce, simulation and actual raw-send paths via ordinary omitted network lookup', async () => {
+  const { grant, child } = restrictedNetwork();
+  try {
+    const options = { privacyContext: handle, intent: fixtureIntent, review: async () => true };
+    await service.estimateGas({ ...params, from: wallet.address }, options);
+    await network.request(11155111, 'eth_call', [
+      { from: wallet.address, to: params.to, value: '0x1' },
+      'latest',
+    ]);
+    const result = await service.signAndSendTransaction(params, signer, options);
+    expect(result.hash).toMatch(/^0x[0-9a-f]{64}$/i);
+    expect(requests.filter((v) => v.method === 'eth_sendRawTransaction')).toHaveLength(1);
+    expect(requests.some((v) => v.method === 'eth_chainId')).toBe(true);
+    expect(requests.some((v) => v.method === 'eth_getTransactionCount')).toBe(true);
+    expect(mockRequest.mock.calls.every(([, url]) => url === 'https://rpc.example')).toBe(true);
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+test('review revocation prevents signing and raw-send after successful earlier simulation', async () => {
+  const { grant, child } = restrictedNetwork();
+  try {
+    await expect(
+      service.signAndSendTransaction(params, signer, {
+        privacyContext: handle,
+        intent: fixtureIntent,
+        review: async () => {
+          grant.close();
+          return true;
+        },
+      })
+    ).rejects.toThrow();
+    expect(requests.filter((v) => v.method === 'eth_sendRawTransaction')).toHaveLength(0);
+    expect(signer.signTransaction).not.toHaveBeenCalled();
+    expect(() => getPrivateTransactionNetwork(handle)).toThrow();
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+
+test('network options accessor is never invoked and cannot change cached client', () => {
+  const getter = jest.fn(() => {
+    throw Error('getter must not run');
+  });
+  const options = Object.defineProperty({}, 'destinationConstraint', {
+    get: getter,
+    enumerable: true,
+  });
+  expect(() => getPrivateTransactionNetwork(handle, options)).toThrow();
+  expect(getter).not.toHaveBeenCalled();
+  expect(getPrivateTransactionNetwork(handle)).toBe(network);
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('failed constrained first build retains its binding and an omitted retry cannot admit endpoint B', async () => {
+  const grant = reviewedConstraint();
+  const child = createPrivacyScope({ profileId: 'test', signal: scope.signal });
+  const fresh = child.getContext({
+    kind: 'public-address',
+    principal: wallet.address,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  try {
+    mockUrl = 'https://unreviewed.example/rpc';
+    expect(() =>
+      getPrivateTransactionNetwork(fresh, { destinationConstraint: grant.constraint })
+    ).toThrow();
+    for (const options of [undefined, {}, { destinationConstraint: undefined }])
+      expect(() => getPrivateTransactionNetwork(fresh, options)).toThrow();
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(grant.signal.aborted).toBe(false);
+    // A denied endpoint did not revoke a reusable restriction. Restoring the
+    // reviewed endpoint may build a client, but it still inherits that token.
+    mockUrl = 'https://rpc.example';
+    handle = fresh;
+    const inherited = getPrivateTransactionNetwork(fresh);
+    await inherited.request(11155111, 'eth_getCode', [wallet.address, 'pending']);
+    expect(mockRequest.mock.calls.every(([, url]) => url === 'https://rpc.example')).toBe(true);
+    grant.close();
+    expect(inherited.signal.aborted).toBe(true);
+    expect(() => getPrivateTransactionNetwork(fresh)).toThrow();
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+test.each([null, false, 0, {}, new Proxy({}, {})])(
+  'invalid first constraint %p leaves its new handle refused on omission',
+  (token) => {
+    const child = createPrivacyScope({ profileId: 'test', signal: scope.signal });
+    const fresh = child.getContext({
+      kind: 'public-address',
+      principal: wallet.address,
+      chainId: 11155111,
+      role: 'transaction-rpc',
+    });
+    try {
+      expect(() => getPrivateTransactionNetwork(fresh, { destinationConstraint: token })).toThrow();
+      expect(() => getPrivateTransactionNetwork(fresh)).toThrow();
+      expect(() => getPrivateTransactionNetwork(fresh, {})).toThrow();
+      expect(getPrivateTransactionNetwork(handle)).toBe(network);
+      expect(mockRequest).not.toHaveBeenCalled();
+    } finally {
+      child.close();
+    }
+  }
+);
