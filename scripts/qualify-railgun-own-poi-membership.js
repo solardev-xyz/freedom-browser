@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -197,6 +197,8 @@ const sources = [
   'src/main/wallet/railgun-poi-submit-data.test.js',
   'src/main/wallet/railgun-poi-intent-store.js',
   'src/main/wallet/railgun-poi-intent-store.test.js',
+  'src/main/wallet/railgun-poi-cold-validation.js',
+  'src/main/wallet/railgun-poi-cold-validation.test.js',
   'src/main/wallet/railgun-poi-output-recovery.js',
   'src/main/wallet/railgun-poi-output-recovery.test.js',
   'src/main/wallet/railgun-poi-output-recovery-data.js',
@@ -244,9 +246,24 @@ async function main() {
     process.argv.slice(2);
   assert.ok([5, 7, 8].includes(process.argv.length));
   const checksMode = process.argv.length === 8;
-  if (checksMode) assert.ok(['checks', 'intents', 'output-recovery'].includes(checksFlag));
+  if (checksMode)
+    assert.ok(['checks', 'intents', 'output-recovery', 'cold-validation'].includes(checksFlag));
   const outputRecoveryMode = checksFlag === 'output-recovery';
-  const intentsMode = checksFlag === 'intents' || outputRecoveryMode;
+  const coldValidationMode = checksFlag === 'cold-validation';
+  const intentsMode = checksFlag === 'intents' || outputRecoveryMode || coldValidationMode;
+  const coldValidationRuns = [],
+    coldValidationVerifierTimings = [],
+    coldValidationVerifierJobs = {
+      started: 0,
+      exited: 0,
+      inputChecks: 0,
+      inputSubstitutions: 0,
+      resultMessages: 0,
+      hashChecks: 0,
+      resultAdmissions: 0,
+    },
+    coldValidationGuards = { reports: 0, attempts: 0, canaryChecks: 0, hooks: [] };
+  let coldValidationActive = false;
   const intentRuns = [];
   const outputRecoveryRuns = [],
     outputRecoveryReplies = [],
@@ -646,6 +663,9 @@ async function main() {
   processModule.startRailgunProcess = (options) => {
     const recoveringOutput =
       options.filename === require.resolve('../src/main/wallet/railgun-poi-output-recover-job');
+    const coldVerifying =
+      coldValidationActive &&
+      options.filename === require.resolve('../src/main/wallet/railgun-poi-verify-job');
     const outputOwnSelector =
       outputRecoveryActive &&
       options.filename === require.resolve('../src/main/wallet/railgun-own-selector-job');
@@ -703,7 +723,7 @@ async function main() {
       throw Error('Unexpected output recovery utility');
     };
     let outputMirrorMode;
-    if (outputRecoveryActive) {
+    if (outputRecoveryActive && !coldVerifying) {
       if (!(
         outputOwnSelector ||
         outputOwnTxid ||
@@ -724,7 +744,8 @@ async function main() {
       }
       if (outputPublicPlan) {
         const input = JSON.parse(options.input);
-        if (input.mode !== 'plan' || outputRecoveryRuns.length !== 0) refuseOutputUtility();
+        if (input.mode !== 'plan' || outputRecoveryRuns.length + coldValidationRuns.length !== 0)
+          refuseOutputUtility();
         outputRecoveryJobs.publicPlan++;
         const {
           getRailgunAccountPublicIdentity,
@@ -812,7 +833,7 @@ async function main() {
       assert.equal(options.rssMb, 768);
       proofJobs.viewing++;
     }
-    if (verifying) {
+    if (verifying && !coldVerifying) {
       assert.ok(proofMode && proofActive && !options.binaryKey);
       proofJobs.verification++;
     }
@@ -842,7 +863,7 @@ async function main() {
     let real;
     let patched = options;
     let outputKeyRequestedAt, outputKeyRepliedAt, outputResultAt;
-    if (outputRecoveryActive) {
+    if (outputRecoveryActive && !coldVerifying) {
       const originalBroker = options.broker;
       let guardSeen = false,
         mirrorSequence = 0,
@@ -1020,6 +1041,134 @@ async function main() {
         },
       };
     }
+    if (coldVerifying) {
+      coldValidationVerifierJobs.started++;
+      assert.equal(outputRecoveryActive, true);
+      assert.equal(proofActive, false);
+      assert.ok(!options.binaryKey);
+      const context = getPrivacyContext(options.handle);
+      assert.equal(context.subject.kind, 'private-account');
+      assert.equal(context.subject.principal, 'railgun:' + enrollment.descriptor.accountIndex);
+      assert.equal(context.subject.protocol, 'railgun');
+      assert.equal(context.subject.deployment, 'sepolia');
+      assert.equal(context.subject.chainId, 11155111);
+      assert.equal(context.subject.role, 'prover');
+      assert.equal(context.subject.operation, 'poi-verify');
+      assert.ok(options.lifetimeMs > 0 && options.lifetimeMs <= 35000);
+      assert.equal(options.startupMs, Math.min(30000, options.lifetimeMs));
+      const input = JSON.parse(options.input);
+      assert.deepEqual(input, { proverArchive, artifactDirectory, payload: savedProof.payload });
+      // The output phase and all its keyless workers must have actually exited
+      // before the separately claimed verifier phase starts.
+      for (const name of [
+        'ownSelector',
+        'ownTxid',
+        'mirrorInspect',
+        'mirrorWitness',
+        'publicPlan',
+        'viewing',
+      ])
+        assert.equal(outputRecoveryJobs[name], outputRecoveryJobs[name + 'Exit']);
+      assert.equal(
+        outputRecoveryJobs.viewing,
+        kind === 'transfer' ? coldValidationRuns.length + 1 : 0
+      );
+      assert.ok(outputRecoveryReplies.every((bytes) => bytes.every((v) => v === 0)));
+      coldValidationVerifierJobs.inputChecks++;
+      const originalInputDigest = sha(options.input),
+        originalBroker = options.broker;
+      if (outputRecoveryFault === 'invalid-snark') {
+        // On-curve negation changes only A.y; a result would invalidate this
+        // control even if the host later refused its substituted input digest.
+        const base = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+        const originalY = input.payload.proof.pi_a[1],
+          y = BigInt(originalY);
+        assert.ok(y > 0n && y < base);
+        input.payload.proof.pi_a[1] = String(base - y);
+        assert.notEqual(input.payload.proof.pi_a[1], originalY);
+        const changed =
+          require('../src/main/wallet/railgun-poi-payload').normalizeRailgunPoiPayload(
+            input.payload
+          );
+        assert.notEqual(sha(JSON.stringify(changed)), savedProof.payloadSha256);
+        const restored = copy(changed);
+        restored.proof.pi_a[1] = originalY;
+        assert.deepEqual(restored, savedProof.payload);
+        coldValidationVerifierJobs.inputSubstitutions++;
+      }
+      const wireInput =
+        outputRecoveryFault === 'invalid-snark' ? JSON.stringify(input) : options.input;
+      let resultSeen = false;
+      patched = {
+        ...options,
+        input: wireInput,
+        broker: {
+          signal: originalBroker.signal,
+          async dispatch(wire) {
+            coldValidationVerifierJobs.resultMessages++;
+            assert.equal(resultSeen, false);
+            resultSeen = true;
+            assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 16384);
+            const message = JSON.parse(wire);
+            assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+            assert.equal(message.id, 1);
+            assert.equal(message.method, 'result');
+            const value = message.value;
+            assert.deepEqual(Object.keys(value).sort(), [
+              'disclosureEnabled',
+              'guards',
+              'inputSha256',
+              'membershipAuthenticated',
+              'payloadSha256',
+              'proofVerified',
+              'proverSha256',
+              'rootAccepted',
+              'sourceAuthenticated',
+              'spendingEnabled',
+            ]);
+            assert.equal(value.inputSha256, originalInputDigest);
+            assert.equal(value.payloadSha256, savedProof.payloadSha256);
+            assert.equal(
+              value.proverSha256,
+              require('../src/main/wallet/railgun-prover-manifest.json').sha256
+            );
+            coldValidationVerifierJobs.hashChecks++;
+            assert.equal(value.proofVerified, true);
+            for (const name of [
+              'sourceAuthenticated',
+              'membershipAuthenticated',
+              'rootAccepted',
+              'disclosureEnabled',
+              'spendingEnabled',
+            ])
+              assert.equal(value[name], false);
+            const guards = value.guards;
+            assert.deepEqual(Object.keys(guards).sort(), ['attempts', 'canaries', 'hooks']);
+            assert.equal(guards.attempts, 0);
+            assert.ok(
+              Array.isArray(guards.hooks) && guards.hooks.length >= 1 && guards.hooks.length <= 256
+            );
+            assert.ok(
+              guards.hooks.every(
+                (hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook)
+              )
+            );
+            assert.equal(new Set(guards.hooks).size, guards.hooks.length);
+            assert.equal(guards.canaries, guards.hooks.length);
+            coldValidationGuards.reports++;
+            coldValidationGuards.attempts += guards.attempts;
+            coldValidationGuards.canaryChecks += guards.canaries;
+            coldValidationGuards.hooks = [
+              ...new Set([...coldValidationGuards.hooks, ...guards.hooks]),
+            ].sort();
+            const reply = await originalBroker.dispatch(wire);
+            assert.deepEqual(JSON.parse(reply), { id: 1, value: null });
+            coldValidationVerifierJobs.resultAdmissions++;
+            return reply;
+          },
+        },
+      };
+    }
     if (checksOwnSelector || checksOwnTxid) {
       const originalBroker = options.broker;
       let guardSeen = false;
@@ -1118,6 +1267,17 @@ async function main() {
     const jobStarted = performance.now();
     real = originals.start(patched);
     real.closed.then((exit) => {
+      if (coldVerifying) {
+        coldValidationVerifierJobs.exited++;
+        coldValidationVerifierTimings.push({
+          mode: outputRecoveryFault,
+          exitCode: exit.code,
+          elapsedMs: Math.ceil(performance.now() - jobStarted),
+          budgetMs: options.lifetimeMs,
+          peakRssBytes: exit.peakRssBytes,
+          rssMeasurement: exit.peakRssBytes > 0 ? 'sampled-peak' : 'no-positive-sample-before-exit',
+        });
+      }
       if (outputOwnSelector) outputRecoveryJobs.ownSelectorExit++;
       if (outputOwnTxid) outputRecoveryJobs.ownTxidExit++;
       if (outputPublicPlan) outputRecoveryJobs.publicPlanExit++;
@@ -1154,7 +1314,7 @@ async function main() {
           budgetMs: options.lifetimeMs,
         });
       }
-      if (verifying) proofJobs.verificationExit++;
+      if (verifying && !coldVerifying) proofJobs.verificationExit++;
     });
     if (proving && proofFault === 'early-timeout') {
       // The actual job completes, but the fixture withholds ready admission.
@@ -1303,6 +1463,7 @@ async function main() {
     assertRailgunOwnPoiChecks,
   } = require('../src/main/wallet/railgun-own-poi-checks');
   const { recoverRailgunPoiOutput } = require('../src/main/wallet/railgun-poi-output-recovery');
+  const { validateRailgunRetainedPoi } = require('../src/main/wallet/railgun-poi-cold-validation');
   const runs = [],
     recoveryRuns = [];
   try {
@@ -2575,17 +2736,20 @@ async function main() {
       assert.deepEqual(intentActivity(), initialActivity);
       assert.equal(intentRuns.length, 6);
     };
-    if (outputRecoveryMode) {
-      phase = 'output-recovery-enrollment-reopen';
+    if (outputRecoveryMode || coldValidationMode) {
+      phase = (coldValidationMode ? 'cold-validation' : 'output-recovery') + '-enrollment-reopen';
       await reopenPreparedIntent();
       const delta = (a, b) =>
         Object.fromEntries(Object.keys(a).map((key) => [key, a[key] - b[key]]));
       const exerciseOutputRecovery = async (fault) => {
-        phase = 'output-recovery-' + fault;
+        phase = (coldValidationMode ? 'cold-validation-' : 'output-recovery-') + fault;
         outputRecoveryFault = fault;
         outputRecoveryInputDigest = undefined;
         outputRecoveryTxid = undefined;
-        const coldPublicRestore = Number(outputRecoveryRuns.length === 0),
+        const coldPublicRestore = Number(
+            outputRecoveryRuns.length + coldValidationRuns.length === 0
+          ),
+          invalidSnark = coldValidationMode && fault === 'invalid-snark',
           substituted = fault === 'substituted-output',
           beforeActivity = intentActivity(),
           beforeJournal = await journal.readSnapshot(),
@@ -2595,9 +2759,14 @@ async function main() {
           beforePublicBroker = copy(outputRecoveryPublicBroker),
           beforeReplies = outputRecoveryReplies.length,
           beforeTimings = outputRecoveryTimings.length,
-          beforeGuards = outputRecoveryGuards.reports;
+          beforeGuards = outputRecoveryGuards.reports,
+          beforeVerifier = copy(coldValidationVerifierJobs),
+          beforeVerifierTimings = coldValidationVerifierTimings.length,
+          beforeVerifierGuards = coldValidationGuards.reports;
         outputRecoveryActive = true;
-        const work = recoverRailgunPoiOutput({
+        coldValidationActive = coldValidationMode;
+        const work = (coldValidationMode ? validateRailgunRetainedPoi : recoverRailgunPoiOutput)({
+          ...(coldValidationMode ? { proverArchive, artifactDirectory } : {}),
           identity,
           enrollment,
           coordinator: publicAccount.coordinator,
@@ -2612,12 +2781,16 @@ async function main() {
         } finally {
           pendingOperations.delete(work);
           outputRecoveryActive = false;
+          coldValidationActive = false;
         }
         const viewing = Number(kind === 'transfer');
         if (
           (substituted &&
             (recovered.status !== 'refused' || recovered.stage !== 'recovery:callback')) ||
-          (!substituted && recovered.status !== 'matched')
+          (!substituted &&
+            !invalidSnark &&
+            recovered.status !== (coldValidationMode ? 'validated' : 'matched')) ||
+          (invalidSnark && (recovered.status !== 'refused' || recovered.stage !== 'verify'))
         )
           process.stderr.write(
             JSON.stringify({
@@ -2627,20 +2800,37 @@ async function main() {
               jobs: delta(outputRecoveryJobs, beforeJobs),
             }) + '\n'
           );
-        if (substituted) {
+        if (invalidSnark) {
+          assert.deepEqual(recovered, { status: 'refused', stage: 'verify' });
+        } else if (substituted) {
           assert.equal(viewing, 1);
           assert.deepEqual(recovered, { status: 'refused', stage: 'recovery:callback' });
         } else {
-          assert.equal(recovered.status, 'matched', 'output recovery stage ' + recovered.stage);
+          assert.equal(
+            recovered.status,
+            coldValidationMode ? 'validated' : 'matched',
+            'recovery stage ' + recovered.stage
+          );
           assert.equal(recovered.capsuleDigest, retainedIntent.capsuleDigest);
           assert.equal(recovered.payloadSha256, retainedIntent.payloadSha256);
           assert.equal(recovered.revision, retainedIntent.revision);
-          assert.equal(recovered.recoveryInputSha256, viewing ? outputRecoveryInputDigest : null);
+          if (coldValidationMode) {
+            assert.equal(recovered.proofVerified, true);
+            assert.equal(recovered.independentlyVerified, true);
+            assert.equal(recovered.verifierExitObserved, true);
+            for (const flag of [
+              'rootAccepted',
+              'originalTxidRootCanonical',
+              'currentNoteEligibility',
+            ])
+              assert.equal(recovered[flag], false);
+          } else
+            assert.equal(recovered.recoveryInputSha256, viewing ? outputRecoveryInputDigest : null);
           assert.equal(recovered.outputMatched, true);
           assert.equal(recovered.viewingKeyReleases, viewing);
           assert.equal(recovered.viewingUtilityExitObserved, !!viewing);
           for (const flag of [
-            'proofVerified',
+            ...(!coldValidationMode ? ['proofVerified'] : []),
             'originalInputReconstructed',
             'originalRootsAccepted',
             'membershipAuthenticated',
@@ -2725,20 +2915,56 @@ async function main() {
           eth_getTransactionByHash: 1,
           eth_getLogs: coldPublicRestore,
         });
-        outputRecoveryRuns.push({
+        const verifierDelta = delta(coldValidationVerifierJobs, beforeVerifier),
+          verifierTimings = coldValidationVerifierTimings.slice(beforeVerifierTimings);
+        if (coldValidationMode) {
+          assert.deepEqual(verifierDelta, {
+            started: 1,
+            exited: 1,
+            inputChecks: 1,
+            inputSubstitutions: Number(invalidSnark),
+            resultMessages: Number(!invalidSnark),
+            hashChecks: Number(!invalidSnark),
+            resultAdmissions: Number(!invalidSnark),
+          });
+          assert.equal(verifierTimings.length, 1);
+          const timing = verifierTimings[0];
+          assert.equal(timing.mode, fault);
+          assert.equal(
+            timing.exitCode,
+            invalidSnark ? 'RAILGUN_PROCESS_FAILED' : 'RAILGUN_PROCESS_CLOSED'
+          );
+          assert.ok(Number.isSafeInteger(timing.elapsedMs) && timing.elapsedMs >= 0);
+          assert.ok(
+            Number.isSafeInteger(timing.budgetMs) && timing.budgetMs > 0 && timing.budgetMs <= 35000
+          );
+          // A rejected child can exit before Electron supplies a positive RSS
+          // sample. Zero is unavailable measurement, not zero memory consumption.
+          assert.ok(Number.isSafeInteger(timing.peakRssBytes) && timing.peakRssBytes >= 0);
+          if (!invalidSnark) assert.ok(timing.peakRssBytes > 0);
+          assert.equal(coldValidationGuards.reports - beforeVerifierGuards, Number(!invalidSnark));
+          assert.equal(coldValidationGuards.attempts, 0);
+        } else {
+          assert.deepEqual(coldValidationVerifierJobs, beforeVerifier);
+          assert.equal(verifierTimings.length, 0);
+        }
+        (coldValidationMode ? coldValidationRuns : outputRecoveryRuns).push({
           mode: fault,
           status: recovered.status,
-          ...(substituted
-            ? { stage: recovered.stage, validFieldSubstitutionRefused: true }
-            : {
-                preparedPayloadDigestMatched: true,
-                recoveryInputDigestMatched: !!viewing,
-              }),
+          ...(invalidSnark
+            ? { stage: recovered.stage, invalidSnarkInputRefusedWithoutResult: true }
+            : substituted
+              ? { stage: recovered.stage, validFieldSubstitutionRefused: true }
+              : {
+                  preparedPayloadDigestMatched: true,
+                  recoveryInputDigestMatched: !!viewing,
+                }),
           enrollmentReopened: true,
           exactRevisionRetained: true,
           viewingKeyReleases: viewing,
           viewingUtilityExitObserved: !!viewing,
-          outputMatched: !substituted,
+          outputMatched: !substituted && !invalidSnark,
+          ...(coldValidationMode ? { outputStageCompletedBeforeVerifier: true } : {}),
           journalUnchanged: true,
           healthyRecapture: true,
           noPreparedRecordMutation: true,
@@ -2747,11 +2973,15 @@ async function main() {
             'TXID utility input/get/result broker',
             'cold public plan sourceNext/jobResult broker without storage',
             'viewing utility key/result broker',
+            ...(coldValidationMode ? ['keyless POI verifier input/result and observed exit'] : []),
             'fixture POI transport and public/chain service factories',
           ],
           ownedNoteQueries: 0,
           additionalPoiProverJobs: 0,
-          additionalPoiVerifierJobs: 0,
+          additionalPoiVerifierJobs: Number(coldValidationMode),
+          ...(coldValidationMode
+            ? { verifierCounts: verifierDelta, verifierTimings, proofSpecificRootQueries: 0 }
+            : {}),
           additionalSpendingKeyDerivations: 0,
           jobCounts: jobDelta,
           readOnlyTxidMirrorBroker: mirrorBrokerDelta,
@@ -2759,7 +2989,16 @@ async function main() {
           timings,
           publicPreflightCalls: publicDelta,
           chainPreflightCalls: chainDelta,
-          proofVerified: false,
+          proofVerified: coldValidationMode && !invalidSnark,
+          ...(coldValidationMode
+            ? {
+                independentlyVerified: !invalidSnark,
+                verifierExitObserved: true,
+                originalTxidRootCanonical: false,
+                currentNoteEligibility: false,
+                rootAccepted: false,
+              }
+            : {}),
           originalInputReconstructed: false,
           originalRootsAccepted: false,
           membershipAuthenticated: false,
@@ -2768,11 +3007,18 @@ async function main() {
           spendingEnabled: false,
         });
       };
-      if (kind === 'transfer') {
+      if (coldValidationMode) {
+        await exerciseOutputRecovery('invalid-snark');
+        await exerciseOutputRecovery('healthy-after-refusal');
+        assert.deepEqual(
+          coldValidationRuns.map((run) => run.mode),
+          ['invalid-snark', 'healthy-after-refusal']
+        );
+      } else if (kind === 'transfer') {
         await exerciseOutputRecovery('substituted-output');
         await exerciseOutputRecovery('healthy-after-refusal');
       } else await exerciseOutputRecovery('healthy');
-      assert.equal(outputRecoveryRuns.length, kind === 'transfer' ? 2 : 1);
+      assert.equal(outputRecoveryRuns.length, coldValidationMode ? 0 : kind === 'transfer' ? 2 : 1);
     }
     phase = 'final-journal-drift';
     mode = 'valid';
@@ -2836,7 +3082,7 @@ async function main() {
     assert.equal(transportCreates, transportCloses);
     assert.equal(jobs.membership, jobs.membershipExit);
     assert.equal(jobs.selector, jobs.selectorExit);
-    if (intentsMode && !outputRecoveryMode) await reopenPreparedIntent();
+    if (intentsMode && !outputRecoveryMode && !coldValidationMode) await reopenPreparedIntent();
     assert.deepEqual(hashes(), before);
     const report = {
       fixture: 'synthetic-enrolled-own-poi-membership',
@@ -2851,6 +3097,10 @@ async function main() {
       intentsMode,
       intentRuns,
       outputRecoveryMode,
+      coldValidationMode,
+      coldValidationRuns,
+      coldValidationVerifierJobs,
+      coldValidationVerifierTimings,
       outputRecoveryRuns,
       outputRecoveryJobs,
       outputRecoveryMirrorBroker,
@@ -2863,6 +3113,7 @@ async function main() {
       guards: {
         checksPreflightUtilities: checksGuards,
         outputRecoveryUtilities: outputRecoveryGuards,
+        coldValidationVerifierUtilities: coldValidationGuards,
       },
       publicPrefixAdvances: advances,
       poiMethods,

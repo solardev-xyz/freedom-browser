@@ -88,61 +88,67 @@ async function verify({
       broker: {
         signal: scope.signal,
         async dispatch(wire) {
-          active();
-          assert.equal(result, undefined);
-          assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 16384);
-          const message = JSON.parse(wire);
-          shape(message, ['id', 'method', 'value']);
-          assert.equal(message.id, 1);
-          assert.equal(message.method, 'result');
-          const value = message.value;
-          shape(value, [
-            'inputSha256',
-            'payloadSha256',
-            'proofVerified',
-            'sourceAuthenticated',
-            'membershipAuthenticated',
-            'rootAccepted',
-            'disclosureEnabled',
-            'spendingEnabled',
-            'guards',
-            'proverSha256',
-          ]);
-          assert.equal(value.inputSha256, digest);
-          assert.equal(value.payloadSha256, payloadSha256);
-          assert.equal(value.proofVerified, true);
-          for (const key of [
-            'sourceAuthenticated',
-            'membershipAuthenticated',
-            'rootAccepted',
-            'disclosureEnabled',
-            'spendingEnabled',
-          ])
-            assert.equal(value[key], false);
-          assert.equal(value.proverSha256, require('./railgun-prover-manifest.json').sha256);
-          shape(value.guards, ['attempts', 'canaries', 'hooks']);
-          const { attempts, canaries, hooks } = value.guards;
-          assert.equal(attempts, 0);
-          assert.ok(Array.isArray(hooks) && hooks.length >= 1 && hooks.length <= 256);
-          assert.ok(
-            hooks.every((hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook))
-          );
-          assert.equal(new Set(hooks).size, hooks.length);
-          assert.equal(canaries, hooks.length);
-          result = Object.freeze({
-            inputSha256: digest,
-            payloadSha256,
-            proofVerified: true,
-            independentlyVerified: true,
-            sourceAuthenticated: false,
-            membershipAuthenticated: false,
-            rootAccepted: false,
-            metadataAuthenticated: false,
-            ownershipAuthenticated: false,
-            disclosureEnabled: false,
-            spendingEnabled: false,
-          });
-          return JSON.stringify({ id: 1, value: null });
+          try {
+            active();
+            assert.equal(result, undefined);
+            assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 16384);
+            const message = JSON.parse(wire);
+            shape(message, ['id', 'method', 'value']);
+            assert.equal(message.id, 1);
+            assert.equal(message.method, 'result');
+            const value = message.value;
+            shape(value, [
+              'inputSha256',
+              'payloadSha256',
+              'proofVerified',
+              'sourceAuthenticated',
+              'membershipAuthenticated',
+              'rootAccepted',
+              'disclosureEnabled',
+              'spendingEnabled',
+              'guards',
+              'proverSha256',
+            ]);
+            assert.equal(value.inputSha256, digest);
+            assert.equal(value.payloadSha256, payloadSha256);
+            assert.equal(value.proofVerified, true);
+            for (const key of [
+              'sourceAuthenticated',
+              'membershipAuthenticated',
+              'rootAccepted',
+              'disclosureEnabled',
+              'spendingEnabled',
+            ])
+              assert.equal(value[key], false);
+            assert.equal(value.proverSha256, require('./railgun-prover-manifest.json').sha256);
+            shape(value.guards, ['attempts', 'canaries', 'hooks']);
+            const { attempts, canaries, hooks } = value.guards;
+            assert.equal(attempts, 0);
+            assert.ok(Array.isArray(hooks) && hooks.length >= 1 && hooks.length <= 256);
+            assert.ok(
+              hooks.every((hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook))
+            );
+            assert.equal(new Set(hooks).size, hooks.length);
+            assert.equal(canaries, hooks.length);
+            result = Object.freeze({
+              inputSha256: digest,
+              payloadSha256,
+              proofVerified: true,
+              independentlyVerified: true,
+              sourceAuthenticated: false,
+              membershipAuthenticated: false,
+              rootAccepted: false,
+              metadataAuthenticated: false,
+              ownershipAuthenticated: false,
+              disclosureEnabled: false,
+              spendingEnabled: false,
+            });
+            return JSON.stringify({ id: 1, value: null });
+          } catch (error) {
+            // Refusal revokes this attempt before another message can be admitted.
+            close();
+            throw error;
+          }
         },
       },
     });

@@ -1,4 +1,4 @@
-let mockMode, mockTask, mockExit, mockDeferExit;
+let mockMode, mockTask, mockExit, mockDeferExit, mockExercise;
 jest.mock('./railgun-prover-runtime', () => ({ verifyRailgunProverRuntime: (v) => v }));
 jest.mock('./railgun-process', () => ({
   startRailgunProcess: jest.fn((options) => {
@@ -50,6 +50,7 @@ jest.mock('./railgun-process', () => ({
         method: ['key', 'input', 'get', 'provider'].includes(mockMode) ? mockMode : 'result',
         value,
       });
+      if (mockExercise) return mockExercise(options, wire);
       if (mockMode === 'missing') return;
       await options.broker.dispatch(wire);
       if (mockMode === 'duplicate') await options.broker.dispatch(wire);
@@ -85,6 +86,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockMode = 'valid';
   mockDeferExit = false;
+  mockExercise = undefined;
   scope = createPrivacyScope({
     profileId: 'detached-fixture',
     signal: new AbortController().signal,
@@ -234,3 +236,60 @@ test.each(['caller', 'parent', 'deadline'])(
     }
   }
 );
+
+test.each(['same-tick', 'next-tick'])(
+  'a rejected message permanently refuses later valid verification results: %s',
+  async (ordering) => {
+    let outcomes, aborted;
+    mockExercise = async (options, valid) => {
+      const changed = JSON.parse(valid);
+      changed.value.payloadSha256 = '0'.repeat(64);
+      const first = options.broker.dispatch(JSON.stringify(changed));
+      first.catch(() => {});
+      if (ordering === 'next-tick') await Promise.allSettled([first]);
+      const second = options.broker.dispatch(valid);
+      outcomes = await Promise.allSettled([first, second]);
+      aborted = options.broker.signal.aborted;
+    };
+    const result = await verifyRailgunPoiPayload(input).catch((error) => error);
+    expect(result).toMatchObject({ code: 'RAILGUN_POI_VERIFICATION_REFUSED' });
+    expect(outcomes.map(({ status }) => status)).toEqual(['rejected', 'rejected']);
+    expect(aborted).toBe(true);
+    expect(mockTask.close).toHaveBeenCalled();
+  }
+);
+
+test('a refused extra message cannot preserve an earlier accepted result', async () => {
+  let first, second, aborted;
+  mockExercise = async (options, valid) => {
+    first = await Promise.allSettled([options.broker.dispatch(valid)]);
+    second = await Promise.allSettled([options.broker.dispatch(valid)]);
+    aborted = options.broker.signal.aborted;
+  };
+  const result = await verifyRailgunPoiPayload(input).catch((error) => error);
+  expect(result).toMatchObject({ code: 'RAILGUN_POI_VERIFICATION_REFUSED' });
+  expect(first[0].status).toBe('fulfilled');
+  expect(second[0].status).toBe('rejected');
+  expect(aborted).toBe(true);
+});
+
+test('sticky refusal still waits for the actual child exit', async () => {
+  mockDeferExit = true;
+  let outcomes;
+  mockExercise = async (options, valid) => {
+    const first = options.broker.dispatch('{');
+    const second = options.broker.dispatch(valid);
+    outcomes = await Promise.allSettled([first, second]);
+  };
+  let settled = false;
+  const work = verifyRailgunPoiPayload(input).catch((error) => {
+    settled = true;
+    return error;
+  });
+  for (let i = 0; i < 30 && !mockTask?.close.mock.calls.length; i++) await Promise.resolve();
+  expect(mockTask.close).toHaveBeenCalled();
+  expect(settled).toBe(false);
+  mockExit();
+  expect(await work).toMatchObject({ code: 'RAILGUN_POI_VERIFICATION_REFUSED' });
+  expect(outcomes.map(({ status }) => status)).toEqual(['rejected', 'rejected']);
+});
