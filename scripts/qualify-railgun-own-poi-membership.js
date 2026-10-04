@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -197,6 +197,12 @@ const sources = [
   'src/main/wallet/railgun-poi-submit-data.test.js',
   'src/main/wallet/railgun-poi-intent-store.js',
   'src/main/wallet/railgun-poi-intent-store.test.js',
+  'src/main/wallet/railgun-poi-output-recovery.js',
+  'src/main/wallet/railgun-poi-output-recovery.test.js',
+  'src/main/wallet/railgun-poi-output-recovery-data.js',
+  'src/main/wallet/railgun-poi-output-recovery-data.test.js',
+  'src/main/wallet/railgun-poi-output-recover-job.js',
+  'src/main/wallet/railgun-poi-output-recover-job.test.js',
   'src/main/wallet/railgun-poi-root.js',
   'src/main/wallet/railgun-poi-root.test.js',
   'src/main/wallet/railgun-own-poi-prove-job.js',
@@ -238,9 +244,53 @@ async function main() {
     process.argv.slice(2);
   assert.ok([5, 7, 8].includes(process.argv.length));
   const checksMode = process.argv.length === 8;
-  if (checksMode) assert.ok(['checks', 'intents'].includes(checksFlag));
-  const intentsMode = checksFlag === 'intents';
+  if (checksMode) assert.ok(['checks', 'intents', 'output-recovery'].includes(checksFlag));
+  const outputRecoveryMode = checksFlag === 'output-recovery';
+  const intentsMode = checksFlag === 'intents' || outputRecoveryMode;
   const intentRuns = [];
+  const outputRecoveryRuns = [],
+    outputRecoveryReplies = [],
+    outputRecoveryTimings = [],
+    outputRecoveryJobs = {
+      ownSelector: 0,
+      ownSelectorExit: 0,
+      ownTxid: 0,
+      ownTxidExit: 0,
+      mirrorInspect: 0,
+      mirrorInspectExit: 0,
+      mirrorWitness: 0,
+      mirrorWitnessExit: 0,
+      publicPlan: 0,
+      publicPlanExit: 0,
+      viewing: 0,
+      viewingExit: 0,
+      keyRequests: 0,
+      keyReplies: 0,
+      resultMessages: 0,
+      resultAdmissions: 0,
+      resultSubstitutions: 0,
+      unexpected: 0,
+    },
+    outputRecoveryMirrorBroker = {
+      attempted: 0,
+      admitted: 0,
+      input: 0,
+      get: 0,
+      result: 0,
+      forbidden: 0,
+    },
+    outputRecoveryPublicBroker = {
+      attempted: 0,
+      admitted: 0,
+      sourceNext: 0,
+      jobResult: 0,
+      forbidden: 0,
+    },
+    outputRecoveryGuards = { reports: 0, attempts: 0, canaryChecks: 0, hooks: [] };
+  let outputRecoveryActive = false,
+    outputRecoveryFault = 'healthy',
+    outputRecoveryInputDigest,
+    outputRecoveryTxid;
   let intentStore;
   const proofMode = process.argv.length >= 7;
   if (proofMode) assert.ok(path.isAbsolute(proverArchive) && path.isAbsolute(artifactDirectory));
@@ -594,6 +644,141 @@ async function main() {
   originals.rpc = rpcModule.createPrivateRpc;
   originals.services = serviceModule.createRailgunPublicServices;
   processModule.startRailgunProcess = (options) => {
+    const recoveringOutput =
+      options.filename === require.resolve('../src/main/wallet/railgun-poi-output-recover-job');
+    const outputOwnSelector =
+      outputRecoveryActive &&
+      options.filename === require.resolve('../src/main/wallet/railgun-own-selector-job');
+    const outputOwnTxid =
+      outputRecoveryActive &&
+      options.filename === require.resolve('../src/main/wallet/railgun-own-txid-job');
+    const outputMirror =
+      outputRecoveryActive &&
+      options.filename === require.resolve('../src/main/wallet/railgun-txid-job');
+    const outputPublicPlan =
+      outputRecoveryActive &&
+      options.filename === require.resolve('../src/main/wallet/railgun-public-job');
+    const refuseOutputUtility = () => {
+      outputRecoveryJobs.unexpected++;
+      let mode, operation;
+      try {
+        mode = JSON.parse(options.input).mode;
+      } catch {
+        mode = undefined;
+      }
+      try {
+        operation = getPrivacyContext(options.handle).subject.operation;
+      } catch {
+        operation = undefined;
+      }
+      const basename = path.basename(options.filename ?? '');
+      process.stderr.write(
+        JSON.stringify({
+          refusedOutputUtility: /^[a-z-]+\.js$/.test(basename) ? basename : 'unrecognized',
+          operation: [
+            'public-scan',
+            'own-txid-selector',
+            'own-txid-proof',
+            'poi-output-recover',
+            'poi-prove',
+            ...['inspect', 'witness', 'project', 'apply', 'note-witness', 'coverage'].map(
+              (value) => 'txid-' + value
+            ),
+          ].includes(operation)
+            ? operation
+            : 'unrecognized',
+          mode: [
+            'inspect',
+            'witness',
+            'plan',
+            'apply',
+            'project',
+            'note-witness',
+            'coverage',
+          ].includes(mode)
+            ? mode
+            : 'unrecognized',
+        }) + '\n'
+      );
+      throw Error('Unexpected output recovery utility');
+    };
+    let outputMirrorMode;
+    if (outputRecoveryActive) {
+      if (!(
+        outputOwnSelector ||
+        outputOwnTxid ||
+        outputMirror ||
+        outputPublicPlan ||
+        recoveringOutput
+      ))
+        refuseOutputUtility();
+      if (outputMirror) {
+        const input = JSON.parse(options.input);
+        if (!['inspect', 'witness'].includes(input.mode)) refuseOutputUtility();
+        outputMirrorMode = input.mode;
+        outputRecoveryJobs[outputMirrorMode === 'inspect' ? 'mirrorInspect' : 'mirrorWitness']++;
+        assert.deepEqual(input, { archive, mode: outputMirrorMode });
+        assert.equal(options.archive, archive);
+        assert.equal(options.startupMs, 120000);
+        assert.equal(options.lifetimeMs, 180000);
+      }
+      if (outputPublicPlan) {
+        const input = JSON.parse(options.input);
+        if (input.mode !== 'plan' || outputRecoveryRuns.length !== 0) refuseOutputUtility();
+        outputRecoveryJobs.publicPlan++;
+        const {
+          getRailgunAccountPublicIdentity,
+        } = require('../src/main/wallet/railgun-account-public');
+        const { publicId } = getRailgunAccountPublicIdentity(
+          publicAccount.coordinator,
+          enrollment,
+          publicAccount.policy
+        );
+        assert.deepEqual(input, {
+          archive,
+          mode: 'plan',
+          storeId: publicId,
+          qualifiedThrough: require('../src/main/wallet/railgun-public-policy').QUALIFIED_THROUGH,
+        });
+        assert.equal(options.startupMs, 120000);
+        assert.equal(options.lifetimeMs, 170000);
+      }
+      assert.equal(!!options.binaryKey, recoveringOutput);
+      const context = getPrivacyContext(options.handle);
+      assert.equal(context.subject.kind, 'private-account');
+      assert.equal(context.subject.role, 'engine');
+      assert.equal(context.subject.principal, 'railgun:' + enrollment.descriptor.accountIndex);
+      assert.equal(
+        context.subject.operation,
+        recoveringOutput
+          ? 'poi-output-recover'
+          : outputOwnSelector
+            ? 'own-txid-selector'
+            : outputMirror
+              ? 'txid-' + outputMirrorMode
+              : outputPublicPlan
+                ? 'public-scan'
+                : 'own-txid-proof'
+      );
+      if (outputOwnSelector) outputRecoveryJobs.ownSelector++;
+      if (outputOwnTxid) outputRecoveryJobs.ownTxid++;
+      if (recoveringOutput) {
+        outputRecoveryJobs.viewing++;
+        assert.equal(kind, 'transfer');
+        assert.equal(options.startupMs, options.lifetimeMs);
+        assert.ok(options.lifetimeMs > 0 && options.lifetimeMs <= 30000);
+        assert.equal(options.rssMb, 512);
+        outputRecoveryInputDigest = sha(options.input);
+        const input = JSON.parse(options.input);
+        assert.deepEqual(Object.keys(input).sort(), [
+          'archive',
+          'binding',
+          'descriptor',
+          'preparation',
+        ]);
+        assert.equal(input.binding.payloadSha256, savedProof.payloadSha256);
+      }
+    } else assert.equal(recoveringOutput, false);
     const proving =
       options.filename === require.resolve('../src/main/wallet/railgun-own-poi-prove-job');
     const verifying =
@@ -606,13 +791,16 @@ async function main() {
     }
     if (options.binaryKey) {
       if (phase !== 'enrollment') {
-        if (!(proofMode && proofActive && proving)) {
+        if (!(proofMode && proofActive && proving) && !(outputRecoveryActive && recoveringOutput)) {
           forbiddenKeyJobs++;
           throw Error('Operation key release forbidden');
         }
         const context = getPrivacyContext(options.handle);
         assert.equal(context.subject.role, 'engine');
-        assert.equal(context.subject.operation, 'poi-prove');
+        assert.equal(
+          context.subject.operation,
+          recoveringOutput ? 'poi-output-recover' : 'poi-prove'
+        );
       } else {
         setupKeyJobs++;
       }
@@ -653,6 +841,185 @@ async function main() {
     if (selectorJob) jobs.selector++;
     let real;
     let patched = options;
+    let outputKeyRequestedAt, outputKeyRepliedAt, outputResultAt;
+    if (outputRecoveryActive) {
+      const originalBroker = options.broker;
+      let guardSeen = false,
+        mirrorSequence = 0,
+        mirrorReads = 0,
+        publicSequence = 0,
+        publicEof = false;
+      const mirrorKeys =
+        outputMirrorMode === 'inspect'
+          ? ['txid:state']
+          : ['txid:state', 'txid:lookup:' + outputRecoveryTxid, 'txid:row:0'];
+      patched = {
+        ...options,
+        broker: {
+          signal: originalBroker.signal,
+          async dispatch(wire) {
+            if (outputMirror) outputRecoveryMirrorBroker.attempted++;
+            if (outputPublicPlan) outputRecoveryPublicBroker.attempted++;
+            assert.ok(
+              typeof wire === 'string' &&
+                Buffer.byteLength(wire) <=
+                  (outputMirror || outputPublicPlan ? 2 * 1024 * 1024 : 16384)
+            );
+            const message = JSON.parse(wire);
+            if (outputMirror) {
+              if (!['input', 'get', 'result'].includes(message.method)) {
+                outputRecoveryMirrorBroker.forbidden++;
+                throw Error('Unexpected output recovery TXID broker operation');
+              }
+              outputRecoveryMirrorBroker[message.method]++;
+              assert.equal(message.id, ++mirrorSequence);
+              assert.equal(guardSeen, false);
+              if (message.method === 'input') {
+                assert.deepEqual(message, { id: 1, method: 'input' });
+                const reply = await originalBroker.dispatch(wire);
+                const decoded = JSON.parse(reply);
+                assert.deepEqual(Object.keys(decoded).sort(), ['id', 'value']);
+                assert.equal(decoded.id, message.id);
+                assert.deepEqual(
+                  decoded.value,
+                  outputMirrorMode === 'inspect'
+                    ? {}
+                    : { state: payload.state, txid: outputRecoveryTxid }
+                );
+                outputRecoveryMirrorBroker.admitted++;
+                return reply;
+              }
+              if (message.method === 'get') {
+                assert.ok(mirrorSequence > 1 && mirrorReads < mirrorKeys.length);
+                assert.deepEqual(message, {
+                  id: mirrorSequence,
+                  method: 'get',
+                  args: { key: Buffer.from(mirrorKeys[mirrorReads++]).toString('base64') },
+                });
+                const reply = await originalBroker.dispatch(wire);
+                outputRecoveryMirrorBroker.admitted++;
+                return reply;
+              }
+              assert.equal(mirrorReads, mirrorKeys.length);
+              assert.equal(message.id, mirrorKeys.length + 2);
+              assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+              if (outputMirrorMode === 'inspect') {
+                assert.deepEqual(message.value.state, payload.state);
+                assert.equal(message.value.initialized, true);
+              } else {
+                assert.equal(payload.state.count, 1);
+                assert.equal(message.value.witness.index, 0);
+                assert.equal(message.value.witness.railgunTxid, outputRecoveryTxid);
+                assert.deepEqual(message.value.witness.row, payload.row);
+              }
+            } else if (outputPublicPlan) {
+              if (!['sourceNext', 'jobResult'].includes(message.method)) {
+                outputRecoveryPublicBroker.forbidden++;
+                throw Error('Unexpected output recovery public broker operation');
+              }
+              outputRecoveryPublicBroker[message.method]++;
+              assert.equal(message.id, ++publicSequence);
+              assert.equal(guardSeen, false);
+              if (message.method === 'sourceNext') {
+                assert.equal(publicEof, false);
+                assert.deepEqual(message, { id: publicSequence, method: 'sourceNext' });
+                assert.ok(publicSequence === 1 || publicSequence === 2);
+                const reply = await originalBroker.dispatch(wire);
+                const decoded = JSON.parse(reply);
+                assert.deepEqual(Object.keys(decoded).sort(), ['id', 'value']);
+                assert.equal(decoded.id, message.id);
+                const expected = history.map((log) => ({
+                  address: log.address.toLowerCase(),
+                  blockNumber: Number(BigInt(log.blockNumber)),
+                  blockHash: log.blockHash,
+                  transactionIndex: Number(BigInt(log.transactionIndex)),
+                  transactionHash: log.transactionHash,
+                  logIndex: Number(BigInt(log.logIndex)),
+                  topics: log.topics,
+                  data: log.data,
+                }));
+                assert.deepEqual(decoded.value, publicSequence === 1 ? expected : null);
+                publicEof = decoded.value === null;
+                outputRecoveryPublicBroker.admitted++;
+                return reply;
+              }
+              assert.equal(publicEof, true);
+              assert.equal(message.id, 3);
+              assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+            } else if (!recoveringOutput) {
+              assert.equal(message.id, 1);
+              assert.equal(message.method, 'result');
+              assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+            }
+            if (recoveringOutput && message.id === 1) {
+              outputRecoveryJobs.keyRequests++;
+              outputKeyRequestedAt = performance.now();
+              assert.deepEqual(message, {
+                id: 1,
+                method: 'key',
+                purpose: 'poi-output-recover',
+                inputSha256: outputRecoveryInputDigest,
+              });
+              const reply = await originalBroker.dispatch(wire);
+              assert.ok(reply instanceof Uint8Array && reply.byteLength === 32);
+              outputRecoveryJobs.keyReplies++;
+              outputKeyRepliedAt = performance.now();
+              outputRecoveryReplies.push(reply);
+              return reply;
+            }
+            if (recoveringOutput) {
+              outputRecoveryJobs.resultMessages++;
+              outputResultAt = performance.now();
+              assert.equal(message.id, 2);
+              assert.equal(message.method, 'result');
+              assert.equal(message.value.recoveryInputSha256, outputRecoveryInputDigest);
+              assert.equal(message.value.payloadSha256, savedProof.payloadSha256);
+              assert.deepEqual(message.value.output, {
+                blindedCommitmentsOut: savedProof.payload.blindedCommitmentsOut,
+                railgunTxidIfHasUnshield: savedProof.payload.railgunTxidIfHasUnshield,
+              });
+              assert.ok(outputRecoveryReplies.every((bytes) => bytes.every((v) => v === 0)));
+            }
+            assert.equal(guardSeen, false);
+            const guards = message.value.guards;
+            assert.deepEqual(Object.keys(guards).sort(), ['attempts', 'canaries', 'hooks']);
+            assert.equal(guards.attempts, 0);
+            assert.ok(
+              Array.isArray(guards.hooks) && guards.hooks.length >= 1 && guards.hooks.length <= 256
+            );
+            assert.ok(
+              guards.hooks.every(
+                (hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook)
+              )
+            );
+            assert.equal(new Set(guards.hooks).size, guards.hooks.length);
+            assert.equal(guards.canaries, guards.hooks.length);
+            guardSeen = true;
+            outputRecoveryGuards.reports++;
+            outputRecoveryGuards.attempts += guards.attempts;
+            outputRecoveryGuards.canaryChecks += guards.canaries;
+            outputRecoveryGuards.hooks = [
+              ...new Set([...outputRecoveryGuards.hooks, ...guards.hooks]),
+            ].sort();
+            if (recoveringOutput && outputRecoveryFault === 'substituted-output') {
+              const previous = message.value.output.blindedCommitmentsOut[0];
+              message.value.output.blindedCommitmentsOut[0] = previous === hex(1) ? hex(2) : hex(1);
+              assert.notEqual(message.value.output.blindedCommitmentsOut[0], previous);
+              outputRecoveryJobs.resultSubstitutions++;
+            }
+            const reply = await originalBroker.dispatch(JSON.stringify(message));
+            if (recoveringOutput) outputRecoveryJobs.resultAdmissions++;
+            if (outputMirror) outputRecoveryMirrorBroker.admitted++;
+            if (outputPublicPlan) outputRecoveryPublicBroker.admitted++;
+            if (outputOwnSelector) {
+              assert.match(message.value.railgunTxid, /^[0-9a-f]{64}$/);
+              outputRecoveryTxid = message.value.railgunTxid;
+            }
+            return reply;
+          },
+        },
+      };
+    }
     if (checksOwnSelector || checksOwnTxid) {
       const originalBroker = options.broker;
       let guardSeen = false;
@@ -751,6 +1118,29 @@ async function main() {
     const jobStarted = performance.now();
     real = originals.start(patched);
     real.closed.then((exit) => {
+      if (outputOwnSelector) outputRecoveryJobs.ownSelectorExit++;
+      if (outputOwnTxid) outputRecoveryJobs.ownTxidExit++;
+      if (outputPublicPlan) outputRecoveryJobs.publicPlanExit++;
+      if (outputMirror)
+        outputRecoveryJobs[
+          outputMirrorMode === 'inspect' ? 'mirrorInspectExit' : 'mirrorWitnessExit'
+        ]++;
+      if (outputRecoveryActive && recoveringOutput) {
+        outputRecoveryJobs.viewingExit++;
+        outputRecoveryTimings.push({
+          mode: outputRecoveryFault,
+          exitCode: exit.code,
+          elapsedMs: Math.ceil(performance.now() - jobStarted),
+          budgetMs: options.lifetimeMs,
+          peakRssBytes: exit.peakRssBytes,
+          keyRequestAfterMs: Math.ceil(outputKeyRequestedAt - jobStarted),
+          keyReplyAfterMs: Math.ceil(outputKeyRepliedAt - jobStarted),
+          keyRequestToReplyMs: Math.ceil(outputKeyRepliedAt - outputKeyRequestedAt),
+          keyRequestToResultMs: Math.ceil(outputResultAt - outputKeyRequestedAt),
+          keyReplyToResultMs: Math.ceil(outputResultAt - outputKeyRepliedAt),
+          resultAfterMs: Math.ceil(outputResultAt - jobStarted),
+        });
+      }
       if (checksOwnSelector) checksJobs.ownSelectorExit++;
       if (checksOwnTxid) checksJobs.ownTxidExit++;
       if (membership) jobs.membershipExit++;
@@ -912,6 +1302,7 @@ async function main() {
     openRailgunOwnPoiChecks,
     assertRailgunOwnPoiChecks,
   } = require('../src/main/wallet/railgun-own-poi-checks');
+  const { recoverRailgunPoiOutput } = require('../src/main/wallet/railgun-poi-output-recovery');
   const runs = [],
     recoveryRuns = [];
   try {
@@ -2152,6 +2543,237 @@ async function main() {
       assert.deepEqual(await journal.readSnapshot(), initialJournal);
       assert.deepEqual(intentActivity(), initialActivity);
     }
+    const reopenPreparedIntent = async () => {
+      const initialActivity = intentActivity();
+      intentStore.close();
+      await intentStore.closed;
+      await publicAccount.close();
+      publicAccount = undefined;
+      enrollment.close();
+      enrollment = await openRailgunAccountEnrollment({ identity });
+      journal = openJournal();
+      publicAccount = await openRailgunAccountPublic({ enrollment, archive });
+      intentStore = await enrollment.openPoiIntents();
+      assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), retainedIntent);
+      for (const proof of [retainedIntent, savedProof])
+        assert.equal(
+          (
+            await intentStore.prepare({
+              proof,
+              coordinator: publicAccount.coordinator,
+              signal: enrollment.signal,
+            })
+          ).status,
+          'refused'
+        );
+      intentRuns.push({
+        mode: 'enrollment-reopen',
+        retained: true,
+        restoredDataRefused: true,
+        oldOwnerProofRefused: true,
+      });
+      assert.deepEqual(intentActivity(), initialActivity);
+      assert.equal(intentRuns.length, 6);
+    };
+    if (outputRecoveryMode) {
+      phase = 'output-recovery-enrollment-reopen';
+      await reopenPreparedIntent();
+      const delta = (a, b) =>
+        Object.fromEntries(Object.keys(a).map((key) => [key, a[key] - b[key]]));
+      const exerciseOutputRecovery = async (fault) => {
+        phase = 'output-recovery-' + fault;
+        outputRecoveryFault = fault;
+        outputRecoveryInputDigest = undefined;
+        outputRecoveryTxid = undefined;
+        const coldPublicRestore = Number(outputRecoveryRuns.length === 0),
+          substituted = fault === 'substituted-output',
+          beforeActivity = intentActivity(),
+          beforeJournal = await journal.readSnapshot(),
+          beforeSignatures = signature.attempts(),
+          beforeJobs = copy(outputRecoveryJobs),
+          beforeMirrorBroker = copy(outputRecoveryMirrorBroker),
+          beforePublicBroker = copy(outputRecoveryPublicBroker),
+          beforeReplies = outputRecoveryReplies.length,
+          beforeTimings = outputRecoveryTimings.length,
+          beforeGuards = outputRecoveryGuards.reports;
+        outputRecoveryActive = true;
+        const work = recoverRailgunPoiOutput({
+          identity,
+          enrollment,
+          coordinator: publicAccount.coordinator,
+          archive,
+          capsuleDigest: retainedIntent.capsuleDigest,
+          signal: operationsController.signal,
+        });
+        pendingOperations.add(work);
+        let recovered;
+        try {
+          recovered = await work;
+        } finally {
+          pendingOperations.delete(work);
+          outputRecoveryActive = false;
+        }
+        const viewing = Number(kind === 'transfer');
+        if (
+          (substituted &&
+            (recovered.status !== 'refused' || recovered.stage !== 'recovery:callback')) ||
+          (!substituted && recovered.status !== 'matched')
+        )
+          process.stderr.write(
+            JSON.stringify({
+              outputRecoveryMode: fault,
+              status: recovered.status,
+              stage: recovered.stage,
+              jobs: delta(outputRecoveryJobs, beforeJobs),
+            }) + '\n'
+          );
+        if (substituted) {
+          assert.equal(viewing, 1);
+          assert.deepEqual(recovered, { status: 'refused', stage: 'recovery:callback' });
+        } else {
+          assert.equal(recovered.status, 'matched', 'output recovery stage ' + recovered.stage);
+          assert.equal(recovered.capsuleDigest, retainedIntent.capsuleDigest);
+          assert.equal(recovered.payloadSha256, retainedIntent.payloadSha256);
+          assert.equal(recovered.revision, retainedIntent.revision);
+          assert.equal(recovered.recoveryInputSha256, viewing ? outputRecoveryInputDigest : null);
+          assert.equal(recovered.outputMatched, true);
+          assert.equal(recovered.viewingKeyReleases, viewing);
+          assert.equal(recovered.viewingUtilityExitObserved, !!viewing);
+          for (const flag of [
+            'proofVerified',
+            'originalInputReconstructed',
+            'originalRootsAccepted',
+            'membershipAuthenticated',
+            'sourceAuthenticated',
+            'disclosureEnabled',
+            'spendingEnabled',
+          ])
+            assert.equal(recovered[flag], false);
+        }
+        const jobDelta = delta(outputRecoveryJobs, beforeJobs);
+        assert.deepEqual(jobDelta, {
+          ownSelector: 1,
+          ownSelectorExit: 1,
+          ownTxid: 1,
+          ownTxidExit: 1,
+          mirrorInspect: 2,
+          mirrorInspectExit: 2,
+          mirrorWitness: 1,
+          mirrorWitnessExit: 1,
+          publicPlan: coldPublicRestore,
+          publicPlanExit: coldPublicRestore,
+          viewing,
+          viewingExit: viewing,
+          keyRequests: viewing,
+          keyReplies: viewing,
+          resultMessages: viewing,
+          resultAdmissions: substituted ? 0 : viewing,
+          resultSubstitutions: Number(substituted),
+          unexpected: 0,
+        });
+        const mirrorBrokerDelta = delta(outputRecoveryMirrorBroker, beforeMirrorBroker);
+        assert.deepEqual(mirrorBrokerDelta, {
+          attempted: 11,
+          admitted: 11,
+          input: 3,
+          get: 5,
+          result: 3,
+          forbidden: 0,
+        });
+        const publicBrokerDelta = delta(outputRecoveryPublicBroker, beforePublicBroker);
+        assert.deepEqual(publicBrokerDelta, {
+          attempted: 3 * coldPublicRestore,
+          admitted: 3 * coldPublicRestore,
+          sourceNext: 2 * coldPublicRestore,
+          jobResult: coldPublicRestore,
+          forbidden: 0,
+        });
+        assert.equal(outputRecoveryReplies.length - beforeReplies, viewing);
+        assert.ok(outputRecoveryReplies.every((bytes) => bytes.every((v) => v === 0)));
+        const timings = outputRecoveryTimings.slice(beforeTimings);
+        assert.equal(timings.length, viewing);
+        for (const timing of timings) {
+          assert.equal(timing.mode, fault);
+          assert.equal(
+            timing.exitCode,
+            substituted ? 'RAILGUN_SESSION_REVOKED' : 'RAILGUN_PROCESS_CLOSED'
+          );
+          assert.ok(timing.peakRssBytes > 0 && timing.peakRssBytes < 512 * 1024 * 1024);
+          for (const [key, value] of Object.entries(timing))
+            if (key.endsWith('Ms')) assert.ok(Number.isSafeInteger(value) && value >= 0);
+          assert.ok(timing.keyRequestAfterMs <= timing.keyReplyAfterMs);
+          assert.ok(timing.keyReplyAfterMs <= timing.resultAfterMs);
+          assert.ok(timing.resultAfterMs <= timing.elapsedMs);
+        }
+        assert.equal(outputRecoveryGuards.reports - beforeGuards, 5 + viewing + coldPublicRestore);
+        assert.equal(outputRecoveryGuards.attempts, 0);
+        assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), retainedIntent);
+        assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+        assert.equal((await capture()).status, 'captured');
+        assert.equal(signature.attempts(), beforeSignatures);
+        const afterActivity = intentActivity();
+        for (const key of Object.keys(beforeActivity))
+          if (!['publicMethods', 'rpcMethods'].includes(key))
+            assert.deepEqual(afterActivity[key], beforeActivity[key]);
+        const publicDelta = delta(afterActivity.publicMethods, beforeActivity.publicMethods),
+          chainDelta = delta(afterActivity.rpcMethods, beforeActivity.rpcMethods);
+        assert.deepEqual(publicDelta, { latest: 3, validate: 3, page: 0 });
+        assert.deepEqual(chainDelta, {
+          eth_getTransactionReceipt: 1,
+          eth_getBlockByNumber: 22 + 12 * coldPublicRestore,
+          eth_blockNumber: 2,
+          eth_getTransactionByHash: 1,
+          eth_getLogs: coldPublicRestore,
+        });
+        outputRecoveryRuns.push({
+          mode: fault,
+          status: recovered.status,
+          ...(substituted
+            ? { stage: recovered.stage, validFieldSubstitutionRefused: true }
+            : {
+                preparedPayloadDigestMatched: true,
+                recoveryInputDigestMatched: !!viewing,
+              }),
+          enrollmentReopened: true,
+          exactRevisionRetained: true,
+          viewingKeyReleases: viewing,
+          viewingUtilityExitObserved: !!viewing,
+          outputMatched: !substituted,
+          journalUnchanged: true,
+          healthyRecapture: true,
+          noPreparedRecordMutation: true,
+          activityObservationSeams: [
+            'utility process starts and exits',
+            'TXID utility input/get/result broker',
+            'cold public plan sourceNext/jobResult broker without storage',
+            'viewing utility key/result broker',
+            'fixture POI transport and public/chain service factories',
+          ],
+          ownedNoteQueries: 0,
+          additionalPoiProverJobs: 0,
+          additionalPoiVerifierJobs: 0,
+          additionalSpendingKeyDerivations: 0,
+          jobCounts: jobDelta,
+          readOnlyTxidMirrorBroker: mirrorBrokerDelta,
+          publicPlanBroker: publicBrokerDelta,
+          timings,
+          publicPreflightCalls: publicDelta,
+          chainPreflightCalls: chainDelta,
+          proofVerified: false,
+          originalInputReconstructed: false,
+          originalRootsAccepted: false,
+          membershipAuthenticated: false,
+          sourceAuthenticated: false,
+          disclosureEnabled: false,
+          spendingEnabled: false,
+        });
+      };
+      if (kind === 'transfer') {
+        await exerciseOutputRecovery('substituted-output');
+        await exerciseOutputRecovery('healthy-after-refusal');
+      } else await exerciseOutputRecovery('healthy');
+      assert.equal(outputRecoveryRuns.length, kind === 'transfer' ? 2 : 1);
+    }
     phase = 'final-journal-drift';
     mode = 'valid';
     onRoot = async () => {
@@ -2214,37 +2836,7 @@ async function main() {
     assert.equal(transportCreates, transportCloses);
     assert.equal(jobs.membership, jobs.membershipExit);
     assert.equal(jobs.selector, jobs.selectorExit);
-    if (intentsMode) {
-      const initialActivity = intentActivity();
-      intentStore.close();
-      await intentStore.closed;
-      await publicAccount.close();
-      publicAccount = undefined;
-      enrollment.close();
-      enrollment = await openRailgunAccountEnrollment({ identity });
-      publicAccount = await openRailgunAccountPublic({ enrollment, archive });
-      intentStore = await enrollment.openPoiIntents();
-      assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), retainedIntent);
-      for (const proof of [retainedIntent, savedProof])
-        assert.equal(
-          (
-            await intentStore.prepare({
-              proof,
-              coordinator: publicAccount.coordinator,
-              signal: enrollment.signal,
-            })
-          ).status,
-          'refused'
-        );
-      intentRuns.push({
-        mode: 'enrollment-reopen',
-        retained: true,
-        restoredDataRefused: true,
-        oldOwnerProofRefused: true,
-      });
-      assert.deepEqual(intentActivity(), initialActivity);
-      assert.equal(intentRuns.length, 6);
-    }
+    if (intentsMode && !outputRecoveryMode) await reopenPreparedIntent();
     assert.deepEqual(hashes(), before);
     const report = {
       fixture: 'synthetic-enrolled-own-poi-membership',
@@ -2258,11 +2850,20 @@ async function main() {
       checksMode,
       intentsMode,
       intentRuns,
+      outputRecoveryMode,
+      outputRecoveryRuns,
+      outputRecoveryJobs,
+      outputRecoveryMirrorBroker,
+      outputRecoveryPublicBroker,
+      outputRecoveryTimings,
       checksRuns,
       checksRoots,
       checksJobs,
       checksForbiddenJobs,
-      guards: { checksPreflightUtilities: checksGuards },
+      guards: {
+        checksPreflightUtilities: checksGuards,
+        outputRecoveryUtilities: outputRecoveryGuards,
+      },
       publicPrefixAdvances: advances,
       poiMethods,
       publicMethods,

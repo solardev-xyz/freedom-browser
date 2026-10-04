@@ -110,6 +110,13 @@ canary checks with zero capability attempts. This checks stage adds no viewing
 key, POI proof, POI verifier or owned-note query. Its preflights do make counted
 synthetic chain and public-service requests; this is not a zero-network-work claim.
 
+**October 4 count clarification from the later output-recovery qualification:** those 14 jobs
+and 1,274 canary checks cover the instrumented selector/TXID verifier jobs only.
+Preflight also uses keyless TXID mirror inspect/witness utilities; they were not
+included in those counters. A cold public coordinator can additionally reconstruct
+its checkpoint with a public-plan utility. The earlier figures are not a census
+of every utility process used by preflight; the original reports remain unchanged.
+
 The scenarios cover valid checks and forged/cross-owner/closed receipts, owner
 exclusion, list rejection, TXID rejection, malformed list response, caller
 cancellation, timeout and healthy reuse after failures. Cancellation and timeout
