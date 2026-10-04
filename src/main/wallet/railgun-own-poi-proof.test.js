@@ -198,7 +198,10 @@ jest.mock('./railgun-process', () => ({
   }),
 }));
 const { createHash } = require('crypto');
-const { proveRailgunOwnPoi: prove } = require('./railgun-own-poi-proof');
+const {
+  proveRailgunOwnPoi: prove,
+  assertRailgunOwnPoiProof: historyOf,
+} = require('./railgun-own-poi-proof');
 const { startRailgunProcess } = require('./railgun-process');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { withRailgunViewingCredential } = require('./railgun-identity');
@@ -405,6 +408,7 @@ afterEach(async () => {
   for (const gate of gates) gate.resolve();
   mockTask?.exit();
   await Promise.allSettled(operations);
+  jest.restoreAllMocks();
   jest.useRealTimers();
 });
 
@@ -908,3 +912,229 @@ test('cancelled keyless verifier must drain before releasing verification phase 
   expect(await pending).toEqual({ status: 'refused', stage: 'verify' });
   expect(mockPhase).toBeNull();
 });
+
+const expectHistoryRefused = (
+  value,
+  enrollment = mockEnrollment,
+  coordinator = mockCoordinator
+) => {
+  let failure;
+  try {
+    historyOf(value, enrollment, coordinator);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  expect(failure).toMatchObject({
+    code: 'RAILGUN_OWN_POI_PROOF_HISTORY_REFUSED',
+    message: 'Railgun own POI proof history unavailable',
+  });
+  expect(Object.keys(failure)).toEqual(['code']);
+  expect(failure.cause).toBeUndefined();
+};
+const expectDeepFrozen = (value) => {
+  if (!value || typeof value !== 'object') return;
+  expect(Object.isFrozen(value)).toBe(true);
+  Object.values(value).forEach(expectDeepFrozen);
+};
+test('registered history is bounded detached deeply frozen data with unchanged public result schema', async () => {
+  const result = await run();
+  expect(result.status).toBe('proved');
+  const history = historyOf(result, mockEnrollment, mockCoordinator);
+  expect(Object.keys(result).sort()).toEqual(
+    [
+      'status',
+      'payload',
+      'payloadSha256',
+      'inputSha256',
+      'locallyVerified',
+      'separatelyVerified',
+      'utilityExitObserved',
+      'accountAuthenticated',
+      'sourceAuthenticated',
+      'currentFinalityVerified',
+      'membershipAuthenticated',
+      'rootAccepted',
+      'disclosureEnabled',
+      'spendingEnabled',
+    ].sort()
+  );
+  expect(history).toEqual({
+    txidTree: 0,
+    archive: options.archive,
+    publicIdentity: mockPublicIdentity,
+    capture: mockObserved.capture,
+    preparation: mockObserved.poiPreparation,
+    selector: mockObserved.selector,
+    expected: mockExpected,
+    payload: result.payload,
+    payloadSha256: result.payloadSha256,
+    inputSha256: result.inputSha256,
+  });
+  expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(131072);
+  expectDeepFrozen(history);
+  expect(history.capture).not.toBe(mockObserved.capture);
+  expect(history.capture.capsule).not.toBe(mockObserved.capture.capsule);
+  expect(history.preparation).not.toBe(mockObserved.poiPreparation);
+  expect(history.publicIdentity).not.toBe(mockPublicIdentity);
+  expect(history.payload).not.toBe(result.payload);
+  expect(history.payload.proof.pi_b[0]).not.toBe(result.payload.proof.pi_b[0]);
+  const baseline = copy(history);
+  mockObserved.capture.capsule.walletId = 'changed-after-return';
+  mockObserved.poiPreparation.ownEvidence.capsule.walletId = 'changed-after-return';
+  mockObserved.selector.blindedCommitment = hex(99);
+  expect(Reflect.set(history.capture.capsule, 'walletId', 'mutated')).toBe(false);
+  expect(Reflect.set(history.payload.proof.pi_b[0], '0', '999')).toBe(false);
+  expect(historyOf(result, mockEnrollment, mockCoordinator)).toEqual(baseline);
+  for (const flag of [
+    'accountAuthenticated',
+    'sourceAuthenticated',
+    'currentFinalityVerified',
+    'membershipAuthenticated',
+    'rootAccepted',
+    'disclosureEnabled',
+    'spendingEnabled',
+  ])
+    expect(result[flag]).toBe(false);
+});
+test('only the exact registered successful object can retrieve history', async () => {
+  const result = await run();
+  const history = historyOf(result, mockEnrollment, mockCoordinator);
+  for (const fake of [
+    {},
+    copy(result),
+    { ...result },
+    Object.create(result),
+    result.payload,
+    history,
+    null,
+    undefined,
+    'proved',
+  ])
+    expectHistoryRefused(fake);
+  expectHistoryRefused(result, { ...mockEnrollment }, mockCoordinator);
+  expectHistoryRefused(result, mockEnrollment, { ...mockCoordinator });
+  expectHistoryRefused(result, undefined, {});
+  expect(historyOf(result, mockEnrollment, mockCoordinator)).toBe(history);
+});
+test.each([
+  'identity-signal',
+  'enrollment-signal',
+  'coordinator-signal',
+  'identity-current',
+  'descriptor',
+  'public-generation',
+])('historical proof lookup refuses and sanitizes %s revocation', async (fault) => {
+  const result = await run();
+  expect(historyOf(result, mockEnrollment, mockCoordinator)).toBeDefined();
+  if (fault === 'identity-signal') identityController.abort();
+  if (fault === 'enrollment-signal') enrollmentController.abort();
+  if (fault === 'coordinator-signal') coordinatorController.abort();
+  if (fault === 'identity-current') mockIdentityCurrent = false;
+  if (fault === 'descriptor') mockIdentity.descriptor = { walletId: 'private-descriptor-detail' };
+  if (fault === 'public-generation')
+    mockPublicIdentity = { ...mockPublicIdentity, generationId: 'private-generation-detail' };
+  expectHistoryRefused(result);
+  expect(startRailgunProcess).toHaveBeenCalledTimes(1);
+  expect(verifyRailgunPoiPayload).toHaveBeenCalledTimes(1);
+});
+test('membership closure/expiry and finished proof/caller lifetimes do not revoke historical data', async () => {
+  const result = await run();
+  const history = historyOf(result, mockEnrollment, mockCoordinator);
+  expect(mockWindow.signal.aborted).toBe(true);
+  expect(mockTask.options.broker.signal.aborted).toBe(true);
+  expect(verifyRailgunPoiPayload.mock.calls[0][0].signal.aborted).toBe(true);
+  mockMembershipCurrent = false; // The genuine membership accessor now refuses.
+  expect(() =>
+    require('./railgun-own-poi-membership').assertRailgunOwnPoiMembership(
+      options.membershipReceipt,
+      mockEnrollment,
+      mockCoordinator
+    )
+  ).toThrow();
+  caller.abort();
+  jest.advanceTimersByTime(175001);
+  expect(historyOf(result, mockEnrollment, mockCoordinator)).toBe(history);
+  expect(mockPhase).toBeNull();
+});
+test.each(['throw', 'digest', 'exit', 'proof', 'independent'])(
+  'fresh verifier %s failure never returns registered history',
+  async (fault) => {
+    const entered = deferred(),
+      gate = deferred();
+    let completed = false;
+    mockVerifier.mockImplementationOnce(async ({ payload: p }) => {
+      entered.resolve();
+      await gate.promise;
+      if (fault === 'throw') throw Error('private verification detail');
+      return {
+        utilityExitObserved: fault !== 'exit',
+        proofVerified: fault !== 'proof',
+        independentlyVerified: fault !== 'independent',
+        payloadSha256: fault === 'digest' ? 'f'.repeat(64) : sha(JSON.stringify(p)),
+      };
+    });
+    const pending = run().then((value) => {
+      completed = true;
+      return value;
+    });
+    await entered.promise;
+    expect(completed).toBe(false);
+    expectHistoryRefused({ status: 'proved', payload: payload(), separatelyVerified: true });
+    gate.resolve();
+    const refused = await pending;
+    expect(refused).toEqual({ status: 'refused', stage: 'verify' });
+    expectHistoryRefused(refused);
+    expect(mockPhase).toBeNull();
+  }
+);
+test('pre-verification refusal cannot be used as registered proof history', async () => {
+  mockStartError = true;
+  const refused = await run();
+  expect(refused.status).toBe('refused');
+  expect(verifyRailgunPoiPayload).not.toHaveBeenCalled();
+  expectHistoryRefused(refused);
+});
+test.each([0, 1])(
+  'history UTF-8 bound at 128 KiB plus %s bytes is enforced before registration',
+  async (excess) => {
+    const first = await run();
+    const baseline = copy(historyOf(first, mockEnrollment, mockCoordinator));
+    // Padding only the mocked capture isolates the registry's bound from utility
+    // input/proof bounds. Real upstream capture validation is tested separately.
+    baseline.capture.historyPadding = '';
+    const paddingBytes = 131072 + excess - Buffer.byteLength(JSON.stringify(baseline));
+    expect(paddingBytes).toBeGreaterThan(0);
+    const padding = 'é'.repeat(Math.floor(paddingBytes / 2)) + 'x'.repeat(paddingBytes % 2);
+    mockObserved.capture.historyPadding = padding;
+    mockCapture.historyPadding = padding;
+    baseline.capture.historyPadding = padding;
+    expect(Buffer.byteLength(JSON.stringify(baseline))).toBe(131072 + excess);
+    let internalCandidate;
+    const freeze = Object.freeze;
+    jest.spyOn(Object, 'freeze').mockImplementation((value) => {
+      if (value?.status === 'proved' && value.separatelyVerified === true)
+        internalCandidate = value;
+      return freeze(value);
+    });
+    const result = await run({ ...options, membershipReceipt: receipt() });
+    expect(verifyRailgunPoiPayload).toHaveBeenCalledTimes(2);
+    expect(internalCandidate).toBeDefined();
+    if (excess === 0) {
+      expect(result).toBe(internalCandidate);
+      const history = historyOf(result, mockEnrollment, mockCoordinator);
+      expect(Buffer.byteLength(JSON.stringify(history))).toBe(131072);
+      expectDeepFrozen(history);
+    } else {
+      expect(result).toEqual({ status: 'refused', stage: 'verify' });
+      expectHistoryRefused(result);
+      // Inspect the internally constructed success-shaped candidate: the rejected
+      // oversize attempt must not leave even that object in the private registry.
+      expectHistoryRefused(internalCandidate);
+    }
+    expect(mockPhase).toBeNull();
+    expect(
+      historyOf(first, mockEnrollment, mockCoordinator).capture.historyPadding
+    ).toBeUndefined();
+  }
+);

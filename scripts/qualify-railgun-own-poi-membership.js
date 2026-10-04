@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -191,6 +191,10 @@ const sources = [
   'src/main/wallet/railgun-own-poi-proof-data.test.js',
   'src/main/wallet/railgun-own-poi-proof.js',
   'src/main/wallet/railgun-own-poi-proof.test.js',
+  'src/main/wallet/railgun-own-poi-checks.js',
+  'src/main/wallet/railgun-own-poi-checks.test.js',
+  'src/main/wallet/railgun-poi-root.js',
+  'src/main/wallet/railgun-poi-root.test.js',
   'src/main/wallet/railgun-own-poi-prove-job.js',
   'src/main/wallet/railgun-own-poi-prove-job.test.js',
   'src/main/wallet/railgun-poi-prover.js',
@@ -226,9 +230,12 @@ const deferred = () => {
   return { promise, resolve };
 };
 async function main() {
-  const [directory, archive, kind, proverArchive, artifactDirectory] = process.argv.slice(2);
-  assert.ok([5, 7].includes(process.argv.length));
-  const proofMode = process.argv.length === 7;
+  const [directory, archive, kind, proverArchive, artifactDirectory, checksFlag] =
+    process.argv.slice(2);
+  assert.ok([5, 7, 8].includes(process.argv.length));
+  const checksMode = process.argv.length === 8;
+  if (checksMode) assert.equal(checksFlag, 'checks');
+  const proofMode = process.argv.length >= 7;
   if (proofMode) assert.ok(path.isAbsolute(proverArchive) && path.isAbsolute(artifactDirectory));
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive) && !fs.existsSync(directory));
   assert.ok(['transfer', 'unshield'].includes(kind));
@@ -309,6 +316,26 @@ async function main() {
     maxWireBytes: 0,
     peakRssBytes: 0,
   };
+  let savedProof,
+    checksActive = false,
+    checksFault = 'valid',
+    checksOperation,
+    checksHold;
+  const checksRuns = [],
+    checksResults = new Set(),
+    checksReleases = new Set(),
+    checksJobs = { ownSelector: 0, ownSelectorExit: 0, ownTxid: 0, ownTxidExit: 0 },
+    checksForbiddenJobs = { binaryKey: 0, poiProver: 0, poiVerifier: 0 },
+    checksGuards = { reports: 0, attempts: 0, canaryChecks: 0, hooks: [] },
+    checksRoots = {
+      creates: 0,
+      closes: 0,
+      attempted: 0,
+      validated: 0,
+      list: 0,
+      txid: 0,
+      pending: 0,
+    };
   const clients = new Set(),
     results = new Set(),
     pendingOperations = new Set(),
@@ -321,6 +348,8 @@ async function main() {
     '../src/main/networks/private-rpc',
     '../src/main/wallet/railgun-public-services',
     '../src/main/wallet/railgun-poi-source',
+    '../src/main/wallet/railgun-poi-root',
+    '../src/main/wallet/railgun-own-poi-checks',
     '../src/main/wallet/railgun-scan-source',
     '../src/main/wallet/railgun-txid-root',
     '../src/main/wallet/private-transaction-network',
@@ -329,6 +358,126 @@ async function main() {
   ])
     assert.equal(require.cache[require.resolve(file)], undefined);
   transport.createWalletTorTransport = () => {
+    if (checksActive) {
+      checksRoots.creates++;
+      let closed = false,
+        used = false;
+      const client = {
+        close() {
+          if (!closed) checksRoots.closes++;
+          closed = true;
+        },
+        async request(handle, url, options) {
+          const held = checksHold;
+          try {
+            checksRoots.attempted++;
+            assert.equal(checksActive, true);
+            assert.equal(closed, false);
+            assert.equal(used, false);
+            used = true;
+            assert.equal(url, 'https://ppoi.fdi.network');
+            const context = getPrivacyContext(handle);
+            assert.deepEqual(context.subject, {
+              kind: 'private-account',
+              principal: 'railgun:' + enrollment.descriptor.accountIndex,
+              protocol: 'railgun',
+              deployment: 'sepolia',
+              chainId: 11155111,
+              role: 'poi',
+              operation: context.subject.operation,
+            });
+            assert.match(context.subject.operation, /^poi:[0-9a-f]{64}$/);
+            checksOperation ??= context.subject.operation;
+            assert.equal(context.subject.operation, checksOperation);
+            assert.deepEqual(context.requirements, {
+              origin: 'tor',
+              content: 'public',
+              correctness: 'any',
+              maxAgeMs: null,
+            });
+            assert.equal(options.method, 'POST');
+            assert.deepEqual(Object.keys(options).sort(), [
+              'body',
+              'headers',
+              'method',
+              'signal',
+              'timeoutMs',
+            ]);
+            assert.deepEqual(options.headers, { 'content-type': 'application/json' });
+            assert.ok(options.signal instanceof AbortSignal && !options.signal.aborted);
+            assert.ok(
+              Number.isSafeInteger(options.timeoutMs) &&
+                options.timeoutMs > 0 &&
+                options.timeoutMs <= 45000
+            );
+            const body = JSON.parse(options.body);
+            assert.deepEqual(Object.keys(body).sort(), ['id', 'jsonrpc', 'method', 'params']);
+            assert.equal(body.jsonrpc, '2.0');
+            assert.ok(typeof body.id === 'string' && body.id.length > 0);
+            const rootKind = body.method === 'ppoi_validate_poi_merkleroots' ? 'list' : 'txid';
+            assert.equal(
+              body.method,
+              rootKind === 'list'
+                ? 'ppoi_validate_poi_merkleroots'
+                : 'ppoi_validate_txid_merkleroot'
+            );
+            assert.deepEqual(body.params, {
+              chainType: '0',
+              chainID: '11155111',
+              txidVersion: 'V2_PoseidonMerkle',
+              ...(rootKind === 'list'
+                ? { listKey: REQUIRED_LIST, poiMerkleroots: [savedProof.payload.poiMerkleroots[0]] }
+                : {
+                    tree: 0,
+                    index: savedProof.payload.txidMerklerootIndex,
+                    merkleroot: savedProof.payload.txidMerkleroot,
+                  }),
+            });
+            checksRoots.validated++;
+            checksRoots[rootKind]++;
+            checksRoots.pending++;
+            try {
+              if (held) {
+                assert.equal(held.requests[rootKind], undefined);
+                held.requests[rootKind] = {
+                  signal: options.signal,
+                  isolation: context.isolationToken,
+                };
+                options.signal.addEventListener(
+                  'abort',
+                  () => {
+                    held.aborted[rootKind] = performance.now();
+                    if (Object.keys(held.aborted).length === 2) held.revoked.resolve();
+                  },
+                  { once: true }
+                );
+                if (Object.keys(held.requests).length === 2) held.entered.resolve();
+              }
+              // Both independent root requests deliberately ignore abort. Their
+              // separate release gates prove one drained sibling is insufficient.
+              if (held) await held.release[rootKind].promise;
+              const value = {
+                jsonrpc: '2.0',
+                id: body.id,
+                result: checksFault !== rootKind + '-reject',
+              };
+              if (checksFault === 'malformed-list' && rootKind === 'list') value.extra = true;
+              return { status: 200, body: Buffer.from(JSON.stringify(value)) };
+            } finally {
+              checksRoots.pending--;
+              held?.finished[rootKind].resolve();
+            }
+          } catch (error) {
+            // Do not make the fixture wait for the controller to report this:
+            // the controller must first drain any held sibling transport.
+            held?.failed.resolve(error);
+            throw error;
+          }
+        },
+      };
+      clients.add(client);
+      return client;
+    }
     transportCreates++;
     let closed = false,
       operation,
@@ -442,6 +591,12 @@ async function main() {
       options.filename === require.resolve('../src/main/wallet/railgun-own-poi-prove-job');
     const verifying =
       options.filename === require.resolve('../src/main/wallet/railgun-poi-verify-job');
+    if (checksActive) {
+      if (options.binaryKey) checksForbiddenJobs.binaryKey++;
+      if (proving) checksForbiddenJobs.poiProver++;
+      if (verifying) checksForbiddenJobs.poiVerifier++;
+      assert.ok(!options.binaryKey && !proving && !verifying);
+    }
     if (options.binaryKey) {
       if (phase !== 'enrollment') {
         if (!(proofMode && proofActive && proving)) {
@@ -469,10 +624,62 @@ async function main() {
     const membership = options.filename === require.resolve('../src/main/wallet/railgun-poi-job');
     const selectorJob =
       options.filename === require.resolve('../src/main/wallet/railgun-poi-shield-selector-job');
+    const checksOwnSelector =
+      checksActive &&
+      options.filename === require.resolve('../src/main/wallet/railgun-own-selector-job');
+    const checksOwnTxid =
+      checksActive &&
+      options.filename === require.resolve('../src/main/wallet/railgun-own-txid-job');
+    if (checksOwnSelector || checksOwnTxid) {
+      assert.ok(!options.binaryKey);
+      const context = getPrivacyContext(options.handle);
+      assert.equal(context.subject.kind, 'private-account');
+      assert.equal(context.subject.role, 'engine');
+      assert.equal(
+        context.subject.operation,
+        checksOwnSelector ? 'own-txid-selector' : 'own-txid-proof'
+      );
+      if (checksOwnSelector) checksJobs.ownSelector++;
+      if (checksOwnTxid) checksJobs.ownTxid++;
+    }
     if (membership) jobs.membership++;
     if (selectorJob) jobs.selector++;
     let real;
     let patched = options;
+    if (checksOwnSelector || checksOwnTxid) {
+      const originalBroker = options.broker;
+      let guardSeen = false;
+      patched = {
+        ...options,
+        broker: {
+          signal: originalBroker.signal,
+          async dispatch(wire) {
+            const reply = await originalBroker.dispatch(wire);
+            assert.equal(guardSeen, false);
+            assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 16384);
+            const guards = JSON.parse(wire).value.guards;
+            assert.deepEqual(Object.keys(guards).sort(), ['attempts', 'canaries', 'hooks']);
+            assert.equal(guards.attempts, 0);
+            assert.ok(
+              Array.isArray(guards.hooks) && guards.hooks.length >= 1 && guards.hooks.length <= 256
+            );
+            assert.ok(
+              guards.hooks.every(
+                (hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook)
+              )
+            );
+            assert.equal(new Set(guards.hooks).size, guards.hooks.length);
+            assert.equal(guards.canaries, guards.hooks.length);
+            guardSeen = true;
+            checksGuards.reports++;
+            checksGuards.attempts += guards.attempts;
+            checksGuards.canaryChecks += guards.canaries;
+            checksGuards.hooks = [...new Set([...checksGuards.hooks, ...guards.hooks])].sort();
+            return reply;
+          },
+        },
+      };
+    }
     if (proving) {
       const originalBroker = options.broker;
       patched = {
@@ -537,6 +744,8 @@ async function main() {
     const jobStarted = performance.now();
     real = originals.start(patched);
     real.closed.then((exit) => {
+      if (checksOwnSelector) checksJobs.ownSelectorExit++;
+      if (checksOwnTxid) checksJobs.ownTxidExit++;
       if (membership) jobs.membershipExit++;
       if (selectorJob) jobs.selectorExit++;
       if (proving) {
@@ -692,6 +901,10 @@ async function main() {
     assertRailgunOwnPoiMembership: assertMembership,
   } = require('../src/main/wallet/railgun-own-poi-membership');
   const { proveRailgunOwnPoi } = require('../src/main/wallet/railgun-own-poi-proof');
+  const {
+    openRailgunOwnPoiChecks,
+    assertRailgunOwnPoiChecks,
+  } = require('../src/main/wallet/railgun-own-poi-checks');
   const runs = [],
     recoveryRuns = [];
   try {
@@ -1488,7 +1701,7 @@ async function main() {
         await proofCall(member, 'forged-receipt', { membershipReceipt: {} });
         for (const fault of ['purpose', 'hash', 'extra', 'result-before-key'])
           await proofCall(member, fault);
-        await proofCall(member, 'valid');
+        savedProof = await proofCall(member, 'valid');
         const before = proofJobs.viewing;
         await proofCall(member, 'consumed-receipt');
         assert.equal(proofJobs.viewing, before);
@@ -1520,6 +1733,326 @@ async function main() {
       assert.equal(proofJobs.verificationExit, 2);
       assert.ok(proofJobs.peakRssBytes > 0 && proofJobs.peakRssBytes < 768 * 1024 * 1024);
       assert.ok(proofJobs.maxWireBytes > 0 && proofJobs.maxWireBytes <= 32768);
+    }
+    if (checksMode) {
+      assert.equal(savedProof.status, 'proved');
+      const snapshots = () =>
+        copy({
+          checksRoots,
+          checksJobs,
+          checksForbiddenJobs,
+          checksGuards,
+          proofJobs,
+          poiMethods,
+          publicMethods,
+          rpcMethods,
+          jobs,
+          setupKeyJobs,
+          forbiddenKeyJobs,
+          unexpectedTransport,
+          unexpectedRpc,
+          transportCreates,
+          transportCloses,
+          signatureChecks: signature.attempts(),
+        });
+      const invokeChecks = (extra = {}) => {
+        const work = openRailgunOwnPoiChecks({
+          enrollment,
+          coordinator: publicAccount.coordinator,
+          archive,
+          proof: savedProof,
+          signal: operationsController.signal,
+          ...extra,
+        }).then((value) => {
+          if (value.status === 'checked') checksResults.add(value);
+          return value;
+        });
+        pendingOperations.add(work);
+        work.then(
+          () => pendingOperations.delete(work),
+          () => pendingOperations.delete(work)
+        );
+        return work;
+      };
+      const refuseCompetingOwner = async () => {
+        const before = snapshots();
+        assert.deepEqual(await invokeChecks({ signal: new AbortController().signal }), {
+          status: 'refused',
+          stage: 'proof-history',
+        });
+        assert.deepEqual(snapshots(), before);
+      };
+      const exercise = async (fault) => {
+        phase = 'checks-' + fault;
+        checksActive = true;
+        checksFault = fault;
+        checksOperation = undefined;
+        checksHold = undefined;
+        const caller = new AbortController(),
+          before = snapshots(),
+          beforeJournal = await journal.readSnapshot(),
+          started = performance.now();
+        let value,
+          diagnostics = {};
+        try {
+          const held = ['cancel-drain', 'timeout-drain'].includes(fault);
+          if (held) {
+            checksHold = {
+              entered: deferred(),
+              revoked: deferred(),
+              failed: deferred(),
+              requests: {},
+              aborted: {},
+              release: { list: deferred(), txid: deferred() },
+              finished: { list: deferred(), txid: deferred() },
+            };
+            for (const gate of Object.values(checksHold.release)) checksReleases.add(gate);
+          }
+          let settled = false;
+          const pending = invokeChecks({
+            signal: AbortSignal.any([caller.signal, operationsController.signal]),
+            ...(fault === 'forged-proof' ? { proof: { ...savedProof } } : {}),
+            ...(fault === 'timeout-drain' ? { timeoutMs: 8000 } : {}),
+          }).then((result) => {
+            settled = true;
+            return result;
+          });
+          if (held) {
+            const premature = pending.then(() => {
+              throw Error('Checks settled before fixture drain');
+            });
+            const transportFailed = checksHold.failed.promise.then((error) => {
+              throw error;
+            });
+            // The original operation remains tracked and must drain in finally;
+            // transport assertion failures bypass the controller's sibling drain
+            // so finally can release both fixture gates before awaiting it.
+            await Promise.race([checksHold.entered.promise, premature, transportFailed]);
+            assert.equal(checksRoots.pending - before.checksRoots.pending, 2);
+            assert.notEqual(checksHold.requests.list.isolation, checksHold.requests.txid.isolation);
+            for (const request of Object.values(checksHold.requests))
+              assert.equal(request.signal.aborted, false);
+            if (fault === 'cancel-drain') caller.abort();
+            await Promise.race([checksHold.revoked.promise, premature, transportFailed]);
+            for (const request of Object.values(checksHold.requests))
+              assert.equal(request.signal.aborted, true);
+            assert.equal(settled, false);
+            assert.equal(checksRoots.pending - before.checksRoots.pending, 2);
+            await refuseCompetingOwner();
+            if (fault === 'timeout-drain') {
+              const elapsed = Math.min(...Object.values(checksHold.aborted)) - started;
+              assert.ok(elapsed >= 7950 && elapsed < 13000);
+              diagnostics = { timeoutMs: 8000, revokedAfterMs: Math.round(elapsed) };
+            }
+            checksHold.release.list.resolve();
+            await checksHold.finished.list.promise;
+            await new Promise((resolve) => setImmediate(resolve));
+            assert.equal(settled, false);
+            assert.equal(checksRoots.pending - before.checksRoots.pending, 1);
+            await refuseCompetingOwner();
+            checksHold.release.txid.resolve();
+            value = await pending;
+            assert.deepEqual(value, { status: 'refused', stage: 'list-root-unavailable' });
+            diagnostics = {
+              ...diagnostics,
+              bothTransportsHeld: true,
+              ownerHeldUntilBothDrain: true,
+            };
+          } else {
+            value = await pending;
+            if (['valid', 'healthy-after-refusals'].includes(fault)) {
+              assert.equal(value.status, 'checked', 'checks stage ' + value.stage);
+              const observation = assertRailgunOwnPoiChecks(
+                value.receipt,
+                enrollment,
+                publicAccount.coordinator,
+                savedProof,
+                1000
+              );
+              assert.equal(observation, value.observation);
+              assert.ok(
+                Object.isFrozen(value) &&
+                  Object.isFrozen(value.receipt) &&
+                  Object.isFrozen(observation)
+              );
+              assert.deepEqual(observation.payload, savedProof.payload);
+              assert.equal(observation.payloadSha256, savedProof.payloadSha256);
+              assert.equal(observation.capture.bindingDigest, baseline.capture.bindingDigest);
+              assert.deepEqual(observation.capture.capsule, capsule);
+              assert.equal(observation.preflight.archiveAnchorChecked, true);
+              assert.equal(observation.listRoot.root, savedProof.payload.poiMerkleroots[0]);
+              assert.equal(observation.listRoot.listKey, REQUIRED_LIST);
+              assert.equal(observation.txidRoot.root, savedProof.payload.txidMerkleroot);
+              assert.equal(observation.txidRoot.index, savedProof.payload.txidMerklerootIndex);
+              assert.equal(observation.txidRoot.tree, 0);
+              for (const root of [observation.listRoot, observation.txidRoot]) {
+                assert.equal(root.accepted, true);
+                assert.equal(root.trust, 'unverified-service');
+                assert.equal(root.membershipVerified, false);
+              }
+              for (const flag of [
+                'accountAuthenticated',
+                'sourceAuthenticated',
+                'currentFinalityVerified',
+                'membershipAuthenticated',
+                'rootAccepted',
+                'noteStatusChecked',
+                'disclosureEnabled',
+                'spendingEnabled',
+              ])
+                assert.equal(observation[flag], false);
+              assert.throws(() =>
+                assertRailgunOwnPoiChecks({}, enrollment, publicAccount.coordinator, savedProof)
+              );
+              assert.throws(() =>
+                assertRailgunOwnPoiChecks(value.receipt, {}, publicAccount.coordinator, savedProof)
+              );
+              assert.throws(() =>
+                assertRailgunOwnPoiChecks(value.receipt, enrollment, {}, savedProof)
+              );
+              assert.throws(() =>
+                assertRailgunOwnPoiChecks(value.receipt, enrollment, publicAccount.coordinator, {
+                  ...savedProof,
+                })
+              );
+              await refuseCompetingOwner();
+              value.close();
+              assert.equal(value.signal.aborted, true);
+              assert.throws(() =>
+                assertRailgunOwnPoiChecks(
+                  value.receipt,
+                  enrollment,
+                  publicAccount.coordinator,
+                  savedProof
+                )
+              );
+              await value.closed;
+              checksResults.delete(value);
+              diagnostics = { forgedAndClosedReceiptsRefused: true, ownerOverlapRefused: true };
+            } else {
+              const expectedStage = {
+                'forged-proof': 'proof-history',
+                'list-reject': 'list-root-rejected',
+                'txid-reject': 'txid-root-rejected',
+                'malformed-list': 'list-root-unavailable',
+              }[fault];
+              assert.ok(expectedStage);
+              assert.deepEqual(value, { status: 'refused', stage: expectedStage });
+            }
+          }
+          assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+          assert.equal((await capture()).status, 'captured');
+          const after = snapshots(),
+            queried = fault !== 'forged-proof' ? 1 : 0;
+          for (const key of [
+            'proofJobs',
+            'checksForbiddenJobs',
+            'poiMethods',
+            'jobs',
+            'setupKeyJobs',
+            'forbiddenKeyJobs',
+            'unexpectedTransport',
+            'unexpectedRpc',
+            'transportCreates',
+            'transportCloses',
+            'signatureChecks',
+          ])
+            assert.deepEqual(after[key], before[key]);
+          const delta = (a, b) =>
+            Object.fromEntries(Object.keys(a).map((key) => [key, a[key] - b[key]]));
+          const rootDelta = delta(after.checksRoots, before.checksRoots),
+            jobDelta = delta(after.checksJobs, before.checksJobs);
+          assert.deepEqual(rootDelta, {
+            creates: 2 * queried,
+            closes: 2 * queried,
+            attempted: 2 * queried,
+            validated: 2 * queried,
+            list: queried,
+            txid: queried,
+            pending: 0,
+          });
+          assert.deepEqual(jobDelta, {
+            ownSelector: queried,
+            ownSelectorExit: queried,
+            ownTxid: queried,
+            ownTxidExit: queried,
+          });
+          const guardReports = after.checksGuards.reports - before.checksGuards.reports;
+          const canaryChecks = after.checksGuards.canaryChecks - before.checksGuards.canaryChecks;
+          assert.equal(guardReports, 2 * queried);
+          assert.equal(after.checksGuards.attempts, 0);
+          if (queried) assert.ok(canaryChecks >= 2 && canaryChecks <= 512);
+          else assert.deepEqual(after.checksGuards, before.checksGuards);
+          const publicDelta = delta(after.publicMethods, before.publicMethods);
+          assert.deepEqual(publicDelta, { latest: 3 * queried, validate: 3 * queried, page: 0 });
+          const rpcDelta = delta(after.rpcMethods, before.rpcMethods);
+          assert.deepEqual(rpcDelta, {
+            eth_getTransactionReceipt: queried,
+            eth_getBlockByNumber: 22 * queried,
+            eth_blockNumber: 2 * queried,
+            eth_getTransactionByHash: queried,
+            eth_getLogs: 0,
+          });
+          checksRuns.push({
+            mode: fault,
+            status: value.status,
+            ...(value.status === 'refused' ? { stage: value.stage } : {}),
+            ...diagnostics,
+            journalUnchanged: true,
+            healthyRecapture: true,
+            rootRequests: rootDelta,
+            keylessJobs: jobDelta,
+            utilityGuardReports: guardReports,
+            utilityCanaryChecks: canaryChecks,
+            publicPreflightCalls: publicDelta,
+            chainPreflightCalls: rpcDelta,
+            additionalViewingKeys: 0,
+            additionalPoiProofs: 0,
+            additionalPoiVerifiers: 0,
+            ownedNoteQueries: 0,
+            overallAuthorityGranted: false,
+          });
+        } finally {
+          caller.abort();
+          for (const result of checksResults) result.close();
+          for (const gate of Object.values(checksHold?.release ?? {})) gate.resolve();
+          await Promise.allSettled([...pendingOperations]);
+          await Promise.all([...checksResults].map((result) => result.closed));
+          checksResults.clear();
+          checksHold = undefined;
+          checksActive = false;
+        }
+      };
+      for (const fault of [
+        'forged-proof',
+        'valid',
+        'list-reject',
+        'txid-reject',
+        'malformed-list',
+        'cancel-drain',
+        'timeout-drain',
+        'healthy-after-refusals',
+      ])
+        await exercise(fault);
+      assert.equal(checksRuns.length, 8);
+      assert.deepEqual(checksRoots, {
+        creates: 14,
+        closes: 14,
+        attempted: 14,
+        validated: 14,
+        list: 7,
+        txid: 7,
+        pending: 0,
+      });
+      assert.deepEqual(checksJobs, {
+        ownSelector: 7,
+        ownSelectorExit: 7,
+        ownTxid: 7,
+        ownTxidExit: 7,
+      });
+      assert.deepEqual(checksForbiddenJobs, { binaryKey: 0, poiProver: 0, poiVerifier: 0 });
+      assert.equal(checksGuards.reports, 14);
+      assert.equal(checksGuards.attempts, 0);
     }
     phase = 'final-journal-drift';
     mode = 'valid';
@@ -1593,6 +2126,12 @@ async function main() {
       recoveryRuns,
       proofRuns,
       proofJobs,
+      checksMode,
+      checksRuns,
+      checksRoots,
+      checksJobs,
+      checksForbiddenJobs,
+      guards: { checksPreflightUtilities: checksGuards },
       publicPrefixAdvances: advances,
       poiMethods,
       publicMethods,
@@ -1633,7 +2172,7 @@ async function main() {
     };
     assert.doesNotMatch(
       JSON.stringify(report),
-      /"(?:blindedCommitment|bindingDigest|inputSha256|leaf|capsule|creator|proof|signature|noteHash|descriptor|transaction|pathElements|expectedHash|viewingKey|nullifyingKey|randomsIn|npksOut|valuesOut)"\s*:/
+      /"(?:blindedCommitment|bindingDigest|inputSha256|payloadSha256|payload|poiMerkleroots|txidMerkleroot|merkleroot|root|leaf|capsule|creator|proof|signature|noteHash|descriptor|transaction|pathElements|expectedHash|viewingKey|nullifyingKey|randomsIn|npksOut|valuesOut)"\s*:/
     );
     fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', {
       flag: 'wx',
@@ -1649,6 +2188,8 @@ async function main() {
   } finally {
     // Stop work, drain actual resources, then unconditionally restore fixture seams.
     operationsController.abort();
+    for (const release of checksReleases) release.resolve();
+    for (const value of checksResults) value.close();
     for (const release of recoveryReleases) release.resolve();
     releaseTransport?.resolve();
     heldTask?.close();
@@ -1658,6 +2199,7 @@ async function main() {
     try {
       const operations = await Promise.allSettled([...pendingOperations]);
       const drained = await Promise.allSettled([
+        ...[...checksResults].map((value) => value.closed),
         ...(task ? [task.closed] : []),
         ...(heldTask ? [heldTask.closed] : []),
         ...(txid ? [txid.close()] : []),
@@ -1691,10 +2233,18 @@ main().then(
     app.exit(0);
   },
   (error) => {
+    // Report only a numeric location in this fixed fixture, never an assertion
+    // message, stack, root, proof, or account payload.
+    const match =
+      typeof error?.stack === 'string'
+        ? error.stack.match(/[/\\]qualify-railgun-own-poi-membership\.js:(\d+):\d+/)
+        : undefined;
+    const line = match ? Number(match[1]) : undefined;
     console.error(
       JSON.stringify({
         phase,
         code: /^[A-Z0-9_]+$/.test(error?.code ?? '') ? error.code : 'QUALIFICATION_REFUSED',
+        ...(Number.isSafeInteger(line) && line > 0 && line < 100000 ? { line } : {}),
       })
     );
     releaseProfileLock(lock);

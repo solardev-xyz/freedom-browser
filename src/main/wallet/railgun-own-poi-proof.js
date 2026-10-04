@@ -23,11 +23,19 @@ const {
   bindRailgunOwnPoiPayload,
 } = require('./railgun-own-poi-proof-data');
 const consumed = new WeakSet(),
-  owners = new Map();
+  owners = new Map(),
+  proofs = new WeakMap();
 const CLEANUP_MS = 10000,
   MIN_PROVE_MS = 10000,
   VERIFY_RESERVE_MS = 35000;
 const sha = (v) => createHash('sha256').update(v).digest('hex');
+const freeze = (value) => {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(freeze);
+    Object.freeze(value);
+  }
+  return value;
+};
 const shape = (v, keys) => {
   assert.ok(v && typeof v === 'object' && !Array.isArray(v));
   assert.deepEqual(Object.keys(v).sort(), [...keys].sort());
@@ -307,7 +315,7 @@ async function proveRailgunOwnPoi(options = {}) {
     assert.equal(verified.proofVerified, true);
     assert.equal(verified.independentlyVerified, true);
     assert.equal(verified.payloadSha256, payloadSha256);
-    return Object.freeze({
+    const proved = Object.freeze({
       status: 'proved',
       payload,
       payloadSha256,
@@ -323,6 +331,39 @@ async function proveRailgunOwnPoi(options = {}) {
       disclosureEnabled: false,
       spendingEnabled: false,
     });
+    // Keep only bounded detached history. Registration authenticates the local
+    // proof result's origin, not current account, source or service eligibility.
+    const historyText = JSON.stringify({
+      archive,
+      publicIdentity,
+      capture: observed.capture,
+      preparation: input.preparation,
+      selector: observed.selector,
+      expected,
+      txidTree: Math.floor(payload.txidMerklerootIndex / 65536),
+      payload,
+      payloadSha256,
+      inputSha256,
+    });
+    assert.ok(Buffer.byteLength(historyText) <= 131072);
+    const history = freeze(JSON.parse(historyText));
+    proofs.set(proved, {
+      enrollment,
+      coordinator,
+      assertCurrent() {
+        assert.ok(
+          !identity.signal.aborted && !enrollment.signal.aborted && !coordinator.signal.aborted
+        );
+        assert.ok(isRailgunAccountEnrollment(enrollment));
+        assert.deepEqual(assertRailgunIdentity(identity, handle), descriptor);
+        assert.deepEqual(
+          getRailgunAccountPublicIdentity(coordinator, enrollment, policy),
+          publicIdentity
+        );
+        return history;
+      },
+    });
+    return proved;
   } catch {
     return Object.freeze({ status: 'refused', stage });
   } finally {
@@ -332,4 +373,15 @@ async function proveRailgunOwnPoi(options = {}) {
     if (owners.get(ownerDirectory) === owner) owners.delete(ownerDirectory);
   }
 }
-module.exports = { proveRailgunOwnPoi };
+function assertRailgunOwnPoiProof(result, enrollment, coordinator) {
+  try {
+    const entry = proofs.get(result);
+    assert.ok(entry && entry.enrollment === enrollment && entry.coordinator === coordinator);
+    return entry.assertCurrent();
+  } catch {
+    throw Object.assign(new Error('Railgun own POI proof history unavailable'), {
+      code: 'RAILGUN_OWN_POI_PROOF_HISTORY_REFUSED',
+    });
+  }
+}
+module.exports = { proveRailgunOwnPoi, assertRailgunOwnPoiProof };

@@ -16,6 +16,7 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const { createWalletTorTransport } = require('../networks/wallet-tor-transport');
 const {
   createRailgunPoiRootSource: create,
+  createRailgunPoiTxidRootSource: createTxid,
   MAX_AGE_MS,
   ACQUIRE_TIMEOUT_MS,
   MAX_ACQUIRE_MS,
@@ -567,3 +568,187 @@ test('successful acquisition clears its timer and idle close settles once', asyn
   await source.closed;
   expect(mockClients[0].close).toHaveBeenCalledTimes(1);
 });
+
+const openTxid = (options = { handle, root: hex(9), index: 12 }) => {
+  const source = createTxid(options);
+  sources.push(source);
+  return source;
+};
+test.each([0, 7999])(
+  'TXID index %s sends only the fixed exact private-account root request',
+  async (index) => {
+    const source = openTxid({ handle, root: hex(9), index });
+    const result = await acquire(source);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    const [child, url, options] = mockRequest.mock.calls[0];
+    expect(url).toBe('https://ppoi.fdi.network');
+    expect(getPrivacyContext(child).subject).toEqual(subject);
+    expect(getPrivacyContext(child).isolationToken).not.toBe(
+      getPrivacyContext(handle).isolationToken
+    );
+    expect(options).toMatchObject({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      timeoutMs: 15000,
+    });
+    expect(options.signal).toBe(source.signal);
+    expect(JSON.parse(options.body)).toEqual({
+      jsonrpc: '2.0',
+      id: expect.any(String),
+      method: 'ppoi_validate_txid_merkleroot',
+      params: {
+        chainType: '0',
+        chainID: '11155111',
+        txidVersion: 'V2_PoseidonMerkle',
+        tree: 0,
+        index,
+        merkleroot: hex(9),
+      },
+    });
+    expect(result.observation).toEqual({
+      tree: 0,
+      index,
+      root: hex(9),
+      accepted: true,
+      observedAt: expect.any(String),
+      trust: 'unverified-service',
+      membershipVerified: false,
+      disclosureEnabled: false,
+      spendingEnabled: false,
+    });
+    expect(Object.isFrozen(result.observation)).toBe(true);
+    expect(source.assertResult(result.receipt)).toBe(result.observation);
+  }
+);
+test.each([-1, 8000, 0.1, NaN, Infinity, '0', null, undefined])(
+  'TXID invalid index %p refuses before transport',
+  (index) => {
+    expectSanitized(() => openTxid({ handle, root: hex(9), index }));
+    expect(createWalletTorTransport).not.toHaveBeenCalled();
+  }
+);
+test.each(['missing-index', 'tree', 'method', 'endpoint', 'latest', 'list', 'root', 'context'])(
+  'TXID %s cannot relax the fixed query boundary',
+  (fault) => {
+    const options = { handle, root: hex(9), index: 12 };
+    if (fault === 'missing-index') delete options.index;
+    if (fault === 'tree') options.tree = 0;
+    if (fault === 'method') options.method = 'latestTxid';
+    if (fault === 'endpoint') options.url = 'https://elsewhere.invalid';
+    if (fault === 'latest') options.latest = true;
+    if (fault === 'list') options.listKey = REQUIRED_LIST;
+    if (fault === 'root') options.root = hex(FIELD);
+    if (fault === 'context')
+      options.handle = scope.getContext({ ...subject, role: 'public-services' });
+    expectSanitized(() => openTxid(options));
+    expect(createWalletTorTransport).not.toHaveBeenCalled();
+  }
+);
+test('list export still refuses TXID arguments and receipts cannot cross exports or indices', async () => {
+  expectSanitized(() => open({ handle, root: hex(9), index: 12 }));
+  const list = open(),
+    txid = openTxid(),
+    nextIndex = openTxid({ handle, root: hex(9), index: 13 });
+  const l = await acquire(list),
+    t = await acquire(txid),
+    n = await acquire(nextIndex);
+  expectSanitized(() => list.assertResult(t.receipt));
+  expectSanitized(() => txid.assertResult(l.receipt));
+  expectSanitized(() => txid.assertResult(n.receipt));
+  expect(nextIndex.assertResult(n.receipt).index).toBe(13);
+  expect(mockRequest.mock.calls.map(([, , o]) => JSON.parse(o.body).method)).toEqual([
+    'ppoi_validate_poi_merkleroots',
+    'ppoi_validate_txid_merkleroot',
+    'ppoi_validate_txid_merkleroot',
+  ]);
+});
+test('TXID snapshots its point and retains shared sequence and acquisition-start freshness rules', async () => {
+  let now = 1000;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const input = { handle, root: hex(9), index: 12 },
+    source = openTxid(input);
+  input.index = 13;
+  input.root = hex(10);
+  mockRequest.mockImplementationOnce(async (_h, _u, options) => {
+    now += 5000;
+    return reply(options);
+  });
+  const first = await acquire(source);
+  expect(first.observation).toMatchObject({ index: 12, root: hex(9) });
+  expect(source.assertResult(first.receipt, 54999)).toBe(first.observation);
+  expectSanitized(() => source.assertResult(first.receipt, 55000));
+  const gate = deferred();
+  mockRequest.mockImplementationOnce(async (_h, _u, options) => {
+    await gate.promise;
+    return reply(options);
+  });
+  const pending = acquire(source);
+  expectSanitized(() => source.assertResult(first.receipt));
+  await expect(acquire(source)).rejects.toMatchObject(refusal);
+  expect(mockRequest).toHaveBeenCalledTimes(2);
+  gate.resolve();
+  const second = await pending;
+  expectSanitized(() => source.assertResult(first.receipt));
+  expect(source.assertResult(second.receipt)).toBe(second.observation);
+});
+test.each(['false', 'string', 'id', 'spoofed-transport', 'revoked-false'])(
+  'TXID %s response preserves sanitized rejection/refusal semantics',
+  async (fault) => {
+    const source = openTxid();
+    mockRequest.mockImplementationOnce(async (_h, _u, options) => {
+      if (fault === 'spoofed-transport')
+        throw Object.assign(Error(hex(9)), { code: 'RAILGUN_POI_ROOT_REJECTED' });
+      const response = reply(options, fault === 'string' ? 'false' : false);
+      if (fault === 'id') {
+        const value = JSON.parse(response.body);
+        value.id = 'wrong';
+        response.body = Buffer.from(JSON.stringify(value));
+      }
+      if (fault === 'revoked-false') parentController.abort();
+      return response;
+    });
+    expectSanitizedError(
+      await acquire(source).catch((error) => error),
+      fault === 'false' ? 'RAILGUN_POI_ROOT_REJECTED' : refusal.code
+    );
+    await source.closed;
+    expect(source.signal.aborted).toBe(true);
+    expect(mockClients[0].close).toHaveBeenCalledTimes(1);
+  }
+);
+test.each(['close', 'parent', 'endpoint', 'timeout'])(
+  'TXID %s holds closed/acquire until ignored-abort transport drains',
+  async (fault) => {
+    const source = openTxid(),
+      first = await acquire(source),
+      gate = deferred();
+    mockRequest.mockImplementationOnce(async (_h, _u, options) => {
+      await gate.promise;
+      return reply(options);
+    });
+    let workSettled = false,
+      closeSettled = false;
+    const pending = acquire(source).catch((error) => {
+      workSettled = true;
+      return error;
+    });
+    source.closed.then(() => {
+      closeSettled = true;
+    });
+    if (fault === 'parent') parentController.abort();
+    else if (fault === 'endpoint') endpointController.abort();
+    else if (fault === 'timeout') jest.advanceTimersByTime(ACQUIRE_TIMEOUT_MS);
+    else source.close();
+    await Promise.resolve();
+    expect(source.signal.aborted).toBe(true);
+    expectSanitized(() => source.assertResult(first.receipt));
+    expect(workSettled).toBe(false);
+    expect(closeSettled).toBe(false);
+    expect(mockClients[0].close).toHaveBeenCalledTimes(1);
+    gate.resolve();
+    expectSanitizedError(await pending);
+    await source.closed;
+    expect(closeSettled).toBe(true);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+  }
+);

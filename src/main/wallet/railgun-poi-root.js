@@ -20,12 +20,16 @@ const shape = (value, keys) => {
   assert.ok(value && typeof value === 'object' && !Array.isArray(value));
   assert.deepEqual(Object.keys(value).sort(), [...keys].sort());
 };
-function createRailgunPoiRootSource(options) {
-  shape(options, ['handle', 'root']);
-  const { handle, root } = options;
+function createRailgunPoiRootSource(options, txid = false) {
+  shape(options, txid ? ['handle', 'root', 'index'] : ['handle', 'root']);
+  const { handle, root, index } = options;
   assert.equal(typeof root, 'string');
   assert.match(root, /^[0-9a-f]{64}$/);
   assert.ok(BigInt('0x' + root) < FIELD);
+  if (txid) assert.ok(Number.isSafeInteger(index) && index >= 0 && index < 8000);
+  const rootFields = Object.freeze(
+    txid ? { tree: 0, index, root } : { listKey: REQUIRED_LIST, root }
+  );
   const context = getPrivacyContext(handle),
     { subject, requirements } = context;
   assert.ok(
@@ -120,13 +124,14 @@ function createRailgunPoiRootSource(options) {
         body: JSON.stringify({
           jsonrpc: '2.0',
           id,
-          method: 'ppoi_validate_poi_merkleroots',
+          method: txid ? 'ppoi_validate_txid_merkleroot' : 'ppoi_validate_poi_merkleroots',
           params: {
             chainType: '0',
             chainID: '11155111',
             txidVersion: 'V2_PoseidonMerkle',
-            listKey: REQUIRED_LIST,
-            poiMerkleroots: [root],
+            ...(txid
+              ? { tree: 0, index, merkleroot: root }
+              : { listKey: REQUIRED_LIST, poiMerkleroots: [root] }),
           },
         }),
         signal: scope.signal,
@@ -146,8 +151,7 @@ function createRailgunPoiRootSource(options) {
         throw fail();
       }
       const observation = Object.freeze({
-        listKey: REQUIRED_LIST,
-        root,
+        ...rootFields,
         accepted: true,
         observedAt: new Date().toISOString(),
         trust: 'unverified-service',
@@ -203,6 +207,13 @@ module.exports = {
   createRailgunPoiRootSource(options) {
     try {
       return createRailgunPoiRootSource(options);
+    } catch {
+      throw fail();
+    }
+  },
+  createRailgunPoiTxidRootSource(options) {
+    try {
+      return createRailgunPoiRootSource(options, true);
     } catch {
       throw fail();
     }
