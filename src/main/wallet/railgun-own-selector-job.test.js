@@ -38,3 +38,27 @@ test.each([
   expect(request).not.toHaveBeenCalled();
   expect(verifyRailgunEngineRuntime).not.toHaveBeenCalled();
 });
+
+test.each(['untagged-two', 'unknown-kind', 'partial-one', 'partial-three', 'partial-extra-fact'])(
+  'refuses %s before the engine or any broker request',
+  async (mode) => {
+    const input = valid();
+    input.intentKind = 'railgun-partial-unshield';
+    input.facts.commitments.push(field);
+    if (mode === 'untagged-two') delete input.intentKind;
+    if (mode === 'unknown-kind') input.intentKind = 'railgun-private-transfer';
+    if (mode === 'partial-one') input.facts.commitments.pop();
+    if (mode === 'partial-three') input.facts.commitments.push(field);
+    if (mode === 'partial-extra-fact') input.facts.unshieldAmount = '400';
+    const request = jest.fn();
+    await expect(
+      run(JSON.stringify(input), {
+        request,
+        signal: new AbortController().signal,
+        guardReport: jest.fn(),
+      })
+    ).rejects.toThrow();
+    expect(verifyRailgunEngineRuntime).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  }
+);

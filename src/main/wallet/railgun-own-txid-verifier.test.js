@@ -136,6 +136,43 @@ test('returns only immutable diagnostic evidence after exit, with no key/storage
     'witness',
   ]);
 });
+test.each(['full', 'partial'])(
+  'requires affirmative unshield verification for a matched %s withdrawal',
+  async (kind) => {
+    const evidence =
+      kind === 'partial'
+        ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial()
+        : sample(true);
+    const projection = createRailgunTxidProjection({
+      hashPair: pair,
+      zeroNodes: zeros,
+      transactionHash: (r) => ({
+        hash: hash(JSON.stringify(r)),
+        railgunTxid: hash(r.nullifiers[0]),
+      }),
+      verificationHash: () => evidence.row.verificationHash,
+    });
+    const values = new Map(),
+      read = async (key) => values.get(key) ?? null;
+    const { state, writes } = await projection.append(projection.empty(), [evidence.row], read);
+    writes.forEach(({ key, value }) => values.set(key, value));
+    const witness = await projection.witness(state, hash(evidence.row.nullifiers[0]), read);
+    const options = { ...input, evidence, state, witness };
+    expect(await verifyRailgunOwnTxid(options)).toMatchObject({
+      unshieldCommitmentVerified: true,
+      pathVerified: true,
+      sourceAuthenticated: false,
+      rootAccepted: false,
+      spendingEnabled: false,
+      utilityExitObserved: true,
+    });
+    mockMode = 'unshield';
+    await expect(verifyRailgunOwnTxid(options)).rejects.toMatchObject({
+      code: 'RAILGUN_OWN_TXID_VERIFICATION_REFUSED',
+    });
+    expect(mockTask.close).toHaveBeenCalled();
+  }
+);
 test.each([
   'key',
   'input',

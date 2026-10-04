@@ -96,6 +96,7 @@ function matchRailgunOwnTxid(input) {
       row,
     } = JSON.parse(text);
     const capsule = normalizeRailgunPrivateCapsule(supplied);
+    const partial = capsule.selection.kind === 'railgun-partial-unshield';
     const { record, resolution, recordKind } = resolvedRecord(suppliedRecord);
     assert.ok(
       validRailgunTransactResolution(resolution, record) && resolution.outcome === 'matched'
@@ -122,16 +123,25 @@ function matchRailgunOwnTxid(input) {
     // The pinned formatter copies this ID; it does not define its third limb.
     assert.equal(BigInt('0x' + row.graphID.slice(130)), 0n);
     assert.deepEqual(row.nullifiers, [decoded.expected.nullifier]);
-    assert.deepEqual(row.commitments, [decoded.expected.commitment]);
+    assert.deepEqual(
+      row.commitments,
+      partial
+        ? [decoded.expected.changeCommitment, decoded.expected.unshieldCommitment]
+        : [decoded.expected.commitment]
+    );
     assert.equal(row.boundParamsHash, decoded.expected.boundParamsHash);
     assert.equal(row.utxoTreeIn, decoded.expected.tree);
-    if (outcome.output.kind === 'shielded') {
-      assert.equal(Object.hasOwn(row, 'unshield'), false);
-      assert.equal(row.utxoTreeOut, outcome.output.tree);
-      assert.equal(row.utxoBatchStartPositionOut, outcome.output.position);
+    if (partial) assert.equal(outcome.output.kind, 'partial-unshield');
+    const change = partial ? outcome.output.change : outcome.output;
+    const hasUnshield = partial || outcome.output.kind === 'unshield';
+    if (change.kind === 'shielded') {
+      assert.equal(row.utxoTreeOut, change.tree);
+      assert.equal(row.utxoBatchStartPositionOut, change.position);
     } else {
       assert.equal(row.utxoTreeOut, 99999);
       assert.equal(row.utxoBatchStartPositionOut, 99999);
+    }
+    if (hasUnshield) {
       assert.deepEqual(row.unshield, {
         tokenData: {
           tokenType: 0,
@@ -139,9 +149,9 @@ function matchRailgunOwnTxid(input) {
           tokenSubID: '0x' + '0'.repeat(64),
         },
         toAddress: decoded.expected.recipient,
-        value: decoded.expected.amount,
+        value: partial ? decoded.expected.unshieldAmount : decoded.expected.amount,
       });
-    }
+    } else assert.equal(Object.hasOwn(row, 'unshield'), false);
     return freeze({
       status: 'matched',
       recordKind,
@@ -155,7 +165,7 @@ function matchRailgunOwnTxid(input) {
       rowSha256: createHash('sha256').update(JSON.stringify(row)).digest('hex'),
       output: outcome.output,
       boundParamsCompared: true,
-      unshieldPreimageCompared: outcome.output.kind === 'unshield',
+      unshieldPreimageCompared: hasUnshield,
       sourceAuthenticated: false,
       currentCanonicalityVerified: false,
       finalityVerified: false,

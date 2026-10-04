@@ -62,6 +62,9 @@ const { createPrivacyScope } = require('../networks/privacy-context');
 const { fixture } = require('../../../scripts/fixtures/railgun-transact-data');
 const { deriveRailgunOwnSelector } = require('./railgun-own-selector');
 const { startRailgunProcess } = require('./railgun-process');
+const {
+  createRailgunPartialCapsuleData,
+} = require('../../../scripts/fixtures/railgun-partial-capsule-data');
 let scope, controller, input;
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -189,7 +192,47 @@ test('pins submitted calldata before asynchronous work', async () => {
   expect(facts.commitments).toHaveLength(1);
 });
 
-test('refuses non-1x1, out-of-field facts and the wrong operation before starting', async () => {
+test('binds both ordered partial commitments with a separate domain before starting', async () => {
+  const f = createRailgunPartialCapsuleData();
+  input.provedTransaction = f.capsule.preparation.transaction;
+  const original = JSON.parse(JSON.stringify(input.provedTransaction));
+  const result = await deriveRailgunOwnSelector(input);
+  const supplied = JSON.parse(startRailgunProcess.mock.calls[0][0].input);
+  expect(supplied.intentKind).toBe('railgun-partial-unshield');
+  expect(supplied.facts.commitments).toEqual([
+    f.capsule.preparation.expected.changeCommitment,
+    f.capsule.preparation.expected.unshieldCommitment,
+  ]);
+  expect(supplied.facts.nullifiers).toEqual([f.capsule.preparation.expected.nullifier]);
+  expect(supplied.bindingDigest).toBe(
+    require('crypto')
+      .createHash('sha256')
+      .update('freedom:railgun:own-selector-v2\0')
+      .update(JSON.stringify(original))
+      .digest('hex')
+  );
+  expect(result).toMatchObject({ selectorDerived: true, spendingEnabled: false });
+});
+
+test.each(['extra-output', 'missing-ciphertext', 'transfer-with-two', 'extra-nullifier'])(
+  'rejects partial %s before launching a selector',
+  async (mode) => {
+    const f = createRailgunPartialCapsuleData();
+    if (mode === 'extra-output') f.inner.commitments.push(f.inner.commitments[0]);
+    if (mode === 'missing-ciphertext') f.inner.boundParams.commitmentCiphertext = [];
+    if (mode === 'transfer-with-two') f.inner.boundParams.unshield = 0;
+    if (mode === 'extra-nullifier') f.inner.nullifiers.push(f.inner.nullifiers[0]);
+    await expect(
+      deriveRailgunOwnSelector({
+        ...input,
+        provedTransaction: { ...f.capsule.preparation.transaction, data: f.encode() },
+      })
+    ).rejects.toMatchObject({ code: 'RAILGUN_OWN_SELECTOR_REFUSED' });
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+  }
+);
+
+test('refuses extra inputs, out-of-field facts and the wrong operation before starting', async () => {
   const multiple = fixture();
   multiple.inner.nullifiers.push(multiple.inner.nullifiers[0]);
   const outOfField = fixture();

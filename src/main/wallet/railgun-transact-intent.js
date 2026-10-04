@@ -34,10 +34,11 @@ function extractRailgunTransactIntent(tx) {
     if (transactions.length !== 1) throw fail();
     const t = transactions[0],
       bound = t.boundParams;
+    const partial = bound.unshield === 1n && t.commitments.length === 2;
     if (
       ![0n, 1n].includes(bound.unshield) ||
       t.nullifiers.length !== 1 ||
-      t.commitments.length !== 1
+      (!partial && t.commitments.length !== 1)
     )
       throw fail();
     const unshield = bound.unshield === 1n;
@@ -47,16 +48,24 @@ function extractRailgunTransactIntent(tx) {
     )
       throw fail();
     const expected = Object.freeze({
-      kind: unshield ? 'railgun-token-unshield' : 'railgun-private-transfer',
+      kind: partial
+        ? 'railgun-partial-unshield'
+        : unshield
+          ? 'railgun-token-unshield'
+          : 'railgun-private-transfer',
       tree: Number(bound.treeNumber),
       merkleRoot: t.merkleRoot,
       nullifier: t.nullifiers[0],
-      commitment: t.commitments[0],
+      ...(partial
+        ? { changeCommitment: t.commitments[0], unshieldCommitment: t.commitments[1] }
+        : { commitment: t.commitments[0] }),
       boundParamsHash: hex(BigInt(keccak256(coder.encode([BOUND_PARAMS], [bound]))) % FIELD),
       ...(unshield
         ? {
             recipient: '0x' + BigInt(t.unshieldPreimage.npk).toString(16).padStart(40, '0'),
-            amount: t.unshieldPreimage.value.toString(),
+            ...(partial
+              ? { unshieldAmount: t.unshieldPreimage.value.toString() }
+              : { amount: t.unshieldPreimage.value.toString() }),
           }
         : {}),
     });
@@ -84,17 +93,30 @@ function extractRailgunTransactIntent(tx) {
 function railgunTransactIntentBinding(tx) {
   const { expected, intentDigest } = extractRailgunTransactIntent(tx);
   const { kind, ...fields } = expected;
-  return Object.freeze({ operation: kind, ...fields, intentDigest });
+  return Object.freeze({
+    ...(kind === 'railgun-partial-unshield' ? { version: 2 } : {}),
+    operation: kind,
+    ...fields,
+    intentDigest,
+  });
 }
 function railgunTransactJournalIntent(tx) {
   try {
+    const binding = railgunTransactIntentBinding(tx);
     return Object.freeze({
       kind: 'railgun-transact',
-      ...railgunTransactIntentBinding(tx),
+      ...binding,
       digest: keccak256(
         coder.encode(
           ['string', 'uint256', 'address', 'address', 'uint256', 'bytes'],
-          ['railgun-transact', tx.chainId, tx.from, tx.to, tx.value, tx.data]
+          [
+            binding.version === 2 ? 'railgun-transact-v2' : 'railgun-transact',
+            tx.chainId,
+            tx.from,
+            tx.to,
+            tx.value,
+            tx.data,
+          ]
         )
       ),
     });
@@ -104,23 +126,26 @@ function railgunTransactJournalIntent(tx) {
 }
 function validRailgunTransactIntent(value) {
   try {
-    const unshield = value?.operation === 'railgun-token-unshield';
+    const partial = value?.operation === 'railgun-partial-unshield';
+    const unshield = partial || value?.operation === 'railgun-token-unshield';
     const keys = [
       'kind',
+      ...(partial ? ['version'] : []),
       'digest',
       'operation',
       'tree',
       'merkleRoot',
       'nullifier',
-      'commitment',
+      ...(partial ? ['changeCommitment', 'unshieldCommitment'] : ['commitment']),
       'boundParamsHash',
       'intentDigest',
-      ...(unshield ? ['recipient', 'amount'] : []),
+      ...(unshield ? ['recipient', partial ? 'unshieldAmount' : 'amount'] : []),
     ];
     if (
       !value ||
       Array.isArray(value) ||
       value.kind !== 'railgun-transact' ||
+      (partial && value.version !== 2) ||
       (!unshield && value.operation !== 'railgun-private-transfer') ||
       Object.keys(value).length !== keys.length ||
       !keys.every((k) => Object.hasOwn(value, k)) ||
@@ -129,17 +154,23 @@ function validRailgunTransactIntent(value) {
       !Number.isSafeInteger(value.tree) ||
       value.tree < 0 ||
       value.tree > 65535 ||
-      !['merkleRoot', 'nullifier', 'commitment', 'boundParamsHash'].every((k) => field(value[k]))
+      ![
+        'merkleRoot',
+        'nullifier',
+        ...(partial ? ['changeCommitment', 'unshieldCommitment'] : ['commitment']),
+        'boundParamsHash',
+      ].every((k) => field(value[k]))
     )
       return false;
+    const publicAmount = partial ? value.unshieldAmount : value.amount;
     return (
       !unshield ||
       (typeof value.recipient === 'string' &&
         /^0x[0-9a-f]{40}$/.test(value.recipient) &&
         BigInt(value.recipient) > 0n &&
-        typeof value.amount === 'string' &&
-        /^[1-9][0-9]{0,16}$/.test(value.amount) &&
-        BigInt(value.amount) <= BigInt(pins.maxQualificationAmount))
+        typeof publicAmount === 'string' &&
+        /^[1-9][0-9]{0,16}$/.test(publicAmount) &&
+        BigInt(publicAmount) <= BigInt(pins.maxQualificationAmount))
     );
   } catch {
     return false;

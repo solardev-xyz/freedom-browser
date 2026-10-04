@@ -27,13 +27,16 @@ async function derive({ handle, archive, provedTransaction, signal, timeoutMs = 
   assert.equal(parent.subject.role, 'engine');
   assert.equal(parent.subject.operation, 'own-txid-selector');
   const { transaction, expected } = extractRailgunTransactIntent(provedTransaction);
+  const partial = expected.kind === 'railgun-partial-unshield';
   const bindingDigest = createHash('sha256')
-    .update('freedom:railgun:own-selector-v1\0')
+    .update(`freedom:railgun:own-selector-v${partial ? 2 : 1}\0`)
     .update(JSON.stringify(transaction))
     .digest('hex');
   const facts = {
     nullifiers: [expected.nullifier],
-    commitments: [expected.commitment],
+    commitments: partial
+      ? [expected.changeCommitment, expected.unshieldCommitment]
+      : [expected.commitment],
     boundParamsHash: expected.boundParamsHash,
   };
   for (const field of [...facts.nullifiers, ...facts.commitments, facts.boundParamsHash]) {
@@ -44,6 +47,7 @@ async function derive({ handle, archive, provedTransaction, signal, timeoutMs = 
     archive: verifyRailgunEngineRuntime(archive),
     facts,
     bindingDigest,
+    ...(partial ? { intentKind: expected.kind } : {}),
   });
   assert.ok(Buffer.byteLength(input) <= 65536);
   const digest = createHash('sha256').update(input).digest('hex');

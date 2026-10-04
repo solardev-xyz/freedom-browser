@@ -29,6 +29,7 @@ async function collect({ record, transaction, receipt, checkpoint, visit, assert
   const input = JSON.parse(text);
   const outcome = inspectRailgunTransactReceipt(input.record, input.transaction, input.receipt);
   assert.equal(outcome.status, 'matched');
+  const eventCount = outcome.operation === 'railgun-partial-unshield' ? 3 : 2;
   const checkpointDigest = checkpointHash(input.checkpoint);
   const blockNumber = quantity(input.receipt.blockNumber);
   const transactionIndex = quantity(input.receipt.transactionIndex);
@@ -45,7 +46,7 @@ async function collect({ record, transaction, receipt, checkpoint, visit, assert
       topics: [...log.topics],
       data: log.data,
     }));
-  assert.equal(expected.length, 2);
+  assert.equal(expected.length, eventCount);
   assertCurrent();
   let count = 0,
     bytes = 0,
@@ -99,7 +100,7 @@ async function collect({ record, transaction, receipt, checkpoint, visit, assert
       assert.equal(log.blockHash, outcome.blockHash);
       assert.equal(log.transactionIndex, transactionIndex);
       selectedBytes += Buffer.byteLength(JSON.stringify(log));
-      assert.ok(logs.length < 2 && selectedBytes <= 32768);
+      assert.ok(logs.length < eventCount && selectedBytes <= 32768);
       assert.deepEqual(log, expected[logs.length]);
       logs.push(JSON.parse(JSON.stringify(log)));
     } catch {
@@ -110,7 +111,7 @@ async function collect({ record, transaction, receipt, checkpoint, visit, assert
   // Cancellation/resource limits may abort, but no partial evidence escapes.
   assertCurrent();
   assert.deepEqual(visited, { count, bytes });
-  assert.ok(!failed && logs.length === 2);
+  assert.ok(!failed && logs.length === eventCount);
   return freeze({
     checkpointHash: checkpointDigest,
     source: {

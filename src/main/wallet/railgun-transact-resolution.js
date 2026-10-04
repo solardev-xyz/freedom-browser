@@ -1,6 +1,7 @@
 /** Durable own-hash private outcome. It never releases the input reservation. */
 const { validRailgunTransactIntent } = require('./railgun-transact-intent');
 const pins = require('./railgun-shield-pins.json');
+const receiptPolicy = require('./railgun-transact-receipt-policy');
 const hash = (v) => typeof v === 'string' && /^0x[0-9a-f]{64}$/.test(v);
 const integer = (v) => Number.isSafeInteger(v) && v >= 0;
 const quantity = (v) => typeof v === 'string' && /^0x(?:0|[1-9a-f][0-9a-f]*)$/.test(v);
@@ -15,9 +16,13 @@ function validRailgunTransactResolution(value, record) {
   try {
     const o = record.observation,
       i = record.intent;
+    const partial = i?.operation === 'railgun-partial-unshield';
     if (
       !validRailgunTransactIntent(i) ||
-      !['railgun-private-transfer', 'railgun-token-unshield'].includes(i.operation) ||
+      !['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+        i.operation
+      ) ||
+      (partial && (i.version !== 2 || receiptPolicy.chainId !== pins.chainId)) ||
       !hash(record.hash) ||
       !o ||
       !integer(o.blockNumber) ||
@@ -35,6 +40,7 @@ function validRailgunTransactResolution(value, record) {
       value.outcome !== 'matched' ||
       o.status !== 'included' ||
       !exact(t, [
+        ...(partial ? ['version', 'receiptPolicy'] : []),
         'status',
         'transactionHash',
         'blockHash',
@@ -42,7 +48,7 @@ function validRailgunTransactResolution(value, record) {
         'operation',
         'inputTree',
         'nullifier',
-        'commitment',
+        ...(partial ? ['changeCommitment', 'unshieldCommitment'] : ['commitment']),
         'boundParamsHash',
         'intentDigest',
         'nullifiedLogIndex',
@@ -51,6 +57,7 @@ function validRailgunTransactResolution(value, record) {
         'spendingEnabled',
       ]) ||
       t.status !== 'matched' ||
+      (partial && (t.version !== 2 || t.receiptPolicy !== receiptPolicy.id)) ||
       t.transactionHash !== record.hash ||
       t.blockHash !== o.blockHash ||
       !index(t.blockNumber) ||
@@ -58,7 +65,9 @@ function validRailgunTransactResolution(value, record) {
       t.operation !== i.operation ||
       t.inputTree !== i.tree ||
       t.nullifier !== i.nullifier ||
-      t.commitment !== i.commitment ||
+      (partial
+        ? t.changeCommitment !== i.changeCommitment || t.unshieldCommitment !== i.unshieldCommitment
+        : t.commitment !== i.commitment) ||
       t.boundParamsHash !== i.boundParamsHash ||
       t.intentDigest !== i.intentDigest ||
       !index(t.nullifiedLogIndex) ||
@@ -67,6 +76,55 @@ function validRailgunTransactResolution(value, record) {
     )
       return false;
     const out = t.output;
+    if (partial) {
+      if (!exact(out, ['kind', 'change', 'unshield']) || out.kind !== 'partial-unshield')
+        return false;
+      const c = out.change,
+        u = out.unshield;
+      if (
+        !exact(c, ['kind', 'tree', 'position', 'logIndex']) ||
+        c.kind !== 'shielded' ||
+        !integer(c.tree) ||
+        c.tree >= 65536 ||
+        !integer(c.position) ||
+        c.position >= 65536 ||
+        !exact(u, [
+          'kind',
+          'logIndex',
+          'recipient',
+          'token',
+          'unshieldAmount',
+          'received',
+          'fee',
+          'feeDeviation',
+          'treasury',
+          'recipientTransferLogIndex',
+          'treasuryTransferLogIndex',
+        ]) ||
+        u.kind !== 'unshield' ||
+        u.recipient !== i.recipient ||
+        u.token !== pins.wrappedNative ||
+        u.treasury !== receiptPolicy.treasury ||
+        u.unshieldAmount !== i.unshieldAmount ||
+        !amount(u.received) ||
+        BigInt(u.received) <= 0n ||
+        !amount(u.fee) ||
+        BigInt(u.received) + BigInt(u.fee) !== BigInt(i.unshieldAmount) ||
+        u.feeDeviation !== (BigInt(u.fee) !== (BigInt(i.unshieldAmount) * 25n) / 10000n)
+      )
+        return false;
+      const indices = [
+        t.nullifiedLogIndex,
+        u.recipientTransferLogIndex,
+        u.treasuryTransferLogIndex,
+        u.logIndex,
+        c.logIndex,
+      ];
+      return (
+        indices.every(index) &&
+        indices.every((v, n) => n === 0 || BigInt(v) > BigInt(indices[n - 1]))
+      );
+    }
     if (!index(out?.logIndex) || BigInt(out.logIndex) <= BigInt(t.nullifiedLogIndex)) return false;
     if (i.operation === 'railgun-private-transfer')
       return (
@@ -104,6 +162,10 @@ function validRailgunTransactResolution(value, record) {
 }
 function freezeRailgunTransactResolution(value) {
   if (value.transact) {
+    if (value.transact.version === 2) {
+      Object.freeze(value.transact.output.change);
+      Object.freeze(value.transact.output.unshield);
+    }
     Object.freeze(value.transact.output);
     Object.freeze(value.transact);
   }

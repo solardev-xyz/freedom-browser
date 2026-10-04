@@ -1,0 +1,57 @@
+{
+  "qualifiedParent": "941099ff0033662b0a8768ffcf00af60b443272b",
+  "tests": 1546,
+  "suites": 22,
+  "runs": [
+    {
+      "tests": 922,
+      "suites": 19,
+      "seconds": 47.276,
+      "exitCode": 0
+    },
+    {
+      "tests": 624,
+      "suites": 3,
+      "seconds": 71.423,
+      "exitCode": 0
+    }
+  ],
+  "finalJournalFileRecheck": {
+    "tests": 17,
+    "suites": 1,
+    "seconds": 0.686,
+    "exitCode": 0,
+    "includedInUniqueTotal": true
+  },
+  "lintExitCode": 0,
+  "fullRepositoryRegressionRefreshed": false,
+  "nativeReportsSeparate": true,
+  "sourceSha256": {
+    "scripts/fixtures/railgun-own-txid-job.js": "87e5356f1da88f6bb7ee125992e7c5015502a93e4d267b60f90ed55ee4b2751f",
+    "scripts/fixtures/railgun-partial-own-txid-data.js": "29e4328238e0b9d45457a12a3a40bdea296c5aa99b68e80777f2243bcae92c90",
+    "scripts/qualify-railgun-own-selector.js": "729409c132537ecd1513f57d536ed7b53a34f51fab9932a6506f87b47472e8a4",
+    "scripts/qualify-railgun-own-txid.js": "dc0d6b2d121842628ecc13250e7dac85fd47da892e9de6e84957b711be241540",
+    "src/main/wallet/private-submission-journal.test.js": "4643c7d8e379385c5865079966bb4ba01c84b991808ac61e58481c7a0b0e52f7",
+    "src/main/wallet/railgun-own-selector-job.js": "c06fb1168c53e6ced7bca85c465cd8fceef7ba6909026d26b30b72739adc811b",
+    "src/main/wallet/railgun-own-selector-job.test.js": "fbcb899802d4c24f8535412c3b0a664d68636ca1d04681c573c18648d5472fa5",
+    "src/main/wallet/railgun-own-selector.js": "9a06c38378e52f5bea9627c5fe4f4a017e771267329d3616a6972da85bfde0d9",
+    "src/main/wallet/railgun-own-selector.test.js": "f68e27faae99897266e2a8b0242c20d60a4e50819c5da7e30fb5d2b94e939bdb",
+    "src/main/wallet/railgun-own-source.js": "161ecec2e67f4f2e27d76444fabcae6df0c0930ce961189e7361dceece7cf35c",
+    "src/main/wallet/railgun-own-source.test.js": "89ef7204f42d135eb410597d9fcf615d3673f3e7f229bd27caab7920d0b4b0b8",
+    "src/main/wallet/railgun-own-txid-job.js": "e9fb7ae9be2b7511ca24a09a3cc9e809cfbd5cde1570b97d9befad063ee40122",
+    "src/main/wallet/railgun-own-txid-job.test.js": "24a1f5c5927497d80e4bba1e919945dcb84cb5c8df3b2329b37315e038eae675",
+    "src/main/wallet/railgun-own-txid-verifier.js": "2c9be09d3a7d2301215709b7bde58cee4bd57d249d861fa7c06fe9397b95e6a7",
+    "src/main/wallet/railgun-own-txid-verifier.test.js": "60d0aa35b28dc1a7cbfea9109b8c6f4a4fddc656d1ed05bbc002171e2b11a98d",
+    "src/main/wallet/railgun-own-txid.js": "792604b5eeb93f84df7fc816e6f17d7455064c724067bb3841bb9e219a7a2917",
+    "src/main/wallet/railgun-own-txid.test.js": "f63e0f65df0c9812bb6c3005b5e7f566d1ed4496b2884fd93c8ea31346736b6a",
+    "src/main/wallet/railgun-transact-intent.js": "8907c350bd1504513d5f0302156e0d68a7aaebd751332fe9b47da7188b6be911",
+    "src/main/wallet/railgun-transact-intent.test.js": "39d172a79ef8f1ceb8ae5284b52a0045421a3461203f153ec4fe464314649329",
+    "src/main/wallet/railgun-transact-receipt-policy.js": "28c70acef573c94f7f45d16cbc157ab47211073f1c78ea0487476d6609c3006c",
+    "src/main/wallet/railgun-transact-receipt.js": "304d6e91c2e34a197b8b1bc0d03dabb5ef090341ca5ef49f1949b25e4d2cb41d",
+    "src/main/wallet/railgun-transact-receipt.test.js": "24c5753b99a9109818bc869c8d940e974efd0b54610de3d4e9b574924e72b77a",
+    "src/main/wallet/railgun-transact-resolution.js": "f6c9557c5af71217d93734d83620e58cdfb672fd8b2cf454e6cddf83e47bb33f",
+    "src/main/wallet/railgun-transact-resolution.test.js": "db0d9cfc135d05553a182a4919c0e023b87a2dce7a9c6c649aa407be910edc05"
+  },
+  "mainPartialAdmissionEnabled": false,
+  "liveQualification": false
+}

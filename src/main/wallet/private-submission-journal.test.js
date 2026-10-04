@@ -80,6 +80,40 @@ test('multiple adapters cannot race past the durable reservation, even with diff
   expect(await other.list()).toHaveLength(1);
 });
 
+test('a partial public intent survives reopening and retains its unresolved nonce without private amounts', async () => {
+  const { record, transaction } =
+    require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial();
+  const owner = { ...subject, principal: transaction.from };
+  scope.close();
+  ({ scope, handle } = open('fixture', owner));
+  journal = createSubmissionJournal({ handle, directory, key });
+  await journal.begin(record.hash, record.nonce, record.intent);
+  const before = await journal.list();
+  expect(before[0].intent).toEqual(record.intent);
+  expect(before[0].intent.version).toBe(2);
+  expect(before[0].intent.operation).toBe('railgun-partial-unshield');
+  expect(before[0].intent.inputAmount).toBeUndefined();
+  expect(before[0].intent.changeAmount).toBeUndefined();
+  scope.close();
+  const reopened = createSubmissionJournal({
+    handle: open('fixture', owner).handle,
+    directory,
+    key,
+  });
+  const after = await reopened.list();
+  expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+  expect(Object.isFrozen(after[0].intent)).toBe(true);
+  await expect(reopened.assertCanSubmit()).rejects.toMatchObject({
+    code: 'PRIVATE_SUBMISSION_UNRESOLVED',
+  });
+  await expect(reopened.begin(record.hash, record.nonce, record.intent)).rejects.toMatchObject({
+    code: 'PRIVATE_BROADCAST_ALREADY_ATTEMPTED',
+  });
+  await expect(reopened.selectNonce(record.nonce + 1)).rejects.toMatchObject({
+    code: 'PRIVATE_SUBMISSION_UNRESOLVED',
+  });
+});
+
 test('initialization cannot erase a concurrent attempt and does not reset its nonce floor', async () => {
   const initial = journal.initialize();
   await journal.begin(hash, 7);
@@ -142,14 +176,18 @@ test('failed pre-handoff commit leaves no attempt; failed acknowledgment preserv
 
 test('one snapshot remains coherent across a concurrent archival transition', async () => {
   await journal.begin(hash, 7, { kind: 'ppv2-register-auth', digest: `0x${'b'.repeat(64)}` });
-  await journal.observe(hash, {
-    status: 'included',
-    trust: 'unverified',
-    observedAt: 1,
-    confirmations: 12,
-    blockNumber: 20,
-    blockHash: `0x${'c'.repeat(64)}`,
-  }, 0);
+  await journal.observe(
+    hash,
+    {
+      status: 'included',
+      trust: 'unverified',
+      observedAt: 1,
+      confirmations: 12,
+      blockNumber: 20,
+      blockHash: `0x${'c'.repeat(64)}`,
+    },
+    0
+  );
   const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() - 2 * 86400000);
   await journal.resolve(hash, 1, 12);
   clock.mockRestore();
@@ -187,19 +225,25 @@ test('snapshot revokes a pending read and does not create a missing journal', as
   await expect(journal.readSnapshot()).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
 });
 
-test.each([1, 2, 3, 4])('snapshot preserves journal version %i without migrating bytes', async (version) => {
-  const storage = require('./privacy-storage').createPrivacyStorage({ handle, directory, key });
-  const record = { hash, nonce: 7, state: 'attempted', attemptedAt: 0 };
-  await storage.set('submissions-v1', JSON.stringify({
-    version,
-    records: [record],
-    ...(version === 1 ? {} : { archive: [] }),
-  }));
-  const file = path.join(directory, fs.readdirSync(directory)[0]);
-  const bytes = fs.readFileSync(file);
-  expect(await journal.readSnapshot()).toEqual({ records: [record], archive: [] });
-  expect(fs.readFileSync(file)).toEqual(bytes);
-});
+test.each([1, 2, 3, 4])(
+  'snapshot preserves journal version %i without migrating bytes',
+  async (version) => {
+    const storage = require('./privacy-storage').createPrivacyStorage({ handle, directory, key });
+    const record = { hash, nonce: 7, state: 'attempted', attemptedAt: 0 };
+    await storage.set(
+      'submissions-v1',
+      JSON.stringify({
+        version,
+        records: [record],
+        ...(version === 1 ? {} : { archive: [] }),
+      })
+    );
+    const file = path.join(directory, fs.readdirSync(directory)[0]);
+    const bytes = fs.readFileSync(file);
+    expect(await journal.readSnapshot()).toEqual({ records: [record], archive: [] });
+    expect(fs.readFileSync(file)).toEqual(bytes);
+  }
+);
 
 test('snapshot uses the shared decoder and refuses inconsistent or unreadable state', async () => {
   const storage = require('./privacy-storage').createPrivacyStorage({ handle, directory, key });
@@ -216,7 +260,14 @@ test('snapshot uses the shared decoder and refuses inconsistent or unreadable st
   for (const state of [
     { version: 4, records: [record, record], archive: [] },
     { version: 4, records: [{ ...record, nonce: 8 }], archive: [archived] },
-    { version: 4, records: [], archive: [{ ...archived, nonce: 8 }, { ...archived, hash: `0x${'b'.repeat(64)}` }] },
+    {
+      version: 4,
+      records: [],
+      archive: [
+        { ...archived, nonce: 8 },
+        { ...archived, hash: `0x${'b'.repeat(64)}` },
+      ],
+    },
     { version: 4, records: [{ ...record, nonce: -1 }], archive: [] },
   ]) {
     await storage.set('submissions-v1', JSON.stringify(state));
@@ -224,7 +275,9 @@ test('snapshot uses the shared decoder and refuses inconsistent or unreadable st
   }
   const file = path.join(directory, fs.readdirSync(directory)[0]);
   fs.writeFileSync(file, 'invalid encrypted data');
-  await expect(journal.readSnapshot()).rejects.toMatchObject({ code: 'PRIVATE_STORAGE_UNREADABLE' });
+  await expect(journal.readSnapshot()).rejects.toMatchObject({
+    code: 'PRIVATE_STORAGE_UNREADABLE',
+  });
 });
 
 test('failure after rename reports the possibly durable hash and cannot authorize a retry', async () => {

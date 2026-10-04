@@ -1,5 +1,9 @@
 # Railgun partial withdrawal: native proof and recovery — October 4, 2026
 
+Historical checkpoint at `941099ff`; later
+[receipt/TXID primitives](railgun-partial-receipt-2026-10-04.md) extend recovery
+without enabling the complete partial wallet operation.
+
 The bounded partial-withdrawal model now has real 01x02 proving and cold
 reconstruction from its original encrypted change and stored signature. A fresh
 keyless verifier accepts both the initial and recovered proofs. These are

@@ -28,6 +28,7 @@ async function verify({ handle, archive, state, evidence, witness, signal, timeo
   assert.equal(parent.subject.role, 'engine');
   assert.equal(parent.subject.operation, 'own-txid-proof');
   const matched = matchRailgunOwnTxid(evidence);
+  const hasUnshield = ['unshield', 'partial-unshield'].includes(matched.output.kind);
   const normalized = normalizeRailgunTxidWitness(witness, state);
   assert.deepEqual(normalized.row, matched.row);
   const bindingDigest = createHash('sha256').update(JSON.stringify(matched)).digest('hex');
@@ -107,7 +108,7 @@ async function verify({ handle, archive, state, evidence, witness, signal, timeo
             assert.equal(value.bindingDigest, bindingDigest);
             assert.equal(value.railgunTxid, normalized.railgunTxid);
             assert.equal(value.pathVerified, true);
-            assert.equal(value.unshieldCommitmentVerified, matched.output.kind === 'unshield');
+            assert.equal(value.unshieldCommitmentVerified, hasUnshield);
             for (const key of ['sourceAuthenticated', 'rootAccepted', 'spendingEnabled'])
               assert.equal(value[key], false);
             assert.equal(
@@ -131,7 +132,7 @@ async function verify({ handle, archive, state, evidence, witness, signal, timeo
               index: normalized.index,
               checkpointIndex: normalized.checkpointIndex,
               pathVerified: true,
-              unshieldCommitmentVerified: matched.output.kind === 'unshield',
+              unshieldCommitmentVerified: hasUnshield,
               sourceAuthenticated: false,
               rootAccepted: false,
               currentCanonicalityVerified: false,

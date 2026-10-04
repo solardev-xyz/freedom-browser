@@ -33,14 +33,32 @@ exports.run = async function run(text, { request, signal, guardReport }) {
   projection.verifyWitness(input.state, witness);
   const unshield = witness.row.unshield;
   if (unshield) {
-    assert.equal(witness.row.commitments.length, 1);
-    assert.equal(witness.row.utxoTreeOut, 99999);
-    assert.equal(witness.row.utxoBatchStartPositionOut, 99999);
+    const partial = witness.row.commitments.length === 2;
+    assert.ok(partial || witness.row.commitments.length === 1);
+    if (partial) {
+      // Only the first commitment is an ordinary change leaf. The final
+      // unshield commitment shares its TXID but has no UTXO-tree position.
+      assert.equal(witness.row.nullifiers.length, 1);
+      assert.ok(witness.row.utxoTreeOut < 65536);
+      assert.ok(witness.row.utxoBatchStartPositionOut < 65536);
+      assert.deepEqual(unshield.tokenData, {
+        tokenType: 0,
+        tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+        tokenSubID: '0x' + '0'.repeat(64),
+      });
+      assert.ok(BigInt(unshield.value) > 0n);
+    } else {
+      assert.equal(witness.row.utxoTreeOut, 99999);
+      assert.equal(witness.row.utxoBatchStartPositionOut, 99999);
+    }
     const { getNoteHash, assertValidNoteToken } = require(path.join(root, 'note/note-util'));
     const value = BigInt(unshield.value);
     assertValidNoteToken(unshield.tokenData, value);
     const commitment = getNoteHash(unshield.toAddress, unshield.tokenData, value);
-    assert.equal('0x' + commitment.toString(16).padStart(64, '0'), witness.row.commitments[0]);
+    assert.equal(
+      '0x' + commitment.toString(16).padStart(64, '0'),
+      witness.row.commitments[partial ? 1 : 0]
+    );
   }
   assert.ok(!signal.aborted);
   const guards = guardReport();

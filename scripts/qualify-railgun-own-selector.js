@@ -15,6 +15,8 @@ const sources = [
   'scripts/fixtures/railgun-own-txid-job.js',
   'scripts/fixtures/railgun-own-txid-data.js',
   'scripts/fixtures/railgun-transact-data.js',
+  'scripts/fixtures/railgun-partial-own-txid-data.js',
+  'scripts/fixtures/railgun-partial-capsule-data.js',
   'src/main/wallet/railgun-shield-pins.json',
   ...[
     'railgun-own-selector',
@@ -26,6 +28,7 @@ const sources = [
     'railgun-private-policy',
     'railgun-transact-intent',
     'railgun-transact-receipt',
+    'railgun-transact-receipt-policy',
     'railgun-transact-resolution',
     'privacy-journal-retention',
     'private-transaction-intent',
@@ -60,7 +63,9 @@ const hashes = () =>
 let phase = 'setup',
   fixtureWireBytes = 0;
 async function main() {
-  const [directory, archive] = process.argv.slice(2);
+  const [directory, archive, mode] = process.argv.slice(2);
+  assert.ok(mode === undefined || mode === 'partial');
+  const partial = mode === 'partial';
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   fs.mkdirSync(directory, { mode: 0o700 });
   app.setPath('userData', path.join(directory, 'electron'));
@@ -88,7 +93,7 @@ async function main() {
     task = startRailgunProcess({
       handle,
       filename: require.resolve('./fixtures/railgun-own-txid-job'),
-      input: JSON.stringify({ archive }),
+      input: JSON.stringify({ archive, ...(partial ? { mode } : {}) }),
       lifetimeMs: 60000,
       broker: {
         signal: scope.signal,
@@ -115,8 +120,18 @@ async function main() {
     const runs = [];
     assert.deepEqual(
       payload.samples.map((sample) => sample.name),
-      ['transfer', 'unshield', 'archived-unshield', 'wrong-preimage']
+      partial
+        ? [
+            'partial-unshield',
+            'archived-partial-unshield',
+            'zero-fee',
+            'same-recipient-treasury',
+            'wrong-preimage',
+            'swapped-commitments',
+          ]
+        : ['transfer', 'unshield', 'archived-unshield', 'wrong-preimage']
     );
+    let baselineSelector;
     for (const sample of payload.samples) {
       phase = sample.name;
       const { input: data, ...fields } = sample.evidence.transaction;
@@ -130,6 +145,25 @@ async function main() {
         });
       const result = await derive(provedTransaction);
       assert.equal(result.railgunTxid, sample.witness.railgunTxid);
+      if (partial) {
+        const matched = require('../src/main/wallet/railgun-own-txid').matchRailgunOwnTxid(
+          sample.evidence
+        );
+        assert.equal(matched.status, 'matched');
+        assert.equal(matched.output.kind, 'partial-unshield');
+        assert.equal(matched.output.change.tree, 1);
+        assert.equal(matched.output.change.position, 123);
+        if (sample.name === 'partial-unshield') baselineSelector = result.railgunTxid;
+        if (['wrong-preimage', 'swapped-commitments'].includes(sample.name))
+          assert.notEqual(result.railgunTxid, baselineSelector);
+        if (sample.name === 'zero-fee') assert.equal(matched.output.unshield.fee, '0');
+        if (sample.name === 'same-recipient-treasury')
+          assert.equal(matched.output.unshield.recipient, matched.output.unshield.treasury);
+        assert.notEqual(
+          matched.output.unshield.recipientTransferLogIndex,
+          matched.output.unshield.treasuryTransferLogIndex
+        );
+      }
       assert.equal(result.selectorDerived, true);
       assert.equal(result.utilityExitObserved, true);
       for (const flag of [
@@ -153,6 +187,15 @@ async function main() {
       runs.push({
         mode: sample.name,
         selectorMatchesMirror: true,
+        ...(partial
+          ? {
+              realChangeCoordinates: true,
+              distinctPayoutTransfers: true,
+              ...(['wrong-preimage', 'swapped-commitments'].includes(sample.name)
+                ? { commitmentMutationChangesSelector: true }
+                : {}),
+            }
+          : {}),
         proofBytesDoNotChangeSelector: true,
         proofBytesChangeBinding: true,
         utilityExitObserved: true,
@@ -195,6 +238,18 @@ async function main() {
           sourceSha256: before,
           runs,
           syntheticDataOnly: true,
+          ...(partial
+            ? {
+                mode,
+                fixtureWireBytes,
+                proofValidityVerified: false,
+                changeOwnershipVerified: false,
+                mainPartialAdmissionEnabled: false,
+                combinedPoiVerified: false,
+                restartSecondSpendVerified: false,
+                receiptPolicyTrust: 'historical-unverified-rpc',
+              }
+            : {}),
           keyTransfers: 0,
           storageRequests: 0,
           sourceAuthenticated: false,

@@ -46,8 +46,11 @@ regression at that checkpoint passes 13,872 tests. The later
 [native partial proof and recovery](railgun-partial-crypto-2026-10-04.md)
 qualifies 01x02 cryptography and stored-signature reconstruction with a synthetic
 account/scan, and requalifies the six existing wallet flows. Its current frozen
-regression passes 13,949 tests. Main partial admission remains closed; earlier
-counts belong to their recorded sources.
+regression passes 13,949 tests at `941099ff`. The subsequent
+[receipt/TXID primitives](railgun-partial-receipt-2026-10-04.md) bind versioned
+public outcomes, both token transfers and ordered change/unshield commitments,
+with real engine hashing/path qualification over synthetic evidence. Main
+partial admission remains closed; earlier counts belong to their recorded sources.
 
 ## Next technical work
 
@@ -64,8 +67,9 @@ counts belong to their recorded sources.
    operation admission remains limited to full-note spends. The new structural
    records express partial withdrawal, and native utility qualification now covers
    proof shape, amount conservation, change decryption and cold reconstruction.
+   Receipt/TXID primitives are now implemented and qualified independently.
    Enabling it still requires deployed verifier checks, reservation integration,
-   receipt matching, normal change ingestion and post-transaction POI. Do not merely
+   connected recovery, normal change ingestion and post-transaction POI. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are
    already pinned in `railgun-artifacts.js`; the missing work is integration.

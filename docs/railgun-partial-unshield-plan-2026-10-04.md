@@ -1,6 +1,6 @@
 # Bounded partial WETH unshield and change spending
 
-**Status: structural records and utility-level native cryptography implemented;
+**Status: structural records, utility-level native cryptography and receipt/TXID primitives implemented;
 main partial spending remains unavailable.**
 The bounded model now has a distinct `railgun-partial-unshield` kind and version-2
 capsule. Preparation and selection bind recovered input value, gross withdrawal
@@ -9,8 +9,10 @@ shape. These checks do not prove encrypted-output ownership or conservation.
 The [native cryptographic checkpoint](railgun-partial-crypto-2026-10-04.md)
 qualifies production change construction, 01x02 proving, independent verification
 and original-ciphertext recovery using a stored signature and synthetic scan.
+The [receipt/TXID checkpoint](railgun-partial-receipt-2026-10-04.md) adds versioned
+public journal records, strict five-log receipts and keyless partial TXID checks.
 Main operation, account, signing, submission and POI entry points still refuse
-this new kind; reservations and the public EOA journal remain legacy-only.
+this new kind; reservations remain legacy-only.
 Combined POI, authenticated change ingestion and the second spend remain to be
 implemented and qualified. This is not evidence of deployed
 contract acceptance, a funded partial transaction or live service eligibility.
@@ -73,8 +75,8 @@ unavailable until the connected qualification passes, including the second spend
    `railgun-private-selection.js`, `railgun-private-policy.js`, and
    `railgun-private-capsule.js`. Public journal support in
    `railgun-transact-intent.js` and `railgun-transact-resolution.js` moves with
-   connected receipt/submission support in stage 3; both currently refuse the new
-   kind. Derive the exact output shape and artifact variant from validated intent.
+   receipt primitives in stage 3 is implemented; connected submission remains
+   unavailable. Derive the exact output shape and artifact variant from validated intent.
    Partial selection now reports recovered V and expected C separately, with
    `inputValueVerified` and `outputConservationVerified` both false. Preserve the
    legacy full-input meaning and reject all other shapes.
@@ -92,7 +94,7 @@ unavailable until the connected qualification passes, including the second spend
    If reusing `railgun-private-receive-job.js`, replace its full-input amount and
    single-output assumptions with the exact authenticated change shape; do not
    treat the requested withdrawal amount as the expected change-note value.
-3. **Recover both outcomes and their TXID.** Extend `railgun-transact-receipt.js`,
+3. **Recover both outcomes and their TXID (primitives qualified; connected admission pending).** Extend `railgun-transact-receipt.js`,
    `railgun-transact-resolution.js`, `railgun-own-selector.js`,
    `railgun-own-selector-job.js`, `railgun-own-source.js`, `railgun-own-txid.js`, and
    `railgun-own-txid-job.js`. Bind unshield recipient/token/gross/net/fee plus
@@ -106,10 +108,11 @@ unavailable until the connected qualification passes, including the second spend
    operation/submission/staging bindings together.
    Recover balances through an authenticated checkpoint and wallet scan, never
    directly from the receipt matcher.
-   `railgun-own-source.js` currently requires exactly two selected proxy logs
-   at initial selection, collection and completion. Version those checks together
-   for the exact additional three-event group, while preserving byte bounds and
-   exact receipt/source log equality. Re-measure traffic and deadline reserves;
+   `railgun-own-source.js` now selects exactly three proxy logs for a matched
+   partial receipt at initial selection, collection and completion, preserving
+   byte bounds and exact receipt/source equality. WETH transfers are checked
+   from the supplied receipt, not authenticated by the proxy ledger. Re-measure
+   connected-operation traffic and deadline reserves;
    an additional event does not automatically justify larger request budgets.
 4. **Produce and retain the combined POI.** Update `railgun-poi-reconstruct.js`,
    `railgun-poi-witness.js`, `railgun-own-poi-proof-data.js`, and
@@ -176,10 +179,15 @@ a partial operation: those admission paths still refuse. Before enabling real
 version-2 records, explicitly handle downgrade compatibility: an older build
 cannot normalize the new record and may refuse the containing store. Do not
 rewrite signed records to make an older build accept them.
-The later public EOA journal extension needs its own downgrade decision: an
-older validator may refuse that address's entire journal, blocking ordinary
-sends as well as private-operation recovery. This checkpoint leaves its schema
-and accepted operation kinds unchanged.
+The public EOA journal parser and resolution validator now accept bounded
+version-2 partial records. Generic encrypted-journal reopen tests cover an
+unresolved synthetic partial intent, while main operation/submission controllers
+still cannot create a genuine partial attempt. An older validator may refuse
+that address's entire journal, blocking ordinary sends as well as private-operation
+recovery. Accept and expose that downgrade limitation before enabling the writer.
+The receipt policy ID is retained in new resolutions. Future policy revisions
+must continue validating historical IDs or explicitly migrate records; changing
+the current baseline alone would make existing partial resolutions unreadable.
 
 Use explicit capsule version/domain dispatch for the new partial shape; preserve
 v1 canonical bytes and digest behavior. Public journal intents and resolutions

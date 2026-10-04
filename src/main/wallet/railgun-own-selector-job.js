@@ -1,4 +1,4 @@
-/** Detached keyless 1x1 TXID derivation. No provider, store or wallet key. */
+/** Detached keyless bounded TXID derivation. No provider, store or wallet key. */
 const assert = require('assert/strict');
 const path = require('path');
 const { createRequire } = require('module');
@@ -8,12 +8,18 @@ exports.run = async function run(text, { request, signal, guardReport }) {
   assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 65536);
   assert.ok(!signal.aborted);
   const input = JSON.parse(text);
-  assert.deepEqual(Object.keys(input).sort(), ['archive', 'bindingDigest', 'facts']);
+  const partial = input.intentKind === 'railgun-partial-unshield';
+  assert.deepEqual(Object.keys(input).sort(), [
+    'archive',
+    'bindingDigest',
+    'facts',
+    ...(partial ? ['intentKind'] : []),
+  ]);
   assert.match(input.bindingDigest, /^[0-9a-f]{64}$/);
   const facts = input.facts;
   assert.deepEqual(Object.keys(facts).sort(), ['boundParamsHash', 'commitments', 'nullifiers']);
   assert.ok(Array.isArray(facts.nullifiers) && facts.nullifiers.length === 1);
-  assert.ok(Array.isArray(facts.commitments) && facts.commitments.length === 1);
+  assert.ok(Array.isArray(facts.commitments) && facts.commitments.length === (partial ? 2 : 1));
   for (const field of [...facts.nullifiers, ...facts.commitments, facts.boundParamsHash]) {
     assert.match(field, /^0x[0-9a-f]{64}$/);
     assert.ok(BigInt(field) < FIELD);

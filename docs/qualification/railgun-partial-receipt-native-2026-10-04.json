@@ -1,0 +1,42 @@
+{
+  "qualifiedParent": "941099ff0033662b0a8768ffcf00af60b443272b",
+  "reports": [
+    {
+      "file": "railgun-partial-own-selector-2026-10-04.json",
+      "sha256": "3dac9bb5ffe7f2359e9694ea22970a333bbe82dd69b563825bd405211f28ab13",
+      "groups": 8,
+      "elapsedMs": 3170,
+      "sourceFiles": 41,
+      "fixtureWireBytes": 129854
+    },
+    {
+      "file": "railgun-partial-own-txid-2026-10-04.json",
+      "sha256": "c5e61a5e11cde0e60fe9553f409c44e32c6261c7d770b8c1dbe8e4b40d260042",
+      "groups": 10,
+      "elapsedMs": 2620,
+      "sourceFiles": 40,
+      "fixtureWireBytes": 129854
+    },
+    {
+      "file": "railgun-legacy-own-selector-2026-10-04.json",
+      "sha256": "bc5091d95ed24f5c8c877c7c6139645c3a2a1f65ead55fa8edd5381d18f54642",
+      "groups": 6,
+      "elapsedMs": 2039,
+      "sourceFiles": 41
+    },
+    {
+      "file": "railgun-legacy-own-txid-2026-10-04.json",
+      "sha256": "66ce8416cca4af4dabcc6168c3bbf86d5919543e73ce5c743b7dddeeeaeda016",
+      "groups": 8,
+      "elapsedMs": 1837,
+      "sourceFiles": 40
+    }
+  ],
+  "pinnedEngineHashing": true,
+  "syntheticReceiptsAndPaths": true,
+  "spendProofValidityVerified": false,
+  "changeOwnershipVerified": false,
+  "mainPartialAdmissionEnabled": false,
+  "liveQualification": false,
+  "fixtureWireLimitBytes": 131072
+}

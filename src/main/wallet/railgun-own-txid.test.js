@@ -5,7 +5,25 @@ const {
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
 const { fixture } = require('../../../scripts/fixtures/railgun-transact-data');
 const pins = require('./railgun-shield-pins.json');
+const { createHash } = require('crypto');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+// Captured from the matcher at 941099ff before partial TXID support. These
+// canonical bytes are consumed by downstream evidence binding digests.
+test.each([
+  [false, false, 'fb7f775640f08204300b14495e7a4179f3113aff6f23f724709c6fce39d906e1'],
+  [false, true, '7bdb8e58684ccdb2f98b3fa9e7346866a09cc6e4a3e75523dfbbd0a53aae3d37'],
+  [true, false, '2c976025b05d40e84eff3b87972c21bf04ad727dd09953d110e00b6d2b777355'],
+  [true, true, 'fc0d5d0f8723d09122e98ab867d81a3e184c770442c6987b785ef4450e3cc55d'],
+])('preserves legacy matcher bytes, unshield=%s archived=%s', (unshield, archived, digest) => {
+  const input = sample(unshield, archived);
+  const hash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  expect(hash(match(input))).toBe(digest);
+  expect(hash(project(input.record))).toBe(
+    unshield
+      ? '9af874a3b8844b4ec545db4ecfd4540d71230a8502fd75573612ac6cc398b922'
+      : '2b19675bb4c73328484780dc1cd352bd9e91f25fdb67a0e5eda98542213739e6'
+  );
+});
 test.each([false, true])(
   'stable %s record projection survives refresh and archival as data only',
   (unshield) => {
@@ -358,4 +376,110 @@ test('accepts equal consistent archived finality anchors without claiming curren
   v.record.railgun.finalizedBlockNumber = v.record.finalized.blockNumber = 291;
   v.record.railgun.finalizedBlockHash = v.record.finalized.blockHash = hex(200);
   expect(match(v).finalityVerified).toBe(false);
+});
+
+const { samplePartial } = require('../../../scripts/fixtures/railgun-partial-own-txid-data');
+test.each([false, true])(
+  'matches partial change coordinates AND unshield metadata, archived=%s',
+  (archived) => {
+    const input = samplePartial({ archived });
+    const result = match(input);
+    expect(result).toMatchObject({
+      status: 'matched',
+      recordKind: archived ? 'archived' : 'active',
+      output: {
+        kind: 'partial-unshield',
+        change: {
+          kind: 'shielded',
+          tree: input.row.utxoTreeOut,
+          position: input.row.utxoBatchStartPositionOut,
+        },
+        unshield: { kind: 'unshield', unshieldAmount: '400', received: '399', fee: '1' },
+      },
+      boundParamsCompared: true,
+      unshieldPreimageCompared: true,
+      sourceAuthenticated: false,
+      currentCanonicalityVerified: false,
+      finalityVerified: false,
+      txidPathVerified: false,
+      txidRootAccepted: false,
+      rowMetadataAuthenticated: false,
+      unshieldCommitmentHashVerified: false,
+      poiVerified: false,
+      spendingEnabled: false,
+    });
+    expect(result.row.commitments).toEqual([
+      input.capsule.preparation.expected.changeCommitment,
+      input.capsule.preparation.expected.unshieldCommitment,
+    ]);
+    expect(result.row.unshield.value).toBe('400');
+    expect(result.row.unshield.value).not.toBe(input.capsule.preparation.inputAmount);
+    expect(result.row.unshield.value).not.toBe(input.capsule.preparation.changeAmount);
+    for (const value of [
+      result.output,
+      result.output.change,
+      result.output.unshield,
+      result.row.unshield.tokenData,
+    ])
+      expect(Object.isFrozen(value)).toBe(true);
+    const bytes = JSON.stringify(result);
+    input.row.commitments[1] = hex(777);
+    input.row.unshield.value = '800';
+    expect(JSON.stringify(result)).toBe(bytes);
+  }
+);
+test('partial stable projection preserves both outcomes across archival', () => {
+  const active = samplePartial();
+  const archived = samplePartial({ archived: true });
+  expect(project(active.record)).toEqual(project(archived.record));
+  const result = project(active.record);
+  expect(result.railgun.transact.version).toBe(2);
+  expect(Object.isFrozen(result.railgun.transact.output.change)).toBe(true);
+  expect(Object.isFrozen(result.railgun.transact.output.unshield)).toBe(true);
+});
+test.each([
+  ['swapped commitments', (v) => v.row.commitments.reverse()],
+  ['wrong change commitment', (v) => (v.row.commitments[0] = hex(999))],
+  ['wrong unshield commitment', (v) => (v.row.commitments[1] = hex(999))],
+  ['missing unshield commitment', (v) => v.row.commitments.pop()],
+  ['extra commitment', (v) => v.row.commitments.push(hex(999))],
+  ['extra nullifier', (v) => v.row.nullifiers.push(hex(999))],
+  ['wrong nullifier', (v) => (v.row.nullifiers[0] = hex(999))],
+  ['missing unshield preimage', (v) => delete v.row.unshield],
+  ['net amount as gross', (v) => (v.row.unshield.value = '399')],
+  ['change amount as gross', (v) => (v.row.unshield.value = '600')],
+  ['input amount as gross', (v) => (v.row.unshield.value = '1000')],
+  ['wrong recipient', (v) => (v.row.unshield.toAddress = pins.proxy)],
+  ['wrong token address', (v) => (v.row.unshield.tokenData.tokenAddress = pins.proxy)],
+  ['wrong token type', (v) => (v.row.unshield.tokenData.tokenType = 1)],
+  ['wrong token sub-ID', (v) => (v.row.unshield.tokenData.tokenSubID = hex(1))],
+  ['wrong change tree', (v) => v.row.utxoTreeOut++],
+  ['wrong change position', (v) => v.row.utxoBatchStartPositionOut++],
+  ['unshield sentinel tree', (v) => (v.row.utxoTreeOut = 99999)],
+  ['unshield sentinel position', (v) => (v.row.utxoBatchStartPositionOut = 99999)],
+  ['wrong input tree', (v) => v.row.utxoTreeIn++],
+  ['wrong bound parameters', (v) => (v.row.boundParamsHash = hex(999))],
+  ['wrong transaction hash', (v) => (v.row.txid = hex(999).slice(2))],
+  ['nonzero graph slot', (v) => (v.row.graphID = v.row.graphID.slice(0, -1) + '1')],
+  ['legacy capsule version', (v) => (v.capsule.version = 1)],
+  ['legacy expected commitment field', (v) => (v.capsule.preparation.expected.commitment = hex(3))],
+])('refuses partial %s without claiming crypto verification', (_name, change) => {
+  const input = samplePartial();
+  change(input);
+  expect(() => match(input)).toThrow(expect.objectContaining({ code: 'RAILGUN_OWN_TXID_REFUSED' }));
+});
+test.each(['change', 'unshield'])('refuses contradictory retained partial %s outcome', (kind) => {
+  const input = samplePartial();
+  const output = input.record.resolution.railgun.transact.output;
+  if (kind === 'change') output.change.position++;
+  else output.unshield.unshieldAmount = '401';
+  expect(() => match(input)).toThrow(expect.objectContaining({ code: 'RAILGUN_OWN_TXID_REFUSED' }));
+});
+test('partial matching does not authenticate its structurally consistent dummy final commitment', () => {
+  const input = samplePartial({ commitments: [hex(100), hex(101)] });
+  const result = match(input);
+  expect(result.row.commitments).toEqual([hex(100), hex(101)]);
+  expect(result.unshieldPreimageCompared).toBe(true);
+  expect(result.unshieldCommitmentHashVerified).toBe(false);
+  expect(result.txidPathVerified).toBe(false);
 });

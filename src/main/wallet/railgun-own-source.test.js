@@ -3,17 +3,19 @@ const { collectRailgunOwnSource: collect } = require('./railgun-own-source');
 const { PRIVATE_EVENTS } = require('./railgun-transact-receipt');
 const { checkpointHash } = require('./railgun-wallet-coverage');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
+const { samplePartial } = require('../../../scripts/fixtures/railgun-partial-own-txid-data');
 const pins = require('./railgun-shield-pins.json');
 const abi = new Interface(PRIVATE_EVENTS);
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 function fixture(unshield = false) {
-  const { record, transaction, receipt } = sample(unshield);
+  const partial = unshield === 'partial';
+  const { record, transaction, receipt } = partial ? samplePartial() : sample(unshield);
   const checkpoint = {
     from: 0,
     previousHash: hex(0),
     to: { number: 300, hash: hex(300) },
     anchor: { number: 310, hash: hex(310) },
-    logs: { count: 2, sha256: 'a'.repeat(64) },
+    logs: { count: partial ? 3 : 2, sha256: 'a'.repeat(64) },
     source: {
       level: 'unverified-rpc',
       providersSha256: 'b'.repeat(64),
@@ -26,19 +28,21 @@ function fixture(unshield = false) {
       trees: [{ tree: 0, length: 1, root: hex(1) }],
       commitments: { count: 1, sha256: 'f'.repeat(64) },
       nullifiers: { count: 1, sha256: '1'.repeat(64) },
-      unshields: { count: Number(unshield), sha256: '2'.repeat(64) },
+      unshields: { count: Number(Boolean(unshield)), sha256: '2'.repeat(64) },
     },
   };
-  const logs = receipt.logs.map((log) => ({
-    address: log.address,
-    blockNumber: Number(BigInt(log.blockNumber)),
-    blockHash: log.blockHash,
-    transactionHash: log.transactionHash,
-    transactionIndex: Number(BigInt(log.transactionIndex)),
-    logIndex: Number(BigInt(log.logIndex)),
-    topics: [...log.topics],
-    data: log.data,
-  }));
+  const logs = receipt.logs
+    .filter((log) => log.address === pins.proxy)
+    .map((log) => ({
+      address: log.address,
+      blockNumber: Number(BigInt(log.blockNumber)),
+      blockHash: log.blockHash,
+      transactionHash: log.transactionHash,
+      transactionIndex: Number(BigInt(log.transactionIndex)),
+      logIndex: Number(BigInt(log.logIndex)),
+      topics: [...log.topics],
+      data: log.data,
+    }));
   let visitedCount = 0;
   const options = {
     record,
@@ -59,7 +63,7 @@ function fixture(unshield = false) {
   };
   return { options, logs, visitedCount: () => visitedCount };
 }
-test.each([false, true])(
+test.each([false, true, 'partial'])(
   'matches exact %s proxy group as frozen data with no authority',
   async (unshield) => {
     const f = fixture(unshield),
@@ -80,6 +84,81 @@ test.each([false, true])(
     expect(Object.isFrozen(result.suppliedOutcome.output)).toBe(true);
     f.logs[0].topics[0] = hex(999);
     expect(result.logs[0].topics[0]).not.toBe(hex(999));
+  }
+);
+
+test('compares three partial proxy events after the supplied receipt passes token checks', async () => {
+  const f = fixture('partial');
+  const result = await collect(f.options);
+  expect(result.logs).toHaveLength(3);
+  expect(result.suppliedOutcome).toMatchObject({
+    version: 2,
+    operation: 'railgun-partial-unshield',
+    output: {
+      kind: 'partial-unshield',
+      change: { kind: 'shielded', tree: 1, position: 123 },
+      unshield: { unshieldAmount: '400', received: '399', fee: '1' },
+    },
+  });
+  expect(Object.isFrozen(result.suppliedOutcome.output.change)).toBe(true);
+  expect(Object.isFrozen(result.suppliedOutcome.output.unshield)).toBe(true);
+  expect(f.visitedCount()).toBe(3);
+});
+
+test.each(['missing-unshield', 'extra-proxy', 'different-fee', 'changed-ciphertext'])(
+  'drains the source prefix after partial %s mismatch',
+  async (mode) => {
+    const f = fixture('partial');
+    if (mode === 'missing-unshield') f.logs.splice(1, 1);
+    if (mode === 'extra-proxy') f.logs.push({ ...f.logs[2], logIndex: 10 });
+    if (mode === 'different-fee')
+      Object.assign(
+        f.logs[1],
+        abi.encodeEventLog('Unshield', [
+          f.options.record.intent.recipient,
+          [0, pins.wrappedNative, 0],
+          398,
+          2,
+        ])
+      );
+    if (mode === 'changed-ciphertext') {
+      const args = abi.decodeEventLog('Transact', f.logs[2].data, f.logs[2].topics);
+      const cipher = args.ciphertext[0].toArray(true);
+      cipher[0][0] = hex(999);
+      Object.assign(
+        f.logs[2],
+        abi.encodeEventLog('Transact', [
+          args.treeNumber,
+          args.startPosition,
+          [...args.hash],
+          [cipher],
+        ])
+      );
+    }
+    f.logs.push({
+      ...f.logs[0],
+      transactionHash: hex(777),
+      blockNumber: 292,
+      blockHash: hex(292),
+      transactionIndex: 0,
+      logIndex: 0,
+    });
+    await expect(collect(f.options)).rejects.toMatchObject({ code: 'RAILGUN_OWN_SOURCE_REFUSED' });
+    expect(f.visitedCount()).toBe(f.logs.length);
+  }
+);
+
+test.each(['missing-fee-transfer', 'extra-token-log', 'duplicate-transfer-index'])(
+  'rejects partial receipt %s before any source visit',
+  async (mode) => {
+    const f = fixture('partial');
+    if (mode === 'missing-fee-transfer') f.options.receipt.logs.splice(2, 1);
+    if (mode === 'extra-token-log')
+      f.options.receipt.logs.push({ ...f.options.receipt.logs[2], logIndex: '0xa' });
+    if (mode === 'duplicate-transfer-index')
+      f.options.receipt.logs[2].logIndex = f.options.receipt.logs[1].logIndex;
+    await expect(collect(f.options)).rejects.toMatchObject({ code: 'RAILGUN_OWN_SOURCE_REFUSED' });
+    expect(f.options.visit).not.toHaveBeenCalled();
   }
 );
 test('ignores unrelated token-contract receipt logs without omitting proxy events', async () => {

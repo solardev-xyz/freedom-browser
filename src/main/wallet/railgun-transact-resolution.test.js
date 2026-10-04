@@ -120,7 +120,7 @@ test('reverted has no private outcome and nonce-consumed cannot resolve', () => 
   record.observation.status = 'nonce-consumed';
   expect(valid(value, record)).toBe(false);
 });
-test('a wider intent parser cannot resolve partial withdrawals before both outcomes are supported', () => {
+test('even a wider parser cannot resolve an unversioned partial record', () => {
   const {
     createRailgunPartialCapsuleData,
   } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
@@ -138,8 +138,7 @@ test('a wider intent parser cannot resolve partial withdrawals before both outco
   record.observation.status = 'reverted';
   value.outcome = 'reverted';
   value.transact = null;
-  // Model later structural parser support independently of resolution support.
-  // This must not turn an unfinished partial recovery path into a resolution.
+  // Version/kind dispatch remains explicit even if a parser is later widened.
   try {
     jest.isolateModules(() => {
       jest.doMock('./railgun-transact-intent', () => ({ validRailgunTransactIntent: () => true }));
@@ -149,4 +148,243 @@ test('a wider intent parser cannot resolve partial withdrawals before both outco
   } finally {
     jest.dontMock('./railgun-transact-intent');
   }
+});
+
+const { createHash } = require('crypto');
+const receiptPolicy = require('./railgun-transact-receipt-policy');
+const {
+  createRailgunPartialCapsuleData,
+} = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+function partialSample() {
+  const { record, value } = sample(true);
+  const f = createRailgunPartialCapsuleData();
+  record.intent = railgunTransactJournalIntent({
+    ...f.capsule.preparation.transaction,
+    from: '0x' + '34'.repeat(20),
+  });
+  const i = record.intent;
+  value.transact = {
+    version: 2,
+    receiptPolicy: receiptPolicy.id,
+    status: 'matched',
+    transactionHash: record.hash,
+    blockHash: record.observation.blockHash,
+    blockNumber: '0x10',
+    operation: i.operation,
+    inputTree: i.tree,
+    nullifier: i.nullifier,
+    changeCommitment: i.changeCommitment,
+    unshieldCommitment: i.unshieldCommitment,
+    boundParamsHash: i.boundParamsHash,
+    intentDigest: i.intentDigest,
+    nullifiedLogIndex: '0x5',
+    output: {
+      kind: 'partial-unshield',
+      change: { kind: 'shielded', tree: 1, position: 123, logIndex: '0x9' },
+      unshield: {
+        kind: 'unshield',
+        logIndex: '0x8',
+        recipient: i.recipient,
+        token: pins.wrappedNative,
+        unshieldAmount: i.unshieldAmount,
+        received: '399',
+        fee: '1',
+        feeDeviation: false,
+        treasury: receiptPolicy.treasury,
+        recipientTransferLogIndex: '0x6',
+        treasuryTransferLogIndex: '0x7',
+      },
+    },
+    trust: 'unverified-rpc',
+    spendingEnabled: false,
+  };
+  return { record, value };
+}
+test.each([
+  [false, 'f1594ef2c96fc2ac1a342e1d040c90ad7c7fbf29cc3cb4a598ef6b7b4d289709'],
+  [true, '0f9985fa90618d93d20100ff9256706b2bb9843934ae209628646c540295d86b'],
+])('preserves legacy %s resolution golden bytes', (u, golden) => {
+  const { record, value } = sample(u);
+  expect(valid(value, record)).toBe(true);
+  expect(
+    createHash('sha256')
+      .update(JSON.stringify(freeze(value)))
+      .digest('hex')
+  ).toBe(golden);
+  expect(valid({ ...value, transact: { ...value.transact, version: 2 } }, record)).toBe(false);
+  expect(
+    valid({ ...value, transact: { ...value.transact, receiptPolicy: receiptPolicy.id } }, record)
+  ).toBe(false);
+});
+test('partial resolution persists both outcomes and policy id, freezing every nested component', () => {
+  const { record, value } = partialSample();
+  expect(valid(value, record)).toBe(true);
+  const copy = JSON.parse(JSON.stringify(value));
+  expect(valid(copy, record)).toBe(true);
+  const result = freeze(copy);
+  for (const v of [
+    result,
+    result.transact,
+    result.transact.output,
+    result.transact.output.change,
+    result.transact.output.unshield,
+  ])
+    expect(Object.isFrozen(v)).toBe(true);
+  expect(result).toEqual(value);
+});
+test.each([
+  ['version', undefined],
+  ['version', 1],
+  ['version', 3],
+  ['version', '2'],
+  ['receiptPolicy', undefined],
+  ['receiptPolicy', 'railgun-sepolia-partial-receipt-v2'],
+  ['receiptPolicy', {}],
+  ['operation', 'railgun-token-unshield'],
+  ['changeCommitment', '0x' + 'a'.repeat(64)],
+  ['unshieldCommitment', '0x' + 'a'.repeat(64)],
+  ['nullifier', '0x' + 'a'.repeat(64)],
+  ['inputTree', 1],
+  ['intentDigest', '0x' + 'a'.repeat(64)],
+  ['boundParamsHash', '0x' + 'a'.repeat(64)],
+  ['transactionHash', '0x' + 'b'.repeat(64)],
+  ['blockHash', '0x' + 'a'.repeat(64)],
+  ['blockNumber', '0x11'],
+  ['trust', 'verified'],
+  ['spendingEnabled', true],
+])('refuses partial top-level %s=%p', (key, replacement) => {
+  const { record, value } = partialSample();
+  if (replacement === undefined) delete value.transact[key];
+  else value.transact[key] = replacement;
+  expect(valid(value, record)).toBe(false);
+});
+test.each([
+  ['kind', 'shielded'],
+  ['recipient', receiptPolicy.treasury],
+  ['token', pins.proxy],
+  ['unshieldAmount', '401'],
+  ['unshieldAmount', 400],
+  ['received', '0400'],
+  ['received', 399],
+  ['received', '0'],
+  ['received', '400'],
+  ['fee', '01'],
+  ['fee', 1],
+  ['fee', '2'],
+  ['feeDeviation', true],
+  ['feeDeviation', 0],
+  ['treasury', '0x' + '56'.repeat(20)],
+])('refuses partial unshield %s=%p', (key, replacement) => {
+  const { record, value } = partialSample();
+  value.transact.output.unshield[key] = replacement;
+  expect(valid(value, record)).toBe(false);
+});
+test.each([
+  ['kind', 'unshield'],
+  ['tree', 65536],
+  ['tree', -1],
+  ['tree', 1.5],
+  ['position', 65536],
+  ['position', -1],
+  ['position', '123'],
+])('refuses partial change %s=%p', (key, replacement) => {
+  const { record, value } = partialSample();
+  value.transact.output.change[key] = replacement;
+  expect(valid(value, record)).toBe(false);
+});
+test.each([
+  ['output', 'kind'],
+  ['output', 'change'],
+  ['output', 'unshield'],
+  ['change', 'kind'],
+  ['change', 'tree'],
+  ['change', 'position'],
+  ['change', 'logIndex'],
+  ['unshield', 'kind'],
+  ['unshield', 'logIndex'],
+  ['unshield', 'recipient'],
+  ['unshield', 'token'],
+  ['unshield', 'unshieldAmount'],
+  ['unshield', 'received'],
+  ['unshield', 'fee'],
+  ['unshield', 'feeDeviation'],
+  ['unshield', 'treasury'],
+  ['unshield', 'recipientTransferLogIndex'],
+  ['unshield', 'treasuryTransferLogIndex'],
+])('requires exact nested partial %s.%s', (part, key) => {
+  const { record, value } = partialSample();
+  const obj = part === 'output' ? value.transact.output : value.transact.output[part];
+  delete obj[key];
+  expect(valid(value, record)).toBe(false);
+});
+test.each(['transact', 'output', 'change', 'unshield'])(
+  'refuses extra partial fields at %s',
+  (part) => {
+    const { record, value } = partialSample();
+    const obj =
+      part === 'transact'
+        ? value.transact
+        : part === 'output'
+          ? value.transact.output
+          : value.transact.output[part];
+    obj.extra = true;
+    expect(valid(value, record)).toBe(false);
+  }
+);
+test.each([
+  ['nullifiedLogIndex', '0x6'],
+  ['recipientTransferLogIndex', '0x5'],
+  ['treasuryTransferLogIndex', '0x6'],
+  ['unshieldLogIndex', '0x7'],
+  ['changeLogIndex', '0x8'],
+  ['recipientTransferLogIndex', '0x06'],
+  ['treasuryTransferLogIndex', '0x20000000000000'],
+  ['unshieldLogIndex', 8],
+  ['changeLogIndex', null],
+])('refuses partial index %s=%p', (key, replacement) => {
+  const { record, value } = partialSample(),
+    t = value.transact;
+  if (key === 'nullifiedLogIndex') t[key] = replacement;
+  else if (key === 'changeLogIndex') t.output.change.logIndex = replacement;
+  else if (key === 'unshieldLogIndex') t.output.unshield.logIndex = replacement;
+  else t.output.unshield[key] = replacement;
+  expect(valid(value, record)).toBe(false);
+});
+test('zero fee and equal destination retain two distinct transfer indices in resolution', () => {
+  const { record, value } = partialSample();
+  record.intent = { ...record.intent, recipient: receiptPolicy.treasury, unshieldAmount: '399' };
+  Object.assign(value.transact.output.unshield, {
+    recipient: receiptPolicy.treasury,
+    unshieldAmount: '399',
+    received: '399',
+    fee: '0',
+  });
+  expect(valid(value, record)).toBe(true);
+  value.transact.output.unshield.treasuryTransferLogIndex =
+    value.transact.output.unshield.recipientTransferLogIndex;
+  expect(valid(value, record)).toBe(false);
+});
+test('fee deviation is diagnostic while exact gross conservation remains mandatory', () => {
+  const { record, value } = partialSample(),
+    u = value.transact.output.unshield;
+  Object.assign(u, { received: '398', fee: '2', feeDeviation: true });
+  expect(valid(value, record)).toBe(true);
+  u.received = '399';
+  expect(valid(value, record)).toBe(false);
+});
+test('partial finality and reverted resolution do not grant release or accept mixed formats', () => {
+  const { record, value } = partialSample();
+  value.finalizedBlockNumber = 15;
+  expect(valid(value, record)).toBe(false);
+  value.finalizedBlockNumber = 16;
+  value.finalizedBlockHash = '0x' + 'c'.repeat(64);
+  expect(valid(value, record)).toBe(false);
+  value.finalizedBlockNumber = 17;
+  expect(valid(value, record)).toBe(true);
+  value.outcome = 'reverted';
+  value.transact = null;
+  record.observation.status = 'reverted';
+  expect(valid(value, record)).toBe(true);
+  record.intent = { ...record.intent, version: 1 };
+  expect(valid(value, record)).toBe(false);
 });
