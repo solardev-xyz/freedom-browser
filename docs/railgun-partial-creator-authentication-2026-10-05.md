@@ -2,6 +2,9 @@
 
 October 5, 2026. Creator authentication is implemented and qualified following the
 [partial receipt and TXID milestone](railgun-partial-receipt-2026-10-04.md).
+The later [merged qualification](railgun-creator-merged-qualification-2026-10-05.md)
+records the current-main sync, explicit node refresh and full 14,483-test regression.
+
 This extends authentication of the transaction that created an input to an
 existing transfer or full withdrawal. It does not yet enable a partial own
 operation or qualify the complete partial-withdrawal/POI/restart/second-spend flow.
