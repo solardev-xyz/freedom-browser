@@ -55,14 +55,27 @@ exports.qualify = async function qualify({
     initialCapsules = await capsules.inspect();
   const poiSources = new WeakMap(),
     preflights = new WeakMap();
+  let nextDrain;
+  const drainChecks = [];
   poiModule.openRailgunPrivateWindowPoi = ({ window }) => {
     poiContexts++;
     current();
     const data = wallet.assertRailgunAccountPrivateWindow(window, account, owners);
+    // Resource-free fixture: the held barrier tests controller ordering only.
+    // It does not simulate or establish physical socket closure.
+    const gate = nextDrain;
+    assert.ok(gate);
+    nextDrain = undefined;
+    let closed = false;
     const source = {
-      close() {},
+      closed: gate.drained,
+      close() {
+        closed = true;
+        gate.started();
+      },
       acquire: async () => {
         current();
+        assert.equal(closed, false);
         poiCalls++;
         const receipt = {};
         const observation = Object.freeze({
@@ -81,7 +94,7 @@ exports.qualify = async function qualify({
           rootsAccepted: true,
           publicThrough: baseline.read.readiness.to,
         });
-        poiSources.set(source, { receipt, observation, window });
+        poiSources.set(source, { receipt, observation, window, isClosed: () => closed });
         return { status: negative ? 'refused' : 'verified', receipt, observation };
       },
     };
@@ -96,6 +109,7 @@ exports.qualify = async function qualify({
     margin
   ) => {
     const stored = poiSources.get(source);
+    assert.equal(stored.isClosed(), false);
     assert.equal(actualAccount, account);
     assert.equal(actualOwners.identity, identity);
     assert.equal(stored.receipt, receipt);
@@ -184,8 +198,42 @@ exports.qualify = async function qualify({
       },
     };
     const started = performance.now();
+    const proveWithHeldDrain = async (signed) => {
+      let start, release;
+      const closing = new Promise((resolve) => {
+        start = resolve;
+      });
+      const drained = new Promise((resolve) => {
+        release = resolve;
+      });
+      nextDrain = { started: start, drained };
+      let settled = false;
+      const work = prove(options).then((value) => {
+        settled = true;
+        return value;
+      });
+      try {
+        await Promise.race([
+          closing,
+          work.then(() => {
+            throw Error('Controller settled before synthetic POI closure');
+          }),
+        ]);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(settled, false);
+        assert.equal(nextDrain, undefined);
+        const during = await capsules.inspect();
+        assert.equal(during.signatures, initialCapsules.signatures + (signed ? 1 : 0));
+        assert.equal(during.proofs, initialCapsules.proofs);
+        assert.equal(keyReplies, signed ? 1 : 0);
+        drainChecks.push(signed ? 'signed-before-proof' : 'refused-before-key');
+      } finally {
+        release();
+      }
+      return work;
+    };
     if (!stagingReceipt) {
-      const refused = await prove(options);
+      const refused = await proveWithHeldDrain(false);
       assert.deepEqual(refused, { status: 'refused', stage: 'poi' });
       assert.equal(keyReplies, 0);
       assert.equal(preflightCalls, 0);
@@ -193,7 +241,7 @@ exports.qualify = async function qualify({
       assert.deepEqual(await reservations.inspect(), initialReservations);
     }
     negative = false;
-    const result = await prove(options);
+    const result = await proveWithHeldDrain(true);
     assert.equal(result.status, 'proved', result.stage);
     assert.equal(result.submissionEnabled, false);
     assert.equal(keyReplies, 1);
@@ -315,6 +363,8 @@ exports.qualify = async function qualify({
       syntheticVault: true,
       productionController: true,
       externalObservationsSimulated: true,
+      syntheticPoiDrainChecks: drainChecks,
+      physicalTransportDrainQualified: false,
       simulatedPoiCalls: poiCalls,
       simulatedPreflightCalls: preflightCalls,
       simulatedEoaCalls: { ...eoaCalls },

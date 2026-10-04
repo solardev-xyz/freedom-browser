@@ -1,6 +1,27 @@
 let mockWallet, mockIdentity, mockEnrollment, mockCoordinator, mockSnapshot, mockObservation;
 let mockSource, mockSourceArgs, mockStaleSource, mockStaleMembership;
 let mockWindow, mockWindowData, mockBusy, mockWindowController;
+let mockSourceExit, mockHoldSource, mockSourceController, mockContextThrow;
+const mockScopes = [],
+  mockFactory = jest.fn();
+jest.mock('../networks/privacy-context', () => {
+  const actual = jest.requireActual('../networks/privacy-context');
+  return {
+    ...actual,
+    createPrivacyScope: (...args) => {
+      const scope = actual.createPrivacyScope(...args);
+      mockScopes.push(scope);
+      return mockContextThrow
+        ? {
+            ...scope,
+            getContext: () => {
+              throw Error('PRIVATE context');
+            },
+          }
+        : scope;
+    },
+  };
+});
 jest.mock('./railgun-account-wallet', () => ({
   readRailgunAccountOwnedNotes: (wallet, owners) => {
     if (
@@ -31,7 +52,7 @@ jest.mock('./railgun-account-wallet', () => ({
 jest.mock('./railgun-poi-source', () => ({
   createRailgunPoiSource: (options) => {
     mockSourceArgs = options;
-    return mockSource;
+    return mockFactory(options);
   },
 }));
 const mockVerify = jest.fn();
@@ -51,6 +72,12 @@ const {
 let scope, controller, args;
 beforeEach(() => {
   jest.clearAllMocks();
+  mockScopes.length = 0;
+  mockContextThrow = false;
+  mockHoldSource = false;
+  mockFactory.mockReset();
+  mockFactory.mockImplementation(() => mockSource);
+  mockSourceController = new AbortController();
   controller = new AbortController();
   scope = createPrivacyScope({ profileId: 'owned-poi-test', signal: controller.signal });
   mockWallet = { signal: scope.signal };
@@ -94,13 +121,21 @@ beforeEach(() => {
     spendingEnabled: false,
   };
   mockStaleSource = mockStaleMembership = false;
+  const sourceClosed = new Promise((resolve) => {
+    mockSourceExit = resolve;
+  });
   mockSource = {
+    signal: mockSourceController.signal,
+    closed: sourceClosed,
     acquire: jest.fn(async () => ({ receipt: {}, observation: mockObservation })),
     assertResult: jest.fn(() => {
       if (mockStaleSource) throw Error('stale source');
       return mockObservation;
     }),
-    close: jest.fn(),
+    close: jest.fn(() => {
+      mockSourceController.abort();
+      if (!mockHoldSource) mockSourceExit();
+    }),
   };
   mockVerify.mockImplementation(async () => ({
     receipt: {},
@@ -125,7 +160,11 @@ beforeEach(() => {
     deadline: performance.now() + 175000,
   });
 });
-afterEach(() => scope.close());
+afterEach(() => {
+  mockSourceExit();
+  scope.close();
+  jest.useRealTimers();
+});
 test('a caller cannot mutate the diagnostic selected list to skip later ownership checks', async () => {
   const operation = open(args),
     result = await operation.acquire();
@@ -374,4 +413,229 @@ test('ownership changes during acquisition cancel the result', async () => {
   await expect(operation.acquire()).rejects.toThrow();
   expect(mockSource.close).toHaveBeenCalled();
   expect(mockVerify).not.toHaveBeenCalled();
+});
+
+const accountTurn = () => new Promise((resolve) => setImmediate(resolve));
+const accountGate = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+const openKind = (kind) =>
+  kind === 'window' ? openWindow({ ...args, window: mockWindow }) : open(args);
+test.each(['account', 'window'])(
+  'healthy %s retries keep one closed promise pending until terminal close',
+  async (kind) => {
+    mockHoldSource = true;
+    const operation = openKind(kind),
+      closed = operation.closed;
+    let drained = false;
+    closed.then(() => {
+      drained = true;
+    });
+    mockObservation.statuses = [{ status: 'Missing' }];
+    const first = await operation.acquire();
+    if (kind === 'window') expect(first.status).toBe('refused');
+    else expect(first.observation.membershipVerified).toBe(false);
+    expect(operation.signal.aborted).toBe(false);
+    expect(mockVerify).not.toHaveBeenCalled();
+    mockObservation.statuses = [{ status: 'Valid' }];
+    const second = await operation.acquire();
+    expect(operation.assertResult(second.receipt).membershipVerified).toBe(true);
+    await accountTurn();
+    expect(drained).toBe(false);
+    expect(operation.closed).toBe(closed);
+    operation.close();
+    operation.close();
+    expect(operation.signal.aborted).toBe(true);
+    await accountTurn();
+    expect(drained).toBe(false);
+    mockSourceExit();
+    await closed;
+    expect(drained).toBe(true);
+  }
+);
+test.each(
+  ['account', 'window'].flatMap((kind) =>
+    ['work-first', 'source-first'].map((order) => [kind, order])
+  )
+)('%s closure waits verifier and source in %s order', async (kind, order) => {
+  mockHoldSource = true;
+  const entered = accountGate(),
+    work = accountGate();
+  mockVerify.mockImplementation(async () => {
+    entered.resolve();
+    await work.promise;
+    return { receipt: {}, observation: { ...mockObservation, membershipVerified: true } };
+  });
+  const operation = openKind(kind);
+  let settled = false,
+    drained = false;
+  operation.closed.then(() => {
+    drained = true;
+  });
+  const pending = operation.acquire().then(
+    (value) => {
+      settled = true;
+      return { value };
+    },
+    (error) => {
+      settled = true;
+      return { error };
+    }
+  );
+  await entered.promise;
+  operation.close();
+  try {
+    expect(operation.signal.aborted).toBe(true);
+    if (order === 'work-first') work.resolve();
+    else mockSourceExit();
+    await accountTurn();
+    expect(settled).toBe(false);
+    expect(drained).toBe(false);
+    if (order === 'work-first') mockSourceExit();
+    else work.resolve();
+    expect((await pending).error).toBeDefined();
+    await operation.closed;
+    expect(drained).toBe(true);
+  } finally {
+    work.resolve();
+    mockSourceExit();
+    await pending;
+  }
+});
+test.each(['throw', 'falsy', 'reentrant'])(
+  'admitted source %s failure waits drain without acquire/closed self-wait',
+  async (failure) => {
+    mockHoldSource = true;
+    const operation = open(args);
+    mockSource.acquire.mockImplementation(() => {
+      if (failure === 'reentrant') operation.close();
+      if (failure === 'falsy') throw undefined;
+      throw Error('PRIVATE acquisition');
+    });
+    let settled = false;
+    const pending = operation.acquire().then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { refused: true, error };
+      }
+    );
+    try {
+      await accountTurn();
+      expect(operation.signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      mockSourceExit();
+      expect((await pending).refused).toBe(true);
+      await operation.closed;
+    } finally {
+      mockSourceExit();
+      await pending;
+    }
+  }
+);
+test('overlapping acquire refusal leaves healthy admitted work intact', async () => {
+  const entered = accountGate(),
+    release = accountGate();
+  mockSource.acquire.mockImplementationOnce(async () => {
+    entered.resolve();
+    await release.promise;
+    return { receipt: {}, observation: mockObservation };
+  });
+  const operation = open(args),
+    pending = operation.acquire();
+  await entered.promise;
+  try {
+    await expect(operation.acquire()).rejects.toThrow();
+    expect(operation.signal.aborted).toBe(false);
+    expect(mockSource.close).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+  }
+  expect((await pending).observation.membershipVerified).toBe(true);
+  operation.close();
+  await operation.closed;
+});
+test.each(['wallet', 'window', 'source'])(
+  'idle %s revocation retains terminal wait until source drains',
+  async (which) => {
+    mockHoldSource = true;
+    const operation = openWindow({ ...args, window: mockWindow });
+    let drained = false;
+    operation.closed.then(() => {
+      drained = true;
+    });
+    if (which === 'wallet') controller.abort();
+    if (which === 'window') mockWindowController.abort();
+    if (which === 'source') mockSourceController.abort();
+    expect(operation.signal.aborted).toBe(true);
+    await accountTurn();
+    expect(drained).toBe(false);
+    mockSourceExit();
+    await operation.closed;
+    expect(mockSource.acquire).not.toHaveBeenCalled();
+  }
+);
+test.each(['context', 'factory', 'missing-barrier', 'aborted-factory'])(
+  '%s construction failure revokes its scope and cleans any returned source',
+  async (fault) => {
+    const count = mockScopes.length;
+    if (fault === 'context') mockContextThrow = true;
+    if (fault === 'factory')
+      mockFactory.mockImplementationOnce(() => {
+        throw Error('PRIVATE factory');
+      });
+    if (fault === 'missing-barrier') delete mockSource.closed;
+    if (fault === 'aborted-factory')
+      mockFactory.mockImplementationOnce(() => {
+        mockWindowController.abort();
+        return mockSource;
+      });
+    expect(() => openWindow({ ...args, window: mockWindow })).toThrow();
+    expect(mockScopes.length).toBe(count + 1);
+    expect(mockScopes.at(-1).signal.aborted).toBe(true);
+    if (['missing-barrier', 'aborted-factory'].includes(fault))
+      expect(mockSource.close).toHaveBeenCalled();
+    expect(mockSource.acquire).not.toHaveBeenCalled();
+    mockSourceExit();
+    await accountTurn();
+  }
+);
+test('rejecting source barrier revokes admission without resolving account closure', async () => {
+  mockSource.closed = Promise.reject(Error('PRIVATE invalid source contract'));
+  const operation = open(args);
+  let drained = false;
+  operation.closed.then(() => {
+    drained = true;
+  });
+  await accountTurn();
+  expect(operation.signal.aborted).toBe(true);
+  expect(drained).toBe(false);
+  expect(mockSource.close).toHaveBeenCalled();
+  operation.close();
+  await accountTurn();
+  expect(drained).toBe(false);
+});
+test('throwing source close cannot skip scope revocation or its actual barrier', async () => {
+  mockHoldSource = true;
+  mockSource.close.mockImplementation(() => {
+    throw Error('PRIVATE source close');
+  });
+  const operation = open(args);
+  let drained = false;
+  operation.closed.then(() => {
+    drained = true;
+  });
+  expect(() => operation.close()).not.toThrow();
+  expect(operation.signal.aborted).toBe(true);
+  await accountTurn();
+  expect(drained).toBe(false);
+  mockSourceExit();
+  await operation.closed;
 });

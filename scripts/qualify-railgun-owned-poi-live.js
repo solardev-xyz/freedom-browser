@@ -264,6 +264,7 @@ async function main() {
     };
   } finally {
     operation?.close();
+    if (operation) await operation.closed;
     recovery?.close();
     await wallet?.close();
     await publicAccount?.close();

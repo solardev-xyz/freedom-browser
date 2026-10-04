@@ -220,6 +220,7 @@ async function prove({
         artifactDirectory,
         async onIntent(offer, signal, window, capsule) {
           let poi,
+            poiDrain,
             preflight,
             acquiredPoi,
             acquiredPreflight,
@@ -227,7 +228,8 @@ async function prove({
             deadlineTimer,
             provenance,
             acquiredProvenance,
-            provenanceValue;
+            provenanceValue,
+            cleanupFailed = false;
           const data = assertRailgunAccountPrivateWindow(window, account, owners);
           assert.equal(data.owned.checkpointHash, baseline.checkpointHash);
           assert.deepEqual(data.selection, selection);
@@ -236,20 +238,36 @@ async function prove({
             signal: AbortSignal.any([scope.signal, signal]),
           });
           const closeSources = () => {
-            poi?.close();
-            preflight?.close();
+            try {
+              poi?.close();
+            } catch {
+              cleanupFailed = true;
+            }
+            try {
+              preflight?.close();
+            } catch {
+              cleanupFailed = true;
+            }
           };
           operationScope.signal.addEventListener('abort', closeSources, { once: true });
-          const onProvenanceAbort = () => operationScope.close();
+          const closeScope = () => {
+            try {
+              operationScope.close();
+            } catch {
+              cleanupFailed = true;
+            }
+            closeSources();
+          };
+          const onProvenanceAbort = closeScope;
           const current = (margin = 0) => {
             active();
-            assert.ok(!operationScope.signal.aborted && !signal.aborted);
+            assert.ok(!cleanupFailed && !operationScope.signal.aborted && !signal.aborted);
             assert.equal(assertRailgunAccountPrivateWindow(window, account, owners, margin), data);
           };
           try {
             current();
             deadlineTimer = setTimeout(
-              () => operationScope.close(),
+              closeScope,
               Math.max(1, Math.floor(data.deadline - performance.now()))
             );
             deadlineTimer.unref?.();
@@ -301,6 +319,16 @@ async function prove({
             );
             assert.ok(poiBudget > 0);
             poi = openRailgunPrivateWindowPoi({ wallet: account, ...owners, archive, window });
+            const poiClosed = poi.closed;
+            assert.ok(poiClosed && typeof poiClosed.then === 'function');
+            poiDrain = Promise.resolve(poiClosed).then(
+              () => true,
+              () => {
+                cleanupFailed = true;
+                closeScope();
+                return false;
+              }
+            );
             acquiredPoi = await poi.acquire({ timeoutMs: poiBudget });
             current(KEY_MARGIN_MS);
             if (acquiredPoi.status !== 'verified') return { status: 'refused' };
@@ -491,10 +519,35 @@ async function prove({
           } finally {
             if (permit) permits.delete(permit);
             clearTimeout(deadlineTimer);
-            operationScope.close();
-            closeSources();
-            provenance?.signal.removeEventListener('abort', onProvenanceAbort);
-            await provenance?.close();
+            try {
+              provenance?.signal.removeEventListener('abort', onProvenanceAbort);
+            } catch {
+              cleanupFailed = true;
+            }
+            closeScope();
+            const drains = [];
+            if (poiDrain) drains.push(poiDrain);
+            else if (poi) cleanupFailed = true;
+            try {
+              if (provenance) {
+                const provenanceClosed = provenance.close();
+                assert.ok(provenanceClosed && typeof provenanceClosed.then === 'function');
+                drains.push(
+                  Promise.resolve(provenanceClosed).then(
+                    () => true,
+                    () => false
+                  )
+                );
+              }
+            } catch {
+              cleanupFailed = true;
+            }
+            // Both closes start before either wait. POI includes actual source
+            // drain; provenance retains its existing root-work drain contract.
+            const drained = await Promise.all(drains);
+            assert.ok(!cleanupFailed && drained.every((value) => value), fail());
+            // The enclosing wallet rechecks the window after this callback.
+            // Expiry after signing retains the durable signed-unfinished hold.
           }
         },
       }

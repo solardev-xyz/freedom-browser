@@ -58,6 +58,10 @@ jest.mock('./railgun-account-wallet', () => ({
         mock.window,
         mock.capsule
       );
+      // Match account-wallet's real checks immediately after the awaited
+      // onIntent callback, including time spent draining its resources.
+      if (!mock.windowLive || mock.scope.signal.aborted || performance.now() >= mock.data.deadline)
+        throw Error('window post-callback refused');
       mockStep('A-response');
       if (response.status !== 'signed') return { operation: { status: 'refused' } };
       mockStep('A-proof');
@@ -298,13 +302,18 @@ beforeEach(() => {
       minimumBlock: 10,
     },
   };
+  const poiClosed = new Promise((resolve) => {
+    mock.poiExit = resolve;
+  });
   mock.poi = {
+    closed: poiClosed,
     acquire: async () => {
       mockStep('POI');
       return { status: mock.poiRefused ? 'refused' : 'verified', receipt: {} };
     },
     close: () => {
       mock.poiClosed = true;
+      if (!mock.holdPoi) mock.poiExit();
     },
   };
   mock.preflight = {
@@ -334,6 +343,8 @@ beforeEach(() => {
       expect(() => consume(permit, {}, mock.signerToken)).toThrow();
       expect(() => consume(permit, mock.identity, {})).toThrow();
       const gate = consume(permit, mock.identity, mock.signerToken);
+      mock.lastPermit = permit;
+      mock.lastGate = gate;
       expect(() => consume(permit, mock.identity, mock.signerToken)).toThrow();
       await gate.assertCurrent();
       mockStep('derive');
@@ -356,7 +367,11 @@ beforeEach(() => {
     artifactDirectory: '/artifacts',
   };
 });
-afterEach(() => mock.scope.close());
+afterEach(() => {
+  mock.poiExit();
+  mock.scope.close();
+  jest.useRealTimers();
+});
 function enableTransact() {
   mock.owned.ownedPoi[0].type = 'Transact';
   mock.poiValue.input.type = 'Transact';
@@ -737,3 +752,280 @@ test('preflight timeout closes it but the operation waits until acquisition drai
   expect(mock.events).not.toContain('reserve');
   jest.useRealTimers();
 });
+
+const operationGate = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+const operationTurn = () => new Promise((resolve) => setImmediate(resolve));
+function holdPoiClosure() {
+  const entered = operationGate();
+  mock.holdPoi = true;
+  const close = mock.poi.close;
+  mock.poi.close = () => {
+    close();
+    entered.resolve();
+  };
+  return entered;
+}
+test.each([false, true])(
+  'POI drain holds the A callback after signed/refused work, refused=%s',
+  async (refused) => {
+    mock.poiRefused = refused;
+    const entered = holdPoiClosure();
+    let settled = false;
+    const pending = prove(options).then((value) => {
+      settled = true;
+      return value;
+    });
+    await entered.promise;
+    try {
+      expect(mock.poiClosed).toBe(true);
+      expect(mock.windowLive).toBe(true);
+      await operationTurn();
+      expect(settled).toBe(false);
+      expect(mock.events).not.toContain('A-response');
+      expect(mock.events).not.toContain('C');
+      expect(await prove(options)).toEqual({ status: 'refused', stage: 'local' });
+      if (!refused) {
+        expect(mock.stored.signature).toBeDefined();
+        expect(mock.preflightClosed).toBe(true);
+        mock.signerLive = true;
+        expect(() => consume(mock.lastPermit, mock.identity, mock.signerToken)).toThrow();
+        await expect(mock.lastGate.assertCurrent()).rejects.toThrow();
+        mock.signerLive = false;
+      }
+      mock.poiExit();
+      expect((await pending).status).toBe(refused ? 'refused' : 'proved');
+    } finally {
+      mock.poiExit();
+      await pending;
+    }
+  }
+);
+test.each(['poi-first', 'provenance-first'])(
+  'both close requests start promptly and both drains hold A in %s order',
+  async (order) => {
+    enableTransact();
+    const entered = holdPoiClosure(),
+      provenance = operationGate();
+    mock.provenanceDrain = provenance.promise;
+    let settled = false;
+    const pending = prove(options).then((value) => {
+      settled = true;
+      return value;
+    });
+    await entered.promise;
+    try {
+      await operationTurn();
+      expect(mock.provenance.close).toHaveBeenCalled();
+      expect(mock.provenance.signal.aborted).toBe(true);
+      expect(mock.preflightClosed).toBe(true);
+      expect(mock.windowLive).toBe(true);
+      if (order === 'poi-first') mock.poiExit();
+      else provenance.resolve();
+      await operationTurn();
+      expect(settled).toBe(false);
+      expect(mock.events).not.toContain('A-proof');
+      expect(mock.events).not.toContain('C');
+      expect(await prove(options)).toEqual({ status: 'refused', stage: 'local' });
+      if (order === 'poi-first') provenance.resolve();
+      else mock.poiExit();
+      expect((await pending).status).toBe('proved');
+    } finally {
+      provenance.resolve();
+      mock.poiExit();
+      await pending;
+    }
+  }
+);
+test('post-signature POI drain crossing the actual A window deadline retains signed-unfinished state', async () => {
+  jest.useFakeTimers();
+  mock.data.deadline = performance.now() + 175000;
+  const entered = holdPoiClosure();
+  let settled = false;
+  const pending = prove(options).then((value) => {
+    settled = true;
+    return value;
+  });
+  await entered.promise;
+  try {
+    expect(mock.stored.signature).toBeDefined();
+    expect(mock.events.filter((x) => x === 'key')).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(175001);
+    expect(settled).toBe(false);
+    expect(mock.windowLive).toBe(true);
+    expect(mock.events).not.toContain('A-proof');
+    expect(mock.events).not.toContain('abandon');
+    mock.poiExit();
+    const result = await pending;
+    expect(result).toMatchObject({ status: 'signed-unfinished', holdId: mock.holdId });
+    expect(result.completion).toBeUndefined();
+    expect(mock.stored.signature).toBeDefined();
+    expect(mock.stored.capsule).toBeDefined();
+    expect(mock.events).not.toContain('save-proof');
+    expect(mock.events).not.toContain('abandon');
+    expect(mock.windowLive).toBe(false);
+    // Preserve the real reservation contract: a durable signing hold blocks
+    // another operation, rather than the original fixture's always-free stub.
+    mock.reservations.assertAvailable = async () => {
+      throw Error('signing hold retained');
+    };
+    expect((await prove(options)).status).toBe('refused');
+    expect(mock.events.filter((x) => x === 'key')).toHaveLength(1);
+  } finally {
+    mock.poiExit();
+    await pending;
+  }
+});
+test.each(['poi', 'preflight', 'provenance-throw', 'provenance-reject'])(
+  'post-signature %s cleanup failure waits all other drains and retains signed state',
+  async (failure) => {
+    enableTransact();
+    const entered = holdPoiClosure(),
+      provenance = operationGate();
+    mock.provenanceDrain = provenance.promise;
+    if (failure === 'poi') {
+      const close = mock.poi.close;
+      mock.poi.close = () => {
+        close();
+        throw Error('PRIVATE POI close');
+      };
+    }
+    if (failure === 'preflight')
+      mock.preflight.close = () => {
+        mock.preflightClosed = true;
+        throw Error('PRIVATE preflight close');
+      };
+    if (failure === 'provenance-throw')
+      mock.provenance.close.mockImplementation(() => {
+        mock.provenanceController.abort();
+        throw Error('PRIVATE provenance close');
+      });
+    if (failure === 'provenance-reject')
+      mock.provenance.close.mockImplementation(async () => {
+        mock.provenanceController.abort();
+        await provenance.promise;
+        throw Error('PRIVATE provenance rejection');
+      });
+    let settled = false;
+    const pending = prove(options).then((value) => {
+      settled = true;
+      return value;
+    });
+    await entered.promise;
+    try {
+      await operationTurn();
+      expect(mock.provenance.close).toHaveBeenCalled();
+      expect(mock.preflightClosed).toBe(true);
+      expect(mock.stored.signature).toBeDefined();
+      expect(settled).toBe(false);
+      expect(mock.events).not.toContain('A-proof');
+      provenance.resolve();
+      await operationTurn();
+      expect(settled).toBe(false);
+      mock.poiExit();
+      const result = await pending;
+      expect(result.status).toBe('signed-unfinished');
+      expect(result.holdId).toBe(mock.holdId);
+      expect(JSON.stringify(result)).not.toContain('PRIVATE');
+      expect(mock.events).not.toContain('abandon');
+      expect(mock.events).not.toContain('C');
+    } finally {
+      provenance.resolve();
+      mock.poiExit();
+      await pending;
+    }
+  }
+);
+test('simultaneous POI close throw and provenance rejection cannot skip remaining POI drain', async () => {
+  enableTransact();
+  const entered = holdPoiClosure();
+  const close = mock.poi.close;
+  mock.poi.close = () => {
+    close();
+    throw Error('PRIVATE POI');
+  };
+  mock.provenance.close.mockImplementation(async () => {
+    mock.provenanceController.abort();
+    throw Error('PRIVATE provenance');
+  });
+  let settled = false;
+  const pending = prove(options).then((value) => {
+    settled = true;
+    return value;
+  });
+  await entered.promise;
+  try {
+    await operationTurn();
+    expect(mock.provenance.close).toHaveBeenCalled();
+    expect(mock.preflightClosed).toBe(true);
+    expect(settled).toBe(false);
+    expect(mock.windowLive).toBe(true);
+    expect(mock.stored.signature).toBeDefined();
+    mock.poiExit();
+    const result = await pending;
+    expect(result.status).toBe('signed-unfinished');
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    expect(mock.events).not.toContain('abandon');
+    expect(mock.events).not.toContain('C');
+  } finally {
+    mock.poiExit();
+    await pending;
+  }
+});
+test('abort-listener POI close exception is contained and cannot skip preflight closure/drain', async () => {
+  const entered = operationGate(),
+    release = operationGate();
+  mock.holdPoi = true;
+  mock.preflight.acquire = async () => {
+    entered.resolve();
+    await release.promise;
+    throw Error('cancelled');
+  };
+  const close = mock.poi.close;
+  mock.poi.close = () => {
+    close();
+    throw Error('PRIVATE listener');
+  };
+  let settled = false;
+  const pending = prove(options).then((value) => {
+    settled = true;
+    return value;
+  });
+  await entered.promise;
+  try {
+    expect(() => mock.scope.close()).not.toThrow();
+    await operationTurn();
+    expect(mock.poiClosed).toBe(true);
+    expect(mock.preflightClosed).toBe(true);
+    release.resolve();
+    await operationTurn();
+    expect(settled).toBe(false);
+    mock.poiExit();
+    expect((await pending).status).toBe('refused');
+    expect(mock.events).not.toContain('reserve');
+    expect(mock.events).not.toContain('key');
+  } finally {
+    release.resolve();
+    mock.poiExit();
+    await pending;
+  }
+});
+test.each(['missing', 'rejected'])(
+  'invalid POI %s barrier never admits key work or success',
+  async (mode) => {
+    if (mode === 'missing') delete mock.poi.closed;
+    else mock.poi.closed = Promise.reject(Error('PRIVATE invalid POI closed'));
+    if (mode === 'rejected') mock.poi.closed.catch(() => {});
+    const result = await prove(options);
+    expect(result.status).toBe('refused');
+    expect(result.completion).toBeUndefined();
+    expect(mock.events).not.toContain('key');
+    expect(mock.events).not.toContain('reserve');
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  }
+);

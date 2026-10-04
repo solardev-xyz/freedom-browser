@@ -76,21 +76,34 @@ function createOwnedPoi({
       }
     },
   });
-  const handle = scope.getContext({
-    ...parent.subject,
-    role: 'poi',
-    operation: 'poi:' + operationId,
-  });
-  let source,
+  let handle,
+    source,
     closed = false,
     busy = false,
+    sourceDrained = false,
+    resolveClosed,
     sequence = 0;
+  const drained = new Promise((resolve) => {
+    resolveClosed = resolve;
+  });
+  const finish = () => {
+    if (closed && !busy && sourceDrained) resolveClosed();
+  };
   const receipts = new WeakMap();
   const close = () => {
     if (closed) return;
     closed = true;
-    source?.close();
-    scope.close();
+    try {
+      source?.close();
+    } catch {
+      // Only the source barrier can establish drainage.
+    }
+    try {
+      scope.close();
+    } catch {
+      // Abort listeners and timer callbacks must not throw.
+    }
+    finish();
   };
   const active = (minimumRemainingMs = 0) => {
     check(!closed && !scope.signal.aborted);
@@ -98,6 +111,11 @@ function createOwnedPoi({
     getPrivacyContext(handle);
   };
   try {
+    handle = scope.getContext({
+      ...parent.subject,
+      role: 'poi',
+      operation: 'poi:' + operationId,
+    });
     source = createRailgunPoiSource({
       handle,
       notes: selected.map(({ record }) => ({
@@ -105,6 +123,22 @@ function createOwnedPoi({
         type: record.type,
       })),
     });
+    const sourceClosed = source.closed;
+    check(sourceClosed && typeof sourceClosed.then === 'function');
+    sourceClosed.then(
+      () => {
+        sourceDrained = true;
+        finish();
+      },
+      () => {
+        // A rejected barrier cannot stand in for physical closure.
+        close();
+      }
+    );
+    scope.signal.addEventListener('abort', close, { once: true });
+    source.signal.addEventListener('abort', close, { once: true });
+    if (scope.signal.aborted || source.signal.aborted) close();
+    active();
   } catch (error) {
     close();
     throw error;
@@ -119,7 +153,7 @@ function createOwnedPoi({
     const budget = window
       ? Math.min(timeoutMs, Math.floor(windowData.deadline - started))
       : timeoutMs;
-    let timer;
+    let timer, failure;
     try {
       if (window) {
         check(budget > 0);
@@ -183,12 +217,17 @@ function createOwnedPoi({
       });
       return Object.freeze({ ...(window ? { status: 'verified' } : {}), receipt, observation });
     } catch (error) {
+      failure = error;
       close();
-      throw error;
     } finally {
       clearTimeout(timer);
       busy = false;
+      finish();
     }
+    // Success (including a refused diagnostic value) returns above. Failure
+    // waits only after inner acquisition AND membership verification settled.
+    await drained;
+    throw failure;
   }
   function assertResult(receipt, minimumRemainingMs = 0) {
     check(
@@ -211,7 +250,13 @@ function createOwnedPoi({
       assertRailgunPoiMembership(entry.membershipReceipt, handle, minimumRemainingMs);
     return entry.observation;
   }
-  const operation = Object.freeze({ acquire, assertResult, close, signal: scope.signal });
+  const operation = Object.freeze({
+    acquire,
+    assertResult,
+    close,
+    closed: drained,
+    signal: scope.signal,
+  });
   operations.set(operation, { wallet, owners, window });
   return operation;
 }
