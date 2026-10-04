@@ -82,62 +82,72 @@ async function verify({ handle, archive, state, evidence, witness, signal, timeo
       broker: {
         signal: scope.signal,
         async dispatch(wire) {
-          active();
-          assert.equal(result, undefined);
-          assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 16384);
-          const message = JSON.parse(wire);
-          shape(message, ['id', 'method', 'value']);
-          assert.equal(message.id, 1);
-          assert.equal(message.method, 'result');
-          const value = message.value;
-          shape(value, [
-            'inputSha256',
-            'bindingDigest',
-            'railgunTxid',
-            'pathVerified',
-            'unshieldCommitmentVerified',
-            'sourceAuthenticated',
-            'rootAccepted',
-            'spendingEnabled',
-            'guards',
-            'inventory',
-          ]);
-          assert.equal(value.inputSha256, digest);
-          assert.equal(value.bindingDigest, bindingDigest);
-          assert.equal(value.railgunTxid, normalized.railgunTxid);
-          assert.equal(value.pathVerified, true);
-          assert.equal(value.unshieldCommitmentVerified, matched.output.kind === 'unshield');
-          for (const key of ['sourceAuthenticated', 'rootAccepted', 'spendingEnabled'])
-            assert.equal(value[key], false);
-          assert.equal(value.inventory, require('./railgun-engine-manifest.json').inventory.sha256);
-          shape(value.guards, ['attempts', 'canaries', 'hooks']);
-          const { attempts, canaries, hooks } = value.guards;
-          assert.equal(attempts, 0);
-          assert.ok(Array.isArray(hooks) && hooks.length >= 1 && hooks.length <= 256);
-          assert.ok(
-            hooks.every((hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook))
-          );
-          assert.equal(new Set(hooks).size, hooks.length);
-          assert.equal(canaries, hooks.length);
-          result = Object.freeze({
-            inputSha256: digest,
-            bindingDigest,
-            railgunTxid: normalized.railgunTxid,
-            root: normalized.root,
-            index: normalized.index,
-            checkpointIndex: normalized.checkpointIndex,
-            pathVerified: true,
-            unshieldCommitmentVerified: matched.output.kind === 'unshield',
-            sourceAuthenticated: false,
-            rootAccepted: false,
-            currentCanonicalityVerified: false,
-            finalityVerified: false,
-            rowMetadataAuthenticated: false,
-            poiVerified: false,
-            globalTxidCompleteness: false,
-            spendingEnabled: false,
-          });
-          return JSON.stringify({ id: 1, value: null });
+          try {
+            active();
+            assert.equal(result, undefined);
+            assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 16384);
+            const message = JSON.parse(wire);
+            shape(message, ['id', 'method', 'value']);
+            assert.equal(message.id, 1);
+            assert.equal(message.method, 'result');
+            const value = message.value;
+            shape(value, [
+              'inputSha256',
+              'bindingDigest',
+              'railgunTxid',
+              'pathVerified',
+              'unshieldCommitmentVerified',
+              'sourceAuthenticated',
+              'rootAccepted',
+              'spendingEnabled',
+              'guards',
+              'inventory',
+            ]);
+            assert.equal(value.inputSha256, digest);
+            assert.equal(value.bindingDigest, bindingDigest);
+            assert.equal(value.railgunTxid, normalized.railgunTxid);
+            assert.equal(value.pathVerified, true);
+            assert.equal(value.unshieldCommitmentVerified, matched.output.kind === 'unshield');
+            for (const key of ['sourceAuthenticated', 'rootAccepted', 'spendingEnabled'])
+              assert.equal(value[key], false);
+            assert.equal(
+              value.inventory,
+              require('./railgun-engine-manifest.json').inventory.sha256
+            );
+            shape(value.guards, ['attempts', 'canaries', 'hooks']);
+            const { attempts, canaries, hooks } = value.guards;
+            assert.equal(attempts, 0);
+            assert.ok(Array.isArray(hooks) && hooks.length >= 1 && hooks.length <= 256);
+            assert.ok(
+              hooks.every((hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook))
+            );
+            assert.equal(new Set(hooks).size, hooks.length);
+            assert.equal(canaries, hooks.length);
+            result = Object.freeze({
+              inputSha256: digest,
+              bindingDigest,
+              railgunTxid: normalized.railgunTxid,
+              root: normalized.root,
+              index: normalized.index,
+              checkpointIndex: normalized.checkpointIndex,
+              pathVerified: true,
+              unshieldCommitmentVerified: matched.output.kind === 'unshield',
+              sourceAuthenticated: false,
+              rootAccepted: false,
+              currentCanonicalityVerified: false,
+              finalityVerified: false,
+              rowMetadataAuthenticated: false,
+              poiVerified: false,
+              globalTxidCompleteness: false,
+              spendingEnabled: false,
+            });
+            return JSON.stringify({ id: 1, value: null });
+          } catch (error) {
+            // Refusal is permanent before the dispatch rejection reaches the
+            // supervisor. Queued valid traffic cannot recover this attempt.
+            close();
+            throw error;
+          }
         },
       },
     });

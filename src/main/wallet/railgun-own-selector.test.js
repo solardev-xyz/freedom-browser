@@ -1,4 +1,4 @@
-let mockMode, mockTask, mockExit, mockDeferExit;
+let mockMode, mockTask, mockExit, mockDeferExit, mockProtocol;
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
 jest.mock('./railgun-process', () => ({
   startRailgunProcess: jest.fn((options) => {
@@ -50,6 +50,7 @@ jest.mock('./railgun-process', () => ({
         method: ['key', 'input', 'get', 'provider'].includes(mockMode) ? mockMode : 'result',
         value,
       });
+      if (mockProtocol) return mockProtocol(options.broker, wire);
       if (mockMode === 'missing') return;
       await options.broker.dispatch(wire);
       if (mockMode === 'duplicate') await options.broker.dispatch(wire);
@@ -66,6 +67,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockMode = 'valid';
   mockDeferExit = false;
+  mockProtocol = undefined;
   scope = createPrivacyScope({
     profileId: 'detached-fixture',
     signal: new AbortController().signal,
@@ -211,3 +213,97 @@ test('refuses non-1x1, out-of-field facts and the wrong operation before startin
   await expect(deriveRailgunOwnSelector(input)).rejects.toThrow();
   expect(startRailgunProcess).not.toHaveBeenCalled();
 });
+
+// Deliberately suppress broker rejection in the mocked supervisor. These tests
+// establish the host's own irrevocable refusal, not a live supervisor bypass.
+const protocolCases = ['same-tick', 'next-tick', 'valid-then-bad'];
+function exerciseRefusal(timing, fault, observed) {
+  return async (broker, valid) => {
+    const value = JSON.parse(valid);
+    if (fault === 'digest') value.value.inputSha256 = '0'.repeat(64);
+    if (fault === 'method') value.method = 'key';
+    const invalid = fault === 'json' ? '{' : JSON.stringify(value);
+    observed.signal = broker.signal;
+    if (timing === 'valid-then-bad') {
+      await broker.dispatch(valid);
+      observed.initialAccepted = true;
+    }
+    const refused = broker.dispatch(invalid);
+    observed.immediatelyAborted = broker.signal.aborted;
+    const rejection = refused.then(
+      () => {
+        observed.invalidAccepted = true;
+      },
+      () => {
+        observed.rejectionSeen = true;
+      }
+    );
+    if (timing === 'next-tick') await new Promise((resolve) => setImmediate(resolve));
+    if (timing !== 'valid-then-bad') {
+      await broker.dispatch(valid).then(
+        () => {
+          observed.lateAccepted = true;
+        },
+        () => {
+          observed.lateRefused = true;
+        }
+      );
+    }
+    await rejection;
+    observed.driverFinished = true;
+    // Return normally even after refusal; supervisor readiness is not trusted
+    // to preserve the original failure in this adversarial host-boundary mock.
+  };
+}
+test.each(
+  protocolCases.flatMap((timing) => ['digest', 'method', 'json'].map((fault) => [timing, fault]))
+)('permanently revokes %s %s refusal before supervisor reaction', async (timing, fault) => {
+  const observed = {};
+  mockProtocol = exerciseRefusal(timing, fault, observed);
+  await expect(deriveRailgunOwnSelector(input)).rejects.toMatchObject({
+    code: 'RAILGUN_OWN_SELECTOR_REFUSED',
+  });
+  expect(observed.immediatelyAborted).toBe(true);
+  expect(observed.rejectionSeen).toBe(true);
+  expect(observed.invalidAccepted).not.toBe(true);
+  expect(observed.driverFinished).toBe(true);
+  if (timing === 'valid-then-bad') expect(observed.initialAccepted).toBe(true);
+  else {
+    expect(observed.lateAccepted).not.toBe(true);
+    expect(observed.lateRefused).toBe(true);
+  }
+  expect(mockTask.close).toHaveBeenCalled();
+});
+test.each(protocolCases)(
+  'retains %s refusal until the actual delayed process exit',
+  async (timing) => {
+    const observed = {};
+    mockDeferExit = true;
+    mockProtocol = exerciseRefusal(timing, 'digest', observed);
+    let settled = false;
+    const pending = deriveRailgunOwnSelector(input).then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(observed.driverFinished).toBe(true);
+      expect(observed.immediatelyAborted).toBe(true);
+      expect(observed.signal.aborted).toBe(true);
+      expect(mockTask.close).toHaveBeenCalled();
+      expect(settled).toBe(false);
+      mockExit();
+      expect(await pending).toMatchObject({ error: { code: 'RAILGUN_OWN_SELECTOR_REFUSED' } });
+    } finally {
+      mockExit();
+      await pending;
+    }
+  }
+);
