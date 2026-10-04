@@ -50,7 +50,16 @@ function createRailgunPoiSource({ handle, notes: input }) {
   const scope = createPrivacyScope({
     profileId: context.profileId,
     signal: AbortSignal.any([context.signal, endpoint.signal, controller.signal]),
-    isCurrent: () => tor.getWalletSocksEndpoint() === endpoint,
+    isCurrent: () => {
+      try {
+        // Transport uses this derived handle; retain the original parent's
+        // admission checks as well as Tor endpoint currency at that boundary.
+        getPrivacyContext(handle);
+        return tor.getWalletSocksEndpoint() === endpoint;
+      } catch {
+        return false;
+      }
+    },
   });
   const receipts = new WeakMap();
   let scopedHandle,

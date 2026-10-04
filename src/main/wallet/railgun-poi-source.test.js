@@ -615,3 +615,249 @@ test('an already revoked parent refuses before transport construction', () => {
   expect(mockFactory).not.toHaveBeenCalled();
   expect(mockRequest).not.toHaveBeenCalled();
 });
+
+const fixedPoiMethods = [
+  'ppoi_pois_per_list',
+  'ppoi_merkle_proofs',
+  'ppoi_poi_events',
+  'ppoi_validate_poi_merkleroots',
+];
+test.each(
+  ['expired', 'revoked', 'throwing'].flatMap((mode) =>
+    fixedPoiMethods.map((method, index) => [mode, method, index])
+  )
+)(
+  'retained parent %s between source check and transport authentication admits no %s',
+  async (mode, method, index) => {
+    let now = 100,
+      current = true,
+      throwCurrent = false;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    scope.close();
+    scope = createPrivacyScope({
+      profileId: 'poi-parent-admission',
+      signal: new AbortController().signal,
+      isCurrent: () => {
+        if (throwCurrent) throw Error('PRIVATE parent check');
+        return current && now < 200;
+      },
+    });
+    handle = scope.getContext(subject);
+    const { exit } = heldTransport(),
+      entered = drainGate(),
+      admitted = [],
+      normal = mockRequest.getMockImplementation();
+    let retained,
+      refusedAtTransport = false,
+      revokedAtTransport = false;
+    mockRequest.mockImplementation(async (childHandle, url, options) => {
+      const next = JSON.parse(options.body).method;
+      retained = childHandle;
+      if (next === method) {
+        // This runs after source.active(), at the actual transport admission
+        // seam. No timer or explicit parent close triggers this lazy failure.
+        if (mode === 'expired') now = 200;
+        if (mode === 'revoked') current = false;
+        if (mode === 'throwing') throwCurrent = true;
+      }
+      try {
+        getPrivacyContext(childHandle);
+        admitted.push(next);
+      } catch (error) {
+        refusedAtTransport = true;
+        revokedAtTransport = source.signal.aborted;
+        throw error;
+      } finally {
+        if (next === method) entered.resolve();
+      }
+      return normal(childHandle, url, options);
+    });
+    const client = open();
+    let settled = false,
+      drained = false;
+    client.closed.then(() => {
+      drained = true;
+    });
+    const pending = client.acquire().then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    await entered.promise;
+    try {
+      await drainedTurn();
+      expect(admitted).toEqual(fixedPoiMethods.slice(0, index));
+      expect(refusedAtTransport).toBe(true);
+      expect(revokedAtTransport).toBe(true);
+      expect(client.signal.aborted).toBe(true);
+      expect(() => getPrivacyContext(retained)).toThrow();
+      expect(mockClose).toHaveBeenCalledTimes(1);
+      expect(mockRequest).toHaveBeenCalledTimes(index + 1);
+      expect(settled).toBe(false);
+      expect(drained).toBe(false);
+      exit.resolve();
+      expect(await pending).toMatchObject({
+        error: { code: 'RAILGUN_POI_SOURCE_REFUSED', message: 'Railgun POI source unavailable' },
+      });
+      await client.closed;
+      expect(drained).toBe(true);
+    } finally {
+      exit.resolve();
+      await pending;
+    }
+  }
+);
+test('transport authentication traverses a healthy retained parent for every fixed request', async () => {
+  let visits = 0;
+  scope.close();
+  scope = createPrivacyScope({
+    profileId: 'poi-parent-healthy',
+    signal: new AbortController().signal,
+    isCurrent: () => {
+      visits++;
+      return true;
+    },
+  });
+  handle = scope.getContext(subject);
+  const normal = mockRequest.getMockImplementation(),
+    transportVisits = [];
+  mockRequest.mockImplementation(async (retained, url, options) => {
+    const before = visits;
+    expect(retained).not.toBe(handle);
+    expect(getPrivacyContext(retained).subject).toEqual(subject);
+    transportVisits.push(visits - before);
+    return normal(retained, url, options);
+  });
+  const result = await open().acquire();
+  expect(result.observation.rootsAccepted).toBe(true);
+  expect(transportVisits).toEqual([1, 1, 1, 1]);
+  expect(source.signal.aborted).toBe(false);
+  source.close();
+  await source.closed;
+});
+
+test('parent predicate reentrantly closes itself during transport authentication without listener throw', async () => {
+  scope.close();
+  let closeInPredicate = false,
+    authenticationError,
+    signalAlreadyRevoked;
+  scope = createPrivacyScope({
+    profileId: 'poi-parent-reentrant',
+    signal: new AbortController().signal,
+    isCurrent: () => {
+      if (closeInPredicate) scope.close();
+      return true;
+    },
+  });
+  handle = scope.getContext(subject);
+  const { exit } = heldTransport(),
+    entered = drainGate(),
+    admitted = [];
+  mockRequest.mockImplementation(async (retained, _url, options) => {
+    closeInPredicate = true;
+    try {
+      getPrivacyContext(retained);
+      admitted.push(JSON.parse(options.body).method);
+    } catch (error) {
+      authenticationError = error;
+      signalAlreadyRevoked = source.signal.aborted;
+      throw error;
+    } finally {
+      entered.resolve();
+    }
+  });
+  const client = open();
+  let settled = false;
+  const pending = client
+    .acquire()
+    .then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    )
+    .then((result) => {
+      settled = true;
+      return result;
+    });
+  await entered.promise;
+  try {
+    await drainedTurn();
+    expect(authenticationError).toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
+    expect(signalAlreadyRevoked).toBe(true);
+    expect(scope.signal.aborted).toBe(true);
+    expect(admitted).toEqual([]);
+    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    exit.resolve();
+    expect(await pending).toMatchObject({ error: { code: 'RAILGUN_POI_SOURCE_REFUSED' } });
+    await client.closed;
+  } finally {
+    exit.resolve();
+    await pending;
+  }
+});
+test('lazy stale parent after admission refuses post-response and retains transport drain', async () => {
+  scope.close();
+  let current = true;
+  scope = createPrivacyScope({
+    profileId: 'poi-parent-inflight',
+    signal: new AbortController().signal,
+    isCurrent: () => current,
+  });
+  handle = scope.getContext(subject);
+  const { exit } = heldTransport(),
+    entered = drainGate(),
+    reply = drainGate(),
+    admitted = [],
+    normal = mockRequest.getMockImplementation();
+  mockRequest.mockImplementation(async (retained, url, options) => {
+    getPrivacyContext(retained);
+    admitted.push(JSON.parse(options.body).method);
+    entered.resolve();
+    await reply.promise;
+    return normal(retained, url, options);
+  });
+  const client = open();
+  let settled = false,
+    drained = false;
+  client.closed.then(() => {
+    drained = true;
+  });
+  const pending = client
+    .acquire()
+    .then(
+      (value) => ({ value }),
+      (error) => ({ error })
+    )
+    .then((result) => {
+      settled = true;
+      return result;
+    });
+  await entered.promise;
+  try {
+    current = false;
+    expect(scope.signal.aborted).toBe(false);
+    expect(client.signal.aborted).toBe(false);
+    expect(admitted).toEqual(['ppoi_pois_per_list']);
+    reply.resolve();
+    await drainedTurn();
+    expect(client.signal.aborted).toBe(true);
+    expect(scope.signal.aborted).toBe(true);
+    expect(settled).toBe(false);
+    expect(drained).toBe(false);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+    expect(admitted).toEqual(['ppoi_pois_per_list']);
+    exit.resolve();
+    expect(await pending).toMatchObject({ error: { code: 'RAILGUN_POI_SOURCE_REFUSED' } });
+    await client.closed;
+    expect(drained).toBe(true);
+  } finally {
+    reply.resolve();
+    exit.resolve();
+    await pending;
+  }
+});
