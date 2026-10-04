@@ -687,3 +687,28 @@ test.each(['service', 'public-address'])(
     expect(mockFork).not.toHaveBeenCalled();
   }
 );
+
+test.each(['service', 'public-address'])(
+  'otherwise exact Shield receiver binary tuple refuses %s subject',
+  (kind) => {
+    const handle = scope.getContext({
+      kind,
+      principal: kind === 'public-address' ? '0x' + '12'.repeat(20) : 'railgun:0',
+      protocol: 'railgun',
+      deployment: 'sepolia',
+      chainId: 11155111,
+      role: 'engine',
+      operation: 'shield-receive',
+    });
+    expect(() =>
+      startRailgunProcess({
+        handle,
+        filename: require.resolve('./railgun-shield-receive-job'),
+        input: '{}',
+        binaryKey: true,
+        broker: { signal: scope.signal, dispatch: async () => new Uint8Array(32) },
+      })
+    ).toThrow(expect.objectContaining({ code: 'RAILGUN_PROCESS_INVALID' }));
+    expect(mockFork).not.toHaveBeenCalled();
+  }
+);

@@ -41,9 +41,10 @@ instance remains read-only; no generic Host or user-facing activation is added.
 1. **Connect the separate public Shield lane.** The
    [bounded implementation plan](railgun-kohaku-public-shield-plan-2026-10-04.md)
    reuses native ETH-to-WETH preparation, receiver verification, submission and
-   recovery. First harden host cancellation/phase ownership and bind reviewed
-   destinations; then expose a genuine public-operation token and a separate
-   main-owned submitter. The private broadcaster must not accept Shield.
+   recovery. [Host cancellation/phase ownership and reviewed destination binding](railgun-shield-prerequisites-2026-10-04.md)
+   now pass focused and controlled native qualification. Next expose a genuine
+   public-operation token, preparation disclosure review and separate main-owned
+   submitter. The private broadcaster must not accept Shield.
 2. **Add partial withdrawal with authenticated change.** PPv2 already has
    withdrawal/change recovery and second-spend evidence. Railgun's current
    one-output policy cannot express the equivalent partial withdrawal. Extending

@@ -1,6 +1,8 @@
 /** Actual Electron/vault/engine/signing/journal exercise with simulated funding
  * RPC. Only deployment reads go over Tor. No signed bytes reach a live network.
  * FREEDOM_WALLET_TOR_EXPERIMENT=1 electron script ARCHIVE NEW_OUTPUT
+ * Offline: additionally set FREEDOM_RAILGUN_SHIELD_OFFLINE=1 and pass a third
+ * absolute public-bytecode fixture path. Both RPC roles are then intercepted.
  */
 const fs = require('fs'),
   path = require('path'),
@@ -9,11 +11,33 @@ const { createHash } = require('crypto');
 const { app } = require('electron');
 const { Wallet, Transaction, Interface } = require('ethers');
 const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
-const { openLiveTransport } = require('./qualify-ppv2-live');
 let lock;
+async function within(work, timeoutMs = 5000, code = 'QUALIFICATION_DEADLINE_EXCEEDED') {
+  let timer;
+  try {
+    return await Promise.race([
+      work,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(Object.assign(Error('Qualification deadline exceeded'), { code })),
+          timeoutMs
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function main() {
-  const [archive, output] = process.argv.slice(2);
-  assert.equal(process.argv.length, 4);
+  const [archive, output, bytecodes] = process.argv.slice(2);
+  const offline = process.env.FREEDOM_RAILGUN_SHIELD_OFFLINE === '1';
+  assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_SHIELD_OFFLINE));
+  assert.equal(process.argv.length, offline ? 5 : 4);
+  const deployment = offline
+    ? require('./fixtures/railgun-shield-offline-deployment').createOfflineShieldDeployment(
+        bytecodes
+      )
+    : null;
   assert.ok([archive, output].every(path.isAbsolute) && !fs.existsSync(output));
   fs.mkdirSync(output, { mode: 0o700 });
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
@@ -28,7 +52,27 @@ async function main() {
         require('../docs/qualification/railgun-shield-account-2026-10-03.json').sourceSha256
       ),
       'scripts/qualify-railgun-shield-submission.js',
+      ...(offline ? ['scripts/fixtures/railgun-shield-offline-deployment.js'] : []),
       ...[
+        'identity/privacy-keys.js',
+        'identity/railgun-key-derivation.js',
+        'identity/derivation.js',
+        'profile-resolver.js',
+        'profile-catalog.js',
+        'profile-lock.js',
+        'updater-owner-lock.js',
+        'networks/migration.js',
+      ].map((name) => 'src/main/' + name),
+      'src/shared/chains.json',
+      'src/shared/endpoint-sources.json',
+      ...[
+        'railgun-account-phase',
+        'railgun-recovery-finality',
+        'railgun-wallet-catalog',
+        'vault-errors',
+        'chains',
+        'ppv2-ragequit-policy',
+        'ppv2-deposit-policy',
         'railgun-shield-operation',
         'railgun-shield-intent',
         'railgun-shield-receipt',
@@ -62,13 +106,17 @@ async function main() {
     observedAt: new Date().toISOString(),
     sourceSha256: hashes(),
     recipientPublicVector: true,
-    torManager: 'qualification-only-endpoint-shim',
+    torManager: offline ? 'synthetic-endpoint-no-tor-process' : 'qualification-only-endpoint-shim',
     fundingRpc: 'simulated-in-process',
-    deploymentRpc: 'live-tor',
+    deploymentRpc: offline ? 'offline-pinned-bytecode-synthetic-state' : 'live-tor',
     liveSubmissionRoute: 'none',
     simulatedAttempts: 0,
     simulatedSubmissions: 0,
+    unexpectedTransportFailures: 0,
+    callbacks: { getAddress: 0, signTransaction: 0, transactionReview: 0 },
     circuitIsolationQualified: false,
+    overriddenModules: ['src/main/tor-manager.js', 'src/main/networks/wallet-tor-transport.js'],
+    inventoryIsExecutionCoverage: false,
     runs: [],
     passed: false,
   };
@@ -81,8 +129,14 @@ async function main() {
   const owner = signerWallet.address.toLowerCase();
   report.syntheticFundingAddress = owner;
   const signer = {
-    getAddress: async () => signerWallet.address,
-    signTransaction: (tx) => signerWallet.signTransaction(tx),
+    getAddress: async () => {
+      report.callbacks.getAddress++;
+      return signerWallet.address;
+    },
+    signTransaction: (tx) => {
+      report.callbacks.signTransaction++;
+      return signerWallet.signTransaction(tx);
+    },
   };
   const torModule = require.resolve('../src/main/tor-manager'),
     savedTor = require.cache[torModule];
@@ -97,6 +151,12 @@ async function main() {
   ]);
   const transactions = new Map(),
     receipts = new Map();
+  const controlledFailure = Symbol('controlled simulated transport failure');
+  const loseAcknowledgement = () => {
+    const error = Error('Controlled simulated transport failure');
+    error[controlledFailure] = true;
+    return error;
+  };
   let nonce = 0,
     loseResponse = false,
     dropBeforeAcceptance = false,
@@ -106,7 +166,99 @@ async function main() {
     enrollment,
     operation,
     recovery,
+    destinationOwner,
     stage = 'vault';
+  const rpcUrl = offline
+    ? 'https://synthetic.invalid/railgun-shield'
+    : 'https://sepolia.rpc.sentio.xyz';
+  // Each operation/reopen gets fresh genuine observations. Tokens never enter
+  // the journal or survive this owner's closure.
+  function reviewedDestinations(accountEnrollment) {
+    assert.ok(offline);
+    const { createPrivacyScope } = require('../src/main/networks/privacy-context');
+    const rpc = require('../src/main/networks/private-rpc');
+    const parent =
+      accountEnrollment ?? require('../src/main/wallet/privacy-session').openPrivacySession();
+    const subject = {
+      kind: 'public-address',
+      principal: owner,
+      chainId: pins.chainId,
+      role: 'transaction-rpc',
+    };
+    const parentHandle = accountEnrollment
+      ? accountEnrollment.getContext('engine', 'shield-prepare')
+      : parent.getContext(subject);
+    const scope = createPrivacyScope({
+      profileId: getPrivacyContext(parentHandle).profileId,
+      signal: parent.signal,
+    });
+    const constraints = [];
+    const result = { signal: scope.signal };
+    try {
+      for (const role of accountEnrollment ? ['protocol', 'transaction'] : ['transaction']) {
+        const roleSubject =
+          role === 'protocol'
+            ? getPrivacyContext(accountEnrollment.getContext('protocol-rpc', 'shield-preflight'))
+                .subject
+            : subject;
+        const handle = scope.getContext(roleSubject);
+        const client = rpc.createPrivateRpc(handle, roleSubject.role);
+        const observation = rpc.getPrivateRpcDestination(client, handle);
+        assert.equal(rpc.getPrivateRpcDestinationDetails(observation).url, rpcUrl);
+        const restriction = rpc.createPrivateRpcDestinationConstraint({
+          observation,
+          signal: scope.signal,
+          deadline: performance.now() + 240000,
+        });
+        constraints.push(restriction);
+        result[role] = restriction.constraint;
+      }
+      return Object.freeze({
+        ...result,
+        close() {
+          constraints.forEach((constraint) => constraint.close());
+          scope.close();
+        },
+      });
+    } catch (error) {
+      constraints.forEach((constraint) => constraint.close());
+      scope.close();
+      throw error;
+    }
+  }
+  async function openOperation() {
+    destinationOwner?.close();
+    destinationOwner = offline ? reviewedDestinations(enrollment) : null;
+    return require('../src/main/wallet/railgun-shield-operation').openRailgunShieldOperation({
+      identity,
+      enrollment,
+      archive,
+      owner,
+      amount: '100000000000000',
+      ...(destinationOwner
+        ? {
+            signal: destinationOwner.signal,
+            destinationConstraints: {
+              protocol: destinationOwner.protocol,
+              transaction: destinationOwner.transaction,
+            },
+          }
+        : {}),
+    });
+  }
+  function openRecovery() {
+    destinationOwner?.close();
+    destinationOwner = offline ? reviewedDestinations() : null;
+    return require('../src/main/wallet/railgun-shield-recovery').openRailgunShieldRecovery(
+      owner,
+      destinationOwner
+        ? {
+            signal: destinationOwner.signal,
+            destinationConstraint: destinationOwner.transaction,
+          }
+        : {}
+    );
+  }
   try {
     await vault.importVault(directory, password, phrase);
     const registry = require('../src/main/networks/network-registry');
@@ -117,7 +269,7 @@ async function main() {
           name: 'Sepolia shield submission fixture',
           nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
         },
-        ['https://sepolia.rpc.sentio.xyz']
+        [rpcUrl]
       ).success,
       true
     );
@@ -126,7 +278,19 @@ async function main() {
       quorum: { timeoutMs: 45000 },
     });
     stage = 'tor';
-    client = await openLiveTransport(path.join(output, 'transport'), console.log, 'sentio');
+    if (offline) {
+      const controller = new AbortController();
+      client = {
+        endpoint: Object.freeze({ signal: controller.signal }),
+        metadata: { offline: true, physicalTorTransportQualified: false },
+        close: async () => controller.abort(),
+      };
+    } else
+      client = await require('./qualify-ppv2-live').openLiveTransport(
+        path.join(output, 'transport'),
+        console.log,
+        'sentio'
+      );
     report.transport = client.metadata;
     require.cache[torModule] = {
       id: torModule,
@@ -138,6 +302,9 @@ async function main() {
       '../src/main/networks/private-rpc',
       '../src/main/wallet/private-transaction-network',
       '../src/main/wallet/transaction-service',
+      '../src/main/wallet/railgun-public-services',
+      '../src/main/wallet/railgun-poi-source',
+      '../src/main/wallet/railgun-poi-root',
     ])
       assert.equal(
         require.cache[require.resolve(name)],
@@ -152,142 +319,185 @@ async function main() {
       exports: {
         ...originalTransport,
         createWalletTorTransport: () => {
-          const actual = originalTransport.createWalletTorTransport();
+          // Offline mode never constructs a real transport, even for an
+          // unexpected role or rejected request.
+          const actual = offline
+            ? { release() {}, close() {} }
+            : originalTransport.createWalletTorTransport();
           return {
             ...actual,
             request: async (handle, url, options) => {
-              const context = getPrivacyContext(handle);
-              if (context.subject.kind === 'private-account')
-                return actual.request(handle, url, options);
-              // A strict branch ensures public signing/broadcast never touches actual.
-              assert.equal(context.subject.kind, 'public-address');
-              assert.equal(context.subject.principal, owner);
-              assert.equal(context.subject.role, 'transaction-rpc');
-              const call = JSON.parse(options.body);
-              const blockHash = '0x' + 'b'.repeat(64),
-                blockNumber = '0x10';
-              let result;
-              switch (call.method) {
-                case 'eth_chainId':
-                  result = '0xaa36a7';
-                  break;
-                case 'eth_gasPrice':
-                  result = '0x64';
-                  break;
-                case 'eth_getCode':
-                  result = '0x';
-                  break;
-                case 'eth_estimateGas':
-                  result = '0x493e0';
-                  break;
-                case 'eth_call':
-                  result = '0x';
-                  break;
-                case 'eth_getBalance':
-                  result = '0xde0b6b3a7640000';
-                  break;
-                case 'eth_getTransactionCount':
-                  result = '0x' + nonce.toString(16);
-                  break;
-                case 'eth_blockNumber':
-                  result = '0x12';
-                  break;
-                case 'eth_getBlockByNumber':
-                  result = {
-                    number: blockNumber,
-                    hash: blockHash,
-                    transactions: [...transactions.keys()],
-                  };
-                  break;
-                case 'eth_getTransactionByHash':
-                  result = transactions.get(call.params[0]) ?? null;
-                  break;
-                case 'eth_getTransactionReceipt':
-                  result = receipts.get(call.params[0]) ?? null;
-                  break;
-                case 'eth_sendRawTransaction': {
-                  const tx = Transaction.from(call.params[0]);
-                  assert.equal(tx.from.toLowerCase(), owner);
-                  assert.equal(tx.nonce, nonce);
-                  assert.equal(tx.chainId, 11155111n);
-                  const journal =
-                    require('../src/main/wallet/private-submission-journal').getPrivateSubmissionJournal(
-                      handle
-                    );
-                  const records = await journal.list(),
-                    record = records.find((r) => r.hash === tx.hash);
-                  assert.ok(
-                    record &&
-                      record.state === 'attempted' &&
-                      record.intent.kind === 'railgun-native-shield'
-                  );
-                  assert.ok(!JSON.stringify(records).includes(call.params[0]));
-                  lastHash = tx.hash;
-                  report.simulatedAttempts++;
-                  if (dropBeforeAcceptance)
-                    throw Error('Controlled drop before simulated acceptance');
-                  const [, calls] = abi.decodeFunctionData('multicall', tx.data),
-                    [notes] = abi.decodeFunctionData('shield', calls[1].data);
-                  const note = notes[0],
-                    net = BigInt(record.intent.noteValue);
-                  const event = abi.encodeEventLog('Shield', [
-                    0,
-                    nonce,
-                    [[note.preimage.npk, note.preimage.token, net]],
-                    [note.ciphertext],
-                    [tx.value - net],
-                  ]);
-                  transactions.set(tx.hash, {
-                    hash: tx.hash,
-                    from: owner,
-                    to: pins.relayAdapt,
-                    chainId: '0xaa36a7',
-                    nonce: '0x' + nonce.toString(16),
-                    value: '0x' + tx.value.toString(16),
-                    input: tx.data,
-                    blockHash,
-                    blockNumber,
-                  });
-                  receipts.set(tx.hash, {
-                    transactionHash: tx.hash,
-                    from: owner,
-                    to: pins.relayAdapt,
-                    status: '0x1',
-                    blockHash,
-                    blockNumber,
-                    gasUsed: '0x493e0',
-                    logs: [
-                      {
-                        ...event,
-                        address: pins.proxy,
-                        transactionHash: tx.hash,
-                        blockHash,
-                        blockNumber,
-                        logIndex: '0x4',
-                        removed: false,
-                      },
-                    ],
-                  });
-                  nonce++;
-                  lastHash = tx.hash;
-                  report.simulatedSubmissions++;
-                  if (loseResponse) throw Error('Controlled lost broadcast response');
-                  result = tx.hash;
-                  break;
+              try {
+                const context = getPrivacyContext(handle);
+                if (offline) {
+                  assert.equal(url, rpcUrl);
+                  assert.equal(options.method, 'POST');
+                  assert.equal(options.signal.aborted, false);
                 }
-                default:
-                  throw Error('Unexpected simulated funding method');
+                if (context.subject.kind === 'private-account') {
+                  if (!offline) return actual.request(handle, url, options);
+                  assert.equal(context.subject.role, 'protocol-rpc');
+                  const call = JSON.parse(options.body);
+                  return {
+                    status: 200,
+                    body: Buffer.from(
+                      JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: call.id,
+                        result: deployment.request(call),
+                      })
+                    ),
+                  };
+                }
+                // A strict branch ensures public signing/broadcast never touches actual.
+                assert.equal(context.subject.kind, 'public-address');
+                assert.equal(context.subject.principal, owner);
+                assert.equal(context.subject.role, 'transaction-rpc');
+                const call = JSON.parse(options.body);
+                const blockHash = '0x' + 'b'.repeat(64),
+                  blockNumber = '0x10';
+                let result;
+                switch (call.method) {
+                  case 'eth_chainId':
+                    result = '0xaa36a7';
+                    break;
+                  case 'eth_gasPrice':
+                    result = '0x64';
+                    break;
+                  case 'eth_getCode':
+                    result = '0x';
+                    break;
+                  case 'eth_estimateGas':
+                    result = '0x493e0';
+                    break;
+                  case 'eth_call':
+                    result = '0x';
+                    break;
+                  case 'eth_getBalance':
+                    result = '0xde0b6b3a7640000';
+                    break;
+                  case 'eth_getTransactionCount':
+                    result = '0x' + nonce.toString(16);
+                    break;
+                  case 'eth_blockNumber':
+                    result = '0x12';
+                    break;
+                  case 'eth_getBlockByNumber':
+                    result = {
+                      number: blockNumber,
+                      hash: blockHash,
+                      transactions: [...transactions.keys()],
+                    };
+                    break;
+                  case 'eth_getTransactionByHash':
+                    result = transactions.get(call.params[0]) ?? null;
+                    break;
+                  case 'eth_getTransactionReceipt':
+                    result = receipts.get(call.params[0]) ?? null;
+                    break;
+                  case 'eth_sendRawTransaction': {
+                    const tx = Transaction.from(call.params[0]);
+                    assert.equal(tx.from.toLowerCase(), owner);
+                    assert.equal(tx.nonce, nonce);
+                    assert.equal(tx.chainId, 11155111n);
+                    assert.equal(tx.to.toLowerCase(), pins.relayAdapt);
+                    assert.equal(tx.value, 100000000000000n);
+                    assert.equal(tx.data, operation.prepared.data);
+                    assert.equal(tx.gasLimit, 500000n);
+                    const signedIntent =
+                      require('../src/main/wallet/private-transaction-intent').transactionIntent(
+                        'railgun-native-shield',
+                        { ...tx.toJSON(), from: owner }
+                      );
+                    assert.equal(signedIntent.digest, operation.intent.digest);
+                    const journal =
+                      require('../src/main/wallet/private-submission-journal').getPrivateSubmissionJournal(
+                        handle
+                      );
+                    const records = await journal.list(),
+                      record = records.find((r) => r.hash === tx.hash);
+                    assert.ok(
+                      record &&
+                        record.state === 'attempted' &&
+                        record.intent.kind === 'railgun-native-shield'
+                    );
+                    assert.ok(!JSON.stringify(records).includes(call.params[0]));
+                    assert.equal(record.intent.digest, signedIntent.digest);
+                    lastHash = tx.hash;
+                    report.simulatedAttempts++;
+                    if (dropBeforeAcceptance) throw loseAcknowledgement();
+                    const [, calls] = abi.decodeFunctionData('multicall', tx.data),
+                      [notes] = abi.decodeFunctionData('shield', calls[1].data);
+                    const note = notes[0],
+                      net = BigInt(record.intent.noteValue);
+                    const event = abi.encodeEventLog('Shield', [
+                      0,
+                      nonce,
+                      [[note.preimage.npk, note.preimage.token, net]],
+                      [note.ciphertext],
+                      [tx.value - net],
+                    ]);
+                    transactions.set(tx.hash, {
+                      hash: tx.hash,
+                      from: owner,
+                      to: tx.to.toLowerCase(),
+                      chainId: '0xaa36a7',
+                      nonce: '0x' + nonce.toString(16),
+                      value: '0x' + tx.value.toString(16),
+                      input: tx.data,
+                      blockHash,
+                      blockNumber,
+                    });
+                    receipts.set(tx.hash, {
+                      transactionHash: tx.hash,
+                      from: owner,
+                      to: tx.to.toLowerCase(),
+                      status: '0x1',
+                      blockHash,
+                      blockNumber,
+                      gasUsed: '0x493e0',
+                      logs: [
+                        {
+                          ...event,
+                          address: pins.proxy,
+                          transactionHash: tx.hash,
+                          blockHash,
+                          blockNumber,
+                          logIndex: '0x4',
+                          removed: false,
+                        },
+                      ],
+                    });
+                    nonce++;
+                    lastHash = tx.hash;
+                    report.simulatedSubmissions++;
+                    if (loseResponse) throw loseAcknowledgement();
+                    result = tx.hash;
+                    break;
+                  }
+                  default:
+                    throw Error('Unexpected simulated funding method');
+                }
+                return {
+                  status: 200,
+                  body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id, result })),
+                };
+              } catch (error) {
+                if (offline && error[controlledFailure] !== true)
+                  report.unexpectedTransportFailures++;
+                throw error;
               }
-              return {
-                status: 200,
-                body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id, result })),
-              };
             },
           };
         },
       },
     };
-    for (const mode of ['acknowledged', 'lost-response', 'dropped']) {
+    for (const mode of [
+      'acknowledged',
+      'lost-response',
+      ...(offline ? ['review-cancelled'] : []),
+      'dropped',
+    ]) {
       stage = 'enroll';
       await vault.unlockVault(directory, password, 0);
       identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
@@ -299,16 +509,73 @@ async function main() {
         );
       stage = 'prepare';
       const started = performance.now();
-      operation =
-        await require('../src/main/wallet/railgun-shield-operation').openRailgunShieldOperation({
-          identity,
-          enrollment,
-          archive,
-          owner,
-          amount: '100000000000000',
-        });
+      operation = await within(openOperation(), 150000, 'QUALIFICATION_OPEN_PENDING');
       const preparedMs = performance.now() - started;
       stage = 'submit';
+      if (mode === 'review-cancelled') {
+        const before = { ...report.callbacks, attempts: report.simulatedAttempts };
+        let entered, releaseReview;
+        const entry = new Promise((resolve) => (entered = resolve));
+        const held = new Promise((resolve) => (releaseReview = resolve));
+        const submitted = operation
+          .submit({
+            signer,
+            gasLimit: 500000n,
+            maxGasFee: 1000000000000000n,
+            review: async () => {
+              report.callbacks.transactionReview++;
+              entered();
+              await held;
+              return true;
+            },
+          })
+          .then(
+            (value) => ({ value }),
+            (error) => ({ error })
+          );
+        try {
+          await within(entry);
+          let drained = false;
+          operation.closed.then(
+            () => {
+              drained = true;
+            },
+            () => {
+              drained = true;
+            }
+          );
+          operation.close();
+          const outcome = await within(submitted);
+          assert.equal(outcome.error?.code, 'RAILGUN_SHIELD_HANDOFF_REFUSED');
+          await new Promise(setImmediate);
+          assert.equal(drained, false, 'Original review must retain logical ownership');
+          assert.equal(report.callbacks.signTransaction, before.signTransaction);
+          assert.equal(report.simulatedAttempts, before.attempts);
+          releaseReview();
+          await within(operation.closed);
+          assert.equal(report.callbacks.signTransaction, before.signTransaction);
+          assert.equal(report.simulatedAttempts, before.attempts);
+          assert.equal(report.callbacks.transactionReview, before.transactionReview + 1);
+          report.runs.push({
+            mode,
+            preparedMs,
+            totalMs: performance.now() - started,
+            outwardCancellationBeforeOriginalReviewDrained: true,
+            closureRetainedThroughLateApproval: true,
+            signingAttempts: 0,
+            rawSendAttempts: 0,
+          });
+        } finally {
+          releaseReview();
+          operation.close();
+          await within(operation.closed, 30000, 'QUALIFICATION_CLEANUP_PENDING');
+        }
+        destinationOwner?.close();
+        enrollment.close();
+        identity.close();
+        vault.lockVault();
+        continue;
+      }
       loseResponse = mode === 'lost-response';
       dropBeforeAcceptance = mode === 'dropped';
       try {
@@ -317,6 +584,7 @@ async function main() {
           gasLimit: 500000n,
           maxGasFee: 1000000000000000n,
           review: async (request) => {
+            report.callbacks.transactionReview++;
             assert.equal(request.fundingAddressPublic, true);
             return true;
           },
@@ -329,14 +597,14 @@ async function main() {
         assert.equal(error.transactionHash, lastHash);
       }
       operation.close();
+      await within(operation.closed, 30000, 'QUALIFICATION_CLEANUP_PENDING');
+      destinationOwner?.close();
       enrollment.close();
       identity.close();
       vault.lockVault();
       stage = 'cold-recovery';
       await vault.unlockVault(directory, password, 0);
-      recovery = require('../src/main/wallet/railgun-shield-recovery').openRailgunShieldRecovery(
-        owner
-      );
+      recovery = openRecovery();
       const observed = await recovery.observe(lastHash);
       if (mode === 'dropped') {
         assert.equal(observed.record.observation.status, 'unknown');
@@ -357,14 +625,9 @@ async function main() {
           await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
             { identity, create: false }
           );
-        operation =
-          await require('../src/main/wallet/railgun-shield-operation').openRailgunShieldOperation({
-            identity,
-            enrollment,
-            archive,
-            owner,
-            amount: '100000000000000',
-          });
+        recovery.close();
+        await within(recovery.closed, 30000, 'QUALIFICATION_CLEANUP_PENDING');
+        operation = await within(openOperation(), 150000, 'QUALIFICATION_OPEN_PENDING');
         await assert.rejects(
           operation.submit({
             signer,
@@ -386,9 +649,12 @@ async function main() {
           nextSubmissionRefused: true,
         });
         operation.close();
+        await within(operation.closed, 30000, 'QUALIFICATION_CLEANUP_PENDING');
         enrollment.close();
         identity.close();
         recovery.close();
+        await within(recovery.closed, 30000, 'QUALIFICATION_CLEANUP_PENDING');
+        destinationOwner?.close();
         vault.lockVault();
         continue;
       }
@@ -403,11 +669,11 @@ async function main() {
       assert.equal(resolved.resolution.railgun.outcome, 'matched');
       const snapshot = resolved.resolution.railgun;
       recovery.close();
+      await within(recovery.closed, 30000, 'QUALIFICATION_CLEANUP_PENDING');
+      destinationOwner?.close();
       vault.lockVault();
       await vault.unlockVault(directory, password, 0);
-      recovery = require('../src/main/wallet/railgun-shield-recovery').openRailgunShieldRecovery(
-        owner
-      );
+      recovery = openRecovery();
       assert.deepEqual(
         (await recovery.list()).find((r) => r.hash === lastHash).resolution.railgun,
         snapshot
@@ -422,10 +688,15 @@ async function main() {
         durableOutcome: true,
       });
       recovery.close();
+      await within(recovery.closed, 30000, 'QUALIFICATION_CLEANUP_PENDING');
+      destinationOwner?.close();
       vault.lockVault();
     }
     assert.equal(report.simulatedSubmissions, 2);
     assert.equal(report.simulatedAttempts, 3);
+    assert.equal(report.callbacks.signTransaction, 3);
+    assert.equal(report.callbacks.transactionReview, offline ? 4 : 3);
+    assert.equal(report.unexpectedTransportFailures, 0);
     assert.deepEqual(hashes(), report.sourceSha256);
     report.passed = true;
   } catch (error) {
@@ -441,10 +712,21 @@ async function main() {
   } finally {
     operation?.close();
     recovery?.close();
+    const cleanup = await Promise.allSettled(
+      [operation?.closed, recovery?.closed].map((barrier) =>
+        within(barrier, 30000, 'QUALIFICATION_CLEANUP_PENDING')
+      )
+    );
+    if (cleanup.some((result) => result.status === 'rejected')) {
+      report.passed = false;
+      report.failure ??= { stage: 'cleanup', code: 'QUALIFICATION_CLEANUP_PENDING' };
+    }
+    destinationOwner?.close();
     enrollment?.close();
     identity?.close();
     vault.lockVault();
     if (client) await client.close();
+    if (offline) report.offlineDeployment = deployment.report();
     require.cache[torModule] = savedTor;
     require.cache[transportModule] = savedTransport;
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', {

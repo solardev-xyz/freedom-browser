@@ -1,6 +1,8 @@
 /** Restartable public-address recovery; preparation/receiver receipts play no
- * role after the encrypted submission journal has recorded an attempt.
+ * role after the encrypted submission journal has recorded an attempt. Closure
+ * waits for admitted work, not physical RPC transport/socket termination.
  */
+const { isProxy } = require('util').types;
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { openPrivacySession } = require('./privacy-session');
 const { getPrivateTransactionNetwork } = require('./private-transaction-network');
@@ -19,8 +21,27 @@ const fail = () =>
 const check = (value) => {
   if (!value) throw fail();
 };
-function openRailgunShieldRecovery(owner) {
+function openRailgunShieldRecovery(owner, options = {}) {
+  try {
+    return open(owner, options);
+  } catch {
+    throw fail();
+  }
+}
+function open(owner, options) {
   check(typeof owner === 'string' && /^0x[0-9a-f]{40}$/.test(owner) && BigInt(owner) > 0n);
+  check(options && !isProxy(options) && Object.getPrototypeOf(options) === Object.prototype);
+  check(
+    Reflect.ownKeys(options).every(
+      (key) =>
+        ['signal', 'destinationConstraint'].includes(key) &&
+        Object.hasOwn(Object.getOwnPropertyDescriptor(options, key), 'value')
+    )
+  );
+  const { signal, destinationConstraint } = options;
+  check(
+    signal === undefined || (!isProxy(signal) && signal instanceof AbortSignal && !signal.aborted)
+  );
   const parent = openPrivacySession();
   const subject = {
     kind: 'public-address',
@@ -31,7 +52,7 @@ function openRailgunShieldRecovery(owner) {
   const parentHandle = parent.getContext(subject);
   const scope = createPrivacyScope({
     profileId: getPrivacyContext(parentHandle).profileId,
-    signal: parent.signal,
+    signal: signal === undefined ? parent.signal : AbortSignal.any([parent.signal, signal]),
     isCurrent: () => {
       try {
         getPrivacyContext(parentHandle);
@@ -44,20 +65,89 @@ function openRailgunShieldRecovery(owner) {
   const handle = scope.getContext(subject);
   let network;
   try {
-    network = getPrivateTransactionNetwork(handle);
+    network = getPrivateTransactionNetwork(
+      handle,
+      ...(destinationConstraint === undefined ? [] : [{ destinationConstraint }])
+    );
   } catch (error) {
     scope.close();
     throw error;
   }
   let busy = false,
+    closed = false,
     currentHash = null,
+    currentPermit = null,
+    resolveClosed;
+  const pending = new Set(),
+    drained = new Promise((resolve) => (resolveClosed = resolve));
+  const finish = () => {
+    if (!closed || pending.size) return;
+    scope.signal.removeEventListener('abort', close);
+    network.signal.removeEventListener('abort', close);
+    resolveClosed();
+  };
+  function close() {
+    if (closed) return;
+    closed = true;
     currentPermit = null;
+    try {
+      scope.close();
+    } catch {
+      // Admission is already revoked; cleanup must remain nonthrowing.
+    }
+    finish();
+  }
+  const active = () => {
+    try {
+      check(!closed && !scope.signal.aborted);
+      network.assertActive();
+    } catch {
+      close();
+      throw fail();
+    }
+  };
+  const isCurrent = () => {
+    try {
+      active();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const admit = (use) => {
+    try {
+      active();
+    } catch {
+      return Promise.reject(fail());
+    }
+    let resolve, reject;
+    const work = new Promise((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    // Publish before invoking downstream code, which may close reentrantly.
+    pending.add(work);
+    const settled = () => {
+      pending.delete(work);
+      finish();
+    };
+    work.then(settled, settled);
+    try {
+      Promise.resolve(use()).then(resolve, () => reject(fail()));
+    } catch {
+      reject(fail());
+    }
+    return work;
+  };
+  scope.signal.addEventListener('abort', close, { once: true });
+  network.signal.addEventListener('abort', close, { once: true });
+  if (scope.signal.aborted || network.signal.aborted) close();
+  active();
   owners.set(handle, {
-    active: () => busy && !scope.signal.aborted,
+    active: () => busy && isCurrent(),
     hash: () => currentHash,
     permit: () => currentPermit,
   });
-  const active = () => network.assertActive();
   async function list() {
     active();
     const records = await network.listSubmissions();
@@ -76,6 +166,7 @@ function openRailgunShieldRecovery(owner) {
     const { result: transaction } = await network.request(11155111, 'eth_getTransactionByHash', [
       hash,
     ]);
+    active();
     const { result: receipt } = await network.request(11155111, 'eth_getTransactionReceipt', [
       hash,
     ]);
@@ -113,10 +204,13 @@ function openRailgunShieldRecovery(owner) {
       return value;
     };
     try {
+      // The network may already have persisted a resolution before its promise
+      // settles. Do not replace that successful durable outcome after closure.
       return await network.resolveSubmission(hash, {
         minimumConfirmations,
         reviewTimeoutMs,
         review: (request) => {
+          current();
           check(!callback);
           callback = (async () => {
             const before = await inspect(hash);
@@ -157,6 +251,7 @@ function openRailgunShieldRecovery(owner) {
               shield: after.shield,
             });
             check(validRailgunShieldResolution(details, after.record));
+            current();
             currentPermit = Object.freeze({});
             permits.set(currentPermit, {
               details,
@@ -164,7 +259,7 @@ function openRailgunShieldRecovery(owner) {
               nonce: after.record.nonce,
               hash,
               at: performance.now(),
-              active: () => attemptActive && busy && !scope.signal.aborted,
+              active: () => attemptActive && busy && isCurrent(),
             });
             return decision;
           })();
@@ -179,10 +274,11 @@ function openRailgunShieldRecovery(owner) {
     }
   }
   return Object.freeze({
-    list,
-    observe,
-    resolve,
-    close: () => scope.close(),
+    list: () => admit(list),
+    observe: (hash) => admit(() => observe(hash)),
+    resolve: (hash, options) => admit(() => resolve(hash, options)),
+    close,
+    closed: drained,
     signal: scope.signal,
   });
 }

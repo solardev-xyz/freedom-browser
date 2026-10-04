@@ -1,7 +1,10 @@
 # Railgun Kohaku public Shield implementation plan — October 4, 2026
 
-This is an **unimplemented plan**, not a public Shield capability or new runtime
-qualification. The current [Kohaku facade](../src/main/wallet/railgun-kohaku-plugin.js)
+The **public facade remains unimplemented**. The lower-level
+[Shield lifecycle prerequisites](railgun-shield-prerequisites-2026-10-04.md) now
+have focused and controlled native qualification; that is not yet a public Shield
+capability. The implementation gaps below describe the original plan, with those
+completed prerequisites called out. The current [Kohaku facade](../src/main/wallet/railgun-kohaku-plugin.js)
 offers read and private-operation modes. Its
 [private broadcaster](../src/main/wallet/railgun-kohaku-broadcaster.js) deliberately
 does not accept public Shield operations. Implementation stays in the existing
@@ -63,9 +66,9 @@ and mainnet are outside this slice.
 
 ## Required implementation gaps
 
-1. **Propagate reviewed destinations.** The Shield operation currently constructs
-   its deployment preflight and transaction network without the new destination
-   restrictions. Add optional caller lifetime and protocol/transaction constraints;
+1. **Propagate reviewed destinations — controllers implemented.** The Shield
+   operation and recovery now accept optional caller lifetime and genuine
+   destination constraints. The remaining facade must issue and own these;
    pass the protocol restriction through every permitted preflight attempt and
    permanently bind the transaction restriction to its transaction handle. The
    preflight already accepts `destinationConstraint`. Use the genuine
@@ -73,19 +76,19 @@ and mainnet are outside this slice.
    chain-ID, simulation, gas/nonce/balance and raw-send admission. Keep preview
    clients and restriction owners live until cleanup; never retry through an
    unrestricted replacement. Preserve existing unconstrained callers by default.
-2. **Complete host lifetime handling.** Preparation and receiver verification
-   currently lack caller-signal and explicit closure ownership; their broker and
-   cleanup patterns predate the newer sticky-refusal hardening. Add permanent
+2. **Complete host lifetime handling — implemented.** Preparation and receiver
+   verification now carry caller signals, bounded budgets and explicit closure
+   ownership. The qualified implementation adds permanent
    refusal, cancellation before further key/result admission, borrowed credential
    callback tracking, unconditional child-closure observation and sanitized
-   cleanup failures. Add operation-level `closed` for owned work and review/signer
+   cleanup failures. Operation-level `closed` observes owned work and review/signer
    callbacks. A child or callback that ignores cancellation retains ownership.
    Neither `rpc.release()` nor such a logical barrier proves physical socket drain.
-3. **Use the shared account phase.** An adopted
+3. **Use the shared account phase — hosts implemented, facade pending.** An adopted
    [account wallet](../src/main/wallet/railgun-account-wallet.js) already holds the
    [wallet phase](../src/main/wallet/railgun-account-phase.js). Close and await it
-   before Shield jobs; claim the shared phase for preparation and receiver
-   verification, retaining it through borrowed work and child closure. The gap
+   before Shield jobs. Preparation and receiver verification now claim the shared
+   recovery phase, retaining it through borrowed work and child closure. The gap
    between account closure and the new claim must use a genuine supported phase
    handoff or fail safely on contention, before starting Shield jobs; facade-local
    exclusion does not prevent an external controller from winning that claim.
@@ -122,10 +125,60 @@ Shield does not require input-note selection, a retained-source snapshot, POI
 services or private-spend proof machinery. Existing facade owner/currentness checks
 can remain without adding source-coordinator queries to this lane.
 
+## Facade implementation decisions after prerequisite review
+
+The planned API is `mode: 'public'` on the existing instance, with
+`prepareShield({ asset: { __type: 'native' }, amount }, ownInstanceId?)` and a
+separate `createRailgunKohakuPublicSubmitter(plugin).submit(operation)`. This is
+not implemented yet. Preserve read/private modes, require the engine archive and
+two reviewers, and reject private-prover/artifact configuration in public mode.
+
+Do not copy private preparation's pre-review `getSigner(0).getAddress()` call:
+the vault signer borrows its private key to derive that address. Read the public
+`identity-manager.getWalletRecord(0)` metadata instead, require a known mnemonic
+record with a stored address, and refuse absent metadata without deriving a
+fallback. Snapshot and recheck the index/type/address. Resolve the genuine signer
+only after approval, and let the existing Shield controller authenticate its
+address before signing. Test fixtures must establish real public wallet metadata;
+they must not patch this check away.
+
+For index 0, `getWalletRecord` may fall back to the stored
+`meta.addresses.userWallet` address and normalize a missing type to mnemonic;
+these metadata-only defaults are acceptable. No stored address means refusal.
+Use that snapshotted address as the transaction preview's principal and the
+controller's owner. Mint both destination restrictions for the entire outer public
+budget, covering review, token waiting and submission admission. Expiry during
+already-admitted work must preserve journal uncertainty and cleanup ownership.
+
+Retain the genuine wallet handoff through the original preparation-review
+callback and awaited account closure. The private lane currently releases its
+review handoff on approval; public Shield needs a distinct retention path. Release
+the handoff and immediately call `openRailgunShieldOperation` in the same turn,
+without an intervening await. Do not preclaim recovery in the facade or pass a
+wallet-handoff token to the recovery phase. The hosts claim their own phases;
+contention must cause refusal before a utility starts.
+
+Adopt any controller returned after cancellation and observe its `closed` before
+checking currentness. A failed opening may itself stay pending if cleanup cannot
+be attested. Outward cancellation must not release facade ownership while that
+original work remains. Start a nonrenewing public budget before preparation review
+and keep it through token waiting and submission; do not copy the private lane's
+timer clearing after preparation or its broadcasting exemption. A 120-second
+outer budget must not extend the controller's own, shorter remaining authority.
+
+Consume genuine public tokens synchronously before submission. Preserve the
+controller's acknowledged and journal-backed uncertain/unresolved outcomes without
+a later currentness check hiding them. Cleanup remains separate: an outcome may
+settle while the facade's closure still cannot. An unsubmitted Shield token has no
+private signed capsule, so do not mark it as private signing recovery merely
+because it expired. After the adopted account closes, balance/note reads must
+refuse until a refreshed account is adopted; resolving the public journal alone
+does not ingest the new private note.
+
 ## Fresh recovery review
 
-Extend the restart recovery entry point with optional caller lifetime and a reviewed
-transaction destination constraint. On restart, obtain a fresh genuine observation
+The restart recovery entry point now accepts optional caller lifetime and a reviewed
+transaction destination constraint. Its future facade must obtain a fresh genuine observation
 and review; do not deserialize old WeakMap tokens or treat a stored URL as authority.
 Keep recovery separate from operation preparation and do not silently reprepare or
 resubmit an uncertain transaction.
@@ -139,7 +192,7 @@ it must not claim a physical transport barrier that the underlying API lacks.
 
 ## Sequenced implementation and qualification
 
-1. Harden the two utility hosts and Shield operation lifetime/phase ownership;
+1. Completed in the prerequisite milestone: harden the two utility hosts and Shield operation lifetime/phase ownership;
    propagate constraints into operation and recovery while preserving legacy
    callers. Test malformed-then-valid broker traffic, late credential callbacks,
    cancellation, throwing cleanup, rejected closure and held child/review barriers.
@@ -152,22 +205,23 @@ it must not claim a physical transport barrier that the underlying API lacks.
    with zero signatures and raw sends at that boundary. Transaction-review denial
    must still leave signing and raw-send counts at zero; it cannot undo the
    already-approved simulation disclosures.
-3. Adapt the existing
+3. The existing
    [Shield submission qualifier](../scripts/qualify-railgun-shield-submission.js)
-   for an entirely offline run using disposable profiles and intercepted services.
-   **Do not run it unchanged for this slice:** it currently performs live
-   deployment RPC reads over Tor while simulating transaction RPC. Install
-   fail-closed interception for both protocol and transaction RPC before wallet
-   modules are imported, with no fallback to the real transport. Exercise real preparation,
-   receiver verification, signing and journal persistence; same-host/different-path
-   destination switches, hidden chain-ID and reentrant admission; uncertain send
-   acknowledgment; and cold journal reopen with fresh recovery review. Assert
-   journal-before-send, no automatic retry and ownership through outstanding work.
+   now has an entirely offline mode using disposable profiles and intercepted
+   services. Set `FREEDOM_RAILGUN_SHIELD_OFFLINE=1` and supply the pinned-bytecode
+   fixture; without this opt-in it still performs live deployment reads over Tor.
+   The prerequisite report qualifies real preparation, receiver verification,
+   deployment-check code, signing, journal-before-send, uncertain acknowledgment,
+   held-review cancellation and in-process recovery. Same-host/different-path
+   destination changes and reentrant admission are focused-test evidence. Extend
+   the native runner with the genuine public facade and both review boundaries;
+   the current report does not qualify that unimplemented composition.
 4. Run focused and relevant legacy tests, lint and the combined regression on the
    frozen implementation; inventory the exact native sources. Label mocked
    transport/service results separately from genuine utility, signing and encrypted
    journal evidence. Live or funded qualification is a separate decision, not
    authorized or performed by this plan.
 
-No implementation, runtime test or new compatibility claim is supplied by this
-document. Its validation is limited to source inspection and document formatting.
+This plan does not itself establish compatibility or runtime success. Completed
+prerequisite evidence is linked above; the public facade and its composed native
+qualification remain open.
