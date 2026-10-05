@@ -100,6 +100,7 @@ const sources = [
   'src/main/wallet/railgun-wallet-runner.js',
   'src/main/wallet/railgun-wallet-read.js',
   'src/main/wallet/railgun-kohaku-read.js',
+  'src/main/wallet/railgun-kohaku-read-data.js',
   'src/main/wallet/railgun-wallet-state.js',
   'scripts/fixtures/railgun-wallet-source.js',
   'scripts/railgun-wallet-snapshot-electron.js',

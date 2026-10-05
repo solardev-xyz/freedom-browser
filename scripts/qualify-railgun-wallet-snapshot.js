@@ -241,6 +241,7 @@ async function main() {
     'src/main/wallet/railgun-wallet-runner.js',
     'src/main/wallet/railgun-wallet-read.js',
     'src/main/wallet/railgun-kohaku-read.js',
+    'src/main/wallet/railgun-kohaku-read-data.js',
     'src/main/wallet/railgun-wallet-state.js',
     'src/main/wallet/railgun-wallet-scan.js',
     'src/main/wallet/railgun-wallet-records.js',

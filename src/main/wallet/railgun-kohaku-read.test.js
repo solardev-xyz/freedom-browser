@@ -74,3 +74,152 @@ test('malformed asset filters and includeSpent are refused', async () => {
   }
   await expect(view.notes(undefined, 'true')).rejects.toThrow();
 });
+
+function orderedFixture() {
+  const events = [];
+  let active = true;
+  const receipt = {},
+    journal = {};
+  const received = [Object.freeze({ asset, amount: 3n, spentTxid: false })];
+  const runner = {
+    genuine: true,
+    read: jest.fn((actualReceipt, actualJournal) => {
+      events.push('current');
+      expect(actualReceipt).toBe(receipt);
+      expect(actualJournal).toBe(journal);
+      if (!active) throw Error('stale');
+      return { instanceId: 'ordered', received, readiness: {} };
+    }),
+  };
+  const view = createRailgunKohakuRead({ runner, journal, receipt });
+  expect(events).toEqual(['current']);
+  events.length = 0;
+  runner.read.mockClear();
+  return {
+    view,
+    runner,
+    events,
+    received,
+    revoke: () => {
+      active = false;
+    },
+  };
+}
+
+test.each(['balance', 'notes'])(
+  '%s evaluates filter getters once in original order before current',
+  async (method) => {
+    const { view, events, runner, received } = orderedFixture();
+    const filteredAsset = {
+      __type: 'erc20',
+      get contract() {
+        events.push('contract');
+        return asset.contract;
+      },
+    };
+    const filters = [filteredAsset];
+    Object.defineProperty(filters, 'map', {
+      get() {
+        events.push('map');
+        return Array.prototype.map;
+      },
+    });
+    const result = await view[method](filters);
+    expect(events).toEqual(['map', 'contract', 'contract', 'contract', 'current']);
+    expect(runner.read).toHaveBeenCalledTimes(1);
+    expect(result[0].asset).toBe(asset);
+    if (method === 'notes') expect(result[0]).toBe(received[0]);
+  }
+);
+
+test.each(['balance', 'notes'])(
+  '%s drains the caller map iterable before consulting current evidence',
+  async (method) => {
+    const { view, events } = orderedFixture();
+    const filters = [];
+    filters.map = () => {
+      events.push('map');
+      return {
+        *[Symbol.iterator]() {
+          events.push('iterate');
+          yield 'erc20:' + asset.contract;
+          events.push('done');
+        },
+      };
+    };
+    expect(await view[method](filters)).toHaveLength(1);
+    expect(events).toEqual(['map', 'iterate', 'done', 'current']);
+  }
+);
+
+test.each(['getter', 'iterator'])(
+  'preserves exact %s exception and performs no authority read',
+  async (kind) => {
+    const { view, runner } = orderedFixture();
+    const failure = Error(kind);
+    const filters = [];
+    if (kind === 'getter')
+      Object.defineProperty(filters, 'map', {
+        get() {
+          throw failure;
+        },
+      });
+    else
+      filters.map = () => ({
+        [Symbol.iterator]() {
+          throw failure;
+        },
+      });
+    await expect(view.balance(filters)).rejects.toBe(failure);
+    await expect(view.notes(filters)).rejects.toBe(failure);
+    expect(runner.read).not.toHaveBeenCalled();
+  }
+);
+
+test('includeSpent validation precedes filter evaluation and malformed filters precede stale reads', async () => {
+  const { view, runner, revoke } = orderedFixture();
+  const map = jest.fn(() => {
+    throw Error('filter evaluated');
+  });
+  const filters = [];
+  filters.map = map;
+  await expect(view.notes(filters, 'true')).rejects.not.toThrow('filter evaluated');
+  expect(map).not.toHaveBeenCalled();
+  revoke();
+  await expect(view.balance(null)).rejects.not.toThrow('stale');
+  await expect(view.notes(null)).rejects.not.toThrow('stale');
+  expect(runner.read).not.toHaveBeenCalled();
+});
+
+test('revocation from filter evaluation is checked before projecting supplied evidence', async () => {
+  const { view, revoke, runner } = orderedFixture();
+  const filter = {
+    __type: 'erc20',
+    get contract() {
+      revoke();
+      return asset.contract;
+    },
+  };
+  await expect(view.balance([filter])).rejects.toThrow('stale');
+  expect(runner.read).toHaveBeenCalledTimes(1);
+});
+
+test('all successful methods consult current evidence exactly once per call', async () => {
+  const { view, runner } = orderedFixture();
+  for (const method of ['instanceId', 'balance', 'notes', 'status']) {
+    runner.read.mockClear();
+    await view[method]();
+    expect(runner.read).toHaveBeenCalledTimes(1);
+  }
+  expect(Object.keys(view)).toEqual(['instanceId', 'balance', 'notes', 'status']);
+  expect(Object.isFrozen(view)).toBe(true);
+});
+
+test('malformed custom map output refuses before currentness rather than silently matching nothing', async () => {
+  const { view, runner } = orderedFixture();
+  const filters = [];
+  filters.map = () => [1];
+  await expect(view.balance(filters)).rejects.toThrow();
+  await expect(view.notes(filters)).rejects.toThrow();
+  expect(runner.read).not.toHaveBeenCalled();
+});

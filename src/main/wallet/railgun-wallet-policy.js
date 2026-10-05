@@ -35,6 +35,7 @@ const sources = [
   'railgun-wallet-state',
   'railgun-wallet-read',
   'railgun-kohaku-read',
+  'railgun-kohaku-read-data',
   'railgun-wallet-storage',
   'railgun-remote',
   'railgun-frontier',
