@@ -7,6 +7,14 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [restricted completed-snapshot adapter](railgun-kohaku-snapshot-adapter-2026-10-05.md)
+now shares read behavior between an independent data host and a fixed borrowed-
+account Freedom bridge. Detached mutable results preserve the original facade's
+frozen API. All 510 focused tests pass with natural exit, strict full lint and
+six-file formatting pass. Independent review corrected non-enumerable asset
+copying before import. A focused genuine-account native probe is next; generic
+upstream Host, compiler conformance and live/private qualification remain open.
+
 The [internal read-dispatch extraction](railgun-kohaku-read-dispatch-2026-10-05.md)
 preserves fixed genuine-account capture, settlement checks and pending-read
 retention behind an unchanged facade. All 421 focused tests pass with natural
