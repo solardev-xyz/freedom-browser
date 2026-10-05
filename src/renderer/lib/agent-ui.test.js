@@ -297,6 +297,9 @@ function createAgentElements() {
   elements['agent-attach-files'] = createElement('button');
   elements['agent-attach-folder'] = createElement('button');
   elements['agent-attachment-contexts'] = createElement('div');
+  elements['agent-workspace-view'].appendChild(elements['agent-composer-wrap']);
+  elements['agent-composer-wrap'].appendChild(elements['agent-process-compact']);
+  elements['agent-composer-wrap'].appendChild(elements['agent-attachment-menu']);
   return elements;
 }
 
@@ -802,6 +805,26 @@ describe('Agent UI', () => {
     toggleAgent();
     expect(panel.classList.contains('collapsed')).toBe(false);
     expect(panel.dataset.presentation).toBe('column');
+  });
+
+  test('keeps Workspace above floating composer glass and restores its Agent-first placement', async () => {
+    const ctx = await loadAgentUi();
+    const view = ctx.elements['agent-workspace-view'];
+    const wrap = ctx.elements['agent-composer-wrap'];
+    const strip = ctx.elements['agent-process-compact'];
+    view.appendChild(wrap);
+    wrap.appendChild(strip);
+    wrap.appendChild(ctx.elements['agent-attachment-menu']);
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    expect(strip.parentNode).toBe(wrap);
+    ctx.emit({ type: 'run_started', runId: 'run_workspace', conversationId: 'workspace_test', userText: 'Build an app' });
+    expect(strip.parentNode).toBe(view);
+    expect(view.children.indexOf(strip)).toBeLessThan(view.children.indexOf(wrap));
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(strip.parentNode).toBe(wrap);
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(strip.parentNode).toBe(view);
+    expect(view.children.filter(child => child === strip)).toHaveLength(1);
   });
 
   test('keeps the scope explanation as help that follows the conversation and never lingers', async () => {

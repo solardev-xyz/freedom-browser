@@ -108,6 +108,7 @@
 .agent-floating[data-presentation='column'] .agent-loading-view,
 .agent-floating[data-presentation='column'] .agent-setup-view,
 .agent-floating[data-presentation='column'] .agent-workspace-body,
+.agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact,
 .agent-floating[data-presentation='column'] .agent-composer-wrap > * {
   transition: opacity 200ms ease;
 }
@@ -118,6 +119,7 @@
 .agent-floating.collapsed[data-presentation='column'] .agent-loading-view,
 .agent-floating.collapsed[data-presentation='column'] .agent-setup-view,
 .agent-floating.collapsed[data-presentation='column'] .agent-workspace-body,
+.agent-floating.collapsed[data-presentation='column'] .agent-workspace-view > .agent-process-compact,
 .agent-floating.collapsed[data-presentation='column'] .agent-composer-wrap > * {
   opacity: 0;
 }
@@ -679,6 +681,29 @@
 .agent-floating[data-presentation='column'] .agent-live-status {
   padding: 4px 10px;
   border-radius: 999px;
+}
+
+/* Workspace is a separate stationary strip above the composer glass. */
+.agent-floating[data-presentation='column'] .agent-workspace-view > .agent-process-compact {
+  flex: 0 0 auto;
+  z-index: 1;
+  width: auto;
+  margin: 0 10px 6px;
+  background: var(--agent-message-sheen), var(--agent-message-surface);
+  border: 1px solid var(--agent-bubble-border);
+  border-radius: 16px;
+  box-shadow: var(--agent-bubble-shadow);
+  pointer-events: auto;
+}
+
+.agent-floating[data-presentation='column'] .agent-process-compact-toggle {
+  min-height: 40px;
+  padding: 10px 14px;
+  border-radius: 16px;
+}
+
+.agent-floating[data-presentation='column'] .agent-process-compact-popover {
+  padding-bottom: 10px;
 }
 
 /* The composer stays its own stationary glass card. */

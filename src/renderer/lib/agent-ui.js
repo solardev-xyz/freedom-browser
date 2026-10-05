@@ -1541,8 +1541,21 @@ function syncFloatingPresentation() {
     floating && panelOpen && next === 'column'
   );
   placeRunHeader(floating && next === 'column' && agentView === 'workspace');
+  placeWorkspaceStrip(floating && next === 'column');
   if (moving) animateFloatingPresentation(previous, next, before);
   captureLauncherSnapshot();
+}
+
+// The floating glass belongs to the composer, not the Workspace strip. Keep
+// the real strip (including its inspector and handlers) above that surface;
+// Agent-first and the launcher retain the original composer-relative layout.
+function placeWorkspaceStrip(aboveComposer) {
+  const strip = elements.processCompact;
+  const composerWrap = elements.composerWrap;
+  if (!strip || !composerWrap) return;
+  const parent = aboveComposer ? composerWrap.parentNode : composerWrap;
+  const anchor = aboveComposer ? composerWrap : elements.attachmentMenu;
+  if (parent && strip.parentNode !== parent) parent.insertBefore(strip, anchor);
 }
 
 // The floating column folds the run status and New chat into its compact
