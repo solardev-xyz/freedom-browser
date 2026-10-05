@@ -11,7 +11,7 @@
 const { ipcMain, webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const registry = require('./network-registry');
-const chainCatalog = require('./chain-catalog');
+const chainCatalog = require('./chain-catalog-host');
 const tokenRegistry = require('../token-registry');
 const rpcManager = require('../wallet/rpc-manager');
 const { loadSettings } = require('../settings-store');

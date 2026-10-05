@@ -13,6 +13,9 @@ function registerShutdownSignalHandlers({
   app,
   logger = console,
   processTarget = process,
+  // Runs right before a forced exit: app.exit() skips every quit event, so
+  // anything still buffered (an async log file) has to be written here.
+  beforeForceExit = null,
 } = {}) {
   if (!app || typeof app.quit !== 'function') {
     throw new Error('Electron app with quit() is required for shutdown signal handling');
@@ -31,6 +34,13 @@ function registerShutdownSignalHandlers({
         'warn',
         `[App] Received ${signal} again; forcing shutdown with exit code ${exitCode}`
       );
+      if (typeof beforeForceExit === 'function') {
+        try {
+          beforeForceExit();
+        } catch {
+          // A failed flush must not stop the forced exit.
+        }
+      }
       if (typeof app.exit === 'function') {
         app.exit(exitCode);
       } else if (typeof processTarget.exit === 'function') {

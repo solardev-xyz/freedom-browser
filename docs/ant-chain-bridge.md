@@ -20,8 +20,10 @@ The bridge fixes the chain to Gnosis (100), accepts the eight methods Ant's
 chain module issues, and forwards the original params and JSON-RPC id. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
 → direct RPC), with one exception: `eth_getLogs` never reaches Colibri, for
-Ant or any other caller (the router's `COLIBRI_EXCLUDED_METHODS`). Colibri
-answers a range its RPC refuses with only the latest blocks' logs, marked
+Ant or any other caller (Colibri's entry in the router's
+`SOURCE_CAPABILITIES`, below). Colibri proves that each log it returns is real,
+not that none is missing, and the public Gnosis RPCs behind it cut a large log
+answer short without an error, so a partial answer would come back marked
 verified ([#496](https://github.com/solardev-xyz/freedom-browser/issues/496)).
 (Its verification used to run on the main thread too, where a wide log range
 froze the whole browser for 20-30 s; since
@@ -32,6 +34,56 @@ direct RPC. Ant's log scans go to the RPC quorum only (below). Ant's reads are
 background work: they use Myotis only when its single in-flight slot is idle
 and never queue for it, so the node's polling cannot push interactive
 wallet/app reads into queue-full fallback.
+
+### What each source can serve
+
+The router (`chain-data-router.js`) keeps one capability descriptor per read
+source, `SOURCE_CAPABILITIES`, and consults it before trying a source
+([#497](https://github.com/solardev-xyz/freedom-browser/issues/497)):
+
+| | Myotis | Colibri | RPC quorum | direct RPC |
+|---|---|---|---|---|
+| never serves | filters, `web3_*` | filters, `web3_*`, `eth_getLogs` | filters, `web3_*` | — |
+| `eth_getLogs` span | — | 10,000 (upstream; unused) | learned per endpoint | not tracked |
+| log answer may be cut short | — | yes | yes | yes |
+| cost | serialized | proof | fan-out | single |
+
+- **Methods.** A source that never serves a method is left out of that
+  request before routing starts, together with the caller's own
+  `excludeSources`; an error names both as `excluded for this request`.
+  `excludeSources` is caller policy (Ant's log scans ask the quorum only), the
+  descriptor is the source's capability. Filters (`eth_newFilter` and its
+  siblings) live on one node and `web3_*` answers describe one node, so only
+  direct RPC serves them. What depends on the request rather than the method
+  is still refused by the source's adapter and reported as that source's
+  failure: Myotis serves only the methods its addon version implements, at
+  `latest`, with the call fields it can honour.
+- **Limits.** The quorum asks a range-capped log scan only of endpoints whose
+  learned cap covers its span (below). Colibri's upstream cap is recorded but
+  not consulted while `eth_getLogs` stays off Colibri.
+- **Cost.** Myotis is serialized (one native read per chain at a time), so
+  background callers such as Ant take it only when idle and never queue.
+  Colibri verifies proofs in a worker thread with a bounded number in flight.
+- **Cut-short log answers.** For a source marked as possibly cutting a log
+  answer short, the router checks each `eth_getLogs` answer over a numeric
+  block range at least 2,000 blocks wide whose logs all fall in the last
+  1,000 blocks of the range: the shape #496 measured on 2026-10-04, where
+  `rpc.gnosischain.com` and `gateway.fm` both answered a query matching more
+  than ~50k logs with only the latest ~474 blocks' logs and no error. A
+  genuinely sparse answer looks the same (a wallet funded minutes ago, scanned
+  from the token's deployment), so the shape alone fails nothing: the same
+  source is asked once more for the blocks before the oldest returned log. Any
+  log there proves the first answer incomplete, and the request fails at once
+  with `-32005 query matched too many logs ...; narrow the block range`; no
+  later source is asked, since the RPCs behind it cut the answer the same way.
+  Ant ranks that as a range limit and halves its window until the answer is
+  complete. An empty or failed check accepts the answer as before. A range
+  ending at a tag (`latest`) is not checked: its end is unknown without
+  another request. The cut depends on how many logs match, not on the span, so
+  a window Ant halved after one such error is checked the same way; only a
+  range under 2,000 blocks goes unchecked, since all its logs fall in the last
+  1,000 blocks whether or not it was cut. A failed check is not counted
+  against the endpoints: it neither cools them down nor bounds their span.
 
 ### Log scans: the RPC quorum only, within each endpoint's range cap
 
@@ -221,7 +273,9 @@ endpoint-dependent, hang, success) plus arrival-order cases, the PR #419
 review findings that still apply, and the range caps, replaying the endpoint
 behaviour measured for #484 through Ant's halving. Each case asserts what Ant
 receives, whether Ant's needles match it, the elapsed time and which RPCs were
-asked. `ant-chain-bridge.router.test.js` runs the real router behind the real
+asked. Its `silent truncation (#496)` cases replay the measured cut-short answer
+through Ant's halving down to a complete one, and a recent-only sparse
+answer being accepted. `ant-chain-bridge.router.test.js` runs the real router behind the real
 bridge over loopback sockets with real timers for the same paths end to end
 (range limit, slow members inside the scan budget, a lone answer not
 settling a scan, a fourth endpoint joining, an endpoint-dependent error).

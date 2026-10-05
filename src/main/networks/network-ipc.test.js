@@ -45,7 +45,7 @@ function loadNetworkIpc(options = {}) {
     webContents: { getAllWebContents: jest.fn(() => [{ send }]) },
     extraMocks: {
       [require.resolve('./network-registry')]: () => registry,
-      [require.resolve('./chain-catalog')]: () => ({
+      [require.resolve('./chain-catalog-host')]: () => ({
         searchChains: jest.fn(),
         getCatalogChain: jest.fn(),
       }),

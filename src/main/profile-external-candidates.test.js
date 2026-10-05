@@ -252,9 +252,9 @@ describe('profile external candidates', () => {
     );
   });
 
-  test('defaults invalid combined choices to managed', () => {
+  test('defaults invalid combined choices to managed', async () => {
     const updateNodeConfig = jest.fn();
-    const decisions = applyExternalCandidateDecisions(
+    const decisions = await applyExternalCandidateDecisions(
       [
         {
           protocol: 'bee',

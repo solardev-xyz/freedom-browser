@@ -42,7 +42,7 @@ beforeEach(async () => {
     request: jest.fn().mockResolvedValue({ result: '0x12', source: 'myotis' }),
     broadcastRawTransaction: jest.fn().mockResolvedValue({ result: '0xhash', source: 'direct' }),
   };
-  log = { info: jest.fn(), warn: jest.fn() };
+  log = { info: jest.fn(), verbose: jest.fn(), warn: jest.fn() };
   bridge = await startAntChainBridge({ router, log });
 });
 afterEach(async () => {
@@ -60,7 +60,8 @@ test('routes exact Gnosis requests and unwraps result without promoting trust', 
   expect(
     (await post(bridge.url, rpc('eth_getLogs', [{ fromBlock: '0x1', toBlock: '0x2' }]))).body.result
   ).toEqual([]);
-  expect(log.info).toHaveBeenLastCalledWith('[Ant chain] eth_getLogs via direct');
+  expect(log.verbose).toHaveBeenLastCalledWith('[Ant chain] eth_getLogs via direct');
+  expect(log.info).not.toHaveBeenCalled();
 });
 
 test.each(

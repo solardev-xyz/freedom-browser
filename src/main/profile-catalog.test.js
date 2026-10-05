@@ -11,7 +11,11 @@ const {
   updateProfileNodeConfig,
   validateProfileDeletion,
   withCatalogWriteLock,
+  withCatalogWriteLockAsync,
+  waitForCatalogWriteLockIdle,
 } = require('./profile-catalog');
+const lockfile = require('proper-lockfile');
+const fsOffload = require('./fs-offload');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-profile-catalog-'));
@@ -119,6 +123,190 @@ describe('profile catalog', () => {
         child.kill('SIGKILL');
       }
     }
+  });
+
+  function isCatalogLockHeld(appRoot) {
+    const paths = getCatalogLockPaths(appRoot);
+    return lockfile.checkSync(paths.targetPath, {
+      lockfilePath: paths.lockDir,
+      realpath: false,
+      stale: 30000,
+    });
+  }
+
+  function deferred() {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  describe('withCatalogWriteLockAsync (#513)', () => {
+    test('holds the cross-process lock across awaits and releases it after', async () => {
+      const appRoot = track(makeTempDir());
+      const gate = deferred();
+      const running = withCatalogWriteLockAsync(appRoot, async () => {
+        await gate.promise;
+        return 'done';
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(isCatalogLockHeld(appRoot)).toBe(true);
+      gate.resolve();
+      await expect(running).resolves.toBe('done');
+      expect(isCatalogLockHeld(appRoot)).toBe(false);
+    });
+
+    test('releases the lock when the critical section throws', async () => {
+      const appRoot = track(makeTempDir());
+      await expect(
+        withCatalogWriteLockAsync(appRoot, async () => {
+          throw new Error('boom');
+        })
+      ).rejects.toThrow('boom');
+      expect(isCatalogLockHeld(appRoot)).toBe(false);
+      expect(withCatalogWriteLock(appRoot, () => 'next')).toBe('next');
+    });
+
+    test('serializes in-process async holders in call order', async () => {
+      const appRoot = track(makeTempDir());
+      const gate = deferred();
+      const order = [];
+      const first = withCatalogWriteLockAsync(appRoot, async () => {
+        order.push('first:start');
+        await gate.promise;
+        order.push('first:end');
+      }, { retries: 0 });
+      const second = withCatalogWriteLockAsync(appRoot, async () => {
+        order.push('second');
+      }, { retries: 0 });
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(order).toEqual(['first:start']);
+      gate.resolve();
+      await Promise.all([first, second]);
+      expect(order).toEqual(['first:start', 'first:end', 'second']);
+    });
+
+    // A sync caller retrying with Atomics.wait would block the event loop the
+    // async holder needs, so it must fail fast instead of sleeping out its
+    // whole retry budget.
+    test('fails a sync caller fast while an async holder is active', async () => {
+      const appRoot = track(makeTempDir());
+      const gate = deferred();
+      const running = withCatalogWriteLockAsync(appRoot, () => gate.promise);
+      await new Promise((r) => setTimeout(r, 20));
+
+      const startedAt = Date.now();
+      let caught;
+      try {
+        withCatalogWriteLock(appRoot, () => 'never', {
+          retries: { retries: 20, minTimeout: 100, maxTimeout: 100 },
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught?.code).toBe('ELOCKED');
+      expect(caught?.message).toMatch(/profile catalog is busy/);
+      expect(Date.now() - startedAt).toBeLessThan(100);
+
+      gate.resolve();
+      await running;
+      expect(withCatalogWriteLock(appRoot, () => 'after')).toBe('after');
+    });
+
+    // #517 R1-M1: short sync writers that must not fail on a transient busy
+    // catalog (Ant/Tor persisting a fallback port) wait for the async holder
+    // and its queue to drain, then their sync call goes straight through.
+    test('waitForCatalogWriteLockIdle resolves once async holders have drained', async () => {
+      const appRoot = track(makeTempDir());
+      expect(await waitForCatalogWriteLockIdle(appRoot)).toBeUndefined();
+
+      const gate1 = deferred();
+      const gate2 = deferred();
+      const firstStarted = deferred();
+      const first = withCatalogWriteLockAsync(appRoot, () => {
+        firstStarted.resolve();
+        return gate1.promise;
+      }, { retries: 0 });
+      const second = withCatalogWriteLockAsync(appRoot, () => gate2.promise, { retries: 0 });
+      await firstStarted.promise;
+
+      let idle = false;
+      const waiting = waitForCatalogWriteLockIdle(appRoot).then(() => {
+        idle = true;
+        // Same tick as the wait resolving: no fast-fail.
+        return withCatalogWriteLock(appRoot, () => 'written');
+      });
+      gate1.resolve();
+      await first;
+      await new Promise((r) => setTimeout(r, 20));
+      // Still queued behind the second holder.
+      expect(idle).toBe(false);
+      gate2.resolve();
+      await second;
+      await expect(waiting).resolves.toBe('written');
+
+      // A holder that is queued but has not acquired the lock yet counts too.
+      const gate3 = deferred();
+      const third = withCatalogWriteLockAsync(appRoot, () => gate3.promise, { retries: 0 });
+      let idleBeforeAcquire = false;
+      const waitingEarly = waitForCatalogWriteLockIdle(appRoot).then(() => {
+        idleBeforeAcquire = true;
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(idleBeforeAcquire).toBe(false);
+      gate3.resolve();
+      await third;
+      await waitingEarly;
+    });
+
+    test('waits (without blocking) for a concurrent cross-process writer', async () => {
+      const appRoot = track(makeTempDir());
+      const paths = getCatalogLockPaths(appRoot);
+      const readyPath = path.join(appRoot, 'holder-ready');
+      fs.writeFileSync(paths.targetPath, 'catalog lock target');
+
+      const holderScript = `
+        const lockfile = require(${JSON.stringify(require.resolve('proper-lockfile'))});
+        const fs = require('fs');
+        const [targetPath, lockDir, readyPath] = process.argv.slice(1);
+        const release = lockfile.lockSync(targetPath, {
+          lockfilePath: lockDir, realpath: false, stale: 30000, update: 10000,
+        });
+        fs.writeFileSync(readyPath, 'ready');
+        setTimeout(() => { release(); process.exit(0); }, 150);
+      `;
+      const child = spawn(process.execPath, ['-e', holderScript, paths.targetPath, paths.lockDir, readyPath], {
+        stdio: 'ignore',
+      });
+      let childExited = false;
+      // Listen up front: the child exits while we are still awaiting the lock.
+      const exited = waitForExit(child, 5000);
+
+      try {
+        await waitForPath(readyPath);
+        let ticks = 0;
+        const ticker = setInterval(() => {
+          ticks += 1;
+        }, 10);
+        const result = await withCatalogWriteLockAsync(appRoot, async () => 'acquired', {
+          retries: { retries: 20, minTimeout: 25, maxTimeout: 25 },
+        });
+        clearInterval(ticker);
+
+        expect(result).toBe('acquired');
+        // The event loop kept running while we waited out the other holder.
+        expect(ticks).toBeGreaterThan(3);
+        await expect(exited).resolves.toEqual({ code: 0, signal: null });
+        childExited = true;
+      } finally {
+        if (!childExited && !child.killed) {
+          child.kill('SIGKILL');
+        }
+      }
+    });
   });
 
   test('fills missing Bee P2P ports in existing profile metadata', () => {
@@ -361,7 +549,7 @@ describe('profile catalog', () => {
     expect(fs.existsSync(path.join(appRoot, 'profile-registry.json'))).toBe(false);
   });
 
-  test('deletes the short app-owned Radicle home with a profile', () => {
+  test('deletes the short app-owned Radicle home with a profile', async () => {
     const tempRoot = track(makeTempDir());
     const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
     const defaultProfileDir = path.join(appRoot, 'Profiles', 'default');
@@ -381,17 +569,85 @@ describe('profile catalog', () => {
     fs.mkdirSync(radicleDir, { recursive: true });
     fs.writeFileSync(path.join(radicleDir, 'node.db'), 'radicle');
 
-    deleteProfile(appRoot, 'work', 'Work', {
+    // #517 R1-M2: a staging copy an interrupted Radicle carry-over left next
+    // to this slot's home goes with it; a different slot's is untouched.
+    const staging = `${radicleDir}.migrating-4242-1700000000000`;
+    const otherSlotStaging = `${radicleDir}1.migrating-4242-1700000000000`;
+    for (const dir of [staging, otherSlotStaging]) {
+      fs.mkdirSync(path.join(dir, 'storage'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'storage', 'blob'), 'x');
+    }
+
+    await deleteProfile(appRoot, 'work', 'Work', {
       checkoutHash: 'abcdef12',
       dev: true,
     });
+    expect(fs.existsSync(staging)).toBe(false);
+    expect(fs.existsSync(otherSlotStaging)).toBe(true);
 
     expect(fs.existsSync(record.dir)).toBe(false);
     expect(fs.existsSync(radicleDir)).toBe(false);
   });
 
+  // #513: the deletes run off the main thread (fs-offload), but in the same
+  // order and still entirely under the cross-process catalog write lock.
+  test('deletes asynchronously, catalog first, then profile dir, then Radicle home, under the lock', async () => {
+    const tempRoot = track(makeTempDir());
+    const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+    const defaultProfileDir = path.join(appRoot, 'Profiles', 'default');
+    const options = { checkoutHash: 'abcdef12', defaultProfileDir, dev: true };
+    ensureProfile(appRoot, 'default', options);
+    const { record } = ensureProfile(appRoot, 'work', options);
+    const radicleDir = path.join(tempRoot, 'Freedom Dev', 'R', 'abcdef12', String(record.slot));
+    fs.mkdirSync(radicleDir, { recursive: true });
+    // Enough entries that a recursive delete takes many event-loop turns.
+    for (let i = 0; i < 400; i += 1) {
+      fs.writeFileSync(path.join(record.dir, `blob-${i}`), 'x');
+    }
+
+    const realRemovePath = fsOffload.removePath;
+    const calls = [];
+    const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation((target, opts) => {
+      calls.push({
+        target,
+        lockHeld: isCatalogLockHeld(appRoot),
+        catalogIds: loadCatalog(appRoot).profiles.map((p) => p.id),
+      });
+      return realRemovePath(target, opts);
+    });
+    const rmSyncSpy = jest.spyOn(fs, 'rmSync');
+
+    let immediates = 0;
+    let spinning = true;
+    const spin = () => {
+      if (!spinning) return;
+      immediates += 1;
+      setImmediate(spin);
+    };
+    setImmediate(spin);
+
+    try {
+      await deleteProfile(appRoot, 'work', 'Work', options);
+    } finally {
+      spinning = false;
+      rmSpy.mockRestore();
+      rmSyncSpy.mockRestore();
+    }
+
+    expect(rmSyncSpy).not.toHaveBeenCalled();
+    expect(calls.map((c) => c.target)).toEqual([path.resolve(record.dir), radicleDir]);
+    for (const call of calls) {
+      expect(call.lockHeld).toBe(true);
+      expect(call.catalogIds).toEqual(['default']);
+    }
+    expect(immediates).toBeGreaterThan(0);
+    expect(fs.existsSync(record.dir)).toBe(false);
+    expect(fs.existsSync(radicleDir)).toBe(false);
+    expect(isCatalogLockHeld(appRoot)).toBe(false);
+  });
+
   describe('deleting the default profile (#124)', () => {
-    test('dev layout: removes Profiles/default and its Radicle home, keeps the rest', () => {
+    test('dev layout: removes Profiles/default and its Radicle home, keeps the rest', async () => {
       const tempRoot = track(makeTempDir());
       const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
       const defaultProfileDir = path.join(appRoot, 'Profiles', 'default');
@@ -402,7 +658,7 @@ describe('profile catalog', () => {
       fs.mkdirSync(path.join(radicleRoot, '0'), { recursive: true });
       fs.mkdirSync(path.join(radicleRoot, String(workRecord.slot)), { recursive: true });
 
-      deleteProfile(appRoot, 'default', 'My Profile', { checkoutHash: 'abcdef12', dev: true });
+      await deleteProfile(appRoot, 'default', 'My Profile', { checkoutHash: 'abcdef12', dev: true });
 
       expect(fs.existsSync(defaultRecord.dir)).toBe(false);
       expect(fs.existsSync(path.join(radicleRoot, '0'))).toBe(false);
@@ -414,7 +670,7 @@ describe('profile catalog', () => {
     // A packaged build keeps the default profile in the app data root itself,
     // next to the catalog and every other profile — so it must be removed
     // entry by entry, never by deleting the root.
-    test('packaged layout: wipes the default profile out of the app data root only', () => {
+    test('packaged layout: wipes the default profile out of the app data root only', async () => {
       const appRoot = track(makeTempDir());
       ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
       const { record: workRecord } = ensureProfile(appRoot, 'work', {
@@ -438,7 +694,7 @@ describe('profile catalog', () => {
       const unregisteredDir = path.join(appRoot, 'Profiles', 'stray');
       fs.mkdirSync(unregisteredDir, { recursive: true });
 
-      deleteProfile(appRoot, 'default', 'My Profile');
+      await deleteProfile(appRoot, 'default', 'My Profile');
 
       for (const gone of ['identity-data', 'Cookies', 'profile-open', 'profile.json']) {
         expect(fs.existsSync(path.join(appRoot, gone))).toBe(false);
@@ -457,7 +713,7 @@ describe('profile catalog', () => {
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['work']);
     });
 
-    test('still refuses a non-default record that points at the app data root', () => {
+    test('still refuses a non-default record that points at the app data root', async () => {
       const appRoot = track(makeTempDir());
       ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
       ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
@@ -465,33 +721,33 @@ describe('profile catalog', () => {
       catalog.profiles.find((p) => p.id === 'work').dir = appRoot;
       saveCatalog(appRoot, catalog);
 
-      expect(() => deleteProfile(appRoot, 'work', 'Work')).toThrow(
+      await expect(deleteProfile(appRoot, 'work', 'Work')).rejects.toThrow(
         'Refusing to delete a profile outside the app data root'
       );
       expect(fs.existsSync(path.join(appRoot, 'profile.json'))).toBe(true);
     });
 
-    test('refuses the last remaining profile and removes nothing', () => {
+    test('refuses the last remaining profile and removes nothing', async () => {
       const appRoot = track(makeTempDir());
       ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
 
-      expect(() => deleteProfile(appRoot, 'default', 'My Profile')).toThrow(
+      await expect(deleteProfile(appRoot, 'default', 'My Profile')).rejects.toThrow(
         'The last remaining profile cannot be deleted'
       );
       expect(fs.existsSync(path.join(appRoot, 'profile.json'))).toBe(true);
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
     });
 
-    test('refuses a default profile that is currently open', () => {
+    test('refuses a default profile that is currently open', async () => {
       const appRoot = track(makeTempDir());
       ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
       ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
 
-      expect(() =>
+      await expect(
         deleteProfile(appRoot, 'default', 'My Profile', {
           isProfileLocked: (record) => record.id === 'default',
         })
-      ).toThrow('Profile is currently open: My Profile');
+      ).rejects.toThrow('Profile is currently open: My Profile');
       expect(fs.existsSync(path.join(appRoot, 'profile.json'))).toBe(true);
       expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
     });

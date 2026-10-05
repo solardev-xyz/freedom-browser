@@ -35,6 +35,7 @@ jest.mock('./profile-paths', () => ({
   createProfileTempDir: jest.fn(() =>
     require('fs').mkdtempSync(require('path').join(mockTempRoot, 'run-'))
   ),
+  prepareRadicleDataDir: jest.fn(async () => mockDataDir),
 }));
 jest.mock('https', () => ({
   request: jest.fn((_url, _opts, callback) => {
@@ -110,6 +111,9 @@ test('imports a GitHub checkout directly through libradicle', async () => {
     'Native project',
     'main'
   );
+  // The clone's temp dir is removed (asynchronously, #513) before the import
+  // resolves.
+  expect(fs.readdirSync(mockTempRoot)).toEqual([]);
 });
 
 test('does not report success or persist a bridge when native import returns an invalid RID', async () => {

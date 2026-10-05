@@ -1,0 +1,3 @@
+- Opening a large onchain (`web3://`) app no longer freezes the browser while its code is checked ([#515](https://github.com/solardev-xyz/freedom-browser/issues/515))
+  - An 8 MB app held every window for about a second; the check now runs in a background thread
+  - The first chain search in Settings → Chains also loads the chain catalogue in the background

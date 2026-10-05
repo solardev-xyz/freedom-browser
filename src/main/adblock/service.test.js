@@ -23,7 +23,20 @@ jest.mock('../settings-store', () => ({
 // exercises (the service catches the failure). Tests that need the Swarm
 // update layer point this at a fake userData dir.
 const mockElectron = { userData: null };
+const mockIpcMain = {
+  handlers: {},
+  listeners: {},
+  handle(channel, fn) {
+    this.handlers[channel] = fn;
+  },
+  on(channel, fn) {
+    this.listeners[channel] = fn;
+  },
+};
 jest.mock('electron', () => ({
+  get ipcMain() {
+    return mockIpcMain;
+  },
   get app() {
     if (!mockElectron.userData) throw new Error('electron unavailable');
     return { getPath: () => mockElectron.userData, isPackaged: false };
@@ -34,8 +47,12 @@ const dispatcherMock = require('../webrequest-dispatcher');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
 const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
 const { loadSettings } = require('../settings-store');
+const engineBuildHost = require('./engine-build-host');
+const IPC = require('../../shared/ipc-channels');
 const {
   installAdblockInterception,
+  registerAdblockIpc,
+  _setFirstEngineHoldForTests,
   adblockRequestForDispatch,
   getCosmeticFilters,
   getScriptlets,
@@ -425,22 +442,21 @@ describe('refreshEngine', () => {
   test('a slower earlier build cannot overwrite a newer one (settings race)', async () => {
     // Settings changes fire refreshEngine() without awaiting each other.
     // Build #1 sees cookies enabled and is made artificially slow (its
-    // cookies-list read blocks on a gate); build #2 sees them disabled
-    // again. However the two interleave, the engine must end up
-    // reflecting the newest settings: cookies not blocked. Caching is off
-    // so both builds really parse list text.
+    // worker build is held on a gate until it would otherwise be stale);
+    // build #2 sees them disabled again. However the two interleave, the
+    // engine must end up reflecting the newest settings: cookies not
+    // blocked. Caching is off so both builds really parse list text.
     _resetAdblockForTests();
     installAdblockInterception({ artifactsDir, cacheDir: null });
 
-    const realReadFile = fs.promises.readFile;
-    let releaseCookiesRead;
-    const gate = new Promise((resolve) => (releaseCookiesRead = resolve));
-    const readFileSpy = jest
-      .spyOn(fs.promises, 'readFile')
-      .mockImplementation(async (file, ...args) => {
-        if (String(file).includes('easylist-cookies')) await gate;
-        return realReadFile(file, ...args);
-      });
+    const realBuild = engineBuildHost.buildEngine;
+    let releaseCookiesBuild;
+    const gate = new Promise((resolve) => (releaseCookiesBuild = resolve));
+    const buildSpy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      const result = await realBuild(job);
+      if (job.lists.some((list) => list.category === 'cookies')) await gate;
+      return result;
+    });
 
     try {
       loadSettings.mockReturnValue({ ...DEFAULT_TEST_SETTINGS, adblockCookies: true });
@@ -451,10 +467,10 @@ describe('refreshEngine', () => {
 
       // Give any ungated build time to finish, then unblock the slow one.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      releaseCookiesRead();
+      releaseCookiesBuild();
       await Promise.all([first, second]);
     } finally {
-      readFileSpy.mockRestore();
+      buildSpy.mockRestore();
     }
 
     navigateTab(7, 'https://news.example/story');
@@ -678,6 +694,112 @@ describe('scriptlets', () => {
     fs.rmSync(dir, { recursive: true, force: true });
     if (cacheDir) fs.rmSync(cacheDir, { recursive: true, force: true });
     cacheDir = null;
+  });
+
+  // The first engine of a session builds in a worker (#512). Requests and
+  // scriptlet/cosmetic lookups arriving meanwhile used to queue behind the
+  // main-thread parse; they now wait for the engine instead of going through
+  // unfiltered. `firstBuild` holds the worker build on a gate.
+  function gateBuilds() {
+    const realBuild = engineBuildHost.buildEngine;
+    let open;
+    const gate = new Promise((resolve) => (open = resolve));
+    let markStarted;
+    const started = new Promise((resolve) => (markStarted = resolve));
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      markStarted();
+      const result = await realBuild(job);
+      await gate;
+      return result;
+    });
+    return { open, started, spy };
+  }
+
+  const askScriptlets = (url) => {
+    const event = { sender: { id: 9 } };
+    mockIpcMain.listeners[IPC.ADBLOCK_SCRIPTLETS](event, { url });
+    return event;
+  };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  test('during the first engine build, requests and lookups wait for the engine', async () => {
+    const build = gateBuilds();
+    try {
+      _resetAdblockForTests();
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null });
+      await build.started;
+      navigateTab(9, 'https://video.test/watch');
+
+      const held = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      expect(typeof held?.then).toBe('function');
+      const scriptlets = askScriptlets('https://video.test/watch');
+      const cosmetic = mockIpcMain.handlers[IPC.ADBLOCK_COSMETIC](
+        { sender: { id: 9 } },
+        { url: 'https://video.test/watch', initial: true }
+      );
+      await settle();
+      expect('returnValue' in scriptlets).toBe(false); // the frame is still blocked
+
+      build.open();
+      await expect(held).resolves.toEqual({ cancel: true });
+      await settle();
+      expect(run(scriptlets.returnValue.script).length).toBeGreaterThan(0);
+      await expect(cosmetic).resolves.toEqual(expect.objectContaining({ active: true }));
+    } finally {
+      build.open();
+      build.spy.mockRestore();
+    }
+  });
+
+  test('a rebuild over a live engine holds nothing: the old engine keeps answering', async () => {
+    const build = gateBuilds();
+    try {
+      const rebuilt = refreshEngine();
+      await build.started;
+      expect(
+        adblockRequestForDispatch(
+          makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+        )
+      ).toEqual({ cancel: true });
+      build.open();
+      await rebuilt;
+    } finally {
+      build.open();
+      build.spy.mockRestore();
+    }
+  });
+
+  test('the hold is bounded: a slow first build lets requests through unfiltered', async () => {
+    const build = gateBuilds();
+    try {
+      _resetAdblockForTests();
+      _setFirstEngineHoldForTests(30);
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null });
+      await build.started;
+      const held = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      const scriptlets = askScriptlets('https://video.test/watch');
+      await expect(held).resolves.toBe(null);
+      await settle();
+      expect(scriptlets.returnValue).toEqual({ script: '' });
+      // Once the hold has lapsed, later requests do not wait at all.
+      expect(adblockRequestForDispatch(makeDetails({ webContentsId: 9 }))).toBe(null);
+      build.open();
+      await refreshEngine();
+      expect(
+        adblockRequestForDispatch(
+          makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+        )
+      ).toEqual({ cancel: true });
+    } finally {
+      build.open();
+      build.spy.mockRestore();
+    }
   });
 
   test('returns runnable code for the frame host, trusted scriptlets included for uBlock lists', () => {

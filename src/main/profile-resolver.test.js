@@ -308,6 +308,107 @@ describe('profile resolver', () => {
     }
   });
 
+  // #517 R1-M1: Ant/Tor persist a fallback port mid-start; an in-process
+  // async catalog write (a profile deletion) must make them wait, not fail.
+  test('updateActiveProfileNodeConfigWhenIdle waits out an async catalog holder', async () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const {
+      initializeProfile,
+      updateActiveProfileNodeConfig,
+      updateActiveProfileNodeConfigWhenIdle,
+    } = require('./profile-resolver');
+    const { withCatalogWriteLockAsync } = require('./profile-catalog');
+    const profile = initializeProfile(app, {
+      argv: ['electron', '.', '--profile=work'],
+      env: {},
+      now: '2026-05-25T00:00:00.000Z',
+    });
+
+    let releaseHolder;
+    let holderStarted;
+    const started = new Promise((resolve) => {
+      holderStarted = resolve;
+    });
+    const holder = withCatalogWriteLockAsync(profile.appRoot, () => new Promise((resolve) => {
+      releaseHolder = resolve;
+      holderStarted();
+    }));
+    await started;
+
+    // The plain sync call fails fast while the holder is active...
+    expect(() => updateActiveProfileNodeConfig('tor', { socksPort: 9161 })).toThrow(
+      /profile catalog is busy/
+    );
+    // ...the idle-waiting one completes once it is done.
+    const waiting = updateActiveProfileNodeConfigWhenIdle('tor', { socksPort: 9161 });
+    await new Promise((r) => setTimeout(r, 20));
+    releaseHolder();
+    await holder;
+    const result = await waiting;
+    expect(result.metadata.nodes.tor.socksPort).toBe(9161);
+  });
+
+  // #517 R2-M1: a default-port external-candidate decision (Tor's
+  // checkDefaultExternalCandidate prompt) can be answered while a profile
+  // delete holds the catalog lock; applying it must wait, not throw.
+  test('applyExternalCandidateDecisions waits out an async catalog holder', async () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const { initializeProfile } = require('./profile-resolver');
+    const { withCatalogWriteLockAsync } = require('./profile-catalog');
+    const {
+      EXTERNAL_CANDIDATE_PROMPT_KEY,
+      applyExternalCandidateDecisions,
+    } = require('./profile-external-candidates');
+    const profile = initializeProfile(app, {
+      argv: ['electron', '.', '--profile=work'],
+      env: {},
+      now: '2026-05-25T00:00:00.000Z',
+    });
+
+    let releaseHolder;
+    let holderStarted;
+    const started = new Promise((resolve) => {
+      holderStarted = resolve;
+    });
+    const holder = withCatalogWriteLockAsync(profile.appRoot, () => new Promise((resolve) => {
+      releaseHolder = resolve;
+      holderStarted();
+    }));
+    await started;
+
+    let settled = false;
+    const applying = applyExternalCandidateDecisions(
+      [{
+        protocol: 'tor',
+        endpoints: ['socks5://127.0.0.1:9150'],
+        externalConfig: { mode: 'external', externalSocks: '127.0.0.1:9150' },
+      }],
+      { tor: 'external' },
+      { logger: { info: jest.fn() }, now: '2026-05-26T00:00:00.000Z' }
+    ).finally(() => {
+      settled = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+    releaseHolder();
+    await holder;
+    const decisions = await applying;
+
+    expect(decisions).toEqual([
+      expect.objectContaining({ protocol: 'tor', choice: 'external' }),
+    ]);
+    const metadata = JSON.parse(
+      fs.readFileSync(path.join(profile.userDataDir, 'profile.json'), 'utf-8')
+    );
+    expect(metadata.nodes.tor).toMatchObject({
+      mode: 'external',
+      externalSocks: '127.0.0.1:9150',
+      [EXTERNAL_CANDIDATE_PROMPT_KEY]: { choice: 'external' },
+    });
+  });
+
   test('persists active profile node updates to metadata and catalog', () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
@@ -346,7 +447,7 @@ describe('profile resolver', () => {
     expect(getActiveProfile().metadata.nodes.ipfs).toEqual(expectedIpfs);
   });
 
-  test('creates, lists, and renames catalog profiles for the active app root', () => {
+  test('creates, lists, and renames catalog profiles for the active app root', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const {
@@ -384,11 +485,11 @@ describe('profile resolver', () => {
     renameProfileForActiveApp('default', 'Personal');
     expect(getActiveProfile().displayName).toBe('Personal');
 
-    expect(() => deleteProfileForActiveApp('default', 'Personal')).toThrow(
+    await expect(deleteProfileForActiveApp('default', 'Personal')).rejects.toThrow(
       'The active profile cannot be deleted'
     );
 
-    deleteProfileForActiveApp('work-profile', 'Work');
+    await deleteProfileForActiveApp('work-profile', 'Work');
     expect(fs.existsSync(workDir)).toBe(false);
 
     const updatedCatalog = JSON.parse(
@@ -466,7 +567,7 @@ describe('profile resolver', () => {
     });
   });
 
-  test('refuses to delete a profile that is open in another process', () => {
+  test('refuses to delete a profile that is open in another process', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const {
@@ -489,7 +590,7 @@ describe('profile resolver', () => {
     });
 
     try {
-      expect(() => deleteProfileForActiveApp('work', 'Work')).toThrow(
+      await expect(deleteProfileForActiveApp('work', 'Work')).rejects.toThrow(
         'Profile is currently open: Work'
       );
     } finally {
@@ -497,7 +598,7 @@ describe('profile resolver', () => {
     }
   });
 
-  test('deletes dev Radicle short home through the active resolver path', () => {
+  test('deletes dev Radicle short home through the active resolver path', async () => {
     const appDataDir = track(makeTempDir());
     const repoRoot = track(makeRepoRoot());
     const app = createAppMock({
@@ -528,7 +629,7 @@ describe('profile resolver', () => {
     fs.mkdirSync(radicleDir, { recursive: true });
     fs.writeFileSync(path.join(radicleDir, 'radicle.pub'), 'old-radicle-identity');
 
-    deleteProfileForActiveApp('work', 'Work');
+    await deleteProfileForActiveApp('work', 'Work');
 
     expect(fs.existsSync(created.record.dir)).toBe(false);
     expect(fs.existsSync(radicleDir)).toBe(false);
@@ -536,7 +637,7 @@ describe('profile resolver', () => {
 
   // #124: once another profile exists, the default one can be deleted, and
   // nothing that used to assume it exists may bring it back.
-  test('deletes the packaged default profile from another profile and never resurrects it', () => {
+  test('deletes the packaged default profile from another profile and never resurrects it', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const {
@@ -557,7 +658,7 @@ describe('profile resolver', () => {
     });
     expect(work.id).toBe('work');
 
-    deleteProfileForActiveApp('default', 'My Profile');
+    await deleteProfileForActiveApp('default', 'My Profile');
 
     expect(fs.existsSync(path.join(userDataDir, 'Cookies'))).toBe(false);
     expect(fs.existsSync(path.join(userDataDir, 'profile.json'))).toBe(false);
@@ -583,7 +684,7 @@ describe('profile resolver', () => {
     expect(fs.existsSync(path.join(userDataDir, 'profile.json'))).toBe(false);
 
     // Now the only profile — it cannot be deleted in turn.
-    expect(() => deleteProfileForActiveApp('work', 'Work')).toThrow(
+    await expect(deleteProfileForActiveApp('work', 'Work')).rejects.toThrow(
       'The active profile cannot be deleted'
     );
   });
@@ -614,7 +715,7 @@ describe('profile resolver', () => {
     expect(loadCatalog(userDataDir).profiles.map((p) => p.id)).toEqual(['work']);
   });
 
-  test('an explicit --profile=default recreates a fresh default after deletion', () => {
+  test('an explicit --profile=default recreates a fresh default after deletion', async () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });
     const { deleteProfileForActiveApp, initializeProfile, resolveProfile } =
@@ -623,7 +724,7 @@ describe('profile resolver', () => {
     resolveProfile(app, { argv: ['electron', '.'], env: {} });
     fs.writeFileSync(path.join(userDataDir, 'Cookies'), 'old default data');
     initializeProfile(app, { argv: ['electron', '.', '--profile=work'], env: {} });
-    deleteProfileForActiveApp('default', 'My Profile');
+    await deleteProfileForActiveApp('default', 'My Profile');
 
     const relaunched = createAppMock({ isPackaged: true, userDataDir });
     const recreated = resolveProfile(relaunched, {

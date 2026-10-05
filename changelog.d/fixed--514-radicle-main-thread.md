@@ -1,0 +1,3 @@
+- Opening a large file or commit in a Radicle repository stalls the browser less, and Radicle work no longer holds up file and network lookups elsewhere ([#514](https://github.com/solardev-xyz/freedom-browser/issues/514))
+  - Files, folders, readmes and commits are passed to the page as the Radicle node returns them, instead of being decoded and re-encoded first
+  - Listing your repositories reads two at a time instead of all at once, and the browser keeps 16 threads for background file, network and Radicle work instead of 4

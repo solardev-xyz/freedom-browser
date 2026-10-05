@@ -305,6 +305,8 @@ function loadAntManagerModule(options = {}) {
         getActiveProfile: jest.fn(() => options.activeProfile || null),
         getReservedProfilePorts: jest.fn(() => new Set(options.reservedPorts || [])),
         updateActiveProfileNodeConfig,
+        updateActiveProfileNodeConfigWhenIdle: jest.fn(async (...args) =>
+          updateActiveProfileNodeConfig(...args)),
       }),
       [require.resolve('./service-registry')]: () => ({
         MODE: {

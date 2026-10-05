@@ -219,6 +219,24 @@ test('private window: badge, isolated partition, private start page, no wallet p
   expect(partition).toMatch(/^private-[0-9a-f-]{36}$/);
   expect(partition.startsWith('persist:')).toBe(false);
 
+  // #512: both answers come from the guest's command line (webview-boot.js),
+  // not from sync IPC on every page load. Count the old sync channels from
+  // here on; the provider checks below then prove the switch carried them.
+  await electronApp.evaluate(({ ipcMain }) => {
+    const channels = [
+      'private:is-private',
+      'internal:get-ethereum-inject-source',
+      'internal:get-pages',
+    ];
+    globalThis.__staticSyncCalls = [];
+    const emit = ipcMain.emit;
+    globalThis.__restoreIpcEmit = () => (ipcMain.emit = emit);
+    ipcMain.emit = function (channel, ...rest) {
+      if (channels.includes(channel)) globalThis.__staticSyncCalls.push(channel);
+      return emit.call(this, channel, ...rest);
+    };
+  });
+
   // Wallet providers are not injected in private windows…
   await navigateTo(priv, 'https://dapp.example');
   await waitForStubPage(priv, 'https://dapp.example/');
@@ -233,6 +251,31 @@ test('private window: badge, isolated partition, private start page, no wallet p
   expect(await evalInActiveWebview(window, 'typeof window.ethereum')).toBe('object');
   expect(await evalInActiveWebview(window, 'typeof window.swarm')).toBe('object');
   expect(await evalInActiveWebview(window, 'typeof window.radicle')).toBe('object');
+
+  // The EIP-6963 announcement carries Freedom's info and a uuid minted per
+  // page load (the preload builds it, as main used to per sync call).
+  const announce = `new Promise((resolve) => {
+    addEventListener('eip6963:announceProvider', (e) => resolve(JSON.stringify(e.detail.info)), { once: true });
+    dispatchEvent(new Event('eip6963:requestProvider'));
+  })`;
+  const first = JSON.parse(await evalInActiveWebview(window, announce));
+  expect(first).toEqual(
+    expect.objectContaining({
+      name: expect.any(String),
+      rdns: expect.any(String),
+      icon: expect.stringMatching(/^data:image\/png;base64,./),
+      uuid: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+    })
+  );
+  await navigateTo(window, 'https://dapp.example/?again');
+  await waitForStubPage(window, 'https://dapp.example/?again');
+  const second = JSON.parse(await evalInActiveWebview(window, announce));
+  expect(second.uuid).not.toBe(first.uuid);
+
+  expect(await electronApp.evaluate(() => globalThis.__staticSyncCalls)).toEqual([]);
+  await electronApp.evaluate(() => globalThis.__restoreIpcEmit());
 
   await closePrivateWindows(electronApp);
 });

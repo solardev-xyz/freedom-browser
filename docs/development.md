@@ -150,6 +150,7 @@ Useful debugging surfaces:
 - Inspect main-process output in the terminal.
 - Use the webview context menu to open Chromium Developer Tools.
 - Launch with `DEBUG=1 npm start` for verbose console logging.
+- Launch with `FREEDOM_LOG_SYNC=1` when chasing a main-thread hang or a native crash. The log file is written asynchronously by default (#511). Every `warn` and `error` line is still on disk, after everything logged before it, by the time the call that logged it returns, but the `info` lines logged since the last warning can still be queued when the main thread wedges or the process is force-quit, SIGKILLed or segfaults, and never reach the file. This setting writes every line before the next statement runs, as before #511, at a main-thread cost per line.
 - Search the log for `[main] event loop blocked`: the main process's watchdog (`src/main/event-loop-watchdog.js`) writes it when the main thread stalls for 1 s or more, naming any chain-data reads that were running (`chain-data: 100 eth_getLogs via colibri, 22675 ms`). Further stalls within 30 s are folded into one summary line, written once the 30 s pass or when the app quits. Fee quotes (`fee quote`) and transaction broadcasts (`eth_sendRawTransaction`) are named the same way as other chain-data reads; time the machine spends asleep is not reported.
 
 ## Development builds

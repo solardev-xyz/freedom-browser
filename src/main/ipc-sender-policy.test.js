@@ -357,9 +357,10 @@ describe('installation', () => {
     const index = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
     const install = index.indexOf('installIpcSenderPolicy(ipcMain');
     expect(install).toBeGreaterThan(0);
-    // The only require above the install is electron itself.
+    // The only requires above the install are electron itself and the
+    // threadpool sizing, which sets an env var and requires nothing.
     const before = index.slice(0, install);
     const requires = [...before.matchAll(/require\('([^']+)'\)/g)].map((m) => m[1]);
-    expect(requires).toEqual(['electron', './ipc-sender-policy']);
+    expect(requires).toEqual(['./uv-threadpool', 'electron', './ipc-sender-policy']);
   });
 });

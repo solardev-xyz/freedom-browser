@@ -121,7 +121,6 @@ test.describe('startup responsiveness (real nodes)', () => {
     const watchdogLines = log
       .split('\n')
       .filter((line) => line.includes('[main] event loop blocked'));
-    const antChainReads = log.split('\n').filter((line) => line.includes('[Ant chain]'));
 
     const rtts = samples.map((s) => s.rttMs).sort((a, b) => a - b);
     const worst = samples.reduce((a, b) => (b.rttMs > a.rttMs ? b : a), { rttMs: -1 });
@@ -134,7 +133,9 @@ test.describe('startup responsiveness (real nodes)', () => {
         (notable.length
           ? notable.map((s) => `${s.rttMs} ms @ +${(s.atMs / 1000).toFixed(1)} s`).join(', ')
           : 'none'),
-      `ant: mode ${ant?.mode ?? 'unknown'}, ${antChainReads.length} [Ant chain] reads logged`,
+      // No per-read count: `[Ant chain] <method> via <source>` is verbose since
+      // #511 and no longer reaches main.log.
+      `ant: mode ${ant?.mode ?? 'unknown'}`,
       `watchdog lines: ${watchdogLines.length ? '\n  ' + watchdogLines.join('\n  ') : 'none'}`,
     ].join('\n');
     console.log(`[startup-smoke]\n${report}`);

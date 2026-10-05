@@ -86,6 +86,24 @@ change. **Top Up Credit** passes the chosen amount as
 that the Nodes tab's switch stops saying "Not supported by this node version",
 flips without the node restarting, and that the deposit screen offers amounts.
 
+Publish setup also reads the bundled node's **log**, for one thing the API
+does not report (#510). Since v0.5.58, `/health.chainReady` no longer waits for
+the background batch rediscovery, so until antd logs `background batch
+rediscovery finished` an empty `GET /stamps` can just mean "not found yet" — on
+the first start of a wallet with history that was 15–25 min behind a
+range-capped RPC. `src/main/swarm/ant-rediscovery.js` watches the node's
+stdout/stderr for that line and for `postage batch rediscovery scan failed`
+(both copied from `crates/antd/src/main.rs` at v0.5.58), and the publish setup
+service holds its "Checking…" state instead of offering a plan until the
+first one arrives — unless the node wallet has never sent a transaction (its
+`eth_getTransactionCount` is 0, so there is nothing to rediscover), and for at
+most `REDISCOVERY_MAX_WAIT_MS` (30 min) after Freedom spawned the node. Reused and external nodes are not
+held: Freedom does not see their output. On every pin bump, grep the new
+release's `crates/antd/src/main.rs` for both strings; if either changed, update
+`ant-rediscovery.js`. The proper replacement is the `/health.walletScan` field
+planned upstream (#493) — once a pinned release has it, read that instead and
+delete the log matching (as of 2026-10-05, v0.5.58 has no such field).
+
 Ports matter when you are judging evidence:
 
 - A Freedom-managed profile gets its own port — base **11633** in packaged

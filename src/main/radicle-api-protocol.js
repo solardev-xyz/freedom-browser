@@ -40,6 +40,11 @@ const { registerWebRequestHandler } = require('./webrequest-dispatcher');
 const { runWithPrivateLogContext, redactForLog } = require('./private/private-log-context');
 
 const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
+// Repo metadata reads in flight at once for the `/api/v1/repos` listing.
+// Each is a libradicle call holding a libuv threadpool thread; an unbounded
+// fan-out over every seeded repo queues them all at once, and async fs,
+// dns.lookup, zlib and crypto across main wait behind the queue (#514).
+const REPO_LIST_CONCURRENCY = 2;
 const REVISION_RE = /^[0-9a-f]{40}$/;
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
@@ -81,12 +86,34 @@ function guardRadicleApiRequest(details) {
 }
 
 function json(body, status = 200, { cors = true } = {}) {
+  return jsonText(JSON.stringify(body), status, { cors });
+}
+
+// `text` is JSON already — the addon's own output, passed through as is.
+function jsonText(text, status = 200, { cors = true } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (cors) headers['Access-Control-Allow-Origin'] = '*';
-  return new Response(JSON.stringify(body), {
+  return new Response(text, {
     status,
     headers,
   });
+}
+
+/**
+ * `Promise.all(items.map(fn))` with at most `limit` calls of `fn` pending;
+ * results keep the input order, and the first rejection rejects the whole.
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 function withoutBody(response) {
@@ -193,6 +220,9 @@ async function serveRepoApi(
   // response should not advertise itself as readable by any origin either
   // (docs/security-audit-electron.md, O-12).
   const reply = (payload, status = 200) => json(payload, status, { cors: !allowPrivate });
+  // Blob, readme, tree and commit reads are forwarded as the addon's JSON
+  // text: a big file or diff is not parsed and re-stringified on main.
+  const replyText = (text) => jsonText(text, 200, { cors: !allowPrivate });
   if (!RID_RE.test(rid)) {
     return reply({ error: 'invalid RID' }, 400);
   }
@@ -215,14 +245,14 @@ async function serveRepoApi(
       switch (section) {
         case 'tree':
           response = REVISION_RE.test(revision || '')
-            ? reply(await embedded.treeAt(rid, revision, parts.slice(2).join('/')))
+            ? replyText(await embedded.treeAtRaw(rid, revision, parts.slice(2).join('/')))
             : reply({ error: 'missing revision' }, 400);
           break;
         case 'blob': {
           const blobPath = parts.slice(2).join('/');
           response =
             REVISION_RE.test(revision || '') && blobPath
-              ? reply(await embedded.blobAt(rid, revision, blobPath))
+              ? replyText(await embedded.blobAtRaw(rid, revision, blobPath))
               : reply({ error: 'missing path' }, 400);
           break;
         }
@@ -230,8 +260,8 @@ async function serveRepoApi(
           if (!REVISION_RE.test(revision || '')) {
             response = reply({ error: 'missing revision' }, 400);
           } else {
-            const readme = await embedded.readmeAt(rid, revision);
-            response = readme ? reply(readme) : reply({ error: 'no readme' }, 404);
+            const readme = await embedded.readmeAtRaw(rid, revision);
+            response = readme ? replyText(readme) : reply({ error: 'no readme' }, 404);
           }
           break;
         }
@@ -239,7 +269,7 @@ async function serveRepoApi(
           if (parts.length > 2) return reply({ error: 'invalid commit path' }, 400);
           if (revision) {
             response = REVISION_RE.test(revision)
-              ? reply(await embedded.commit(rid, revision))
+              ? replyText(await embedded.commitRaw(rid, revision))
               : reply({ error: 'invalid revision' }, 400);
           } else {
             const params =
@@ -251,7 +281,7 @@ async function serveRepoApi(
               response = reply({ error: 'missing parent revision' }, 400);
             } else {
               const { page, perPage } = pageParams(params);
-              response = reply(await embedded.commits(rid, parent, page, perPage));
+              response = replyText(await embedded.commitsRaw(rid, parent, page, perPage));
             }
           }
           break;
@@ -335,7 +365,9 @@ async function handleRadicleApiRequest(request) {
     try {
       const repos = await embedded.listRepos();
       const response = json(
-        await Promise.all(repos.map(({ rid }) => embedded.buildRepoMeta(rid))),
+        await mapWithConcurrency(repos, REPO_LIST_CONCURRENCY, ({ rid }) =>
+          embedded.buildRepoMeta(rid)
+        ),
         200,
         { cors: false }
       );
@@ -398,4 +430,6 @@ module.exports = {
   guardRadicleApiRequest,
   serveRepoApi,
   decodeRepoApiPath,
+  mapWithConcurrency,
+  REPO_LIST_CONCURRENCY,
 };

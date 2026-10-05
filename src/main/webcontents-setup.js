@@ -4,7 +4,12 @@ const { BrowserWindow, app } = require('electron');
 const { activeBzzBases } = require('./state');
 const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
 const { cleanupAdblockWebContents } = require('./adblock/service');
-const { isPrivateWebContents, getPartitionForWebContents } = require('./private/private-windows');
+const {
+  isPrivateWebContents,
+  isPrivatePartition,
+  getPartitionForWebContents,
+} = require('./private/private-windows');
+const { WEBVIEW_BOOT_SWITCH, buildWebviewBootSwitch } = require('./webview-boot');
 const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
 const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
@@ -150,6 +155,24 @@ function hardenWebviewPreferences(webPreferences) {
   delete webPreferences.preloadURL;
 }
 
+// The preload's per-load constants (webview-boot.js, #512) on the guest's
+// command line. Private is decided the way isPrivateWebContents decides it
+// for the guest — its window ever hosted a private session, or its partition
+// is a private one — and either one is enough (fails closed). Any switch of
+// the same name already in the list is dropped first: the embedder renderer
+// must not be able to hand the guest its own answer.
+function attachWebviewBoot(embedder, webPreferences, params) {
+  const partition = webPreferences.partition ?? params?.partition;
+  const isPrivate = isPrivateWebContents(embedder) || isPrivatePartition(partition);
+  const existing = Array.isArray(webPreferences.additionalArguments)
+    ? webPreferences.additionalArguments
+    : [];
+  webPreferences.additionalArguments = [
+    ...existing.filter((arg) => !String(arg).startsWith(WEBVIEW_BOOT_SWITCH)),
+    buildWebviewBootSwitch({ isPrivate }),
+  ];
+}
+
 // The chrome renderer (index.html) holds the full privileged preload API, so
 // its top frame must never leave index.html: a link or HTML file dropped on
 // the window outside a <webview>, or any scripted navigation, would otherwise
@@ -195,9 +218,10 @@ function registerWebContentsHandlers() {
     // example app turns this same flag on, because Electron only gives a
     // child frame's preload working IPC with it set; browsers and extensions
     // inject into every frame too (uBlock Origin's `all_frames`, Brave).
-    contents.on('will-attach-webview', (_event, webPreferences) => {
+    contents.on('will-attach-webview', (_event, webPreferences, params) => {
       hardenWebviewPreferences(webPreferences);
       webPreferences.nodeIntegrationInSubFrames = true;
+      if (webPreferences.preload) attachWebviewBoot(contents, webPreferences, params);
     });
 
     if (type === 'window') {

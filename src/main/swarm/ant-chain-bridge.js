@@ -391,7 +391,9 @@ async function startAntChainBridge({
       const source = ['myotis', 'colibri', 'quorum', 'direct'].includes(answer.source)
         ? answer.source
         : 'unknown';
-      log.info(`[Ant chain] ${method} via ${source}`);
+      // One line per Ant chain read (hundreds during a startup scan): verbose
+      // keeps it out of main.log (#511). Failures below stay at warn.
+      log.verbose(`[Ant chain] ${method} via ${source}`);
       send(res, 200, body);
     } catch (error) {
       if (!controller.signal.aborted) {
