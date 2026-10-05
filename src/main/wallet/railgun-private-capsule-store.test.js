@@ -403,7 +403,7 @@ test('tampered sequence and malformed nested data cannot reopen', async () => {
   await expect(open(false)).rejects.toThrow();
 });
 
-test('mixed structural capsule versions reopen without changing legacy records or granting a partial hold', async () => {
+test('mixed capsule versions use genuine reservation/signing receipts and recover without changing legacy records', async () => {
   const {
     createRailgunPartialCapsuleData,
   } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
@@ -412,44 +412,45 @@ test('mixed structural capsule versions reopen without changing legacy records o
     digestRailgunPrivateCapsule,
   } = require('./railgun-private-capsule');
   const s = await open();
-  const legacy = capsule();
-  const saved = await s.put(await hold(legacy), legacy, signing.gatesDigest);
+  const legacy = capsule(3);
+  const legacyHeld = await hold(legacy);
+  const saved = await s.put(legacyHeld, legacy, signing.gatesDigest);
   const legacyBytes = JSON.stringify(saved);
   const partial = createRailgunPartialCapsuleData().capsule;
   partial.walletId = options.walletId;
   const normalized = normalizeRailgunPrivateCapsule(partial);
-  // Production reservation admission deliberately remains full-only. This test
-  // seeds authenticated structural storage, not a genuine v2 signing record.
-  await expect(hold(partial)).rejects.toThrow();
-  expect(reservations.signal.aborted).toBe(false);
-  expect(floor).toBe(1);
+  const held = await hold(partial);
+  expect((await reservations.assertReceipt(held)).facts.kind).toBe('railgun-partial-unshield');
+  const partialEntry = await s.put(held, partial, signing.gatesDigest);
+  expect(partialEntry.capsule).toEqual(normalized);
+  expect(partialEntry.capsuleDigest).toBe(digestRailgunPrivateCapsule(normalized));
+  const signed = await s.markSigning(held, signing);
+  await expect(s.readSigned(signed)).rejects.toThrow();
+  // Signature/proof are structural data here. Actual controller C verification
+  // and spending-key authorization are qualified independently, not fabricated.
+  await s.saveSignature(signed, signature);
+  await s.saveProvedTransaction(signed, partial.preparation.transaction);
+  expect(floor).toBe(4);
+  expect(JSON.stringify(await s.get(saved.holdId))).toBe(legacyBytes);
+  const stored = await s.get(partialEntry.holdId);
+  expect(stored.signature).toEqual(signature);
+  expect(stored.provedTransaction).toEqual(partial.preparation.transaction);
   s.close();
-  const partialId = 'f'.repeat(64);
-  await createPrivacyStorage(options).update('railgun-private-capsules-v1', (text) => {
-    const value = JSON.parse(text);
-    expect(value.version).toBe(1);
-    expect(JSON.stringify(value.entries[0])).toBe(legacyBytes);
-    value.entries.push({
-      holdId: partialId,
-      factsDigest: 'd'.repeat(64),
-      authorizationDigest: signing.gatesDigest,
-      capsuleDigest: digestRailgunPrivateCapsule(normalized),
-      capsule: normalized,
-      signingDigest: null,
-      signature: null,
-      provedTransaction: null,
-    });
-    value.sequence++;
-    return JSON.stringify(value);
-  });
   const cold = await open(false);
   const beforeReads = fs.readFileSync(filename());
-  expect(await cold.inspect()).toEqual({ records: 2, signatures: 0, proofs: 0, capacity: 32 });
+  expect(await cold.inspect()).toEqual({ records: 2, signatures: 1, proofs: 1, capacity: 32 });
   expect(JSON.stringify(await cold.get(saved.holdId))).toBe(legacyBytes);
-  expect((await cold.get(partialId)).capsule).toEqual(normalized);
+  expect(await cold.get(partialEntry.holdId)).toEqual(stored);
+  let escaped;
+  await reservations.withSigningRecovery(async ([record]) => {
+    expect(record.entry.id).toBe(partialEntry.holdId);
+    escaped = record.receipt;
+    expect(await cold.readSigned(record.receipt)).toEqual(stored);
+  });
+  await expect(cold.readSigned(escaped)).rejects.toThrow();
   await expect(cold.readSigned({})).rejects.toThrow();
   expect(fs.readFileSync(filename())).toEqual(beforeReads);
-  expect(floor).toBe(2);
+  expect(floor).toBe(4);
   expect(cold.signal.aborted).toBe(false);
 });
 
@@ -565,3 +566,27 @@ test('a hold abandoned during capsule persistence cannot return a usable put res
   expect((await reservations.inspect()).abandoned).toBe(1);
   expect((await (await open(false)).inspect()).records).toBe(1);
 });
+
+test.each(['copied', 'foreign'])(
+  'partial capsule rejects %s reservation without any durable mutation',
+  async (mode) => {
+    const {
+      createRailgunPartialCapsuleData,
+    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+    const s = await open();
+    const legacy = capsule(3),
+      legacyReceipt = await hold(legacy);
+    await s.put(legacyReceipt, legacy, signing.gatesDigest);
+    const partial = createRailgunPartialCapsuleData().capsule;
+    partial.walletId = options.walletId;
+    const receipt = await hold(partial);
+    const bytes = fs.readFileSync(filename()),
+      minimum = floor;
+    await expect(
+      s.put(mode === 'copied' ? { ...receipt } : legacyReceipt, partial, signing.gatesDigest)
+    ).rejects.toThrow();
+    expect(fs.readFileSync(filename())).toEqual(bytes);
+    expect(floor).toBe(minimum);
+    expect(s.signal.aborted).toBe(true);
+  }
+);

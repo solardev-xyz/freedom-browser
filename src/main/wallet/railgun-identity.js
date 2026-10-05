@@ -217,7 +217,11 @@ async function signPrivateIntent({
     expected: Object.freeze({ ...expected }),
     expectedHash,
   });
-  assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(payload.expected.kind));
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      payload.expected.kind
+    )
+  );
   require('./railgun-private-intent').validateRailgunPrivateSigningIntent(
     payload.transaction,
     payload.expected

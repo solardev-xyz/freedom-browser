@@ -57,21 +57,50 @@ function normalizeRailgunPrivateVerification(value, { intent, transaction, expec
   guards(value.guards);
   return Object.freeze({ transactionDigest: checked.digest, verified: true });
 }
-function normalizeRailgunPrivateReceiver(value, { transaction, expected, recipient, amount }) {
+function normalizeRailgunPrivateReceiver(value, options) {
+  const { transaction, expected, recipient, amount, inputAmount } = options;
   const checked = validateRailgunPrivateSigningIntent(transaction, expected);
-  assert.equal(checked.kind, 'railgun-private-transfer');
-  shape(value, ['verified', 'transactionDigest', 'recipient', 'amount', 'guards', 'inventory']);
+  const partial = checked.kind === 'railgun-partial-unshield';
+  assert.ok(partial || checked.kind === 'railgun-private-transfer');
+  let amounts;
+  if (partial) {
+    for (const key of ['amount', 'unshieldAmount', 'changeAmount'])
+      assert.ok(!Object.hasOwn(options, key));
+    assert.match(inputAmount, /^[1-9][0-9]{0,16}$/);
+    const v = BigInt(inputAmount),
+      u = BigInt(checked.unshieldAmount);
+    assert.ok(
+      v <= BigInt(require('./railgun-shield-pins.json').maxQualificationAmount) && u > 0n && u < v
+    );
+    amounts = {
+      inputAmount,
+      unshieldAmount: checked.unshieldAmount,
+      changeAmount: (v - u).toString(),
+    };
+  } else {
+    assert.ok(!Object.hasOwn(options, 'inputAmount'));
+    amounts = { amount };
+  }
+  shape(value, [
+    'verified',
+    'transactionDigest',
+    'recipient',
+    ...Object.keys(amounts),
+    'guards',
+    'inventory',
+  ]);
   assert.equal(value.verified, true);
   assert.equal(value.transactionDigest, checked.digest);
   assert.equal(value.recipient, recipient);
-  assert.equal(value.amount, amount);
+  for (const [key, expectedValue] of Object.entries(amounts))
+    assert.equal(value[key], expectedValue);
   assert.equal(value.inventory, require('./railgun-engine-manifest.json').inventory.sha256);
   guards(value.guards);
   return Object.freeze({
     recipientVerified: true,
     transactionDigest: checked.digest,
     recipient,
-    amount,
+    ...amounts,
     inputOwnershipVerified: false,
     spendingEnabled: false,
   });

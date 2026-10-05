@@ -3,6 +3,7 @@
  * callers must use only the explicitly selected operation input and transport.
  */
 const { Interface } = require('ethers');
+const { isProxy } = require('util').types;
 const { getPrivacyContext, createPrivacyScope } = require('../networks/privacy-context');
 const { createPrivateRpc } = require('../networks/private-rpc');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
@@ -54,12 +55,30 @@ function selection(input) {
     minimumBlock: input.minimumBlock,
   });
 }
-function createRailgunPrivatePreflight({
-  enrollment,
-  input,
-  artifactDirectory,
-  destinationConstraint,
-}) {
+function createRailgunPrivatePreflight(options) {
+  check(options && !isProxy(options) && Object.getPrototypeOf(options) === Object.prototype);
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  const required = ['enrollment', 'input', 'artifactDirectory'];
+  const allowed = [...required, 'destinationConstraint', 'intentKind'];
+  check(required.every((key) => Object.hasOwn(descriptors, key)));
+  check(Reflect.ownKeys(descriptors).every((key) => allowed.includes(key)));
+  for (const descriptor of Object.values(descriptors))
+    check(Object.hasOwn(descriptor, 'value') && descriptor.enumerable);
+  const { enrollment, input, artifactDirectory, destinationConstraint, intentKind } = options;
+  check(
+    !Object.hasOwn(descriptors, 'intentKind') ||
+      ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+        intentKind
+      )
+  );
+  // Snapshot one closed circuit choice before any asynchronous deployment or
+  // artifact work; the same tuple selects local artifacts and the chain getter.
+  const partial = intentKind === 'railgun-partial-unshield';
+  const circuit = Object.freeze({
+    variant: partial ? '01x02' : '01x01',
+    inputs: 1,
+    outputs: partial ? 2 : 1,
+  });
   check(isRailgunAccountEnrollment(enrollment) && !enrollment.signal.aborted);
   const selected = selection(input);
   check(typeof artifactDirectory === 'string' && require('path').isAbsolute(artifactDirectory));
@@ -135,8 +154,11 @@ function createRailgunPrivatePreflight({
       artifacts = await loadRailgunArtifacts({
         handle: scope.getContext({ ...context.subject, role: 'artifacts' }),
         directory: artifactDirectory,
-        variant: '01x01',
+        variant: circuit.variant,
       });
+      active();
+      fresh();
+      check(artifacts.variant === circuit.variant, 'mismatch');
       const read = async (method, params, validate) => {
         active();
         fresh();
@@ -173,7 +195,13 @@ function createRailgunPrivatePreflight({
       step = 'verifier';
       const encoded = await read(
         'eth_call',
-        [{ to: pins.proxy, data: abi.encodeFunctionData('getVerificationKey', [1, 1]) }, block],
+        [
+          {
+            to: pins.proxy,
+            data: abi.encodeFunctionData('getVerificationKey', [circuit.inputs, circuit.outputs]),
+          },
+          block,
+        ],
         (v) => typeof v === 'string' && /^0x(?:[0-9a-f]{2})+$/.test(v) && v.length <= 32768
       );
       try {
@@ -211,6 +239,7 @@ function createRailgunPrivatePreflight({
         trust: 'unverified-rpc',
         ownershipVerified: false,
         signingEnabled: false,
+        ...(partial ? { intentKind: 'railgun-partial-unshield' } : {}),
       });
       const receipt = Object.freeze({});
       receipts.set(receipt, { serial, started, base: base.receipt, value });

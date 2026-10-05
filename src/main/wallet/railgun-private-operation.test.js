@@ -93,9 +93,16 @@ jest.mock('./railgun-identity', () => ({
 }));
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
 jest.mock('./railgun-private-receive', () => ({
-  verifyRailgunPrivateReceiver: async () => {
+  verifyRailgunPrivateReceiver: async (options) => {
+    mock.receiverOptions = options;
     mockStep('R');
-    return { transactionDigest: mock.offer.transactionDigest, recipientVerified: true };
+    await mock.receiverPause;
+    return (
+      mock.receiverValue ?? {
+        transactionDigest: mock.offer.transactionDigest,
+        recipientVerified: true,
+      }
+    );
   },
 }));
 jest.mock('./railgun-account-poi', () => ({
@@ -221,7 +228,8 @@ beforeEach(() => {
   mock.reservations = {
     signal: mock.scope.signal,
     assertAvailable: async () => mockStep('available'),
-    reserve: async () => {
+    reserve: async (facts) => {
+      mock.reservedFacts = facts;
       mockStep('reserve');
       return mock.held;
     },
@@ -409,13 +417,13 @@ function enableTransact() {
     }),
   };
 }
-test('partial-unshield structure cannot enter production signing before connected qualification', async () => {
+test('unknown operation kind refuses before owned reads', async () => {
   const owned = mock.owned;
   const readOwned = jest.fn(() => owned);
   Object.defineProperty(mock, 'owned', { get: readOwned });
   const result = await prove({
     ...options,
-    request: { ...options.request, kind: 'railgun-partial-unshield', unshieldAmount: '500' },
+    request: { ...options.request, kind: 'railgun-unknown', unshieldAmount: '500' },
   });
   expect(result).toEqual({ status: 'refused', stage: 'local' });
   expect(readOwned).not.toHaveBeenCalled();
@@ -1093,4 +1101,143 @@ test('forged protocol constraint refuses before owned-note POI and key', async (
   expect(result.status).toBe('refused');
   expect(mock.events).not.toContain('POI');
   expect(mock.events).not.toContain('key');
+});
+
+function enablePartial() {
+  mock.capsule =
+    require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData().capsule;
+  mock.capsule.engineSha256 = require('./railgun-engine-manifest.json').sha256;
+  mock.offer = normalizeRailgunPrivateOffer(mock.capsule.preparation, mock.capsule.selection);
+  mock.owner = mock.capsule.selection.recipient;
+  mock.identity.descriptor.walletId = mock.capsule.walletId;
+  mock.identity.descriptor.instanceId = '0zk1' + 'q'.repeat(123);
+  mock.data.selection = mock.capsule.selection;
+  const selected = mock.owned.ownedPoi[0];
+  selected.nullifier = mock.offer.expected.nullifier;
+  selected.hash = mock.capsule.noteHash;
+  mock.poiValue.input.nullifier = selected.nullifier;
+  mock.poiValue.input.noteHash = selected.hash;
+  mock.preflightValue.input.nullifier = selected.nullifier;
+  mock.preflightValue.input.merkleRoot = mock.offer.expected.merkleRoot;
+  mock.preflightValue.intentKind = 'railgun-partial-unshield';
+  mock.receiverValue = {
+    transactionDigest: mock.offer.transactionDigest,
+    recipientVerified: true,
+    recipient: mock.identity.descriptor.instanceId,
+    inputAmount: mock.offer.inputAmount,
+    unshieldAmount: mock.offer.unshieldAmount,
+    changeAmount: mock.offer.changeAmount,
+  };
+  options.request = {
+    kind: 'railgun-partial-unshield',
+    noteId: '0:1',
+    recipient: mock.owner,
+    unshieldAmount: mock.offer.unshieldAmount,
+  };
+}
+test.each(['Shield', 'Transact'])(
+  'partial %s input traverses real orchestration and existing durable key ordering',
+  async (type) => {
+    enablePartial();
+    if (type === 'Transact') enableTransact();
+    const result = await prove(options);
+    expect(result).toMatchObject({ status: 'proved', submissionEnabled: false });
+    expect(mock.receiverOptions).toMatchObject({
+      recipient: mock.identity.descriptor.instanceId,
+      inputAmount: '1000',
+      expected: mock.offer.expected,
+    });
+    expect(mock.receiverOptions).not.toHaveProperty('amount');
+    expect(mock.receiverOptions).not.toHaveProperty('changeAmount');
+    expect(mock.preflightOptions.intentKind).toBe('railgun-partial-unshield');
+    expect(mock.reservedFacts.kind).toBe('railgun-partial-unshield');
+    const order = [
+      'R',
+      'POI',
+      'preflight',
+      'reserve',
+      'put',
+      'mark',
+      'key',
+      'save-signature',
+      'A-proof',
+      'A-exit',
+      'C',
+      'save-proof',
+    ];
+    for (let i = 1; i < order.length; i++)
+      expect(mock.events.indexOf(order[i])).toBeGreaterThan(mock.events.indexOf(order[i - 1]));
+    expect(mock.events.filter((v) => v === 'key')).toHaveLength(1);
+    expect(mock.stored.capsule.version).toBe(2);
+  }
+);
+test.each([
+  'recipient',
+  'transactionDigest',
+  'inputAmount',
+  'unshieldAmount',
+  'changeAmount',
+  'recipientVerified',
+])('partial receiver %s mismatch refuses before POI, preflight or reservation', async (key) => {
+  enablePartial();
+  mock.receiverValue[key] = key === 'recipientVerified' ? false : 'changed';
+  expect(await prove(options)).toMatchObject({ status: 'refused', stage: 'receiver' });
+  for (const event of ['POI-open', 'preflight-open', 'reserve', 'key'])
+    expect(mock.events).not.toContain(event);
+});
+test('partial public recipient mismatch refuses before A or receive work', async () => {
+  enablePartial();
+  mock.owner = '0x' + '45'.repeat(20);
+  expect((await prove(options)).status).toBe('refused');
+  for (const event of ['A-start', 'R', 'POI-open', 'reserve', 'key'])
+    expect(mock.events).not.toContain(event);
+});
+test.each(['missing', 'wrong', 'late-missing', 'late-wrong', 'legacy-extra'])(
+  'preflight exact conditional kind guard refuses %s before reserve or key',
+  async (fault) => {
+    if (fault !== 'legacy-extra') enablePartial();
+    const change = () => {
+      if (fault.includes('missing')) delete mock.preflightValue.intentKind;
+      else mock.preflightValue.intentKind = 'railgun-private-transfer';
+    };
+    if (fault.startsWith('late'))
+      mock.onStep = (step) => {
+        if (step === 'B-validate') change();
+      };
+    else change();
+    expect((await prove(options)).status).toBe('refused');
+    expect(mock.events).not.toContain('reserve');
+    expect(mock.events).not.toContain('key');
+  }
+);
+test.each(['reserve', 'put', 'mark', 'save-signature', 'A-proof', 'C', 'save-proof'])(
+  'partial failure at %s preserves existing conservative durable semantics',
+  async (step) => {
+    enablePartial();
+    mock.failure = step;
+    const result = await prove(options);
+    expect(result.status).toBe(['reserve', 'put'].includes(step) ? 'refused' : 'signed-unfinished');
+    if (['mark', 'save-signature', 'A-proof', 'C', 'save-proof'].includes(step))
+      expect(mock.events).not.toContain('abandon');
+    expect(mock.events.filter((v) => v === 'key').length).toBeLessThanOrEqual(1);
+  }
+);
+
+test('partial cancellation while independent receive is pending drains it and admits no POI or key', async () => {
+  enablePartial();
+  let release;
+  mock.receiverPause = new Promise((resolve) => {
+    release = resolve;
+  });
+  let settled = false;
+  const work = prove(options).finally(() => {
+    settled = true;
+  });
+  while (!mock.events.includes('R')) await new Promise((resolve) => setImmediate(resolve));
+  mock.scope.close();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  release();
+  expect((await work).status).toBe('refused');
+  for (const event of ['POI-open', 'reserve', 'key']) expect(mock.events).not.toContain(event);
 });

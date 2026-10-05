@@ -1,4 +1,11 @@
-let mockIdentity, mockEnrollment, mockMode, mockExit, mockRelease, mockInput, mockCopy;
+let mockIdentity,
+  mockEnrollment,
+  mockMode,
+  mockExit,
+  mockRelease,
+  mockInput,
+  mockCopy,
+  mockCredential;
 const mockStart = jest.fn(),
   mockViewingKey = Buffer.alloc(32, 7);
 jest.mock('./railgun-process', () => ({ startRailgunProcess: (...args) => mockStart(...args) }));
@@ -8,8 +15,9 @@ jest.mock('./railgun-account-enrollment', () => ({
 }));
 jest.mock('./railgun-private-intent', () => ({
   validateRailgunPrivateSigningIntent: (tx, expected) => {
-    if (expected.kind !== 'railgun-private-transfer') throw Error('kind');
-    return { kind: expected.kind, digest: tx.data };
+    if (!['railgun-private-transfer', 'railgun-partial-unshield'].includes(expected.kind))
+      throw Error('kind');
+    return { ...expected, digest: tx.data };
   },
 }));
 jest.mock('./railgun-identity', () => ({
@@ -18,6 +26,7 @@ jest.mock('./railgun-identity', () => ({
     return v.descriptor;
   },
   withRailgunViewingCredential: async (_identity, use) => {
+    if (mockCredential) return mockCredential(use);
     mockCopy = use({ viewingKey: mockViewingKey });
     if (mockMode === 'late-key') {
       mockEnrollment.close();
@@ -30,7 +39,7 @@ const { verifyRailgunPrivateReceiver } = require('./railgun-private-receive');
 let args;
 beforeEach(() => {
   jest.clearAllMocks();
-  mockMode = mockExit = mockRelease = mockInput = mockCopy = undefined;
+  mockMode = mockExit = mockRelease = mockInput = mockCopy = mockCredential = undefined;
   const controller = new AbortController();
   mockIdentity = {
     signal: controller.signal,
@@ -80,7 +89,15 @@ beforeEach(() => {
         verified: true,
         transactionDigest: mockInput.transaction.data,
         recipient: mockInput.recipient,
-        amount: mockInput.amount,
+        ...(mockInput.expected.kind === 'railgun-partial-unshield'
+          ? {
+              inputAmount: mockInput.inputAmount,
+              unshieldAmount: mockInput.expected.unshieldAmount,
+              changeAmount: (
+                BigInt(mockInput.inputAmount) - BigInt(mockInput.expected.unshieldAmount)
+              ).toString(),
+            }
+          : { amount: mockInput.amount }),
         inventory: require('./railgun-engine-manifest.json').inventory.sha256,
         guards: { attempts: 0, canaries: 1, hooks: ['test.hook'] },
       };
@@ -159,4 +176,286 @@ test('cancellation and concurrent requests cannot bypass utility exit drain', as
   expect(settled).toBe(false);
   mockExit();
   await rejected;
+});
+
+const refused = {
+  code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED',
+  message: 'Railgun private receiver unavailable',
+};
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((a, b) => {
+    resolve = a;
+    reject = b;
+  });
+  return { promise, resolve, reject };
+};
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+const keyWire = JSON.stringify({ id: 1, method: 'key', purpose: 'private-receive' });
+function resultWire(input) {
+  return JSON.stringify({
+    id: 2,
+    method: 'result',
+    value: {
+      verified: true,
+      transactionDigest: input.transaction.data,
+      recipient: input.recipient,
+      ...(input.inputAmount
+        ? {
+            inputAmount: input.inputAmount,
+            unshieldAmount: input.expected.unshieldAmount,
+            changeAmount: (
+              BigInt(input.inputAmount) - BigInt(input.expected.unshieldAmount)
+            ).toString(),
+          }
+        : { amount: input.amount }),
+      inventory: require('./railgun-engine-manifest.json').inventory.sha256,
+      guards: { attempts: 0, canaries: 1, hooks: ['test.hook'] },
+    },
+  });
+}
+function partial() {
+  delete args.amount;
+  args.inputAmount = '1000';
+  args.expected = { kind: 'railgun-partial-unshield', unshieldAmount: '400' };
+}
+test('partial returns exact explicit triplet with unchanged authority flags', async () => {
+  partial();
+  const value = await verifyRailgunPrivateReceiver(args);
+  expect(value).toEqual({
+    recipientVerified: true,
+    transactionDigest: args.transaction.data,
+    recipient: 'self',
+    inputAmount: '1000',
+    unshieldAmount: '400',
+    changeAmount: '600',
+    inputOwnershipVerified: false,
+    spendingEnabled: false,
+  });
+  expect(Object.keys(mockInput)).toEqual([
+    'archive',
+    'descriptor',
+    'transaction',
+    'expected',
+    'recipient',
+    'inputAmount',
+  ]);
+  expect(Object.hasOwn(value, 'kind')).toBe(false);
+  expect(Object.isFrozen(value)).toBe(true);
+});
+test.each(['amount', 'changeAmount', 'unshieldAmount', 'zero', 'all', 'over-cap', 'noncanonical'])(
+  'partial %s refuses before utility and any credential',
+  async (mode) => {
+    partial();
+    if (['amount', 'changeAmount', 'unshieldAmount'].includes(mode)) args[mode] = '400';
+    if (mode === 'zero') args.expected.unshieldAmount = '0';
+    if (mode === 'all') args.expected.unshieldAmount = '1000';
+    if (mode === 'over-cap') args.inputAmount = '10000000000000001';
+    if (mode === 'noncanonical') args.inputAmount = '01000';
+    await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+    expect(mockStart).not.toHaveBeenCalled();
+  }
+);
+test.each([0, 31, 33, 'not-bytes'])(
+  'credential length/type %s refuses and cannot publish',
+  async (size) => {
+    mockCredential = (use) =>
+      use({ viewingKey: typeof size === 'number' ? Buffer.alloc(size, 7) : size });
+    await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+  }
+);
+test.each(['malformed-then-key', 'early-result', 'extra-after-result'])(
+  'sticky %s aborts synchronously and cannot be rescued',
+  async (mode) => {
+    const attempted = [];
+    let signal;
+    mockStart.mockImplementation(({ broker, input }) => {
+      signal = broker.signal;
+      const exit = deferred();
+      const ready = Promise.resolve().then(async () => {
+        const final = resultWire(JSON.parse(input));
+        if (mode === 'extra-after-result') {
+          await broker.dispatch(keyWire);
+          await broker.dispatch(final);
+        }
+        const bad =
+          mode === 'malformed-then-key'
+            ? '{'
+            : mode === 'early-result'
+              ? final
+              : JSON.stringify({ id: 3, method: 'result', value: {} });
+        const rejected = broker.dispatch(bad);
+        expect(signal.aborted).toBe(true);
+        await expect(rejected).rejects.toMatchObject(refused);
+        for (const wire of [keyWire, final])
+          await broker.dispatch(wire).then(
+            () => attempted.push('rescued'),
+            (e) => expect(e).toMatchObject(refused)
+          );
+      });
+      return {
+        ready,
+        closed: exit.promise,
+        close: () => exit.resolve({ code: 'RAILGUN_PROCESS_CLOSED' }),
+      };
+    });
+    await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+    expect(attempted).toEqual([]);
+    expect(signal.aborted).toBe(true);
+    if (mockCopy) expect(mockCopy.equals(Buffer.alloc(32))).toBe(true);
+  }
+);
+test.each([
+  'cancel-before-copy',
+  'cancel-after-copy',
+  'malformed-during-loan',
+  'early-result-during-loan',
+])('%s retains identity until borrowed credential drains after child exit', async (mode) => {
+  const gate = deferred(),
+    entered = deferred(),
+    exit = deferred();
+  let broker, loan, key;
+  const abort = new AbortController();
+  args.signal = abort.signal;
+  mockCredential = async (use) => {
+    if (mode === 'cancel-after-copy') key = use({ viewingKey: mockViewingKey });
+    entered.resolve();
+    await gate.promise;
+    return mode === 'cancel-after-copy' ? key : use({ viewingKey: mockViewingKey });
+  };
+  mockStart.mockImplementation((v) => {
+    broker = v.broker;
+    return {
+      ready: Promise.resolve().then(() => {
+        loan = broker.dispatch(keyWire);
+        loan.catch(() => {});
+        return entered.promise;
+      }),
+      closed: exit.promise,
+      close: () => exit.resolve({ code: 'RAILGUN_PROCESS_CLOSED' }),
+    };
+  });
+  let settled = false;
+  const work = verifyRailgunPrivateReceiver(args).finally(() => {
+    settled = true;
+  });
+  const failure = expect(work).rejects.toMatchObject(refused);
+  await entered.promise;
+  if (mode.startsWith('cancel')) abort.abort();
+  else
+    await expect(
+      broker.dispatch(
+        mode === 'malformed-during-loan'
+          ? '{'
+          : resultWire({ transaction: args.transaction, recipient: 'self', amount: '1000' })
+      )
+    ).rejects.toMatchObject(refused);
+  await turn();
+  expect(settled).toBe(false);
+  expect(broker.signal.aborted).toBe(true);
+  await expect(verifyRailgunPrivateReceiver({ ...args, signal: undefined })).rejects.toMatchObject(
+    refused
+  );
+  expect(mockStart).toHaveBeenCalledTimes(1);
+  gate.resolve();
+  await failure;
+  await expect(loan).rejects.toMatchObject(refused);
+  if (key) expect(key.equals(Buffer.alloc(32))).toBe(true);
+  expect(mockViewingKey[0]).toBe(7);
+});
+test.each(['success-close', 'abort-listener-close'])(
+  'throwing %s still awaits the child exit and refuses without uncaught close',
+  async (mode) => {
+    const exit = deferred(),
+      entered = deferred();
+    let close;
+    const abort = new AbortController();
+    args.signal = abort.signal;
+    mockStart.mockImplementation(({ broker, input }) => {
+      close = jest.fn(() => {
+        entered.resolve();
+        throw Error('close detail');
+      });
+      return {
+        ready: Promise.resolve().then(async () => {
+          await broker.dispatch(keyWire);
+          await broker.dispatch(resultWire(JSON.parse(input)));
+          if (mode === 'abort-listener-close') abort.abort();
+        }),
+        closed: exit.promise,
+        close,
+      };
+    });
+    let settled = false;
+    const work = verifyRailgunPrivateReceiver(args).finally(() => {
+      settled = true;
+    });
+    const failure = expect(work).rejects.toMatchObject(refused);
+    await entered.promise;
+    await turn();
+    expect(settled).toBe(false);
+    expect(close).toHaveBeenCalledTimes(1);
+    exit.resolve({ code: 'RAILGUN_PROCESS_CLOSED' });
+    await failure;
+    expect(mockCopy.equals(Buffer.alloc(32))).toBe(true);
+  }
+);
+test('late synchronous startup abort still closes returned child and awaits it', async () => {
+  const abort = new AbortController(),
+    exit = deferred();
+  args.signal = abort.signal;
+  const close = jest.fn();
+  mockStart.mockImplementation(() => {
+    abort.abort();
+    return { ready: Promise.resolve(), closed: exit.promise, close };
+  });
+  let settled = false;
+  const work = verifyRailgunPrivateReceiver(args).finally(() => {
+    settled = true;
+  });
+  const failure = expect(work).rejects.toMatchObject(refused);
+  await turn();
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(settled).toBe(false);
+  exit.resolve({ code: 'RAILGUN_PROCESS_CLOSED' });
+  await failure;
+});
+test('monotonic expiry before timer dispatch refuses after delayed normal child exit', async () => {
+  let now = 1000;
+  const spy = jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const exit = deferred(),
+    closed = deferred();
+  mockStart.mockImplementation(({ broker, input }) => ({
+    ready: Promise.resolve().then(async () => {
+      await broker.dispatch(keyWire);
+      await broker.dispatch(resultWire(JSON.parse(input)));
+    }),
+    closed: exit.promise,
+    close: () => closed.resolve(),
+  }));
+  try {
+    const work = verifyRailgunPrivateReceiver(args);
+    const failure = expect(work).rejects.toMatchObject(refused);
+    await closed.promise;
+    now += 60000;
+    exit.resolve({ code: 'RAILGUN_PROCESS_CLOSED' });
+    await failure;
+  } finally {
+    spy.mockRestore();
+  }
+});
+test('rejected child barrier returns no result and does not release identity exclusion', async () => {
+  const exit = deferred();
+  exit.promise.catch(() => {});
+  mockStart.mockImplementation(({ broker, input }) => ({
+    ready: Promise.resolve().then(async () => {
+      await broker.dispatch(keyWire);
+      await broker.dispatch(resultWire(JSON.parse(input)));
+    }),
+    closed: exit.promise,
+    close: () => exit.reject(Error('unknown exit')),
+  }));
+  await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+  await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+  expect(mockStart).toHaveBeenCalledTimes(1);
 });

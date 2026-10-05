@@ -517,3 +517,53 @@ test('availability checks are local and repeatable, never a reservation grant', 
   await s.abandon(receipt);
   await s.assertAvailable(selected);
 });
+
+test('partial holds share encrypted v2 durability, nullifier exclusion and cold signing recovery with legacy entries', async () => {
+  const s = await open();
+  const legacy = await s.reserve(input());
+  const legacyEntry = await s.assertReceipt(legacy);
+  const facts = { ...input(2), kind: 'railgun-partial-unshield' };
+  const held = await s.reserve(facts);
+  const signed = await s.markSigning(held, signing());
+  const partial = await s.assertReceipt(signed);
+  expect(partial.facts).toEqual(facts);
+  expect(partial.state).toBe('signing');
+  await expect(s.abandon(signed)).rejects.toThrow();
+  await expect(s.reserve({ ...facts, kind: 'railgun-token-unshield' })).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+  });
+  expect(await s.assertReceipt(legacy)).toEqual(legacyEntry);
+  const document = JSON.parse(
+    await createPrivacyStorage(options).get('railgun-private-reservations-v1')
+  );
+  expect(document.version).toBe(2);
+  expect(document.sequence).toBe(3);
+  expect(document.entries).toEqual([legacyEntry, partial]);
+  const minimum = floor;
+  s.close();
+  const cold = await open(false);
+  expect(await cold.inspect()).toEqual({ held: 1, signing: 1, abandoned: 0, legacy: 0 });
+  expect(floor).toBe(minimum);
+  const reopened = JSON.parse(
+    await createPrivacyStorage(options).get('railgun-private-reservations-v1')
+  );
+  expect(reopened.entries).toEqual(document.entries);
+  expect(reopened.sequence).toBe(document.sequence);
+  await expect(
+    cold.abandonRecovered({
+      tree: facts.tree,
+      position: facts.position,
+      nullifier: facts.nullifier,
+      noteHash: facts.noteHash,
+    })
+  ).rejects.toMatchObject({ code: 'RAILGUN_RESERVATION_NOT_RECOVERABLE' });
+});
+test('partial reservation does not admit unknown kind or malformed facts', async () => {
+  const s = await open();
+  for (const value of [
+    { ...input(), kind: 'railgun-partial-unshield', unshieldAmount: '1' },
+    { ...input(), kind: 'partial' },
+  ])
+    await expect(s.reserve(value)).rejects.toThrow();
+  expect(await s.inspect()).toEqual({ held: 0, signing: 0, abandoned: 0, legacy: 0 });
+});

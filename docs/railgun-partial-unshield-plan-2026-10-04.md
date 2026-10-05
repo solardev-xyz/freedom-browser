@@ -1,7 +1,7 @@
 # Bounded partial WETH unshield and change spending
 
 **Status: structural records, native cryptography, receipt/TXID primitives, creator authentication and standalone combined POI implemented;
-main partial spending remains unavailable.**
+protected internal signing/proving qualified for Shield input; facade/submission remain unavailable.**
 The bounded model now has a distinct `railgun-partial-unshield` kind and version-2
 capsule. Preparation and selection bind recovered input value, gross withdrawal
 and change separately. Public policy accepts only the exact one-input/two-output
@@ -15,11 +15,12 @@ The [creator-authentication checkpoint](railgun-partial-creator-authentication-2
 adds final-preimage verification before roots and qualifies retained change
 provenance through real local POI and encrypted recovery. Generic received-note
 compatibility remains intact; this is not the complete second-spend lifecycle.
-Main operation, account, signing, submission and POI entry points still refuse
-this new kind; reservations remain legacy-only.
+The [protected internal controller](railgun-partial-controller-2026-10-05.md) now
+admits the kind through real account, reservation, signing and proof gates.
+Shield input passes connected native qualification; received-Transact admission
+has unit coverage. Partial submission and durable own-POI remain closed.
 The [combined local POI checkpoint](railgun-combined-poi-2026-10-05.md) qualifies
-one proof for withdrawal and original private change. Genuine partial operation
-admission, combined POI persistence/recovery, authenticated change ingestion and
+one proof for withdrawal and original private change. Combined POI persistence/recovery, partial submission/capture, authenticated change ingestion and
 the second spend remain to be implemented and qualified. This is not evidence of deployed
 contract acceptance, a funded partial transaction or live service eligibility.
 
@@ -91,10 +92,10 @@ unavailable until the connected qualification passes, including the second spend
    `railgun-private-prover.js`, `railgun-private-verify-job.js`, and
    `railgun-spend-sign-job.js`. The signer must check the final unshield commitment
    and sign all five ordered public inputs. These utility paths now pass native
-   qualification using a synthetic account/scan; main admission remains closed.
-   The outstanding `railgun-private-preflight.js` change must
-   select 01x02 and match anchored `getVerificationKey(1, 2)` before nullifier
-   disclosure/signing. Preserve the one-use key/signature and utility boundaries.
+   qualification using a synthetic account/scan. The subsequent internal controller
+   qualifies genuine enrolled Shield-input admission; `railgun-private-preflight.js`
+   selects 01x02 and matches anchored `getVerificationKey(1, 2)` before nullifier
+   disclosure/signing. That native getter response is simulated. Preserve the one-use key/signature and utility boundaries.
    Recovery decrypts persisted change and reconstructs the original calldata,
    conservation and signature message; it never creates fresh output randomness.
    If reusing `railgun-private-receive-job.js`, replace its full-input amount and
@@ -177,17 +178,17 @@ The expected signature hash retains the circuit's Poseidon public-input order;
 it does not gain an application domain separator. Original encrypted calldata
 is retained, without adding plaintext output randomness to the capsule.
 
-A mixed-store test seeds a structural version-2 record through authenticated
-test storage and cold-reopens it beside a genuine version-1 record, preserving
-legacy bytes. This is not evidence that production can reserve, sign or persist
-a partial operation: those admission paths still refuse. Before enabling real
-version-2 records, explicitly handle downgrade compatibility: an older build
-cannot normalize the new record and may refuse the containing store. Do not
+The current mixed-store test uses real reserve, put, signing and recovery
+receipts for a version-2 record beside a version-1 record, preserving legacy
+bytes. Connected native Shield-input qualification also persists an actual signed
+partial proof. An exact prior reservation reader refuses the entire mixed store
+without changing ciphertext, floor or inventory; the current reader reopens both
+entries. An older build cannot use the containing reservation store. Do not
 rewrite signed records to make an older build accept them.
 The public EOA journal parser and resolution validator now accept bounded
 version-2 partial records. Generic encrypted-journal reopen tests cover an
-unresolved synthetic partial intent, while main operation/submission controllers
-still cannot create a genuine partial attempt. An older validator may refuse
+unresolved synthetic partial intent, while the submission controller
+still cannot create a genuine partial submission attempt. An older validator may refuse
 that address's entire journal, blocking ordinary sends as well as private-operation
 recovery. Accept and expose that downgrade limitation before enabling the writer.
 The receipt policy ID is retained in new resolutions. Future policy revisions

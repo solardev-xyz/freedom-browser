@@ -571,7 +571,49 @@ test('accessors and proxies in caller amount are rejected without running traps'
   expect(getter).not.toHaveBeenCalled();
   expect(trap).not.toHaveBeenCalled();
 });
-test('no foreign recipient, partial unshield, or tailCalls callback', async () => {
+test.each([1n, 122n])(
+  'partial withdrawal %s stays unavailable through the facade before review or work',
+  async (value) => {
+    const plugin = create();
+    await expect(
+      plugin.prepareUnshield({ ...amount(), amount: value }, '0x' + '1'.repeat(40))
+    ).rejects.toMatchObject(refusal);
+    expect(options.reviewPreparation).not.toHaveBeenCalled();
+    expect(mock.stage).not.toHaveBeenCalled();
+    expect(mock.prove).not.toHaveBeenCalled();
+    expect(mock.submit).not.toHaveBeenCalled();
+  }
+);
+test('internal controller has only the reviewed application importers and one proving caller', () => {
+  const fs = require('fs'),
+    path = require('path');
+  const base = path.resolve(__dirname, '../..');
+  const files = [];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const filename = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(filename);
+      else if (entry.name.endsWith('.js') && !entry.name.endsWith('.test.js')) files.push(filename);
+    }
+  };
+  for (const name of ['main', 'renderer', 'shared']) visit(path.join(base, name));
+  const importers = [],
+    callers = [];
+  for (const filename of files) {
+    if (filename === path.join(__dirname, 'railgun-private-operation.js')) continue;
+    const text = fs.readFileSync(filename, 'utf8');
+    const relative = path.relative(base, filename);
+    if (text.includes('railgun-private-operation')) importers.push(relative);
+    if (text.includes('proveRailgunAccountPrivateOperation')) callers.push(relative);
+  }
+  expect(importers.sort()).toEqual([
+    'main/wallet/railgun-identity.js',
+    'main/wallet/railgun-kohaku-plugin.js',
+    'main/wallet/railgun-private-submission.js',
+  ]);
+  expect(callers).toEqual(['main/wallet/railgun-kohaku-plugin.js']);
+});
+test('no foreign recipient or tailCalls callback', async () => {
   const plugin = create(),
     tailCalls = jest.fn();
   await expect(plugin.prepareTransfer(amount(), '0zk-foreign')).rejects.toMatchObject(refusal);

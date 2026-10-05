@@ -498,24 +498,41 @@ test('staging is consumed once synchronously and its claim stays bound to the ex
   expect(() => claim.assertCurrent()).toThrow();
 });
 
-test('valid partial request refuses before owned selection, handoff, TXID query or utility', async () => {
-  const {
-    createRailgunPartialCapsuleData,
-  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
-  const fixture = createRailgunPartialCapsuleData();
-  require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(fixture.capsule);
-  expect(
-    require('./railgun-private-preparation').selectRailgunPrivatePreparation(
-      fixture.owned,
-      fixture.request
-    ).kind
-  ).toBe('railgun-partial-unshield');
-  const result = await stage({ request: fixture.request });
-  expect(result).toEqual({ status: 'refused', stage: 'local', originalAccountReusable: true });
-  expect(mockRead).not.toHaveBeenCalled();
-  expect(mockOpenTxid).not.toHaveBeenCalled();
-  expect(mockOpenWallet).not.toHaveBeenCalled();
-  expect(events).toEqual([]);
-  expect(mockOld.signal.aborted).toBe(false);
-  expect((await stage()).status).toBe('staged');
+test('partial request binds exact withdrawal amount across the genuine staging registry', async () => {
+  const request = {
+    kind: 'railgun-partial-unshield',
+    noteId: '0:0',
+    recipient: '0x' + '12'.repeat(20),
+    unshieldAmount: '400',
+  };
+  const result = await stage({ request });
+  expect(result.status).toBe('staged');
+  const value = assertRailgunTransactStaging(result.receipt, mockNew, options.owners, request);
+  expect(value.baseline.selection).toMatchObject({ kind: request.kind, unshieldAmount: '400' });
+  for (const changed of [
+    { ...request, unshieldAmount: '401' },
+    { ...request, kind: 'railgun-token-unshield' },
+  ])
+    expect(() =>
+      assertRailgunTransactStaging(result.receipt, mockNew, options.owners, changed)
+    ).toThrow();
+  expect(events).toEqual(['old-close', 'txid-open', 'txid-close', 'wallet-open', 'release']);
 });
+test.each(['0', '1000', '1001'])(
+  'partial invalid withdrawal %s never hands off account or queries TXID',
+  async (unshieldAmount) => {
+    const result = await stage({
+      request: {
+        kind: 'railgun-partial-unshield',
+        noteId: '0:0',
+        recipient: '0x' + '12'.repeat(20),
+        unshieldAmount,
+      },
+    });
+    expect(result.status).toBe('refused');
+    expect(mockOpenTxid).not.toHaveBeenCalled();
+    expect(mockOpenWallet).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(mockOld.signal.aborted).toBe(false);
+  }
+);

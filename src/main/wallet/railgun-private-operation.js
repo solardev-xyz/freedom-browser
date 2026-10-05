@@ -123,9 +123,12 @@ async function prove({
   stagingReceipt,
   destinationConstraints,
 }) {
-  // Structural partial-unshield records must not enable this controller before
-  // connected change recovery, POI and second-spend qualification is complete.
-  assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(request?.kind));
+  // Internal admission retains the same genuine wallet, POI and signing gates.
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      request?.kind
+    )
+  );
   if (destinationConstraints !== undefined) {
     assert.ok(destinationConstraints && !require('util').types.isProxy(destinationConstraints));
     assert.equal(Object.getPrototypeOf(destinationConstraints), Object.prototype);
@@ -230,7 +233,7 @@ async function prove({
         typeof signer.signTransaction === 'function' &&
         !signer.sendTransaction
     );
-    if (selection.kind === 'railgun-token-unshield') assert.equal(selection.recipient, submitter);
+    if (selection.kind !== 'railgun-private-transfer') assert.equal(selection.recipient, submitter);
     stage = 'submitter';
     const handle = scope.getContext({
       kind: 'public-address',
@@ -336,19 +339,25 @@ async function prove({
             }
             let receiver = null;
             stage = 'receiver';
-            if (selection.kind === 'railgun-private-transfer') {
+            const partial = selection.kind === 'railgun-partial-unshield';
+            if (selection.kind === 'railgun-private-transfer' || partial) {
               receiver = await verifyRailgunPrivateReceiver({
                 identity,
                 enrollment,
                 archive,
                 transaction: offer.transaction,
                 expected: offer.expected,
-                recipient: offer.recipient,
-                amount: offer.amount,
+                recipient: partial ? identity.descriptor.instanceId : offer.recipient,
+                ...(partial ? { inputAmount: offer.inputAmount } : { amount: offer.amount }),
                 signal: operationScope.signal,
               });
               assert.equal(receiver.transactionDigest, offer.transactionDigest);
               assert.equal(receiver.recipientVerified, true);
+              if (partial) {
+                assert.equal(receiver.recipient, identity.descriptor.instanceId);
+                for (const key of ['inputAmount', 'unshieldAmount', 'changeAmount'])
+                  assert.equal(receiver[key], offer[key]);
+              }
             }
             current(KEY_MARGIN_MS);
             stage = 'poi';
@@ -406,6 +415,7 @@ async function prove({
               enrollment,
               artifactDirectory,
               input: preflightInput,
+              intentKind: selection.kind,
               ...(destinationConstraints
                 ? { destinationConstraint: destinationConstraints.protocol }
                 : {}),
@@ -424,6 +434,11 @@ async function prove({
               enrollment,
               KEY_MARGIN_MS
             );
+            const assertPreflightKind = (observation) => {
+              assert.equal(Object.hasOwn(observation, 'intentKind'), partial);
+              if (partial) assert.equal(observation.intentKind, selection.kind);
+            };
+            assertPreflightKind(preflightValue);
             assert.deepEqual(preflightValue.input, preflightInput);
             if (provenance) {
               stage = 'txid-root';
@@ -465,6 +480,7 @@ async function prove({
                 ),
                 preflightValue
               );
+              assertPreflightKind(preflightValue);
               if (provenance)
                 assert.equal(
                   assertRailgunTransactProvenance(

@@ -1007,44 +1007,62 @@ test('failed replacement wallet drains before phase release and cannot release t
 });
 
 test.each(['prepare', 'operate'])(
-  'structurally valid partial request refuses %s before snapshot or wallet utility admission',
+  'partial %s captures real normalized selection and preserves the wallet window',
   async (route) => {
-    const {
-      createRailgunPartialCapsuleData,
-    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
-    const { request, owned } = createRailgunPartialCapsuleData();
-    // This fixture uses genuine structural selection with a mocked owned wallet.
-    require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(
-      createRailgunPartialCapsuleData().capsule
+    const f =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData();
+    f.capsule.walletId = mockEnrollment.descriptor.walletId;
+    f.capsule.engineSha256 = require('./railgun-engine-manifest.json').sha256;
+    const owned = { ...f.owned, checkpointHash: '6'.repeat(64) };
+    owned.ownedPoi[0].hash = f.capsule.noteHash;
+    mockRunner.readOwned.mockReturnValue(owned);
+    mockRead.mockImplementation(() => ({}));
+    const offer = require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
+      f.capsule.preparation,
+      f.capsule.selection
     );
-    expect(
-      require('./railgun-private-preparation').selectRailgunPrivatePreparation(owned, request).kind
-    ).toBe('railgun-partial-unshield');
-    mockRunner.readOwned.mockReturnValue({ ...owned, checkpointHash: '6'.repeat(64) });
-    mockRunner.prepareReadOnly = jest.fn();
-    mockRunner.operateReadOnly = jest.fn();
+    const result = {
+      receipt: {},
+      coverage: {},
+      readOnly: { readOnly: true, writeAttempts: 0 },
+      preparation: { ...offer, spendingEnabled: false, witnessRetained: false },
+    };
+    mockRunner.prepareReadOnly = jest.fn(async () => result);
+    mockRunner.operateReadOnly = jest.fn(async ({ privateOperation }) => {
+      const reply = await privateOperation.onIntent(offer, mockSession.signal, f.capsule);
+      return { ...result, operation: { status: reply.status } };
+    });
     const opened = await openRailgunAccountWallet(options);
-    const snapshot = jest.spyOn(options.coordinator, 'withPublicSnapshot');
-    const onIntent = jest.fn();
+    const onIntent = jest.fn(async (value, signal, window, capsule) => {
+      expect(value).toMatchObject(offer);
+      expect(capsule.version).toBe(2);
+      expect(capsule.selection).toEqual(f.capsule.selection);
+      expect(assertRailgunAccountPrivateWindow(window, opened, options).selection).toEqual(
+        f.capsule.selection
+      );
+      expect(signal.aborted).toBe(false);
+      return { status: 'refused' };
+    });
     try {
-      const work =
+      const outcome =
         route === 'prepare'
-          ? prepareRailgunAccountPrivateIntent(opened, options, request)
-          : operateRailgunAccountPrivateIntent(opened, options, request, {
+          ? await prepareRailgunAccountPrivateIntent(opened, options, f.request)
+          : await operateRailgunAccountPrivateIntent(opened, options, f.request, {
               onIntent,
               proverArchive: '/prover.asar',
               artifactDirectory: '/artifacts',
             });
-      await expect(work).rejects.toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' });
-      expect(snapshot).not.toHaveBeenCalled();
-      expect(mockRunner.prepareReadOnly).not.toHaveBeenCalled();
-      expect(mockRunner.operateReadOnly).not.toHaveBeenCalled();
-      expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
-      expect(onIntent).not.toHaveBeenCalled();
+      expect(outcome.preparation).toEqual({
+        ...offer,
+        spendingEnabled: false,
+        witnessRetained: false,
+      });
+      const runner = route === 'prepare' ? mockRunner.prepareReadOnly : mockRunner.operateReadOnly;
+      expect(runner).toHaveBeenCalledWith(
+        expect.objectContaining({ privateIntent: f.capsule.selection })
+      );
+      expect(onIntent).toHaveBeenCalledTimes(route === 'prepare' ? 0 : 1);
       expect(opened.signal.aborted).toBe(false);
-      // Refusal does not consume the original account or prevent a normal restore.
-      await restoreRailgunAccountWallet(opened, options);
-      expect(mockRunner.restoreReadOnly).toHaveBeenCalledTimes(1);
     } finally {
       await opened.close();
     }

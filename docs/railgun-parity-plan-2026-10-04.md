@@ -58,8 +58,11 @@ local POI proving and encrypted recovery with simulated chain/services; it does
 not establish combined partial POI or the complete second-spend lifecycle.
 The subsequent [combined local POI checkpoint](railgun-combined-poi-2026-10-05.md)
 qualifies one actual proof for change plus withdrawal, both input creator types
-and exact application marker binding. Its genuine controller/persistence path
-remains unavailable.
+and exact application marker binding. The subsequent
+[protected internal controller](railgun-partial-controller-2026-10-05.md) qualifies
+a genuine Shield-input hold/sign/prove/verify and encrypted account reopen, with
+real POI/preflight hosts over simulated services. Partial submission and combined
+POI persistence remain unavailable; the facade stays full-only.
 
 ## Next technical work
 
@@ -72,14 +75,16 @@ remains unavailable.
    refuses Shield. Live public-facade qualification and cold resolution/note
    ingestion through this facade remain distinct from these tests.
 2. **Add partial withdrawal with authenticated change.** PPv2 already has
-   withdrawal/change recovery and second-spend evidence. Railgun's current
-   operation admission remains limited to full-note spends. The new structural
+   withdrawal/change recovery and second-spend evidence. Railgun's facade
+   remains limited to full-note spends; its internal partial controller is now
+   connected and natively qualified for Shield input. The new structural
    records express partial withdrawal, and native utility qualification now covers
    proof shape, amount conservation, change decryption and cold reconstruction.
    Receipt/TXID primitives, creator authentication and standalone combined POI
    are implemented and qualified independently.
-   Enabling it still requires deployed verifier checks, reservation integration,
-   connected recovery, normal change ingestion and durable post-transaction POI.
+   Completing it still requires received-input connected controller qualification,
+   live deployed verifier checks, partial submission/capture, connected recovery,
+   normal change ingestion and durable post-transaction POI.
    Signed-but-unfinished proof resumption still needs a production recovery host;
    native utility replay alone is not that host. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,

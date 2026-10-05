@@ -149,3 +149,101 @@ test.each([
   };
   expect(() => normalizeRailgunSpendKeyRequest(request, payload)).toThrow();
 });
+
+describe('receiver result contracts', () => {
+  const { normalizeRailgunPrivateReceiver: normalize } = require('./railgun-private-results');
+  const {
+    createRailgunPartialCapsuleData,
+    createRailgunLegacyCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  function fixture(partial) {
+    const { capsule } = partial
+      ? createRailgunPartialCapsuleData()
+      : createRailgunLegacyCapsuleData('railgun-private-transfer');
+    const options = {
+      transaction: capsule.preparation.transaction,
+      expected: capsule.preparation.expected,
+      recipient: '0zk1' + 'q'.repeat(123),
+      ...(partial ? { inputAmount: '1000' } : { amount: '1000' }),
+    };
+    const checked = validateRailgunPrivateSigningIntent(options.transaction, options.expected);
+    const value = {
+      verified: true,
+      transactionDigest: checked.digest,
+      recipient: options.recipient,
+      ...(partial
+        ? { inputAmount: '1000', unshieldAmount: '400', changeAmount: '600' }
+        : { amount: '1000' }),
+      guards: { attempts: 0, canaries: 1, hooks: ['test.hook'] },
+      inventory: require('./railgun-engine-manifest.json').inventory.sha256,
+    };
+    return { options, value };
+  }
+  beforeEach(() =>
+    validateRailgunPrivateSigningIntent.mockImplementation(
+      jest.requireActual('./railgun-private-intent').validateRailgunPrivateSigningIntent
+    )
+  );
+  test.each([false, true])(
+    'exact %s schema binds real intent and preserves legacy bytes',
+    (partial) => {
+      const { options, value } = fixture(partial);
+      const result = normalize(value, options);
+      expect(JSON.stringify(result)).toBe(
+        JSON.stringify({
+          recipientVerified: true,
+          transactionDigest: value.transactionDigest,
+          recipient: options.recipient,
+          ...(partial
+            ? { inputAmount: '1000', unshieldAmount: '400', changeAmount: '600' }
+            : { amount: '1000' }),
+          inputOwnershipVerified: false,
+          spendingEnabled: false,
+        })
+      );
+      expect(Object.isFrozen(result)).toBe(true);
+    }
+  );
+  test.each([
+    'inputAmount',
+    'unshieldAmount',
+    'changeAmount',
+    'amount',
+    'kind',
+    'extra',
+    'recipient',
+    'transactionDigest',
+    'inventory',
+    'verified',
+  ])('partial substituted/extra %s refuses', (key) => {
+    const { options, value } = fixture(true);
+    value[key] = key === 'verified' ? false : 'wrong';
+    expect(() => normalize(value, options)).toThrow();
+  });
+  test.each(['amount', 'unshieldAmount', 'changeAmount', 'zero', 'over-cap'])(
+    'partial options %s refuse rather than override derived arithmetic',
+    (mode) => {
+      const { options, value } = fixture(true);
+      if (mode === 'zero') options.inputAmount = '400';
+      else if (mode === 'over-cap') options.inputAmount = '10000000000000001';
+      else options[mode] = '600';
+      expect(() => normalize(value, options)).toThrow();
+    }
+  );
+  test('cannot transplant either shape across a real kind/digest', () => {
+    const legacy = fixture(false),
+      partial = fixture(true);
+    expect(() =>
+      normalize(
+        { ...legacy.value, transactionDigest: partial.value.transactionDigest },
+        partial.options
+      )
+    ).toThrow();
+    expect(() =>
+      normalize(
+        { ...partial.value, transactionDigest: legacy.value.transactionDigest },
+        legacy.options
+      )
+    ).toThrow();
+  });
+});

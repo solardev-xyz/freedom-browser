@@ -40,7 +40,11 @@ function facts(v) {
   check(exact(v, FACTS));
   check(integer(v.tree, 65535) && integer(v.position, 65535));
   check(field(v.nullifier) && field(v.noteHash));
-  check(['railgun-private-transfer', 'railgun-token-unshield'].includes(v.kind));
+  check(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      v.kind
+    )
+  );
   check(typeof v.intentDigest === 'string' && /^0x[0-9a-f]{64}$/.test(v.intentDigest));
   check(digest(v.checkpointHash) && digest(v.poiDigest));
   return Object.freeze(Object.fromEntries(FACTS.map((key) => [key, v[key]])));

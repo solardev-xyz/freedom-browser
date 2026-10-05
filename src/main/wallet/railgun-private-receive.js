@@ -1,5 +1,6 @@
 /** Main-owned independent cryptographic receive check. Returns data about the
- * exact intent, never a selection, reservation or spending capability.
+ * exact intent, never a selection, reservation or spending capability. The
+ * controller retains its existing A phase until this host and borrowed work drain.
  */
 const assert = require('assert/strict');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
@@ -10,45 +11,137 @@ const { normalizeRailgunPrivateReceiver } = require('./railgun-private-results')
 const { startRailgunProcess } = require('./railgun-process');
 const pins = require('./railgun-shield-pins.json');
 const busy = new WeakSet();
-async function verifyRailgunPrivateReceiver({
-  identity,
-  enrollment,
-  archive,
-  transaction,
-  expected,
-  recipient,
-  amount,
-  signal,
-}) {
+const fail = () =>
+  Object.assign(new Error('Railgun private receiver unavailable'), {
+    code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED',
+  });
+async function verify(options) {
+  const { identity, enrollment, transaction, expected, recipient, signal } = options;
   assert.ok(isRailgunAccountEnrollment(enrollment));
   assert.ok(signal === undefined || signal instanceof AbortSignal);
   const handle = enrollment.getContext('engine', 'private-receive');
   const descriptor = assertRailgunIdentity(identity, handle);
   assert.equal(enrollment.descriptor.walletId, descriptor.walletId);
   assert.equal(recipient, descriptor.instanceId);
-  assert.match(amount, /^[1-9][0-9]{0,16}$/);
-  assert.ok(BigInt(amount) <= BigInt(pins.maxQualificationAmount));
-  // Capture immutable JSON data before awaiting the utility or a credential.
   const intent = Object.freeze({ ...transaction }),
     wanted = Object.freeze({ ...expected });
   const checked = validateRailgunPrivateSigningIntent(intent, wanted);
-  assert.equal(checked.kind, 'railgun-private-transfer');
-  archive = verifyRailgunEngineRuntime(archive);
+  const partial = checked.kind === 'railgun-partial-unshield';
+  assert.ok(partial || checked.kind === 'railgun-private-transfer');
+  if (partial) {
+    assert.ok(!Object.hasOwn(options, 'amount') && !Object.hasOwn(options, 'changeAmount'));
+    assert.ok(!Object.hasOwn(options, 'unshieldAmount'));
+  } else assert.ok(!Object.hasOwn(options, 'inputAmount'));
+  const amount = partial ? options.inputAmount : options.amount;
+  assert.match(amount, /^[1-9][0-9]{0,16}$/);
+  assert.ok(BigInt(amount) <= BigInt(pins.maxQualificationAmount));
+  if (partial)
+    assert.ok(
+      BigInt(checked.unshieldAmount) > 0n && BigInt(checked.unshieldAmount) < BigInt(amount)
+    );
+  const amounts = partial ? { inputAmount: amount } : { amount };
+  const archive = verifyRailgunEngineRuntime(options.archive);
   assert.ok(!busy.has(identity));
   busy.add(identity);
+  const started = performance.now(),
+    deadline = started + 60000;
   const lifetime = AbortSignal.any([
     identity.signal,
     enrollment.signal,
     ...(signal ? [signal] : []),
   ]);
-  const active = () => {
-    assert.ok(!lifetime.aborted);
-    assertRailgunIdentity(identity, handle);
-    enrollment.getContext('engine', 'private-receive');
-  };
+  const controller = new AbortController(),
+    pending = new Set();
   let task,
     result,
-    sequence = 0;
+    keyCopy,
+    sequence = 0,
+    stopped = false,
+    failed = false,
+    accepting = true,
+    keyDelivered = false,
+    closeRequested = false,
+    exitObserved = false;
+  const current = () => {
+    const now = performance.now();
+    assert.ok(!failed && !lifetime.aborted && now >= started && now < deadline);
+    assert.deepEqual(assertRailgunIdentity(identity, handle), descriptor);
+    assert.equal(enrollment.descriptor.walletId, descriptor.walletId);
+    enrollment.getContext('engine', 'private-receive');
+  };
+  const active = () => {
+    current();
+    assert.ok(!stopped);
+  };
+  const closeTask = () => {
+    if (!task || closeRequested) return;
+    closeRequested = true;
+    try {
+      task.close();
+    } catch {
+      failed = true;
+    }
+  };
+  const close = () => {
+    stopped = true;
+    accepting = false;
+    keyCopy?.fill(0);
+    controller.abort();
+    closeTask();
+  };
+  const refuse = () => {
+    failed = true;
+    close();
+  };
+  const observeExit = async () => {
+    const barrier = task.closed;
+    assert.ok(barrier && typeof barrier.then === 'function');
+    const value = await barrier;
+    exitObserved = true;
+    return value;
+  };
+  const dispatch = async (wire) => {
+    try {
+      active();
+      assert.ok(accepting);
+      assert.equal(typeof wire, 'string');
+      assert.ok(Buffer.byteLength(wire) <= 16384);
+      const message = JSON.parse(wire);
+      assert.equal(message.id, ++sequence);
+      assert.equal(result, undefined);
+      if (message.id === 1) {
+        assert.deepEqual(message, { id: 1, method: 'key', purpose: 'private-receive' });
+        const output = await withRailgunViewingCredential(identity, ({ viewingKey }) => {
+          active();
+          assert.ok(!keyCopy && viewingKey instanceof Uint8Array && viewingKey.byteLength === 32);
+          keyCopy = Buffer.alloc(32);
+          keyCopy.set(viewingKey);
+          return keyCopy;
+        });
+        active();
+        assert.ok(output === keyCopy && keyCopy?.length === 32);
+        keyDelivered = true;
+        return output;
+      }
+      assert.ok(keyDelivered);
+      assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+      assert.equal(message.id, 2);
+      assert.equal(message.method, 'result');
+      result = normalizeRailgunPrivateReceiver(message.value, {
+        transaction: intent,
+        expected: wanted,
+        recipient,
+        ...amounts,
+      });
+      return JSON.stringify({ id: 2, value: null });
+    } catch {
+      refuse();
+      throw fail();
+    }
+  };
+  lifetime.addEventListener('abort', close, { once: true });
+  const timer = setTimeout(close, 60000);
+  timer.unref?.();
   try {
     active();
     task = startRailgunProcess({
@@ -63,59 +156,54 @@ async function verifyRailgunPrivateReceiver({
         transaction: intent,
         expected: wanted,
         recipient,
-        amount,
+        ...amounts,
       }),
       broker: {
-        signal: lifetime,
-        async dispatch(wire) {
-          active();
-          assert.equal(typeof wire, 'string');
-          assert.ok(Buffer.byteLength(wire) <= 16384);
-          const message = JSON.parse(wire);
-          assert.equal(message.id, ++sequence);
-          assert.equal(result, undefined);
-          if (message.id === 1) {
-            assert.deepEqual(message, { id: 1, method: 'key', purpose: 'private-receive' });
-            let output;
-            try {
-              return await withRailgunViewingCredential(identity, ({ viewingKey }) => {
-                active();
-                output = Buffer.alloc(32);
-                viewingKey.copy(output);
-                return output;
-              });
-            } catch (error) {
-              output?.fill(0);
-              throw error;
-            }
-          }
-          assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
-          assert.equal(message.id, 2);
-          assert.equal(message.method, 'result');
-          result = normalizeRailgunPrivateReceiver(message.value, {
-            transaction: intent,
-            expected: wanted,
-            recipient,
-            amount,
-          });
-          return JSON.stringify({ id: 2, value: null });
+        signal: controller.signal,
+        dispatch(wire) {
+          const work = dispatch(wire);
+          pending.add(work);
+          work.then(
+            () => pending.delete(work),
+            () => pending.delete(work)
+          );
+          return work;
         },
       },
     });
+    if (stopped) closeTask();
     await task.ready;
-    assert.ok(result);
-    task.close();
-    assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
     active();
-    return result;
-  } catch {
-    throw Object.assign(new Error('Railgun private receiver unavailable'), {
-      code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED',
-    });
+    assert.ok(result);
+    accepting = false;
+    closeTask();
+    assert.equal((await observeExit()).code, 'RAILGUN_PROCESS_CLOSED');
+    active();
   } finally {
-    task?.close();
-    if (task) await task.closed;
-    busy.delete(identity);
+    clearTimeout(timer);
+    lifetime.removeEventListener('abort', close);
+    close();
+    try {
+      if (task) await observeExit();
+    } finally {
+      try {
+        while (pending.size) await Promise.allSettled([...pending]);
+      } finally {
+        keyCopy?.fill(0);
+        // A rejected child barrier is not evidence of exit; keep this identity
+        // unavailable rather than admitting another child over an unknown one.
+        if (!task || exitObserved) busy.delete(identity);
+      }
+    }
+  }
+  current();
+  return result;
+}
+async function verifyRailgunPrivateReceiver(options) {
+  try {
+    return await verify(options);
+  } catch {
+    throw fail();
   }
 }
 module.exports = { verifyRailgunPrivateReceiver };

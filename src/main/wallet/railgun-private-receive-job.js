@@ -1,4 +1,4 @@
-/** Fresh viewing-only self-transfer check. No note database, preparer witness,
+/** Fresh viewing-only self-transfer or partial change check. No note database, preparer witness,
  * spending key, network or prover. The exact zero-proof intent is checked first.
  */
 const assert = require('assert/strict'),
@@ -9,23 +9,41 @@ const { validateRailgunPrivateSigningIntent } = require('./railgun-private-inten
 const pins = require('./railgun-shield-pins.json');
 exports.run = async function run(text, { request, requestKey, signal, guardReport }) {
   const input = JSON.parse(text);
-  assert.deepEqual(Object.keys(input).sort(), [
-    'amount',
-    'archive',
-    'descriptor',
-    'expected',
-    'recipient',
-    'transaction',
-  ]);
+  const active = () => assert.ok(signal instanceof AbortSignal && !signal.aborted);
+  active();
   const checked = validateRailgunPrivateSigningIntent(input.transaction, input.expected);
-  assert.equal(checked.kind, 'railgun-private-transfer');
+  const partial = checked.kind === 'railgun-partial-unshield';
+  assert.ok(partial || checked.kind === 'railgun-private-transfer');
+  assert.deepEqual(
+    Object.keys(input).sort(),
+    [
+      partial ? 'inputAmount' : 'amount',
+      'archive',
+      'descriptor',
+      'expected',
+      'recipient',
+      'transaction',
+    ].sort()
+  );
   assert.equal(input.recipient, input.descriptor.instanceId);
-  assert.match(input.amount, /^[1-9][0-9]{0,16}$/);
-  assert.ok(BigInt(input.amount) <= BigInt(pins.maxQualificationAmount));
+  const amount = partial ? input.inputAmount : input.amount;
+  assert.match(amount, /^[1-9][0-9]{0,16}$/);
+  assert.ok(BigInt(amount) <= BigInt(pins.maxQualificationAmount));
+  const u = partial ? BigInt(checked.unshieldAmount) : 0n;
+  if (partial) assert.ok(u > 0n && u < BigInt(amount));
+  const change = BigInt(amount) - u;
+  const amounts = partial
+    ? {
+        inputAmount: amount,
+        unshieldAmount: checked.unshieldAmount,
+        changeAmount: change.toString(),
+      }
+    : { amount };
   const archive = require('./railgun-engine-runtime').verifyRailgunEngineRuntime(input.archive);
   const imp = (name) =>
     require(path.join(archive, 'node_modules/@railgun-community/engine/dist', name));
   await imp('utils/poseidon').initPoseidonPromise;
+  active();
   const { ViewOnlyWallet } = imp('wallet/view-only-wallet'),
     { TransactNote } = imp('note/transact-note');
   const { getPublicViewingKey, getSharedSymmetricKey } = imp('utils/keys-utils');
@@ -35,6 +53,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
     input.transaction.data
   );
   const bundle = tx.boundParams.commitmentCiphertext[0];
+  active();
   const bytes = await requestKey(
     JSON.stringify({ id: 1, method: 'key', purpose: 'private-receive' })
   );
@@ -46,6 +65,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
     assert.ok(!signal.aborted);
     const descriptor = input.descriptor,
       pubkey = await getPublicViewingKey(key);
+    active();
     assert.equal(Buffer.from(pubkey).toString('hex'), descriptor.viewingPublicKey);
     const denied = new Proxy(
       {},
@@ -72,6 +92,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
     const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex'),
       receiver = Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex');
     symmetric = await getSharedSymmetricKey(key, sender);
+    active();
     assert.ok(symmetric);
     const tokenData = getTokenDataERC20(pins.wrappedNative),
       tokenHash = getTokenDataHash(tokenData);
@@ -101,9 +122,34 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
       undefined,
       undefined
     );
-    assert.equal(note.value, BigInt(input.amount));
+    active();
+    assert.equal(note.value, change);
     assert.equal(note.tokenHash.replace(/^0x/, ''), tokenHash.replace(/^0x/, ''));
-    assert.equal(note.hash, BigInt(checked.commitment));
+    assert.equal(note.hash, BigInt(partial ? checked.changeCommitment : checked.commitment));
+    if (partial) {
+      assert.equal(
+        imp('note/shield-note').ShieldNote.getNotePublicKey(wallet.masterPublicKey, note.random),
+        note.notePublicKey
+      );
+      assert.equal(note.tokenData.tokenType, 0);
+      assert.equal(note.tokenData.tokenAddress.toLowerCase(), pins.wrappedNative);
+      assert.equal(BigInt(note.tokenData.tokenSubID), 0n);
+      assert.equal(bundle.memo, '0x');
+      assert.equal(note.memoText, undefined);
+      const annotation = imp('note/memo').Memo.decryptNoteAnnotationData(
+        bundle.annotationData,
+        key
+      );
+      assert.equal(annotation?.outputType, imp('models/formatted-types').OutputType.Change);
+      assert.equal(
+        annotation.senderRandom,
+        imp('models/transaction-constants').MEMO_SENDER_RANDOM_NULL
+      );
+      assert.equal(
+        imp('note/note-util').getNoteHash(checked.recipient, tokenData, u),
+        BigInt(checked.unshieldCommitment)
+      );
+    }
     assert.equal(TransactNote.getHash(note.notePublicKey, note.tokenHash, note.value), note.hash);
   } finally {
     key.fill(0);
@@ -122,7 +168,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
             verified: true,
             transactionDigest: checked.digest,
             recipient: input.recipient,
-            amount: input.amount,
+            ...amounts,
             inventory: require('./railgun-engine-manifest.json').inventory.sha256,
             guards,
           },
@@ -131,4 +177,5 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
     ),
     { id: 2, value: null }
   );
+  active();
 };

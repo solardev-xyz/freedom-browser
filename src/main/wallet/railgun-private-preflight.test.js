@@ -1,4 +1,6 @@
-let mockEnrollment, mockEndpoint, mockDeployment, mockBase, mockMode;
+// Real preflight receipts, privacy contexts and ABI; deployment, artifact
+// verification and RPC replies are simulated boundary dependencies.
+let mockEnrollment, mockEndpoint, mockDeployment, mockBase, mockMode, mockOutputs;
 const mockRpcOptions = jest.fn(),
   mockDeploymentOptions = jest.fn(),
   mockRequest = jest.fn(),
@@ -49,6 +51,7 @@ jest.mock('../networks/private-rpc', () => ({
 }));
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { Interface } = require('ethers');
+const { createHash } = require('crypto');
 const {
   createRailgunPrivatePreflight,
   assertRailgunPrivatePreflight,
@@ -70,7 +73,7 @@ const input = () => ({
   minimumBlock: 11800000,
 });
 let scope, source, artifacts;
-function open(selected = input()) {
+function refreshDeployment() {
   if (mockDeployment.signal.aborted) {
     const controller = new AbortController();
     mockDeployment = {
@@ -79,15 +82,20 @@ function open(selected = input()) {
       close: jest.fn(() => controller.abort()),
     };
   }
+}
+function open(selected = input(), options = {}) {
+  refreshDeployment();
   return createRailgunPrivatePreflight({
     enrollment: mockEnrollment,
     input: selected,
     artifactDirectory: '/fixture/artifacts',
+    ...options,
   });
 }
 beforeEach(() => {
   jest.resetAllMocks();
   mockMode = null;
+  mockOutputs = 1;
   scope = createPrivacyScope({
     profileId: 'private-preflight',
     signal: new AbortController().signal,
@@ -114,9 +122,11 @@ beforeEach(() => {
     assertResult: jest.fn(() => ({ anchor: Object.freeze({ ...anchor }) })),
     close: jest.fn(() => controller.abort()),
   };
-  artifacts = { wasm: Buffer.alloc(4, 1), zkey: Buffer.alloc(4, 2), vkey: {} };
-  mockLoad.mockImplementation(async () => {
+  artifacts = { variant: '01x01', wasm: Buffer.alloc(4, 1), zkey: Buffer.alloc(4, 2), vkey: {} };
+  mockLoad.mockImplementation(async ({ variant }) => {
     if (mockMode === 'artifacts') throw Error('artifacts');
+    artifacts.variant =
+      mockMode === 'wrong-artifact' ? (variant === '01x01' ? '01x02' : '01x01') : variant;
     return artifacts;
   });
   mockVerifier.mockImplementation((a, encoded) => {
@@ -133,8 +143,8 @@ beforeEach(() => {
       expect(params[0].to).toBe(pins.proxy);
       const parsed = abi.parseTransaction(params[0]);
       if (parsed.name === 'getVerificationKey') {
-        expect([...parsed.args]).toEqual([1n, 1n]);
-        result = '0x1234';
+        expect([...parsed.args]).toEqual([1n, BigInt(mockOutputs)]);
+        result = mockMode === 'wrong-getter' ? '0xabcd' : '0x1234';
       } else
         result = abi.encodeFunctionResult(parsed.name, [
           {
@@ -194,6 +204,153 @@ test('deployment, input and verifier observations share one canonical block with
   ).toThrow();
   expect(() => source.assertResult({ ...acquired.receipt })).toThrow();
 });
+test.each([undefined, 'railgun-private-transfer', 'railgun-token-unshield'])(
+  'legacy %s retains exact observation bytes and 01x01 verifier tuple',
+  async (intentKind) => {
+    source.close();
+    source = open(input(), intentKind === undefined ? {} : { intentKind });
+    const { observation } = await source.acquire();
+    expect(createHash('sha256').update(JSON.stringify(observation)).digest('hex')).toBe(
+      'b369fa120cae7707a6d0468bbde1f3f6185c11d893187b830cbcbe8aa448d286'
+    );
+    expect(Object.hasOwn(observation, 'intentKind')).toBe(false);
+    expect(mockLoad).toHaveBeenCalledWith(expect.objectContaining({ variant: '01x01' }));
+  }
+);
+test('partial uses 01x02 and its exact verifier tuple before exposing the selected nullifier', async () => {
+  source.close();
+  mockOutputs = 2;
+  source = open(input(), { intentKind: 'railgun-partial-unshield' });
+  const acquired = await source.acquire();
+  expect(mockLoad).toHaveBeenCalledWith(expect.objectContaining({ variant: '01x02' }));
+  expect(acquired.observation).toEqual({
+    anchor,
+    input: input(),
+    deploymentMatched: true,
+    verifierMatched: true,
+    rootAccepted: true,
+    inputUnspent: true,
+    unshieldFeeBps: 25,
+    trust: 'unverified-rpc',
+    ownershipVerified: false,
+    signingEnabled: false,
+    intentKind: 'railgun-partial-unshield',
+  });
+  expect(Object.isFrozen(acquired.observation)).toBe(true);
+  expect(assertRailgunPrivatePreflight(source, acquired.receipt, mockEnrollment)).toBe(
+    acquired.observation
+  );
+  expect(mockVerifier.mock.invocationCallOrder[0]).toBeLessThan(
+    mockRequest.mock.invocationCallOrder[3]
+  );
+  const calls = mockRequest.mock.calls
+    .filter(([method]) => method === 'eth_call')
+    .map(([, params]) => abi.parseTransaction(params[0]));
+  expect(calls.map(({ name }) => name)).toEqual([
+    'rootHistory',
+    'unshieldFee',
+    'getVerificationKey',
+    'nullifiers',
+  ]);
+  expect([...calls[2].args]).toEqual([1n, 2n]);
+  expect([...calls[3].args]).toEqual([0n, input().nullifier]);
+  expect(() => source.assertResult({ ...acquired.receipt })).toThrow();
+});
+test.each(['railgun-partial-unshield', 'railgun-private-transfer'])(
+  'caller mutation during deployment cannot change the captured %s circuit',
+  async (intentKind) => {
+    source.close();
+    mockOutputs = intentKind === 'railgun-partial-unshield' ? 2 : 1;
+    const options = {
+      enrollment: mockEnrollment,
+      input: input(),
+      artifactDirectory: '/fixture/artifacts',
+      intentKind,
+    };
+    // Refresh the synthetic deployment after closing the first source.
+    refreshDeployment();
+    source = createRailgunPrivatePreflight(options);
+    let release;
+    mockDeployment.acquire.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        })
+    );
+    const pending = source.acquire();
+    options.intentKind =
+      intentKind === 'railgun-partial-unshield'
+        ? 'railgun-token-unshield'
+        : 'railgun-partial-unshield';
+    options.variant = '02x03';
+    options.outputs = 3;
+    release({ receipt: mockBase });
+    const { observation } = await pending;
+    expect(mockLoad).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: mockOutputs === 2 ? '01x02' : '01x01' })
+    );
+    expect(observation.intentKind).toBe(mockOutputs === 2 ? 'railgun-partial-unshield' : undefined);
+  }
+);
+test.each([undefined, null, '', '01x02', 'partial-unshield', 'railgun-partial-transfer', {}, 2])(
+  'unrecognized explicit intentKind %p refuses before transport construction',
+  (intentKind) => {
+    mockRpcOptions.mockClear();
+    mockDeploymentOptions.mockClear();
+    expect(() => open(input(), { intentKind })).toThrow('Railgun private preflight unavailable');
+    expect(mockRpcOptions).not.toHaveBeenCalled();
+    expect(mockDeploymentOptions).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
+  }
+);
+test.each(['getter', 'proxy', 'variant', 'outputs', 'symbol'])(
+  'closed constructor refuses %s without evaluating caller code or opening RPC',
+  (kind) => {
+    let options = {
+      enrollment: mockEnrollment,
+      input: input(),
+      artifactDirectory: '/fixture/artifacts',
+    };
+    const getter = jest.fn(() => 'railgun-partial-unshield');
+    if (kind === 'getter')
+      Object.defineProperty(options, 'intentKind', { enumerable: true, get: getter });
+    if (kind === 'proxy') options = new Proxy(options, { get: getter });
+    if (kind === 'variant') options.variant = '01x02';
+    if (kind === 'outputs') options.outputs = 2;
+    if (kind === 'symbol') options[Symbol('intentKind')] = 'railgun-partial-unshield';
+    mockRpcOptions.mockClear();
+    mockDeploymentOptions.mockClear();
+    expect(() => createRailgunPrivatePreflight(options)).toThrow(
+      'Railgun private preflight unavailable'
+    );
+    expect(getter).not.toHaveBeenCalled();
+    expect(mockRpcOptions).not.toHaveBeenCalled();
+    expect(mockDeploymentOptions).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
+  }
+);
+test.each(['wrong-artifact', 'wrong-getter', 'verifier'])(
+  'partial %s mismatch refuses before selected-nullifier disclosure',
+  async (mode) => {
+    source.close();
+    mockOutputs = 2;
+    mockMode = mode;
+    source = open(input(), { intentKind: 'railgun-partial-unshield' });
+    await expect(source.acquire()).rejects.toMatchObject({
+      reason: 'mismatch',
+      step: mode === 'wrong-artifact' ? 'artifacts' : 'verifier',
+    });
+    expect(
+      mockRequest.mock.calls
+        .filter(([method]) => method === 'eth_call')
+        .some(([, params]) => abi.parseTransaction(params[0]).name === 'nullifiers')
+    ).toBe(false);
+    if (mode === 'wrong-artifact') expect(mockRequest).not.toHaveBeenCalled();
+    expect(artifacts.wasm.every((v) => v === 0)).toBe(true);
+    expect(artifacts.zkey.every((v) => v === 0)).toBe(true);
+    expect(source.signal.aborted).toBe(true);
+  }
+);
 test('selection is copied before any asynchronous read', async () => {
   source.close();
   const selected = input();

@@ -402,30 +402,45 @@ test('a child exit does not release identity exclusion until its durable callbac
   expect(settled).toBe(true);
 });
 
-test('valid partial signing intent refuses before a spending job, permit callback or key derivation', async () => {
-  const options = await signingFixture();
-  const {
-    createRailgunPartialCapsuleData,
-  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
-  const { preparation } = createRailgunPartialCapsuleData().capsule;
-  expect(
-    require('./railgun-private-intent').validateRailgunPrivateSigningIntent(
-      preparation.transaction,
-      preparation.expected
-    ).kind
-  ).toBe('railgun-partial-unshield');
-  const onKeyRequest = jest.fn();
-  const jobsBefore = mockInputs.length;
-  await expect(
-    signRailgunPrivateIntent({ ...options, ...preparation, onKeyRequest })
-  ).rejects.toMatchObject({ code: 'RAILGUN_PRIVATE_SIGNING_REFUSED' });
-  expect(mockInputs).toHaveLength(jobsBefore);
-  expect(mockDerived).toHaveLength(0);
-  expect(onKeyRequest).not.toHaveBeenCalled();
-  expect(assertRailgunIdentity(identity)).toBe(identity.descriptor);
-  // A rejected new kind does not occupy or revoke the genuine identity's signer slot.
-  await expect(signRailgunPrivateIntent(options)).rejects.toMatchObject({
-    code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
-  });
-  expect(mockInputs).toHaveLength(jobsBefore + 1);
-});
+test.each([false, true])(
+  'partial signing uses existing genuine B registry and permit gate: granted=%s',
+  async (granted) => {
+    const options = await signingFixture();
+    const { preparation } =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData()
+        .capsule;
+    const onKeyRequest = jest.fn(async (_request, token) => {
+      expect(() =>
+        assertRailgunPrivateSigner(token, identity, { ...options, ...preparation })
+      ).not.toThrow();
+      expect(() =>
+        assertRailgunPrivateSigner(token, identity, {
+          ...options,
+          ...preparation,
+          expected: { ...preparation.expected, unshieldAmount: '401' },
+        })
+      ).toThrow();
+      return {};
+    });
+    let checks = 0;
+    if (granted)
+      mockPermitConsume = () => ({
+        assertCurrent: async () => {
+          checks++;
+        },
+      });
+    const jobsBefore = mockInputs.length;
+    const work = signRailgunPrivateIntent({ ...options, ...preparation, onKeyRequest });
+    if (granted) {
+      await expect(work).resolves.toHaveProperty('signature');
+      expect(mockDerived).toHaveLength(1);
+      expect(checks).toBe(2);
+      expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+    } else {
+      await expect(work).rejects.toMatchObject({ code: 'RAILGUN_PRIVATE_SIGNING_REFUSED' });
+      expect(mockDerived).toHaveLength(0);
+    }
+    expect(mockInputs).toHaveLength(jobsBefore + 1);
+    expect(onKeyRequest).toHaveBeenCalledTimes(1);
+  }
+);
