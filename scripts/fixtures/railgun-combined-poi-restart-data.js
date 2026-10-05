@@ -44,6 +44,7 @@ function profileSnapshot(directory) {
     submissions: snapshot(path.join(profile, 'wallet-private-submissions')),
     inventory: single('wallet-privacy-inventory.json'),
     encryptedVault: single('identity/identity-vault.json'),
+    publicVaultMetadata: single('identity/vault-meta.json'),
   };
 }
 function exact(value, keys) {

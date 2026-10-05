@@ -1,0 +1,983 @@
+{
+  "schema": "railgun-second-cold-final-evidence-v1",
+  "qualifiedNativeProcesses": 18,
+  "groups": [
+    {
+      "creator": "Shield",
+      "case": "ack",
+      "pids": [61378, 62307, 62337],
+      "rootDriver": 18536,
+      "rootObservedExitCode": 0,
+      "rootDrained": true,
+      "hashOnlyHandoffJoinsVerified": true,
+      "handOffHashes": {
+        "setup": "ed86a3d486b9383f8e48d256b817cf5ad8a0db2d0e24e77e0965979341064a6d",
+        "proved": "a297545f242dfe6e937e0448985187f3749fd205c995f9724a628a4e50640bb7"
+      },
+      "proofAndSignaturePreserved": true,
+      "actualSubmitOutcome": "acknowledged",
+      "terminalBalances": {
+        "selectedChangeUnspentAmount": "0",
+        "unrelatedPreserved": true,
+        "totalDecreasedBySelectedChange": true
+      }
+    },
+    {
+      "creator": "Transact",
+      "case": "ack",
+      "pids": [62566, 63386, 63416],
+      "rootDriver": 99336,
+      "rootObservedExitCode": 0,
+      "rootDrained": true,
+      "hashOnlyHandoffJoinsVerified": true,
+      "handOffHashes": {
+        "setup": "7f11411e7d9704824b343244eb9b7f6edbffd935b3f749860b7d043b5b57c9c8",
+        "proved": "43bceb5f290082e8c8f16c5ed228c77d197ee6c974f8eb854fb4fdace2d05f26"
+      },
+      "proofAndSignaturePreserved": true,
+      "actualSubmitOutcome": "acknowledged",
+      "terminalBalances": {
+        "selectedChangeUnspentAmount": "0",
+        "unrelatedPreserved": true,
+        "totalDecreasedBySelectedChange": true
+      }
+    },
+    {
+      "creator": "Shield",
+      "case": "lost",
+      "pids": [63456, 64703, 64861],
+      "rootDriver": 99336,
+      "rootObservedExitCode": 0,
+      "rootDrained": true,
+      "hashOnlyHandoffJoinsVerified": true,
+      "handOffHashes": {
+        "setup": "93f967e1b4afd6bbb11e37bcaed4b752d28bc4c949aaeb70201dd1c7b0ea0b7c",
+        "proved": "85ea3bb7a7c5db2004e270c3677afa20c426812f98719ea83f6a8e60fa944d30"
+      },
+      "proofAndSignaturePreserved": true,
+      "actualSubmitOutcome": "unknown",
+      "terminalBalances": {
+        "selectedChangeUnspentAmount": "0",
+        "unrelatedPreserved": true,
+        "totalDecreasedBySelectedChange": true
+      }
+    },
+    {
+      "creator": "Transact",
+      "case": "lost",
+      "pids": [64980, 66362, 66411],
+      "rootDriver": 99336,
+      "rootObservedExitCode": 0,
+      "rootDrained": true,
+      "hashOnlyHandoffJoinsVerified": true,
+      "handOffHashes": {
+        "setup": "4676350e6fecaeceb39617298bf004a466f9235c6cfdd46fe5c1d3f4119eb19d",
+        "proved": "d06682d5d01da8ef6ca62e5ba77043a6246b462286dcff22270372b88fe99437"
+      },
+      "proofAndSignaturePreserved": true,
+      "actualSubmitOutcome": "unknown",
+      "terminalBalances": {
+        "selectedChangeUnspentAmount": "0",
+        "unrelatedPreserved": true,
+        "totalDecreasedBySelectedChange": true
+      }
+    }
+  ],
+  "reports": [
+    {
+      "creator": "Shield",
+      "case": "ack",
+      "phase": "setup",
+      "path": "docs/qualification/railgun-second-cold-shield-ack-setup-2026-10-05.json",
+      "sha256": "1bf6b4b05727b247304188027394e669ed2a6952a2096ec002f2364b7a62c73e",
+      "elapsedMs": 86078,
+      "sourceCount": 913,
+      "utilities": 296,
+      "utilityExitCode": 15,
+      "workers": 28,
+      "workerExitCode": 0,
+      "credentialLoans": 18,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 4,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 4,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 48,
+        "closes": 48,
+        "entries": 3078,
+        "transactionEntries": 212,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "ack",
+      "phase": "prove-stop",
+      "path": "docs/qualification/railgun-second-cold-shield-ack-prove-stop-2026-10-05.json",
+      "sha256": "c61bba799e383b9fe9ca24af6680d65db8fe19b5bacc84223d6190854dcb30c5",
+      "elapsedMs": 6837,
+      "sourceCount": 913,
+      "utilities": 17,
+      "utilityExitCode": 15,
+      "workers": 6,
+      "workerExitCode": 0,
+      "credentialLoans": 6,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 2,
+        "private-operate": 1,
+        "spending-sign": 1
+      },
+      "eoa": {
+        "addressAttempts": 1,
+        "signatureAttempts": 0,
+        "signatures": 0,
+        "sends": 0,
+        "journalBeforeSend": 0,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 0
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 81,
+        "transactionEntries": 5,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "ack",
+      "phase": "cold-submit",
+      "path": "docs/qualification/railgun-second-cold-shield-ack-cold-submit-2026-10-05.json",
+      "sha256": "38eeac66dcbf0853aa30c7a1de5c13fff1d12cd513dee4c4b1d01d918b7f3af9",
+      "elapsedMs": 10059,
+      "sourceCount": 913,
+      "utilities": 23,
+      "utilityExitCode": 15,
+      "workers": 7,
+      "workerExitCode": 0,
+      "credentialLoans": 5,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 3
+      },
+      "eoa": {
+        "addressAttempts": 2,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 165,
+        "transactionEntries": 47,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Transact",
+      "case": "ack",
+      "phase": "setup",
+      "path": "docs/qualification/railgun-second-cold-transact-ack-setup-2026-10-05.json",
+      "sha256": "b97d9c7961d54f1934027738cef4334806ec3613c8c37c538299e580efe88b34",
+      "elapsedMs": 95358,
+      "sourceCount": 913,
+      "utilities": 339,
+      "utilityExitCode": 15,
+      "workers": 31,
+      "workerExitCode": 0,
+      "credentialLoans": 20,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 5,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-transact-selector": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 4,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 54,
+        "closes": 54,
+        "entries": 3132,
+        "transactionEntries": 212,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Transact",
+      "case": "ack",
+      "phase": "prove-stop",
+      "path": "docs/qualification/railgun-second-cold-transact-ack-prove-stop-2026-10-05.json",
+      "sha256": "9e37017da749dc9fb3a42fd96dcbd2ed8afe29c559b52e966c10dabe7f525d9a",
+      "elapsedMs": 7037,
+      "sourceCount": 913,
+      "utilities": 17,
+      "utilityExitCode": 15,
+      "workers": 6,
+      "workerExitCode": 0,
+      "credentialLoans": 6,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 2,
+        "private-operate": 1,
+        "spending-sign": 1
+      },
+      "eoa": {
+        "addressAttempts": 1,
+        "signatureAttempts": 0,
+        "signatures": 0,
+        "sends": 0,
+        "journalBeforeSend": 0,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 0
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 81,
+        "transactionEntries": 5,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Transact",
+      "case": "ack",
+      "phase": "cold-submit",
+      "path": "docs/qualification/railgun-second-cold-transact-ack-cold-submit-2026-10-05.json",
+      "sha256": "c808b74aecaabdaf249d6da0f78d998357c68b7238f393221aaf462f3f9e6bc5",
+      "elapsedMs": 9981,
+      "sourceCount": 913,
+      "utilities": 23,
+      "utilityExitCode": 15,
+      "workers": 7,
+      "workerExitCode": 0,
+      "credentialLoans": 5,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 3
+      },
+      "eoa": {
+        "addressAttempts": 2,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 165,
+        "transactionEntries": 47,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "lost",
+      "phase": "setup",
+      "path": "docs/qualification/railgun-second-cold-shield-lost-setup-2026-10-05.json",
+      "sha256": "180b5ea5d01bb20beb76231cfd2e2e849266e3ca2aeea81cd634d914a7fd82d1",
+      "elapsedMs": 86648,
+      "sourceCount": 913,
+      "utilities": 296,
+      "utilityExitCode": 15,
+      "workers": 28,
+      "workerExitCode": 0,
+      "credentialLoans": 18,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 4,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 4,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 48,
+        "closes": 48,
+        "entries": 3078,
+        "transactionEntries": 212,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "lost",
+      "phase": "prove-stop",
+      "path": "docs/qualification/railgun-second-cold-shield-lost-prove-stop-2026-10-05.json",
+      "sha256": "1ec3e6f464e20f68933434eeaf3680378d86ba0fe6bffd50c4ec5d711a12dde1",
+      "elapsedMs": 6942,
+      "sourceCount": 913,
+      "utilities": 17,
+      "utilityExitCode": 15,
+      "workers": 6,
+      "workerExitCode": 0,
+      "credentialLoans": 6,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 2,
+        "private-operate": 1,
+        "spending-sign": 1
+      },
+      "eoa": {
+        "addressAttempts": 1,
+        "signatureAttempts": 0,
+        "signatures": 0,
+        "sends": 0,
+        "journalBeforeSend": 0,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 0
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 81,
+        "transactionEntries": 5,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "lost",
+      "phase": "cold-submit",
+      "path": "docs/qualification/railgun-second-cold-shield-lost-cold-submit-2026-10-05.json",
+      "sha256": "dfe256a0a1ee323cd6a3a671c21b13c3d16e53d5ecd92ba65e087fd3af8467d8",
+      "elapsedMs": 9993,
+      "sourceCount": 913,
+      "utilities": 23,
+      "utilityExitCode": 15,
+      "workers": 7,
+      "workerExitCode": 0,
+      "credentialLoans": 5,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 3
+      },
+      "eoa": {
+        "addressAttempts": 2,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 1,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 165,
+        "transactionEntries": 47,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Transact",
+      "case": "lost",
+      "phase": "setup",
+      "path": "docs/qualification/railgun-second-cold-transact-lost-setup-2026-10-05.json",
+      "sha256": "79b6922ce6161f2c11303d432e6a4b10c22fc56a53f7366776942ea99590f5da",
+      "elapsedMs": 95314,
+      "sourceCount": 913,
+      "utilities": 339,
+      "utilityExitCode": 15,
+      "workers": 31,
+      "workerExitCode": 0,
+      "credentialLoans": 20,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 5,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-transact-selector": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 4,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 54,
+        "closes": 54,
+        "entries": 3132,
+        "transactionEntries": 212,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Transact",
+      "case": "lost",
+      "phase": "prove-stop",
+      "path": "docs/qualification/railgun-second-cold-transact-lost-prove-stop-2026-10-05.json",
+      "sha256": "9f1047e5a9ad38c810140015423e806dd87b111e10f7caedd81801f692f976de",
+      "elapsedMs": 6871,
+      "sourceCount": 913,
+      "utilities": 17,
+      "utilityExitCode": 15,
+      "workers": 6,
+      "workerExitCode": 0,
+      "credentialLoans": 6,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 2,
+        "private-operate": 1,
+        "spending-sign": 1
+      },
+      "eoa": {
+        "addressAttempts": 1,
+        "signatureAttempts": 0,
+        "signatures": 0,
+        "sends": 0,
+        "journalBeforeSend": 0,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 0
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 81,
+        "transactionEntries": 5,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    },
+    {
+      "creator": "Transact",
+      "case": "lost",
+      "phase": "cold-submit",
+      "path": "docs/qualification/railgun-second-cold-transact-lost-cold-submit-2026-10-05.json",
+      "sha256": "82533a143fbe3cda4906d5370e98b865e20ebc3e548bc60cddfb631b8b39c255",
+      "elapsedMs": 10263,
+      "sourceCount": 913,
+      "utilities": 23,
+      "utilityExitCode": 15,
+      "workers": 7,
+      "workerExitCode": 0,
+      "credentialLoans": 5,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 3
+      },
+      "eoa": {
+        "addressAttempts": 2,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 1,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 7,
+        "closes": 7,
+        "entries": 165,
+        "transactionEntries": 47,
+        "pending": 0
+      },
+      "state": "audited; original process exit0 and root driver drained"
+    }
+  ],
+  "freeze": {
+    "path": "/private/tmp/railgun-second-cold-root-oct5-freeze-c.json",
+    "sha256": "f986f3efed3d9f0a2535273fce61f72c37fa5d7f6d7e9e4c9e81843f858cf2fc",
+    "sources": 5274,
+    "allCurrent": true
+  },
+  "sharedReportSources": 913,
+  "independentRecomputations": [
+    "P1 bootstrap+prove jobs/admission/exit maps",
+    "P2 bootstrap+host+terminal baseline+ingestion job/admission/exit maps",
+    "complete combined-chain+second-transport outer role maps",
+    "P2 host+baseline17headers/1log+terminal source call map"
+  ],
+  "compatibility": {
+    "rootHandle": 71635,
+    "exitCode": 0,
+    "rootObservedDrained": true,
+    "processes": 6,
+    "allPassed": true
+  },
+  "lostReplyProvenance": {
+    "exactErrorIdentityWeakSet": "scripts/fixtures/railgun-combined-poi-second-chain.js:70,417",
+    "onlyAfterActualSignedBytesAttemptedJournalNonceIntentReceiptChecks": true,
+    "oneControlledLossAndOneSendEach": true,
+    "noRepeatedProofOrPrivateSignatureInP2": true,
+    "unexpectedErrorsRemainSticky": true
+  },
+  "publication": "Only 18 raw reports, source inventory and audit. No profile, private wire or handoff copies. No actual service acceptance, live/funded use, Tor, power-loss or scope C recovery claim.",
+  "coreMatrixProcesses": 12,
+  "compatibilityReports": [
+    {
+      "creator": "Shield",
+      "case": "compatibility-restart",
+      "phase": "restart-setup",
+      "path": "docs/qualification/railgun-second-cold-compat-shield-restart-setup-2026-10-05.json",
+      "sha256": "6d4e2ffc28dfc0fed74f8d615f942ab67174eb2f2b5b8483be0f6dc4a7642888",
+      "pid": 66958,
+      "elapsedMs": 85940,
+      "sourceCount": 913,
+      "utilities": 296,
+      "utilityExitCode": 15,
+      "workers": 28,
+      "workerExitCode": 0,
+      "credentialLoans": 18,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 4,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 4,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 48,
+        "closes": 48,
+        "entries": 3078,
+        "transactionEntries": 212,
+        "pending": 0
+      },
+      "firstStageGroups": 20,
+      "newProcessRestartQualified": false,
+      "secondColdSubmitQualified": false,
+      "state": "audited; original child exit0 and root71635 exit0/drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "compatibility-restart",
+      "phase": "restart-resume",
+      "path": "docs/qualification/railgun-second-cold-compat-shield-restart-resume-2026-10-05.json",
+      "sha256": "e25113686bcded220121fe492f577b70a4e840cd1857803946709d09b80612b1",
+      "pid": 67567,
+      "elapsedMs": 10195,
+      "sourceCount": 913,
+      "utilities": 28,
+      "utilityExitCode": 15,
+      "workers": 8,
+      "workerExitCode": 0,
+      "credentialLoans": 7,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 3,
+        "private-operate": 1,
+        "spending-sign": 1
+      },
+      "eoa": {
+        "addressAttempts": 3,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 1,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 9,
+        "closes": 9,
+        "entries": 181,
+        "transactionEntries": 52,
+        "pending": 0
+      },
+      "firstStageGroups": 0,
+      "newProcessRestartQualified": true,
+      "secondColdSubmitQualified": false,
+      "state": "audited; original child exit0 and root71635 exit0/drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "compatibility-default",
+      "phase": "default",
+      "path": "docs/qualification/railgun-second-cold-compat-shield-default-2026-10-05.json",
+      "sha256": "7f227d1c3815c143773be13ea8678b5a58814c5909b26f51123abd9889e909e7",
+      "pid": 67730,
+      "elapsedMs": 83875,
+      "sourceCount": 913,
+      "utilities": 289,
+      "utilityExitCode": 15,
+      "workers": 25,
+      "workerExitCode": 0,
+      "credentialLoans": 15,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 1,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 4,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 46,
+        "closes": 46,
+        "entries": 3031,
+        "transactionEntries": 212,
+        "pending": 0
+      },
+      "firstStageGroups": 17,
+      "newProcessRestartQualified": false,
+      "secondColdSubmitQualified": false,
+      "state": "audited; original child exit0 and root71635 exit0/drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "compatibility-change",
+      "phase": "change",
+      "path": "docs/qualification/railgun-second-cold-compat-shield-change-2026-10-05.json",
+      "sha256": "01dbee3e895f2da6f3d711b9834c40559267742c9540af6eb13de2b00a3c6b9e",
+      "pid": 68562,
+      "elapsedMs": 87869,
+      "sourceCount": 913,
+      "utilities": 295,
+      "utilityExitCode": 15,
+      "workers": 28,
+      "workerExitCode": 0,
+      "credentialLoans": 18,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 4,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 4,
+        "signatureAttempts": 1,
+        "signatures": 1,
+        "sends": 1,
+        "journalBeforeSend": 1,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 1
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 48,
+        "closes": 48,
+        "entries": 3060,
+        "transactionEntries": 212,
+        "pending": 0
+      },
+      "firstStageGroups": 20,
+      "newProcessRestartQualified": false,
+      "secondColdSubmitQualified": false,
+      "state": "audited; original child exit0 and root71635 exit0/drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "compatibility-second",
+      "phase": "second-spend",
+      "path": "docs/qualification/railgun-second-cold-compat-shield-second-2026-10-05.json",
+      "sha256": "cae36262420dae04e511745247559fce56d0b0634d3f25a8cc952531f483c340",
+      "pid": 69633,
+      "elapsedMs": 91052,
+      "sourceCount": 913,
+      "utilities": 306,
+      "utilityExitCode": 15,
+      "workers": 31,
+      "workerExitCode": 0,
+      "credentialLoans": 22,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 6,
+        "private-operate": 2,
+        "private-receive": 1,
+        "spending-sign": 2,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 7,
+        "signatureAttempts": 2,
+        "signatures": 2,
+        "sends": 2,
+        "journalBeforeSend": 2,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 2
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 52,
+        "closes": 52,
+        "entries": 3184,
+        "transactionEntries": 264,
+        "pending": 0
+      },
+      "firstStageGroups": 20,
+      "newProcessRestartQualified": false,
+      "secondColdSubmitQualified": false,
+      "state": "audited; original child exit0 and root71635 exit0/drained"
+    },
+    {
+      "creator": "Shield",
+      "case": "compatibility-terminal",
+      "phase": "second-spend-ingest",
+      "path": "docs/qualification/railgun-second-cold-compat-shield-terminal-2026-10-05.json",
+      "sha256": "dccbeb249d053d315c371da64d0f3aef188bd27355efb045fb95ba05c05cda04",
+      "pid": 70874,
+      "elapsedMs": 94544,
+      "sourceCount": 913,
+      "utilities": 316,
+      "utilityExitCode": 15,
+      "workers": 33,
+      "workerExitCode": 0,
+      "credentialLoans": 23,
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 7,
+        "private-operate": 2,
+        "private-receive": 1,
+        "spending-sign": 2,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "eoa": {
+        "addressAttempts": 7,
+        "signatureAttempts": 2,
+        "signatures": 2,
+        "sends": 2,
+        "journalBeforeSend": 2,
+        "controlledLostAcknowledgments": 0,
+        "unexpectedFailures": 0,
+        "reviews": 2
+      },
+      "storageKeyObservation": {
+        "copies": 3,
+        "unwiped": 0
+      },
+      "guardAttempts": 0,
+      "wrapperTransport": {
+        "creates": 54,
+        "closes": 54,
+        "entries": 3218,
+        "transactionEntries": 264,
+        "pending": 0
+      },
+      "firstStageGroups": 20,
+      "newProcessRestartQualified": false,
+      "secondColdSubmitQualified": false,
+      "state": "audited; original child exit0 and root71635 exit0/drained"
+    }
+  ],
+  "preservedPreviousPackages": ["../qualified-c", "../qualified-c-matrix"],
+  "tests": {
+    "passed": 366,
+    "suites": 24,
+    "log": "/private/tmp/railgun-second-cold-root-oct5-tests-e.log",
+    "logSha256": "7a44253d6b6a9d5d6b8e25a55a720147e65ec6fa9fd2bc16bf980dea7b3f4195",
+    "rootConfirmedDrained": true,
+    "lintLog": "/private/tmp/railgun-second-cold-root-oct5-lint-e.log",
+    "lintLogSha256": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f",
+    "lintExitCode": 0,
+    "rootReportedFormatAllMatched": true,
+    "newFullRegressionClaim": false,
+    "elapsedSeconds": 15.625
+  },
+  "publishedIndexProvenance": {
+    "inputIndexSha256": "831a126440d31676076be5c92548a9c1cbf8742de2c1f5b5b96950b1b82c0eab",
+    "inputCopyPlanSha256": "1a672f85894fa4bc173e8bb22b3bd754a2f8424ac827187fb062c71e20381ec3",
+    "transformation": "Replace only raw-report absolute paths with corresponding repository paths; raw report bytes unchanged. Add this provenance and published inventory/audit locations.",
+    "sourceInventory": {
+      "path": "docs/qualification/railgun-second-cold-source-hashes-2026-10-05.json",
+      "sha256": "b1d8e0c09f2356c210313cd6d7e8c68038a0638fd1470f5f664fa7c9310556fc"
+    },
+    "audit": {
+      "path": "docs/qualification/railgun-second-cold-audit-2026-10-05.md",
+      "sha256": "da83d9c9b6c98e7eec20b04000348aeca167e54c247223d86b361640c50c6229"
+    }
+  }
+}

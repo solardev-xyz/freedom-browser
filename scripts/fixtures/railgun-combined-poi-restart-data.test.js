@@ -18,6 +18,7 @@ beforeEach(() => {
     'wallet-private-submissions/journal': 'encrypted-eoa',
     'wallet-privacy-inventory.json': 'authenticated-inventory',
     'identity/identity-vault.json': 'encrypted-vault',
+    'identity/vault-meta.json': 'public-wallet-metadata',
   })) {
     const name = path.join(directory, 'profile', file);
     fs.mkdirSync(path.dirname(name), { recursive: true });
@@ -136,6 +137,7 @@ test.each([
   'wallet-private-submissions/journal',
   'wallet-privacy-inventory.json',
   'identity/identity-vault.json',
+  'identity/vault-meta.json',
 ])('changed %s refuses before restore', (name) => {
   sealed();
   fs.appendFileSync(path.join(directory, 'profile', name), 'mutation');

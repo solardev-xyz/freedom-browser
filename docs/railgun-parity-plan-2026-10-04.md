@@ -7,6 +7,17 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [second cold-submission checkpoint](railgun-second-cold-submission-2026-10-05.md)
+now passes both original input histories through separate setup, prove-and-stop,
+and reopened submission processes, including acknowledged and lost-response
+outcomes. Twelve processes plus six compatibility processes pass with 913 identical
+source hashes; 366 focused tests and full lint pass. The recovered host reuses the
+original second private signature/proof, sends once and ingests the selected change
+without disturbing unrelated balances. All external services remain simulated.
+Original-signature recovery of an interrupted second proof and a second genuine
+Kohaku instance remain next; the full production regression stays pinned to 189c0a31.
+The checkpoints below retain their historical scope.
+
 The [partial Kohaku facade checkpoint](railgun-kohaku-partial-facade-2026-10-05.md)
 now qualifies partial withdrawal through the actual adapter, across both input
 histories, failures, cancellation and compatibility (17 native processes).
@@ -82,6 +93,10 @@ The [partial submission and capture checkpoint](railgun-partial-submission-2026-
 
 ## Established baseline
 
+The detailed checkpoints below describe their recorded versions. The latest
+checkpoint and next-work section distinguish the current partial-withdrawal
+support from these earlier integration restrictions.
+
 PPv2 has a funded native Sepolia journey through registration, deposits, a
 finalized relayed withdrawal, restart/change recovery and exits. Controlled
 native and allowlisted ERC-20 lifecycles cover additional recovery and proof
@@ -124,8 +139,8 @@ account/scan, and requalifies the six existing wallet flows. Its current frozen
 regression passes 13,949 tests at `941099ff`. The subsequent
 [receipt/TXID primitives](railgun-partial-receipt-2026-10-04.md) bind versioned
 public outcomes, both token transfers and ordered change/unshield commitments,
-with real engine hashing/path qualification over synthetic evidence. Main
-partial admission remains closed; earlier counts belong to their recorded sources.
+with real engine hashing/path qualification over synthetic evidence. At that checkpoint, main
+partial admission remained closed; earlier counts belong to their recorded sources.
 The [creator-authentication checkpoint](railgun-partial-creator-authentication-2026-10-05.md)
 now verifies the final unshield preimage for generic received-note provenance
 and bounded retained change recovery. Its self-change fixture reaches genuine
@@ -137,9 +152,9 @@ and exact application marker binding. The subsequent
 [protected internal controller](railgun-partial-controller-2026-10-05.md) qualifies
 a genuine Shield-input hold/sign/prove/verify and encrypted account reopen, with
 real POI/preflight hosts over simulated services. That controller checkpoint did not yet qualify submission or combined POI
-persistence. Submission and first-stage combined persistence are now qualified above;
-normal change ingestion, list acceptance and second spend remain open, and the
-facade stays full-only.
+persistence. At that controller checkpoint, normal change ingestion, list
+acceptance and second spend remained open, and the facade was full-only.
+Later checkpoints above supersede those restrictions within their stated scope.
 
 ## Next technical work
 
@@ -151,31 +166,19 @@ facade stays full-only.
    preflight, vault signer and journals, but synthetic RPC. The private broadcaster
    refuses Shield. Live public-facade qualification and cold resolution/note
    ingestion through this facade remain distinct from these tests.
-2. **Add partial withdrawal with authenticated change.** PPv2 already has
-   withdrawal/change recovery and second-spend evidence. Railgun's facade
-   remains limited to full-note spends; its internal partial controller is now
-   connected and natively qualified for Shield input. The new structural
-   records express partial withdrawal, and native utility qualification now covers
-   proof shape, amount conservation, change decryption and cold reconstruction.
-   Receipt/TXID primitives, creator authentication and standalone combined POI
-   are implemented and qualified independently.
-   Both Shield and received-input connected controller qualification now pass.
-   Partial submission and authenticated capture now pass six controlled native
-   cases across both input creators. First-stage durable combined post-transaction
-   POI now passes both connected native cases. Completing the full flow still
-   requires live deployed verifier checks, real-service list acceptance and a
-   connected restart/second spend. Normal change ingestion and disposable-list
-   membership now pass the connected controlled cases described above.
-   Signed-but-unfinished proof resumption now has a production recovery host and
-   six warm native cases plus twelve genuine fresh-process cases, including
-   explicitly advanced trees. The fixed recovered-proof submission host now has fourteen three-process
-   native cases; it remains an internal entry point with synthetic service evidence. Do not merely
-   relax the commitment-count check. Received-input support is a prerequisite,
-   not evidence that this larger flow is implemented. The `01x02` artifacts are
-   already pinned in `railgun-artifacts.js`; the missing work is integration.
-   The [bounded partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md)
-   maps the complete change-recovery and second-spend path, including the
-   additional creator shape and combined output/unshield POI requirements.
+2. **Finish the remaining partial-withdrawal composition boundaries.**
+   The actual Kohaku adapter now supports partial withdrawal with immutable
+   input/withdrawal/change review. Genuine change scanning, disposable-list
+   acceptance, second spending, terminal ingestion, two-process restart and
+   three-process second recovered submission are qualified in controlled runs.
+   Next are original-signature recovery when the second proof is interrupted
+   after signing, and a fresh second Kohaku instance spending the scanned change.
+   Real deployed verifier checks, service list acceptance and private broadcasts
+   remain separate live qualification. Earlier warm and advanced-root recovery
+   evidence retains its own source inventory. The
+   [bounded partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md)
+   records the creator shapes and combined output/unshield POI requirements;
+   the latest checkpoints above distinguish implemented and still-open work.
 3. **Design a restricted return-to-origin recovery path.** The inspected engine
    and wallet SDK implement origin selection as client policy. The inspected
    contract's `validateTransaction` checks the ordinary unshield proof and

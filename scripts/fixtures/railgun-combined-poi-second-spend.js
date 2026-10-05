@@ -41,7 +41,7 @@ function selectChange(owned, continuation) {
   return { note, record, merkleRoot: trees[0].root };
 }
 exports.selectChange = selectChange;
-async function run(h, restart) {
+async function run(h, restart, proveStop = false) {
   const {
     identity,
     enrollment,
@@ -229,6 +229,49 @@ async function run(h, restart) {
       assert.deepEqual(await capsules.readSigned(next.receipt), secondStored);
       context.assertCurrent();
     });
+    if (proveStop) {
+      assert.equal(signal.aborted, false);
+      completion.close();
+      completion = undefined;
+      const firstNow = (await h.journal().list())[0];
+      secondChain.assertFirstRecord(firstNow);
+      assert.equal(secondChain.report().firstCanonicalRefreshReads, 1);
+      assert.equal(secondChain.report().sends, 0);
+      assert.equal(secondChain.report().signatures, 0);
+      assert.deepEqual(await store.get(capsuleDigest), retainedBefore);
+      assert.deepEqual(await store.inspect(), retainedInspect);
+      assert.deepEqual(fs.readFileSync(retainedFile), retainedBytes);
+      const after = h.activity();
+      const expected = require('./railgun-combined-poi-second-cold-counts').assertProveStop(
+        before,
+        after,
+        secondChain.report(),
+        h.wire
+      );
+      assert.equal(h.pendingChildren(), 0);
+      assert.equal(h.unwipedLoans(), 0);
+      sticky.assertEmpty();
+      return {
+        report: {
+          genuineSecondProofStored: true,
+          completionDiscarded: true,
+          secondColdSubmitQualified: false,
+          counts: expected,
+          traffic: secondChain.report(),
+        },
+        sealed: {
+          records: require('./railgun-combined-poi-second-handoff').pairHashes(
+            originalPrivate,
+            { entry: secondEntry, stored: secondStored },
+            firstNow
+          ),
+          retained: {
+            entrySha256: require('./railgun-combined-poi-restart-data').digest(retainedBefore),
+            inspectSha256: require('./railgun-combined-poi-restart-data').digest(retainedInspect),
+          },
+        },
+      };
+    }
     const submit = require(
       walletPath + 'railgun-private-submission'
     ).submitRailgunPrivateTransaction;
@@ -439,3 +482,5 @@ async function run(h, restart) {
 }
 exports.run = (h) => run(h, false);
 exports.runRestart = (h) => run(h, true);
+
+exports.proveAndStopRestart = (h) => run(h, true, true);

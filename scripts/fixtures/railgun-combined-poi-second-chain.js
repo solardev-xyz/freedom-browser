@@ -49,20 +49,25 @@ function verifier(directory) {
     ])
     .toLowerCase();
 }
-exports.create = ({
-  bytecodes,
-  artifactDirectory,
-  accountIndex,
-  selected,
-  tree,
-  merkleRoot,
-  amount,
-  recipient,
-  firstRecord,
-  firstNullifier,
-  firstRoot,
-  firstReceipt,
-}) => {
+function create(
+  {
+    bytecodes,
+    artifactDirectory,
+    accountIndex,
+    selected,
+    tree,
+    merkleRoot,
+    amount,
+    recipient,
+    firstRecord,
+    firstNullifier,
+    firstRoot,
+    firstReceipt,
+  },
+  cold = false,
+  lost = false
+) {
+  const lostReplies = new WeakSet();
   selected = copy(selected);
   firstRecord = copy(firstRecord);
   firstReceipt = copy(firstReceipt);
@@ -230,6 +235,7 @@ exports.create = ({
     },
     assertKeyAdmission() {
       current();
+      assert.equal(cold, false);
       assert.deepEqual(counts.privateCalls, {
         rootHistory: 1,
         unshieldFee: 1,
@@ -240,9 +246,17 @@ exports.create = ({
     assertSigning(value) {
       exactTransaction(value);
       assert.equal(counts.signatures, 0);
+      if (cold)
+        assert.deepEqual(counts.privateCalls, {
+          rootHistory: 1,
+          unshieldFee: 1,
+          getVerificationKey: 1,
+          nullifiers: 1,
+        });
       assert.equal(BigInt(value.nonce), BigInt(firstRecord.nonce) + 1n);
       counts.signatures++;
     },
+    isLostReply: (error) => lostReplies.has(error),
     report: () => copy(counts),
     evidence() {
       current();
@@ -396,6 +410,13 @@ exports.create = ({
             counts.journalBeforeSend++;
             counts.sends++;
             build();
+            if (lost) {
+              counts.controlledLostReplies = (counts.controlledLostReplies || 0) + 1;
+              inc('validated', key);
+              const error = Error('Disposable second submission reply lost');
+              lostReplies.add(error);
+              throw error;
+            }
             result = signed.hash;
           } else if (
             ['eth_getTransactionReceipt', 'eth_getTransactionByHash'].includes(wire.method)
@@ -432,9 +453,13 @@ exports.create = ({
           body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: wire.id, result })),
         };
       } catch (error) {
-        sticky.record(error, 'second-chain.request');
+        if (!lostReplies.has(error)) sticky.record(error, 'second-chain.request');
         throw error;
       }
     },
   });
-};
+}
+exports.create = (options) => create(options);
+exports.createCold = (options) => create(options, true);
+
+exports.createColdLost = (options) => create(options, true, true);

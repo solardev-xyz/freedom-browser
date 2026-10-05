@@ -99,18 +99,25 @@ async function snapshotSetup(h) {
     }),
   });
 }
-async function resume(h) {
+async function resume(h, mode = 'complete') {
   const { enrollment, publicAccount, wire, archive, signal } = h;
   const coordinator = publicAccount.coordinator;
   let store, mirror, replay;
   const current = () => assert.equal(signal.aborted, false);
   try {
     h.phase('restart-private-records');
-    const privateState = await original(enrollment);
+    const pair =
+      mode === 'cold-submit' || mode === 'cold-submit-lost'
+        ? await require('./railgun-combined-poi-second-cold').readPair(enrollment, h.sealed.records)
+        : undefined;
+    const privateState = pair ? pair.first : await original(enrollment);
     current();
     const records = await h.journal().list();
     assert.equal(records.length, 1);
-    assert.deepEqual(hashes(privateState, records[0]), wire.privateHashes);
+    assert.deepEqual(hashes(privateState, records[0]), {
+      ...wire.privateHashes,
+      ...(pair ? { record: h.sealed.records.record } : {}),
+    });
     assert.equal(records[0].hash, wire.transaction.hash);
     assert.ok(records[0].resolution);
     const capsuleDigest = require(wallet + 'railgun-private-capsule').digestRailgunPrivateCapsule(
@@ -144,6 +151,53 @@ async function resume(h) {
     );
     chain.bindProof(retained.payload);
     h.installChain(chain);
+    if (pair) {
+      assert.deepEqual(
+        require(wallet + 'railgun-account-public').getRailgunAccountPublicIdentity(
+          coordinator,
+          enrollment
+        ),
+        wire.publicIdentity
+      );
+      const ownEvidence = {
+        capsule: privateState.stored.capsule,
+        record: records[0],
+        transaction: wire.transaction,
+        receipt: wire.receipt,
+        row: wire.history.rows.at(-1),
+      };
+      assert.equal(
+        require(wallet + 'railgun-own-txid').matchRailgunOwnTxid(ownEvidence).output.kind,
+        'partial-unshield'
+      );
+      assert.equal(
+        require('./railgun-combined-poi-second-handoff').firstImmutable(records[0]),
+        h.sealed.records.immutableRecord
+      );
+      assert.equal(data.digest(retained), h.sealed.retained.entrySha256);
+      assert.equal(data.digest(await store.inspect()), h.sealed.retained.inspectSha256);
+      const stores = await enrollment.openPrivateRecoveryStores();
+      h.adoptStores(stores.reservations, stores.capsules);
+      h.assertBootstrapDrained();
+      h.beforeSecond();
+      const cold = require('./railgun-combined-poi-second-cold');
+      const result = await (mode === 'cold-submit-lost' ? cold.runLost : cold.run)({
+        ...h,
+        coordinator,
+        pair,
+        store,
+        replay,
+        chain,
+        continuation: {
+          ownEvidence,
+          rows: wire.history.rows,
+          state: wire.history.state,
+          events: chain.continuation.logs,
+        },
+      });
+      current();
+      return { ...result, chain };
+    }
     h.phase('restart-completed-source');
     const checkpoint = await completed({ ...h, coordinator });
     current();
@@ -227,7 +281,10 @@ async function resume(h) {
     };
     h.assertBootstrapDrained();
     h.beforeSecond();
-    const second = await require('./railgun-combined-poi-second-spend').runRestart({
+    const secondModule = require('./railgun-combined-poi-second-spend');
+    const second = await (
+      mode === 'prove-stop' ? secondModule.proveAndStopRestart : secondModule.runRestart
+    )({
       ...h,
       coordinator,
       continuation,
@@ -236,6 +293,7 @@ async function resume(h) {
       terminalMode: true,
     });
     current();
+    if (mode === 'prove-stop') return { report: second.report, sealed: second.sealed, chain };
     const terminal = await require('./railgun-combined-poi-terminal-ingest').runRestart({
       ...h,
       first: continuation,
@@ -277,4 +335,11 @@ async function resume(h) {
     }
   }
 }
-module.exports = { snapshotSetup, resume, hashes };
+module.exports = {
+  snapshotSetup,
+  resume: (h) => resume(h),
+  proveStop: (h) => resume(h, 'prove-stop'),
+  coldSubmit: (h) => resume(h, 'cold-submit'),
+  coldSubmitLost: (h) => resume(h, 'cold-submit-lost'),
+  hashes,
+};
