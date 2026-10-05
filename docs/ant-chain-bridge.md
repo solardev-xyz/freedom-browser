@@ -85,7 +85,10 @@ above, so Ant narrows its window. A Blockscout that failed is not asked again
 for 5 minutes. Blockscout sees the node wallet's address for this, but only
 while an RPC could serve the span: with none able to, it is not asked, and
 its transfer pages are abandoned as soon as the RPC answer fails. Its URL
-gets the same https-or-loopback check as RPC URLs, on every redirect hop.
+gets the same https-or-loopback check as RPC URLs, on every redirect hop, and
+a hop that leaves the configured URL's origin must also be https to a host
+that is not this machine, so a remote Blockscout cannot redirect the request
+to a plaintext or local service.
 
 ### Which error Ant sees: one ranking rule
 

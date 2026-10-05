@@ -4,7 +4,9 @@ const {
   IndexUnavailableError,
   MAX_PAGES,
   MAX_REDIRECTS,
+  isLocalHostname,
 } = require('./blockscout-index');
+const { validateRpcUrl } = require('./network-registry');
 
 const BASE = 'https://gnosisscan.io/api/v2';
 const FROM = '0x2b7c998ae67905de2335d438e003dc5459b352e0';
@@ -169,6 +171,55 @@ describe('redirects', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  // The registry's check lets a configured URL use http on loopback; a remote
+  // Blockscout must not borrow that to reach a local service (R2-M1).
+  test.each([
+    'http://127.0.0.1:1633/stamps',
+    'http://localhost:5001/api/v0/shutdown',
+    'https://127.0.0.1:1633/stamps',
+    'https://[::1]/x',
+    'https://[::ffff:127.0.0.1]/x',
+    'http://127.1/x',
+    'https://foo.localhost/x',
+  ])('off the configured origin to %s are refused, with the registry check', async (location) => {
+    expect(validateRpcUrl(location)).toBeNull(); // the registry check alone allows it
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => redirect(location))
+      .mockImplementation(() => reply([{ height: 1 }]));
+    await expect(indexedHeight(BASE, { validateUrl: validateRpcUrl })).rejects.toThrow(
+      'Blockscout URL refused'
+    );
+    expect(global.fetch.mock.calls.map(([url]) => url)).not.toContain(location);
+  });
+
+  test('within a configured loopback http origin are still followed', async () => {
+    const local = 'http://127.0.0.1:4000/api/v2';
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => redirect(`${local}/elsewhere`))
+      .mockImplementation(() => reply(page));
+    await expect(
+      tokenTransfersFrom(local, { from: FROM, token: TOKEN, validateUrl: validateRpcUrl })
+    ).resolves.toEqual(page.items);
+    expect(global.fetch.mock.calls[1][0]).toBe(`${local}/elsewhere`);
+  });
+
+  test('from a configured loopback origin to another local port are refused', async () => {
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => redirect('http://127.0.0.1:1633/stamps'))
+      .mockImplementation(() => reply(page));
+    await expect(
+      tokenTransfersFrom('http://127.0.0.1:4000/api/v2', {
+        from: FROM,
+        token: TOKEN,
+        validateUrl: validateRpcUrl,
+      })
+    ).rejects.toThrow('Blockscout URL refused');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   test('without a caller check, only https is fetched', async () => {
     global.fetch = jest.fn(() => reply(page));
     await expect(
@@ -183,5 +234,26 @@ describe('redirects', () => {
       'redirected too often'
     );
     expect(global.fetch).toHaveBeenCalledTimes(MAX_REDIRECTS + 1);
+  });
+});
+
+describe('isLocalHostname', () => {
+  test.each([
+    ['localhost', true],
+    ['LOCALHOST.', true],
+    ['a.localhost', true],
+    ['127.0.0.1', true],
+    ['127.8.9.10', true],
+    ['0.0.0.0', true],
+    ['[::1]', true],
+    ['[::]', true],
+    ['[::ffff:7f00:1]', true],
+    ['[::7f00:1]', true],
+    ['gnosisscan.io', false],
+    ['8.8.8.8', false],
+    ['[::ffff:808:808]', false],
+    ['localhost.example.com', false],
+  ])('%s → %s', (host, expected) => {
+    expect(isLocalHostname(host)).toBe(expected);
   });
 });

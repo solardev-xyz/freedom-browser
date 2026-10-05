@@ -11,9 +11,15 @@
  * redirects there since 2026-10). Redirects are followed by hand, at most
  * MAX_REDIRECTS hops, and every hop's URL must pass the caller's `validateUrl`
  * (the router passes the registry's https-or-loopback check, the one every
- * main-process-fetched endpoint URL gets), so a redirect cannot turn the
- * request into a plaintext or LAN fetch carrying the wallet address.
+ * main-process-fetched endpoint URL gets). That check lets a *configured*
+ * URL use plaintext http on loopback (a self-hosted Blockscout), which a
+ * redirect must not borrow: a hop that leaves the configured URL's origin must
+ * also use https and must not name a loopback or unspecified address (see
+ * redirectRefusal). So a remote Blockscout cannot turn the request into a
+ * plaintext, LAN or local-service fetch carrying the wallet address.
  */
+
+const net = require('node:net');
 
 // A wallet with more transfers than this (50 per page) is not checked: the
 // scan then takes the range-capped path instead.
@@ -31,6 +37,47 @@ function httpsOnly(url) {
   }
 }
 
+// Addresses that reach this machine: 127.0.0.0/8, ::1, their IPv4-mapped and
+// -compatible IPv6 forms, and the unspecified 0.0.0.0/8 and :: (which Linux
+// and macOS route to the local host). The URL parser has already canonicalised
+// shorthand forms such as 127.1, 0x7f.1 and [::ffff:127.0.0.1].
+const LOCAL_ADDRESSES = new net.BlockList();
+LOCAL_ADDRESSES.addSubnet('127.0.0.0', 8, 'ipv4');
+LOCAL_ADDRESSES.addSubnet('0.0.0.0', 8, 'ipv4');
+LOCAL_ADDRESSES.addAddress('::1', 'ipv6');
+LOCAL_ADDRESSES.addAddress('::', 'ipv6');
+LOCAL_ADDRESSES.addSubnet('::ffff:127.0.0.0', 104, 'ipv6');
+LOCAL_ADDRESSES.addSubnet('::ffff:0.0.0.0', 104, 'ipv6');
+LOCAL_ADDRESSES.addSubnet('::127.0.0.0', 104, 'ipv6');
+
+function isLocalHostname(hostname) {
+  const host = String(hostname || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.+$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  const version = net.isIP(host);
+  if (!version) return false;
+  return LOCAL_ADDRESSES.check(host, version === 4 ? 'ipv4' : 'ipv6');
+}
+
+// Why a redirect from `origin` (the configured URL's origin) to `target` is
+// refused, or null. Staying on the configured origin is fine, whatever its
+// scheme: the user chose that server. Leaving it needs https to a host that
+// is not this machine, on top of the caller's own check.
+function redirectRefusal(target, origin) {
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return 'redirect to an invalid URL';
+  }
+  if (parsed.origin === origin) return null;
+  if (parsed.protocol !== 'https:') return 'redirect off the configured origin must use https://';
+  if (isLocalHostname(parsed.hostname)) return 'redirect to a loopback host';
+  return null;
+}
+
 class IndexUnavailableError extends Error {
   constructor(message) {
     super(message);
@@ -41,9 +88,15 @@ class IndexUnavailableError extends Error {
 async function getJson(url, signal, validateUrl = httpsOnly) {
   const timeout = AbortSignal.any([signal, AbortSignal.timeout(PAGE_TIMEOUT_MS)]);
   let target = url;
+  let origin = null;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    // validateUrl refuses it below.
+  }
   let response;
   for (let hop = 0; ; hop += 1) {
-    const invalid = validateUrl(target);
+    const invalid = validateUrl(target) || (hop > 0 ? redirectRefusal(target, origin) : null);
     if (invalid) throw new IndexUnavailableError(`Blockscout URL refused: ${invalid}`);
     try {
       response = await fetch(target, {
@@ -130,5 +183,6 @@ module.exports = {
   MAX_PAGES,
   MAX_REDIRECTS,
   PAGE_TIMEOUT_MS,
+  isLocalHostname,
   TOTAL_TIMEOUT_MS,
 };

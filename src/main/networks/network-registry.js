@@ -253,7 +253,8 @@ function normalizeRpcUrls(rpcUrls = []) {
 // (the RPC pool, the Colibri prover client, the Blockscout index check, which
 // also sends it the node wallet's address), so all three get the same
 // https-or-loopback SSRF validation. The index check re-applies it to every
-// redirect hop (blockscout-index.js). Other roles carry no network-fetched URL
+// redirect hop and additionally refuses a hop off the configured origin to
+// plaintext or loopback (blockscout-index.js). Other roles carry no network-fetched URL
 // to guard.
 const URL_VALIDATED_ROLES = new Set(['rpc', 'prover', 'indexer']);
 
