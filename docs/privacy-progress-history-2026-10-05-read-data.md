@@ -1,0 +1,20 @@
+## Latest milestone: fresh Railgun adapter qualification after extraction (October 5, 2026)
+
+Branch checkpoint: 7ebc1d71cd0f8737083cadad8aab1162298bcdb3. The PR remains a draft and product activation stays disabled. Main b0fa12ac is already merged; its bundled-node refresh is recorded in the [main-sync report](https://github.com/solardev-xyz/freedom-browser/blob/7ebc1d71cd0f8737083cadad8aab1162298bcdb3/docs/privacy-main-sync-b0fa12ac-2026-10-05.md).
+
+Kohaku balance/note projection now lives in a small data helper, while the existing Freedom runner retains authenticated currentness and receipt/journal checks. The changed source policy requires freshly qualified wallet generations; no old or funded generation was silently adopted. Fresh-profile construction establishes the new-generation scope; reports do not separately record the wallet-policy digest or qualify legacy-generation reopening. Valid-input compatibility is preserved. Malformed custom asset maps returning non-string keys now refuse earlier, before a currentness read.
+
+A separate, dormant Shield-origin matcher compares supplied deposit, receipt, journal and note data. It is a diagnostic only: consistently fabricated inputs can match. It has no production caller, authenticates no ownership or chain state, and enables neither spending nor a POI bypass. Connecting genuine existing account/journal evidence is the next bounded host step.
+
+All fifteen fresh Electron processes and the original driver pass at source commit 6c845e5c under Electron 44.4.5: nine adapter/ordinary-wallet cases and two three-process public deposit/recovery/restore sequences. There are 924 checked adapter reads and eight synthetic Ethereum sends in total. Reports preserve exact selected source maps; the outer freeze checks 11,522 files, ten runtime/input pins and 25 prover artifacts. These are byte inventories, not execution coverage. The first launcher count mismatch remains excluded. Pre-final resource snapshots and final observed exits are distinguished. Private POI/preflight and external chain responses remain synthetic; no live private or anonymity claim follows.
+
+Regression checks pass 9,741 wallet/fixture tests (four skipped), 16,826 broad repository tests (33 skipped), six separate OpenLV cases, lint and formatting. The focused run uses force-exit; the broad and OpenLV runs exit naturally. These totals overlap. The repository integration tests use public Safe-fork RPCs and a real Ant node on a disposable identity with a public resolver configured; they are distinct from the synthetic-service Railgun native campaign. No funded privacy profile was used.
+
+Evidence: [implementation and limits](https://github.com/solardev-xyz/freedom-browser/blob/7ebc1d71cd0f8737083cadad8aab1162298bcdb3/docs/railgun-read-data-and-origin-2026-10-05.md), [native reports and audit](https://github.com/solardev-xyz/freedom-browser/blob/7ebc1d71cd0f8737083cadad8aab1162298bcdb3/docs/qualification/railgun-kohaku-read-data-audit-2026-10-05.md), [parity plan](https://github.com/solardev-xyz/freedom-browser/blob/7ebc1d71cd0f8737083cadad8aab1162298bcdb3/docs/railgun-parity-plan-2026-10-04.md), [roadmap](https://github.com/solardev-xyz/freedom-browser/blob/7ebc1d71cd0f8737083cadad8aab1162298bcdb3/research/privacy-roadmap.md).
+
+Next: an existing-only encrypted journal reader, restricted origin diagnostics using genuine local evidence, a portable Kohaku host contract, and live private/service qualification with reviewed disclosures. Generic Host/TypeScript compatibility, live broadcaster privacy, supported-platform packaging and product UX remain open. Retained-POI version 3 remains a downgrade boundary. Claude and an independent Codex reviewer checked the implementation, evidence and claims; this is engineering review, not an external security audit.
+
+The previous status is preserved verbatim in [cold-credit history](https://github.com/solardev-xyz/freedom-browser/blob/7ebc1d71cd0f8737083cadad8aab1162298bcdb3/docs/privacy-progress-history-2026-10-05-cold-credit.md). Detailed issue/PR history below remains unchanged.
+
+---
+

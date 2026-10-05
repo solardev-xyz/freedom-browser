@@ -7,6 +7,19 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [local Shield-origin native checkpoint](railgun-shield-origin-2026-10-05.md)
+passes all fifteen fresh processes at `233cac01` on Electron 44.5.1. Four
+resolve/restore phases make 24 genuine diagnostic calls: eight matches and
+sixteen refusals, with no added RPC/job/worker/signing/Railgun-key activity and
+unchanged measured encrypted files. Local journal storage-key derivation is
+explicit. Root regression passes 16,986 tests / 33 skipped with natural exit,
+plus six OpenLV tests; all 513 focused tests, full lint and changed-source
+formatting pass. External
+services remain synthetic and every ownership/chain/POI/spending authority flag
+stays false. Next: restricted read-dispatch extraction toward portable Host
+compatibility, then separately authorized live private/service qualification.
+The checkpoints below retain their recorded sources and then-open work.
+
 The [local Shield-origin diagnostic](railgun-shield-origin-diagnostic-2026-10-05.md)
 now joins genuine account handles with two existing-only journal reads and
 reattests the selected note, view, generations and record before reporting.
@@ -275,11 +288,12 @@ Later checkpoints above supersede those restrictions within their stated scope.
    [bounded partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md)
    records the creator shapes and combined output/unshield POI requirements;
    the latest checkpoints above distinguish implemented and still-open work.
-3. **Bind restricted origin diagnostics to genuine local evidence.** The
-   supplied-data matcher is implemented but dormant; it authenticates no
-   ownership or chain state and grants no permission. An existing-only journal
-   reader and a main-only host joining already-open account evidence remain
-   next. The inspected engine
+3. **Local origin diagnostics qualified; spending policy remains separate.**
+   The existing-only journal reader and main-only genuine-account host now pass
+   the [fresh native recovery campaign](railgun-shield-origin-2026-10-05.md).
+   They authenticate local evidence only, grant no ownership or chain authority,
+   and remain unconnected to production operations. Any future return-to-origin
+   spending path still needs its own bounded design and qualification. The inspected engine
    and wallet SDK implement origin selection as client policy. The inspected
    contract's `validateTransaction` checks the ordinary unshield proof and
    recipient commitment, without an origin or POI field/check. This source

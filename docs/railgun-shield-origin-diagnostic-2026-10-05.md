@@ -1,5 +1,8 @@
 # Local Shield-origin diagnostic — October 5, 2026
 
+Follow-up: the [fresh native recovery campaign](railgun-shield-origin-2026-10-05.md)
+now passes all fifteen processes. The unit checkpoint below retains its original scope.
+
 The main-process `diagnoseRailgunShieldOrigin` joins an already-open genuine
 Railgun account with its existing encrypted EOA submission journal. It requires
 one selected unspent Shield note and exactly one matching active resolved deposit
