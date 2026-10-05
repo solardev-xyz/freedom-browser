@@ -54,6 +54,7 @@ function loadPreloadModule(options = {}) {
   loadMainModule(require.resolve('./preload'), {
     ipcRenderer,
     contextBridge,
+    electronOverrides: { webUtils: options.webUtils },
   });
 
   return {
@@ -65,6 +66,18 @@ function loadPreloadModule(options = {}) {
 }
 
 describe('preload', () => {
+  test('resolves dropped native files without accepting forged or generated paths', async () => {
+    const nativeFile = { name: 'notes.txt' };
+    const getPathForFile = jest.fn(file => file === nativeFile ? '/native/notes.txt' : '');
+    const { exposures, ipcRenderer } = loadPreloadModule({ webUtils: { getPathForFile } });
+    await exposures.electronAPI.dropAgentFiles([nativeFile]);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.AGENT_ATTACHMENTS_DROP_FILES, { filePaths: ['/native/notes.txt'] });
+    ipcRenderer.invoke.mockClear();
+    expect(await exposures.electronAPI.dropAgentFiles([{ path: '/forged/secret.txt' }])).toMatchObject({ ok: false });
+    expect(await exposures.electronAPI.dropAgentFiles([])).toMatchObject({ ok: false });
+    expect(await exposures.electronAPI.dropAgentFiles(Array(11).fill(nativeFile))).toMatchObject({ ok: false });
+    expect(ipcRenderer.invoke).not.toHaveBeenCalled();
+  });
   afterEach(() => {
     if (originalBeeApi === undefined) {
       delete process.env.BEE_API;

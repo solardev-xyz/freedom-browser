@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // Note: Preload scripts run in a sandboxed context where relative requires
 // can fail. Using hardcoded strings here for reliability.
@@ -210,6 +210,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteAgentSession: (conversationId) =>
     ipcRenderer.invoke('agent:history:delete', { conversationId }),
   pickAgentFiles: () => ipcRenderer.invoke('agent:attachments:pick-files'),
+  dropAgentFiles: async (files) => {
+    // Resolve native File objects in preload; never trust renderer-supplied paths.
+    try {
+      if (!Array.isArray(files) || !files.length || files.length > 10) {
+        throw new Error('Drop between 1 and 10 files');
+      }
+      const filePaths = files.map(file => webUtils.getPathForFile(file));
+      if (filePaths.some(filePath => !filePath)) throw new Error('Drop files from your computer, or use Add files to choose them');
+      return await ipcRenderer.invoke('agent:attachments:drop-files', { filePaths });
+    } catch (error) {
+      return { ok: false, error: { message: error?.message || 'Could not attach these files. Try Add files instead.' } };
+    }
+  },
   pickAgentFolder: () => ipcRenderer.invoke('agent:attachments:pick-folder'),
   agentProjectAccess: (action, conversationId = null) => ipcRenderer.invoke('agent:project:access', { action, conversationId }),
   removeAgentAttachment: (selectionId) =>

@@ -152,6 +152,7 @@ function register(overrides = {}) {
   const openExternal = jest.fn(async () => {});
   const isTrustedSender = jest.fn((candidate) => candidate === sender);
   const attachmentStore = {
+    stageFiles: jest.fn(async () => []),
     pickFiles: jest.fn(async () => []),
     pickFolder: jest.fn(async () => []),
     removeStaged: jest.fn(() => true),
@@ -338,6 +339,16 @@ describe('Freedom agent IPC', () => {
         attachmentOwnerId: '41',
       })
     );
+  });
+
+  test('binds dropped attachments to trusted chrome and refuses another sender', async () => {
+    const ctx = register();
+    const drop = ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_DROP_FILES);
+    const payload = { filePaths: ['/native/notes.txt'] };
+    await expect(drop({ sender: {} }, payload)).resolves.toMatchObject({ ok: false });
+    expect(ctx.attachmentStore.stageFiles).not.toHaveBeenCalled();
+    await expect(drop({ sender: ctx.sender }, payload)).resolves.toEqual({ ok: true, selections: [] });
+    expect(ctx.attachmentStore.stageFiles).toHaveBeenCalledWith({ ownerId: '41', ownerWindow: null, ...payload });
   });
 
   test('revokes only an owned conversation folder through trusted chrome', async () => {

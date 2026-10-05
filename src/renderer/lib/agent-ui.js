@@ -104,6 +104,9 @@ let pendingPromptText = '';
 let currentRunId = null;
 let currentRunStatus = 'idle';
 let pendingAttachments = [];
+let attachmentSelectionPending = false;
+let attachmentSelectionGeneration = 0;
+let composerDragDepth = 0;
 let conversationResources = [];
 let lastFinishedRunId = null;
 let stopRequestedRunId = null;
@@ -435,15 +438,24 @@ function renderAttachmentContexts() {
   elements.attachmentContexts.replaceChildren(...chips);
 }
 
-async function addAttachments(kind) {
-  if (currentRunStatus !== 'idle') return;
+async function addAttachments(kind, files) {
+  if (currentRunStatus !== 'idle' || pendingApproval || attachmentSelectionPending) return;
+  attachmentSelectionPending = true;
+  const generation = attachmentSelectionGeneration;
+  updateSendAvailability();
   closeComposerPopovers();
-  setMessage(elements.runMessage, kind === 'folder' ? 'Choose a folder…' : 'Choose files…');
+  setMessage(elements.runMessage, files ? 'Adding files…' : kind === 'folder' ? 'Choose a folder…' : 'Choose files…');
   try {
     const response =
-      kind === 'folder'
+      files ? await window.electronAPI.dropAgentFiles(files) : kind === 'folder'
         ? await window.electronAPI.pickAgentFolder()
         : await window.electronAPI.pickAgentFiles();
+    if (generation !== attachmentSelectionGeneration) {
+      for (const selection of response?.selections || []) {
+        await window.electronAPI.removeAgentAttachment(selection.selectionId);
+      }
+      return;
+    }
     if (!response?.ok) {
       setMessage(elements.runMessage, responseMessage(response, 'Could not add attachment'), true);
       return;
@@ -457,8 +469,56 @@ async function addAttachments(kind) {
     renderPageContext();
     focusComposer();
   } catch {
-    setMessage(elements.runMessage, 'Could not add attachment', true);
+    if (generation === attachmentSelectionGeneration) setMessage(elements.runMessage, 'Could not add attachment. Try Add files again.', true);
+  } finally {
+    attachmentSelectionPending = false;
+    updateSendAvailability();
   }
+}
+
+function resetComposerDrop() {
+  composerDragDepth = 0;
+  elements.composer.classList.remove('file-drop-active');
+}
+
+function installComposerDrop() {
+  const hasFiles = event => Array.from(event.dataTransfer?.types || []).includes('Files');
+  const canAttach = () => currentRunStatus === 'idle' && !pendingApproval && !attachmentSelectionPending;
+  elements.composer.addEventListener('dragenter', event => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    composerDragDepth += 1;
+    elements.composer.classList.toggle('file-drop-active', canAttach());
+  });
+  elements.composer.addEventListener('dragover', event => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = canAttach() ? 'copy' : 'none';
+  });
+  elements.composer.addEventListener('dragleave', event => {
+    if (!composerDragDepth) return;
+    event.preventDefault();
+    composerDragDepth = Math.max(0, composerDragDepth - 1);
+    if (!composerDragDepth) resetComposerDrop();
+  });
+  elements.composer.addEventListener('drop', event => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    resetComposerDrop();
+    if (!canAttach()) {
+      setMessage(elements.runMessage, attachmentSelectionPending
+        ? 'Wait for the current files to finish attaching, then drop these again.'
+        : 'Wait for Agent to finish, then drop files to attach them to your next message.');
+      return;
+    }
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length) void addAttachments('files', files);
+  });
+  document.addEventListener('dragend', resetComposerDrop);
+  document.addEventListener('drop', resetComposerDrop);
 }
 
 async function removePendingAttachment(selectionId) {
@@ -2395,7 +2455,7 @@ function updateSendAvailability() {
   let label = 'Run task';
   let disabled = true;
   if (currentRunStatus === 'idle') {
-    disabled = !hasText || !providerStatus?.configured || approvalModeMutationPending;
+    disabled = !hasText || !providerStatus?.configured || approvalModeMutationPending || attachmentSelectionPending;
   } else if (currentRunStatus === 'running') {
     action = hasText ? 'send' : 'stop';
     label = hasText ? 'Send guidance' : 'Stop Agent';
@@ -2412,6 +2472,8 @@ function updateSendAvailability() {
 }
 
 function resetConversationUi() {
+  attachmentSelectionGeneration += 1;
+  resetComposerDrop();
   toolRows.clear();
   attachmentDisplayRows.clear();
   processDisplayRows.clear();
@@ -4491,6 +4553,7 @@ function applyAgentEvent(event) {
 }
 
 async function startRun(options = {}) {
+  if (attachmentSelectionPending) return false;
   const explicitPrompt =
     typeof options.prompt === 'string' && options.prompt.trim() ? options.prompt.trim() : null;
   const prompt = explicitPrompt || elements.prompt.value.trim();
@@ -5172,6 +5235,7 @@ export function initAgentUi(options = {}) {
     elements.attachmentButton.setAttribute('aria-expanded', String(opening));
   });
   elements.attachFiles.addEventListener('click', () => addAttachments('files'));
+  installComposerDrop();
   elements.attachFolder.addEventListener('click', () => addAttachments('folder'));
   elements.openProject.addEventListener('click', () => void changeProjectAccess('open'));
   elements.pageContext.addEventListener('click', () => {

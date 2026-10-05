@@ -1742,6 +1742,27 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   box-shadow: 0 10px 30px color-mix(in srgb, black 17%, transparent);
 }
 
+.agent-file-drop-hint {
+  display: none;
+  position: absolute;
+  inset: 6px;
+  z-index: 3;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--agent-bubble-agent);
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.agent-composer.file-drop-active > .agent-file-drop-hint {
+  display: flex;
+}
+
 .agent-composer.approval-pending > .agent-composer-contexts,
 .agent-composer.approval-pending > .agent-composer-input,
 .agent-composer.approval-pending > .agent-composer-footer {

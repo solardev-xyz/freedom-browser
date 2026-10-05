@@ -1218,6 +1218,8 @@ function registerFreedomAgentIpc(options = {}) {
   };
   const handlePickFiles = (event) =>
     handleAttachmentRequest(event, (context) => attachmentStore.pickFiles(context));
+  const handleDropFiles = (event, payload) =>
+    handleAttachmentRequest(event, (context) => attachmentStore.stageFiles({ ...context, filePaths: payload?.filePaths }));
   const handlePickFolder = (event) =>
     handleAttachmentRequest(event, (context) => attachmentStore.pickFolder(context));
   const handleRemoveAttachment = (event, payload = {}) => {
@@ -1380,6 +1382,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_HISTORY_RENAME, handleHistoryRename);
   ipcMain.handle(IPC.AGENT_HISTORY_DELETE, handleHistoryDelete);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FILES, handlePickFiles);
+  ipcMain.handle(IPC.AGENT_ATTACHMENTS_DROP_FILES, handleDropFiles);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FOLDER, handlePickFolder);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
@@ -1425,6 +1428,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_RENAME);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_DELETE);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FILES);
+    ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_DROP_FILES);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FOLDER);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REMOVE);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REVOKE);

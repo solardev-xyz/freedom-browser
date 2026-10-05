@@ -201,6 +201,7 @@ module.exports = {
   AGENT_HISTORY_RENAME: 'agent:history:rename',
   AGENT_HISTORY_DELETE: 'agent:history:delete',
   AGENT_ATTACHMENTS_PICK_FILES: 'agent:attachments:pick-files',
+  AGENT_ATTACHMENTS_DROP_FILES: 'agent:attachments:drop-files',
   AGENT_ATTACHMENTS_PICK_FOLDER: 'agent:attachments:pick-folder',
   AGENT_ATTACHMENTS_REMOVE: 'agent:attachments:remove',
   AGENT_ATTACHMENTS_REVOKE: 'agent:attachments:revoke',

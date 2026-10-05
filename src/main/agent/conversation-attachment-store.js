@@ -108,17 +108,25 @@ class ConversationAttachmentStore {
     if (selection?.canceled || !Array.isArray(selection?.filePaths) || !selection.filePaths.length) {
       return [];
     }
-    if (selection.filePaths.length > MAX_SELECTIONS) {
+    return this.stageFiles({ ownerId, filePaths: selection.filePaths });
+  }
+
+  async stageFiles({ ownerId, filePaths } = {}) {
+    if (!Array.isArray(filePaths) || !filePaths.length || filePaths.some(filePath =>
+      typeof filePath !== 'string' || !path.isAbsolute(filePath) || filePath.includes('\0'))) {
+      throw new Error('Drop files from your computer, or use Add files to choose them');
+    }
+    if (filePaths.length > MAX_SELECTIONS) {
       throw new Error(`Attach at most ${MAX_SELECTIONS} files at once`);
     }
     const ownerKey = String(ownerId);
     const pending = this.staged.get(ownerKey) || new Map();
-    if (pending.size + selection.filePaths.length > MAX_SELECTIONS) {
+    if (pending.size + filePaths.length > MAX_SELECTIONS) {
       throw new Error(`Attach at most ${MAX_SELECTIONS} files and folders per message`);
     }
     const stagedResources = [];
     let selectedBytes = [...pending.values()].reduce((total, item) => total + (item.bytes || 0), 0);
-    for (const filePath of selection.filePaths) {
+    for (const filePath of filePaths) {
       const stat = await this.fs.lstat(filePath);
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Only regular files can be attached');
       if (stat.size > MAX_FILE_BYTES) throw new Error(`${path.basename(filePath)} is larger than 20 MB`);
@@ -138,10 +146,16 @@ class ConversationAttachmentStore {
       };
       stagedResources.push(resource);
     }
-    for (const resource of stagedResources) {
-      pending.set(resource.selectionId, resource);
+    // Re-read after validation: another picker/drop may have finished while
+    // these files were being inspected. Never overwrite its selections.
+    const latest = this.staged.get(ownerKey) || pending;
+    const latestBytes = [...latest.values()].reduce((total, item) => total + (item.bytes || 0), 0);
+    if (latest.size + stagedResources.length > MAX_SELECTIONS ||
+        latestBytes + stagedResources.reduce((total, item) => total + item.bytes, 0) > MAX_TOTAL_BYTES) {
+      throw new Error('Too many attachments. Remove files and try again (10 files, 50 MB total).');
     }
-    this.staged.set(ownerKey, pending);
+    for (const item of stagedResources) latest.set(item.selectionId, item);
+    this.staged.set(ownerKey, latest);
     return stagedResources.map((resource) => ({
       selectionId: resource.selectionId,
       ...publicResource(resource),

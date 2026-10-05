@@ -71,6 +71,36 @@ describe('ConversationAttachmentStore', () => {
     expect(fs.readFileSync(manifestPath, 'utf8')).not.toContain(sourceDir);
   });
 
+  test('dropped files share picker validation and remain owner-bound without opening a dialog', async () => {
+    const sourcePath = path.join(sourceDir, 'dropped.md');
+    fs.writeFileSync(sourcePath, 'Dropped notes');
+    const store = createStore([]);
+    const [staged] = await store.stageFiles({ ownerId: 'window_1', filePaths: [sourcePath] });
+    expect(store.dialog.showOpenDialog).not.toHaveBeenCalled();
+    expect(staged).toMatchObject({ name: 'dropped.md', kind: 'file', category: 'text' });
+    expect(JSON.stringify(staged)).not.toContain(sourceDir);
+    await expect(store.consume('window_2', [staged.selectionId], 'conversation_aaaaaaaaaaaaaaaa')).rejects.toThrow('expired');
+    await expect(store.stageFiles({ ownerId: 'window_1', filePaths: ['../notes.md'] })).rejects.toThrow('Drop files');
+    await expect(store.stageFiles({ ownerId: 'window_1', filePaths: [sourceDir] })).rejects.toThrow('regular files');
+    const unsupported = path.join(sourceDir, 'archive.zip');
+    fs.writeFileSync(unsupported, 'not supported');
+    await expect(store.stageFiles({ ownerId: 'window_1', filePaths: [sourcePath, unsupported] })).rejects.toThrow('not a supported');
+    expect(store.staged.get('window_1').size).toBe(1);
+  });
+
+  test('concurrent attachment batches cannot overwrite selections or exceed the combined limit', async () => {
+    const sourcePath = path.join(sourceDir, 'notes.txt');
+    fs.writeFileSync(sourcePath, 'Notes');
+    const store = createStore([]);
+    const results = await Promise.allSettled([
+      store.stageFiles({ ownerId: 'window_1', filePaths: Array(6).fill(sourcePath) }),
+      store.stageFiles({ ownerId: 'window_1', filePaths: Array(6).fill(sourcePath) }),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+    expect(store.staged.get('window_1').size).toBe(6);
+  });
+
   test('refuses a selected file that changes before the message is sent', async () => {
     const sourcePath = path.join(sourceDir, 'notes.txt');
     fs.writeFileSync(sourcePath, 'first');

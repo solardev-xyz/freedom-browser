@@ -501,6 +501,51 @@ async function loadAgentUi(options = {}) {
 }
 
 describe('Agent UI', () => {
+  test('dropping files highlights the composer and attaches them before the prompt can send', async () => {
+    let resolveDrop;
+    const dropAgentFiles = jest.fn(() => new Promise(resolve => { resolveDrop = resolve; }));
+    const ctx = await loadAgentUi({ electronAPI: { dropAgentFiles } });
+    const composer = ctx.elements['agent-composer'];
+    const files = [{ name: 'notes.txt' }, { name: 'photo.png' }];
+    const event = { dataTransfer: { types: ['Files'], files }, preventDefault: jest.fn(), stopPropagation: jest.fn() };
+    composer.dispatch('dragenter', event);
+    composer.dispatch('dragenter', event);
+    composer.dispatch('dragleave', event);
+    expect(composer.classList.contains('file-drop-active')).toBe(true);
+    composer.dispatch('dragover', event);
+    expect(event.dataTransfer.dropEffect).toBe('copy');
+    ctx.elements['agent-prompt'].value = 'Review these';
+    composer.dispatch('drop', event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(composer.classList.contains('file-drop-active')).toBe(false);
+    expect(dropAgentFiles).toHaveBeenCalledWith(files);
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
+    const selectionId = 'selection_' + 'a'.repeat(20);
+    resolveDrop({ ok: true, selections: [{ selectionId, name: 'notes.txt', kind: 'file', category: 'text' }] });
+    await flush();
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(1);
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(expect.anything(), 'Review these', expect.any(String), [selectionId]);
+  });
+
+  test('text drags remain native; file drops during a run are blocked without navigation', async () => {
+    const dropAgentFiles = jest.fn();
+    const ctx = await loadAgentUi({ electronAPI: { dropAgentFiles } });
+    const composer = ctx.elements['agent-composer'];
+    const text = { dataTransfer: { types: ['text/plain'] }, preventDefault: jest.fn() };
+    composer.dispatch('dragenter', text);
+    composer.dispatch('drop', text);
+    expect(text.preventDefault).not.toHaveBeenCalled();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const event = { dataTransfer: { types: ['Files'], files: [{}] }, preventDefault: jest.fn(), stopPropagation: jest.fn() };
+    composer.dispatch('drop', event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(dropAgentFiles).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-run-message'].textContent).toContain('Wait for Agent');
+  });
+
   function messages(ctx) {
     return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
       if (row.classList.contains('agent-helper-list')) return row.children.map(card => card.querySelector('.agent-helper-title').textContent);
