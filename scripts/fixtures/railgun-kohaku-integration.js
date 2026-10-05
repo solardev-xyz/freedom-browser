@@ -31,6 +31,22 @@ exports.install = function install(mode) {
   );
   const inputType = mode.startsWith('transact-') ? 'Transact' : 'Shield';
   const kind = mode.endsWith('-transfer') ? 'railgun-private-transfer' : 'railgun-token-unshield';
+  const privateAdapterMode = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER === '1';
+  const privateAdapterDenied = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER_DENY === '1';
+  for (const name of [
+    'FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER',
+    'FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER_DENY',
+  ])
+    assert.ok([undefined, '1'].includes(process.env[name]));
+  if (privateAdapterMode) {
+    assert.ok(['shield-transfer', 'transact-unshield'].includes(mode));
+    assert.equal(process.env.FREEDOM_RAILGUN_KOHAKU_CANCEL_TRANSACTION_REVIEW, undefined);
+    assert.equal(
+      process.env.FREEDOM_RAILGUN_KOHAKU_LOST_ACK,
+      mode === 'transact-unshield' ? '1' : undefined
+    );
+    if (privateAdapterDenied) assert.equal(mode, 'shield-transfer');
+  } else assert.equal(privateAdapterDenied, false);
   const uncertain = process.env.FREEDOM_RAILGUN_KOHAKU_LOST_ACK === '1';
   assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_KOHAKU_LOST_ACK));
   const cancelTransactionReview =
@@ -537,6 +553,310 @@ exports.install = function install(mode) {
             return true;
           },
         };
+        if (privateAdapterMode) {
+          const adapterTools = require('./railgun-kohaku-private-native');
+          settlements = adapterTools.installPrivateAdapterSettlementObserver();
+          const {
+            createRailgunKohakuPrivateHost,
+          } = require('../../src/main/wallet/railgun-kohaku-private-host');
+          const {
+            createRailgunKohakuPrivateAdapter,
+            createRailgunKohakuPrivateAdapterBroadcaster,
+          } = require('../../src/main/wallet/railgun-kohaku-private-adapter');
+          const { mode: ignoredMode, ...hostOptions } = pluginOptions;
+          assert.equal(ignoredMode, 'private');
+          plugin = createRailgunKohakuPrivateAdapter({
+            host: createRailgunKohakuPrivateHost(hostOptions),
+            signal: signalController.signal,
+          });
+          plugins.push(plugin);
+          const adapterReads = await adapterTools.qualifyPrivateAdapterReads({
+            adapter: plugin,
+            account,
+            owners,
+            measure: measureReads,
+          });
+          const broadcast = createRailgunKohakuPrivateAdapterBroadcaster(plugin).broadcast;
+          const prepare = () =>
+            kind === 'railgun-private-transfer'
+              ? plugin.prepareTransfer(amount, recipient)
+              : plugin.prepareUnshield(amount, recipient);
+          const branchBefore = snapshot();
+          const durableBefore = privateBytes();
+          const assertAdapterRpc = (denied) => {
+            const expectedMethods = {
+              eth_chainId: denied ? 11 : 12,
+              eth_getBlockByNumber: denied ? 710 : inputType === 'Transact' ? 740 : 720,
+              eth_getLogs: 16,
+              ...(denied
+                ? {}
+                : {
+                    eth_getCode: 2,
+                    eth_getBalance: 2,
+                    eth_estimateGas: 1,
+                    eth_call: 1,
+                    eth_gasPrice: 1,
+                    eth_getTransactionCount: 3,
+                    eth_sendRawTransaction: 1,
+                  }),
+            };
+            assert.deepEqual(methods, expectedMethods, 'Source-derived complete adapter RPC map');
+            assert.equal(
+              counters.transportCalls,
+              Object.values(expectedMethods).reduce((n, v) => n + v, 0)
+            );
+            assert.equal(counters.unknownMethods, 0);
+          };
+
+          reviewMode = privateAdapterDenied ? 'deny' : 'allow';
+          if (privateAdapterDenied) {
+            await assert.rejects(prepare(), { code: 'RAILGUN_KOHAKU_PRIVATE_ADAPTER_REFUSED' });
+            await plugin.closed;
+            assert.equal(account.signal.aborted, true);
+            assert.deepEqual(snapshot(), {
+              ...branchBefore,
+              preparationReviews: branchBefore.preparationReviews + 1,
+            });
+            assert.deepEqual(await reservations.inspect(), initialReservations);
+            assert.deepEqual(await capsules.inspect(), initialCapsules);
+            assert.deepEqual(privateBytes(), durableBefore);
+            assertAdapterRpc(true);
+            const refusedReads = await adapterTools.assertPrivateAdapterReadRefusals(
+              plugin,
+              measureReads
+            );
+            assert.deepEqual(settlements.report(), {
+              delegateCalls: 0,
+              delegateSettlements: 0,
+              checkedCalls: 0,
+              acknowledged: 0,
+              uncertain: 0,
+              refused: 0,
+            });
+            return {
+              mode,
+              variant: 'private-adapter-denied',
+              inputType,
+              kind,
+              elapsedMs: Math.round(performance.now() - started),
+              privateAdapter: {
+                reads: adapterReads,
+                closedReadRefusals: refusedReads,
+                forwarding: settlements.report(),
+                adoptingAccountClosed: true,
+                deniedPreparationNoQueriesKeysOrDurableChanges: true,
+                realProofQualified: false,
+                realSubmissionQualified: false,
+              },
+              productionFacade: true,
+              productionRestrictedPrivateHost: true,
+              productionRestrictedPrivateAdapter: true,
+              genericHostQualified: false,
+              counts,
+              attempts: { ...attempts },
+              rpc: { ...counters, methods: { ...methods } },
+              liveQueries: 0,
+              liveSubmissions: 0,
+            };
+          }
+          observeKeys(async (key) => {
+            counts.spendingKeys++;
+            borrowedKeys.push(key);
+            assert.equal(counts.spendingKeys, 1);
+            const held = await reservations.inspect(),
+              stored = await capsules.inspect();
+            assert.equal(held.signing, initialReservations.signing + 1);
+            assert.equal(stored.records, initialCapsules.records + 1);
+            assert.equal(stored.signatures, initialCapsules.signatures);
+          });
+          const operation = await prepare();
+          contractOracle.assertOpaqueOperationShape(operation, 'private');
+          const preparedReads = await adapterTools.assertPrivateAdapterReadRefusals(
+            plugin,
+            measureReads
+          );
+          assert.equal(counts.spendingKeys, 1);
+          assert.equal(counts.poiAcquisitions, 1);
+          assert.ok(borrowedKeys.every((key) => key.every((value) => value === 0)));
+          assert.ok(preparingAccount);
+          if (inputType === 'Transact') {
+            assert.notEqual(preparingAccount, account);
+            assert.equal(account.signal.aborted, true);
+          }
+          const capsuleState = await capsules.inspect();
+          assert.equal(capsuleState.signatures, initialCapsules.signatures + 1);
+          assert.equal(capsuleState.proofs, initialCapsules.proofs + 1);
+          const privateBefore = privateBytes();
+          const beforeCopies = snapshot();
+          await assert.rejects(broadcast({ ...operation }), {
+            code: 'RAILGUN_KOHAKU_PRIVATE_ADAPTER_REFUSED',
+          });
+          await assert.rejects(broadcast(JSON.parse(JSON.stringify(operation))), {
+            code: 'RAILGUN_KOHAKU_PRIVATE_ADAPTER_REFUSED',
+          });
+          assert.deepEqual(snapshot(), beforeCopies);
+          sendObserver = async (handle, tx) => {
+            assert.equal(tx.from.toLowerCase(), owner);
+            assert.equal(tx.chainId, 11155111n);
+            const journal =
+              require('../../src/main/wallet/private-submission-journal').getPrivateSubmissionJournal(
+                handle
+              );
+            const records = await journal.list();
+            assert.equal(records.length, 1);
+            assert.equal(records[0].hash, tx.hash.toLowerCase());
+            assert.equal(records[0].state, 'attempted');
+            assert.equal(records[0].intent.intentDigest, expectedDigest);
+            assert.deepEqual(
+              records[0].intent,
+              require('../../src/main/wallet/railgun-transact-intent').railgunTransactJournalIntent(
+                tx
+              )
+            );
+            journalBeforeSend = true;
+          };
+          const forwarded = settlements.begin(() => broadcast(operation));
+          const result = await forwarded.promise;
+          const outcomeSchema = await forwarded.assert({
+            outcome: uncertain ? 'uncertain' : 'acknowledged',
+            hash: sentHash,
+          });
+          await plugin.closed;
+          assert.equal(preparingAccount.signal.aborted, true);
+          assert.deepEqual(privateBytes(), privateBefore);
+          assert.ok(approvedSummary);
+          assert.equal(counts.preparationReviews, 1);
+          assert.equal(counts.transactionReviews, 1);
+          assert.equal(counts.eoaSignatures, 1);
+          assert.equal(counts.preflightAcquisitions, 2);
+          assert.equal(counts.constrainedPreflightClients, 2);
+          assert.equal(counters.sends, 1);
+          assert.equal(counters.unknownMethods, 0);
+          assert.equal(journalBeforeSend, true);
+          assert.ok(txHandle && sentHash);
+          if (uncertain) {
+            assert.equal(result.submissionStatus, 'unknown');
+            assert.equal(result.transactionHash, sentHash);
+          } else assert.equal(result.hash.toLowerCase(), sentHash);
+          assertAdapterRpc(false);
+          assert.deepEqual(
+            { latest: counts.latest, page: counts.page, root: counts.root },
+            inputType === 'Transact'
+              ? { latest: 6, page: 1, root: 5 }
+              : { latest: 0, page: 0, root: 0 }
+          );
+          const keyRepliesDelta = Object.fromEntries(
+            Object.entries(readKeyCounts()).map(([key, value]) => [
+              key,
+              value - branchBefore.keys[key],
+            ])
+          );
+          assert.deepEqual(keyRepliesDelta, {
+            privateViewingKeys: 1,
+            privateReceiveKeys: inputType === 'Transact' ? 0 : 1,
+          });
+          const closedReads = await adapterTools.assertPrivateAdapterReadRefusals(
+            plugin,
+            measureReads
+          );
+          const noRetry = snapshot();
+          await assert.rejects(broadcast(operation), {
+            code: 'RAILGUN_KOHAKU_PRIVATE_ADAPTER_REFUSED',
+          });
+          assert.deepEqual(snapshot(), noRetry);
+          const reopenedScope = createPrivacyScope({
+            profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
+            signal: enrollment.signal,
+          });
+          try {
+            const handle = reopenedScope.getContext({
+              kind: 'public-address',
+              principal: owner,
+              chainId: pins.chainId,
+              role: 'transaction-rpc',
+            });
+            const journal =
+              require('../../src/main/wallet/private-submission-journal').getPrivateSubmissionJournal(
+                handle
+              );
+            const records = await journal.list();
+            assert.equal(records.length, 1);
+            assert.equal(records[0].hash, sentHash);
+            assert.equal(records[0].intent.intentDigest, expectedDigest);
+            assert.equal(records[0].state, uncertain ? 'attempted' : 'submitted');
+            await assert.rejects(journal.assertCanSubmit());
+            let matched = 0;
+            await reservations.withSigningRecovery(async (records, context) => {
+              context.assertCurrent();
+              const entry = records.find((v) => v.entry.facts.noteHash === selected.hash)?.entry;
+              assert.ok(entry);
+              const stored = await capsules.get(entry.id);
+              assert.ok(stored.signature && stored.provedTransaction);
+              assert.equal(entry.facts.intentDigest, expectedDigest);
+              require('../../src/main/wallet/railgun-private-intent').matchRailgunPrivateProvedTransaction(
+                stored.capsule.preparation.transaction,
+                stored.provedTransaction,
+                stored.capsule.preparation.expected
+              );
+              matched++;
+            });
+            assert.equal(matched, 1);
+            assert.deepEqual(privateBytes(), privateBefore);
+          } finally {
+            reopenedScope.close();
+          }
+          assert.ok(serviceInstances.every((service) => service.signal.aborted));
+          assert.ok(preflightSources.every((source) => source.signal.aborted));
+          return {
+            mode,
+            variant: 'private-adapter',
+            inputType,
+            kind,
+            elapsedMs: Math.round(performance.now() - started),
+            privateAdapter: {
+              reads: adapterReads,
+              preparedReadRefusals: preparedReads,
+              closedReadRefusals: closedReads,
+              forwarding: settlements.report(),
+              outcomeSchema,
+              adoptingAccountClosed: true,
+              copiedAndRepeatedOperationRefused: true,
+              originalSettlementValuePreserved: true,
+              keyRepliesDelta,
+            },
+            productionFacade: true,
+            productionRestrictedPrivateHost: true,
+            productionRestrictedPrivateAdapter: true,
+            genericHostQualified: false,
+            productionStaging: inputType === 'Transact',
+            productionOperationAndSubmissionControllers: true,
+            genuineCompletionOnly: true,
+            productionRpcDestinationConstraints: true,
+            privatePreflightConstraintPassedAndValidated: true,
+            realPreflightClientsNativeQualified: false,
+            syntheticAccountPoiAuthority: true,
+            syntheticPrivatePreflightAuthority: true,
+            privatePreflightChainGuardsNativeQualified: false,
+            syntheticPublicServices: inputType === 'Transact',
+            actualPinnedProofAndIndependentVerifier: true,
+            realVaultPrivateAndEoaSigning: true,
+            durableCapsuleBeforeSpendingKey: true,
+            journalBeforeSimulatedSend: true,
+            transactionSimulationBeforeReview: true,
+            lostAcknowledgment: uncertain,
+            freshJournalContextReopened: true,
+            unresolvedSubmissionBlocksAnotherSend: true,
+            privateSigningStateUnchanged: true,
+            facadeClosesWalletBeforeSubmission: true,
+            keyBuffersWiped: true,
+            physicalTorTransportQualified: false,
+            counts,
+            attempts: { ...attempts },
+            rpc: { ...counters, methods: { ...methods } },
+            liveQueries: 0,
+            liveSubmissions: 0,
+          };
+        }
         const facade = require('../../src/main/wallet/railgun-kohaku-plugin');
         settlements = installSettlementObserver('private');
         const {

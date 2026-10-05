@@ -54,6 +54,17 @@ async function main() {
     : null;
   let snapshotAdapterQualification;
   const kohakuMode = process.env.FREEDOM_RAILGUN_KOHAKU;
+  const privateAdapterMode = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER === '1';
+  const privateAdapterDenied = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER_DENY === '1';
+  for (const name of [
+    'FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER',
+    'FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER_DENY',
+  ])
+    assert.ok([undefined, '1'].includes(process.env[name]));
+  if (privateAdapterMode) {
+    assert.ok(['shield-transfer', 'transact-unshield'].includes(kohakuMode));
+    assert.equal(snapshotFlag, undefined);
+  } else assert.equal(privateAdapterDenied, false);
   const publicShield = kohakuMode === 'public-shield';
   if (publicShield) {
     assert.equal(composition, 'enrolled');
@@ -595,6 +606,18 @@ async function main() {
           'src/main/wallet/railgun-kohaku-read-dispatch.js',
           'src/main/wallet/railgun-kohaku-operation-dispatch.js',
           'src/main/wallet/railgun-kohaku-broadcaster.js',
+        ]
+      : []),
+    ...(privateAdapterMode
+      ? [
+          'src/main/wallet/railgun-kohaku-private-host.js',
+          'src/main/wallet/railgun-kohaku-private-host.test.js',
+          'src/main/wallet/railgun-kohaku-private-adapter.js',
+          'src/main/wallet/railgun-kohaku-private-adapter.test.js',
+          'scripts/fixtures/railgun-kohaku-private-contract.d.ts',
+          'scripts/fixtures/railgun-kohaku-private-conformance.js',
+          'scripts/fixtures/railgun-kohaku-private-native.js',
+          'scripts/fixtures/railgun-kohaku-private-native.test.js',
         ]
       : []),
     ...(snapshotProbe
@@ -2173,14 +2196,28 @@ async function main() {
       );
       assert.ok(contractResources.snapshot().utilityStarts > 0);
       assert.ok(contractResources.snapshot().workerStarts > 0);
-      require('./fixtures/railgun-kohaku-contract-conformance').assertInstanceReadVector(
-        kohakuQualification.contract.reads,
-        {
-          lane: publicShield ? 'public' : 'private',
-          heldReview: process.env.FREEDOM_RAILGUN_KOHAKU_CANCEL_TRANSACTION_REVIEW === '1',
-        }
-      );
-      assert.equal(kohakuQualification.contract.forwarding.checkedCalls, 1);
+      if (privateAdapterMode) {
+        assert.equal(kohakuQualification.privateAdapter.reads.calls, 13);
+        assert.equal(kohakuQualification.privateAdapter.closedReadRefusals.calls, 3);
+        assert.equal(
+          kohakuQualification.privateAdapter.forwarding.checkedCalls,
+          privateAdapterDenied ? 0 : 1
+        );
+        if (!privateAdapterDenied)
+          assert.equal(kohakuQualification.privateAdapter.preparedReadRefusals.calls, 3);
+        assert.equal(kohakuQualification.productionRestrictedPrivateHost, true);
+        assert.equal(kohakuQualification.productionRestrictedPrivateAdapter, true);
+        assert.equal(kohakuQualification.genericHostQualified, false);
+      } else {
+        require('./fixtures/railgun-kohaku-contract-conformance').assertInstanceReadVector(
+          kohakuQualification.contract.reads,
+          {
+            lane: publicShield ? 'public' : 'private',
+            heldReview: process.env.FREEDOM_RAILGUN_KOHAKU_CANCEL_TRANSACTION_REVIEW === '1',
+          }
+        );
+        assert.equal(kohakuQualification.contract.forwarding.checkedCalls, 1);
+      }
     }
     nativeAssertions.assertEmpty();
     if (snapshotProbe) assert.equal(snapshotAdapterQualification?.instances, 1);

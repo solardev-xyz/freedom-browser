@@ -1,7 +1,7 @@
 /** Offline partial EOA submission and capture over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron script SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [acknowledged|lost-response|bad-verifier|preparation-review-close|transaction-review-close] [direct|kohaku]
+ * electron script SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [acknowledged|lost-response|bad-verifier|preparation-review-close|transaction-review-close] [direct|kohaku|private-adapter]
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -36,14 +36,15 @@ async function main() {
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
   const testCase = args[7] ?? 'acknowledged';
   const route = args[8] ?? 'direct';
-  assert.ok(['direct', 'kohaku'].includes(route));
-  const facadeRoute = route === 'kohaku';
+  assert.ok(['direct', 'kohaku', 'private-adapter'].includes(route));
+  const privateAdapterRoute = route === 'private-adapter';
+  const facadeRoute = route === 'kohaku' || privateAdapterRoute;
   const cancellationCase = ['preparation-review-close', 'transaction-review-close'].includes(
     testCase
   );
   assert.ok(
     ['acknowledged', 'lost-response', 'bad-verifier'].includes(testCase) ||
-      (facadeRoute && inputCreator === 'Shield' && cancellationCase)
+      (facadeRoute && (inputCreator === 'Shield' || privateAdapterRoute) && cancellationCase)
   );
   const transact = inputCreator === 'Transact';
   assert.ok(args.slice(0, 6).every((value) => path.isAbsolute(value)));
@@ -546,6 +547,8 @@ async function main() {
   const facadeTools = facadeRoute ? require('./fixtures/railgun-kohaku-partial-native') : null;
   let observedProof, observedReceiver, observedSubmission, preparationSummary, facadeContext;
   const facadePhases = [];
+  let privateAdapterTools, privateAdapterObserver, privateAdapterFailure;
+  const privateAdapterProbe = { readyReads: null, refusedReadChecks: [], settlement: null };
   const measure = () => ({
     ...snapshot(),
     workers: { started: workerStarts, exited: workerResults.length },
@@ -585,6 +588,12 @@ async function main() {
         observedSubmission = result;
       },
     });
+  if (privateAdapterRoute) {
+    privateAdapterTools = require('./fixtures/railgun-kohaku-private-native');
+    // Existing genuine proof/receiver/submission observers are installed first;
+    // this observer must precede the adopting host and original broadcaster.
+    privateAdapterObserver = privateAdapterTools.installPrivateAdapterSettlementObserver();
+  }
   const vault = require('../src/main/identity/vault');
   const started = performance.now();
   const runs = [];
@@ -698,6 +707,7 @@ async function main() {
       await services.close();
       assert.equal(services.report().pendingRequests, 0);
       assert.equal(services.report().unexpectedTransportFailures, 0);
+      if (privateAdapterRoute) await privateAdapterObserver.close();
       assert.deepEqual(inventory(), sourceHashes);
       const expected = {
         jobs: {},
@@ -716,6 +726,14 @@ async function main() {
             schema: 'railgun-kohaku-partial-control-native-v1',
             sourceHashes,
             route,
+            ...(privateAdapterRoute
+              ? {
+                  privateAdapter: {
+                    ...privateAdapterProbe,
+                    observer: privateAdapterObserver.report(),
+                  },
+                }
+              : {}),
             inputCreator,
             testCase,
             runs,
@@ -780,7 +798,7 @@ async function main() {
       });
       const beforePrepare = measure();
       const expectPrepare = facadeTools.prepareCounts(transact);
-      plugin = createRailgunKohakuPlugin({
+      const privateOptions = {
         account,
         owners,
         signal: enrollment.signal,
@@ -827,11 +845,33 @@ async function main() {
           transactionEntered.resolve();
           return testCase === 'transaction-review-close' ? transactionRelease.promise : true;
         },
-      });
-      broadcaster =
-        require('../src/main/wallet/railgun-kohaku-broadcaster').createRailgunKohakuBroadcaster(
-          plugin
-        );
+      };
+      if (privateAdapterRoute) {
+        const { mode, ...hostOptions } = privateOptions;
+        assert.equal(mode, 'private');
+        const host =
+          require('../src/main/wallet/railgun-kohaku-private-host').createRailgunKohakuPrivateHost(
+            hostOptions
+          );
+        const adapterModule = require('../src/main/wallet/railgun-kohaku-private-adapter');
+        plugin = adapterModule.createRailgunKohakuPrivateAdapter({
+          host,
+          signal: enrollment.signal,
+        });
+        broadcaster = adapterModule.createRailgunKohakuPrivateAdapterBroadcaster(plugin);
+        privateAdapterProbe.readyReads = await privateAdapterTools.qualifyPrivateAdapterReads({
+          adapter: plugin,
+          account,
+          owners,
+          measure,
+        });
+      } else {
+        plugin = createRailgunKohakuPlugin(privateOptions);
+        broadcaster =
+          require('../src/main/wallet/railgun-kohaku-broadcaster').createRailgunKohakuBroadcaster(
+            plugin
+          );
+      }
       phase = 'facade-prepare';
       const preparing = plugin.prepareUnshield(
         {
@@ -870,10 +910,18 @@ async function main() {
           capacity: 32,
         });
         account = null;
+        if (privateAdapterRoute)
+          privateAdapterProbe.refusedReadChecks.push(
+            await privateAdapterTools.assertPrivateAdapterReadRefusals(plugin, measure)
+          );
         await finalizeControl();
         return;
       }
       token = await preparing;
+      if (privateAdapterRoute)
+        privateAdapterProbe.refusedReadChecks.push(
+          await privateAdapterTools.assertPrivateAdapterReadRefusals(plugin, measure)
+        );
       facadeTools.assertCounts(beforePrepare, measure(), expectPrepare);
       assert.deepEqual(facadeObservers.counts, {
         prove: 1,
@@ -914,22 +962,95 @@ async function main() {
       });
       if (testCase === 'transaction-review-close') {
         const before = measure();
-        const pending = broadcaster.broadcast(token);
+        const adapterSettlement = privateAdapterRoute
+          ? privateAdapterObserver.begin(() => broadcaster.broadcast(token))
+          : null;
+        const pending = adapterSettlement
+          ? adapterSettlement.promise
+          : broadcaster.broadcast(token);
         try {
-          await facadeTools.heldClose({
-            plugin,
-            entered: transactionEntered,
-            release: transactionRelease,
-            pending,
-            owners,
-            closeAccount: () => account.close(),
-            bounded,
-            snapshot: measure,
-            runs,
-            name: 'held-final-transaction-review-close',
-          });
+          if (privateAdapterRoute) {
+            await bounded(transactionEntered.promise);
+            const beforeHeld = measure();
+            let closedSettled = false;
+            const observedClose = plugin.closed.then(
+              () => {
+                closedSettled = true;
+              },
+              () => {
+                closedSettled = true;
+              }
+            );
+            try {
+              plugin.close();
+              const outward = await bounded(pending);
+              assert.deepEqual(outward, { status: 'recovery-required', stage: 'review-draining' });
+              privateAdapterProbe.settlement = await bounded(
+                adapterSettlement.assert({ outcome: 'refused' })
+              );
+              await bounded(account.close());
+              assert.equal(closedSettled, false);
+              const {
+                claimRailgunAccountPhase,
+              } = require('../src/main/wallet/railgun-account-phase');
+              let acquired;
+              try {
+                assert.throws(
+                  () => (acquired = claimRailgunAccountPhase(owners.enrollment, 'recovery'))
+                );
+              } finally {
+                acquired?.release();
+              }
+              facadeTools.assertCounts(beforeHeld, measure(), {
+                jobs: {},
+                keys: {},
+                methods: {},
+                rpcCounts: {},
+              });
+            } finally {
+              transactionRelease.resolve(true);
+            }
+            await bounded(plugin.closed);
+            await observedClose;
+            assert.equal(closedSettled, true);
+            facadeTools.assertCounts(beforeHeld, measure(), {
+              jobs: {},
+              keys: {},
+              methods: {},
+              rpcCounts: {},
+            });
+            runs.push({
+              mode: 'held-final-transaction-review-close',
+              originalReviewSettled: true,
+              adoptedAccountClosedBeforeHeldPhaseProbe: true,
+              closedHeldUntilOriginalReview: true,
+              outwardOriginalReviewDrainingWhileHeld: true,
+              realAccountPhaseExcluded: true,
+              noLateJobKeyOrRpc: true,
+              noLateEoaSignatureOrSend: measure().eoa.sends === 0 && measure().eoa.signatures === 0,
+              logicalDrainOnly: true,
+            });
+          } else {
+            await facadeTools.heldClose({
+              plugin,
+              entered: transactionEntered,
+              release: transactionRelease,
+              pending,
+              owners,
+              closeAccount: () => account.close(),
+              bounded,
+              snapshot: measure,
+              runs,
+              name: 'held-final-transaction-review-close',
+            });
+          }
         } finally {
           transactionRelease.resolve(true);
+        }
+        if (privateAdapterRoute) {
+          privateAdapterProbe.refusedReadChecks.push(
+            await privateAdapterTools.assertPrivateAdapterReadRefusals(plugin, measure)
+          );
         }
         facadeTools.assertCounts(before, measure(), facadeTools.submitCounts(testCase));
         facadePhases.push({
@@ -1097,13 +1218,32 @@ async function main() {
     phase = 'submit';
     if (testCase === 'bad-verifier') services.setMode('wrong-verifier');
     const beforeSubmit = snapshot();
-    const submitted = facadeRoute
-      ? await broadcaster.broadcast(token)
-      : await submit(submitOptions);
+    const adapterSettlement = privateAdapterRoute
+      ? privateAdapterObserver.begin(() => broadcaster.broadcast(token))
+      : null;
+    const submitted = adapterSettlement
+      ? await adapterSettlement.promise
+      : facadeRoute
+        ? await broadcaster.broadcast(token)
+        : await submit(submitOptions);
     if (facadeRoute) {
       await bounded(plugin.closed);
       account = null;
       assert.equal(submitted, observedSubmission);
+      if (privateAdapterRoute) {
+        privateAdapterProbe.settlement = await adapterSettlement.assert({
+          outcome:
+            testCase === 'bad-verifier'
+              ? 'refused'
+              : testCase === 'lost-response'
+                ? 'uncertain'
+                : 'acknowledged',
+          ...(signedTransaction ? { hash: signedTransaction.hash } : {}),
+        });
+        privateAdapterProbe.refusedReadChecks.push(
+          await privateAdapterTools.assertPrivateAdapterReadRefusals(plugin, measure)
+        );
+      }
       assert.deepEqual(facadeObservers.counts, {
         prove: 1,
         receiver: 1,
@@ -1440,6 +1580,7 @@ async function main() {
     assert.equal(services.report().pendingRequests, 0);
     assert.equal(services.report().transportCreates, services.report().transportCloses);
     assert.equal(services.report().unexpectedTransportFailures, 0);
+    if (privateAdapterRoute) await privateAdapterObserver.close();
     assert.deepEqual(inventory(), sourceHashes);
     if (facadeRoute) {
       const expected = {
@@ -1463,6 +1604,14 @@ async function main() {
       ...(facadeRoute
         ? {
             route,
+            ...(privateAdapterRoute
+              ? {
+                  privateAdapter: {
+                    ...privateAdapterProbe,
+                    observer: privateAdapterObserver.report(),
+                  },
+                }
+              : {}),
             facadePhases,
             observerCounts: { ...facadeObservers.counts },
             actualPartialCapsuleAmountsMatched: true,
@@ -1521,38 +1670,70 @@ async function main() {
       mode: 0o600,
     });
     console.log(JSON.stringify({ status: 'qualified', elapsedMs: report.elapsedMs }));
+  } catch (error) {
+    if (privateAdapterRoute) privateAdapterFailure = { error };
+    throw error;
   } finally {
-    plugin?.close();
-    if (plugin) await bounded(plugin.closed);
-    facadeObservers?.close();
-    recovery?.close();
-    completion?.close();
-    staged?.close();
-    for (const constraint of constraints) constraint.close();
-    preview?.close();
-    journalScope?.close();
-    try {
-      await account?.close();
-    } finally {
-      try {
-        await txid?.close();
-      } finally {
-        try {
-          await publicAccount?.close();
-        } finally {
-          enrollment?.close();
-          identity?.close();
-          vault.lockVault();
-          for (const child of children) child.close();
-          await bounded(Promise.all([...children].map((child) => child.closed)));
-          for (const worker of workers) worker.close();
-          await bounded(Promise.all([...workers].map((worker) => worker.closed)));
-          await closeWrapperClients();
-          await services.close();
+    if (privateAdapterRoute) {
+      const finishCleanup = async () => {
+        // A failed observer or close barrier must not skip later cleanup. Retain
+        // the original operation failure, then the first cleanup failure, while
+        // attempting every dependent before releasing its remaining owners.
+        let cleanupFailure;
+        const cleanup = async (operation) => {
+          try {
+            await operation();
+          } catch (error) {
+            cleanupFailure ??= { error };
+          }
+        };
+        await cleanup(() => plugin?.close());
+        await cleanup(() => (plugin ? bounded(plugin.closed) : undefined));
+        await cleanup(() => privateAdapterObserver?.close());
+        await cleanup(() => facadeObservers?.close());
+        await cleanup(() => recovery?.close());
+        await cleanup(() => completion?.close());
+        await cleanup(() => staged?.close());
+        for (const constraint of constraints) await cleanup(() => constraint.close());
+        await cleanup(() => preview?.close());
+        await cleanup(() => journalScope?.close());
+        await cleanup(() => account?.close());
+        await cleanup(() => txid?.close());
+        await cleanup(() => publicAccount?.close());
+        const cleanupChildren = [...children];
+        const cleanupWorkers = [...workers];
+        for (const child of cleanupChildren) await cleanup(() => child.close());
+        await cleanup(async () => {
+          const results = await bounded(
+            Promise.allSettled(cleanupChildren.map((child) => child.closed))
+          );
+          for (const result of results) if (result.status === 'rejected') throw result.reason;
+        });
+        for (const worker of cleanupWorkers) await cleanup(() => worker.close());
+        await cleanup(async () => {
+          const results = await bounded(
+            Promise.allSettled(cleanupWorkers.map((worker) => worker.closed))
+          );
+          for (const result of results) if (result.status === 'rejected') throw result.reason;
+        });
+        await cleanup(() => enrollment?.close());
+        await cleanup(() => identity?.close());
+        await cleanup(() => vault.lockVault());
+        await cleanup(() => closeWrapperClients());
+        await cleanup(() => services.close());
+        await cleanup(() => {
           signers.getSigner = originalSigner;
+        });
+        await cleanup(() => {
           runtime.startRailgunProcess = originalStart;
+        });
+        await cleanup(() => {
           sessionModule.startRailgunSessionWorker = originalSession;
+        });
+        await cleanup(() => {
           sessionModule.startRailgunReadOnlySessionWorker = originalReadOnlySession;
+        });
+        await cleanup(() => {
           if (!fs.existsSync(path.join(directory, 'report.json')))
             fs.writeFileSync(
               path.join(directory, 'diagnostic.json'),
@@ -1563,6 +1744,55 @@ async function main() {
               ) + '\n',
               { flag: 'wx', mode: 0o600 }
             );
+        });
+        if (privateAdapterFailure) throw privateAdapterFailure.error;
+        if (cleanupFailure) throw cleanupFailure.error;
+      };
+      await finishCleanup();
+    } else {
+      plugin?.close();
+      if (plugin) await bounded(plugin.closed);
+      if (privateAdapterRoute) await privateAdapterObserver.close();
+      facadeObservers?.close();
+      recovery?.close();
+      completion?.close();
+      staged?.close();
+      for (const constraint of constraints) constraint.close();
+      preview?.close();
+      journalScope?.close();
+      try {
+        await account?.close();
+      } finally {
+        try {
+          await txid?.close();
+        } finally {
+          try {
+            await publicAccount?.close();
+          } finally {
+            enrollment?.close();
+            identity?.close();
+            vault.lockVault();
+            for (const child of children) child.close();
+            await bounded(Promise.all([...children].map((child) => child.closed)));
+            for (const worker of workers) worker.close();
+            await bounded(Promise.all([...workers].map((worker) => worker.closed)));
+            await closeWrapperClients();
+            await services.close();
+            signers.getSigner = originalSigner;
+            runtime.startRailgunProcess = originalStart;
+            sessionModule.startRailgunSessionWorker = originalSession;
+            sessionModule.startRailgunReadOnlySessionWorker = originalReadOnlySession;
+            if (!fs.existsSync(path.join(directory, 'report.json')))
+              fs.writeFileSync(
+                path.join(directory, 'diagnostic.json'),
+                JSON.stringify(
+                  { phase, keys, jobs, childResults, eoa, methods, services: services.report() },
+                  null,
+                  2
+                ) + '\n',
+                { flag: 'wx', mode: 0o600 }
+              );
+          }
         }
       }
     }

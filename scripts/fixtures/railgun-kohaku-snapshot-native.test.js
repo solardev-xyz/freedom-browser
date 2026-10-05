@@ -335,6 +335,7 @@ test('default-off selected inventory remains exact and cannot load snapshot fixt
       kohaku: null,
       publicShield: false,
       snapshotProbe,
+      privateAdapterMode: false,
       require: () => {
         throw Error('Unexpected off import');
       },
@@ -427,4 +428,43 @@ test('actual qualifier counts every broker entry before parsing, including non-k
   context.snapshotProbe = null;
   expect(dispatch('{"method":"off"}').method).toBe('off');
   expect(counts).toHaveLength(4);
+});
+
+test('private adapter inventory is opt-in and includes both bridge and independent observer', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../qualify-railgun-wallet-journal.js'),
+    'utf8'
+  );
+  const start = source.indexOf('  const sources = [') + '  const sources = '.length;
+  const end = source.indexOf('\n  ];', start) + '\n  ]'.length;
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const expression = source.slice(start, end);
+  const evaluate = (privateAdapterMode) =>
+    vm.runInNewContext(expression, {
+      kohaku: {},
+      publicShield: false,
+      snapshotProbe: null,
+      privateAdapterMode,
+      require: () => {
+        throw Error('Inventory evaluation must not load host or observer');
+      },
+    });
+  const legacy = evaluate(false),
+    adapter = evaluate(true);
+  const added = adapter.filter((name) => !legacy.includes(name));
+  expect(added).toEqual([
+    'src/main/wallet/railgun-kohaku-private-host.js',
+    'src/main/wallet/railgun-kohaku-private-host.test.js',
+    'src/main/wallet/railgun-kohaku-private-adapter.js',
+    'src/main/wallet/railgun-kohaku-private-adapter.test.js',
+    'scripts/fixtures/railgun-kohaku-private-contract.d.ts',
+    'scripts/fixtures/railgun-kohaku-private-conformance.js',
+    'scripts/fixtures/railgun-kohaku-private-native.js',
+    'scripts/fixtures/railgun-kohaku-private-native.test.js',
+  ]);
+  expect(adapter.filter((name) => !added.includes(name))).toEqual(legacy);
+  expect(new Set(added).size).toBe(8);
+  expect(legacy).toContain('src/main/wallet/railgun-kohaku-plugin.js');
+  expect(legacy.some((name) => name.includes('snapshot-native'))).toBe(false);
 });
