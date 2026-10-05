@@ -83,7 +83,10 @@ function createCombinedPoiListAcceptance(options) {
   );
   assert.deepEqual(
     history.capture.intent,
-    railgunTransactJournalIntent(history.capture.provedTransaction)
+    railgunTransactJournalIntent({
+      ...history.capture.provedTransaction,
+      from: history.capture.submitter,
+    })
   );
   assert.deepEqual(
     history.capture.projection,

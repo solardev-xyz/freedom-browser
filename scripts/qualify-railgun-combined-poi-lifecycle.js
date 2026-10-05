@@ -1,7 +1,7 @@
 /** Offline actual partial EOA submission through durable combined POI over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact]
+ * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [change]
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -33,7 +33,9 @@ async function bounded(work, ms = 30000) {
 }
 async function main() {
   const args = process.argv.slice(2);
-  assert.ok(args.length >= 6 && args.length <= 7);
+  assert.ok(args.length >= 6 && args.length <= 8);
+  const changeMode = args.length === 8;
+  if (changeMode) assert.equal(args[7], 'change');
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
@@ -143,6 +145,7 @@ async function main() {
     if (
       [
         'railgun-combined-poi-row-job.js',
+        'railgun-combined-poi-list-job.js',
         'railgun-own-poi-prove-job.js',
         'railgun-poi-output-recover-job.js',
         'railgun-poi-verify-job.js',
@@ -157,10 +160,13 @@ async function main() {
       assert.equal(subject.chainId, 11155111);
       const expected = {
         'railgun-combined-poi-row-job.js': ['engine', 'combined-poi-row-fixture', false],
+        'railgun-combined-poi-list-job.js': ['engine', 'fixture-list-binding', false],
         'railgun-own-poi-prove-job.js': ['engine', 'poi-prove', true],
         'railgun-poi-output-recover-job.js': ['engine', 'poi-output-recover', true],
         'railgun-poi-verify-job.js': ['prover', 'poi-verify', false],
       }[job];
+      if (job === 'railgun-combined-poi-list-job.js')
+        assert.equal(subject.principal, 'disposable-list');
       assert.equal(subject.role, expected[0]);
       assert.equal(subject.operation, expected[1]);
       assert.equal(!!options.binaryKey, expected[2]);
@@ -219,13 +225,26 @@ async function main() {
     );
     return task;
   };
-  const services = require('./fixtures/railgun-partial-controller-services').install({
-    bytecodes,
-    artifactDirectory,
-    source,
-    anchor,
-    perHandlePoi: true,
-  });
+  const signatureModule = require('./fixtures/railgun-own-poi-membership-signature');
+  const originalInstallSignature = signatureModule.install;
+  let signature, services;
+  try {
+    signatureModule.install = (...args) => {
+      assert.equal(signature, undefined);
+      signature = originalInstallSignature(...args);
+      return signature;
+    };
+    services = require('./fixtures/railgun-partial-controller-services').install({
+      bytecodes,
+      artifactDirectory,
+      source,
+      anchor,
+      perHandlePoi: true,
+    });
+    assert.ok(signature);
+  } finally {
+    signatureModule.install = originalInstallSignature;
+  }
   const storeObserver = require('./fixtures/railgun-combined-poi-store-observer').install();
 
   const transport = require('../src/main/networks/wallet-tor-transport');
@@ -424,7 +443,7 @@ async function main() {
           const roleKey = subject.kind + ':' + subject.role + ':' + (called.method ?? 'page');
           roleMethods[roleKey] = (roleMethods[roleKey] || 0) + 1;
           if (postChain) {
-            const handled = await postChain.route(subject, url, options);
+            const handled = await postChain.route(subject, url, options, handle);
             if (handled !== undefined) {
               current();
               return handled;
@@ -1074,6 +1093,9 @@ async function main() {
       await txid.close();
       txid = null;
       const completed = await lifecycle.run({
+        changeMode,
+        signature,
+        outerSignal: identity.signal,
         archive,
         proverArchive,
         artifactDirectory,
@@ -1123,7 +1145,7 @@ async function main() {
         actualSignedCalldata: true,
         realPublicProjectionAndTxidMirror: true,
         rows: projected.rows.length,
-        changeCreditedByWallet: false,
+        changeCreditedByWallet: changeMode,
         secondSpend: false,
       });
     }
@@ -1190,7 +1212,10 @@ async function main() {
     sticky.assertEmpty();
     assert.deepEqual(inventory(), sourceHashes);
     const report = {
-      schema: 'railgun-combined-poi-native-v1',
+      schema: changeMode
+        ? 'railgun-combined-poi-change-native-v1'
+        : 'railgun-combined-poi-native-v1',
+      changeMode,
       connected,
       combinedChain: postChain.report(),
       roleMethods,
@@ -1234,8 +1259,13 @@ async function main() {
       utilityRuntimeGuardsExercised: true,
       sourceAndMirrorActualFirstTransaction: true,
       changeEligibilityEstablished: false,
+      disposableChangeMembershipQualified: changeMode,
+      normalChangeScanQualified: changeMode,
       actualServiceAcceptance: false,
-      noChangeCreditingOrSecondSpendClaim: true,
+      ...(changeMode
+        ? { changeCreditedByNormalScan: true }
+        : { noChangeCreditingOrSecondSpendClaim: true }),
+      secondSpendQualified: false,
       newProcessRestartQualified: false,
       unchangedOriginalCapsuleSignatureProofAndSigningHold: true,
       elapsedMs: Math.round(performance.now() - started),
@@ -1302,7 +1332,7 @@ main().then(
       .split('\n')
       .map((part) =>
         part.match(
-          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer))\.js:(\d+):\d+/
+          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer|change-scan|change-inventory|list-acceptance))\.js:(\d+):\d+/
         )
       )
       .find(Boolean);

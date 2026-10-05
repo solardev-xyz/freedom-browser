@@ -7,6 +7,17 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [normal change checkpoint](railgun-combined-change-integration-2026-10-05.md)
+connects actual first-transaction change to the ordinary wallet scan and
+Missing-to-Valid membership through a disposable proof-verifying list service.
+Both input types pass twenty native stages; default compatibility passes
+seventeen. All three share 856 source hashes. Only fixture/documentation bytes
+change from the preceding production checkpoint. Actual second spending,
+new-process combined recovery, partial facade and live qualification remain
+open. The next step stages and spends the actual change with fresh authority.
+
+The following checkpoints retain their historical evidence and limitations.
+
 The [durable combined-proof checkpoint](railgun-combined-poi-integration-2026-10-05.md)
 connects genuine partial capture to one combined proof, retained version-3 data,
 recovery, cold validation and one fixed proof POST. Shield and received-Transact
@@ -117,8 +128,9 @@ facade stays full-only.
    Partial submission and authenticated capture now pass six controlled native
    cases across both input creators. First-stage durable combined post-transaction
    POI now passes both connected native cases. Completing the full flow still
-   requires live deployed verifier checks, normal change ingestion, verified
-   list acceptance and a connected restart/second spend.
+   requires live deployed verifier checks, real-service list acceptance and a
+   connected restart/second spend. Normal change ingestion and disposable-list
+   membership now pass the connected controlled cases described above.
    Signed-but-unfinished proof resumption now has a production recovery host and
    six warm native cases plus twelve genuine fresh-process cases, including
    explicitly advanced trees. The fixed recovered-proof submission host now has fourteen three-process

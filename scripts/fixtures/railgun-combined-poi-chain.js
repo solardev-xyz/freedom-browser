@@ -1,7 +1,8 @@
 /** Disposable post-submission chain/service answers below genuine retained
  * clients. Original input eligibility remains the existing signed fixture list;
- * this helper NEVER marks the newly created change as eligible or accepted. */
-const { assert } = require('./railgun-native-assertions');
+ * change membership requires the separate disposable proof-verifying service. */
+const sticky = require('./railgun-native-assertions');
+const { assert } = sticky;
 const copy = (v) => JSON.parse(JSON.stringify(v));
 const quantity = (v) => '0x' + BigInt(v).toString(16);
 const field = (v) => '0x' + BigInt(v).toString(16).padStart(64, '0');
@@ -81,7 +82,9 @@ exports.create = ({
   let payload,
     attempted,
     postGate,
+    acceptance,
     postsAllowed = false;
+  const changeHandles = new WeakSet();
   const key = (subject, wire) => subject.kind + ':' + subject.role + ':' + (wire.method ?? 'page');
   const add = (name, k) => {
     counts[name][k] = (counts[name][k] || 0) + 1;
@@ -101,6 +104,24 @@ exports.create = ({
       assert.equal(payload, undefined);
       payload = copy(value);
     },
+    bindChangeAcceptance(value) {
+      assert.equal(acceptance, undefined);
+      assert.ok(
+        payload &&
+          value &&
+          typeof value.acceptPost === 'function' &&
+          typeof value.answer === 'function'
+      );
+      assert.deepEqual(value.report(), {
+        ...value.report(),
+        accepted: false,
+        postCalls: 0,
+        verifierExits: 0,
+        bindingExits: 0,
+        signedEvents: 0,
+      });
+      acceptance = value;
+    },
     allowPost(readAttempt, gate) {
       assert.equal(postsAllowed, false);
       attempted = readAttempt;
@@ -112,7 +133,8 @@ exports.create = ({
       attempted = postGate = undefined;
     },
     report: () => copy(counts),
-    async route(subject, url, options) {
+    async route(subject, url, options, handle) {
+      const started = performance.now();
       const wire = JSON.parse(options.body);
       const publicService =
         subject.kind === 'service' && subject.principal === 'railgun-public-sync';
@@ -124,10 +146,17 @@ exports.create = ({
         (wire.method === 'ppoi_validate_txid_merkleroot' ||
           (wire.method === 'ppoi_validate_poi_merkleroots' &&
             wire.params?.poiMerkleroots?.[0] === payload.poiMerkleroots[0]));
+      const changeStatus =
+        acceptance &&
+        wire.method === 'ppoi_pois_per_list' &&
+        wire.params?.blindedCommitmentDatas?.some(
+          (note) => note.blindedCommitment === payload.blindedCommitmentsOut[0]
+        );
+      const changeQuery = changeStatus || (handle && changeHandles.has(handle));
       // An owned-list validate can equal the saved proof root. The same exact
       // root/schema assertions are valid; the other three owned-list methods
       // stay with the existing fixture's typed note + signature assertions.
-      if (!publicService && !scan && !post && !roots) return undefined;
+      if (!publicService && !scan && !post && !roots && !changeQuery) return undefined;
       const k = key(subject, wire);
       add('attempted', k);
       assert.equal(options.method, 'POST');
@@ -136,7 +165,23 @@ exports.create = ({
       assert.equal(subject.deployment, 'sepolia');
       assert.equal(subject.chainId, 11155111);
       let result;
-      if (scan) {
+      if (changeQuery) {
+        assert.ok(handle && typeof handle === 'object');
+        assert.equal(subject.kind, 'private-account');
+        assert.equal(subject.principal, 'railgun:' + accountIndex);
+        assert.equal(subject.role, 'poi');
+        assert.match(subject.operation, /^poi:[0-9a-f]{64}$/);
+        assert.equal(url, POI_URL);
+        assert.deepEqual(Object.keys(wire).sort(), ['id', 'jsonrpc', 'method', 'params']);
+        assert.equal(wire.jsonrpc, '2.0');
+        try {
+          result = acceptance.answer(wire.method, wire.params);
+        } catch (error) {
+          sticky.record(error, 'change-list.answer');
+          throw error;
+        }
+        if (changeStatus) changeHandles.add(handle);
+      } else if (scan) {
         assert.equal(subject.kind, 'private-account');
         assert.equal(subject.principal, 'railgun:' + accountIndex);
         assert.equal(url, 'https://synthetic.invalid/railgun-partial-controller');
@@ -241,6 +286,37 @@ exports.create = ({
           postGate?.entered();
           if (postGate) await postGate.wait;
           assert.equal(options.signal.aborted, false);
+          if (acceptance) {
+            assert.equal(options.timeoutMs, 10000);
+            const left = Math.floor(options.timeoutMs - (performance.now() - started));
+            assert.ok(left > 0);
+            let reply;
+            try {
+              reply = await acceptance.acceptPost(options.body, {
+                signal: options.signal,
+                timeoutMs: left,
+              });
+            } catch (error) {
+              sticky.record(error, 'change-list.acceptPost');
+              throw error;
+            }
+            assert.equal(reply.status, 200);
+            assert.ok(Buffer.isBuffer(reply.body) && reply.body.length <= 2048);
+            const parsed = JSON.parse(reply.body.toString());
+            assert.deepEqual(parsed, { jsonrpc: '2.0', id: wire.id, result: true });
+            assert.deepEqual(acceptance.report(), {
+              ...acceptance.report(),
+              accepted: true,
+              postCalls: 1,
+              verifierExits: 1,
+              bindingExits: 1,
+              signedEvents: 1,
+            });
+            counts.acceptedPostElapsedMs = performance.now() - started;
+            assert.ok(counts.acceptedPostElapsedMs < options.timeoutMs);
+            add('validated', k);
+            return reply;
+          }
           result = null;
         }
       }

@@ -127,7 +127,12 @@ exports.run = async (h) => {
   } = h;
   let { enrollment, publicAccount } = h,
     store,
-    membership;
+    entry,
+    membership,
+    acceptance,
+    changeDiagnostics,
+    changeVerified = false;
+  const changeMode = h.changeMode === true;
   const runs = [];
   let continuation;
   const setPhase = (name) => h.phase('combined-' + name);
@@ -208,6 +213,7 @@ exports.run = async (h) => {
       posts = 0,
       handshake = false,
       substituted = false,
+      listBinding = 0,
     } = {}
   ) => {
     const after = activity(),
@@ -221,6 +227,7 @@ exports.run = async (h) => {
       'railgun-txid-job.js': q * (3 + 2 * t + 5 * history),
       'railgun-poi-output-recover-job.js': viewing,
       'railgun-poi-verify-job.js': verify,
+      'railgun-combined-poi-list-job.js': listBinding,
     };
     assert.deepEqual(nonzero(delta(after.audit.starts, before.audit.starts)), nonzero(expected));
     assert.deepEqual(nonzero(delta(after.audit.exits, before.audit.exits)), nonzero(expected));
@@ -273,8 +280,128 @@ exports.run = async (h) => {
     };
     assert.deepEqual(nonzero(delta(after.roleMethods, before.roleMethods)), nonzero(traffic));
     assert.deepEqual(after.services.poiMethods, before.services.poiMethods);
+    assert.equal(after.services.signatureChecks - before.services.signatureChecks, listBinding);
     assert.deepEqual(after.chain.attempted, after.chain.validated);
     return { jobs: nonzero(expected), methods: nonzero(traffic), allRoleAdmissionsChecked: true };
+  };
+  const walletWork = (before, verified = false, queried = false) => {
+    const after = activity();
+    const expectedJobs = {
+      'railgun-wallet-job.js': 1,
+      ...(verified ? { 'railgun-poi-job.js': 1 } : {}),
+    };
+    for (const key of ['starts', 'exits', 'attemptedResults', 'admittedResults', 'guards'])
+      assert.deepEqual(nonzero(delta(after.audit[key], before.audit[key])), expectedJobs);
+    for (const key of ['keyRequests', 'keyReplies'])
+      assert.deepEqual(nonzero(delta(after.audit[key], before.audit[key])), {
+        'railgun-wallet-job.js': 1,
+      });
+    assert.deepEqual(nonzero(delta(after.audit.modes, before.audit.modes)), {});
+    const expectedMethods = {
+      // Two ordinary refresh passes over three unique numbered boundaries and finalized.
+      'private-account:protocol-rpc:eth_getBlockByNumber': 8,
+      ...(queried ? { 'private-account:poi:ppoi_pois_per_list': 1 } : {}),
+      ...(verified
+        ? {
+            'private-account:poi:ppoi_merkle_proofs': 1,
+            'private-account:poi:ppoi_poi_events': 1,
+            'private-account:poi:ppoi_validate_poi_merkleroots': 1,
+          }
+        : {}),
+    };
+    assert.deepEqual(nonzero(delta(after.roleMethods, before.roleMethods)), expectedMethods);
+    assert.deepEqual(after.services.poiMethods, before.services.poiMethods);
+    assert.equal(
+      after.services.signatureChecks - before.services.signatureChecks,
+      Number(verified)
+    );
+    assert.deepEqual(after.chain.attempted, after.chain.validated);
+    assert.equal(after.storageWorkers.starts - before.storageWorkers.starts, 1);
+    assert.equal(after.storageWorkers.exits - before.storageWorkers.exits, 1);
+    assert.equal(after.storageWorkers.pending, before.storageWorkers.pending);
+    assertDrain();
+    return { jobs: expectedJobs, methods: expectedMethods, walletWorkers: 1, viewingLoans: 1 };
+  };
+  const observeChange = async (valid) => {
+    setPhase(valid ? 'change-valid-membership' : 'change-missing-membership');
+    const before = activity(),
+      disk = await durable();
+    const files = require('./railgun-combined-poi-change-inventory').observeWalletInventory({
+      enrollment,
+      coordinator: publicAccount.coordinator,
+      archive,
+    });
+    const walletModule = require('../../src/main/wallet/railgun-account-wallet');
+    const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
+    let account, poi;
+    try {
+      account = await walletModule.openRailgunAccountWallet({ ...owners, archive, mode: 'active' });
+      const owned = walletModule.readRailgunAccountOwnedNotes(account, owners);
+      const changes = owned.ownedPoi.filter(
+        (record) => record.txid === '0x' + continuation.ownEvidence.row.txid
+      );
+      assert.equal(changes.length, 1);
+      const record = changes[0],
+        note = owned.read.received.find((value) => value.id === record.id);
+      assert.equal(record.type, 'Transact');
+      assert.equal(record.hash, capture.capsule.preparation.expected.changeCommitment);
+      assert.equal(record.blindedCommitment, entry.payload.blindedCommitmentsOut[0]);
+      assert.ok(note && note.spentTxid === false);
+      assert.equal(note.amount.toString(), capture.capsule.preparation.changeAmount);
+      poi = require('../../src/main/wallet/railgun-account-poi').openRailgunAccountPoi({
+        wallet: account,
+        ...owners,
+        archive,
+        noteIds: [record.id],
+      });
+      const acquired = await poi.acquire({ timeoutMs: 30000 });
+      const observed = poi.assertResult(acquired.receipt);
+      assert.equal(observed, acquired.observation);
+      assert.deepEqual(observed.statuses, [
+        {
+          blindedCommitment: record.blindedCommitment,
+          type: 'Transact',
+          status: valid ? 'Valid' : 'Missing',
+        },
+      ]);
+      assert.equal(observed.rootsAccepted, valid);
+      assert.equal(observed.ownershipAtSnapshot, true);
+      assert.equal(observed.membershipVerified === true, valid);
+      if (valid) {
+        assert.equal(observed.proofs.length, 1);
+        assert.equal('0x' + observed.proofs[0].leaf, record.blindedCommitment);
+        assert.equal(observed.events.length, 1);
+      } else {
+        assert.equal(observed.proofs, null);
+        assert.equal(observed.events, null);
+        assert.equal(acceptance.report().signedEvents, 0);
+      }
+      for (const key of ['txidProvenanceVerified', 'reservationsChecked', 'spendingEnabled'])
+        assert.equal(observed[key], false);
+    } finally {
+      try {
+        poi?.close();
+      } finally {
+        try {
+          if (poi) await poi.closed;
+        } finally {
+          if (account) await account.close();
+        }
+      }
+    }
+    assert.deepEqual(await durable(), disk);
+    const changed = files.assertAfter();
+    assert.deepEqual(changed, ['walletJournal']);
+    const exact = walletWork(before, valid, true);
+    runs.push({
+      mode: valid ? 'normal-change-valid-membership' : 'normal-change-missing-membership',
+      exact,
+      changedFileClasses: changed,
+      protectedStoresByteIdentical: true,
+      disposableServiceOnly: true,
+      spendingEnabled: false,
+    });
+    if (valid) changeVerified = true;
   };
   const run = async (
     name,
@@ -483,7 +610,7 @@ exports.run = async (h) => {
       signal: enrollment.signal,
     });
     assert.equal(prepared.status, 'prepared', 'prepare stage ' + prepared.stage);
-    let entry = await store.get(capture.capsuleDigest);
+    entry = await store.get(capture.capsuleDigest);
     assert.equal(entry.state, 'prepared');
     const preparedDocument = await h.storeObserver.document(store);
     assert.equal(preparedDocument.version, 3);
@@ -514,6 +641,48 @@ exports.run = async (h) => {
       documentBefore: { version: 1, sequence: 0 },
       documentAfter: { version: 3, sequence: 1 },
     });
+    if (changeMode) {
+      setPhase('normal-change-scan');
+      assert.equal(h.outerSignal, identity.signal);
+      assert.notEqual(h.outerSignal, enrollment.signal);
+      const before = activity(),
+        disk = await durable();
+      const files = require('./railgun-combined-poi-change-inventory').observeWalletInventory({
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        archive,
+      });
+      const scan = await require('./railgun-combined-poi-change-scan').scanCombinedPoiChange({
+        identity,
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        archive,
+        proverArchive,
+        artifactDirectory,
+        proof,
+        store,
+        signature: h.signature,
+        originalNoteId: `${capture.capsule.selection.tree}:${capture.capsule.selection.position}`,
+        signal: h.outerSignal,
+      });
+      acceptance = scan.acceptance;
+      changeDiagnostics = scan.diagnostics;
+      assert.equal(acceptance.report().accepted, false);
+      assert.equal(acceptance.report().signedEvents, 0);
+      chain.bindChangeAcceptance(acceptance);
+      assert.deepEqual(await durable(), disk);
+      const changed = files.assertAfter();
+      assert.deepEqual(changed, ['walletAndCoverage', 'walletJournal']);
+      const exact = walletWork(before);
+      runs.push({
+        mode: 'ordinary-change-scan',
+        ...changeDiagnostics,
+        changedFileClasses: changed,
+        exact,
+        protectedStoresByteIdentical: true,
+      });
+      await observeChange(false);
+    }
     await run(
       'checks',
       () =>
@@ -722,7 +891,8 @@ exports.run = async (h) => {
       const exact = verifyActivity(before, {
         queried: mode !== 'deny-validation',
         viewing: Number(mode !== 'deny-validation'),
-        verify: Number(mode !== 'deny-validation'),
+        verify: Number(mode !== 'deny-validation') + Number(changeMode && mode === 'accept'),
+        listBinding: Number(changeMode && mode === 'accept'),
         history: Number(mode !== 'deny-validation'),
         roots: Number(mode === 'accept'),
         posts: Number(mode === 'accept'),
@@ -753,6 +923,17 @@ exports.run = async (h) => {
     await send('deny-validation');
     await send('deny-submission');
     await send('accept');
+    if (changeMode) {
+      assert.deepEqual(acceptance.report(), {
+        ...acceptance.report(),
+        accepted: true,
+        postCalls: 1,
+        verifierExits: 1,
+        bindingExits: 1,
+        signedEvents: 1,
+      });
+      await observeChange(true);
+    }
     const beforeAttemptedReader = await durable();
     runs.push({ mode: 'attempted-v3-old-reader', ...(await h.storeObserver.oldReader(store)) });
     await reopen(beforeAttemptedReader);
@@ -808,6 +989,13 @@ exports.run = async (h) => {
         runs,
         sameProcessColdReopen: true,
         actualChangeAcceptance: false,
+        ...(changeMode
+          ? {
+              normalChangeScan: changeDiagnostics,
+              disposableChangeMembershipVerified: changeVerified,
+              acceptance: acceptance.report(),
+            }
+          : {}),
         secondSpendQualified: false,
         originalInputMembershipSimulated: true,
         attemptReservesRemaining: 2,
@@ -816,11 +1004,24 @@ exports.run = async (h) => {
     };
   } finally {
     audit.fault(false);
-    membership?.close?.();
-    if (membership?.closed) await membership.closed;
-    store?.close();
-    if (store?.closed) await store.closed;
-    // Return genuine latest owners to outer finally even if a cold stage fails.
-    h.adopt(enrollment, publicAccount);
+    try {
+      try {
+        membership?.close?.();
+        if (membership?.closed) await membership.closed;
+      } finally {
+        store?.close();
+        if (store?.closed) await store.closed;
+      }
+    } finally {
+      try {
+        acceptance?.close();
+      } finally {
+        try {
+          if (acceptance) await acceptance.closed;
+        } finally {
+          h.adopt(enrollment, publicAccount);
+        }
+      }
+    }
   }
 };

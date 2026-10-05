@@ -190,7 +190,8 @@ beforeEach(async () => {
   mockAccount = options.account;
   mockEnrollment = options.owners.enrollment;
   mockCoordinator = options.owners.coordinator;
-  const provedTransaction = { ...ownEvidence.transaction, data: ownEvidence.transaction.input };
+  const { from: submitter, ...transaction } = ownEvidence.transaction;
+  const provedTransaction = { ...transaction, data: transaction.input };
   mockHistory = {
     preparation: { ownEvidence, state, witness },
     capture: {
@@ -200,9 +201,10 @@ beforeEach(async () => {
           ownEvidence.capsule
         ),
       bindingDigest: hash('binding'),
+      submitter,
       provedTransaction,
       intent: require('../../src/main/wallet/railgun-transact-intent').railgunTransactJournalIntent(
-        provedTransaction
+        { ...provedTransaction, from: submitter }
       ),
       projection: require('../../src/main/wallet/railgun-own-txid').projectRailgunOwnRecord(
         ownEvidence.record
@@ -249,6 +251,8 @@ const statuses = () => ({
 });
 const post = () => helper.acceptPost(body, request());
 test('publishes only after both independent checks and exits; exact fixed wire reaches real normalizer', async () => {
+  expect(Object.hasOwn(mockHistory.capture.provedTransaction, 'from')).toBe(false);
+  expect(mockHistory.capture.submitter).toMatch(/^0x[0-9a-f]{40}$/);
   helper = createCombinedPoiListAcceptance(options);
   expect(helper.answer('ppoi_pois_per_list', statuses())[hex(5)][REQUIRED_LIST]).toBe('Missing');
   expect(() =>
@@ -410,6 +414,7 @@ test.each([
   'captureCapsule',
   'projection',
   'provedTransaction',
+  'submitter',
   'payloadDigest',
 ])('rejects inconsistent mocked authenticated history %s', (mode) => {
   if (mode === 'capsuleDigest') mockHistory.capture.capsuleDigest = hash('other');
@@ -417,6 +422,7 @@ test.each([
   if (mode === 'captureCapsule') mockHistory.capture.capsule = {};
   if (mode === 'projection') mockHistory.capture.projection = {};
   if (mode === 'provedTransaction') mockHistory.capture.provedTransaction = {};
+  if (mode === 'submitter') mockHistory.capture.submitter = '0x' + '12'.repeat(20);
   if (mode === 'payloadDigest') mockHistory.payloadSha256 = hash('other');
   expect(() => createCombinedPoiListAcceptance(options)).toThrow();
   expect(verifyRailgunPoiPayload).not.toHaveBeenCalled();
