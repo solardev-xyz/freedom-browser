@@ -159,6 +159,25 @@ const guidanceViews = new Map();
 const attachmentPreviewLoaders = new WeakMap();
 let attachmentPreviewObserver = null;
 
+function classifierUncertaintyText(reason) {
+  const messages = {
+    invalid_classifier_output: 'The model returned an unreadable permission assessment. Please review this action.',
+    classifier_invalid_json: 'The model returned an unreadable permission assessment. Please review this action.',
+    classifier_invalid_schema: 'The model returned an incomplete or invalid permission assessment. Please review this action.',
+    classifier_empty_output: 'The model did not return a permission assessment. Please review this action.',
+    classifier_output_too_large: 'The model’s permission assessment was too long to validate. Please review this action.',
+    classifier_truncated_output: 'The model’s permission assessment was cut short. Please review this action.',
+    classifier_unexpected_tool: 'The model did not return the required permission assessment. Please review this action.',
+    classifier_timeout: 'The permission check took too long. Please review this action.',
+    classifier_provider_error: 'The model provider could not complete the permission check. Please review this action.',
+    classifier_cancelled: 'The permission check was stopped.',
+    classifier_runtime_unavailable: 'The model is unavailable for the permission check. Please review this action.',
+    classifier_session_unavailable: 'The permission check could not start. Please review this action.',
+    classifier_input_rejected: 'This action could not be assessed automatically. Please review it.',
+  };
+  return Object.hasOwn(messages, reason) ? messages[reason] : reason;
+}
+
 function byId(id) {
   return document.getElementById(id);
 }
@@ -2957,7 +2976,7 @@ function renderNodeRequestApproval(request) {
   appendNodeRequestSummary('Effect', effectLabel(nodeRequest.effect));
   appendNodeRequestSummary('Classifier', nodeRequest.classification?.summary);
   if (nodeRequest.classification?.uncertainties?.length) {
-    appendNodeRequestSummary('Uncertainty', nodeRequest.classification.uncertainties.join('\n'));
+    appendNodeRequestSummary('Uncertainty', nodeRequest.classification.uncertainties.map(classifierUncertaintyText).join('\n'));
   }
   if (wireRequest.headers && Object.keys(wireRequest.headers).length) {
     appendNodeRequestSummary(
@@ -2979,7 +2998,7 @@ function renderNodeLifecycleApproval(request) {
   appendNodeRequestSummary('Effect', effectLabel(lifecycle.effect));
   appendNodeRequestSummary('Classifier', lifecycle.classification?.summary);
   if (lifecycle.classification?.uncertainties?.length) {
-    appendNodeRequestSummary('Uncertainty', lifecycle.classification.uncertainties.join('\n'));
+    appendNodeRequestSummary('Uncertainty', lifecycle.classification.uncertainties.map(classifierUncertaintyText).join('\n'));
   }
 }
 
@@ -3241,7 +3260,7 @@ function renderApproval(request) {
                     : approvalOriginSummary(request);
   if (request.pageMessage) elements.approvalOrigin.textContent += `\n\nPage says: ${JSON.stringify(request.pageMessage)}`;
   if (request.inputPreview) elements.approvalOrigin.textContent += `\n\n${request.inputPreview.replace(/\r\n?|\n/g, ' ⏎ ')}`;
-  if (interaction?.uncertainties?.length) elements.approvalOrigin.textContent += `\n\n${interaction.uncertainties.join('\n')}`;
+  if (interaction?.uncertainties?.length) elements.approvalOrigin.textContent += `\n\n${interaction.uncertainties.map(classifierUncertaintyText).join('\n')}`;
   elements.pageToolDetails.hidden = !pageTool && !mcp;
   elements.pageToolDetails.open = Boolean(pageTool || mcp);
   elements.pageToolArguments.textContent = mcp?.argumentsJSON || pageTool?.argumentsJSON || '';

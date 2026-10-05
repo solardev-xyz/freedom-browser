@@ -18,7 +18,9 @@ test('custom providers stream tool calls and apply privacy to stream and complet
         isEncryptionAvailable: () => true,
         encryptString: (text) => Buffer.from(text), decryptString: (buffer) => buffer.toString(),
       } });
-      const descriptor = { id: 'test', name: 'Test', tools: true, available: true,
+      const { structuredClassifierRuntime, classifierSchema } = require('./src/main/agent/classifier-response');
+      const schema = classifierSchema('kind', ['ordinary', 'consequential', 'uncertain'], ['uncertainties']);
+      const descriptor = { id: 'test', name: 'Test', tools: true, available: true, jsonSchema: true,
         privacy: 'tee', contextWindow: 32000, maxTokens: 4096 };
       const catalog = { get: (id) => ['venice', 'near-ai', 'openrouter'].includes(id)
         ? { updatedAt: Date.now(), models: [descriptor] } : { models: [] } };
@@ -44,7 +46,8 @@ test('custom providers stream tool calls and apply privacy to stream and complet
         assert(runtime.getModels('xai').length > 0);
         let lastMessage;
         for (const method of ['stream', 'streamSimple', 'complete', 'completeSimple']) {
-          const result = runtime[method](resolved.model, context, { fetch, maxRetries: 0,
+          const selectedRuntime = method === 'streamSimple' ? structuredClassifierRuntime(runtime, resolved.model, schema) : runtime;
+          const result = selectedRuntime[method](resolved.model, context, { fetch, maxRetries: 0,
             onPayload: (payload) => ({ ...payload, provider: { zdr: false }, plugins: [{ id: 'web' }],
               venice_parameters: { enable_web_search: 'on' } }),
           });
@@ -57,6 +60,8 @@ test('custom providers stream tool calls and apply privacy to stream and complet
           assert.equal(sent.authorization, 'Bearer test-key');
           assert.equal(sent.body.messages[0].content, 'Test');
           assert.equal(sent.body.tools[0].function.name, 'inspect');
+          if (method === 'streamSimple') assert.deepEqual(sent.body.response_format.json_schema.schema, schema);
+          else assert.equal(sent.body.response_format, undefined);
           if (providerId === 'openrouter') {
             assert.equal(sent.body.provider.zdr, true);
             assert.equal(sent.body.provider.data_collection, 'deny');

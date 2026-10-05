@@ -1409,6 +1409,22 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval'].hidden).toBe(true);
   });
 
+  test.each(['invalid_classifier_output', 'classifier_invalid_json', 'classifier_invalid_schema', 'classifier_empty_output', 'classifier_provider_error', 'classifier_timeout'])('explains %s in the approval sheet without a raw error code', async reason => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Search for Freedom';
+    ctx.elements['agent-run'].dispatch('click'); await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'classification_failed',
+      action: 'browser_interaction', operation: 'browser_type', origin: 'https://www.google.com', label: 'Search',
+      interaction: { kind: 'uncertain', confidence: 0, summary: 'Unavailable', uncertainties: [reason] },
+    });
+    const copy = ctx.elements['agent-approval-origin'].textContent;
+    expect(copy).not.toContain(reason);
+    expect(copy).toContain('Please review this action.');
+    expect(ctx.elements['agent-approval'].hidden).toBe(false);
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+  });
+
   test('explains an intent-classified consequential website approval honestly', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Publish my response';

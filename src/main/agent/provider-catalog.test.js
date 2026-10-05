@@ -34,6 +34,18 @@ function createCatalog(fetch) {
 }
 
 describe('provider model discovery', () => {
+  test('preserves only explicitly advertised JSON schema support, including across restart', async () => {
+    const { catalog, dataDir } = createCatalog(async () => new Response(JSON.stringify(venice('private', { supportsResponseSchema: true }))));
+    await catalog.refresh('venice', 'test-key');
+    expect(catalog.get('venice').models[0].jsonSchema).toBe(true);
+    expect(new ProviderCatalog({ dataDir }).get('venice').models[0].jsonSchema).toBe(true);
+    expect(normalizeModels('venice', venice())[0].jsonSchema).toBe(false);
+    for (const features of [[], ['structured_outputs']]) {
+      expect(normalizeModels('near-ai', { models: [{ modelId: 'test', metadata: { supportedFeatures: features } }] })[0].jsonSchema).toBe(features.length > 0);
+      expect(normalizeModels('openrouter', { data: [{ id: 'test', supported_parameters: features }] })[0].jsonSchema).toBe(features.length > 0);
+    }
+  });
+
   test('normalizes Venice capabilities and blocks E2EE-only and non-tool models', () => {
     const [model] = normalizeModels('venice', venice());
     expect(model).toMatchObject({

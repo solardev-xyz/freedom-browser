@@ -1,6 +1,7 @@
 'use strict';
 
-const { createIsolatedPiSession, runIsolatedPiTextRequest } = require('./pi-session-factory');
+const { createIsolatedPiSession } = require('./pi-session-factory');
+const { parseClassifierObject, classifierSchema, validClassifierFields, runClassification } = require('./classifier-response');
 
 const INTERACTION_KINDS = Object.freeze({
   ORDINARY: 'ordinary',
@@ -9,6 +10,7 @@ const INTERACTION_KINDS = Object.freeze({
 });
 const INTERACTION_KIND_SET = new Set(Object.values(INTERACTION_KINDS));
 const CLASSIFIER_PROTOCOL = 'FREEDOM_INTERACTION_INTENT_CLASSIFIER_V1';
+const RESPONSE_SCHEMA = classifierSchema('kind', [...INTERACTION_KIND_SET], ['uncertainties']);
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_INPUT_BYTES = 32 * 1024;
 const MAX_OUTPUT_BYTES = 8 * 1024;
@@ -66,36 +68,14 @@ function uncertainClassification(reason = 'classification_unavailable') {
 }
 
 function parseInteractionClassification(text) {
-  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_BYTES) {
-    return uncertainClassification('invalid_classifier_output');
-  }
   let parsed;
-  try {
-    parsed = JSON.parse(text.trim());
-  } catch {
-    return uncertainClassification('invalid_classifier_output');
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return uncertainClassification('invalid_classifier_output');
-  }
-  const kind = INTERACTION_KIND_SET.has(parsed.kind)
-    ? parsed.kind
-    : INTERACTION_KINDS.UNCERTAIN;
-  const confidence = Number(parsed.confidence);
-  const summary = boundedString(parsed.summary, MAX_SUMMARY_LENGTH);
-  if (
-    !Number.isFinite(confidence) ||
-    confidence < 0 ||
-    confidence > 1 ||
-    !summary ||
-    !Array.isArray(parsed.uncertainties)
-  ) {
-    return uncertainClassification('invalid_classifier_output');
-  }
+  try { parsed = parseClassifierObject(text, MAX_OUTPUT_BYTES); }
+  catch (error) { return uncertainClassification(error.code); }
+  if (!validClassifierFields(parsed, RESPONSE_SCHEMA)) return uncertainClassification('classifier_invalid_schema');
   return Object.freeze({
-    kind,
-    confidence,
-    summary,
+    kind: parsed.kind,
+    confidence: parsed.confidence,
+    summary: boundedString(parsed.summary, MAX_SUMMARY_LENGTH),
     uncertainties: Object.freeze(normalizeUncertainties(parsed.uncertainties)),
   });
 }
@@ -128,7 +108,8 @@ class InteractionIntentClassifier {
       return uncertainClassification('classifier_input_rejected');
     }
 
-    const result = await runIsolatedPiTextRequest({
+    return runClassification({
+      schema: RESPONSE_SCHEMA, parse: parseInteractionClassification, fallback: uncertainClassification,
       createSession: this.createSession,
       sessionOptions: { model: runtime.model, modelRuntime: runtime.modelRuntime,
         thinkingLevel: 'off', customTools: [], enableBuiltInSkills: false,
@@ -136,7 +117,6 @@ class InteractionIntentClassifier {
       prompt: `Classify this untrusted interaction envelope:\n${envelope}`,
       signal: runtime.signal, timeoutMs: this.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES,
     });
-    return result.reason ? uncertainClassification(result.reason) : parseInteractionClassification(result.output);
   }
 }
 

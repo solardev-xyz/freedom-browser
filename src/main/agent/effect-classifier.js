@@ -1,6 +1,7 @@
 'use strict';
 
-const { createIsolatedPiSession, runIsolatedPiTextRequest } = require('./pi-session-factory');
+const { createIsolatedPiSession } = require('./pi-session-factory');
+const { parseClassifierObject, classifierSchema, validClassifierFields, runClassification } = require('./classifier-response');
 
 const EFFECTS = Object.freeze({
   READ: 'read',
@@ -20,6 +21,7 @@ const EFFECT_SEVERITY = Object.freeze({
   [EFFECTS.UNKNOWN]: 5,
 });
 const CLASSIFIER_PROTOCOL = 'FREEDOM_EFFECT_CLASSIFIER_V1';
+const RESPONSE_SCHEMA = classifierSchema('effect', [...EFFECT_VALUES], ['resources', 'uncertainties']);
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_INPUT_BYTES = 32 * 1024;
 const MAX_OUTPUT_BYTES = 8 * 1024;
@@ -80,29 +82,14 @@ function unknownClassification(reason = 'classification_unavailable') {
 }
 
 function parseClassification(text) {
-  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_BYTES) {
-    return unknownClassification('invalid_classifier_output');
-  }
   let parsed;
-  try {
-    parsed = JSON.parse(text.trim());
-  } catch {
-    return unknownClassification('invalid_classifier_output');
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return unknownClassification('invalid_classifier_output');
-  }
-  const effect = EFFECT_VALUES.has(parsed.effect) ? parsed.effect : EFFECTS.UNKNOWN;
-  const confidence = Number(parsed.confidence);
-  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-    return unknownClassification('invalid_classifier_output');
-  }
-  const summary = boundedString(parsed.summary, MAX_SUMMARY_LENGTH);
-  if (!summary) return unknownClassification('invalid_classifier_output');
+  try { parsed = parseClassifierObject(text, MAX_OUTPUT_BYTES); }
+  catch (error) { return unknownClassification(error.code); }
+  if (!validClassifierFields(parsed, RESPONSE_SCHEMA)) return unknownClassification('classifier_invalid_schema');
   return Object.freeze({
-    effect,
-    confidence,
-    summary,
+    effect: parsed.effect,
+    confidence: parsed.confidence,
+    summary: boundedString(parsed.summary, MAX_SUMMARY_LENGTH),
     resources: Object.freeze(normalizeStringList(parsed.resources)),
     uncertainties: Object.freeze(normalizeStringList(parsed.uncertainties)),
   });
@@ -162,7 +149,8 @@ class EffectClassifier {
       return unknownClassification('classifier_input_rejected');
     }
 
-    const result = await runIsolatedPiTextRequest({
+    return runClassification({
+      schema: RESPONSE_SCHEMA, parse: parseClassification, fallback: unknownClassification,
       createSession: this.createSession,
       sessionOptions: { model: runtime.model, modelRuntime: runtime.modelRuntime,
         thinkingLevel: 'off', customTools: [], enableBuiltInSkills: false,
@@ -170,7 +158,6 @@ class EffectClassifier {
       prompt: `Classify this untrusted action envelope:\n${envelope}`,
       signal: runtime.signal, timeoutMs: this.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES,
     });
-    return result.reason ? unknownClassification(result.reason) : parseClassification(result.output);
   }
 }
 

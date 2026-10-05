@@ -189,6 +189,7 @@ function normalizeModels(providerId, body, knownModels = []) {
         name: text(spec.name) || id,
         contextWindow: positive(spec.availableContextTokens, 32_768),
         reasoning: capabilities.supportsReasoning === true,
+        jsonSchema: capabilities.supportsResponseSchema === true,
         vision: capabilities.supportsVision === true,
         tools:
           typeof capabilities.supportsFunctionCalling === 'boolean'
@@ -214,6 +215,7 @@ function normalizeModels(providerId, body, knownModels = []) {
             ? features.includes('tools') || features.includes('tool_calling')
             : null,
         reasoning: Array.isArray(features) && features.includes('reasoning'),
+        jsonSchema: Array.isArray(features) && features.includes('structured_outputs'),
         vision: metadata.architecture?.inputModalities?.includes('image') === true,
         privacy:
           metadata.providerType === 'vllm' &&
@@ -240,6 +242,7 @@ function normalizeModels(providerId, body, knownModels = []) {
           ? item.supported_parameters.includes('tools')
           : null,
         reasoning: item.supported_parameters?.includes('reasoning') === true,
+        jsonSchema: item.supported_parameters?.includes('structured_outputs') === true,
         vision: item.architecture?.input_modalities?.includes('image') === true,
         privacy: 'routing',
         available: true,
@@ -247,6 +250,7 @@ function normalizeModels(providerId, body, knownModels = []) {
         outputPrice: price(item.pricing?.completion, 1_000_000),
       };
     } else throw catalogError();
+    model.jsonSchema = model.jsonSchema === true;
     model.maxTokens = Math.min(positive(model.maxTokens, 8192), model.contextWindow);
     seen.add(id);
     models.push(model);
@@ -322,6 +326,7 @@ class ProviderCatalog {
             privacy: m.privacy,
             tools: typeof m.tools === 'boolean' ? m.tools : null,
             reasoning: m.reasoning === true,
+            jsonSchema: m.jsonSchema === true,
             vision: m.vision === true,
             inputPrice: price(m.inputPrice),
             outputPrice: price(m.outputPrice),

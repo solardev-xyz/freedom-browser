@@ -399,6 +399,9 @@ class AgentProviderResolver {
 
   #enforceRequestPolicy(runtime, providerId) {
     if (!['openrouter', 'venice', 'near-ai'].includes(providerId)) return;
+    // Capability is explicit catalog metadata, never inferred from a model name.
+    runtime.supportsClassifierSchema = model => model.provider === providerId &&
+      this.catalog.get(providerId).models.some(entry => entry.id === model.id && entry.jsonSchema === true);
     for (const method of ['stream', 'streamSimple']) {
       if (typeof runtime[method] !== 'function') continue;
       const original = runtime[method].bind(runtime);

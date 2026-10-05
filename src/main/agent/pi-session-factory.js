@@ -376,20 +376,32 @@ async function runIsolatedPiTextRequest({ createSession = createIsolatedPiSessio
     if (!session?.subscribe || !session.prompt || !session.dispose) return { reason: 'classifier_session_unavailable' };
     let output = '';
     let invalid = false;
+    let completionFailure;
     unsubscribe = session.subscribe(event => {
       if (closed || invalid) return;
       if (event?.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
         const delta = event.assistantMessageEvent.delta;
-        if (typeof delta !== 'string' || Buffer.byteLength(output) + Buffer.byteLength(delta) > maxOutputBytes) {
+        if (typeof delta !== 'string') {
           invalid = true; interrupt('invalid_classifier_output'); return;
+        }
+        if (Buffer.byteLength(output) + Buffer.byteLength(delta) > maxOutputBytes) {
+          invalid = true; interrupt('classifier_output_too_large'); return;
         }
         output += delta;
       }
-      if (event?.type === 'tool_execution_start') { invalid = true; interrupt('invalid_classifier_output'); }
+      if (event?.type === 'tool_execution_start') { invalid = true; interrupt('classifier_unexpected_tool'); }
+      if (event?.type === 'message_end' && event.message?.role === 'assistant') {
+        const stop = event.message.stopReason;
+        if (stop === 'error') completionFailure = 'classifier_provider_error';
+        else if (stop === 'aborted') completionFailure = 'classifier_cancelled';
+        else if (stop === 'length') completionFailure = 'classifier_truncated_output';
+        else if (stop === 'toolUse') completionFailure = 'classifier_unexpected_tool';
+      }
     });
     if (signal?.aborted) return { reason: 'classifier_cancelled' };
     await session.prompt(prompt, { expandPromptTemplates: false, source: 'interactive' });
     return signal?.aborted ? { reason: 'classifier_cancelled' }
+      : completionFailure ? { reason: completionFailure }
       : invalid ? { reason: 'invalid_classifier_output' } : { output };
   })().catch(() => ({ reason: 'classifier_provider_error' }));
   try { return await Promise.race([interrupted, work]); }
