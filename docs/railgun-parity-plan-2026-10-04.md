@@ -7,7 +7,7 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
-The [original-signature recovery checkpoint](railgun-proof-recovery-2026-10-05.md) now resumes signed, unfinished proofs through genuine completed-wallet restoration and a fresh independent verifier, preserving the original capsule/signature and writing the proof slot once. Six warm native cases pass across all three private kinds and both input creators with simulated services; retries return stored data without new proving or authority. The [completed-wallet foundation](railgun-completed-wallet-2026-10-05.md) supplies authenticated read-only restoration and drainage/quarantine. Wallet policy changes require explicit derived-generation maintenance. Genuine cold/fresh-process and advanced-root recovery remain next; partial facade/submission, combined POI persistence, actual change ingestion, restart/second spend and live private qualification remain open.
+The [fresh-process proof recovery checkpoint](railgun-proof-restart-2026-10-05.md) qualifies twelve clean restart cases across all three private kinds, both input creators and unchanged/advanced roots, plus two warm compatibility cases. Genuine cold opening authenticates the original history with bounded lease/floor updates; recovery retains the original signature, verifies independently and writes the proof once. The production host remains that of `ba44c1b4`; only the qualifier changed. Simulated chain/services and clean-restart limits remain explicit. Next: genuine partial submission/capture with 01x02 preflight, a separately reviewed submission bridge for cold-recovered proofs, durable combined POI, actual change ingestion, restart/second spend and live private qualification.
 
 ## Established baseline
 
@@ -91,8 +91,9 @@ POI persistence remain unavailable; the facade stays full-only.
    submission/capture, connected recovery,
    normal change ingestion and durable post-transaction POI.
    Signed-but-unfinished proof resumption now has a production recovery host and
-   six warm native cases; fresh-process and advanced-root qualification remain
-   open. Do not merely
+   six warm native cases plus twelve genuine fresh-process cases, including
+   explicitly advanced trees. Submission of recovered proofs remains separately
+   gated. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are
    already pinned in `railgun-artifacts.js`; the missing work is integration.

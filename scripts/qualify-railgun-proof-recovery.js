@@ -1,19 +1,29 @@
 /** Offline original-signature proof recovery over a disposable enrolled account.
  * Synthetic external services; real account, gates, signer, stores and recovery A/C.
  * electron script SOURCE NEW_DIR ENGINE PROVER ARTIFACTS BYTECODES
- *   [Shield|Transact] [transfer|unshield|partial]
+ *   [Shield|Transact] [transfer|unshield|partial] [warm|setup|resume] [same-root|advanced-root]
  */
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert/strict');
-const { createHash } = require('crypto');
+const { createHash, randomUUID } = require('crypto');
 const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const OFFSET = 5944700;
+const COLD_RECORDS = [
+  'railgun-wallet-catalog-v1',
+  'railgun-public-catalog-v1',
+  'freedom-railgun-host-scan-v1',
+  'railgun-private-reservations-v1',
+  'railgun-private-capsules-v1',
+  'railgun-private-reservations-floor-v1',
+  'railgun-private-capsules-floor-v1',
+];
 let lock,
-  phase = 'setup';
+  phase = 'setup',
+  setupHandoff;
 function snapshot(directory) {
   const entries = {};
   const visit = (current) => {
@@ -49,15 +59,80 @@ async function bounded(work, ms = 30000) {
 }
 async function main() {
   const args = process.argv.slice(2);
-  assert.ok(args.length >= 6 && args.length <= 8);
+  assert.ok(args.length >= 6 && args.length <= 10);
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
   const kind = args[7] ?? 'transfer';
   assert.ok(['transfer', 'unshield', 'partial'].includes(kind));
+  const runMode = args[8] ?? 'warm';
+  assert.ok(['warm', 'setup', 'resume'].includes(runMode));
+  const resuming = runMode === 'resume';
+  const historyMode = args[9] ?? 'same-root';
+  assert.ok(['same-root', 'advanced-root'].includes(historyMode));
+  const advanced = historyMode === 'advanced-root';
+  assert.ok(!advanced || runMode !== 'warm');
+  const handoffFilename = path.join(directory, 'restart-handoff.json');
+  const reportFilename = path.join(directory, resuming ? 'resume-report.json' : 'report.json');
+  const diagnosticFilename = path.join(
+    directory,
+    resuming ? 'resume-diagnostic.json' : 'diagnostic.json'
+  );
   const transact = inputCreator === 'Transact';
   assert.ok(args.slice(0, 6).every((value) => path.isAbsolute(value)));
-  assert.equal(fs.existsSync(directory), false);
+  assert.equal(fs.existsSync(directory), resuming);
+  let handoff;
+  if (resuming) {
+    const stat = fs.lstatSync(directory);
+    assert.ok(stat.isDirectory() && !stat.isSymbolicLink());
+    assert.equal(fs.realpathSync(directory), directory);
+    const file = fs.lstatSync(handoffFilename);
+    assert.ok(
+      file.isFile() && !file.isSymbolicLink() && file.nlink === 1 && file.size < 2 * 1024 * 1024
+    );
+    handoff = JSON.parse(fs.readFileSync(handoffFilename, 'utf8'));
+    assert.deepEqual(
+      Object.keys(handoff).sort(),
+      [
+        'historyMode',
+        'originalCheckpoint',
+        'rootTransition',
+        'schema',
+        'runID',
+        'setupPID',
+        'inputCreator',
+        'kind',
+        'sourceSha256',
+        'sourceHashes',
+        'runtimeHashes',
+        'checkpoint',
+        'publicIdentity',
+        'recordHashes',
+        'accountFiles',
+        'inventoryHash',
+        'setupEvidence',
+        'cleanlyDrainedAndProfileReleased',
+      ].sort()
+    );
+    assert.equal(handoff.schema, 'railgun-proof-recovery-restart-handoff-v1');
+    assert.match(handoff.runID, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.ok(Number.isSafeInteger(handoff.setupPID) && handoff.setupPID > 0);
+    assert.notEqual(handoff.setupPID, process.pid);
+    assert.throws(
+      () => process.kill(handoff.setupPID, 0),
+      (error) => error.code === 'ESRCH',
+      'Setup process must have exited before resume'
+    );
+    assert.equal(handoff.inputCreator, inputCreator);
+    assert.equal(handoff.kind, kind);
+    assert.equal(handoff.historyMode, historyMode);
+    assert.equal(handoff.cleanlyDrainedAndProfileReleased, true);
+    assert.deepEqual(Object.keys(handoff.recordHashes).sort(), ['capsule', 'entry', 'signature']);
+    for (const digest of Object.values(handoff.recordHashes))
+      assert.match(digest, /^[0-9a-f]{64}$/);
+    assert.equal(fs.existsSync(reportFilename), false);
+  }
+  const runID = handoff?.runID ?? randomUUID();
   const sourceBytes = fs.readFileSync(sourceFilename);
   // This one published public-vector source is allowed. Never accept a real
   // wallet export just because its JSON claims to be a disposable fixture.
@@ -70,6 +145,40 @@ async function main() {
   if (transact) {
     const derived = require('./fixtures/railgun-transact-staging-source').derive(source);
     source = derived.source;
+    if (advanced) {
+      const { Interface } = require('ethers');
+      const { PRIVATE_EVENTS } = require('../src/main/wallet/railgun-transact-receipt');
+      const abi = new Interface(PRIVATE_EVENTS),
+        foreign = source.foreignTransfers[0];
+      assert.equal(foreign.amount, '700');
+      assert.ok(!source.logs.some((log) => log.data.includes(foreign.commitment.slice(2))));
+      const event = abi.encodeEventLog(abi.getEvent('Transact'), [
+        0,
+        3,
+        [foreign.commitment],
+        [foreign.ciphertext],
+      ]);
+      const decoded = abi.parseLog(event);
+      assert.equal(decoded.args.startPosition, 3n);
+      assert.equal(decoded.args.hash[0], foreign.commitment);
+      for (const [key, value] of Object.entries(foreign.ciphertext))
+        assert.deepEqual(
+          Array.isArray(value)
+            ? Array.from(decoded.args.ciphertext[0][key])
+            : decoded.args.ciphertext[0][key],
+          value
+        );
+      source.logs.push({
+        ...source.logs.find((log) => log.blockNumber === 30),
+        ...event,
+        blockNumber: 40,
+        blockHash: hex(41),
+        transactionHash: hex(1040),
+        transactionIndex: 0,
+        logIndex: 0,
+        removed: false,
+      });
+    }
     derived.row.blockNumber += OFFSET;
     derived.row.timestamp += OFFSET;
     derived.row.graphID = hex(derived.row.blockNumber) + derived.row.graphID.slice(66);
@@ -80,11 +189,15 @@ async function main() {
     log.blockHash = hex(log.blockNumber + 1000);
   }
   const anchor = { number: OFFSET + 100, hash: hex(OFFSET + 1100) };
-  fs.mkdirSync(directory, { mode: 0o700 });
+  const initialTo = advanced ? OFFSET + (transact ? 39 : 29) : anchor.number;
+  const advancedTo = OFFSET + 40;
+  if (!resuming) fs.mkdirSync(directory, { mode: 0o700 });
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
     env: { FREEDOM_TEST_USER_DATA: path.join(directory, 'profile') },
   });
   lock = acquireProfileLock(profile, { onCompromised: () => app.exit(1) });
+  assert.ok(lock);
+  const profileLockAcquired = true;
   app.dock?.hide();
   await app.whenReady();
   const inventory = () => {
@@ -115,6 +228,26 @@ async function main() {
     );
   };
   const sourceHashes = inventory();
+  const archiveFs = require('original-fs');
+  const runtimeHashes = {
+    engine: sha(archiveFs.readFileSync(archive)),
+    prover: sha(archiveFs.readFileSync(proverArchive)),
+    bytecodes: sha(fs.readFileSync(bytecodes)),
+    artifacts: Object.fromEntries(
+      ['01x01', '01x02'].flatMap((variant) =>
+        ['wasm', 'zkey', 'vkey'].map((extension) => {
+          const name = variant + '.' + extension;
+          return [name, sha(fs.readFileSync(path.join(artifactDirectory, name)))];
+        })
+      )
+    ),
+  };
+  if (resuming) {
+    assert.equal(handoff.sourceSha256, sha(sourceBytes));
+    assert.deepEqual(handoff.sourceHashes, sourceHashes);
+    assert.deepEqual(handoff.runtimeHashes, runtimeHashes);
+  }
+  const canonicalHash = (value) => sha(JSON.stringify(value));
   const runtime = require('../src/main/wallet/railgun-process');
   const sessions = require('../src/main/wallet/railgun-session-worker');
   const storage = require('../src/main/wallet/privacy-storage');
@@ -135,11 +268,17 @@ async function main() {
     keys = {},
     rpcMethods = {};
   let measuring = false,
-    interruptSignature = true,
+    interruptSignature = !resuming,
     interrupted = 0,
     refusedResult = 0;
-  let originalCapsule, originalSignature, originalCheckpoint, reservations, capsules;
-  let capsuleFilename, manifestFilename;
+  let originalCapsule,
+    originalSignature,
+    originalCheckpoint,
+    restoredCheckpoint,
+    reservations,
+    capsules;
+  let capsuleFilename, manifestFilename, authenticatedPublicCheckpoint;
+  const walletJournalReads = [];
   const counts = {
     childStarts: 0,
     childExits: 0,
@@ -158,10 +297,78 @@ async function main() {
     const filename = storage.getPrivacyStoragePath(options.handle, options.directory);
     return Object.freeze({
       ...genuine,
+      async get(name) {
+        const result = await genuine.get(name);
+        if (name === 'railgun-account-enrollment-v1') manifestFilename = filename;
+        if (measuring && name === 'railgun-wallet-journal-v1') {
+          const authenticated = JSON.parse(result);
+          assert.equal(authenticated.pending, null);
+          assert.ok(authenticated.checkpoint);
+          assert.deepEqual(
+            authenticated.checkpoint.target.plan,
+            restoredCheckpoint ?? originalCheckpoint
+          );
+          walletJournalReads.push({
+            checkpoint: structuredClone(authenticated.checkpoint),
+            afterRecoveryJobExit: childResults.some(
+              (child) =>
+                child.phase === 'proof-recovery' &&
+                child.job === 'railgun-private-recover-job.js' &&
+                child.code === 'RAILGUN_PROCESS_CLOSED'
+            ),
+          });
+        }
+        return result;
+      },
       async update(name, change) {
-        let observation;
+        let observation, publicCheckpointCandidate;
         await genuine.update(name, (previous) => {
           const next = change(previous);
+          let cold;
+          if (resuming && phase === 'cold-bootstrap') {
+            assert.ok(COLD_RECORDS.includes(name), 'Unexpected cold record update: ' + name);
+            assert.equal(
+              storageWrites.filter((write) => write.cold?.record === name).length,
+              0,
+              'Repeated cold record update: ' + name
+            );
+            assert.notEqual(previous, null, 'Cold bootstrap must not create a record');
+            const old = JSON.parse(previous),
+              value = JSON.parse(next);
+            if (name === 'freedom-railgun-host-scan-v1') {
+              assert.equal(value.pending, null);
+              assert.ok(value.checkpoint);
+              publicCheckpointCandidate = structuredClone(value.checkpoint);
+            }
+            const mutable =
+              name === 'railgun-wallet-catalog-v1' || name === 'railgun-public-catalog-v1'
+                ? ['lease', 'sequence']
+                : name === 'freedom-railgun-host-scan-v1'
+                  ? ['lease', 'sequence', 'generation']
+                  : ['railgun-private-reservations-v1', 'railgun-private-capsules-v1'].includes(
+                        name
+                      )
+                    ? ['lease']
+                    : [];
+            const strip = (record) =>
+              Object.fromEntries(Object.entries(record).filter(([key]) => !mutable.includes(key)));
+            assert.deepEqual(
+              strip(value),
+              strip(old),
+              'Cold bootstrap changed authenticated content: ' + name
+            );
+            if (mutable.includes('lease')) assert.notEqual(value.lease, old.lease);
+            if (mutable.includes('sequence')) assert.equal(value.sequence, old.sequence + 1);
+            if (mutable.includes('generation')) assert.equal(value.generation, old.generation + 1);
+            cold = {
+              record: name,
+              mutableFields: mutable,
+              authenticatedContentUnchanged: true,
+              ...(Object.hasOwn(old, 'sequence')
+                ? { beforeSequence: old.sequence, afterSequence: value.sequence }
+                : {}),
+            };
+          }
           if (name === 'railgun-private-capsules-v1') {
             capsuleFilename = filename;
             observation = {
@@ -173,8 +380,10 @@ async function main() {
             observation = { kind: 'other' };
           }
           if (name === 'railgun-account-enrollment-v1') manifestFilename = filename;
+          if (cold) observation.cold = cold;
           return next;
         });
+        if (publicCheckpointCandidate) authenticatedPublicCheckpoint = publicCheckpointCandidate;
         storageWrites.push({ phase, filename, ...observation });
       },
     });
@@ -213,7 +422,24 @@ async function main() {
     if (job === 'railgun-private-operate-job.js')
       originalCheckpoint = JSON.parse(options.input).checkpoint;
     if (measuring && ['railgun-wallet-job.js', 'railgun-private-recover-job.js'].includes(job))
-      assert.deepEqual(JSON.parse(options.input).checkpoint, originalCheckpoint);
+      assert.deepEqual(
+        JSON.parse(options.input).checkpoint,
+        restoredCheckpoint ?? originalCheckpoint
+      );
+    if (
+      resuming &&
+      [
+        'railgun-spend-sign-job.js',
+        'railgun-private-operate-job.js',
+        'railgun-private-receive-job.js',
+        'railgun-note-provenance-job.js',
+      ].includes(job)
+    ) {
+      counts.forbiddenJobs++;
+      throw Error('Forbidden resumed admission/signing job');
+    }
+    if (job === 'railgun-wallet-job.js' && phase === 'advanced-wallet')
+      restoredCheckpoint = JSON.parse(options.input).checkpoint;
     const broker = options.broker;
     const task = originals.start({
       ...options,
@@ -226,6 +452,10 @@ async function main() {
                 if (message.method === 'key') {
                   keys[message.purpose] = (keys[message.purpose] || 0) + 1;
                   if (message.purpose === 'spending-sign') counts.spendingKeys++;
+                  if (resuming && message.purpose === 'spending-sign') {
+                    counts.forbiddenKeys++;
+                    throw Error('Fresh recovery must not admit spending-sign');
+                  }
                   if (
                     measuring &&
                     !['wallet-viewing', 'private-recover'].includes(message.purpose)
@@ -234,7 +464,10 @@ async function main() {
                     throw Error('Unexpected proof-recovery credential');
                   }
                 }
-                if (message.method === 'private-intent') counts.intentRequests++;
+                if (message.method === 'private-intent') {
+                  counts.intentRequests++;
+                  assert.equal(resuming, false, 'Fresh recovery must not request an intent');
+                }
                 if (
                   job === 'railgun-private-operate-job.js' &&
                   message.method === 'result' &&
@@ -357,157 +590,345 @@ async function main() {
   let identity, enrollment, publicAccount, account, txid, staged;
   const started = performance.now();
   try {
-    phase = 'enroll';
     const vaultDirectory = path.join(directory, 'profile', 'identity');
-    await vault.importVault(
-      vaultDirectory,
-      'public-fixture-password-not-a-user-credential',
-      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
-    );
-    await vault.unlockVault(vaultDirectory, 'public-fixture-password-not-a-user-credential', 0);
-    identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
-      archive,
-    });
-    enrollment =
-      await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment({
-        identity,
-        create: true,
+    let publicIdentity, destination, holdId, interruptedResult, faultExits;
+    let coldBootstrap, originalEntry;
+    let rootTransition = null;
+    if (!resuming) {
+      phase = 'enroll';
+      await vault.importVault(
+        vaultDirectory,
+        'public-fixture-password-not-a-user-credential',
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+      );
+      await vault.unlockVault(vaultDirectory, 'public-fixture-password-not-a-user-credential', 0);
+      identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
+        archive,
       });
-    phase = 'public-scan';
-    publicAccount = await publicApi.openRailgunAccountPublic({ enrollment, archive, create: true });
-    for (let from = 0; from <= anchor.number; from += 100000)
-      await publicAccount.advance({ to: Math.min(from + 99999, anchor.number), anchor });
-    const wallet = require('../src/main/wallet/railgun-account-wallet');
-    const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
-    if (transact) {
-      phase = 'txid-checkpoint';
-      const state = await services.initializeTxid({ archive, enrollment });
-      txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
+      enrollment =
+        await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
+          {
+            identity,
+            create: true,
+          }
+        );
+      phase = 'public-scan';
+      publicAccount = await publicApi.openRailgunAccountPublic({
         enrollment,
-        coordinator: owners.coordinator,
         archive,
         create: true,
       });
-      await txid.advance();
-      assert.deepEqual((await txid.inspect()).checkpoint.state, state);
-      await txid.close();
-      txid = null;
-    }
-    phase = 'wallet-scan';
-    account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'new' });
-    const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
-    const selected = baseline.ownedPoi.find(
-      (record) =>
-        record.type === inputCreator &&
-        baseline.read.received.some(
-          (note) => note.id === record.id && note.spentTxid === false && note.amount > 1n
-        )
-    );
-    assert.ok(selected);
-    const note = baseline.read.received.find((note) => note.id === selected.id);
-    reservations = await enrollment.openReservations();
-    capsules = await enrollment.openPrivateCapsules();
-    const recipient = (
-      await require('../src/main/wallet/signers').getSigner(0).getAddress()
-    ).toLowerCase();
-    await services.setSelected({
-      archive,
-      enrollment,
-      record: selected,
-      submitter: recipient,
-      merkleRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
-    });
-    const request = {
-      kind: {
-        transfer: 'railgun-private-transfer',
-        unshield: 'railgun-token-unshield',
-        partial: 'railgun-partial-unshield',
-      }[kind],
-      noteId: selected.id,
-      recipient: kind === 'transfer' ? baseline.read.instanceId : recipient,
-      ...(kind === 'partial' ? { unshieldAmount: (note.amount / 2n).toString() } : {}),
-    };
-    const publicIdentity = publicApi.getRailgunAccountPublicIdentity(
-      owners.coordinator,
-      enrollment
-    );
-    const options = { account, owners, archive, proverArchive, artifactDirectory, request };
-    if (transact) {
-      phase = 'transact-staging';
-      staged =
-        await require('../src/main/wallet/railgun-transact-staging').stageRailgunTransactInput({
-          account,
-          owners,
-          request,
+      for (let from = 0; from <= initialTo; from += 100000)
+        await publicAccount.advance({ to: Math.min(from + 99999, initialTo), anchor });
+      const wallet = require('../src/main/wallet/railgun-account-wallet');
+      const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
+      if (transact) {
+        phase = 'txid-checkpoint';
+        const state = await services.initializeTxid({ archive, enrollment });
+        txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
+          enrollment,
+          coordinator: owners.coordinator,
           archive,
-          signal: enrollment.signal,
+          create: true,
         });
-      assert.equal(staged.status, 'staged');
-      account = options.account = staged.account;
-      options.stagingReceipt = staged.receipt;
-    }
-    phase = 'signed-interruption';
-    const interruptedResult =
-      await require('../src/main/wallet/railgun-private-operation').proveRailgunAccountPrivateOperation(
-        options
+        await txid.advance();
+        assert.deepEqual((await txid.inspect()).checkpoint.state, state);
+        await txid.close();
+        txid = null;
+      }
+      phase = 'wallet-scan';
+      account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'new' });
+      const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
+      const selected = baseline.ownedPoi.find(
+        (record) =>
+          record.type === inputCreator &&
+          baseline.read.received.some(
+            (note) => note.id === record.id && note.spentTxid === false && note.amount > 1n
+          )
       );
-    assert.equal(interruptedResult.status, 'signed-unfinished', JSON.stringify(interruptedResult));
-    assert.equal(interrupted, 1);
-    assert.equal(refusedResult, 1);
-    assert.equal(counts.spendingKeys, 1);
-    assert.equal(counts.intentRequests, 1);
-    assert.equal(counts.brokerRefusals, 1);
-    const faultExits = childResults.filter((item) => item.job === 'railgun-private-operate-job.js');
-    assert.equal(faultExits.length, 1);
-    assert.equal(faultExits[0].code, 'RAILGUN_SESSION_REVOKED');
-    assert.ok(
-      brokerResults.some(
-        (value) =>
-          value.job === 'railgun-private-operate-job.js' &&
-          value.method === 'result' &&
-          value.code === 'RAILGUN_WALLET_BROKER_REFUSED'
-      )
-    );
-    assert.equal(Number.isInteger(faultExits[0].exitCode), true);
-    assert.deepEqual(services.report().verificationKeyQueries, [[1, kind === 'partial' ? 2 : 1]]);
-    assert.deepEqual(services.report().verificationKeyVariants, [
-      kind === 'partial' ? '01x02' : '01x01',
-    ]);
-    await account.close();
-    account = null;
-    staged?.close();
-    staged = null;
-    require('../src/main/wallet/railgun-identity').assertRailgunIdentity(identity);
-    const availablePhase =
-      require('../src/main/wallet/railgun-account-phase').claimRailgunAccountPhase(
+      assert.ok(selected);
+      if (advanced) assert.equal(selected.id, transact ? '0:2' : '0:1');
+      const note = baseline.read.received.find((note) => note.id === selected.id);
+      reservations = await enrollment.openReservations();
+      capsules = await enrollment.openPrivateCapsules();
+      const recipient = (
+        await require('../src/main/wallet/signers').getSigner(0).getAddress()
+      ).toLowerCase();
+      await services.setSelected({
+        archive,
         enrollment,
-        'recovery'
+        record: selected,
+        submitter: recipient,
+        merkleRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
+      });
+      const request = {
+        kind: {
+          transfer: 'railgun-private-transfer',
+          unshield: 'railgun-token-unshield',
+          partial: 'railgun-partial-unshield',
+        }[kind],
+        noteId: selected.id,
+        recipient: kind === 'transfer' ? baseline.read.instanceId : recipient,
+        ...(kind === 'partial' ? { unshieldAmount: (note.amount / 2n).toString() } : {}),
+      };
+      publicIdentity = publicApi.getRailgunAccountPublicIdentity(owners.coordinator, enrollment);
+      const options = { account, owners, archive, proverArchive, artifactDirectory, request };
+      if (transact) {
+        phase = 'transact-staging';
+        staged =
+          await require('../src/main/wallet/railgun-transact-staging').stageRailgunTransactInput({
+            account,
+            owners,
+            request,
+            archive,
+            signal: enrollment.signal,
+          });
+        assert.equal(staged.status, 'staged');
+        account = options.account = staged.account;
+        options.stagingReceipt = staged.receipt;
+      }
+      phase = 'signed-interruption';
+      interruptedResult =
+        await require('../src/main/wallet/railgun-private-operation').proveRailgunAccountPrivateOperation(
+          options
+        );
+      assert.equal(
+        interruptedResult.status,
+        'signed-unfinished',
+        JSON.stringify(interruptedResult)
       );
-    try {
-      availablePhase.assertCurrent();
-    } finally {
-      availablePhase.release();
+      assert.equal(interrupted, 1);
+      assert.equal(refusedResult, 1);
+      assert.equal(counts.spendingKeys, 1);
+      assert.equal(counts.intentRequests, 1);
+      assert.equal(counts.brokerRefusals, 1);
+      faultExits = childResults.filter((item) => item.job === 'railgun-private-operate-job.js');
+      assert.equal(faultExits.length, 1);
+      assert.equal(faultExits[0].code, 'RAILGUN_SESSION_REVOKED');
+      assert.ok(
+        brokerResults.some(
+          (value) =>
+            value.job === 'railgun-private-operate-job.js' &&
+            value.method === 'result' &&
+            value.code === 'RAILGUN_WALLET_BROKER_REFUSED'
+        )
+      );
+      assert.equal(Number.isInteger(faultExits[0].exitCode), true);
+      assert.deepEqual(services.report().verificationKeyQueries, [[1, kind === 'partial' ? 2 : 1]]);
+      assert.deepEqual(services.report().verificationKeyVariants, [
+        kind === 'partial' ? '01x02' : '01x01',
+      ]);
+      await account.close();
+      account = null;
+      staged?.close();
+      staged = null;
+      require('../src/main/wallet/railgun-identity').assertRailgunIdentity(identity);
+      const availablePhase =
+        require('../src/main/wallet/railgun-account-phase').claimRailgunAccountPhase(
+          enrollment,
+          'recovery'
+        );
+      try {
+        availablePhase.assertCurrent();
+      } finally {
+        availablePhase.release();
+      }
+      if (advanced) {
+        phase = 'advanced-owner-setup';
+        originalEntry = await reservations.withSigningRecovery(async (records, context) => {
+          context.assertCurrent();
+          assert.equal(records.length, 1);
+          assert.equal(records[0].entry.id, interruptedResult.holdId);
+          const saved = await capsules.readSignedUnfinished(records[0].receipt);
+          assert.deepEqual(saved.capsule, originalCapsule);
+          assert.deepEqual(saved.signature, originalSignature);
+          return records[0].entry;
+        });
+        await publicAccount.close();
+        publicAccount = await publicApi.openRailgunAccountPublic({ enrollment, archive });
+        assert.deepEqual(
+          publicApi.getRailgunAccountPublicIdentity(publicAccount.coordinator, enrollment),
+          publicIdentity
+        );
+        owners.coordinator = publicAccount.coordinator;
+        phase = 'advanced-public';
+        await publicAccount.advance({ to: advancedTo, anchor });
+        phase = 'advanced-wallet';
+        account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'advance' });
+        const current = wallet.readRailgunAccountOwnedNotes(account, owners);
+        const currentNote = current.read.received.find((value) => value.id === selected.id);
+        const currentPoi = current.ownedPoi.find((value) => value.id === selected.id);
+        assert.ok(currentNote && currentPoi);
+        for (const key of ['id', 'tree', 'position', 'hash', 'txid', 'amount', 'spentTxid'])
+          assert.deepEqual(currentNote[key], note[key]);
+        assert.equal(currentNote.spentTxid, false);
+        for (const key of ['nullifier', 'type']) assert.equal(currentPoi[key], selected[key]);
+        const initialTree = baseline.trees.find((value) => value.tree === note.tree);
+        const advancedTree = current.trees.find((value) => value.tree === note.tree);
+        assert.equal(initialTree.length, transact ? 3 : 2);
+        assert.equal(advancedTree.length, initialTree.length + 1);
+        assert.equal(initialTree.root, originalCapsule.preparation.expected.merkleRoot);
+        assert.notEqual(advancedTree.root, originalCapsule.preparation.expected.merkleRoot);
+        assert.ok(restoredCheckpoint);
+        assert.equal(
+          restoredCheckpoint.state.trees.find((value) => value.tree === note.tree).root,
+          advancedTree.root
+        );
+        assert.notDeepEqual(restoredCheckpoint, originalCheckpoint);
+        rootTransition = {
+          initialTreeLength: initialTree.length,
+          advancedTreeLength: advancedTree.length,
+          currentRootDiffersFromOriginalSignedRoot: true,
+          originalInputUnchangedAndUnspent: true,
+          maintenanceBeforeShutdown: true,
+          addedLeafRecipient: transact ? 'other-wallet' : 'self',
+          creatorProvenOrAccepted: false,
+        };
+        await account.close();
+        account = null;
+      }
+      if (runMode === 'warm') {
+        phase = 'recovery-owner-setup';
+        // The detected A protocol refusal revokes its coordinator. Reopen only its
+        // existing public generation; no advance, source repair or wallet repair.
+        const setupBefore = services.report();
+        await publicAccount.close();
+        publicAccount = await publicApi.openRailgunAccountPublic({ enrollment, archive });
+        assert.deepEqual(
+          publicApi.getRailgunAccountPublicIdentity(publicAccount.coordinator, enrollment),
+          publicIdentity
+        );
+        assert.equal(services.report().publicScanRequests, setupBefore.publicScanRequests);
+        assert.deepEqual(services.report().publicServiceMethods, setupBefore.publicServiceMethods);
+        destination = publicApi.getRailgunAccountPublicDestination(
+          publicAccount.coordinator,
+          enrollment
+        );
+      }
+      holdId = interruptedResult.holdId;
+    } else {
+      phase = 'cold-bootstrap';
+      const accountBase = path.join(profile.userDataDir, 'wallet-railgun-accounts');
+      const marker = path.join(profile.userDataDir, 'wallet-privacy-inventory.json');
+      assert.deepEqual(snapshot(accountBase), handoff.accountFiles);
+      assert.equal(sha(fs.readFileSync(marker)), handoff.inventoryHash);
+      const beforeBootstrap = evidence();
+      await vault.unlockVault(vaultDirectory, 'public-fixture-password-not-a-user-credential', 0);
+      identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
+        archive,
+      });
+      enrollment =
+        await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
+          { identity, create: false }
+        );
+      publicAccount = await publicApi.openRailgunAccountPublic({
+        enrollment,
+        archive,
+        create: false,
+      });
+      publicIdentity = publicApi.getRailgunAccountPublicIdentity(
+        publicAccount.coordinator,
+        enrollment
+      );
+      assert.deepEqual(publicIdentity, handoff.publicIdentity);
+      destination = publicApi.getRailgunAccountPublicDestination(
+        publicAccount.coordinator,
+        enrollment
+      );
+      ({ reservations, capsules } = await enrollment.openPrivateRecoveryStores());
+      await reservations.withSigningRecovery(async (records, context) => {
+        context.assertCurrent();
+        assert.equal(records.length, 1);
+        assert.equal(records[0].entry.state, 'signing');
+        const stored = await capsules.readSignedUnfinished(records[0].receipt);
+        context.assertCurrent();
+        assert.equal(canonicalHash(records[0].entry), handoff.recordHashes.entry);
+        assert.equal(canonicalHash(stored.capsule), handoff.recordHashes.capsule);
+        assert.equal(canonicalHash(stored.signature), handoff.recordHashes.signature);
+        assert.equal(stored.provedTransaction, null);
+        holdId = records[0].entry.id;
+        originalCapsule = stored.capsule;
+        originalSignature = stored.signature;
+      });
+      originalCheckpoint = handoff.originalCheckpoint;
+      assert.ok(authenticatedPublicCheckpoint);
+      assert.deepEqual(authenticatedPublicCheckpoint, handoff.checkpoint);
+      restoredCheckpoint = authenticatedPublicCheckpoint;
+      rootTransition = handoff.rootTransition;
+      if (advanced) {
+        assert.ok(rootTransition?.currentRootDiffersFromOriginalSignedRoot);
+        const tree = restoredCheckpoint.state.trees.find((value) => value.tree === 0);
+        assert.notEqual(tree.root, originalCapsule.preparation.expected.merkleRoot);
+        assert.equal(tree.length, transact ? 4 : 3);
+      } else assert.deepEqual(restoredCheckpoint, originalCheckpoint);
+      const bootstrappedFiles = snapshot(accountBase);
+      assert.deepEqual(Object.keys(bootstrappedFiles), Object.keys(handoff.accountFiles));
+      assert.equal(sha(fs.readFileSync(marker)), handoff.inventoryHash);
+      const changed = Object.keys(bootstrappedFiles).filter(
+        (name) => bootstrappedFiles[name] !== handoff.accountFiles[name]
+      );
+      const observed = storageWrites.map((write) => path.relative(accountBase, write.filename));
+      // SQLite opens are real and source/public stores can authenticate/collect.
+      // This fixture requires their bytes unchanged; only observed JSON leases/floors may change.
+      assert.deepEqual(
+        storageWrites.map((write) => write.cold?.record).sort(),
+        [...COLD_RECORDS].sort()
+      );
+      assert.ok(storageWrites.every((write) => write.cold.authenticatedContentUnchanged));
+      assert.equal(new Set(observed).size, 6);
+      assert.deepEqual(changed.sort(), [...new Set(observed)].sort());
+      const afterBootstrap = evidence();
+      const bootstrapJobs = Object.fromEntries(
+        Object.entries(afterBootstrap.jobs)
+          .map(([job, count]) => [job, count - (beforeBootstrap.jobs[job] || 0)])
+          .filter(([, count]) => count !== 0)
+      );
+      assert.deepEqual(bootstrapJobs, { 'railgun-identity-job.js': 2 });
+      assert.equal(afterBootstrap.counts.childStarts - beforeBootstrap.counts.childStarts, 2);
+      assert.equal(afterBootstrap.counts.childExits - beforeBootstrap.counts.childExits, 2);
+      assert.equal(afterBootstrap.counts.storageStarts - beforeBootstrap.counts.storageStarts, 2);
+      assert.equal(
+        afterBootstrap.counts.readOnlyStorageStarts - beforeBootstrap.counts.readOnlyStorageStarts,
+        0
+      );
+      assert.ok(
+        childResults.every(
+          (child) => child.code === 'RAILGUN_PROCESS_CLOSED' && Number.isInteger(child.exitCode)
+        )
+      );
+      assert.equal(
+        afterBootstrap.services.transportEntries,
+        beforeBootstrap.services.transportEntries
+      );
+      assert.equal(counts.spendingKeys, 0);
+      assert.equal(counts.intentRequests, 0);
+      coldBootstrap = {
+        before: beforeBootstrap,
+        after: afterBootstrap,
+        expectedRecordUpdates: [...COLD_RECORDS],
+        updates: storageWrites.map(({ cold }) => cold),
+        bootstrapJobs,
+        changedFileCount: changed.length,
+        authenticatedRecordContentPreserved: true,
+        persistedCheckpointPreserved: true,
+        genuinePublicCheckpointAuthenticatedByColdOpener: true,
+        fixedExistingOnlyRecoveryStoresOpenedInBootstrap: true,
+        identityDerivationKeys: {
+          spendingPublic: keys['spending-public'] || 0,
+          viewingIdentity: keys['viewing-identity'] || 0,
+        },
+        noNewSpendSignatureOrPrivateIntent: true,
+        noProtocolServiceOrRpcCalls: true,
+      };
+      assert.equal(coldBootstrap.identityDerivationKeys.spendingPublic, 1);
+      assert.equal(coldBootstrap.identityDerivationKeys.viewingIdentity, 1);
+      interruptedResult = { status: 'signed-unfinished' };
+      faultExits = [handoff.setupEvidence.observedFaultExit];
     }
-    phase = 'recovery-owner-setup';
-    // The detected A protocol refusal revokes its coordinator. Reopen only its
-    // existing public generation; no advance, source repair or wallet repair.
-    const setupBefore = services.report();
-    await publicAccount.close();
-    publicAccount = await publicApi.openRailgunAccountPublic({ enrollment, archive });
-    assert.deepEqual(
-      publicApi.getRailgunAccountPublicIdentity(publicAccount.coordinator, enrollment),
-      publicIdentity
-    );
-    assert.equal(services.report().publicScanRequests, setupBefore.publicScanRequests);
-    assert.deepEqual(services.report().publicServiceMethods, setupBefore.publicServiceMethods);
-    const destination = publicApi.getRailgunAccountPublicDestination(
-      publicAccount.coordinator,
-      enrollment
-    );
-    const holdId = interruptedResult.holdId;
     const inspectSigned = async (unfinished) =>
       reservations.withSigningRecovery(async (records, context) => {
         context.assertCurrent();
+        assert.equal(records.length, 1);
         const matches = records.filter((value) => value.entry.id === holdId);
         assert.equal(matches.length, 1);
         assert.equal(matches[0].entry.state, 'signing');
@@ -518,10 +939,73 @@ async function main() {
         return { entry: matches[0].entry, stored };
       });
     const before = await inspectSigned(true);
+    if (originalEntry) assert.deepEqual(before.entry, originalEntry);
     assert.deepEqual(before.stored.capsule, originalCapsule);
     assert.deepEqual(before.stored.signature, originalSignature);
     assert.equal(before.stored.provedTransaction, null);
     assert.equal(before.stored.capsule.version, kind === 'partial' ? 2 : 1);
+    if (runMode === 'setup') {
+      phase = 'setup-close';
+      await publicAccount.close();
+      publicAccount = null;
+      enrollment.close();
+      identity.close();
+      vault.lockVault();
+      await bounded(Promise.all([...children].map((child) => child.closed)));
+      await bounded(Promise.all([...workers].map((worker) => worker.closed)));
+      assert.equal(children.size, 0);
+      assert.equal(workers.size, 0);
+      assert.equal(counts.childStarts, counts.childExits);
+      assert.equal(counts.storageStarts, counts.storageExits);
+      assert.ok(workerResults.every((worker) => worker.exitCode === 0));
+      assert.ok(loans.every((key) => key.every((value) => value === 0)));
+      await services.close();
+      assert.equal(services.report().pendingRequests, 0);
+      assert.equal(services.report().transportCreates, services.report().transportCloses);
+      assert.deepEqual(inventory(), sourceHashes);
+      setupHandoff = {
+        filename: handoffFilename,
+        value: {
+          schema: 'railgun-proof-recovery-restart-handoff-v1',
+          runID,
+          setupPID: process.pid,
+          inputCreator,
+          kind,
+          sourceSha256: sha(sourceBytes),
+          sourceHashes,
+          runtimeHashes,
+          historyMode,
+          originalCheckpoint,
+          rootTransition,
+          checkpoint: restoredCheckpoint ?? originalCheckpoint,
+          publicIdentity,
+          recordHashes: {
+            entry: canonicalHash(before.entry),
+            capsule: canonicalHash(before.stored.capsule),
+            signature: canonicalHash(before.stored.signature),
+          },
+          accountFiles: snapshot(path.dirname(enrollment.directory)),
+          inventoryHash: sha(
+            fs.readFileSync(path.join(profile.userDataDir, 'wallet-privacy-inventory.json'))
+          ),
+          setupEvidence: {
+            profileLockAcquired,
+            counts,
+            jobs,
+            keys,
+            childResults,
+            workerResults,
+            brokerResults,
+            observedFaultExit: faultExits[0],
+            durableSignedUnfinished: true,
+            borrowedKeysWiped: true,
+            services: services.report(),
+          },
+          cleanlyDrainedAndProfileReleased: true,
+        },
+      };
+      return;
+    }
     assert.ok(capsuleFilename && manifestFilename);
     const accountBase = path.dirname(enrollment.directory);
     const inventoryMarker = path.join(profile.userDataDir, 'wallet-privacy-inventory.json');
@@ -550,6 +1034,10 @@ async function main() {
     assert.equal(result.status, 'proof-stored', JSON.stringify(result));
     assert.equal(result.submissionEnabled, false);
     const after = await inspectSigned(false);
+    assert.ok(walletJournalReads.length > 0);
+    assert.ok(walletJournalReads.some((read) => read.afterRecoveryJobExit));
+    for (const read of walletJournalReads)
+      assert.deepEqual(read.checkpoint, walletJournalReads[0].checkpoint);
     assert.deepEqual(after.entry, before.entry);
     assert.deepEqual(after.stored, {
       ...before.stored,
@@ -691,7 +1179,13 @@ async function main() {
     assert.equal(services.report().unexpectedTransportFailures, 0);
     assert.deepEqual(inventory(), sourceHashes, 'Source changed during qualification');
     const report = {
-      schema: 'railgun-proof-recovery-offline-v1',
+      schema: 'railgun-proof-recovery-offline-v2',
+      runMode,
+      historyMode,
+      rootTransition,
+      runID,
+      resumePID: process.pid,
+      ...(resuming ? { setupPID: handoff.setupPID, coldBootstrap } : {}),
       inputCreator,
       kind,
       sourceSha256: sha(sourceBytes),
@@ -699,6 +1193,7 @@ async function main() {
       beforeRecovery,
       afterRecovery,
       interruptedOperation: {
+        evidenceProcess: resuming ? 'setup-process' : 'current-process',
         status: interruptedResult.status,
         durableSignature: true,
         proofAbsent: true,
@@ -726,21 +1221,30 @@ async function main() {
         newSignatures: 0,
         privateServiceCalls: 0,
         eoaCalls: 0,
-        publicOwnerReopenedWithoutAdvanceBeforeMeasurement: true,
+        publicOwnerReopenedBeforeMeasurement: true,
+        noPublicAdvanceDuringRecovery: true,
         recoveryRpcMethods,
         genuineReviewedDestinationBoundByRecoveryHost: true,
-        warmCachedStoreRecovery: true,
-        coldExistingOnlyOpenQualified: false,
-        originalPublicCheckpointAndGenerationUnchanged: true,
+        completedWalletJournalCheckpointAuthenticatedAndUnchanged: true,
+        authenticatedJournalReads: walletJournalReads.length,
+        authenticatedJournalReadAfterRecoveryJobExit: true,
+        warmCachedStoreRecovery: !resuming,
+        coldExistingOnlyOpenQualified: resuming,
+        storesCachedAfterExplicitColdBootstrap: resuming,
+        completedPublicCheckpointAndGenerationUnchangedDuringRecovery: true,
         duplicateStatus: duplicate.status,
         duplicateNoJobKeyRpcOrWrite: true,
       },
       actualStoredSignatureRegeneratedProof: true,
       simulatedExternalServiceResponsesAndListTrust: true,
       syntheticExternalChain: true,
-      sameProcessRecovery: true,
-      freshProcessRestartQualified: false,
-      originalRootDifferentFromCurrentQualified: false,
+      sameProcessRecovery: !resuming,
+      freshProcessRestartQualified: resuming,
+      cleanRestartOnly: resuming,
+      setupProcessObservedAbsentBeforeResume: resuming,
+      profileLockAcquired,
+      powerLossRecoveryQualified: false,
+      originalRootDifferentFromCurrentQualified: advanced,
       fundedOrLiveQualified: false,
       realTorQualified: false,
       noAuthorityApiReplaced: true,
@@ -754,7 +1258,7 @@ async function main() {
       services: services.report(),
       elapsedMs: Math.round(performance.now() - started),
     };
-    fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', {
+    fs.writeFileSync(reportFilename, JSON.stringify(report, null, 2) + '\n', {
       flag: 'wx',
       mode: 0o600,
     });
@@ -779,9 +1283,9 @@ async function main() {
           await bounded(Promise.all([...children].map((child) => child.closed)));
           await bounded(Promise.all([...workers].map((worker) => worker.closed)));
           await services.close();
-          if (!fs.existsSync(path.join(directory, 'report.json')))
+          if (!setupHandoff && !fs.existsSync(reportFilename))
             fs.writeFileSync(
-              path.join(directory, 'diagnostic.json'),
+              diagnosticFilename,
               JSON.stringify(
                 {
                   phase,
@@ -810,6 +1314,19 @@ async function main() {
 main().then(
   () => {
     releaseProfileLock(lock);
+    if (setupHandoff) {
+      fs.writeFileSync(setupHandoff.filename, JSON.stringify(setupHandoff.value, null, 2) + '\n', {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      console.log(
+        JSON.stringify({
+          status: 'setup-complete',
+          setupPID: process.pid,
+          runID: setupHandoff.value.runID,
+        })
+      );
+    }
     app.exit(0);
   },
   (error) => {
