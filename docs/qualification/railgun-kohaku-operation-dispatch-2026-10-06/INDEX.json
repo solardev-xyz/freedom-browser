@@ -1,0 +1,181 @@
+{
+  "schema": "railgun-operation-dispatch-native-evidence-v1",
+  "publicationDate": "2026-10-06",
+  "status": "complete",
+  "head": "fd5ac778fe5cfba349a3d97f5e3cdc30bc863f5d",
+  "completedNativeProcesses": 3,
+  "packageSha256": "83b8def3c1098bb28f7c287fbdeaf6fd2131c54bda7852f1e31f792ddfb1892f",
+  "sourceFreezeSha256": "7004a2185d2f7aceff4be79fb688226ef5bb0c38b75d8a3430aa6a4068628640",
+  "attestationSha256": "12651147502b17b7548ecd5fcfe754d29fed35378bdccb7bcbf91b51441f7a4b",
+  "observationSha256": "d6041f3777adf0a46488391f40af6b20d73f7277b446be68afe8fe3da67c656f",
+  "driver": {
+    "schema": "railgun-operation-dispatch-driver-observation-v1",
+    "originalDriverSessionId": 55914,
+    "originalDriverExitObserved": true,
+    "originalDriverExitCode": 0,
+    "freezeSha256": "7004a2185d2f7aceff4be79fb688226ef5bb0c38b75d8a3430aa6a4068628640",
+    "attestationSha256": "12651147502b17b7548ecd5fcfe754d29fed35378bdccb7bcbf91b51441f7a4b",
+    "progressSha256": "fa27d66927c689a791b3cd0fb41a099e2649305df25dadf774c1031ba786fd94",
+    "driverLogSha256": "c64e6538fc5eae08e21873ad16df74edd06b895342e419f534ce4940e7b19d07",
+    "children": [
+      {
+        "case": "shield-unshield",
+        "pid": 22352,
+        "exitObserved": true,
+        "exitCode": 0,
+        "reportSha256": "d71688d70f4797f8189cc0b1b546e3c4750c8fe8ef3f8c7b9779f9dff365d00b"
+      },
+      {
+        "case": "lost-response",
+        "pid": 22662,
+        "exitObserved": true,
+        "exitCode": 0,
+        "reportSha256": "b3fde62c73fee01a9b6ebcda920b7fd519fff81c11781f2532ada18f9efac863"
+      },
+      {
+        "case": "shield-transfer-cancel",
+        "pid": 23204,
+        "exitObserved": true,
+        "exitCode": 0,
+        "reportSha256": "d2eb50217bb47fd2cb96387a35c743c2bb2758db12fb3727fbbe5d3cc28cafd5"
+      }
+    ]
+  },
+  "exporterSha256": "1543efd569c47a3eccd931f0e57b116f76c427f4cf3f094b68e51a65c470c130",
+  "completedChecksSha256": "a911d6bd62f0229ede10c3fb8df4e1d22128bdda20e89e45b9bd7186b0c366b4",
+  "reports": [
+    {
+      "case": "shield-unshield",
+      "mode": "shield-unshield",
+      "outcome": "ack",
+      "pid": 22352,
+      "exitObserved": true,
+      "exitCode": 0,
+      "report": "railgun-kohaku-operation-dispatch-shield-unshield-2026-10-06.json",
+      "reportSha256": "d71688d70f4797f8189cc0b1b546e3c4750c8fe8ef3f8c7b9779f9dff365d00b",
+      "observedAt": "2026-10-05T22:27:44.938Z",
+      "logBasename": "railgun-operation-dispatch-shield-unshield-oct6-a.log",
+      "logSha256": "3b96303f9bdfc0ebb9052fa698e7b66c5dd99e88e3f42f7513e0f120a3d18938",
+      "selectedSourceCount": 145,
+      "runGroups": 19,
+      "forwardingOutcome": "acknowledged",
+      "preCleanupResourceSnapshot": {
+        "utilityStarts": 107,
+        "utilitySettlements": 107,
+        "workerStarts": 80,
+        "workerSettlements": 80,
+        "rejectedBarriers": 0
+      },
+      "preCleanupPendingWorkers": 0
+    },
+    {
+      "case": "lost-response",
+      "mode": "public-shield",
+      "outcome": "lost-response",
+      "pid": 22662,
+      "exitObserved": true,
+      "exitCode": 0,
+      "report": "railgun-kohaku-operation-dispatch-lost-response-2026-10-06.json",
+      "reportSha256": "b3fde62c73fee01a9b6ebcda920b7fd519fff81c11781f2532ada18f9efac863",
+      "observedAt": "2026-10-05T22:28:22.726Z",
+      "logBasename": "railgun-operation-dispatch-lost-response-oct6-a.log",
+      "logSha256": "7cd06de7a2eebc5c362474601e60cfc65231566cc0e37bf1a13ddbbc5abb8d1c",
+      "selectedSourceCount": 180,
+      "runGroups": 19,
+      "forwardingOutcome": "uncertain",
+      "preCleanupResourceSnapshot": {
+        "utilityStarts": 97,
+        "utilitySettlements": 97,
+        "workerStarts": 81,
+        "workerSettlements": 79,
+        "rejectedBarriers": 0
+      },
+      "preCleanupPendingWorkers": 2
+    },
+    {
+      "case": "shield-transfer-cancel",
+      "mode": "shield-transfer",
+      "outcome": "cancel",
+      "pid": 23204,
+      "exitObserved": true,
+      "exitCode": 0,
+      "report": "railgun-kohaku-operation-dispatch-shield-transfer-cancel-2026-10-06.json",
+      "reportSha256": "d2eb50217bb47fd2cb96387a35c743c2bb2758db12fb3727fbbe5d3cc28cafd5",
+      "observedAt": "2026-10-05T22:29:08.652Z",
+      "logBasename": "railgun-operation-dispatch-shield-transfer-cancel-oct6-a.log",
+      "logSha256": "dec53b5001ab35e8c2eb384e9253d5eb4fdf560692807b11f6f2088a8fd981ed",
+      "selectedSourceCount": 145,
+      "runGroups": 19,
+      "forwardingOutcome": "refused",
+      "preCleanupResourceSnapshot": {
+        "utilityStarts": 106,
+        "utilitySettlements": 106,
+        "workerStarts": 78,
+        "workerSettlements": 76,
+        "rejectedBarriers": 0
+      },
+      "preCleanupPendingWorkers": 2
+    }
+  ],
+  "runtimeInputs": {
+    "railgun-vault-weth-source-oct3-d.json": "bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc1e41",
+    "railgun-public-contract-bytecodes-oct4.json": "a1f3a1c51c6272eca7940313bf3b8d6b8229527db3aaf3334acc76d8314c0427",
+    "repo/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a",
+    "repo/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab",
+    "repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83",
+    "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base.ts": "1ac1b93c617eb8347e74263566071ebba2bcc7caca5166f11dce0a293e766803",
+    "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/shared.ts": "c51d5160c0d63235c04ecc4b9ad2f6adbe3841fd01dcb0ebb154bdecf8bbc86f",
+    "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/host/index.ts": "4a3578ceb42ae5138726e36de6bf2a9e7511ff73a8d592e6b494106be51a9814",
+    "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/broadcaster/base.ts": "6d973ce3b0ea458aaf1613c7106d9fb8104eb2c18baa5fe9ea405fe1d6f940cf",
+    "repo/node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+  },
+  "inheritedArtifactPinCount": 25,
+  "validation": {
+    "focused": {
+      "exitCode": 0,
+      "commandHandleObserved": true,
+      "originalSessionId": 29740,
+      "logSha256": "1d9a71d76e5f9ef454f329d34b8ac155a20cf43b6a860b86be1f2bab2a35111a",
+      "testsPassed": 558,
+      "suitesPassed": 17,
+      "elapsedSeconds": 1.384,
+      "naturalExitObserved": true,
+      "forceExit": false,
+      "logBasename": "railgun-operation-dispatch-root-focused-oct6.log"
+    },
+    "lint": {
+      "exitCode": 0,
+      "commandHandleObserved": true,
+      "originalSessionId": 30809,
+      "logSha256": "d56e357ebba7dd4f6225baf0c364cba405502e9215c1ec184119ea9ba3318d6c",
+      "warnings": 0,
+      "logBasename": "railgun-operation-dispatch-root-lint-oct6.log"
+    },
+    "format": {
+      "exitCode": 0,
+      "commandHandleObserved": true,
+      "originalSessionId": null,
+      "logSha256": "17aa973d3f004560237d9a95171210b0671deff23d61628eecf7322ff5938f20",
+      "logBasename": "railgun-operation-dispatch-root-format-oct6.log"
+    },
+    "fullRegressionForTheseSources": false
+  },
+  "scope": {
+    "sourceInventoriesAreNotExecutionCoverage": true,
+    "controllerAndPolicySourceUnchanged": true,
+    "rawReportsByteExact": true,
+    "logicalDrainAndObservedExitOnly": true,
+    "privatePoiAndPreflightAuthoritySynthetic": true,
+    "syntheticChainAndDeploymentReplies": true,
+    "genericHostQualified": false,
+    "typescriptConformance": false,
+    "fullRegressionForTheseSources": false,
+    "coldCampaignRepeated": false,
+    "profileHandoffWireOrCredentialPayloadPublished": false,
+    "nativeVersionMeasuredInReports": false
+  },
+  "sourceFile": {
+    "file": "SOURCE-HASHES.json",
+    "sha256": "ceeae8ff01e0491dba3c03db0f0f65fd4ca9b7e060a0995edd0b35415498139d"
+  }
+}

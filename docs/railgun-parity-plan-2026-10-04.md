@@ -7,6 +7,24 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [prepared-operation dispatch checkpoint](railgun-kohaku-operation-dispatch-2026-10-06.md)
+passes three targeted native cases at `fd5ac778`: acknowledged private unshield,
+public lost response, and private cancellation during held final review. Original
+controller outcomes, one-use admission and retained ownership remain intact.
+All 558 focused tests pass with natural exit; strict lint and five-file formatting
+pass. This is an internal sequencing extraction, not a transaction Host.
+
+Next is a complete restricted private-operation adapter and fixed adopting
+Freedom bridge. It will expose the existing self-transfer and full/partial
+withdrawal paths through a documented host contract while keeping keys, proofs,
+disclosure review and durable authority in the host. The fixed bridge will use
+the existing controllers. Its outcomes must match private submissions, whose
+acknowledged result omits the ordinary wallet's journal status fields. It remains
+separate from generic upstream Host support, live private/service qualification,
+relayed broadcast, package/browser qualification and UI/product work.
+
+## Earlier checkpoints
+
 The [restricted snapshot qualification](railgun-kohaku-snapshot-qualification-2026-10-06.md)
 now passes one genuine-account native case at `20560d86`: thirteen successful
 reads, mutation isolation, pending-read shutdown, host-abort refusal and continued
@@ -18,8 +36,6 @@ dependency scope and lack of JavaScript implementation typechecking are explicit
 This completes the restricted read-host milestone. Generic upstream Host support,
 transaction-capable extraction, package/browser qualification and live private
 service/broadcaster qualification remain open. UI/product design is still deferred.
-
-## Earlier checkpoints
 
 The [restricted completed-snapshot adapter](railgun-kohaku-snapshot-adapter-2026-10-05.md)
 now shares read behavior between an independent data host and a fixed borrowed-
