@@ -26,7 +26,7 @@
   "dependencies": [
     {
       "name": "electron",
-      "version": "44.4.5",
+      "version": "44.5.1",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },
@@ -466,7 +466,7 @@
     },
     {
       "name": "@ledgerhq/hw-app-eth",
-      "version": "7.8.19",
+      "version": "7.10.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/LedgerHQ/ledger-live" },
@@ -551,7 +551,7 @@
     },
     {
       "name": "@x402/core",
-      "version": "2.27.0",
+      "version": "2.28.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },
@@ -568,7 +568,7 @@
     },
     {
       "name": "@x402/evm",
-      "version": "2.27.0",
+      "version": "2.28.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },

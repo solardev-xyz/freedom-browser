@@ -298,14 +298,14 @@
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^44.4.5",
+    "electron": "^44.5.1",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
-    "eslint": "^10.4.0",
-    "globals": "^17.6.0",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
     "jest": "^30.4.2",
-    "prettier": "^3.8.3",
-    "ws": "^8.21.0"
+    "prettier": "^3.9.9",
+    "ws": "^8.22.0"
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
@@ -313,15 +313,15 @@
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",
     "@ghostery/adblocker": "^2.18.1",
-    "@ledgerhq/hw-app-eth": "^7.8.8",
+    "@ledgerhq/hw-app-eth": "^7.10.0",
     "@ledgerhq/hw-transport-node-hid": "^6.33.5",
     "@metamask/browser-passworder": "^6.0.0",
     "@openlv/core": "^0.2.0",
     "@openlv/session": "^0.2.0",
     "@safe-global/protocol-kit": "^8.0.3",
     "@scure/bip39": "^2.2.0",
-    "@x402/core": "^2.12.0",
-    "@x402/evm": "^2.12.0",
+    "@x402/core": "^2.28.0",
+    "@x402/evm": "^2.28.0",
     "better-sqlite3": "^13.0.3",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.3",
@@ -344,10 +344,10 @@
       "uuid": "^14.0.0"
     },
     "ethers": {
-      "ws": "^8.21.0"
+      "ws": "^8.22.0"
     },
     "viem": {
-      "ws": "^8.21.0"
+      "ws": "^8.22.0"
     }
   },
   "title": "Freedom",
