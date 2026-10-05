@@ -425,11 +425,29 @@ function create(options) {
       assert.equal(typeof recipient, 'string');
       if (kind === 'railgun-token-unshield')
         recipient = require('ethers').getAddress(recipient).toLowerCase();
-      const requestedAmount = amount.amount;
-      const request = Object.freeze({ kind, noteId: amount.noteId, recipient });
+      const requestedAmount = amount.amount,
+        noteId = amount.noteId,
+        unshield = kind === 'railgun-token-unshield';
       available();
+      let inputAmount = requestedAmount;
+      if (unshield) {
+        const notes = readRailgunAccountOwnedNotes(account, owners).read.received.filter(
+          (note) => note.id === noteId
+        );
+        assert.equal(notes.length, 1);
+        inputAmount = notes[0].amount;
+        assert.ok(typeof inputAmount === 'bigint' && requestedAmount <= inputAmount);
+        if (requestedAmount < inputAmount) kind = 'railgun-partial-unshield';
+      }
+      const partial = kind === 'railgun-partial-unshield';
+      const request = Object.freeze({
+        kind,
+        noteId,
+        recipient,
+        ...(partial ? { unshieldAmount: requestedAmount.toString() } : {}),
+      });
       const baseline = selected(account, owners, request);
-      assert.equal(amount.amount, baseline.note.amount);
+      assert.equal(inputAmount, baseline.note.amount);
       return start(async () => {
         const started = performance.now(),
           deadline = started + PREPARE_MS;
@@ -443,7 +461,7 @@ function create(options) {
           current();
           assert.match(submitter, /^0x[0-9a-f]{40}$/);
           assert.ok(BigInt(submitter) > 0n);
-          if (kind === 'railgun-token-unshield') assert.equal(recipient, submitter);
+          if (unshield) assert.equal(recipient, submitter);
           const destination = getRailgunAccountPublicDestination(coordinator, enrollment);
           const sourceDetails = getPrivateRpcDestinationDetails(destination);
           const configuration = configuredRpc();
@@ -521,7 +539,21 @@ function create(options) {
               publicGenerationId: publicIdentity.generationId,
             },
             selectedInputs: 1,
-            fullNote: true,
+            fullNote: !partial,
+            ...(partial
+              ? {
+                  inputAmount: inputAmount.toString(),
+                  unshieldAmount: requestedAmount.toString(),
+                  changeAmount: (inputAmount - requestedAmount).toString(),
+                  entireInputConsumed: true,
+                  changeRecipient: 'same-private-account',
+                  unshieldAmountIncludesProtocolFee: true,
+                  changeRequiresConfirmedScan: true,
+                  changeSpendRequiresSeparatePoiSubmission: true,
+                  changePoiDisclosure:
+                    'Spending change requires a later, separately reviewed combined POI submission and list acceptance. That submission links the blinded change to the public unshield recipient and amount at the aggregator; this operation does not publish it automatically.',
+                }
+              : {}),
             destinations: {
               retainedSource: sourceDetails.url,
               protocolRpc: rpcDetails.url,
@@ -549,6 +581,7 @@ function create(options) {
                 'nullifier',
                 'commitments',
                 'encrypted-output',
+                ...(partial ? ['gross-unshield-amount', 'encrypted-change-output'] : []),
                 'eth_estimateGas',
                 'eth_call',
               ],

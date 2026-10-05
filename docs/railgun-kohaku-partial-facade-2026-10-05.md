@@ -1,0 +1,44 @@
+# Partial withdrawals through the Railgun Kohaku adapter
+
+The existing `prepareUnshield` adapter method now accepts a positive amount smaller than its selected note. It delegates to the genuine partial-operation controller, consumes the whole input and creates encrypted change for the same private account. With an amount equal to the input, the existing full-withdrawal request and review remain byte-identical. Transfers remain full-note operations. No UI or IPC activation is added.
+
+The adapter snapshots input, withdrawal and change amounts before asynchronous work; validates the destination against the funding signer before preparation review; and rechecks the genuine selected note after review. The immutable review describes gross withdrawal including protocol fee, whole-input consumption, self-change, confirmed scanning and the separate reviewed POI publication/list acceptance needed to spend that change. It does not automatically publish change. One-use operation tokens and the existing broadcaster retain ownership of proving and submission.
+
+The [evidence index](qualification/railgun-partial-facade-2026-10-05.json) links exact raw reports and the [independent audit](qualification/railgun-partial-facade-audit-2026-10-05.md).
+
+## Native evidence
+
+Six outcome cases pass through the actual adapter with genuine account/controller/receiver/proof/signer/journal authority. Chain responses, receipts, finality, list trust and review callbacks are fixtures. These are offline engineering qualifications, not live private withdrawals or human review.
+
+| Input history     | Outcome                | Elapsed ms | Utilities | Storage workers | EOA signatures / sends |
+| ----------------- | ---------------------- | ---------: | --------: | --------------: | ---------------------- |
+| Shield            | Acknowledged           |     20,296 |        71 |               6 | 1 / 1                  |
+| Shield            | Lost response          |     20,316 |        71 |               6 | 1 / 1                  |
+| Shield            | Wrong verifier refused |     20,231 |        71 |               6 | 0 / 0                  |
+| Received Transact | Acknowledged           |     24,154 |        83 |              10 | 1 / 1                  |
+| Received Transact | Lost response          |     23,955 |        83 |              10 | 1 / 1                  |
+| Received Transact | Wrong verifier refused |     23,912 |        83 |              10 | 0 / 0                  |
+
+Acknowledged cases deliberately use a gross withdrawal of one smallest unit; lost-response and wrong-verifier cases use half the selected input. The former exercises zero-fee receipt handling synthetically. The [separate pinned-runtime fee/zero-token-transfer report](qualification/railgun-partial-zero-fee-2026-10-05.json) supports that boundary: local Anvil executed fee arithmetic at gross amounts 1/399/400 and a zero-value WETH transfer plus a positive control, using installed pinned runtimes and synthetic state without a fork. This complements the [earlier receipt bytecode analysis](railgun-partial-receipt-bytecode-2026-10-04.md); the Railgun implementation source is only partially verified and this campaign does not execute a complete Railgun contract transaction. No arbitrary minimum of 400 units is introduced.
+
+All six cases observe the real prove, receiver and submit delegates exactly once. Signed capsule, independently verified change receiver, review amounts and proved calldata agree in all six cases; in the four submitted cases, ordered receipt commitments and gross amount also agree. Source-derived per-phase counters cover jobs, credential purposes, storage workers, all-role RPC methods and Ethereum signing/journaling. Allocation and guard-hook totals are observed, not an exact admission budget; SQL/fsync counts are not measured.
+
+Four named Shield controls also pass: copied/unregistered operation tokens, replay after broadcast, close during held preparation review, and close during held transaction review. The two held cases wait for the adopted account to close, establish that the account phase remains excluded and plugin closure remains pending until the original review callback settles, then verify no late signature/send or new work. The held-preparation interval between setup and close is observed rather than predicted: one signer-address lookup and one adopted-account worker exit, without jobs, keys or RPC. The token controls also run for both creators in all six outcome cases. These controls do not claim physical socket drainage.
+
+Successful and lost-response submissions resolve the strict five-log receipt, reject reversed logs and premature capture, and preserve the original private capsule/signature/proof through active, archived and same-process reopened capture. Capture does not authorize later spending, credit change, prove its tree position or establish process-restart recovery. Missing-POI-authority controls reject absent genuine authority; they do not falsely claim native coverage of inner guards they never reach.
+
+The unchanged direct partial route passes in 20,965 ms. Four existing private adapter modes (Shield/Transact transfer/full withdrawal), public Shield acknowledgment and enrolled read-only compatibility also pass. The legacy private fixture still substitutes account-POI/private-preflight authority and cannot requalify those real gates; the new partial facade cases above exercise them. Four unit goldens establish exact legacy request/review bytes. Public Shield lost-response and cancelled-review compatibility also pass. All 17 constituent native processes exited zero; the separate inventory-driver failure is described below.
+
+## Source and validation scope
+
+Main `758c98b0` was merged as `6392c1ea` before this campaign. Its adblock-only change preserves the privacy branch; bundled Ant, IPFS, Radicle and Myotis installations were explicitly refreshed again, Myotis supervisor rebuilt, required binaries checked, Radicle loaded with 30 exports and Arti verified at 2.6.0. Package/lock and pins were unchanged. Earlier restart evidence remains pinned to its earlier 902-source tree.
+
+The eight new facade reports have the same 904-source inventory. The unchanged direct qualifier reports 578 sources, all an exact subset with matching hashes. Legacy private/public/read-only reports use the older `sourceSha256` field with 133/169/130-source maps respectively; all recorded hashes match. The broader external freeze and entrypoint supplement remained unchanged throughout the runs. The first launch failed before workers because Electron interpreted an ASAR as a directory; the fixture now hashes raw archive bytes with `original-fs`, matching existing qualifiers. That failed profile is preserved as a diagnostic. The matrix driver exited one only after all eight children had exited zero: its final equality assertion incorrectly required the direct and facade inventories to have identical scope. Independent validation confirms exact overlapping hashes and unchanged frozen sources; the failure is not relabeled as an exit-zero driver.
+
+Focused tests pass 312 cases across five suites, including upstream adblock checks; full lint and changed-file formatting pass. Six separately configured OpenLV integration tests pass. The full merged-tree regression passes 16,276 tests across 544 suites in 692.184 seconds, with 33 tests and five suites skipped. OpenLV is excluded from that broad command and tested separately. Jest uses explicit `--forceExit`; this is not proof of natural closure of all test handles, and no coverage result is claimed. The original runner exited zero and was drained.
+
+Claude reviewed the implementation, archive correction, main merge and native evidence; another agent independently checked counters, hashes and boundaries. This is engineering review, not an external security audit. No secrets, profiles, raw wire, private captures or failed logs are published with the evidence.
+
+## Remaining work
+
+The next connected step is a separate genuine Kohaku instance spending change produced by the first partial withdrawal, after normal scanning and separately accepted POI state, then ingesting its terminal balance. Cold second submission and interrupted second-proof recovery are separate ongoing work. Live POI acceptance, private transfer/withdrawal, a suitable private broadcaster, portable adapter extraction and UI design remain open. Version-3 retained-POI stores still refuse older readers after their first combined prepare. No funded wallet or live private service was accessed for this milestone.

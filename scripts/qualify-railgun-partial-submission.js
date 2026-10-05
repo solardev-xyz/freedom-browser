@@ -1,7 +1,7 @@
 /** Offline partial EOA submission and capture over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron script SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [acknowledged|lost-response|bad-verifier]
+ * electron script SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [acknowledged|lost-response|bad-verifier|preparation-review-close|transaction-review-close] [direct|kohaku]
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -30,12 +30,21 @@ async function bounded(work, ms = 30000) {
 }
 async function main() {
   const args = process.argv.slice(2);
-  assert.ok(args.length >= 6 && args.length <= 8);
+  assert.ok(args.length >= 6 && args.length <= 9);
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
   const testCase = args[7] ?? 'acknowledged';
-  assert.ok(['acknowledged', 'lost-response', 'bad-verifier'].includes(testCase));
+  const route = args[8] ?? 'direct';
+  assert.ok(['direct', 'kohaku'].includes(route));
+  const facadeRoute = route === 'kohaku';
+  const cancellationCase = ['preparation-review-close', 'transaction-review-close'].includes(
+    testCase
+  );
+  assert.ok(
+    ['acknowledged', 'lost-response', 'bad-verifier'].includes(testCase) ||
+      (facadeRoute && inputCreator === 'Shield' && cancellationCase)
+  );
   const transact = inputCreator === 'Transact';
   assert.ok(args.slice(0, 6).every((value) => path.isAbsolute(value)));
   assert.equal(fs.existsSync(directory), false);
@@ -83,8 +92,20 @@ async function main() {
           .map((name) => path.join(base, name));
       }),
     ];
+    if (facadeRoute) {
+      const walk = (directory) => {
+        for (const entry of fs.readdirSync(directory, {
+          withFileTypes: true,
+        })) {
+          const filename = path.join(directory, entry.name);
+          if (entry.isDirectory()) walk(filename);
+          else if (entry.isFile() && /\.(js|json)$/.test(entry.name)) files.push(filename);
+        }
+      };
+      walk(path.join(__dirname, '../src/main'));
+    }
     return Object.fromEntries(
-      files
+      [...new Set(files)]
         .sort()
         .map((file) => [
           path.relative(path.join(__dirname, '..'), file),
@@ -93,6 +114,24 @@ async function main() {
     );
   };
   const sourceHashes = inventory();
+  let facadeRuntimePins;
+  if (facadeRoute) {
+    const engineManifest = require('../src/main/wallet/railgun-engine-manifest.json');
+    const proverManifest = require('../src/main/wallet/railgun-prover-manifest.json');
+    const archiveFs = require('original-fs');
+    const engineSha256 = sha(archiveFs.readFileSync(archive)),
+      proverSha256 = sha(archiveFs.readFileSync(proverArchive));
+    assert.equal(engineSha256, engineManifest.sha256);
+    assert.equal(proverSha256, proverManifest.sha256);
+    facadeRuntimePins = {
+      engineSha256,
+      proverSha256,
+      publicVectorSha256: sha(sourceBytes),
+      bytecodeInputSha256: sha(fs.readFileSync(bytecodes)),
+      engineInventorySha256: engineManifest.inventory.sha256,
+      proverInventorySha256: proverManifest.inventorySha256,
+    };
+  }
   const runtime = require('../src/main/wallet/railgun-process');
   const originalStart = runtime.startRailgunProcess;
   const sessionModule = require('../src/main/wallet/railgun-session-worker');
@@ -183,6 +222,7 @@ async function main() {
   const { getPrivacyContext, createPrivacyScope } = require('../src/main/networks/privacy-context');
   const signers = require('../src/main/wallet/signers'),
     originalSigner = signers.getSigner;
+  const rpcCounts = {};
   const methods = {},
     eoa = {
       addressAttempts: 0,
@@ -203,7 +243,9 @@ async function main() {
     staged,
     preview,
     recovery,
-    journalScope;
+    journalScope,
+    plugin,
+    facadeObservers;
   let expectedOwner,
     expectedTransaction,
     signedTransaction,
@@ -252,6 +294,17 @@ async function main() {
     const gross = inner.unshieldPreimage.value,
       fee = (gross * 25n) / 10000n,
       net = gross - fee;
+    if (facadeRoute) {
+      assert.equal(gross.toString(), preparationSummary.unshieldAmount);
+      const preparation = observedProof.stored.capsule.preparation;
+      assert.equal(gross.toString(), preparation.unshieldAmount);
+      assert.equal(inner.commitments[0], preparation.expected.changeCommitment);
+      assert.equal(inner.commitments[1], preparation.expected.unshieldCommitment);
+      if (testCase === 'acknowledged') {
+        assert.equal(gross, 1n);
+        assert.equal(fee, 0n);
+      }
+    }
     const treasury = require('../src/main/wallet/railgun-transact-receipt-policy').treasury;
     const events = [
       [pins.proxy, 'Nullified', [inner.boundParams.treeNumber, inner.nullifiers]],
@@ -356,6 +409,13 @@ async function main() {
         };
         try {
           const { subject } = current();
+          if (facadeRoute) {
+            const label = require('./fixtures/railgun-kohaku-partial-native').rpcLabel(
+              subject,
+              JSON.parse(options.body)
+            );
+            rpcCounts[label] = (rpcCounts[label] || 0) + 1;
+          }
           if (subject.role !== 'transaction-rpc') {
             const response = await client.request(handle, url, options);
             current();
@@ -468,6 +528,12 @@ async function main() {
     methods: { ...methods },
     services: services.report(),
     wrapperTransport: { ...wrapperTransport },
+    ...(facadeRoute
+      ? {
+          rpcCounts: { ...rpcCounts },
+          workers: { started: workerStarts, exited: workerResults.length },
+        }
+      : {}),
   });
   const captureActivity = () => ({
     keys: { ...keys },
@@ -477,6 +543,48 @@ async function main() {
     transportEntries: services.report().transportEntries,
     wrapperEntries: wrapperTransport.entries,
   });
+  const facadeTools = facadeRoute ? require('./fixtures/railgun-kohaku-partial-native') : null;
+  let observedProof, observedReceiver, observedSubmission, preparationSummary, facadeContext;
+  const facadePhases = [];
+  const measure = () => ({
+    ...snapshot(),
+    workers: { started: workerStarts, exited: workerResults.length },
+  });
+  if (facadeRoute)
+    facadeObservers = facadeTools.installObservers({
+      onReceiver(options, result) {
+        assert.equal(options.identity, identity);
+        assert.equal(options.enrollment, enrollment);
+        assert.equal(options.recipient, identity.descriptor.instanceId);
+        assert.equal(observedReceiver, undefined);
+        observedReceiver = result;
+      },
+      async onProved(options, result) {
+        assert.equal(options.owners.identity, identity);
+        assert.equal(options.owners.enrollment, enrollment);
+        assert.deepEqual(options.request, facadeContext.request);
+        assert.equal(result.status, 'proved');
+        assert.equal(observedProof, undefined);
+        const stored = await capsules.get(result.holdId);
+        assert.equal(stored.capsule.noteHash, facadeContext.note.hash);
+        facadeTools.assertAmounts({
+          summary: preparationSummary,
+          stored,
+          receiver: observedReceiver,
+          ...facadeContext,
+          privateRecipient: identity.descriptor.instanceId,
+        });
+        observedProof = { result, stored };
+        expectedTransaction = stored.provedTransaction;
+      },
+      onSubmitted(options, result) {
+        assert.equal(options.identity, identity);
+        assert.equal(options.enrollment, enrollment);
+        assert.equal(options.completion, observedProof.result.completion.receipt);
+        assert.equal(observedSubmission, undefined);
+        observedSubmission = result;
+      },
+    });
   const vault = require('../src/main/identity/vault');
   const started = performance.now();
   const runs = [];
@@ -557,98 +665,396 @@ async function main() {
       merkleRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
     });
     expectedOwner = recipient;
-    const rpc = require('../src/main/networks/private-rpc');
-    preview = createPrivacyScope({
-      profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
-      signal: enrollment.signal,
-    });
-    const protocolSubject = {
-      ...getPrivacyContext(enrollment.getContext('engine')).subject,
-      role: 'protocol-rpc',
-    };
-    delete protocolSubject.operation;
-    const protocolHandle = preview.getContext(protocolSubject);
-    const transactionHandle = preview.getContext({
-      kind: 'public-address',
-      principal: recipient,
-      chainId: 11155111,
-      role: 'transaction-rpc',
-    });
-    for (const [handle, role] of [
-      [protocolHandle, 'protocol-rpc'],
-      [transactionHandle, 'transaction-rpc'],
-    ]) {
-      const client = rpc.createPrivateRpc(handle, role);
-      const observation = rpc.getPrivateRpcDestination(client, handle);
-      const details = rpc.getPrivateRpcDestinationDetails(observation);
-      assert.equal(details.url, 'https://synthetic.invalid/railgun-partial-controller');
-      if (role === 'transaction-rpc') reviewedEndpoint = details.url;
-      constraints.push(
-        rpc.createPrivateRpcDestinationConstraint({
-          observation,
-          signal: enrollment.signal,
-          deadline: performance.now() + 300000,
-        })
+    let proved, stored, savedBefore, token, broadcaster;
+    const inspectStored = () =>
+      reservations.withSigningRecovery(async (records, context) => {
+        context.assertCurrent();
+        assert.equal(records.length, 1);
+        assert.equal(records[0].entry.state, 'signing');
+        assert.deepEqual(await capsules.readSigned(records[0].receipt), stored);
+        return records[0].entry;
+      });
+    const finalizeControl = async () => {
+      await plugin.closed;
+      const before = measure();
+      await publicAccount.close();
+      publicAccount = null;
+      enrollment.close();
+      identity.close();
+      vault.lockVault();
+      await bounded(Promise.all([...children].map((child) => child.closed)));
+      await bounded(Promise.all([...workers].map((worker) => worker.closed)));
+      assert.equal(children.size, 0);
+      assert.equal(workers.size, 0);
+      assert.equal(workerResults.length, workerStarts);
+      assert.ok(workerResults.every((result) => result.exitCode === 0));
+      assert.ok(
+        childResults.every(
+          (result) => result.code === 'RAILGUN_PROCESS_CLOSED' && Number.isInteger(result.exitCode)
+        )
       );
-    }
-    const destinationConstraints = Object.freeze({
-      protocol: constraints[0].constraint,
-      transaction: constraints[1].constraint,
-    });
-    const options = {
-      account,
-      owners,
-      archive,
-      proverArchive,
-      artifactDirectory,
-      destinationConstraints,
-      request: {
-        kind: 'railgun-partial-unshield',
-        noteId: selected.id,
+      assert.ok(loans.every((key) => key.every((byte) => byte === 0)));
+      await closeWrapperClients();
+      await services.close();
+      assert.equal(services.report().pendingRequests, 0);
+      assert.equal(services.report().unexpectedTransportFailures, 0);
+      assert.deepEqual(inventory(), sourceHashes);
+      const expected = {
+        jobs: {},
+        keys: {},
+        methods: {},
+        rpcCounts: {},
+        eoa: {},
+        workers: { exited: 2 },
+      };
+      facadeTools.assertCounts(before, measure(), expected);
+      facadePhases.push({ phase: 'control-final-close', expected, before, after: measure() });
+      fs.writeFileSync(
+        path.join(directory, 'report.json'),
+        JSON.stringify(
+          {
+            schema: 'railgun-kohaku-partial-control-native-v1',
+            sourceHashes,
+            route,
+            inputCreator,
+            testCase,
+            runs,
+            facadePhases,
+            observerCounts: { ...facadeObservers.counts },
+            keys,
+            jobs,
+            methods,
+            eoa,
+            workers: { started: workerStarts, exited: workerResults.length },
+            childResults,
+            services: services.report(),
+            wrapperTransport,
+            runtimeVersions: process.versions,
+            runtimePins: facadeRuntimePins,
+            noLiveNetwork: true,
+            syntheticChainAndListTrust: true,
+            allOriginalCallbacksChildrenWorkersAndLoansDrained: true,
+            physicalSocketDrainQualified: false,
+            partialFacadeSubmissionQualified: false,
+          },
+          null,
+          2
+        ) + '\n',
+        { flag: 'wx', mode: 0o600 }
+      );
+    };
+    if (facadeRoute) {
+      const setupExpected = facadeTools.setupCounts(source, anchor, transact);
+      facadeTools.assertCounts(
+        Object.fromEntries(Object.keys(setupExpected).map((key) => [key, {}])),
+        measure(),
+        setupExpected
+      );
+      facadePhases.push({
+        phase: 'setup',
+        expected: setupExpected,
+        after: measure(),
+      });
+      const amount = testCase === 'acknowledged' ? 1n : note.amount / 2n;
+      facadeContext = {
+        note,
+        amount,
         recipient,
-        unshieldAmount: (note.amount / 2n).toString(),
-      },
-    };
-    if (transact) {
-      phase = 'transact-staging';
-      staged =
-        await require('../src/main/wallet/railgun-transact-staging').stageRailgunTransactInput({
-          account,
-          owners,
-          request: options.request,
-          archive,
-          signal: enrollment.signal,
-        });
-      assert.equal(staged.status, 'staged');
-      account = options.account = staged.account;
-      options.stagingReceipt = staged.receipt;
-    }
-    phase = 'prove';
-    const proved =
-      await require('../src/main/wallet/railgun-private-operation').proveRailgunAccountPrivateOperation(
-        options
+        request: Object.freeze({
+          kind: 'railgun-partial-unshield',
+          noteId: selected.id,
+          recipient,
+          unshieldAmount: amount.toString(),
+        }),
+      };
+      const preparationEntered = facadeTools.deferred(),
+        preparationRelease = facadeTools.deferred();
+      const transactionEntered = facadeTools.deferred(),
+        transactionRelease = facadeTools.deferred();
+      const { createRailgunKohakuPlugin } = require('../src/main/wallet/railgun-kohaku-plugin');
+      assert.deepEqual(await capsules.inspect(), {
+        records: 0,
+        signatures: 0,
+        proofs: 0,
+        capacity: 32,
+      });
+      const beforePrepare = measure();
+      const expectPrepare = facadeTools.prepareCounts(transact);
+      plugin = createRailgunKohakuPlugin({
+        account,
+        owners,
+        signal: enrollment.signal,
+        mode: 'private',
+        archive,
+        proverArchive,
+        artifactDirectory,
+        gasLimit: 1500000n,
+        maxGasFee: 2000000000000000n,
+        reviewPreparation: async (summary) => {
+          assert.equal(preparationSummary, undefined);
+          preparationSummary = summary;
+          assert.equal(summary.inputType, inputCreator);
+          assert.equal(summary.inputAmount, note.amount.toString());
+          assert.equal(summary.unshieldAmount, amount.toString());
+          assert.equal(summary.changeAmount, (note.amount - amount).toString());
+          assert.equal(
+            summary.destinations.protocolRpc,
+            'https://synthetic.invalid/railgun-partial-controller'
+          );
+          assert.equal(summary.destinations.transactionRpc, summary.destinations.protocolRpc);
+          assert.equal(summary.destinations.retainedSource, summary.destinations.protocolRpc);
+          reviewedEndpoint = summary.destinations.transactionRpc;
+          facadeTools.assertCounts(beforePrepare, measure(), {
+            jobs: {},
+            keys: {},
+            methods: {},
+            rpcCounts: {},
+            workers: {},
+            eoa: { addressAttempts: 1 },
+          });
+          preparationEntered.resolve();
+          return testCase === 'preparation-review-close' ? preparationRelease.promise : true;
+        },
+        reviewTransaction: async (request) => {
+          eoa.reviews++;
+          assert.equal(methods.eth_estimateGas, 1);
+          assert.equal(methods.eth_call, 1);
+          assert.equal(eoa.sends, 0);
+          assert.equal(eoa.signatureAttempts, 0);
+          assert.equal(request.operation, 'railgun-partial-unshield');
+          assert.equal(request.transaction.data, expectedTransaction.data);
+          assert.equal(request.from.toLowerCase(), recipient);
+          transactionEntered.resolve();
+          return testCase === 'transaction-review-close' ? transactionRelease.promise : true;
+        },
+      });
+      broadcaster =
+        require('../src/main/wallet/railgun-kohaku-broadcaster').createRailgunKohakuBroadcaster(
+          plugin
+        );
+      phase = 'facade-prepare';
+      const preparing = plugin.prepareUnshield(
+        {
+          asset: { __type: 'erc20', contract: pins.wrappedNative },
+          amount,
+          noteId: selected.id,
+        },
+        recipient
       );
-    assert.equal(proved.status, 'proved', JSON.stringify(proved));
-    completion = proved.completion;
-    const stored = await capsules.get(proved.holdId);
-    assert.equal(stored.capsule.version, 2);
-    assert.ok(stored.signature && stored.provedTransaction);
-    expectedTransaction = stored.provedTransaction;
-    assert.equal(keys['spending-sign'], 1);
-    await account.close();
-    account = null;
-    staged?.close();
-    staged = null;
-    const savedBefore = await reservations.withSigningRecovery(async (records, context) => {
-      context.assertCurrent();
-      assert.equal(records.length, 1);
-      const entry = records[0];
-      assert.equal(entry.entry.state, 'signing');
-      assert.deepEqual(await capsules.readSigned(entry.receipt), stored);
-      return entry.entry;
-    });
+      if (testCase === 'preparation-review-close') {
+        try {
+          await facadeTools.heldClose({
+            plugin,
+            entered: preparationEntered,
+            release: preparationRelease,
+            pending: preparing,
+            owners,
+            closeAccount: () => account.close(),
+            bounded,
+            snapshot: measure,
+            runs,
+            name: 'held-preparation-review-close',
+          });
+        } finally {
+          preparationRelease.resolve(true);
+        }
+        assert.deepEqual(facadeObservers.counts, {
+          prove: 0,
+          receiver: 0,
+          submit: 0,
+        });
+        assert.deepEqual(await capsules.inspect(), {
+          records: 0,
+          signatures: 0,
+          proofs: 0,
+          capacity: 32,
+        });
+        account = null;
+        await finalizeControl();
+        return;
+      }
+      token = await preparing;
+      facadeTools.assertCounts(beforePrepare, measure(), expectPrepare);
+      assert.deepEqual(facadeObservers.counts, {
+        prove: 1,
+        receiver: 1,
+        submit: 0,
+      });
+      facadePhases.push({
+        phase: 'prepare',
+        expected: expectPrepare,
+        before: beforePrepare,
+        after: measure(),
+      });
+      proved = observedProof.result;
+      stored = observedProof.stored;
+      assert.deepEqual(await capsules.inspect(), {
+        records: 1,
+        signatures: 1,
+        proofs: 1,
+        capacity: 32,
+      });
+      const beforeCopy = measure();
+      await assert.rejects(broadcaster.broadcast({ ...token }));
+      await assert.rejects(broadcaster.broadcast(Object.freeze({ __type: 'privateOperation' })));
+      facadeTools.assertCounts(beforeCopy, measure(), {
+        jobs: {},
+        keys: {},
+        methods: {},
+        rpcCounts: {},
+      });
+      assert.deepEqual(measure(), beforeCopy);
+      assert.equal(facadeObservers.counts.submit, 0);
+      runs.push({
+        mode: 'copied-unregistered-token',
+        zeroDownstreamAdmission: true,
+        originalTokenRetained: true,
+        noFabricatedForeignPlugin: true,
+        synchronousRefusalNoBorrowedWork: true,
+      });
+      if (testCase === 'transaction-review-close') {
+        const before = measure();
+        const pending = broadcaster.broadcast(token);
+        try {
+          await facadeTools.heldClose({
+            plugin,
+            entered: transactionEntered,
+            release: transactionRelease,
+            pending,
+            owners,
+            closeAccount: () => account.close(),
+            bounded,
+            snapshot: measure,
+            runs,
+            name: 'held-final-transaction-review-close',
+          });
+        } finally {
+          transactionRelease.resolve(true);
+        }
+        facadeTools.assertCounts(before, measure(), facadeTools.submitCounts(testCase));
+        facadePhases.push({
+          phase: 'held-final-transaction-review-close',
+          expected: facadeTools.submitCounts(testCase),
+          before,
+          after: measure(),
+        });
+        assert.deepEqual(facadeObservers.counts, {
+          prove: 1,
+          receiver: 1,
+          submit: 1,
+        });
+        savedBefore = await inspectStored();
+        assert.ok(savedBefore);
+        assert.equal(eoa.signatureAttempts, 0);
+        assert.equal(eoa.sends, 0);
+        account = null;
+        await finalizeControl();
+        return;
+      }
+    } else {
+      const rpc = require('../src/main/networks/private-rpc');
+      preview = createPrivacyScope({
+        profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
+        signal: enrollment.signal,
+      });
+      const protocolSubject = {
+        ...getPrivacyContext(enrollment.getContext('engine')).subject,
+        role: 'protocol-rpc',
+      };
+      delete protocolSubject.operation;
+      const protocolHandle = preview.getContext(protocolSubject);
+      const transactionHandle = preview.getContext({
+        kind: 'public-address',
+        principal: recipient,
+        chainId: 11155111,
+        role: 'transaction-rpc',
+      });
+      for (const [handle, role] of [
+        [protocolHandle, 'protocol-rpc'],
+        [transactionHandle, 'transaction-rpc'],
+      ]) {
+        const client = rpc.createPrivateRpc(handle, role);
+        const observation = rpc.getPrivateRpcDestination(client, handle);
+        const details = rpc.getPrivateRpcDestinationDetails(observation);
+        assert.equal(details.url, 'https://synthetic.invalid/railgun-partial-controller');
+        if (role === 'transaction-rpc') reviewedEndpoint = details.url;
+        constraints.push(
+          rpc.createPrivateRpcDestinationConstraint({
+            observation,
+            signal: enrollment.signal,
+            deadline: performance.now() + 300000,
+          })
+        );
+      }
+      const destinationConstraints = Object.freeze({
+        protocol: constraints[0].constraint,
+        transaction: constraints[1].constraint,
+      });
+      const options = {
+        account,
+        owners,
+        archive,
+        proverArchive,
+        artifactDirectory,
+        destinationConstraints,
+        request: {
+          kind: 'railgun-partial-unshield',
+          noteId: selected.id,
+          recipient,
+          unshieldAmount: (note.amount / 2n).toString(),
+        },
+      };
+      if (transact) {
+        phase = 'transact-staging';
+        staged =
+          await require('../src/main/wallet/railgun-transact-staging').stageRailgunTransactInput({
+            account,
+            owners,
+            request: options.request,
+            archive,
+            signal: enrollment.signal,
+          });
+        assert.equal(staged.status, 'staged');
+        account = options.account = staged.account;
+        options.stagingReceipt = staged.receipt;
+      }
+      phase = 'prove';
+      proved =
+        await require('../src/main/wallet/railgun-private-operation').proveRailgunAccountPrivateOperation(
+          options
+        );
+      assert.equal(proved.status, 'proved', JSON.stringify(proved));
+      completion = proved.completion;
+      stored = await capsules.get(proved.holdId);
+      assert.equal(stored.capsule.version, 2);
+      assert.ok(stored.signature && stored.provedTransaction);
+      expectedTransaction = stored.provedTransaction;
+      assert.equal(keys['spending-sign'], 1);
+      await account.close();
+      account = null;
+      staged?.close();
+      staged = null;
+      savedBefore = await reservations.withSigningRecovery(async (records, context) => {
+        context.assertCurrent();
+        assert.equal(records.length, 1);
+        const entry = records[0];
+        assert.equal(entry.entry.state, 'signing');
+        assert.deepEqual(await capsules.readSigned(entry.receipt), stored);
+        return entry.entry;
+      });
+    }
     const captureSelector = Object.fromEntries(
-      ['tree', 'position', 'nullifier', 'noteHash'].map((key) => [key, savedBefore.facts[key]])
+      ['tree', 'position', 'nullifier', 'noteHash'].map((key) => [
+        key,
+        facadeRoute
+          ? {
+              tree: stored.capsule.selection.tree,
+              position: stored.capsule.selection.position,
+              nullifier: stored.capsule.preparation.expected.nullifier,
+              noteHash: stored.capsule.noteHash,
+            }[key]
+          : savedBefore.facts[key],
+      ])
     );
     const capture = () =>
       require('../src/main/wallet/railgun-own-operation').captureRailgunOwnOperation({
@@ -661,7 +1067,7 @@ async function main() {
     const submitOptions = {
       identity,
       enrollment,
-      completion: completion.receipt,
+      completion: completion?.receipt,
       proverArchive,
       artifactDirectory,
       gasLimit: 1500000n,
@@ -679,17 +1085,39 @@ async function main() {
         return true;
       },
     };
-    phase = 'copied-completion';
-    const beforeCopy = snapshot();
-    assert.deepEqual(await submit({ ...submitOptions, completion: { ...completion.receipt } }), {
-      status: 'recovery-required',
-      stage: 'completion',
-    });
-    assert.deepEqual(snapshot(), beforeCopy);
+    if (!facadeRoute) {
+      phase = 'copied-completion';
+      const beforeCopy = snapshot();
+      assert.deepEqual(await submit({ ...submitOptions, completion: { ...completion.receipt } }), {
+        status: 'recovery-required',
+        stage: 'completion',
+      });
+      assert.deepEqual(snapshot(), beforeCopy);
+    }
     phase = 'submit';
     if (testCase === 'bad-verifier') services.setMode('wrong-verifier');
     const beforeSubmit = snapshot();
-    const submitted = await submit(submitOptions);
+    const submitted = facadeRoute
+      ? await broadcaster.broadcast(token)
+      : await submit(submitOptions);
+    if (facadeRoute) {
+      await bounded(plugin.closed);
+      account = null;
+      assert.equal(submitted, observedSubmission);
+      assert.deepEqual(facadeObservers.counts, {
+        prove: 1,
+        receiver: 1,
+        submit: 1,
+      });
+      facadeTools.assertCounts(beforeSubmit, snapshot(), facadeTools.submitCounts(testCase));
+      facadePhases.push({
+        phase: 'submit',
+        expected: facadeTools.submitCounts(testCase),
+        before: beforeSubmit,
+        after: snapshot(),
+      });
+      savedBefore = await inspectStored();
+    }
     if (testCase === 'bad-verifier') {
       assert.deepEqual(submitted, { status: 'recovery-required', stage: 'preflight' });
       assert.equal(eoa.signatureAttempts, 0);
@@ -743,16 +1171,28 @@ async function main() {
       });
     }
     const beforeReplay = snapshot();
-    assert.deepEqual(await submit(submitOptions), {
-      status: 'recovery-required',
-      stage: 'completion',
-    });
+    if (facadeRoute) {
+      await assert.rejects(broadcaster.broadcast(token));
+      assert.equal(facadeObservers.counts.submit, 1);
+      await bounded(plugin.closed);
+      runs.push({
+        mode: 'replay-after-broadcast',
+        zeroAdditionalSend: true,
+        closedObserved: true,
+        originalCallbacksDrained: true,
+      });
+    } else
+      assert.deepEqual(await submit(submitOptions), {
+        status: 'recovery-required',
+        stage: 'completion',
+      });
     assert.deepEqual(snapshot(), beforeReplay);
-    completion.close();
+    completion?.close();
     completion = null;
     for (const constraint of constraints) constraint.close();
-    preview.close();
+    preview?.close();
     preview = null;
+    const beforeRetainedRecovery = facadeRoute ? measure() : null;
     const openJournal = () => {
       journalScope?.close();
       journalScope = createPrivacyScope({
@@ -965,6 +1405,17 @@ async function main() {
     assert.equal(jobs['railgun-private-receive-job.js'], 1);
     assert.equal(jobs['railgun-private-recover-job.js'] || 0, 0);
     assert.ok(loans.every((key) => key.every((value) => value === 0)));
+    if (facadeRoute) {
+      const expected = facadeTools.recoveryCounts(testCase === 'bad-verifier');
+      facadeTools.assertCounts(beforeRetainedRecovery, measure(), expected);
+      facadePhases.push({
+        phase: 'retained-recovery',
+        expected,
+        before: beforeRetainedRecovery,
+        after: measure(),
+      });
+    }
+    const beforeFinalClose = facadeRoute ? measure() : null;
     phase = 'close';
     await publicAccount?.close();
     publicAccount = null;
@@ -990,8 +1441,40 @@ async function main() {
     assert.equal(services.report().transportCreates, services.report().transportCloses);
     assert.equal(services.report().unexpectedTransportFailures, 0);
     assert.deepEqual(inventory(), sourceHashes);
+    if (facadeRoute) {
+      const expected = {
+        jobs: {},
+        keys: {},
+        methods: {},
+        rpcCounts: {},
+        eoa: {},
+        workers: testCase === 'bad-verifier' ? { exited: 2 } : {},
+      };
+      facadeTools.assertCounts(beforeFinalClose, measure(), expected);
+      facadePhases.push({
+        phase: 'final-close',
+        expected,
+        before: beforeFinalClose,
+        after: measure(),
+      });
+    }
     const report = {
       schema: 'railgun-partial-submission-native-v1',
+      ...(facadeRoute
+        ? {
+            route,
+            facadePhases,
+            observerCounts: { ...facadeObservers.counts },
+            actualPartialCapsuleAmountsMatched: true,
+            genuineChangeReceiverConservationMatched: true,
+            partialPreparationSummaryMatched: true,
+            receiptGrossAndOrderedCommitmentsMatched: testCase !== 'bad-verifier',
+            actualRailgunContractExecutionQualified: false,
+            facadeActivationQualified: false,
+            runtimeVersions: process.versions,
+            runtimePins: facadeRuntimePins,
+          }
+        : {}),
       sourceSha256: sha(sourceBytes),
       sourceHashes,
       inputCreator,
@@ -1018,7 +1501,15 @@ async function main() {
       receiptAndFinalitySynthetic: true,
       namedTreasuryPolicyOnly: true,
       realTorOrLiveSubmissionQualified: false,
-      partialFacadeQualified: false,
+      partialFacadeQualified: facadeRoute,
+      ...(facadeRoute
+        ? {
+            countContract: 'source-predicted-jobs-keys-storage-workers-all-role-rpc-eoa',
+            durableStorageQualified: 'authenticated-record-state-and-unchanged-originals',
+            sqlStatementOrFsyncCountsQualified: false,
+            transportAllocationAndGuardHookCounts: 'observed-only-not-qualified-by-count-contract',
+          }
+        : {}),
       partialPoiLifecycleQualified: false,
       noChangeCreditingOrSecondSpendClaim: true,
       newProcessRestartQualified: false,
@@ -1031,6 +1522,9 @@ async function main() {
     });
     console.log(JSON.stringify({ status: 'qualified', elapsedMs: report.elapsedMs }));
   } finally {
+    plugin?.close();
+    if (plugin) await bounded(plugin.closed);
+    facadeObservers?.close();
     recovery?.close();
     completion?.close();
     staged?.close();

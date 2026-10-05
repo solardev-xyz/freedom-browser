@@ -360,7 +360,7 @@ test('read capability has no preparation/broadcaster and reads only current genu
   expect(() => createRailgunKohakuBroadcaster(plugin)).toThrow(refusal.message);
   expect(mock.events).toEqual([]);
 });
-test('private capability selects only current single-input transfer/full-unshield methods', async () => {
+test('private capability selects only current single-input transfer/unshield methods', async () => {
   const plugin = create();
   expect(Object.keys(plugin).sort()).toEqual(
     [
@@ -571,19 +571,6 @@ test('accessors and proxies in caller amount are rejected without running traps'
   expect(getter).not.toHaveBeenCalled();
   expect(trap).not.toHaveBeenCalled();
 });
-test.each([1n, 122n])(
-  'partial withdrawal %s stays unavailable through the facade before review or work',
-  async (value) => {
-    const plugin = create();
-    await expect(
-      plugin.prepareUnshield({ ...amount(), amount: value }, '0x' + '1'.repeat(40))
-    ).rejects.toMatchObject(refusal);
-    expect(options.reviewPreparation).not.toHaveBeenCalled();
-    expect(mock.stage).not.toHaveBeenCalled();
-    expect(mock.prove).not.toHaveBeenCalled();
-    expect(mock.submit).not.toHaveBeenCalled();
-  }
-);
 test('internal controller has only the reviewed application importers and one proving caller', () => {
   const fs = require('fs'),
     path = require('path');
@@ -1855,3 +1842,588 @@ test.each(['review-expiry', 'token-expiry', 'wall-regression'])(
     await plugin.closed;
   }
 );
+
+// Facade orchestration tests: genuine selection normalizer, privacy contexts and
+// phase claims; account, staging, proof, submission and RPC issuers are controlled
+// registry mocks. These assertions do not qualify real crypto/controller gates.
+const partialAmount = (value = 50n) => ({ ...amount(), amount: value });
+const preparePartial = (plugin, value = 50n) =>
+  plugin.prepareUnshield(partialAmount(value), '0x' + '1'.repeat(40), {});
+
+test.each([
+  ['Shield', 'transfer', '7b6ce5f5860b7f02dda1c3ff05a47496be9629c9e9d20d62bfda4ca366ffb653'],
+  ['Shield', 'unshield', '96e9b66d1facf0f24f9b9e621dfa9228086bce9787fe60c41e6d4fb39f0e5931'],
+  ['Transact', 'transfer', '447e00fb95f554b91bc44c44f4ab7f8b01155165b829c948fba193d51dc63a56'],
+  ['Transact', 'unshield', '7363e66b95fd1cef078ecb707a8b5ed9a27ece11034c6966ab6190f020b9b3ce'],
+])(
+  'legacy %s %s request and complete review bytes match pre-change golden',
+  async (type, kind, digest) => {
+    mock.owned.ownedPoi[0].type = type;
+    const plugin = create();
+    if (kind === 'transfer') await plugin.prepareTransfer(amount(), '0zk-self');
+    else await plugin.prepareUnshield(amount(), '0x' + '1'.repeat(40), {});
+    const data = {
+      summary: options.reviewPreparation.mock.calls[0][0],
+      request: mock.prove.mock.calls[0][0].request,
+    };
+    expect(require('crypto').createHash('sha256').update(JSON.stringify(data)).digest('hex')).toBe(
+      digest
+    );
+    expect(data.summary.fullNote).toBe(true);
+    expect(data.summary).not.toHaveProperty('changeAmount');
+  }
+);
+
+test.each(['Shield', 'Transact'].flatMap((type) => [1n, 50n, 122n].map((value) => [type, value])))(
+  'partial %s U=%s binds exact request, gross amount and private change review',
+  async (type, value) => {
+    mock.owned.ownedPoi[0].type = type;
+    const plugin = create();
+    const op = await preparePartial(plugin, value);
+    const request = mock.prove.mock.calls[0][0].request;
+    expect(request).toEqual({
+      kind: 'railgun-partial-unshield',
+      noteId: '0:1',
+      recipient: '0x' + '1'.repeat(40),
+      unshieldAmount: value.toString(),
+    });
+    expect(Object.isFrozen(request)).toBe(true);
+    const summary = options.reviewPreparation.mock.calls[0][0];
+    expect(summary).toMatchObject({
+      operation: 'railgun-partial-unshield',
+      amount: value.toString(),
+      inputAmount: '123',
+      unshieldAmount: value.toString(),
+      changeAmount: (123n - value).toString(),
+      fullNote: false,
+      entireInputConsumed: true,
+      changeRecipient: 'same-private-account',
+      unshieldAmountIncludesProtocolFee: true,
+      changeRequiresConfirmedScan: true,
+      changeSpendRequiresSeparatePoiSubmission: true,
+      selectedInputs: 1,
+      inputType: type,
+      broadcastSimulationBeforeTransactionReview: true,
+      automaticRetry: false,
+    });
+    expect(BigInt(summary.unshieldAmount) + BigInt(summary.changeAmount)).toBe(
+      BigInt(summary.inputAmount)
+    );
+    expect(summary.exposures.transactionRpc).toEqual(
+      expect.arrayContaining([
+        'gross-unshield-amount',
+        'encrypted-change-output',
+        'eth_estimateGas',
+        'eth_call',
+      ])
+    );
+    expect(summary.changePoiDisclosure).toBe(
+      'Spending change requires a later, separately reviewed combined POI submission and list acceptance. That submission links the blinded change to the public unshield recipient and amount at the aggregator; this operation does not publish it automatically.'
+    );
+    expect(summary).not.toHaveProperty('netReceivedAmount');
+    expect(Object.isFrozen(summary)).toBe(true);
+    expect(Object.isFrozen(summary.exposures.transactionRpc)).toBe(true);
+    expect(op).toEqual({ __type: 'privateOperation' });
+    expect(Object.keys(op)).toEqual(['__type']);
+    expect(Object.isFrozen(op)).toBe(true);
+    expect(mock.submit).not.toHaveBeenCalled();
+    expect(mock.stage).toHaveBeenCalledTimes(type === 'Transact' ? 1 : 0);
+    if (type === 'Transact') {
+      expect(mock.stage.mock.calls[0][0].request).toBe(request);
+      expect(mock.prove.mock.calls[0][0].account).toBe(mock.replacement);
+      expect(mock.prove.mock.calls[0][0].stagingReceipt).toBe(mock.staged.receipt);
+    }
+    expect(mock.prove.mock.calls[0][0].destinationConstraints).toEqual({
+      protocol: mock.constraints[0].result.constraint,
+      transaction: mock.constraints[1].result.constraint,
+    });
+  }
+);
+
+test.each([0n, -1n, 124n, 1, '50', null, undefined])(
+  'invalid partial amount %p refuses before signer/review/asynchronous work',
+  async (value) => {
+    const plugin = create();
+    const pending = plugin.prepareUnshield(
+      { ...amount(), amount: value },
+      '0x' + '1'.repeat(40),
+      {}
+    );
+    // Wrapper calls are counted at entry, before cancellation can hide admission.
+    expect(mock.getSigner).not.toHaveBeenCalled();
+    await expect(pending).rejects.toMatchObject(refusal);
+    expect(options.reviewPreparation).not.toHaveBeenCalled();
+    expect(mock.stage).not.toHaveBeenCalled();
+    expect(mock.prove).not.toHaveBeenCalled();
+  }
+);
+
+test.each([
+  'above-cap',
+  'spent',
+  'missing',
+  'duplicate',
+  'duplicate-record',
+  'wrong-asset',
+  'foreign-type',
+])('partial selected %s input refuses before review or signer', async (fault) => {
+  const plugin = create();
+  const note = mock.owned.read.received[0],
+    record = mock.owned.ownedPoi[0];
+  if (fault === 'above-cap') note.amount = BigInt(pins.maxQualificationAmount) + 1n;
+  if (fault === 'spent') note.spentTxid = '0x' + 'd'.repeat(64);
+  if (fault === 'missing') mock.owned.read.received = [];
+  if (fault === 'duplicate') mock.owned.read.received.push({ ...note });
+  if (fault === 'duplicate-record') mock.owned.ownedPoi.push({ ...record });
+  if (fault === 'wrong-asset') note.asset.contract = '0x' + '2'.repeat(40);
+  if (fault === 'foreign-type') record.type = 'CallerDefined';
+  await expect(preparePartial(plugin)).rejects.toMatchObject(refusal);
+  expect(mock.getSigner).not.toHaveBeenCalled();
+  expect(options.reviewPreparation).not.toHaveBeenCalled();
+  expect(mock.stage).not.toHaveBeenCalled();
+  expect(mock.prove).not.toHaveBeenCalled();
+});
+
+test('partial wrong funding recipient refuses before preparation review and preview construction', async () => {
+  const plugin = create();
+  await expect(
+    plugin.prepareUnshield(partialAmount(), '0x' + '2'.repeat(40))
+  ).rejects.toMatchObject(refusal);
+  expect(mock.getAddress).toHaveBeenCalledTimes(1);
+  expect(options.reviewPreparation).not.toHaveBeenCalled();
+  expect(mock.sourceReads).toBe(0);
+  expect(mock.constraints).toHaveLength(0);
+  expect(mock.prove).not.toHaveBeenCalled();
+  await preparePartial(plugin);
+  expect(mock.prove).toHaveBeenCalledTimes(1);
+});
+
+test('partial caller mutation cannot retarget captured U or classification', async () => {
+  const gate = deferred();
+  mock.getAddress.mockReturnValue(gate.promise);
+  const plugin = create(),
+    a = partialAmount();
+  const work = plugin.prepareUnshield(a, '0x' + '1'.repeat(40), {});
+  a.amount = 123n;
+  a.noteId = '0:2';
+  a.asset.contract = '0x' + '2'.repeat(40);
+  gate.resolve('0x' + '1'.repeat(40));
+  await work;
+  expect(options.reviewPreparation.mock.calls[0][0]).toMatchObject({
+    amount: '50',
+    inputAmount: '123',
+    changeAmount: '73',
+    operation: 'railgun-partial-unshield',
+  });
+  expect(mock.prove.mock.calls[0][0].request).toEqual({
+    kind: 'railgun-partial-unshield',
+    noteId: '0:1',
+    recipient: '0x' + '1'.repeat(40),
+    unshieldAmount: '50',
+  });
+});
+
+test.each(['value', 'coherent-hash', 'type', 'checkpoint', 'spent'])(
+  'partial post-review baseline detects %s drift before staging/prove',
+  async (fault) => {
+    mock.owned.ownedPoi[0].type = 'Transact';
+    options.reviewPreparation.mockImplementation(async () => {
+      if (fault === 'value') mock.owned.read.received[0].amount = 124n;
+      if (fault === 'coherent-hash')
+        mock.owned.read.received[0].hash = mock.owned.ownedPoi[0].hash = 'f'.repeat(64);
+      if (fault === 'type') mock.owned.ownedPoi[0].type = 'Shield';
+      if (fault === 'checkpoint') mock.owned.checkpointHash = 'f'.repeat(64);
+      if (fault === 'spent') mock.owned.read.received[0].spentTxid = '0x' + 'f'.repeat(64);
+      return true;
+    });
+    const plugin = create();
+    await expect(preparePartial(plugin)).rejects.toMatchObject(refusal);
+    expect(mock.stage).not.toHaveBeenCalled();
+    expect(mock.prove).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['value', 'coherent-hash', 'type', 'checkpoint', 'spent'])(
+  'partial post-staging baseline detects %s drift before prove',
+  async (fault) => {
+    mock.owned.ownedPoi[0].type = 'Transact';
+    const original = mock.stage.getMockImplementation();
+    mock.stage.mockImplementation(async (args) => {
+      const result = await original(args);
+      if (fault === 'value') mock.owned.read.received[0].amount = 124n;
+      if (fault === 'coherent-hash')
+        mock.owned.read.received[0].hash = mock.owned.ownedPoi[0].hash = 'f'.repeat(64);
+      if (fault === 'type') mock.owned.ownedPoi[0].type = 'Shield';
+      if (fault === 'checkpoint') mock.owned.checkpointHash = 'f'.repeat(64);
+      if (fault === 'spent') mock.owned.read.received[0].spentTxid = '0x' + 'f'.repeat(64);
+      return result;
+    });
+    const plugin = create();
+    await expect(preparePartial(plugin)).rejects.toMatchObject(refusal);
+    await plugin.closed;
+    expect(mock.stage).toHaveBeenCalledTimes(1);
+    expect(mock.prove).not.toHaveBeenCalled();
+    expect(mock.staged.close).toHaveBeenCalled();
+    expect(mock.replacement.close).toHaveBeenCalled();
+  }
+);
+
+test.each(['partial-to-full', 'full-to-partial'])(
+  'review cannot reclassify %s after note value changes',
+  async (direction) => {
+    options.reviewPreparation.mockImplementation(async () => {
+      mock.owned.read.received[0].amount = direction === 'partial-to-full' ? 50n : 124n;
+      return true;
+    });
+    const plugin = create();
+    await expect(
+      preparePartial(plugin, direction === 'partial-to-full' ? 50n : 123n)
+    ).rejects.toMatchObject(refusal);
+    expect(mock.prove).not.toHaveBeenCalled();
+  }
+);
+
+test('partial normalizes checksum recipient and forwards genuine final transaction review unchanged', async () => {
+  const address = require('ethers').getAddress('0x' + 'ab'.repeat(20));
+  mock.getAddress.mockResolvedValue(address);
+  const summary = Object.freeze({
+    operation: 'railgun-partial-unshield',
+    transaction: Object.freeze({ data: 'controlled-final-calldata' }),
+    intent: Object.freeze({ operation: 'railgun-partial-unshield' }),
+  });
+  mock.submit.mockImplementation(async ({ review }) => {
+    expect(await review(summary)).toBe(true);
+    return { submissionState: 'submitted' };
+  });
+  const plugin = create();
+  const op = await plugin.prepareUnshield(partialAmount(), address);
+  expect(mock.prove.mock.calls[0][0].request.recipient).toBe(address.toLowerCase());
+  await createRailgunKohakuBroadcaster(plugin).broadcast(op);
+  expect(options.reviewTransaction.mock.calls[0][0]).toBe(summary);
+});
+
+test('partial rejects proxy/accessor/extra options without running caller hooks', async () => {
+  const plugin = create(),
+    hook = jest.fn();
+  const a = partialAmount();
+  Object.defineProperty(a, 'amount', { get: hook });
+  await expect(plugin.prepareUnshield(a, '0x' + '1'.repeat(40))).rejects.toMatchObject(refusal);
+  await expect(
+    plugin.prepareUnshield(
+      new Proxy(partialAmount(), { getPrototypeOf: hook }),
+      '0x' + '1'.repeat(40)
+    )
+  ).rejects.toMatchObject(refusal);
+  const asset = partialAmount();
+  Object.defineProperty(asset.asset, 'contract', { get: hook });
+  await expect(plugin.prepareUnshield(asset, '0x' + '1'.repeat(40))).rejects.toMatchObject(refusal);
+  for (const opts of [
+    { tailCalls: hook },
+    { changeRecipient: 'foreign' },
+    { kind: 'railgun-partial-unshield' },
+    new Proxy({}, { ownKeys: hook }),
+  ])
+    await expect(
+      plugin.prepareUnshield(partialAmount(), '0x' + '1'.repeat(40), opts)
+    ).rejects.toMatchObject(refusal);
+  expect(hook).not.toHaveBeenCalled();
+  expect(mock.getSigner).not.toHaveBeenCalled();
+  expect(options.reviewPreparation).not.toHaveBeenCalled();
+});
+
+test('partial lifecycle: late approved review after close drains callback and retains ownership with zero follow-on work', async () => {
+  const gate = deferred();
+  options.reviewPreparation.mockReturnValue(gate.promise);
+  const plugin = create();
+  const work = preparePartial(plugin);
+  await tick();
+  plugin.close();
+  let drained = false;
+  plugin.closed.then(() => {
+    drained = true;
+  });
+  await tick();
+  expect(drained).toBe(false);
+  expect(() => create({ account: makeAccount() })).toThrow(refusal.message);
+  gate.resolve(true);
+  await expect(work).rejects.toMatchObject(refusal);
+  await plugin.closed;
+  expect(mock.prove).not.toHaveBeenCalled();
+});
+
+test('partial lifecycle: review monotonic timeout refuses late true even before timer dispatch', async () => {
+  const original = performance.now();
+  const clock = jest.spyOn(performance, 'now').mockReturnValue(original);
+  options.reviewPreparation.mockImplementation(async () => {
+    clock.mockReturnValue(original + 30000);
+    return true;
+  });
+  const plugin = create();
+  await expect(preparePartial(plugin)).rejects.toMatchObject(refusal);
+  expect(mock.prove).not.toHaveBeenCalled();
+});
+
+test('partial lifecycle: late staged replacement after cancellation is closed and never proved', async () => {
+  mock.owned.ownedPoi[0].type = 'Transact';
+  const gate = deferred();
+  mock.stage.mockImplementation(async () => gate.promise);
+  const plugin = create(),
+    work = preparePartial(plugin);
+  await tick();
+  caller.abort();
+  const replacement = makeAccount(),
+    staged = { status: 'staged', account: replacement, receipt: {}, close: jest.fn() };
+  gate.resolve(staged);
+  await expect(work).rejects.toMatchObject(refusal);
+  await plugin.closed;
+  expect(replacement.close).toHaveBeenCalled();
+  expect(staged.close).toHaveBeenCalled();
+  expect(mock.prove).not.toHaveBeenCalled();
+});
+
+test('partial lifecycle: busy preparation admission cannot revoke or replace first request', async () => {
+  const gate = deferred();
+  options.reviewPreparation.mockReturnValue(gate.promise);
+  const plugin = create(),
+    work = preparePartial(plugin);
+  await expect(plugin.prepareUnshield(amount(), '0x' + '1'.repeat(40))).rejects.toMatchObject(
+    refusal
+  );
+  gate.resolve(true);
+  await work;
+  expect(mock.prove).toHaveBeenCalledTimes(1);
+  expect(plugin.signal.aborted).toBe(false);
+  await expect(preparePartial(plugin)).rejects.toMatchObject(refusal);
+});
+
+test('partial lifecycle: late proved completion after cancel is revoked and durable hold requires recovery', async () => {
+  const gate = deferred();
+  mock.prove.mockReturnValue(gate.promise);
+  const plugin = create(),
+    work = preparePartial(plugin);
+  await tick();
+  plugin.close();
+  const completed = completion();
+  gate.resolve({ status: 'proved', completion: completed });
+  await expect(work).rejects.toMatchObject(refusal);
+  await plugin.closed;
+  expect(completed.close).toHaveBeenCalled();
+  expect(plugin.status().recoveryRequired).toBe(true);
+  expect(mock.submit).not.toHaveBeenCalled();
+});
+
+test('partial lifecycle: signed-unfinished is retained as recovery state, never automatically proved again', async () => {
+  mock.prove.mockResolvedValue({
+    status: 'signed-unfinished',
+    stage: 'signing',
+    holdId: 'private-hold',
+  });
+  const plugin = create();
+  await expect(preparePartial(plugin)).rejects.toMatchObject(refusal);
+  await plugin.closed;
+  expect(plugin.status().recoveryRequired).toBe(true);
+  expect(JSON.stringify(plugin.status())).not.toContain('private-hold');
+});
+
+test('partial lifecycle: opaque completion expiration closes instance without submission or hold abandonment', async () => {
+  const plugin = create();
+  await preparePartial(plugin);
+  mock.completion.close();
+  await plugin.closed;
+  expect(plugin.status().recoveryRequired).toBe(true);
+  expect(mock.submit).not.toHaveBeenCalled();
+});
+
+test('partial lifecycle: broadcaster closes/drains wallet before recovery, consumes once and preserves result', async () => {
+  const plugin = create(),
+    broadcaster = createRailgunKohakuBroadcaster(plugin);
+  const op = await preparePartial(plugin);
+  const gate = deferred();
+  account.close.mockImplementation(() => {
+    mock.events.push('closing-held');
+    return gate.promise;
+  });
+  const work = broadcaster.broadcast(op);
+  await tick();
+  expect(mock.submit).not.toHaveBeenCalled();
+  await expect(broadcaster.broadcast(op)).rejects.toMatchObject(refusal);
+  gate.resolve();
+  const result = await work;
+  expect(result.status).toBe('submitted');
+  await plugin.closed;
+  expect(mock.submit.mock.calls[0][0].completion).toBe(mock.completion.receipt);
+  expect(mock.events.indexOf('closing-held')).toBeLessThan(mock.events.indexOf('submit'));
+  await expect(broadcaster.broadcast(op)).rejects.toMatchObject(refusal);
+});
+
+test('partial lifecycle: forged/copied/public operations cannot consume authentic prepared operation', async () => {
+  const plugin = create(),
+    broadcaster = createRailgunKohakuBroadcaster(plugin);
+  const op = await preparePartial(plugin);
+  for (const bad of [
+    {},
+    { ...op },
+    { __type: 'publicOperation' },
+    { __type: 'privateOperation', data: '0x' },
+  ])
+    await expect(broadcaster.broadcast(bad)).rejects.toMatchObject(refusal);
+  expect(mock.submit).not.toHaveBeenCalled();
+  expect((await broadcaster.broadcast(op)).status).toBe('submitted');
+});
+
+test('partial lifecycle: cross-instance operation refuses without consuming the other instance', async () => {
+  const plugin = create(),
+    op = await preparePartial(plugin);
+  const saved = mock.enrollment.directory;
+  mock.enrollment.directory = saved + '-second';
+  const other = create({ account: makeAccount() });
+  mock.enrollment.directory = saved;
+  const otherBroadcaster = createRailgunKohakuBroadcaster(other);
+  await expect(otherBroadcaster.broadcast(op)).rejects.toMatchObject(refusal);
+  expect((await createRailgunKohakuBroadcaster(plugin).broadcast(op)).status).toBe('submitted');
+});
+
+test('partial lifecycle: cancellation while EOA review ignores abort retains owner until review/controller drain', async () => {
+  const gate = deferred();
+  options.reviewTransaction.mockReturnValue(gate.promise);
+  const plugin = create(),
+    op = await preparePartial(plugin);
+  const work = createRailgunKohakuBroadcaster(plugin).broadcast(op);
+  await tick();
+  caller.abort();
+  let drained = false;
+  plugin.closed.then(() => {
+    drained = true;
+  });
+  await tick();
+  expect(drained).toBe(false);
+  expect(() => create({ account: makeAccount(), signal: new AbortController().signal })).toThrow(
+    refusal.message
+  );
+  gate.resolve(true);
+  expect((await work).status).toBe('recovery-required');
+  await plugin.closed;
+});
+
+test('partial lifecycle: throwing account close refuses recovery admission and keeps directory excluded', async () => {
+  account.close.mockImplementation(() => {
+    throw Error('private close');
+  });
+  const plugin = create(),
+    op = await preparePartial(plugin);
+  expect((await createRailgunKohakuBroadcaster(plugin).broadcast(op)).status).toBe(
+    'recovery-required'
+  );
+  expect(mock.submit).not.toHaveBeenCalled();
+  expect(() => create({ account: makeAccount() })).toThrow(refusal.message);
+});
+
+test('partial lifecycle: aborted preparation keeps handoff until callback and delayed account close both drain', async () => {
+  const phase = claimRailgunAccountPhase(mock.enrollment, 'wallet');
+  mock.phases.set(account, phase);
+  const callback = deferred(),
+    worker = deferred();
+  const originalClose = account.close;
+  account.close = jest.fn(async () => {
+    await originalClose();
+    await worker.promise;
+    phase.release();
+  });
+  const plugin = create({ reviewPreparation: () => callback.promise });
+  const work = preparePartial(plugin);
+  work.catch(() => {});
+  let drained = false;
+  plugin.closed.then(() => (drained = true));
+  try {
+    await tick();
+    plugin.close();
+    await expect(work).rejects.toMatchObject(refusal);
+    callback.resolve(true);
+    await tick();
+    expect(drained).toBe(false);
+    // The actual wallet grant still exists, and its handoff remains reserved.
+    expect(() => phase.reserveHandoff()).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_ACCOUNT_PHASE_BUSY' })
+    );
+    expect(() => claimRailgunAccountPhase(mock.enrollment, 'recovery')).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_ACCOUNT_PHASE_BUSY' })
+    );
+    expect(mock.prove).not.toHaveBeenCalled();
+  } finally {
+    callback.resolve(true);
+    worker.resolve();
+    plugin.close();
+    await plugin.closed;
+    phase.release();
+  }
+  const recovered = claimRailgunAccountPhase(mock.enrollment, 'recovery');
+  recovered.release();
+});
+
+test.each(['deny', 'throw'])(
+  'partial %s preparation review does no stage/prove/submit and leaves owner healthy',
+  async (decision) => {
+    options.reviewPreparation.mockImplementation(async () => {
+      if (decision === 'throw') throw Error('PRIVATE NOTE');
+      return false;
+    });
+    const plugin = create();
+    await expect(preparePartial(plugin)).rejects.toMatchObject(refusal);
+    expect(mock.getAddress).toHaveBeenCalledTimes(1); // Existing pre-review address derivation is not zero-key evidence.
+    expect(mock.stage).not.toHaveBeenCalled();
+    expect(mock.prove).not.toHaveBeenCalled();
+    expect(mock.submit).not.toHaveBeenCalled();
+    expect(plugin.status().state).toBe('ready');
+    expect(account.close).not.toHaveBeenCalled();
+    options.reviewPreparation.mockResolvedValue(true);
+    await preparePartial(plugin);
+    expect(mock.prove).toHaveBeenCalledTimes(1);
+  }
+);
+
+test.each(['acknowledged', 'uncertain', 'review-denied'])(
+  'partial %s controller outcome is preserved without a second prove or submission',
+  async (mode) => {
+    const result = Object.freeze(
+      mode === 'acknowledged'
+        ? { hash: '0x' + 'd'.repeat(64), submissionState: 'submitted' }
+        : mode === 'uncertain'
+          ? { transactionHash: '0x' + 'e'.repeat(64), submissionStatus: 'unknown' }
+          : { status: 'recovery-required', stage: 'review' }
+    );
+    mock.submit.mockImplementation(async ({ review }) => {
+      if (mode === 'review-denied') {
+        options.reviewTransaction.mockResolvedValue(false);
+        expect(await review(Object.freeze({ operation: 'railgun-partial-unshield' }))).toBe(false);
+      }
+      caller.abort();
+      return result;
+    });
+    const plugin = create(),
+      op = await preparePartial(plugin),
+      broadcaster = createRailgunKohakuBroadcaster(plugin);
+    expect(await broadcaster.broadcast(op)).toBe(result);
+    await plugin.closed;
+    await expect(broadcaster.broadcast(op)).rejects.toMatchObject(refusal);
+    expect(mock.prove).toHaveBeenCalledTimes(1);
+    expect(mock.submit).toHaveBeenCalledTimes(1);
+    expect(plugin.status().recoveryRequired).toBe(true);
+  }
+);
+
+test('partial rejected wallet close retains ownership and never admits submission', async () => {
+  account.close.mockRejectedValue(Error('private worker close rejected'));
+  const plugin = create(),
+    op = await preparePartial(plugin);
+  const result = await createRailgunKohakuBroadcaster(plugin).broadcast(op);
+  expect(result).toEqual({ status: 'recovery-required', stage: 'kohaku' });
+  expect(mock.submit).not.toHaveBeenCalled();
+  let drained = false;
+  plugin.closed.then(() => {
+    drained = true;
+  });
+  await tick();
+  expect(drained).toBe(false);
+  expect(() => create({ account: makeAccount() })).toThrow(refusal.message);
+  expect(plugin.status().recoveryRequired).toBe(true);
+});

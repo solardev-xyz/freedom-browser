@@ -7,6 +7,13 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [partial Kohaku facade checkpoint](railgun-kohaku-partial-facade-2026-10-05.md)
+now qualifies partial withdrawal through the actual adapter, across both input
+histories, failures, cancellation and compatibility (17 native processes).
+Main 758c98b0 is merged; full regression passes 16,276 tests/544 suites, plus
+six OpenLV tests separately. Synthetic-service and explicit test-force-exit limits
+remain. Actual second facade on scanned change and cold second recovery remain next.
+
 The [complete connected restart checkpoint](railgun-connected-change-restart-2026-10-05.md)
 now passes both original input histories through separate setup/resume processes,
 including genuine encrypted restoration, fresh second proof/signature and terminal
