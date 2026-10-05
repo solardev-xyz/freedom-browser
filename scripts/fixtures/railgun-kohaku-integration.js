@@ -585,7 +585,7 @@ exports.install = function install(mode) {
           const durableBefore = privateBytes();
           const assertAdapterRpc = (denied) => {
             const expectedMethods = {
-              eth_chainId: denied ? 11 : 12,
+              eth_chainId: denied ? 10 : 12,
               eth_getBlockByNumber: denied ? 710 : inputType === 'Transact' ? 740 : 720,
               eth_getLogs: 16,
               ...(denied

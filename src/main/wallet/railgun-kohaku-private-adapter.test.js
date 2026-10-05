@@ -575,3 +575,45 @@ test('fulfilled host.closed revokes a live adapter and closes host exactly once'
   await f.instance.closed;
   expect(f.calls).toEqual([{ method: 'close' }]);
 });
+
+// Public vectors from the pinned ethers address documentation. Outcome spelling
+// remains unchanged; the adapter requires its declared prefixed 20-byte shape.
+describe.each(['from', 'to'])('acknowledged %s address shape', (field) => {
+  test.each([
+    ['lowercase', '0x8ba1f109551bd432803012645ac136ddd64dba72'],
+    ['uppercase', '0x8BA1F109551BD432803012645AC136DDD64DBA72'],
+    ['checksum', '0x8ba1f109551bD432803012645Ac136ddd64DBA72'],
+  ])('preserves %s address and outcome identity', async (_, address) => {
+    const f = fixture();
+    f.acknowledged[field] = address;
+    f.open();
+    const operation = await f.prepare();
+    const result = await broadcaster(f.instance).broadcast(operation);
+    expect(result).toBe(f.acknowledged);
+    expect(result[field]).toBe(address);
+    await f.instance.closed;
+    await expect(broadcaster(f.instance).broadcast(operation)).rejects.toMatchObject({
+      code: CODE,
+    });
+  });
+  test.each([
+    ['ICAP', 'XE65GB6LDNXYOFTX0NSV3FUWKOWIXAMJK36'],
+    ['unprefixed', '8ba1f109551bd432803012645ac136ddd64dba72'],
+    ['invalid checksum', '0x8Ba1f109551bD432803012645Ac136ddd64DBA72'],
+    ['short', '0x1234'],
+    ['nonhex', '0x8ba1f109551bd432803012645ac136ddd64dba7g'],
+  ])('salvages %s acknowledgement as uncertainty', async (_, address) => {
+    const f = fixture();
+    f.acknowledged[field] = address;
+    f.open();
+    const operation = await f.prepare();
+    const result = await broadcaster(f.instance).broadcast(operation);
+    expect(result).toEqual({ transactionHash: HASH, submissionStatus: 'unknown' });
+    expect(result).not.toBe(f.acknowledged);
+    expect(Object.isFrozen(result)).toBe(true);
+    await f.instance.closed;
+    await expect(broadcaster(f.instance).broadcast(operation)).rejects.toMatchObject({
+      code: CODE,
+    });
+  });
+});

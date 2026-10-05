@@ -195,8 +195,8 @@ function outcome(value) {
       'explorerUrl',
     ]);
     assert.match(value.hash, /^0x[0-9a-f]{64}$/);
-    getAddress(value.from);
-    getAddress(value.to);
+    getAddress(hex(value.from, 40));
+    getAddress(hex(value.to, 40));
     assert.ok(Number.isSafeInteger(value.nonce) && value.nonce >= 0);
     assert.equal(value.value, '0');
     assert.equal(value.chainId, pins.chainId);

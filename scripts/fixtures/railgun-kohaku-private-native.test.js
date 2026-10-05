@@ -361,3 +361,114 @@ test('native key deltas follow actual job purposes and count requests before dis
   expect(context.messages).toBe(3);
   expect(() => report('Shield')).toThrow();
 });
+
+test('denied RPC map removes both independently cached transaction client chain checks', async () => {
+  const fs = require('fs'),
+    path = require('path'),
+    vm = require('vm'),
+    parser = require('acorn');
+  const read = (name) => fs.readFileSync(path.join(__dirname, '../../', name), 'utf8');
+  const find = (root, predicate) => {
+    const result = [];
+    function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (predicate(node)) result.push(node);
+      for (const item of Object.values(node))
+        if (Array.isArray(item)) item.forEach(walk);
+        else if (item && typeof item === 'object') walk(item);
+    }
+    walk(root);
+    return result;
+  };
+  const parse = (source) => parser.parse(source, { ecmaVersion: 'latest' });
+  const rpcSource = read('src/main/networks/private-rpc.js');
+  const readyNodes = find(
+    parse(rpcSource),
+    (node) => node.type === 'FunctionDeclaration' && node.id.name === 'ready'
+  );
+  expect(readyNodes).toHaveLength(1);
+  const readySource = rpcSource.slice(readyNodes[0].start, readyNodes[0].end);
+  const raw = jest.fn(async () => '0xaa36a7');
+  const handles = new Set();
+  const networks = new Map();
+  const networkModule = {
+    getPrivateTransactionNetwork(handle) {
+      if (!networks.has(handle)) {
+        handles.add(handle);
+        // Actual production ready() implementation, with admitted wire and
+        // currency seams mocked. Each new client has its own chainCheck cache.
+        const ready = vm.runInNewContext(`(function() { ${readySource}; return ready; })()`, {
+          chainCheck: undefined,
+          assertActive() {},
+          raw,
+          isQuantity: (value) => /^0x[0-9a-f]+$/.test(value),
+          subject: { chainId: 11155111 },
+        });
+        networks.set(handle, {
+          async request() {
+            await ready();
+            return { result: '0x' };
+          },
+        });
+      }
+      return networks.get(handle);
+    },
+  };
+  for (const [file, functionName] of [
+    ['railgun-private-operation.js', 'prove'],
+    ['railgun-private-submission.js', 'submitFinal'],
+  ]) {
+    const source = read('src/main/wallet/' + file);
+    const functions = find(
+      parse(source),
+      (node) => node.type === 'FunctionDeclaration' && node.id.name === functionName
+    );
+    expect(functions).toHaveLength(1);
+    const calls = find(functions[0], (node) => node.type === 'CallExpression');
+    expect(calls.some((node) => node.callee.name === 'createPrivacyScope')).toBe(true);
+    const createNetwork = calls.filter(
+      (node) => node.callee.property?.name === 'getPrivateTransactionNetwork'
+    );
+    expect(createNetwork).toHaveLength(1);
+    const firstRequest = calls.find(
+      (node) => node.callee.object?.name === 'network' && node.callee.property?.name === 'request'
+    );
+    expect(firstRequest.arguments[1].value).toBe('eth_getCode');
+    const handle = Object.freeze({ phase: functionName });
+    const context = vm.createContext({
+      handle,
+      destinationConstraints: undefined,
+      claim: {},
+      require: (name) => {
+        expect(name).toBe('./private-transaction-network');
+        return networkModule;
+      },
+      pins: { chainId: 11155111 },
+      submitter: '0x' + 'ab'.repeat(20),
+      owner: '0x' + 'ab'.repeat(20),
+    });
+    context.network = vm.runInContext(
+      source.slice(createNetwork[0].start, createNetwork[0].end),
+      context
+    );
+    const expression = source.slice(firstRequest.start, firstRequest.end);
+    await vm.runInContext(expression, context);
+    await vm.runInContext(expression, context);
+  }
+  expect(handles.size).toBe(2);
+  expect(raw).toHaveBeenCalledTimes(2);
+  expect(raw.mock.calls.every(([method]) => method === 'eth_chainId')).toBe(true);
+  const fixture = read('scripts/fixtures/railgun-kohaku-integration.js');
+  const maps = find(
+    parse(fixture),
+    (node) => node.type === 'VariableDeclarator' && node.id.name === 'expectedMethods'
+  );
+  expect(maps).toHaveLength(1);
+  const expression = fixture.slice(maps[0].init.start, maps[0].init.end);
+  const map = (denied) => vm.runInNewContext(`(${expression})`, { denied, inputType: 'Shield' });
+  const successful = map(false),
+    denied = map(true);
+  expect(successful.eth_chainId - denied.eth_chainId).toBe(raw.mock.calls.length);
+  expect(denied).toEqual({ eth_chainId: 10, eth_getBlockByNumber: 710, eth_getLogs: 16 });
+  expect(Object.values(denied).reduce((total, value) => total + value, 0)).toBe(736);
+});
