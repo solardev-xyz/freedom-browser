@@ -1,1 +1,1 @@
-- Sending on a custom network without a valid block explorer no longer shows a broken transaction link ([#475](https://github.com/solardev-xyz/freedom-browser/issues/475))
+- Sending on a custom network without a valid block explorer no longer shows a broken transaction link ([#476](https://github.com/solardev-xyz/freedom-browser/pull/476))
