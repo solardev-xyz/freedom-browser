@@ -1,0 +1,1 @@
+- Ankr's public RPC from the default Ethereum endpoints — it now turns away requests without an API key ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))

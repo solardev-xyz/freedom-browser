@@ -352,6 +352,13 @@ async function startAntChainBridge({
       }
       id = request.id;
       method = request.method;
+      // The bridge serves one chain, so it answers the chain id itself. Ant
+      // v0.5.58+ keys its saved wallet scan by it and asks first; a refusal
+      // fails the scan before any log is read.
+      if (method === 'eth_chainId') {
+        send(res, 200, { jsonrpc: '2.0', id, result: `0x${CHAIN_ID.toString(16)}` });
+        return;
+      }
       if (!READ_METHODS.has(method) && !(allowBroadcast && method === 'eth_sendRawTransaction')) {
         fail(-32601, 'Method not available to Ant');
         return;

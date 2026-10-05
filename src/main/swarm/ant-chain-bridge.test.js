@@ -85,6 +85,14 @@ test.each(
   expect(router.request).not.toHaveBeenCalled();
 });
 
+// Ant v0.5.58+ asks for the chain id before every wallet scan and keys the
+// saved scan by it; the bridge serves Gnosis only, so it answers 100 itself.
+test('answers eth_chainId with Gnosis without routing', async () => {
+  const response = await post(bridge.url, rpc('eth_chainId', []));
+  expect(response).toEqual({ status: 200, body: { jsonrpc: '2.0', id: 7, result: '0x64' } });
+  expect(router.request).not.toHaveBeenCalled();
+});
+
 test.each([
   ['{', -32700],
   [[rpc()], -32600],

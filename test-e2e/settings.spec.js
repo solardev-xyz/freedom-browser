@@ -276,8 +276,8 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
     .toEqual([
       { source: 'myotis', status: 'Off' },
       { source: 'colibri', status: 'Available' },
-      { source: 'quorum', status: '2 of 3 · 4 available' },
-      { source: 'direct', status: '4 available' },
+      { source: 'quorum', status: '2 of 3 · 3 available' },
+      { source: 'direct', status: '3 available' },
     ]);
 
   const gnosis = await settingsEval(

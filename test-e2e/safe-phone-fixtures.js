@@ -33,7 +33,7 @@ const phoneWallet = new Wallet(PHONE_KEY);
 // Second remote owner that is never reachable in the test.
 const DEAD_PHONE_ADDRESS = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 
-const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-ankr', 'gno-publicnode', 'gno-drpc-public'];
+const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-publicnode', 'gno-drpc-public'];
 
 function safePhoneE2eAvailable() {
   if (spawnSync('anvil', ['--version']).status !== 0) return false;
