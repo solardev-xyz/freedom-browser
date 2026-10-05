@@ -566,6 +566,7 @@ async function main() {
             ? 'scripts/fixtures/railgun-kohaku-public-integration.js'
             : 'scripts/fixtures/railgun-kohaku-integration.js',
           'src/main/wallet/railgun-kohaku-plugin.js',
+          'src/main/wallet/railgun-kohaku-read-dispatch.js',
           'src/main/wallet/railgun-kohaku-broadcaster.js',
         ]
       : []),

@@ -5,6 +5,7 @@
 const assert = require('assert/strict');
 const path = require('path');
 const { isProxy } = require('util').types;
+const { dispatchRailgunKohakuRead } = require('./railgun-kohaku-read-dispatch');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { assertRailgunIdentity } = require('./railgun-identity');
 const {
@@ -384,30 +385,26 @@ function create(options) {
     track(pending);
     return publicSettlement(pending, false);
   }
-  function read(method, args) {
-    try {
+  // These ports are fixed main-owned closures, never caller-supplied Host options.
+  const readPorts = Object.freeze({
+    capture() {
       current();
       assert.ok(!busy && account);
       readRailgunAccountOwnedNotes(account, owners);
-      const capturedAccount = account,
-        capturedView = account.view;
-      return track(
-        Promise.resolve(capturedView[method](...args))
-          .then((result) => {
-            current();
-            assert.ok(account && !busy);
-            assert.equal(account, capturedAccount);
-            assert.equal(account.view, capturedView);
-            readRailgunAccountOwnedNotes(account, owners);
-            return result;
-          })
-          .catch(() => {
-            throw fail();
-          })
-      );
-    } catch {
-      return Promise.reject(fail());
-    }
+      return { account, view: account.view };
+    },
+    recheck(captured) {
+      current();
+      assert.ok(account && !busy);
+      assert.equal(account, captured.account);
+      assert.equal(account.view, captured.view);
+      readRailgunAccountOwnedNotes(account, owners);
+    },
+    retain: track,
+    refused: fail,
+  });
+  function read(method, args) {
+    return dispatchRailgunKohakuRead(readPorts, method, args);
   }
   function prepare(kind, amount, recipient, unshieldOptions) {
     try {

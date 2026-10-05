@@ -7,6 +7,13 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [internal read-dispatch extraction](railgun-kohaku-read-dispatch-2026-10-05.md)
+preserves fixed genuine-account capture, settlement checks and pending-read
+retention behind an unchanged facade. All 421 focused tests pass with natural
+exit; full lint is warning-free and the five changed JavaScript files pass
+formatting. Native contract compatibility follows; portable Host and TypeScript
+conformance remain unclaimed. The origin campaign below predates this extraction.
+
 The [local Shield-origin native checkpoint](railgun-shield-origin-2026-10-05.md)
 passes all fifteen fresh processes at `233cac01` on Electron 44.5.1. Four
 resolve/restore phases make 24 genuine diagnostic calls: eight matches and

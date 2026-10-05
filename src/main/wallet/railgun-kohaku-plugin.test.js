@@ -2427,3 +2427,71 @@ test('partial rejected wallet close retains ownership and never admits submissio
   expect(() => create({ account: makeAccount() })).toThrow(refusal.message);
   expect(plugin.status().recoveryRequired).toBe(true);
 });
+
+// These lifecycle tests keep existing registry mocks explicit. No alternate
+// Host/port object can supply genuine ownership through the public constructor.
+test.each(['ports', 'host', 'readPorts'])(
+  'caller-supplied %s cannot replace fixed read authority or adopt the account',
+  (name) => {
+    const injected = { capture: jest.fn(), recheck: jest.fn(), retain: jest.fn() };
+    expect(() => create({ [name]: injected })).toThrow(refusal.message);
+    Object.values(injected).forEach((callback) => expect(callback).not.toHaveBeenCalled());
+    expect(account.close).not.toHaveBeenCalled();
+    expect(create().signal.aborted).toBe(false);
+  }
+);
+test('read seam keeps exact argument and successful result references without preparation work', async () => {
+  const filters = [],
+    result = Object.freeze([]);
+  account.view.notes.mockResolvedValue(result);
+  const plugin = create();
+  expect(await plugin.notes(filters, true)).toBe(result);
+  expect(account.view.notes).toHaveBeenCalledTimes(1);
+  expect(account.view.notes.mock.calls[0][0]).toBe(filters);
+  expect(account.view.notes.mock.calls[0][1]).toBe(true);
+  expect(mock.stage).not.toHaveBeenCalled();
+  expect(mock.prove).not.toHaveBeenCalled();
+  expect(mock.submit).not.toHaveBeenCalled();
+  expect(mock.getSigner).not.toHaveBeenCalled();
+});
+test.each(['resolve', 'reject'])(
+  'close holds directory ownership through original read %s after account closure',
+  async (settlement) => {
+    const gate = deferred();
+    account.view.notes.mockReturnValue(gate.promise);
+    const plugin = create(),
+      pending = plugin.notes();
+    const rejected = expect(pending).rejects.toMatchObject(refusal);
+    plugin.close();
+    expect(plugin.signal.aborted).toBe(true);
+    expect(account.close).toHaveBeenCalledTimes(1);
+    let closed = false;
+    plugin.closed.then(() => {
+      closed = true;
+    });
+    await tick();
+    expect(closed).toBe(false);
+    expect(() => create({ account: makeAccount() })).toThrow(refusal.message);
+    if (settlement === 'resolve') gate.resolve(mock.owned.read.received);
+    else gate.reject(Error('private late read failure'));
+    await rejected;
+    await plugin.closed;
+    expect(closed).toBe(true);
+    expect(create({ account: makeAccount() }).signal.aborted).toBe(false);
+    expect(mock.prove).not.toHaveBeenCalled();
+    expect(mock.submit).not.toHaveBeenCalled();
+  }
+);
+test('synchronous view throw remains asynchronous refusal and permits a later healthy read', async () => {
+  account.view.notes.mockImplementationOnce(() => {
+    throw Error('private synchronous detail');
+  });
+  const plugin = create();
+  let pending;
+  expect(() => {
+    pending = plugin.notes();
+  }).not.toThrow();
+  await expect(pending).rejects.toMatchObject(refusal);
+  expect(await plugin.notes()).toBe(mock.owned.read.received);
+  expect(account.view.notes).toHaveBeenCalledTimes(2);
+});
