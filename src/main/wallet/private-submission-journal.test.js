@@ -769,3 +769,341 @@ test('possibly committed Railgun write remains reserved after inventory failure 
   });
   expect((await journal.list())[0].hash).toBe(word(101));
 });
+
+describe('existing-only EOA journal snapshot', () => {
+  const { readExistingPrivateSubmissionSnapshot } = require('./private-submission-journal');
+  const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-storage');
+  const { mnemonicToSeedSync } = require('@scure/bip39');
+  const { createHmac } = require('crypto');
+  let profileId;
+  const marker = () => path.join(directory, 'wallet-privacy-inventory.json');
+  const file = () =>
+    getPrivacyStoragePath(handle, path.join(directory, 'wallet-private-submissions'));
+  function tree(root = directory) {
+    return fs
+      .readdirSync(root)
+      .sort()
+      .flatMap((name) => {
+        const target = path.join(root, name),
+          stat = fs.lstatSync(target);
+        return stat.isDirectory()
+          ? [[target, 'directory'], ...tree(target)]
+          : [
+              [
+                target,
+                stat.isSymbolicLink()
+                  ? fs.readlinkSync(target)
+                  : fs.readFileSync(target).toString('hex'),
+              ],
+            ];
+      });
+  }
+  function rawStorage() {
+    const seed = mnemonicToSeedSync(mockMnemonic);
+    const context = require('../networks/privacy-context').getPrivacyContext(handle);
+    const secret = createHmac('sha256', seed)
+      .update('Freedom wallet submission journal v1\0')
+      .update(JSON.stringify([profileId, context.subject]))
+      .digest();
+    try {
+      return createPrivacyStorage({
+        handle,
+        directory: path.join(directory, 'wallet-private-submissions'),
+        key: secret,
+      });
+    } finally {
+      seed.fill(0);
+      secret.fill(0);
+    }
+  }
+  async function initialized() {
+    journal = getPrivateSubmissionJournal(handle);
+    await journal.initialize();
+    return journal;
+  }
+  beforeEach(() => {
+    scope.close();
+    profileId = createHash('sha256')
+      .update(JSON.stringify([mockProfile.id, directory]))
+      .digest('hex');
+    ({ scope, handle } = open(profileId));
+  });
+  test('same canonical frozen snapshot as standard reader, with zero filesystem writes or catalog changes', async () => {
+    await initialized();
+    await journal.begin(hash, 3);
+    fs.writeFileSync(path.join(directory, 'catalog-fixture.json'), '{"unchanged":true}');
+    const expected = await journal.readSnapshot(),
+      before = tree();
+    const writers = ['mkdirSync', 'writeFileSync', 'writeSync', 'renameSync', 'fsyncSync'].map(
+      (name) => jest.spyOn(fs, name)
+    );
+    const result = await readExistingPrivateSubmissionSnapshot(handle);
+    expect(result).toEqual(expected);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.records)).toBe(true);
+    expect(Object.isFrozen(result.records[0])).toBe(true);
+    expect(result).not.toBe(expected);
+    expect(tree()).toEqual(before);
+    writers.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+    expect(Object.keys(result)).toEqual(['records', 'archive']);
+  });
+  test.each([false, true])(
+    'absent inventory refuses without creating anything (directory exists=%s)',
+    async (exists) => {
+      if (exists) fs.mkdirSync(path.join(directory, 'wallet-private-submissions'));
+      const before = tree();
+      await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toMatchObject({
+        code: 'PRIVATE_PROFILE_INVENTORY_MISSING',
+      });
+      expect(tree()).toEqual(before);
+    }
+  );
+  test('unregistered ciphertext is not adopted even when the ordinary journal is cached', async () => {
+    journal = getPrivateSubmissionJournal(handle);
+    const emptyInventory = fs.readFileSync(marker());
+    await journal.initialize();
+    await journal.begin(hash, 3);
+    fs.writeFileSync(marker(), emptyInventory);
+    const before = tree();
+    await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toMatchObject({
+      code: 'PRIVATE_PROFILE_INVENTORY_INVALID',
+    });
+    expect(tree()).toEqual(before);
+    // The legacy reader still deliberately adopts authenticated preexisting data.
+    expect((await journal.readSnapshot()).records).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(marker())).state.files).toHaveLength(1);
+  });
+  test('existing registered encrypted container without journal key is not silently empty state', async () => {
+    await initialized();
+    const context = require('../networks/privacy-context').getPrivacyContext(handle);
+    const seed = mnemonicToSeedSync(mockMnemonic),
+      secret = createHmac('sha256', seed)
+        .update('Freedom wallet submission journal v1\0')
+        .update(JSON.stringify([profileId, context.subject]))
+        .digest();
+    const { createCipheriv } = require('crypto');
+    const iv = Buffer.alloc(12, 7),
+      cipher = createCipheriv('aes-256-gcm', secret, iv);
+    cipher.setAAD(Buffer.from(JSON.stringify([1, profileId, context.subject])));
+    const ciphertext = Buffer.concat([cipher.update(Buffer.from('{}')), cipher.final()]);
+    fs.writeFileSync(
+      file(),
+      JSON.stringify({
+        version: 1,
+        iv: iv.toString('base64'),
+        tag: cipher.getAuthTag().toString('base64'),
+        ciphertext: ciphertext.toString('base64'),
+      })
+    );
+    seed.fill(0);
+    secret.fill(0);
+    const before = tree();
+    await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toMatchObject({
+      code: 'PRIVATE_JOURNAL_UNAVAILABLE',
+    });
+    expect(await journal.readSnapshot()).toEqual({ records: [], archive: [] });
+    expect(tree()).toEqual(before);
+  });
+  test.each([1, 2, 3, 4])('preserves version %s canonical decoding', async (version) => {
+    await initialized();
+    const record = { hash, nonce: 3, state: 'attempted', attemptedAt: 1 };
+    await rawStorage().set(
+      'submissions-v1',
+      JSON.stringify({ version, records: [record], ...(version === 1 ? {} : { archive: [] }) })
+    );
+    const before = tree();
+    expect(await readExistingPrivateSubmissionSnapshot(handle)).toEqual(
+      await journal.readSnapshot()
+    );
+    expect(tree()).toEqual(before);
+  });
+  test.each([
+    [
+      'version',
+      (data) => {
+        data.version = 5;
+      },
+    ],
+    [
+      'duplicate hash',
+      (data) => {
+        data.records.push({ ...data.records[0], nonce: 4 });
+      },
+    ],
+    [
+      'unknown active field',
+      (data) => {
+        data.records[0].unexpected = true;
+      },
+    ],
+    [
+      'invalid nonce',
+      (data) => {
+        data.records[0].nonce = -1;
+      },
+    ],
+    [
+      'invalid intent',
+      (data) => {
+        data.records[0].intent = { version: 1 };
+      },
+    ],
+    [
+      'invalid observation',
+      (data) => {
+        data.records[0].observation = { status: 'included' };
+      },
+    ],
+    [
+      'invalid resolution',
+      (data) => {
+        data.records[0].resolution = { minimumConfirmations: 0 };
+      },
+    ],
+    [
+      'invalid archive',
+      (data) => {
+        data.archive = [{}];
+      },
+    ],
+  ])('reuses full canonical journal refusal: %s', async (_label, mutate) => {
+    await initialized();
+    const data = {
+      version: 4,
+      records: [{ hash, nonce: 3, state: 'attempted', attemptedAt: 1 }],
+      archive: [],
+    };
+    mutate(data);
+    await rawStorage().set('submissions-v1', JSON.stringify(data));
+    const before = tree();
+    await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toMatchObject({
+      code: 'PRIVATE_JOURNAL_INVALID',
+    });
+    await expect(journal.readSnapshot()).rejects.toMatchObject({ code: 'PRIVATE_JOURNAL_INVALID' });
+    expect(tree()).toEqual(before);
+  });
+  test.each(['marker', 'file', 'directory'])(
+    'refuses a symlinked %s without mutation',
+    async (kind) => {
+      await initialized();
+      const target = kind === 'marker' ? marker() : kind === 'file' ? file() : path.dirname(file());
+      fs.renameSync(target, `${target}.preserved`);
+      fs.symlinkSync(`${target}.preserved`, target);
+      const before = tree();
+      await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toMatchObject({
+        code: 'PRIVATE_PROFILE_INVENTORY_INVALID',
+      });
+      expect(tree()).toEqual(before);
+    }
+  );
+  test('another registered required file missing refuses the entire current inventory', async () => {
+    await initialized();
+    const other = scope.getContext({ ...subject, principal: `0x${'2'.repeat(40)}` });
+    await getPrivateSubmissionJournal(other).initialize();
+    const target = getPrivacyStoragePath(other, path.dirname(file()));
+    fs.renameSync(target, `${target}.preserved`);
+    const before = tree();
+    await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toMatchObject({
+      code: 'PRIVATE_PROFILE_STORE_MISSING',
+    });
+    expect(tree()).toEqual(before);
+  });
+  test('forged, revoked, foreign-profile and wrong-chain/role handles refuse without disk opens', async () => {
+    const invalid = [
+      {},
+      { ...handle },
+      open('foreign').handle,
+      open(profileId, { ...subject, chainId: 1 }).handle,
+      open(profileId, { ...subject, role: 'protocol-rpc' }).handle,
+    ];
+    const old = open(profileId);
+    old.scope.close();
+    invalid.push(old.handle);
+    const disk = jest.spyOn(fs, 'openSync');
+    for (const value of invalid)
+      await expect(readExistingPrivateSubmissionSnapshot(value)).rejects.toThrow();
+    expect(disk).not.toHaveBeenCalled();
+  });
+  test.each(['abort', 'profile', 'profile-in-place', 'session'])(
+    'refuses %s drift during read before releasing a snapshot',
+    async (kind) => {
+      await initialized();
+      const original = fs.readSync;
+      let changed = false;
+      jest.spyOn(fs, 'readSync').mockImplementation((...args) => {
+        const result = original(...args);
+        if (!changed) {
+          changed = true;
+          if (kind === 'abort') mockVault.abort();
+          else if (kind === 'session') mockVault = new AbortController();
+          else if (kind === 'profile-in-place') mockProfile.id = 'different';
+          else mockProfile = { ...mockProfile, id: 'different' };
+        }
+        return result;
+      });
+      await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toThrow();
+    }
+  );
+  test.each(railgunKinds.flatMap((kind) => [false, true].map((archived) => [kind, archived])))(
+    'retains complete %s history, archive=%s, without refreshing observations',
+    async (kind, archived) => {
+      await initialized();
+      const record = railgunHistory(kind, archived);
+      const data = {
+        version: 4,
+        records: archived ? [] : [record],
+        archive: archived ? [record] : [],
+      };
+      await rawStorage().set('submissions-v1', JSON.stringify(data));
+      const before = tree();
+      const result = await readExistingPrivateSubmissionSnapshot(handle);
+      expect(result).toEqual(await journal.readSnapshot());
+      expect(result).toEqual({ records: data.records, archive: data.archive });
+      expect(tree()).toEqual(before);
+    }
+  );
+  test.each(['success', 'invalid-journal', 'missing-marker'])(
+    'wipes one-shot seed, encryption key and inventory key on %s',
+    async (kind) => {
+      if (kind !== 'missing-marker') await initialized();
+      if (kind === 'invalid-journal') await rawStorage().set('submissions-v1', '{');
+      const context = require('../networks/privacy-context').getPrivacyContext(handle);
+      const expectedSeed = mnemonicToSeedSync(mockMnemonic);
+      const expectedKey = createHmac('sha256', expectedSeed)
+        .update('Freedom wallet submission journal v1\0')
+        .update(JSON.stringify([profileId, context.subject]))
+        .digest();
+      const expectedInventory = createHmac('sha256', expectedSeed)
+        .update('Freedom privacy inventory v1\0')
+        .update(mockProfile.id)
+        .digest();
+      const targets = [expectedSeed, expectedKey, expectedInventory],
+        wiped = new Map();
+      const fill = Buffer.prototype.fill,
+        arrayFill = Uint8Array.prototype.fill;
+      function track(bytes, args) {
+        const index = targets.findIndex((expected) =>
+          Buffer.from(bytes).equals(Buffer.from(expected))
+        );
+        if (args[0] === 0 && index >= 0) wiped.set(index, bytes);
+      }
+      jest.spyOn(Buffer.prototype, 'fill').mockImplementation(function (...args) {
+        track(this, args);
+        return fill.apply(this, args);
+      });
+      jest.spyOn(Uint8Array.prototype, 'fill').mockImplementation(function (...args) {
+        track(this, args);
+        return arrayFill.apply(this, args);
+      });
+      if (kind === 'success')
+        await expect(readExistingPrivateSubmissionSnapshot(handle)).resolves.toEqual({
+          records: [],
+          archive: [],
+        });
+      else await expect(readExistingPrivateSubmissionSnapshot(handle)).rejects.toThrow();
+      expect([...wiped.keys()].sort()).toEqual([0, 1, 2]);
+      for (const bytes of wiped.values()) expect(bytes.every((byte) => byte === 0)).toBe(true);
+      targets.forEach((bytes) => arrayFill.call(bytes, 0));
+    }
+  );
+});

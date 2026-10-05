@@ -14,6 +14,86 @@ function getPrivacyStoragePath(handle, directory) {
   return path.join(directory, `${createHash('sha256').update(aad).digest('hex')}.json`);
 }
 
+function decodePrivacyStorage(record, secret, aad) {
+  if (record.version !== 1) throw new Error('version');
+  const iv = Buffer.from(record.iv, 'base64');
+  const tag = Buffer.from(record.tag, 'base64');
+  const ciphertext = Buffer.from(record.ciphertext, 'base64');
+  if (iv.length !== 12 || tag.length !== 16 || ciphertext.length > MAX_BYTES)
+    throw new Error('shape');
+  const decipher = createDecipheriv('aes-256-gcm', secret, iv);
+  decipher.setAAD(aad);
+  decipher.setAuthTag(tag);
+  let head, tail, plaintext;
+  try {
+    head = decipher.update(ciphertext);
+    tail = decipher.final();
+    plaintext = Buffer.concat([head, tail]);
+    const values = JSON.parse(plaintext.toString('utf8'));
+    if (
+      !values ||
+      Array.isArray(values) ||
+      typeof values !== 'object' ||
+      Object.keys(values).length > 256 ||
+      Object.entries(values).some(
+        ([name, value]) => !name || name.length > 256 || typeof value !== 'string'
+      )
+    )
+      throw new Error('shape');
+    return values;
+  } finally {
+    head?.fill(0);
+    tail?.fill(0);
+    plaintext?.fill(0);
+  }
+}
+// Fixed internal main-process callers only; this is not an authority issuer.
+// One synchronous authenticated read. There is no storage adapter, writer,
+// inventory adoption or retained key/listener on this path.
+function readExistingPrivacyStorageValue({ handle, directory, key, profile, seed }, name) {
+  const context = getPrivacyContext(handle);
+  const permitted =
+    (context.subject.kind === 'private-account' && context.subject.role === 'storage') ||
+    (context.subject.kind === 'public-address' &&
+      context.subject.role === 'transaction-rpc' &&
+      context.subject.operation === null &&
+      context.subject.protocol === null &&
+      context.subject.deployment === null);
+  if (
+    !permitted ||
+    !Buffer.isBuffer(key) ||
+    key.length !== 32 ||
+    !path.isAbsolute(directory) ||
+    typeof name !== 'string' ||
+    !name ||
+    name.length > 256
+  )
+    throw privacyError('PRIVATE_STORAGE_INVALID', 'Invalid privacy storage configuration');
+  const file = getPrivacyStoragePath(handle, directory);
+  const bytes = require('./privacy-profile-guard').readRegisteredPrivacyProfileFile({
+    handle,
+    profile,
+    seed,
+    file,
+    maximumBytes: MAX_BYTES * 2,
+  });
+  let values;
+  try {
+    values = decodePrivacyStorage(
+      JSON.parse(bytes.toString('utf8')),
+      key,
+      Buffer.from(JSON.stringify([1, context.profileId, context.subject]))
+    );
+  } catch {
+    throw privacyError(
+      'PRIVATE_STORAGE_UNREADABLE',
+      'Privacy state could not be authenticated or decoded'
+    );
+  }
+  getPrivacyContext(handle);
+  return Object.hasOwn(values, name) ? values[name] : null;
+}
+
 function createPrivacyStorage({ handle, directory, key, profileGuard }) {
   const context = getPrivacyContext(handle);
   const permitted =
@@ -45,33 +125,9 @@ function createPrivacyStorage({ handle, directory, key, profileGuard }) {
     try {
       if (fs.statSync(file).size > MAX_BYTES * 2) throw new Error('size');
       const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (record.version !== 1) throw new Error('version');
-      const iv = Buffer.from(record.iv, 'base64');
-      const tag = Buffer.from(record.tag, 'base64');
-      const ciphertext = Buffer.from(record.ciphertext, 'base64');
-      if (iv.length !== 12 || tag.length !== 16 || ciphertext.length > MAX_BYTES)
-        throw new Error('shape');
-      const decipher = createDecipheriv('aes-256-gcm', secret, iv);
-      decipher.setAAD(aad);
-      decipher.setAuthTag(tag);
-      const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-      try {
-        const values = JSON.parse(plaintext.toString('utf8'));
-        if (
-          !values ||
-          Array.isArray(values) ||
-          typeof values !== 'object' ||
-          Object.keys(values).length > 256 ||
-          Object.entries(values).some(
-            ([name, value]) => !name || name.length > 256 || typeof value !== 'string'
-          )
-        )
-          throw new Error('shape');
-        profileGuard?.remember(file);
-        return values;
-      } finally {
-        plaintext.fill(0);
-      }
+      const values = decodePrivacyStorage(record, secret, aad);
+      profileGuard?.remember(file);
+      return values;
     } catch (error) {
       if (error.code?.startsWith('PRIVATE_PROFILE_')) throw error;
       throw privacyError(
@@ -161,4 +217,4 @@ function createPrivacyStorage({ handle, directory, key, profileGuard }) {
     },
   });
 }
-module.exports = { createPrivacyStorage, getPrivacyStoragePath };
+module.exports = { createPrivacyStorage, getPrivacyStoragePath, readExistingPrivacyStorageValue };

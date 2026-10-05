@@ -64,7 +64,105 @@ function validObservation(value) {
   );
 }
 
-function createSubmissionJournal({ handle, directory, key, profileGuard }) {
+const invalid = () =>
+  privacyError('PRIVATE_JOURNAL_INVALID', 'Submission state could not be validated');
+function decode(value) {
+  if (value === null) return { records: [], archive: [] };
+  try {
+    const data = JSON.parse(value);
+    if (
+      ![1, 2, 3, 4].includes(data.version) ||
+      !Array.isArray(data.records) ||
+      data.records.length > 64
+    )
+      throw invalid();
+    const hashes = new Set();
+    for (const record of data.records) {
+      if (
+        !HASH.test(record.hash) ||
+        Object.keys(record).some(
+          (name) =>
+            ![
+              'hash',
+              'nonce',
+              'state',
+              'attemptedAt',
+              'revision',
+              'intent',
+              'observation',
+              'resolution',
+              'route',
+              'ordinary',
+            ].includes(name)
+        ) ||
+        hashes.has(record.hash) ||
+        !Number.isSafeInteger(record.nonce) ||
+        record.nonce < 0 ||
+        !['attempted', 'submitted'].includes(record.state) ||
+        !Number.isSafeInteger(record.attemptedAt) ||
+        record.attemptedAt < 0
+      )
+        throw invalid();
+      if (
+        record.revision !== undefined &&
+        (!Number.isSafeInteger(record.revision) || record.revision < 0)
+      )
+        throw invalid();
+      if (record.intent !== undefined && !validIntent(record.intent)) throw invalid();
+      if (
+        (record.route !== undefined || record.ordinary !== undefined) &&
+        (data.version < 4 ||
+          record.route !== 'ordinary' ||
+          record.intent !== undefined ||
+          !validOrdinaryFacts(record.ordinary))
+      )
+        throw invalid();
+      if (record.observation !== undefined && !validObservation(record.observation))
+        throw invalid();
+      if (
+        record.observation?.status === 'nonce-consumed' &&
+        record.observation.finalizedNonce <= record.nonce
+      )
+        throw invalid();
+      if (
+        record.resolution &&
+        (!record.observation ||
+          record.resolution.blockHash !== record.observation.blockHash ||
+          !Number.isSafeInteger(record.resolution.minimumConfirmations) ||
+          record.resolution.minimumConfirmations < 1 ||
+          record.observation.confirmations < record.resolution.minimumConfirmations ||
+          !Number.isSafeInteger(record.resolution.reviewedAt) ||
+          record.resolution.reviewedAt < 0)
+      )
+        throw invalid();
+      if (
+        record.resolution &&
+        (record.intent?.kind === 'railgun-transact'
+          ? !validRailgunTransactResolution(record.resolution.railgun, record)
+          : record.intent?.kind === 'railgun-native-shield'
+            ? !validRailgunShieldResolution(record.resolution.railgun, record)
+            : record.resolution.railgun !== undefined)
+      )
+        throw invalid();
+      hashes.add(record.hash);
+    }
+    const archive = data.version === 1 ? [] : data.archive;
+    if (
+      !retention.validArchive(archive, 'public') ||
+      (data.version < 4 && archive.some((r) => r.route !== undefined)) ||
+      new Set([...data.records, ...archive].map((r) => r.hash)).size !==
+        data.records.length + archive.length ||
+      archive.some((r, i) => i > 0 && r.nonce <= archive[i - 1].nonce) ||
+      data.records.some((r) => archive.length && r.nonce <= archive.at(-1).nonce)
+    )
+      throw invalid();
+    return { records: data.records, archive };
+  } catch {
+    throw invalid();
+  }
+}
+
+function assertJournalScope(handle) {
   const context = getPrivacyContext(handle);
   const { subject } = context;
   if (
@@ -77,104 +175,12 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
   ) {
     throw privacyError('PRIVATE_JOURNAL_SCOPE', 'Unsupported submission journal scope');
   }
+  return context;
+}
+
+function createSubmissionJournal({ handle, directory, key, profileGuard }) {
+  const { subject } = assertJournalScope(handle);
   const storage = createPrivacyStorage({ handle, directory, key, profileGuard });
-  const invalid = () =>
-    privacyError('PRIVATE_JOURNAL_INVALID', 'Submission state could not be validated');
-  function decode(value) {
-    if (value === null) return { records: [], archive: [] };
-    try {
-      const data = JSON.parse(value);
-      if (
-        ![1, 2, 3, 4].includes(data.version) ||
-        !Array.isArray(data.records) ||
-        data.records.length > 64
-      )
-        throw invalid();
-      const hashes = new Set();
-      for (const record of data.records) {
-        if (
-          !HASH.test(record.hash) ||
-          Object.keys(record).some(
-            (name) =>
-              ![
-                'hash',
-                'nonce',
-                'state',
-                'attemptedAt',
-                'revision',
-                'intent',
-                'observation',
-                'resolution',
-                'route',
-                'ordinary',
-              ].includes(name)
-          ) ||
-          hashes.has(record.hash) ||
-          !Number.isSafeInteger(record.nonce) ||
-          record.nonce < 0 ||
-          !['attempted', 'submitted'].includes(record.state) ||
-          !Number.isSafeInteger(record.attemptedAt) ||
-          record.attemptedAt < 0
-        )
-          throw invalid();
-        if (
-          record.revision !== undefined &&
-          (!Number.isSafeInteger(record.revision) || record.revision < 0)
-        )
-          throw invalid();
-        if (record.intent !== undefined && !validIntent(record.intent)) throw invalid();
-        if (
-          (record.route !== undefined || record.ordinary !== undefined) &&
-          (data.version < 4 ||
-            record.route !== 'ordinary' ||
-            record.intent !== undefined ||
-            !validOrdinaryFacts(record.ordinary))
-        )
-          throw invalid();
-        if (record.observation !== undefined && !validObservation(record.observation))
-          throw invalid();
-        if (
-          record.observation?.status === 'nonce-consumed' &&
-          record.observation.finalizedNonce <= record.nonce
-        )
-          throw invalid();
-        if (
-          record.resolution &&
-          (!record.observation ||
-            record.resolution.blockHash !== record.observation.blockHash ||
-            !Number.isSafeInteger(record.resolution.minimumConfirmations) ||
-            record.resolution.minimumConfirmations < 1 ||
-            record.observation.confirmations < record.resolution.minimumConfirmations ||
-            !Number.isSafeInteger(record.resolution.reviewedAt) ||
-            record.resolution.reviewedAt < 0)
-        )
-          throw invalid();
-        if (
-          record.resolution &&
-          (record.intent?.kind === 'railgun-transact'
-            ? !validRailgunTransactResolution(record.resolution.railgun, record)
-            : record.intent?.kind === 'railgun-native-shield'
-              ? !validRailgunShieldResolution(record.resolution.railgun, record)
-              : record.resolution.railgun !== undefined)
-        )
-          throw invalid();
-        hashes.add(record.hash);
-      }
-      const archive = data.version === 1 ? [] : data.archive;
-      if (
-        !retention.validArchive(archive, 'public') ||
-        (data.version < 4 && archive.some((r) => r.route !== undefined)) ||
-        new Set([...data.records, ...archive].map((r) => r.hash)).size !==
-          data.records.length + archive.length ||
-        archive.some((r, i) => i > 0 && r.nonce <= archive[i - 1].nonce) ||
-        data.records.some((r) => archive.length && r.nonce <= archive.at(-1).nonce)
-      )
-        throw invalid();
-      return { records: data.records, archive };
-    } catch {
-      throw invalid();
-    }
-  }
   async function list() {
     getPrivacyContext(handle);
     const value = await storage.get(KEY);
@@ -513,4 +519,62 @@ function getPrivateSubmissionJournal(handle) {
   }
 }
 
-module.exports = { createSubmissionJournal, getPrivateSubmissionJournal };
+// Diagnostic detached data only. Unlike getPrivateSubmissionJournal, this
+// fixed path cannot initialize a journal or create/adopt an inventory entry.
+async function readExistingPrivateSubmissionSnapshot(handle) {
+  const context = assertJournalScope(handle);
+  const resolver = require('../profile-resolver');
+  const vault = require('../identity/vault');
+  const activeProfile = resolver.getActiveProfile();
+  const profile = activeProfile && { id: activeProfile.id, userDataDir: activeProfile.userDataDir };
+  const signal = vault.getSessionSignal(),
+    mnemonic = vault.getMnemonic();
+  if (!profile?.id || !profile.userDataDir || signal.aborted || !mnemonic)
+    throw privacyError('PRIVATE_JOURNAL_UNAVAILABLE', 'An unlocked active profile is required');
+  const profileId = createHash('sha256')
+    .update(JSON.stringify([profile.id, profile.userDataDir]))
+    .digest('hex');
+  if (profileId !== context.profileId)
+    throw privacyError('PRIVATE_JOURNAL_SCOPE', 'Submission context belongs to another profile');
+  const seed = mnemonicToSeedSync(mnemonic);
+  let key;
+  try {
+    key = createHmac('sha256', seed)
+      .update('Freedom wallet submission journal v1\0')
+      .update(JSON.stringify([profileId, context.subject]))
+      .digest();
+    const value = require('./privacy-storage').readExistingPrivacyStorageValue(
+      {
+        handle,
+        directory: path.join(profile.userDataDir, 'wallet-private-submissions'),
+        key,
+        profile,
+        seed,
+      },
+      KEY
+    );
+    if (value === null)
+      throw privacyError('PRIVATE_JOURNAL_UNAVAILABLE', 'Existing submission state is required');
+    const result = freezeSnapshot(decode(value));
+    getPrivacyContext(handle);
+    const current = resolver.getActiveProfile();
+    if (
+      signal.aborted ||
+      vault.getSessionSignal() !== signal ||
+      vault.getMnemonic() !== mnemonic ||
+      current?.id !== profile.id ||
+      current?.userDataDir !== profile.userDataDir
+    )
+      throw privacyError('PRIVATE_JOURNAL_UNAVAILABLE', 'An unlocked active profile is required');
+    return result;
+  } finally {
+    seed.fill(0);
+    key?.fill(0);
+  }
+}
+
+module.exports = {
+  createSubmissionJournal,
+  getPrivateSubmissionJournal,
+  readExistingPrivateSubmissionSnapshot,
+};

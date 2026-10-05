@@ -412,3 +412,196 @@ describe('assertRegistered', () => {
     expect(snapshot()).toEqual(before);
   });
 });
+
+describe('fixed existing-only registered file reader', () => {
+  const { readRegisteredPrivacyProfileFile } = require('./privacy-profile-guard');
+  const { getPrivacyStoragePath } = require('./privacy-storage');
+  const file = () =>
+    getPrivacyStoragePath(handle, path.join(profile.userDataDir, 'wallet-private-submissions'));
+  const read = (target = file(), maximumBytes = 8 * 1024 * 1024) =>
+    readRegisteredPrivacyProfileFile({ handle, profile, seed, file: target, maximumBytes });
+  const marker = () => path.join(profile.userDataDir, 'wallet-privacy-inventory.json');
+  test('reads registered ciphertext without writers, registration, or retained abort listeners', async () => {
+    await store('wallet-private-submissions').set('state', 'value');
+    const expected = fs.readFileSync(file());
+    const inventory = fs.readFileSync(marker());
+    const { signal } = require('../networks/privacy-context').getPrivacyContext(handle);
+    const add = jest.spyOn(signal, 'addEventListener'),
+      remove = jest.spyOn(signal, 'removeEventListener');
+    const writers = ['mkdirSync', 'writeFileSync', 'writeSync', 'renameSync', 'fsyncSync'].map(
+      (method) => jest.spyOn(fs, method)
+    );
+    const open = jest.spyOn(fs, 'openSync');
+    expect(read()).toEqual(expected);
+    expect(fs.readFileSync(marker())).toEqual(inventory);
+    writers.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+    expect(open.mock.calls.length).toBeGreaterThan(0);
+    open.mock.calls.forEach(([, flags]) =>
+      expect(
+        flags &
+          (fs.constants.O_WRONLY |
+            fs.constants.O_RDWR |
+            fs.constants.O_CREAT |
+            fs.constants.O_TRUNC)
+      ).toBe(0)
+    );
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith('abort', add.mock.calls[0][1]);
+  });
+  test('missing inventory never creates an empty marker or directory', () => {
+    const before = fs.readdirSync(profile.userDataDir);
+    expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_MISSING' }));
+    expect(fs.readdirSync(profile.userDataDir)).toEqual(before);
+  });
+  test('authenticated empty inventory cannot adopt an existing file', async () => {
+    guard();
+    const inventory = fs.readFileSync(marker());
+    await store('wallet-private-submissions', undefined).set('state', 'value');
+    // Restore genuine pre-registration bytes; this models omission, not rollback protection.
+    fs.writeFileSync(marker(), inventory);
+    const ciphertext = fs.readFileSync(file());
+    const remember = jest.spyOn(fs, 'writeFileSync');
+    expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' }));
+    expect(remember).not.toHaveBeenCalled();
+    expect(fs.readFileSync(file())).toEqual(ciphertext);
+    expect(fs.readFileSync(marker())).toEqual(inventory);
+  });
+  test.each(['marker', 'file', 'directory', 'root', 'dangling'])(
+    'refuses %s symlink without following it',
+    async (kind) => {
+      await store('wallet-private-submissions').set('state', 'value');
+      const target =
+        kind === 'marker' || kind === 'dangling'
+          ? marker()
+          : kind === 'file'
+            ? file()
+            : kind === 'directory'
+              ? path.dirname(file())
+              : profile.userDataDir;
+      fs.renameSync(target, `${target}.preserved`);
+      fs.symlinkSync(kind === 'dangling' ? `${target}.missing` : `${target}.preserved`, target);
+      expect(read).toThrow();
+      expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
+    }
+  );
+  test.each([
+    '../outside.json',
+    'wallet-private-submissions/../../outside.json',
+    'not-registered.json',
+  ])('rejects forbidden relative target %s', async (relative) => {
+    await store('wallet-private-submissions').set('state', 'value');
+    expect(() => read(path.join(profile.userDataDir, relative))).toThrow();
+  });
+  test.each([0, -1, 8 * 1024 * 1024 + 1, NaN, 1.5])(
+    'rejects invalid read bound %s',
+    async (bound) => {
+      await store('wallet-private-submissions').set('state', 'value');
+      expect(() => read(file(), bound)).toThrow();
+    }
+  );
+  test('refuses oversized, missing registered, and non-regular files', async () => {
+    await store('wallet-private-submissions').set('state', 'value');
+    expect(() => read(file(), 1)).toThrow();
+    fs.renameSync(file(), `${file()}.preserved`);
+    expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_STORE_MISSING' }));
+    fs.mkdirSync(file());
+    expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' }));
+  });
+  test('detects registered inode replacement during open and closes the admitted descriptor', async () => {
+    await store('wallet-private-submissions').set('state', 'value');
+    const original = fs.openSync,
+      originalClose = fs.closeSync;
+    let replaced = false,
+      opened;
+    jest.spyOn(fs, 'openSync').mockImplementation((target, ...args) => {
+      if (target === file() && !replaced) {
+        replaced = true;
+        const bytes = fs.readFileSync(target);
+        fs.renameSync(target, `${target}.preserved`);
+        fs.writeFileSync(target, bytes);
+        opened = original(target, ...args);
+        return opened;
+      }
+      return original(target, ...args);
+    });
+    const close = jest.spyOn(fs, 'closeSync').mockImplementation(originalClose);
+    expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' }));
+    expect(close).toHaveBeenCalledWith(opened);
+  });
+  test('rechecks inventory authentication after the selected file read and releases the listener', async () => {
+    await store('wallet-private-submissions').set('state', 'value');
+    const { signal } = require('../networks/privacy-context').getPrivacyContext(handle);
+    const add = jest.spyOn(signal, 'addEventListener'),
+      remove = jest.spyOn(signal, 'removeEventListener');
+    const original = fs.readSync;
+    let selected;
+    const open = fs.openSync;
+    jest.spyOn(fs, 'openSync').mockImplementation((target, ...args) => {
+      const fd = open(target, ...args);
+      if (target === file()) selected = fd;
+      return fd;
+    });
+    jest.spyOn(fs, 'readSync').mockImplementation((fd, ...args) => {
+      const result = original(fd, ...args);
+      if (fd === selected) {
+        selected = undefined;
+        const value = JSON.parse(fs.readFileSync(marker()));
+        value.mac = '0'.repeat(64);
+        fs.writeFileSync(marker(), JSON.stringify(value));
+      }
+      return result;
+    });
+    expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' }));
+    expect(remove).toHaveBeenCalledWith('abort', add.mock.calls[0][1]);
+  });
+  test.each([
+    'healthy',
+    'marker',
+    'dangling-marker',
+    'selected-file',
+    'selected-directory',
+    'profile-root',
+    'required-file',
+    'required-directory',
+  ])('strict no-follow metadata for %s uses neither existsSync nor statSync', async (kind) => {
+    await store('wallet-private-submissions').set('state', 'value');
+    const otherDirectory = path.join(profile.userDataDir, 'wallet-ppv2-experiment');
+    await store('wallet-ppv2-experiment').set('state', 'other');
+    const otherFile = getPrivacyStoragePath(handle, otherDirectory);
+    const targets = {
+      marker: marker(),
+      'dangling-marker': marker(),
+      'selected-file': file(),
+      'selected-directory': path.dirname(file()),
+      'profile-root': profile.userDataDir,
+      'required-file': otherFile,
+      'required-directory': otherDirectory,
+    };
+    const target = targets[kind];
+    if (target) {
+      fs.renameSync(target, `${target}.preserved`);
+      fs.symlinkSync(
+        kind === 'dangling-marker' ? `${target}.missing` : `${target}.preserved`,
+        target
+      );
+    }
+    const exists = jest.spyOn(fs, 'existsSync'),
+      stat = jest.spyOn(fs, 'statSync');
+    const opens = jest.spyOn(fs, 'openSync');
+    if (kind === 'healthy') expect(read().length).toBeGreaterThan(0);
+    else
+      expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' }));
+    expect(exists).not.toHaveBeenCalled();
+    expect(stat).not.toHaveBeenCalled();
+    if (kind.startsWith('required'))
+      expect(opens.mock.calls.some(([target]) => target === file())).toBe(false);
+  });
+  test('strict missing marker avoids followed metadata and leaves absence unchanged', () => {
+    const exists = jest.spyOn(fs, 'existsSync'),
+      stat = jest.spyOn(fs, 'statSync');
+    expect(read).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_MISSING' }));
+    expect(exists).not.toHaveBeenCalled();
+    expect(stat).not.toHaveBeenCalled();
+    expect(fs.readdirSync(profile.userDataDir)).toEqual([]);
+  });
+});

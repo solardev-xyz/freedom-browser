@@ -7,6 +7,16 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [existing-only journal reader](railgun-existing-journal-reader-2026-10-05.md)
+now authenticates registered encrypted snapshots without storage creation or
+adoption. Shared plaintext-buffer cleanup also covers authentication failure.
+The exact candidate passes 16,899 tests with 33 skips and natural exit, plus six
+OpenLV tests and the documented stable-runtime supplement. Branch import passes
+198 focused tests and lint. No host consumer or new native qualification is
+claimed. Next: genuine-account origin diagnostics and fresh disposable-profile
+qualification on Electron 44.5.1, then portable Host and live-private work.
+
+
 The [read-data extraction and diagnostic checkpoint](railgun-read-data-and-origin-2026-10-05.md)
 separates pure Kohaku projections while retaining genuine account admission.
 Its changed policy is qualified with fresh generations: nine adapter/ordinary
