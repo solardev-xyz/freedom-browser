@@ -27,7 +27,7 @@ There are no dependency, IPC, key/job permission or source-policy changes.
 
 Root focused checks pass **421 tests across thirteen suites in 1.397 seconds**,
 with natural exit and no force-exit. Full lint passes without warnings and all
-five changed JavaScript files pass formatting. The earlier scratch lint returned
+five changed JavaScript files pass formatting (root-attested; no saved log). The earlier scratch lint returned
 zero with an unused test-argument warning; root caught it, renamed that argument
 to `_args`, and reran tests and lint. Production bytes are unchanged from the
 independently reviewed candidate.
@@ -44,8 +44,37 @@ The wallet-journal qualifier's explicit Kohaku inventory includes the new helper
 Other relevant inventories discover it recursively. Existing evidence remains
 pinned to its historical sources. The prior full regression and fifteen-process
 [origin campaign](railgun-shield-origin-2026-10-05.md) precede this extraction;
-they are not relabeled as current. A bounded native contract campaign follows.
+they are not relabeled as current. The bounded native contract campaign below now passes.
 
 Portable Host compatibility, upstream TypeScript conformance, live Railgun
 service/broadcaster qualification and product activation remain separate work.
 No funded profile, owned-note service lookup or live private spending was used.
+
+## Native compatibility follow-up
+
+At `e4ec6dd5`, nine fresh contract compatibility processes pass on Electron
+44.5.1. The source-pinned launcher preserves the complete expected reports,
+including 924 checked adapter reads and original forwarding outcomes. The
+private Shield/Transact, public Shield and ordinary-wallet cases cover six
+synthetic sends and two review-cancellation outcomes.
+
+The selected source maps contain 144 private, 179 public and 140 default-wallet
+entries, with a 180-file union. Eight Kohaku maps include the new read
+helper; ordinary-wallet selection is unchanged. The complete outer inventory
+contains 11,526 files and fifteen source symlinks, with ten external inputs and
+twenty-five prover artifacts pinned. Inventories identify bytes, not execution
+coverage. The qualifier changed only its source list; lifecycle code is identical.
+
+All nine original child exits and the original driver exit were observed as
+zero. Pre-cleanup worker snapshots retain the reviewed zero-to-two pending
+worker bound; final exit requires the fixture cleanup/sticky gate. This is
+logical lifetime evidence, not physical socket drainage.
+
+The chain and service inputs remain synthetic, including legacy private
+POI/preflight authority seams. Only the 421 focused tests and clean lint/format
+above apply to these sources. The prior full regression and cold restart campaign
+remain historical. No new full suite or cold sequence was run for this refactor.
+
+Raw reports, selected hashes and observed process evidence are published in
+[the evidence index](qualification/railgun-kohaku-dispatch-2026-10-05/INDEX.json).
+Claude reviewed the launcher, exporter and final evidence.

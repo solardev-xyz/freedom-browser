@@ -1,0 +1,268 @@
+{
+  "schema": "railgun-dispatch-native-evidence-v1",
+  "status": "complete",
+  "head": "e4ec6dd5f3c172e33339545412fa22e4ed2de947",
+  "completedNativeProcesses": 9,
+  "sourceFreezeSha256": "23054aebad57a1db0b3dc6f7c0d05d7fa601af8b3c3d639cdee598c5c2e44576",
+  "launcherPackageSha256": "c8bbde0e5463c5f4a0012b4caba16885011ce081ed2da5199d35410349815061",
+  "completedChecksSha256": "f592a47aeaae281f5db718786b58eb8329de893ab1b4597e0bbbe0f50430b1e3",
+  "attestationSha256": "b43c25ed387b4b910a788a4f29db5994ff24ba4545e1d57483dfa19623c86019",
+  "observationSha256": "149e5abfeb08842d97a5fe60024e4ed491358bde2a6a676c47fa5dab5d7736cc",
+  "driver": {
+    "schema": "railgun-dispatch-driver-observation-v1",
+    "originalHandle": 92890,
+    "exitCode": 0,
+    "commandHandleObserved": true,
+    "freezeSha256": "23054aebad57a1db0b3dc6f7c0d05d7fa601af8b3c3d639cdee598c5c2e44576",
+    "attestationSha256": "b43c25ed387b4b910a788a4f29db5994ff24ba4545e1d57483dfa19623c86019",
+    "progressSha256": "5a9333f95fe6b148761080c57b67754cae3a716f9798777db1d073fdb78a7705",
+    "driverLogSha256": "6242bb5808f44f3a5194c51eb60121f132774ff0afd2b3564722c7901de18a73"
+  },
+  "exporterSha256": "93ca6bb5c9b0e711715f8fe9d0222d54c5a0005b3bfb1959ae2db61e049bb028",
+  "reports": [
+    {
+      "case": "shield-transfer-lost",
+      "mode": "shield-transfer",
+      "outcome": "lost",
+      "pid": 88305,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 144,
+      "report": "raw/railgun-kohaku-dispatch-shield-transfer-lost-2026-10-05.json",
+      "reportSha256": "971a5952657df54d92f6b371ba57c656af541c25ccf4fe52b4ba7a52f22a568e",
+      "logBasename": "railgun-dispatch-contract-shield-transfer-lost-oct5-b.log",
+      "logSha256": "df50107f3d08d0a1261a83c413458b38e24ae68e91a2f247f339642a9680a26d",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 108,
+        "utilitySettlements": 108,
+        "workerStarts": 80,
+        "workerSettlements": 78,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "shield-unshield",
+      "mode": "shield-unshield",
+      "outcome": "ack",
+      "pid": 92072,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 144,
+      "report": "raw/railgun-kohaku-dispatch-shield-unshield-2026-10-05.json",
+      "reportSha256": "1be21b6fe9538dbef606b1b3a0df9dabec6ea1fdb9eeefa2d7a1ef5ecaa51b24",
+      "logBasename": "railgun-dispatch-contract-shield-unshield-oct5-b.log",
+      "logSha256": "c678eb808b2ee9de629069c26e3684df3e651fe2ff9ee9e9dc4b558aba3e38cc",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 107,
+        "utilitySettlements": 107,
+        "workerStarts": 80,
+        "workerSettlements": 78,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "transact-transfer",
+      "mode": "transact-transfer",
+      "outcome": "ack",
+      "pid": 92310,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 144,
+      "report": "raw/railgun-kohaku-dispatch-transact-transfer-2026-10-05.json",
+      "reportSha256": "da8a9335e5463a3ae61192114096518ca7748720e9c418e0039b77e6e8321b99",
+      "logBasename": "railgun-dispatch-contract-transact-transfer-oct5-b.log",
+      "logSha256": "f920b58cb4bc9592634f8d702418eb5b470067da79e952715a7f674a9de99131",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 121,
+        "utilitySettlements": 121,
+        "workerStarts": 85,
+        "workerSettlements": 83,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "transact-unshield-lost",
+      "mode": "transact-unshield",
+      "outcome": "lost",
+      "pid": 96208,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 144,
+      "report": "raw/railgun-kohaku-dispatch-transact-unshield-lost-2026-10-05.json",
+      "reportSha256": "2c5b10c299711aae5d210f07bc2acff4c2ed615701288e381c681d97f656fbca",
+      "logBasename": "railgun-dispatch-contract-transact-unshield-lost-oct5-b.log",
+      "logSha256": "0293b2ff8b957350bb2147e14ed06538ec8db2c8837bca6f405ac428411f71eb",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 120,
+        "utilitySettlements": 120,
+        "workerStarts": 85,
+        "workerSettlements": 83,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "shield-transfer-cancel",
+      "mode": "shield-transfer",
+      "outcome": "cancel",
+      "pid": 97135,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 144,
+      "report": "raw/railgun-kohaku-dispatch-shield-transfer-cancel-2026-10-05.json",
+      "reportSha256": "dfb7ea3810dd88fd8ea4fc4e72f6c02992f02f3511c1ceaed715d6643dc91fea",
+      "logBasename": "railgun-dispatch-contract-shield-transfer-cancel-oct5-b.log",
+      "logSha256": "f89aadc6881058c06972c3d6873340b65aed3bff4080a0751612363e58ecae45",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 106,
+        "utilitySettlements": 106,
+        "workerStarts": 78,
+        "workerSettlements": 76,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "acknowledged",
+      "mode": "public-shield",
+      "outcome": "acknowledged",
+      "pid": 97496,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 179,
+      "report": "raw/railgun-kohaku-dispatch-acknowledged-2026-10-05.json",
+      "reportSha256": "4f6732edae5a12424b49f73001d5620ed581282698e887a33eedf099f5ae70b3",
+      "logBasename": "railgun-dispatch-contract-acknowledged-oct5-b.log",
+      "logSha256": "7ab20c1ccb9de02a46e6573bad7ad5a3408caf3a4a561d834acee2785019bcb5",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 97,
+        "utilitySettlements": 97,
+        "workerStarts": 81,
+        "workerSettlements": 79,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "lost-response",
+      "mode": "public-shield",
+      "outcome": "lost-response",
+      "pid": 97799,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 179,
+      "report": "raw/railgun-kohaku-dispatch-lost-response-2026-10-05.json",
+      "reportSha256": "3da25c1e0503c6fc340d5647a61d686cbe17c4db0815a75e386ca17b7a59f3ed",
+      "logBasename": "railgun-dispatch-contract-lost-response-oct5-b.log",
+      "logSha256": "11243320413cb60a3d6e494d3af13da80a7c9aac63b7c6b7de90d69eebcb0d72",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 97,
+        "utilitySettlements": 97,
+        "workerStarts": 81,
+        "workerSettlements": 79,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "review-cancelled",
+      "mode": "public-shield",
+      "outcome": "review-cancelled",
+      "pid": 98032,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 179,
+      "report": "raw/railgun-kohaku-dispatch-review-cancelled-2026-10-05.json",
+      "reportSha256": "be47ec32f2c5d5fd3b915841dea10b7cad98aaafbc39afadacaed7dbc2f86844",
+      "logBasename": "railgun-dispatch-contract-review-cancelled-oct5-b.log",
+      "logSha256": "6d207aa0adfd4a73616c140fa19b0afabd6924ac04dbda8d09c71f615ca916df",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": {
+        "utilityStarts": 98,
+        "utilitySettlements": 98,
+        "workerStarts": 82,
+        "workerSettlements": 82,
+        "rejectedBarriers": 0
+      }
+    },
+    {
+      "case": "default-wallet",
+      "mode": "default",
+      "outcome": "compat",
+      "pid": 98173,
+      "exitCode": 0,
+      "exitObserved": true,
+      "sourceCount": 140,
+      "report": "raw/railgun-kohaku-dispatch-default-wallet-2026-10-05.json",
+      "reportSha256": "90a1a344fb728ebd4851cb8e9d5d7f921a8568a4010c07cf569d858935b14926",
+      "logBasename": "railgun-dispatch-contract-default-wallet-oct5-b.log",
+      "logSha256": "084f265c48e724753ceb9cf9b408c15fec6c77646d8cafaf245b2e0207a9d8a2",
+      "runGroups": 19,
+      "preFinalResourceSnapshot": null
+    }
+  ],
+  "validation": {
+    "focused": {
+      "passed": 421,
+      "suitesPassed": 13,
+      "seconds": 1.397,
+      "originalHandle": 63435,
+      "commandHandleObserved": true,
+      "exitCode": 0,
+      "forceExit": false,
+      "naturalExitObserved": true,
+      "logSha256": "6441d786146647a44a3b7db8da84675b963bfbb098d9d640b9808d8b4423c17e",
+      "logBasename": "railgun-dispatch-root-focused-clean-oct5.log"
+    },
+    "lint": {
+      "originalHandle": 64809,
+      "commandHandleObserved": true,
+      "exitCode": 0,
+      "warnings": 0,
+      "logSha256": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f",
+      "logBasename": "railgun-dispatch-root-lint-clean-oct5.log"
+    },
+    "formatRootAttested": {
+      "files": [
+        "src/main/wallet/railgun-kohaku-plugin.js",
+        "src/main/wallet/railgun-kohaku-plugin.test.js",
+        "src/main/wallet/railgun-kohaku-read-dispatch.js",
+        "src/main/wallet/railgun-kohaku-read-dispatch.test.js",
+        "scripts/qualify-railgun-wallet-journal.js"
+      ],
+      "commandHandleObserved": true,
+      "exitCode": 0
+    },
+    "formatSavedLog": false,
+    "fullRegressionForTheseSources": false
+  },
+  "scope": {
+    "rawReportsByteExact": true,
+    "currentSourcesIndependentlyRehashed": true,
+    "runtimeInputsRecheckedByObservedDriver": true,
+    "exporterReadsExternalRuntimePayloads": false,
+    "syntheticChainAndServices": true,
+    "legacyPrivateSimulatedPoiAndPreflightAuthority": true,
+    "resourceSnapshotsBeforeFinally": true,
+    "observedExitZeroAfterBoundedMeterAndStickyGate": true,
+    "physicalSocketDrainQualified": false,
+    "genericHostQualified": false,
+    "liveOrFundedQualified": false,
+    "coldRepeated": false,
+    "historicalFullTests": 16986,
+    "historicalNativeProcesses": 15,
+    "historicalCheckpoint": "233cac01",
+    "noProfileHandoffOrWirePayloadPublished": true
+  },
+  "sourceFile": {
+    "file": "SOURCE-HASHES.json",
+    "sha256": "a515ecd4f7b69d7304e2b2b433f860104c3759a75495956aabe5f8bcf265b45b"
+  },
+  "auditFile": {
+    "file": "AUDIT.md",
+    "sha256": "ba8829fc6b038d998c62fc4c3c0d20fc6e55f19fbc9a81090b793c9f2071c2a5"
+  }
+}
