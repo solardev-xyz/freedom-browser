@@ -1,7 +1,7 @@
 # Bounded partial WETH unshield and change spending
 
 **Status: structural records, native cryptography, receipt/TXID primitives, creator authentication and standalone combined POI implemented;
-protected internal signing/proving qualified for Shield input; facade/submission remain unavailable.**
+protected internal signing/proving and submission/capture qualified for both input creators; facade and durable combined POI remain unavailable.**
 The bounded model now has a distinct `railgun-partial-unshield` kind and version-2
 capsule. Preparation and selection bind recovered input value, gross withdrawal
 and change separately. Public policy accepts only the exact one-input/two-output
@@ -17,11 +17,16 @@ provenance through real local POI and encrypted recovery. Generic received-note
 compatibility remains intact; this is not the complete second-spend lifecycle.
 The [protected internal controller](railgun-partial-controller-2026-10-05.md) now
 admits the kind through real account, reservation, signing and proof gates.
-Shield input passes connected native qualification; received-Transact admission
-has unit coverage. Partial submission and durable own-POI remain closed.
+Both Shield and received-Transact inputs now pass connected native qualification.
+The [partial submission/capture checkpoint](railgun-partial-submission-2026-10-05.md)
+adds six controlled native cases, including acknowledged and uncertain sends,
+strict resolution and active/archive capture. Durable combined own-POI remains closed.
 The [combined local POI checkpoint](railgun-combined-poi-2026-10-05.md) qualifies
-one proof for withdrawal and original private change. Combined POI persistence/recovery, partial submission/capture, authenticated change ingestion and
-the second spend remain to be implemented and qualified. This is not evidence of deployed
+one proof for withdrawal and original private change. Combined POI persistence/recovery,
+authenticated change ingestion and the second spend remain to be implemented and qualified.
+Original-signature proof recovery also passes fresh-process qualification;
+[submission after restart](railgun-cold-submission-prerequisites-2026-10-05.md)
+still requires its separate host and qualification. This is not evidence of deployed
 contract acceptance, a funded partial transaction or live service eligibility.
 
 ## Complete target
@@ -81,9 +86,9 @@ unavailable until the connected qualification passes, including the second spend
 1. **Define and bind the bounded model (structural portion implemented).** Evolve `railgun-private-preparation.js`,
    `railgun-private-selection.js`, `railgun-private-policy.js`, and
    `railgun-private-capsule.js`. Public journal support in
-   `railgun-transact-intent.js` and `railgun-transact-resolution.js` moves with
-   receipt primitives in stage 3 is implemented; connected submission remains
-   unavailable. Derive the exact output shape and artifact variant from validated intent.
+   `railgun-transact-intent.js` and `railgun-transact-resolution.js` is implemented
+   alongside the receipt primitives in stage 3; connected submission now has
+   the separate controlled native qualification linked above. Derive the exact output shape and artifact variant from validated intent.
    Partial selection now reports recovered V and expected C separately, with
    `inputValueVerified` and `outputConservationVerified` both false. Preserve the
    legacy full-input meaning and reject all other shapes.
@@ -93,7 +98,7 @@ unavailable until the connected qualification passes, including the second spend
    `railgun-spend-sign-job.js`. The signer must check the final unshield commitment
    and sign all five ordered public inputs. These utility paths now pass native
    qualification using a synthetic account/scan. The subsequent internal controller
-   qualifies genuine enrolled Shield-input admission; `railgun-private-preflight.js`
+   qualifies genuine enrolled admission for both input creators; `railgun-private-preflight.js`
    selects 01x02 and matches anchored `getVerificationKey(1, 2)` before nullifier
    disclosure/signing. That native getter response is simulated. Preserve the one-use key/signature and utility boundaries.
    Recovery decrypts persisted change and reconstructs the original calldata,
@@ -101,7 +106,7 @@ unavailable until the connected qualification passes, including the second spend
    If reusing `railgun-private-receive-job.js`, replace its full-input amount and
    single-output assumptions with the exact authenticated change shape; do not
    treat the requested withdrawal amount as the expected change-note value.
-3. **Recover both outcomes and their TXID (primitives qualified; connected admission pending).** Extend `railgun-transact-receipt.js`,
+3. **Recover both outcomes and their TXID (primitives and connected submission/capture qualified; change ingestion pending).** Extend `railgun-transact-receipt.js`,
    `railgun-transact-resolution.js`, `railgun-own-selector.js`,
    `railgun-own-selector-job.js`, `railgun-own-source.js`, `railgun-own-txid.js`, and
    `railgun-own-txid-job.js`. Bind unshield recipient/token/gross/net/fee plus
@@ -124,8 +129,8 @@ unavailable until the connected qualification passes, including the second spend
 4. **Produce and retain the combined POI.** Update `railgun-poi-reconstruct.js`,
    `railgun-poi-witness.js`, `railgun-own-poi-proof-data.js`, and
    `railgun-poi-payload.js`. A partial proof contains one blinded change output
-   **and** a nonzero unshield TXID marker; the current payload policy makes these
-   exclusive. All commitments enter POI transaction binding, while output NPKs
+   **and** a nonzero unshield TXID marker. The payload normalizer now accepts
+   that bounded shape; durable intent records still exclude it until migration. All commitments enter POI transaction binding, while output NPKs
    and values describe only shielded change. The marker equals the own TXID;
    no additional hash transformation is implied.
    Extend `railgun-poi-output-recovery.js`, `railgun-poi-output-recovery-data.js`,
@@ -135,7 +140,7 @@ unavailable until the connected qualification passes, including the second spend
    Disclosure descriptions must include both categories and actual inventories.
    Update durable `railgun-poi-intent-store.js` records and the
    `railgun-poi-submit-data.js`/verifier normalizers coherently: the current
-   payload parser is exclusive and the durable record has only a capsule digest,
+   durable record excludes combined payloads and has only a capsule digest,
    not an authenticated operation-kind discriminator. Do not infer new authority
    from a payload containing both fields or reinterpret existing attempted bytes.
 5. **Creator authentication implemented; complete second spend still pending.**
@@ -187,8 +192,8 @@ entries. An older build cannot use the containing reservation store. Do not
 rewrite signed records to make an older build accept them.
 The public EOA journal parser and resolution validator now accept bounded
 version-2 partial records. Generic encrypted-journal reopen tests cover an
-unresolved synthetic partial intent, while the submission controller
-still cannot create a genuine partial submission attempt. An older validator may refuse
+unresolved synthetic partial intent, and the connected submission checkpoint now creates genuine partial attempts
+with real vault signatures over simulated external transport. An older validator may refuse
 that address's entire journal, blocking ordinary sends as well as private-operation
 recovery. Accept and expose that downgrade limitation before enabling the writer.
 The receipt policy ID is retained in new resolutions. Future policy revisions
