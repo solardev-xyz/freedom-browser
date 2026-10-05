@@ -16,6 +16,10 @@ original second private signature/proof, sends once and ingests the selected cha
 without disturbing unrelated balances. All external services remain simulated.
 Original-signature recovery of an interrupted second proof and a second genuine
 Kohaku instance remain next; the full production regression stays pinned to 189c0a31.
+The native matrix is pinned to `7540636842b8e2d746a223ba2444610c42cbd01d`. The later
+[main 484bf259 synchronization](privacy-main-sync-484bf259-2026-10-05.md) refreshed
+the bundled nodes and passes 57 affected startup/profile tests plus lint; it does
+not relabel the original native reports.
 The checkpoints below retain their historical scope.
 
 The [partial Kohaku facade checkpoint](railgun-kohaku-partial-facade-2026-10-05.md)

@@ -1,0 +1,169 @@
+{
+  "schema": "privacy-main-refresh-v1",
+  "main": "484bf25987bce105d03729f02b98706b711197ef",
+  "merge": "f4ec26e98044d7e3ac3e492a79ef214ef539cb1f",
+  "nativeQualificationCommit": "7540636842b8e2d746a223ba2444610c42cbd01d",
+  "nativeReportsRemainHistorical": true,
+  "changedQualifiedSourceFiles": {
+    "src/main/index.js": {
+      "qualifiedSha256": "753253a5ed6b9749f7d42c5ed6ab4c58a1c536093b9e83d4b346f147237eb386",
+      "mergedSha256": "b2a35da100673180e829e431c2f0d52247f82344ca81b931ceb483af3d40f72d"
+    },
+    "src/main/migrate-user-data.js": {
+      "qualifiedSha256": "da5e1366fc146c22294006afd7dbc8a8dd70c1b61347447000db51387be5bdaa",
+      "mergedSha256": "aaa97f46449e944c8c069544ea7c866b7cdc6d8772098e7b05915d5604e7c89e"
+    },
+    "src/main/migrate-user-data.test.js": {
+      "qualifiedSha256": "db8a2e6c7c124c01ec1d3641796343b4ed9679246aac87a0f1489efa6a88eb7b",
+      "mergedSha256": "96ebcebe4188150586f436d2df7398ac325fe7e9a0e9ae82df80cb50435f7ff3"
+    }
+  },
+  "downloads": {
+    "ant": "0.5.58: all downloader targets, Windows ARM64 emulation copy",
+    "ipfs": "0.4.3: host packaged and development addon",
+    "radicle": "0.7.1: host addon",
+    "myotis": "0.1.12: all five pinned release targets"
+  },
+  "myotisSupervisorRebuilt": true,
+  "myotisHostAbi": 32,
+  "arti": {
+    "version": "2.6.0",
+    "unchangedMatchingPinRetained": true
+  },
+  "networkNodesStarted": false,
+  "pinsChanged": false,
+  "lockfileChanged": false,
+  "npmCiRequired": false,
+  "adblockRequirementsChanged": false,
+  "files": {
+    "ant-bin/mac-arm64/antd": {
+      "bytes": 14439824,
+      "sha256": "d27bed99adc077c4c06d5e22e52aeeda0b43e5aa11622a1f084ba02ea63a35c3"
+    },
+    "native/freedom-ipfs-node/prebuilds/mac-arm64/freedom_ipfs_native.node": {
+      "bytes": 33220056,
+      "sha256": "10218e249ba00cb0c7646cbc738a85bb806a9f030aa449736bfa056284955b4b"
+    },
+    "native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node": {
+      "bytes": 33220056,
+      "sha256": "10218e249ba00cb0c7646cbc738a85bb806a9f030aa449736bfa056284955b4b"
+    },
+    "radicle-bin/mac-arm64/libradicle.node": {
+      "bytes": 13006512,
+      "sha256": "807ef2c0679ee3cedebf9ef2f9f4c012f921b2f43bdcba52d3715a35e6d4d210"
+    },
+    "myotis-bin/mac-arm64/myotis-supervisor": {
+      "bytes": 34768,
+      "sha256": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203"
+    },
+    "arti-bin/mac-arm64/arti": {
+      "bytes": 22463904,
+      "sha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34"
+    },
+    "myotis-bin/mac-arm64/myotis-node.node": {
+      "bytes": 9859088,
+      "sha256": "19f1866ce23230ebad65262b79bf2dd0792f5b98684fdfdd9a0e6c5d0295d9cc"
+    },
+    "myotis-bin/mac-x64/myotis-node.node": {
+      "bytes": 11427568,
+      "sha256": "0e064d2511bdd9e78483c65de13efe44ed10affd35e8fca1561896a836f3f1b0"
+    },
+    "myotis-bin/linux-x64/myotis-node.node": {
+      "bytes": 13942520,
+      "sha256": "e80c561ca623d52e736d6d1f8c48da33c4975dd15143a1e4191bd81815f7dd16"
+    },
+    "myotis-bin/linux-arm64/myotis-node.node": {
+      "bytes": 12805736,
+      "sha256": "95d6aff682d005e403e346390bebf71d5df2b89a9198c2433d5365ca804a53d6"
+    },
+    "myotis-bin/win-x64/myotis-node.node": {
+      "bytes": 9835520,
+      "sha256": "70ce52f8aa0d3abbb9c4bf01d3da0a88fa495952823ba57be61bffa541d6fff1"
+    }
+  },
+  "unchangedPinInputSha256": {
+    "package.json": "f4cbb3f9c86ea96bd6889741e3286b7130a9b6cfe7950daae4c6aa9ea2029dc8",
+    "package-lock.json": "2fefb4c5be3baeec56fbd2c60136e06640f307644bbb88e297c5cd2339a28993",
+    "scripts/fetch-ant.js": "43ad536a0e8708737be29ed1d495af7ecf31ceb4c890c6f4f5596d8b0a52fcad",
+    "scripts/fetch-freedom-ipfs-native.js": "89a29740398eff4ac4d494b46bb8dbebaadf6a5d78ed562f5d72861945f9b4cb",
+    "scripts/fetch-radicle-addon.js": "044ece13bd75603ac6488c55e67d0b5e336ea279c6097558530cbb80c2d0770b",
+    "src/shared/radicle-addon-version.js": "fcf8150d4686ac239bdae9e976361d6ffad5031861e74d794e432dd948b9be6c",
+    "scripts/fetch-myotis.js": "49e6a71936c8ba705726c25c72958e8f97494fc9cf20310e8bce27c9b32f6f22",
+    "scripts/fetch-arti.js": "82cf8ed18c5bc04bb082936f3e0c2a5d2ff2a4304efa7e7b5a0f47350e8e58cc",
+    "scripts/build-myotis-supervisor.js": "8b9f3ea69367cb63396ca34f4bf66e3333022307f4310aaae096258c79c28030",
+    "scripts/fetch-adblock-lists.js": "f10127658120793f777ec25c1601a9e7e79f4967257d1fa439aa2c7d01838d4b"
+  },
+  "logs": {
+    "ant-refresh": {
+      "path": "/private/tmp/privacy-main-484bf259-ant-refresh-oct5.log",
+      "sha256": "b5ef2c68dda6ff238486b1c5f80eb060ba0b4b3721220d5efd5d39bbdde42409",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "ipfs-refresh": {
+      "path": "/private/tmp/privacy-main-484bf259-ipfs-refresh-oct5.log",
+      "sha256": "dba00968187e4cd1853a3bf6e3c64313aae0549cf5a332b754b101d13e598019",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "radicle-refresh": {
+      "path": "/private/tmp/privacy-main-484bf259-radicle-refresh-oct5.log",
+      "sha256": "17efb0b671a5ae45e89a99371c35e78eb9ab73427bc10e5c4cd6179e2231ff5c",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "myotis-refresh": {
+      "path": "/private/tmp/privacy-main-484bf259-myotis-refresh-oct5.log",
+      "sha256": "7a8d32e64cd86ecdec3a68ca39da218f4d0ef3873145c0d7e604e36183572661",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "supervisor": {
+      "path": "/private/tmp/privacy-main-484bf259-supervisor-oct5.log",
+      "sha256": "9e92838d110dcd4a96ebbf8e716d6caeb815a40a045a90cedb437fc67b5ccb1a",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "radicle-load": {
+      "path": "/private/tmp/privacy-main-484bf259-radicle-load-oct5.log",
+      "sha256": "aeb4ac21b39c501a267426de044fd429b5e727f3a53e12360668f1775a797d02",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "versions": {
+      "path": "/private/tmp/privacy-main-484bf259-versions-oct5.log",
+      "sha256": "323ee0941a7a9637e71b08387f5bfe294d39e79af344220710535f39209e5f7a",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "binaries": {
+      "path": "/private/tmp/privacy-main-484bf259-binaries-oct5.log",
+      "sha256": "6fd167b0d7d1263ed5cfe93953236d35a8b6663f9e8a3e80aad6b2eecf5b1b86",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "tests": {
+      "path": "/private/tmp/privacy-main-484bf259-tests-oct5.log",
+      "sha256": "3dcdba7a8905580e5c46138dcc970194f090ec584da0d695da1bd74144c4aab1",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "lint": {
+      "path": "/private/tmp/privacy-main-484bf259-lint-oct5.log",
+      "sha256": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    }
+  },
+  "validation": {
+    "tests": 57,
+    "suites": 4,
+    "elapsedSeconds": 1.048,
+    "lintPassed": true,
+    "binaryPresenceChecksPassed": true,
+    "radicleExportsLoaded": 30,
+    "radicleStatus": "node not started",
+    "newFullRegression": false,
+    "newRailgunNativeQualification": false
+  }
+}

@@ -4,6 +4,8 @@ Both first-input histories (Shield and Transact) pass acknowledged and lost-resp
 
 This extends the connected change lifecycle with a separate process boundary after the second withdrawal has been proved. The earlier restart qualification reopened after the first operation and then proved/submitted the second within one process. Here the proof is persisted, all completion objects and owners are closed, and another process invokes the production recovered-submission host from the encrypted signing record. No production API or policy is widened by this fixture extension.
 
+The native campaign is pinned to `7540636842b8e2d746a223ba2444610c42cbd01d`. Main subsequently advanced to `484bf259`; its startup-only merge and repeated bundled-node refresh are recorded in the [post-qualification synchronization](privacy-main-sync-484bf259-2026-10-05.md). The original reports remain evidence for their recorded source inventory.
+
 ## Three-process lifecycle
 
 1. A fresh disposable profile executes the actual first partial withdrawal, scans its change, persists its combined POI attempt and receives signed disposable-list acceptance. It drains and seals the existing setup handoff.
