@@ -282,6 +282,12 @@
   min-width: 0;
 }
 
+.agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-header {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 0;
+}
+
 .agent-floating[data-presentation='column'] .agent-sidebar-header-actions {
   grid-area: actions;
 }
@@ -363,21 +369,27 @@
 
 .agent-floating[data-presentation='column'] .agent-workspace-view {
   min-height: 0;
+  margin-top: -6px;
   pointer-events: none;
 }
 
 .agent-floating[data-presentation='column'] .agent-workspace-body {
   min-height: 0;
+  margin-bottom: -6px;
   pointer-events: auto;
 }
 
 /* The conversation's one scrollbar. Bubbles grow with their content; only
    code and tables scroll sideways, inside themselves. */
 .agent-floating[data-presentation='column'] .agent-workspace-scroll {
-  padding: 4px 8px 16px;
+  padding: 12px 8px;
   overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+  /* Fade only the stationary scroll viewport, with the six-pixel edges
+     tucked beneath the header/composer. Neither glass surface is masked. */
+  /* theme-literal: black is an opaque alpha mask, not a visible surface */
+  mask-image: linear-gradient(to bottom, transparent, black 6px, black calc(100% - 6px), transparent);
 }
 
 /* Runtime notices: a small system line, errors keep their colour. It stays
@@ -671,7 +683,8 @@
 
 /* The composer stays its own stationary glass card. */
 .agent-floating[data-presentation='column'] .agent-composer-wrap {
-  margin-top: 8px;
+  z-index: 1;
+  margin-top: 0;
   padding: 4px;
   border-radius: 24px;
   pointer-events: auto;
