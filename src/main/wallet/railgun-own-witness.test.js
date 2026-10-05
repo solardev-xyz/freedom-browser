@@ -2675,3 +2675,87 @@ describe.each(['Shield', 'Transact'])('fixed retained %s submission handoff', (t
     }
   );
 });
+
+test.each([
+  ['witness', capture, false, false],
+  ['transaction-preflight', preflight, false, false],
+  ['poi-preflight', poiPreflight, false, false],
+  ['completed-poi', poiCompleted, true, false],
+  ['submission-poi', poiSubmission, true, true],
+  ['transact-membership', poiTransact, false, false],
+  ['transact-input', transactInput, false, false],
+  ['retained-completed', poiRetained, true, false],
+  ['retained-submission', poiRetainedSubmission, true, true],
+])(
+  '%s refuses a captured partial before receipt/source/TXID/root work',
+  async (_name, run, destination, submission) => {
+    const partial =
+      require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial({
+        recipient: '0x' + '34'.repeat(20),
+      });
+    first.capture = {
+      ...first.capture,
+      capsule: partial.capsule,
+      intent: partial.record.intent,
+      record: partial.record,
+      projection: projectRailgunOwnRecord(partial.record),
+      provedTransaction: {
+        chainId: 11155111,
+        to: partial.transaction.to,
+        value: '0',
+        data: partial.transaction.input,
+      },
+    };
+    const handoff = submission
+      ? {
+          entry: {
+            selector: copy(options.selector),
+            capsuleDigest: first.capture.capsuleDigest,
+            bindingDigest: first.capture.bindingDigest,
+          },
+          capture: copy(first.capture),
+          observation: {
+            transaction: partial.transaction,
+            receipt: partial.receipt,
+            captureBindingDigest: first.capture.bindingDigest,
+          },
+        }
+      : undefined;
+    expect(
+      await run(
+        { ...options, ...(destination ? { sourceDestination: mockDestination } : {}) },
+        handoff
+      )
+    ).toEqual({ status: 'refused', stage: 'capture' });
+    expect(mockSelectorCapture).toHaveBeenCalledTimes(1);
+    expect(mockObserve).not.toHaveBeenCalled();
+    for (const source of [
+      mockSourceCapture,
+      mockPoiCapture,
+      mockPoiCompletedCapture,
+      mockPoiTransactCapture,
+      mockPoiRetainedCapture,
+    ])
+      expect(source).not.toHaveBeenCalled();
+    expect(mockOpen).not.toHaveBeenCalled();
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockVerifyCreator).not.toHaveBeenCalled();
+    expect(mockRootCreate).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
+    expect(events).toEqual(['capture-selector-exited']);
+    const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+    phase.release();
+  }
+);
+test.each(['partial-v1', 'legacy-v2', 'unknown-kind'])(
+  'witness rejects %s immediately after capture',
+  async (mode) => {
+    if (mode === 'partial-v1') first.capture.capsule.selection.kind = 'railgun-partial-unshield';
+    if (mode === 'legacy-v2') first.capture.capsule.version = 2;
+    if (mode === 'unknown-kind') first.capture.capsule.selection.kind = 'unknown';
+    expect(await preflight(options)).toEqual({ status: 'refused', stage: 'capture' });
+    expect(mockObserve).not.toHaveBeenCalled();
+    expect(mockOpen).not.toHaveBeenCalled();
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  }
+);

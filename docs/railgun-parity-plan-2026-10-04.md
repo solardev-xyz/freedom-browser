@@ -7,7 +7,7 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
-The [fresh-process proof recovery checkpoint](railgun-proof-restart-2026-10-05.md) qualifies twelve clean restart cases across all three private kinds, both input creators and unchanged/advanced roots, plus two warm compatibility cases. Genuine cold opening authenticates the original history with bounded lease/floor updates; recovery retains the original signature, verifies independently and writes the proof once. The production host remains that of `ba44c1b4`; only the qualifier changed. Simulated chain/services and clean-restart limits remain explicit. Next: genuine partial submission/capture with 01x02 preflight, a separately reviewed submission bridge for cold-recovered proofs, durable combined POI, actual change ingestion, restart/second spend and live private qualification.
+The [partial submission and capture checkpoint](railgun-partial-submission-2026-10-05.md) connects the genuine 01x02 controller/completion to fresh submission checks, real vault EOA signing and durable attempted-before-send journals. Six controlled native cases cover both input creators and acknowledged, lost-reply and wrong-verifier outcomes; the four submitted cases reach strict resolution and active/archive/same-process reopened capture. All cases use simulated external services and share 528 source hashes; 2,163 affected tests pass and lint is clean. Partial facade, durable combined POI and change credit remain closed. The preceding [fresh-process proof recovery](railgun-proof-restart-2026-10-05.md) remains separately qualified; its diagnostics do not authorize submission. Next: a fixed cold-proof submission path with fresh live eligibility and atomic prior-attempt protection, durable combined POI, actual change ingestion, restart/second spend and live private qualification.
 
 ## Established baseline
 
@@ -87,8 +87,9 @@ POI persistence remain unavailable; the facade stays full-only.
    Receipt/TXID primitives, creator authentication and standalone combined POI
    are implemented and qualified independently.
    Both Shield and received-input connected controller qualification now pass.
-   Completing it still requires live deployed verifier checks, partial
-   submission/capture, connected recovery,
+   Partial submission and authenticated capture now pass six controlled native
+   cases across both input creators. Completing it still requires live deployed
+   verifier checks, cold-proof submission, connected recovery,
    normal change ingestion and durable post-transaction POI.
    Signed-but-unfinished proof resumption now has a production recovery host and
    six warm native cases plus twelve genuine fresh-process cases, including

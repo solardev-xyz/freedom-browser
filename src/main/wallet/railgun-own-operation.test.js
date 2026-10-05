@@ -40,8 +40,8 @@ let scope,
   input,
   finish,
   delayFinish;
-function configure(unshield = false, archived = false) {
-  const fixture = sample(unshield, archived);
+function configure(unshield = false, archived = false, supplied) {
+  const fixture = supplied ?? sample(unshield, archived);
   const capsule = fixture.capsule;
   const submitter = unshield ? capsule.selection.recipient : fixture.transaction.from;
   const provedTransaction = {
@@ -281,31 +281,35 @@ test.each(['refresh', 'archive', 'key-order'])(
     expect(result.capture.record).toEqual(latest.records[0] ?? latest.archive[0]);
   }
 );
-test('input is pinned before opening stores and final completion rechecks caller cancellation', async () => {
-  const wanted = { ...input.selector };
-  mockEnrollment.openReservations.mockImplementation(async () => {
-    input.selector.position++;
-    return reservations;
-  });
-  const result = await capture(input);
-  expect(result.capture.selector).toEqual(wanted);
-  input.selector = wanted;
-  mockEnrollment.openReservations.mockResolvedValue(reservations);
-  delayFinish = true;
-  let settled = false;
-  const pending = capture(input).then((value) => {
-    settled = true;
-    return value;
-  });
-  for (let i = 0; i < 80 && !finish; i++) await Promise.resolve();
-  expect(finish).toEqual(expect.any(Function));
-  caller.abort();
-  expect(settled).toBe(false);
-  expect(inRecovery).toBe(true);
-  finish();
-  expect((await pending).status).toBe('refused');
-  expect(inRecovery).toBe(false);
-});
+test.each([false, true])(
+  'input is pinned before opening stores and final completion rechecks caller cancellation (partial=%s)',
+  async (partial) => {
+    if (partial) configurePartialCapture();
+    const wanted = { ...input.selector };
+    mockEnrollment.openReservations.mockImplementation(async () => {
+      input.selector.position++;
+      return reservations;
+    });
+    const result = await capture(input);
+    expect(result.capture.selector).toEqual(wanted);
+    input.selector = wanted;
+    mockEnrollment.openReservations.mockResolvedValue(reservations);
+    delayFinish = true;
+    let settled = false;
+    const pending = capture(input).then((value) => {
+      settled = true;
+      return value;
+    });
+    for (let i = 0; i < 80 && !finish; i++) await Promise.resolve();
+    expect(finish).toEqual(expect.any(Function));
+    caller.abort();
+    expect(settled).toBe(false);
+    expect(inRecovery).toBe(true);
+    finish();
+    expect((await pending).status).toBe('refused');
+    expect(inRecovery).toBe(false);
+  }
+);
 test('invalid enrollment and selectors refuse before store acquisition', async () => {
   for (const options of [
     undefined,
@@ -812,7 +816,7 @@ test.each([
 });
 
 test.each(['capture', 'selector', 'recovery'])(
-  'valid structural v2 capsule refuses %s before journal, selector or callback',
+  'downgraded partial capsule refuses %s before journal, selector or callback',
   async (route) => {
     const {
       createRailgunPartialCapsuleData,
@@ -820,6 +824,8 @@ test.each(['capture', 'selector', 'recovery'])(
     stored.capsule = require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(
       createRailgunPartialCapsuleData().capsule
     );
+    stored.capsule = copy(stored.capsule);
+    stored.capsule.version = 1;
     const use = jest.fn();
     railgunTransactJournalIntent.mockClear();
     const result = await (route === 'capture'
@@ -835,5 +841,141 @@ test.each(['capture', 'selector', 'recovery'])(
     expect(use).not.toHaveBeenCalled();
     expect(inRecovery).toBe(false);
     expect(reservations.close).not.toHaveBeenCalled();
+  }
+);
+
+function configurePartialCapture(archived = false) {
+  const { samplePartial } = require('../../../scripts/fixtures/railgun-partial-own-txid-data');
+  const fixture = samplePartial({ archived, recipient: '0x' + '34'.repeat(20) });
+  configure(true, archived, fixture);
+  return fixture;
+}
+test.each([false, true])(
+  'partial active/archive=%s authenticates exact v2 intent inside schema1 capture',
+  async (archived) => {
+    const fixture = configurePartialCapture(archived);
+    const result = await capture(input);
+    expect(result.status).toBe('captured');
+    expect(result.capture.version).toBe(1);
+    expect(result.capture.capsule.version).toBe(2);
+    expect(result.capture.intent).toEqual(fixture.record.intent);
+    expect(result.capture.intent).toMatchObject({
+      version: 2,
+      operation: 'railgun-partial-unshield',
+      changeCommitment: fixture.row.commitments[0],
+      unshieldCommitment: fixture.row.commitments[1],
+      unshieldAmount: '400',
+    });
+    expect(result.capture.projection.railgun.transact.output.kind).toBe('partial-unshield');
+    expect(result.capture.accountAuthenticated).toBe(false);
+    expect(result.capture.spendingEnabled).toBe(false);
+    expect(Object.isFrozen(result.capture.capsule.preparation.expected)).toBe(true);
+    expect(mockJournal.readSnapshot).toHaveBeenCalledTimes(2);
+    expect(inRecovery).toBe(false);
+  }
+);
+test.each(['selector', 'recovery'])(
+  'partial %s shares the original reattestation path',
+  async (route) => {
+    configurePartialCapture();
+    mockDerive.mockImplementation(async ({ provedTransaction }) => {
+      expect(inRecovery).toBe(true);
+      expect(provedTransaction).toEqual(stored.provedTransaction);
+      return { utilityExitObserved: true };
+    });
+    let window;
+    const result =
+      route === 'selector'
+        ? await captureSelector({ ...input, archive: '/runtime.asar' })
+        : await withRecovery(input, async (value) => {
+            window = value;
+            expect((await value.reattest()).capsule.version).toBe(2);
+            return { partial: true };
+          });
+    expect(result.status).toBe(route === 'selector' ? 'captured' : 'used');
+    expect(mockDerive).toHaveBeenCalledTimes(route === 'selector' ? 1 : 0);
+    if (window) expect(() => window.assertCurrent()).toThrow();
+    expect(inRecovery).toBe(false);
+  }
+);
+test.each(['receipt-policy', 'calldata', 'recipient'])(
+  'partial capture refuses %s without minting evidence',
+  async (mode) => {
+    configurePartialCapture();
+    const record = journalState.records[0];
+    if (mode === 'receipt-policy')
+      record.resolution.railgun.transact.receiptPolicy = 'other-policy';
+    if (mode === 'calldata') stored.provedTransaction.data = sample(true).transaction.input;
+    if (mode === 'recipient') entry.signing.submitter = '0x' + '56'.repeat(20);
+    expect(await capture(input)).toEqual({ status: 'refused', stage: expect.any(String) });
+    expect(reservations.close).not.toHaveBeenCalled();
+    expect(inRecovery).toBe(false);
+  }
+);
+test('partial routine refresh and archive keep stable binding with latest original record', async () => {
+  configurePartialCapture();
+  const first = await capture(input);
+  const archived = require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial(
+    { archived: true, recipient: '0x' + '34'.repeat(20) }
+  ).record;
+  mockJournal.readSnapshot
+    .mockResolvedValueOnce(copy(journalState))
+    .mockResolvedValueOnce({ records: [], archive: [archived] });
+  const result = await capture(input);
+  expect(result.status).toBe('captured');
+  expect(result.capture.bindingDigest).toBe(first.capture.bindingDigest);
+  expect(result.capture.record).toEqual(archived);
+});
+test('partial independently valid inclusion drift refuses at final reattestation', async () => {
+  configurePartialCapture();
+  const changed = copy(journalState);
+  const record = changed.records[0],
+    blockHash = '0x' + 'a'.repeat(64);
+  record.observation.blockHash = record.resolution.blockHash = blockHash;
+  record.resolution.railgun.transact.blockHash = blockHash;
+  expect(require('./railgun-own-txid').projectRailgunOwnRecord(record).blockHash).toBe(blockHash);
+  mockJournal.readSnapshot.mockResolvedValueOnce(copy(journalState)).mockResolvedValueOnce(changed);
+  expect(await capture(input)).toEqual({ status: 'refused', stage: 'reattest' });
+});
+
+test.each(['partial-v3', 'legacy-v2', 'unknown-kind'])(
+  'capture rejects unsupported %s before interpreting the journal',
+  async (mode) => {
+    if (mode === 'partial-v3') {
+      configurePartialCapture();
+      stored.capsule.version = 3;
+    }
+    if (mode === 'legacy-v2') stored.capsule.version = 2;
+    if (mode === 'unknown-kind') stored.capsule.selection.kind = 'unknown';
+    expect(await capture(input)).toEqual({ status: 'refused', stage: 'capsule' });
+    expect(mockJournal.readSnapshot).not.toHaveBeenCalled();
+    expect(reservations.close).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['swapped-commitments', 'unshieldAmount'])(
+  'coherent alternate partial %s record refuses at the exact journal intent join',
+  async (mode) => {
+    const original = configurePartialCapture();
+    const { samplePartial } = require('../../../scripts/fixtures/railgun-partial-own-txid-data');
+    const alternate = samplePartial({
+      recipient: original.capsule.selection.recipient,
+      ...(mode === 'swapped-commitments'
+        ? { commitments: [original.row.commitments[1], original.row.commitments[0]] }
+        : { unshieldAmount: '401' }),
+    });
+    // Each alternate receipt/resolution is independently valid: only its
+    // association with the original authenticated capsule/intent is wrong.
+    const projection = require('./railgun-own-txid').projectRailgunOwnRecord(alternate.record);
+    expect(projection.railgun.transact.output.kind).toBe('partial-unshield');
+    expect(alternate.record.intent.nullifier).toBe(original.record.intent.nullifier);
+    expect(alternate.record.intent).not.toEqual(original.record.intent);
+    journalState.records = [alternate.record];
+    expect(await capture(input)).toEqual({ status: 'refused', stage: 'journal' });
+    expect(mockJournal.readSnapshot).toHaveBeenCalledTimes(1);
+    expect(stored.capsule).toEqual(original.capsule);
+    expect(stored.provedTransaction.data).toBe(original.transaction.input);
+    expect(reservations.close).not.toHaveBeenCalled();
+    expect(inRecovery).toBe(false);
   }
 );

@@ -167,15 +167,20 @@ async function captureRailgunOwnOperation(
           const stored = await capsules.readSigned(receipt);
           active();
           const { capsule, provedTransaction } = stored;
-          assert.equal(capsule.version, 1);
+          const partial = capsule.selection.kind === 'railgun-partial-unshield';
+          assert.equal(capsule.version, partial ? 2 : 1);
           assert.ok(
-            ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
+            [
+              'railgun-private-transfer',
+              'railgun-token-unshield',
+              'railgun-partial-unshield',
+            ].includes(capsule.selection.kind)
           );
           assert.equal(capsule.walletId, enrollment.descriptor.walletId);
           const submitter = entry.signing.submitter;
           const intent = railgunTransactJournalIntent({ ...provedTransaction, from: submitter });
           assert.equal(intent.intentDigest, entry.facts.intentDigest);
-          if (capsule.selection.kind === 'railgun-token-unshield')
+          if (capsule.selection.kind !== 'railgun-private-transfer')
             assert.equal(capsule.selection.recipient, submitter);
           scope = createPrivacyScope({
             profileId: getPrivacyContext(parent).profileId,

@@ -169,6 +169,14 @@ async function captureRailgunOwnWitness(
         stage = 'capture:' + first.stage;
         throw Error('capture refused');
       }
+      // Partial submission/capture does not admit the retained POI lifecycle.
+      // Refuse before receipt, source, mirror or service-root acquisition.
+      assert.equal(first.capture.capsule.version, 1);
+      assert.ok(
+        ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+          first.capture.capsule.selection.kind
+        )
+      );
       const derived = first.derived;
       let chain,
         sourceObservation,

@@ -38,10 +38,12 @@ async function submitRailgunPrivateTransaction({
     assert.ok(typeof maxGasFee === 'bigint' && maxGasFee > 0n && maxGasFee <= 2000000000000000n);
     claim = claimRailgunPrivateCompletion(completion, identity, enrollment);
     const snapshot = claim.assertCurrent();
-    assert.equal(snapshot.stored.capsule.version, 1);
+    const kind = snapshot.stored.capsule.selection.kind;
+    const partial = kind === 'railgun-partial-unshield';
+    assert.equal(snapshot.stored.capsule.version, partial ? 2 : 1);
     assert.ok(
-      ['railgun-private-transfer', 'railgun-token-unshield'].includes(
-        snapshot.stored.capsule.selection.kind
+      ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+        kind
       )
     );
     const reservations = await enrollment.openReservations();
@@ -80,7 +82,7 @@ async function submitRailgunPrivateTransaction({
           const signer = require('./signers').getSigner(0);
           assert.equal((await signer.getAddress()).toLowerCase(), owner);
           assert.ok(typeof signer.signTransaction === 'function' && !signer.sendTransaction);
-          if (capsule.selection.kind === 'railgun-token-unshield')
+          if (capsule.selection.kind !== 'railgun-private-transfer')
             assert.equal(capsule.selection.recipient, owner);
           const evidence = {
             intent: capsule.preparation.transaction,
@@ -108,6 +110,7 @@ async function submitRailgunPrivateTransaction({
             enrollment,
             artifactDirectory,
             input,
+            ...(partial ? { intentKind: kind } : {}),
             ...(claim.destinationConstraints
               ? { destinationConstraint: claim.destinationConstraints.protocol }
               : {}),
@@ -132,6 +135,8 @@ async function submitRailgunPrivateTransaction({
             10000
           );
           assert.deepEqual(observed.input, input);
+          assert.equal(Object.hasOwn(observed, 'intentKind'), partial);
+          if (partial) assert.equal(observed.intentKind, kind);
           const assertCurrent = () => {
             context.assertCurrent();
             claim.assertCurrent();
