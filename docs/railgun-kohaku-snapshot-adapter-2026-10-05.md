@@ -57,14 +57,15 @@ privileged wallet owners. Exposing an arbitrary host through the existing facade
 would change its trust boundary and is unnecessary for this read-only adapter.
 No existing facade, policy input, dependency, IPC or product activation changes.
 
-## Next
+## Subsequent qualification
 
-A focused opt-in native probe will construct the actual bridge over a genuine
-enrolled account, compare read results with its existing view, test mutation
-isolation and borrowed-owner usability, and measure activity and encrypted bytes.
-That qualification is not yet claimed by this unit-tested checkpoint.
+The [October 6 follow-up](railgun-kohaku-snapshot-qualification-2026-10-06.md)
+records one passing genuine-account native probe and a separate strict declaration
+check against the actual pinned Kohaku graph. The syntax-only statements above
+describe this earlier unit checkpoint. The later compiler run checks declaration
+and consumer assignability, with an explicit dependency-version limitation; it
+does not type-check the JavaScript implementation.
 
 Generic upstream Host support, transaction-capable extraction, a standalone
-package/browser build, strict TypeScript conformance and live Railgun
-service/broadcaster qualification remain separate. The
-[parity plan](railgun-parity-plan-2026-10-04.md) tracks those boundaries.
+package/browser build and live Railgun service/broadcaster qualification remain
+separate. The [parity plan](railgun-parity-plan-2026-10-04.md) tracks those boundaries.

@@ -1,0 +1,341 @@
+{
+  "positive": "positive.ts",
+  "negatives": [
+    {
+      "file": "missing-instance-id.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "instanceId",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 7
+        }
+      ],
+      "category": "upstream-binding"
+    },
+    {
+      "file": "wrong-balance.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "balance",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 7
+        }
+      ],
+      "category": "upstream-binding"
+    },
+    {
+      "file": "missing-adapter-notes.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "notes",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 7
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "wrong-target-notes.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "notes",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 7
+        }
+      ],
+      "category": "upstream-binding"
+    },
+    {
+      "file": "forbidden-prepareShield.ts",
+      "expectedCodes": [
+        2339
+      ],
+      "messageIncludes": "prepareShield",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 33
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "forbidden-prepareShieldMulti.ts",
+      "expectedCodes": [
+        2339
+      ],
+      "messageIncludes": "prepareShieldMulti",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 33
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "forbidden-prepareTransfer.ts",
+      "expectedCodes": [
+        2339
+      ],
+      "messageIncludes": "prepareTransfer",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 33
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "forbidden-prepareTransferMulti.ts",
+      "expectedCodes": [
+        2339
+      ],
+      "messageIncludes": "prepareTransferMulti",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 33
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "forbidden-prepareUnshield.ts",
+      "expectedCodes": [
+        2339
+      ],
+      "messageIncludes": "prepareUnshield",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 33
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "forbidden-prepareUnshieldMulti.ts",
+      "expectedCodes": [
+        2339
+      ],
+      "messageIncludes": "prepareUnshieldMulti",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 33
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "forbidden-upstream-target-prepare.ts",
+      "expectedCodes": [
+        2339
+      ],
+      "messageIncludes": "prepareTransfer",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 33
+        }
+      ],
+      "category": "upstream-binding"
+    },
+    {
+      "file": "number-amount.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "bigint",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 62
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "string-nft-token.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "bigint",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 69
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "readonly-result.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "readonly",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 7
+        }
+      ],
+      "category": "upstream-binding"
+    },
+    {
+      "file": "async-capture.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "Promise",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 50
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "async-current.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "Promise",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 44
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "false-current.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "undefined",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 44
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "wrong-provenance.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "host-supplied",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 14
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "wrong-spent-marker.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "true",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 47
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "include-spent-type.ts",
+      "expectedCodes": [
+        2345
+      ],
+      "messageIncludes": "boolean",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 24
+        }
+      ],
+      "category": "freedom-declaration"
+    },
+    {
+      "file": "not-generic-host.ts",
+      "expectedCodes": [
+        2739
+      ],
+      "messageIncludes": "network",
+      "expectedPositions": [
+        {
+          "line": 4,
+          "character": 14
+        }
+      ],
+      "category": "upstream-binding"
+    },
+    {
+      "file": "not-generic-factory.ts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "Host",
+      "expectedPositions": [
+        {
+          "line": 4,
+          "character": 14
+        }
+      ],
+      "category": "upstream-binding"
+    },
+    {
+      "file": "upstream-invalid-erc1155.ts",
+      "expectedCodes": [
+        2344
+      ],
+      "expectedPositions": [
+        {
+          "line": 5,
+          "character": 44
+        }
+      ],
+      "messageIncludes": "BadCaps",
+      "category": "upstream-binding"
+    },
+    {
+      "file": "upstream-invalid-number-amount.ts",
+      "expectedCodes": [
+        2344
+      ],
+      "expectedPositions": [
+        {
+          "line": 5,
+          "character": 44
+        }
+      ],
+      "messageIncludes": "BadCaps",
+      "category": "upstream-binding"
+    }
+  ]
+}

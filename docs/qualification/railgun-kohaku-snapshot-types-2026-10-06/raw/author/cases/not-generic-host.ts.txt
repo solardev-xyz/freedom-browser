@@ -1,0 +1,4 @@
+import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
+import type { Host } from 'kohaku-plugin-host';
+declare const source: SnapshotHost;
+export const wrong: Host = source;

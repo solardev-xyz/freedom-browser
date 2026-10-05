@@ -1,0 +1,515 @@
+{
+  "sourceFreezeSha256": "fb234c18861960ce2fd8a5961d57103e566ab4ee67ffa88e7d16579a290473b8",
+  "compilerVersion": "6.0.3",
+  "compilerSha256": "569177652966bd528c319171c7dd22860dbf72bde116cbc4f644f1d02bb12e39",
+  "positivePassed": true,
+  "negativeCases": 24,
+  "negativeCasesDistinguished": 24,
+  "categoryCounts": {
+    "upstream-binding": {
+      "cases": 9,
+      "distinguished": 9
+    },
+    "freedom-declaration": {
+      "cases": 15,
+      "distinguished": 15
+    }
+  },
+  "rootHead": "20560d869be1682fe74cc1deea57f72358bddfaf",
+  "declarationGitStatus": "",
+  "upstreamHead": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "upstreamCommit": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "upstreamBlobChecks": [
+    {
+      "path": "packages/provider/src/tx.ts",
+      "sha256": "704d93886d2a51168a65571f464ab14d317c67d4be1390b07c59bccca3257a91",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/provider/src/provider.ts",
+      "sha256": "77854bdb724102e9b211520e5546f3ea757ad95f9987a1f5af7cda19ee11245f",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/provider/src/index.ts",
+      "sha256": "aab6b628727d95647c2e3ad37c77363344dbc66508e2e0989693f84c67df0ed6",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/host/memory-storage.ts",
+      "sha256": "44545fb28c53fa5b71b97131fec60ef5d02ea41676ce7e672c47046dc6edc85a",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/host/mnemonic-keystore.ts",
+      "sha256": "874418962f94c72b1bdb18d4be3d5b79e6daeb2fce6b7d47a2ed615c102423b8",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/host/index.ts",
+      "sha256": "4a3578ceb42ae5138726e36de6bf2a9e7511ff73a8d592e6b494106be51a9814",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/shared.ts",
+      "sha256": "c51d5160c0d63235c04ecc4b9ad2f6adbe3841fd01dcb0ebb154bdecf8bbc86f",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/base.ts",
+      "sha256": "1ac1b93c617eb8347e74263566071ebba2bcc7caca5166f11dce0a293e766803",
+      "gitBlobBytesMatch": true
+    }
+  ],
+  "aliasResolutions": [
+    {
+      "from": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base.ts",
+      "name": "~/host",
+      "to": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/host/index.ts"
+    },
+    {
+      "from": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base.ts",
+      "name": "~/shared",
+      "to": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/shared.ts"
+    }
+  ],
+  "aliasOriginControls": {
+    "pluginAccepted": true,
+    "providerRejected": true,
+    "siblingPrefixRejected": true
+  },
+  "unexpected": [],
+  "results": [
+    {
+      "input": "positive.ts",
+      "category": "positive",
+      "matched": true,
+      "diagnostics": [],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "missing-instance-id.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/missing-instance-id.ts",
+          "line": 3,
+          "character": 7,
+          "message": "Type 'Omit<SnapshotReadPlugin, \"instanceId\">' is not assignable to type 'PinnedReadTarget'.\n  Property 'instanceId' is missing in type 'Omit<SnapshotReadPlugin, \"instanceId\">' but required in type '{ instanceId: () => Promise<string>; }'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "wrong-balance.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/wrong-balance.ts",
+          "line": 3,
+          "character": 7,
+          "message": "Type 'Omit<SnapshotReadPlugin, \"balance\"> & { balance(assets?: ReadAsset[] | undefined): Promise<number[]>; }' is not assignable to type 'PinnedReadTarget'.\n  Type 'Omit<SnapshotReadPlugin, \"balance\"> & { balance(assets?: ReadAsset[] | undefined): Promise<number[]>; }' is not assignable to type '{ balance: (assets: ReadAsset[] | undefined) => Promise<ReadAmount[]>; notes?: ((assets?: ReadAsset[] | undefined, includeSpent?: boolean | undefined) => Promise<...>) | undefined; }'.\n    The types returned by 'balance(...)' are incompatible between these types.\n      Type 'Promise<number[]>' is not assignable to type 'Promise<ReadAmount[]>'.\n        Type 'number[]' is not assignable to type 'ReadAmount[]'.\n          Type 'number' is not assignable to type 'ReadAmount'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "missing-adapter-notes.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/missing-adapter-notes.ts",
+          "line": 3,
+          "character": 7,
+          "message": "Type 'Omit<SnapshotReadPlugin, \"notes\">' is not assignable to type 'SnapshotReadPlugin'.\n  Property 'notes' is missing in type 'Omit<SnapshotReadPlugin, \"notes\">' but required in type '{ instanceId(): Promise<string>; balance(assets?: ReadAsset[] | undefined): Promise<ReadAmount[]>; notes(assets?: ReadAsset[] | undefined, includeSpent?: boolean | undefined): Promise<...>; }'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "wrong-target-notes.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/wrong-target-notes.ts",
+          "line": 3,
+          "character": 7,
+          "message": "Type 'Omit<SnapshotReadPlugin, \"notes\"> & { notes(): Promise<{ id: string; }[]>; }' is not assignable to type 'PinnedReadTarget'.\n  Type 'Omit<SnapshotReadPlugin, \"notes\"> & { notes(): Promise<{ id: string; }[]>; }' is not assignable to type '{ balance: (assets: ReadAsset[] | undefined) => Promise<ReadAmount[]>; notes?: ((assets?: ReadAsset[] | undefined, includeSpent?: boolean | undefined) => Promise<...>) | undefined; }'.\n    The types returned by 'notes(...)' are incompatible between these types.\n      Type 'Promise<{ id: string; }[]>' is not assignable to type 'Promise<NonNullable<ReadNote>[]>'.\n        Type '{ id: string; }[]' is not assignable to type 'NonNullable<ReadNote>[]'.\n          Type '{ id: string; }' is not assignable to type 'NonNullable<ReadNote>'.\n            Type '{ id: string; }' is missing the following properties from type 'Omit<SnapshotNote, \"asset\">': position, tag, amount, hash, and 4 more."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "forbidden-prepareShield.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/forbidden-prepareShield.ts",
+          "line": 3,
+          "character": 33,
+          "message": "Property 'prepareShield' does not exist on type 'SnapshotReadPlugin'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "forbidden-prepareShieldMulti.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/forbidden-prepareShieldMulti.ts",
+          "line": 3,
+          "character": 33,
+          "message": "Property 'prepareShieldMulti' does not exist on type 'SnapshotReadPlugin'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "forbidden-prepareTransfer.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/forbidden-prepareTransfer.ts",
+          "line": 3,
+          "character": 33,
+          "message": "Property 'prepareTransfer' does not exist on type 'SnapshotReadPlugin'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "forbidden-prepareTransferMulti.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/forbidden-prepareTransferMulti.ts",
+          "line": 3,
+          "character": 33,
+          "message": "Property 'prepareTransferMulti' does not exist on type 'SnapshotReadPlugin'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "forbidden-prepareUnshield.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/forbidden-prepareUnshield.ts",
+          "line": 3,
+          "character": 33,
+          "message": "Property 'prepareUnshield' does not exist on type 'SnapshotReadPlugin'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "forbidden-prepareUnshieldMulti.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/forbidden-prepareUnshieldMulti.ts",
+          "line": 3,
+          "character": 33,
+          "message": "Property 'prepareUnshieldMulti' does not exist on type 'SnapshotReadPlugin'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "forbidden-upstream-target-prepare.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/forbidden-upstream-target-prepare.ts",
+          "line": 3,
+          "character": 33,
+          "message": "Property 'prepareTransfer' does not exist on type 'PinnedReadTarget'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "number-amount.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/number-amount.ts",
+          "line": 2,
+          "character": 62,
+          "message": "Type 'number' is not assignable to type 'bigint'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "string-nft-token.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/string-nft-token.ts",
+          "line": 2,
+          "character": 69,
+          "message": "Type 'string' is not assignable to type 'bigint'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "readonly-result.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/readonly-result.ts",
+          "line": 3,
+          "character": 7,
+          "message": "Type 'Omit<SnapshotReadPlugin, \"balance\"> & { balance(assets?: ReadAsset[] | undefined): Promise<readonly ReadAmount[]>; }' is not assignable to type 'PinnedReadTarget'.\n  Type 'Omit<SnapshotReadPlugin, \"balance\"> & { balance(assets?: ReadAsset[] | undefined): Promise<readonly ReadAmount[]>; }' is not assignable to type '{ balance: (assets: ReadAsset[] | undefined) => Promise<ReadAmount[]>; notes?: ((assets?: ReadAsset[] | undefined, includeSpent?: boolean | undefined) => Promise<...>) | undefined; }'.\n    The types returned by 'balance(...)' are incompatible between these types.\n      Type 'Promise<readonly ReadAmount[]>' is not assignable to type 'Promise<ReadAmount[]>'.\n        The type 'readonly ReadAmount[]' is 'readonly' and cannot be assigned to the mutable type 'ReadAmount[]'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "async-capture.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/async-capture.ts",
+          "line": 3,
+          "character": 50,
+          "message": "Type '() => Promise<{ snapshot: { instanceId: string; received: never[]; }; assertCurrent(): undefined; }>' is not assignable to type '() => { snapshot: { instanceId: string; received: readonly SnapshotNote[]; }; assertCurrent(): undefined; }'.\n  Type 'Promise<{ snapshot: { instanceId: string; received: never[]; }; assertCurrent(): undefined; }>' is missing the following properties from type '{ snapshot: { instanceId: string; received: readonly SnapshotNote[]; }; assertCurrent(): undefined; }': snapshot, assertCurrent"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "async-current.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/async-current.ts",
+          "line": 3,
+          "character": 44,
+          "message": "Type '() => { snapshot: { instanceId: string; received: never[]; }; assertCurrent(): Promise<undefined>; }' is not assignable to type '() => { snapshot: { instanceId: string; received: readonly SnapshotNote[]; }; assertCurrent(): undefined; }'.\n  Call signature return types '{ snapshot: { instanceId: string; received: never[]; }; assertCurrent(): Promise<undefined>; }' and '{ snapshot: { instanceId: string; received: readonly SnapshotNote[]; }; assertCurrent(): undefined; }' are incompatible.\n    The types returned by 'assertCurrent()' are incompatible between these types.\n      Type 'Promise<undefined>' is not assignable to type 'undefined'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "false-current.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/false-current.ts",
+          "line": 3,
+          "character": 44,
+          "message": "Type '() => { snapshot: { instanceId: string; received: never[]; }; assertCurrent(): boolean; }' is not assignable to type '() => { snapshot: { instanceId: string; received: readonly SnapshotNote[]; }; assertCurrent(): undefined; }'.\n  Call signature return types '{ snapshot: { instanceId: string; received: never[]; }; assertCurrent(): boolean; }' and '{ snapshot: { instanceId: string; received: readonly SnapshotNote[]; }; assertCurrent(): undefined; }' are incompatible.\n    The types returned by 'assertCurrent()' are incompatible between these types.\n      Type 'boolean' is not assignable to type 'undefined'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "wrong-provenance.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/wrong-provenance.ts",
+          "line": 2,
+          "character": 14,
+          "message": "Type '\"authenticated-owner\"' is not assignable to type '\"host-supplied\"'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "wrong-spent-marker.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/wrong-spent-marker.ts",
+          "line": 3,
+          "character": 47,
+          "message": "Type 'true' is not assignable to type 'false | `0x${string}`'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "include-spent-type.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2345,
+          "file": "harness/cases/include-spent-type.ts",
+          "line": 3,
+          "character": 24,
+          "message": "Argument of type '\"yes\"' is not assignable to parameter of type 'boolean | undefined'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "not-generic-host.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2739,
+          "file": "harness/cases/not-generic-host.ts",
+          "line": 4,
+          "character": 14,
+          "message": "Type 'SnapshotHost' is missing the following properties from type 'Host': network, storage, keystore, provider"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "not-generic-factory.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/not-generic-factory.ts",
+          "line": 4,
+          "character": 14,
+          "message": "Type '(options: { host: SnapshotHost; signal: AbortSignal; }) => SnapshotReadPlugin' is not assignable to type 'CreatePluginFn<SnapshotReadPlugin, {}>'.\n  Types of parameters 'options' and 'host' are incompatible.\n    Type 'Host' is missing the following properties from type '{ host: SnapshotHost; signal: AbortSignal; }': host, signal"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "upstream-invalid-erc1155.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2344,
+          "file": "harness/cases/upstream-invalid-erc1155.ts",
+          "line": 5,
+          "character": 44,
+          "message": "Type 'BadCaps' does not satisfy the constraint 'Partial<PICapabilities>'.\n  The types of 'assetAmounts.read.asset' are incompatible between these types.\n    Type '{ __type: \"erc1155\"; contract: `0x${string}`; tokenId: bigint; }' is not assignable to type 'AssetId'.\n      Type '{ __type: \"erc1155\"; contract: `0x${string}`; tokenId: bigint; }' is not assignable to type 'ERC721AssetId'.\n        Types of property '__type' are incompatible.\n          Type '\"erc1155\"' is not assignable to type '\"erc721\"'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    },
+    {
+      "input": "upstream-invalid-number-amount.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2344,
+          "file": "harness/cases/upstream-invalid-number-amount.ts",
+          "line": 5,
+          "character": 44,
+          "message": "Type 'BadCaps' does not satisfy the constraint 'Partial<PICapabilities>'.\n  The types of 'assetAmounts.read.amount' are incompatible between these types.\n    Type 'number' is not assignable to type 'bigint'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 220
+    }
+  ],
+  "packages": [
+    {
+      "name": "ox",
+      "version": "0.14.45",
+      "manifest": "repo/node_modules/ox/package.json",
+      "sha256": "bcc5006eb5200a83bb57dc91ed8b99f5eb372ac262ad07061ae0deb4a274ffa7"
+    },
+    {
+      "name": "@scure/bip32",
+      "version": "1.4.0",
+      "manifest": "repo/node_modules/@scure/bip32/package.json",
+      "sha256": "94ef521ad8dc07dcdc7528f0dc382151214cd535ff646107fb4729037595b8a5"
+    },
+    {
+      "name": "@scure/bip39",
+      "version": "2.4.0",
+      "manifest": "repo/node_modules/@scure/bip39/package.json",
+      "sha256": "60cf3d46b7ff6396a60266e5818210ded8f00ce7c029b48230f178481f7206f5"
+    }
+  ],
+  "dependencyQualification": {
+    "upstreamProviderOxRange": "^0.12.0",
+    "usedOxVersion": "0.14.45",
+    "upstreamLockfileBuild": false
+  },
+  "scope": {
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "checkJs": false,
+    "declarationConsumerAssignabilityOnly": true,
+    "runtimeImplementationTypechecked": false,
+    "genericUpstreamHostSupported": false,
+    "sourceGraphExecuted": false,
+    "repositoryEdited": false,
+    "network": false,
+    "installation": false,
+    "requiresIndependentHarnessReview": true
+  }
+}

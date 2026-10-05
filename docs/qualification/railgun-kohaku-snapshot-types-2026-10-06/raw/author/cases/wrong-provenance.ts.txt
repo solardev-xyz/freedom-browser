@@ -1,0 +1,2 @@
+import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
+export const wrong: SnapshotExtras['provenance'] = 'authenticated-owner';

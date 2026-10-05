@@ -7,6 +7,20 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [restricted snapshot qualification](railgun-kohaku-snapshot-qualification-2026-10-06.md)
+now passes one genuine-account native case at `20560d86`: thirteen successful
+reads, mutation isolation, pending-read shutdown, host-abort refusal and continued
+borrowed-account usability. All fourteen measured activity deltas and the measured
+encrypted files remain unchanged. Root checks pass 544 tests with natural exit,
+strict full lint and changed-source formatting. A separate strict declaration check passes one
+positive and 24 negative cases against the actual pinned Kohaku graph; its exact
+dependency scope and lack of JavaScript implementation typechecking are explicit.
+This completes the restricted read-host milestone. Generic upstream Host support,
+transaction-capable extraction, package/browser qualification and live private
+service/broadcaster qualification remain open. UI/product design is still deferred.
+
+## Earlier checkpoints
+
 The [restricted completed-snapshot adapter](railgun-kohaku-snapshot-adapter-2026-10-05.md)
 now shares read behavior between an independent data host and a fixed borrowed-
 account Freedom bridge. Detached mutable results preserve the original facade's
@@ -54,7 +68,6 @@ OpenLV tests and the documented stable-runtime supplement. Branch import passes
 198 focused tests and lint. No host consumer or new native qualification is
 claimed. Next: genuine-account origin diagnostics and fresh disposable-profile
 qualification on Electron 44.5.1, then portable Host and live-private work.
-
 
 The [read-data extraction and diagnostic checkpoint](railgun-read-data-and-origin-2026-10-05.md)
 separates pure Kohaku projections while retaining genuine account admission.
@@ -296,10 +309,11 @@ Later checkpoints above supersede those restrictions within their stated scope.
    its proof is made, and
    a fresh second Kohaku instance spending scanned change now pass separate
    controlled native campaigns. Pinned runtime contract checks now pass for
-   private/public/read instances and their original settlement forwarding. Next
-   is a restricted host contract to make portable extraction reviewable. The
-   current facade remains Freedom-owned; generic Kohaku Host and TypeScript
-   compatibility are not yet qualified.
+   private/public/read instances and their original settlement forwarding.
+   Reusable transaction preparation remains next. The restricted snapshot
+   host/read adapter now has genuine native and strict declaration qualification;
+   its separate evidence does not type-check the current transaction facade or
+   implement generic upstream Host. The transaction facade remains Freedom-owned.
    Real deployed verifier checks, service list acceptance and private broadcasts
    remain separate live qualification. Earlier warm and advanced-root recovery
    evidence retains its own source inventory. The
@@ -407,7 +421,8 @@ completion, discard a signing hold or permit an automatic retry.
 Kohaku's generic Host object does not authenticate Freedom's enrollment,
 coordinator, account phases or proof receipts. Matching the selected instance and
 broadcaster shapes is not yet a portable `createPlugin(host, params)` package.
-Extraction still needs an explicit restricted host contract. Native Shield uses
+Restricted read extraction now has its own host contract and native/type evidence.
+Transaction extraction still needs a bounded authority-preserving host contract. Native Shield uses
 a public-operation lane and must not be passed to the private broadcaster.
 
 ## Live permission and shared product gates

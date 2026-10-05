@@ -1,0 +1,579 @@
+{
+  "schema": "railgun-snapshot-types-public-archive-map-v2",
+  "publicationDirectory": "docs/qualification/railgun-kohaku-snapshot-types-2026-10-06",
+  "payloadCount": 43,
+  "byteExactOriginalPayloadCount": 37,
+  "pathNormalizedDerivedPayloadCount": 6,
+  "originalHashScope": "originalSha256/originalBytes identify preserved private originals. archivedSha256/archivedBytes identify actual published payload bytes. Original PACKAGE and evidence cross-links bind original bytes, not normalized copies.",
+  "normalizationRecipe": {
+    "encoding": "UTF-8",
+    "operation": "Replace every literal occurrence of the identified original path prefix with its placeholder; no JSON serialization, formatting, hash rewriting or other transformation.",
+    "pathLabels": [
+      {
+        "sourcePathLabel": "repository-root",
+        "placeholder": "<REPOSITORY_ROOT>"
+      },
+      {
+        "sourcePathLabel": "compiler-discovery-directory",
+        "placeholder": "<COMPILER_DISCOVERY_DIRECTORY>"
+      },
+      {
+        "sourcePathLabel": "prior-r1-private-directory",
+        "placeholder": "<PRIOR_R1_PRIVATE_DIRECTORY>"
+      },
+      {
+        "sourcePathLabel": "typescript-package-root",
+        "placeholder": "<TYPESCRIPT_PACKAGE_ROOT>"
+      },
+      {
+        "sourcePathLabel": "node-executable",
+        "placeholder": "<NODE_EXECUTABLE>"
+      }
+    ],
+    "sourcePathValues": "Private original path values are intentionally not published. Their logical roles and replacement placeholders are recorded above."
+  },
+  "entries": [
+    {
+      "sourceGroup": "author",
+      "originalName": "harness.cjs",
+      "archivedPath": "derived/author/harness.cjs.txt",
+      "representation": "path-normalized-derived",
+      "originalSha256": "17f22a03ce9d62c2a921ff2b0da6eecb79c53d8306386c46eb2e50586cc514c8",
+      "originalBytes": 14323,
+      "archivedSha256": "18a2e14eb2a6485a12d4b46f0651420e4bc0b44b09dc8516dfb215d78b17ad5d",
+      "archivedBytes": 14270,
+      "transformation": {
+        "recipe": "literal UTF-8 path-prefix replacement only; all other bytes preserved",
+        "substitutions": [
+          {
+            "sourcePathLabel": "repository-root",
+            "placeholder": "<REPOSITORY_ROOT>",
+            "occurrences": 1
+          },
+          {
+            "sourcePathLabel": "compiler-discovery-directory",
+            "placeholder": "<COMPILER_DISCOVERY_DIRECTORY>",
+            "occurrences": 1
+          }
+        ]
+      }
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "CASE-SPEC.json",
+      "archivedPath": "raw/author/CASE-SPEC.json.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "a184efb9bd60231f3f2d82c0351e6075f2cee0ba41e73e805069402af8dbc3f8",
+      "originalBytes": 6865,
+      "archivedSha256": "a184efb9bd60231f3f2d82c0351e6075f2cee0ba41e73e805069402af8dbc3f8",
+      "archivedBytes": 6865,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "SOURCE-FREEZE.json",
+      "archivedPath": "derived/author/SOURCE-FREEZE.json.txt",
+      "representation": "path-normalized-derived",
+      "originalSha256": "68233c5d5471dee27cc95300ae254fe9380cebbec3ad5c97c971d0984bd63c21",
+      "originalBytes": 66795,
+      "archivedSha256": "030a3da193cd011930d41987ebffdb3f4b2643eb9891244595dc9f5c967d24ea",
+      "archivedBytes": 66610,
+      "transformation": {
+        "recipe": "literal UTF-8 path-prefix replacement only; all other bytes preserved",
+        "substitutions": [
+          {
+            "sourcePathLabel": "repository-root",
+            "placeholder": "<REPOSITORY_ROOT>",
+            "occurrences": 5
+          }
+        ]
+      }
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "REPORT.json",
+      "archivedPath": "raw/author/REPORT.json.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "e377f2e723038dd4e028fa4741a8cf4f88b36a63df3936b68039f11b2ba243ee",
+      "originalBytes": 19989,
+      "archivedSha256": "e377f2e723038dd4e028fa4741a8cf4f88b36a63df3936b68039f11b2ba243ee",
+      "archivedBytes": 19989,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "README.md",
+      "archivedPath": "derived/author/README.md.txt",
+      "representation": "path-normalized-derived",
+      "originalSha256": "1aeb720a986296471e176d53fbd4627f28601d2573385e31095108c8e064e977",
+      "originalBytes": 8064,
+      "archivedSha256": "3bfb7a03f026d11153d3a4bc2e93ec50b9fac961f2ba4f40ddfa80d0bf7bcdc8",
+      "archivedBytes": 8041,
+      "transformation": {
+        "recipe": "literal UTF-8 path-prefix replacement only; all other bytes preserved",
+        "substitutions": [
+          {
+            "sourcePathLabel": "prior-r1-private-directory",
+            "placeholder": "<PRIOR_R1_PRIVATE_DIRECTORY>",
+            "occurrences": 1
+          }
+        ]
+      }
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "prepare.log",
+      "archivedPath": "raw/author/prepare.log.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "a88de80e8db9a02ddf8a91d74d076ca91774a1eb8d45204f9031d0b86830b470",
+      "originalBytes": 185,
+      "archivedSha256": "a88de80e8db9a02ddf8a91d74d076ca91774a1eb8d45204f9031d0b86830b470",
+      "archivedBytes": 185,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "run.log",
+      "archivedPath": "raw/author/run.log.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "068da3852c5cf9d31ac7e1c8cac25f367c55c07c6cd50c61806e32a5e364c617",
+      "originalBytes": 160,
+      "archivedSha256": "068da3852c5cf9d31ac7e1c8cac25f367c55c07c6cd50c61806e32a5e364c617",
+      "archivedBytes": 160,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "lint.log",
+      "archivedPath": "raw/author/lint.log.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "archivedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "archivedBytes": 0,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "prepare-diagnostics.json",
+      "archivedPath": "raw/author/prepare-diagnostics.json.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "8417e14c6d882a692be84b1adfeadc2f2a3c836effd1994be5b4f951428d1066",
+      "originalBytes": 58956,
+      "archivedSha256": "8417e14c6d882a692be84b1adfeadc2f2a3c836effd1994be5b4f951428d1066",
+      "archivedBytes": 58956,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "r2-review.patch",
+      "archivedPath": "derived/author/r2-review.patch.txt",
+      "representation": "path-normalized-derived",
+      "originalSha256": "c23cf5b2fc0de758cb5ede08436fe31f0f0d7c433130142dc67a967930035be8",
+      "originalBytes": 18446,
+      "archivedSha256": "719b3346687a031e00815f11f39f7dd46936c7a5c3c708233ab1fe9986919ef5",
+      "archivedBytes": 18393,
+      "transformation": {
+        "recipe": "literal UTF-8 path-prefix replacement only; all other bytes preserved",
+        "substitutions": [
+          {
+            "sourcePathLabel": "repository-root",
+            "placeholder": "<REPOSITORY_ROOT>",
+            "occurrences": 1
+          },
+          {
+            "sourcePathLabel": "compiler-discovery-directory",
+            "placeholder": "<COMPILER_DISCOVERY_DIRECTORY>",
+            "occurrences": 1
+          }
+        ]
+      }
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/async-capture.ts",
+      "archivedPath": "raw/author/cases/async-capture.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "ca937c4dc4618a51484db47cab701ab219d3e9476900dd734e0c5d3e4400c531",
+      "originalBytes": 346,
+      "archivedSha256": "ca937c4dc4618a51484db47cab701ab219d3e9476900dd734e0c5d3e4400c531",
+      "archivedBytes": 346,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/async-current.ts",
+      "archivedPath": "raw/author/cases/async-current.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "c51db064f0c3a14b1594f1877ea9b18f0146cd06a92bec2c40938adedb1edb4a",
+      "originalBytes": 346,
+      "archivedSha256": "c51db064f0c3a14b1594f1877ea9b18f0146cd06a92bec2c40938adedb1edb4a",
+      "archivedBytes": 346,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/false-current.ts",
+      "archivedPath": "raw/author/cases/false-current.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "0001d918162f3e7ef27c1f8b76da38a4e0d86d95191aa3a15a697633db81956c",
+      "originalBytes": 336,
+      "archivedSha256": "0001d918162f3e7ef27c1f8b76da38a4e0d86d95191aa3a15a697633db81956c",
+      "archivedBytes": 336,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/forbidden-prepareShield.ts",
+      "archivedPath": "raw/author/cases/forbidden-prepareShield.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "2d0244a6c0f0025526b4d7145741cdebad6d4a5a311ff9071eed3760be1dbf2b",
+      "originalBytes": 239,
+      "archivedSha256": "2d0244a6c0f0025526b4d7145741cdebad6d4a5a311ff9071eed3760be1dbf2b",
+      "archivedBytes": 239,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/forbidden-prepareShieldMulti.ts",
+      "archivedPath": "raw/author/cases/forbidden-prepareShieldMulti.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "ec8cdc28fdf643408c95241d1e4c54403e61430c8b7cbc83ca2b07e3b4f26988",
+      "originalBytes": 244,
+      "archivedSha256": "ec8cdc28fdf643408c95241d1e4c54403e61430c8b7cbc83ca2b07e3b4f26988",
+      "archivedBytes": 244,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/forbidden-prepareTransfer.ts",
+      "archivedPath": "raw/author/cases/forbidden-prepareTransfer.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "6b850993c885ea05f78f4ab9204e3a7b0133fd3117c8df5527b521fce869d914",
+      "originalBytes": 241,
+      "archivedSha256": "6b850993c885ea05f78f4ab9204e3a7b0133fd3117c8df5527b521fce869d914",
+      "archivedBytes": 241,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/forbidden-prepareTransferMulti.ts",
+      "archivedPath": "raw/author/cases/forbidden-prepareTransferMulti.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "9181ef9dfe6b36d90aaf627a2f05a8e353703d3e0b7570186f01322e74a4c191",
+      "originalBytes": 246,
+      "archivedSha256": "9181ef9dfe6b36d90aaf627a2f05a8e353703d3e0b7570186f01322e74a4c191",
+      "archivedBytes": 246,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/forbidden-prepareUnshield.ts",
+      "archivedPath": "raw/author/cases/forbidden-prepareUnshield.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "80b05ff22110d1c0220854ba0f910dc6b1e79346dbbb01b7144ef74bdead8ac4",
+      "originalBytes": 241,
+      "archivedSha256": "80b05ff22110d1c0220854ba0f910dc6b1e79346dbbb01b7144ef74bdead8ac4",
+      "archivedBytes": 241,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/forbidden-prepareUnshieldMulti.ts",
+      "archivedPath": "raw/author/cases/forbidden-prepareUnshieldMulti.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "9c8aa1e13ca25c61e83a6561e6e5d2486e027f1f3ffd7d822073a46607b260a8",
+      "originalBytes": 246,
+      "archivedSha256": "9c8aa1e13ca25c61e83a6561e6e5d2486e027f1f3ffd7d822073a46607b260a8",
+      "archivedBytes": 246,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/forbidden-upstream-target-prepare.ts",
+      "archivedPath": "raw/author/cases/forbidden-upstream-target-prepare.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "afe0f07ea16c56bc096312c9cdedd934bc28011839447cf5c594c3d8b6a7ac2d",
+      "originalBytes": 239,
+      "archivedSha256": "afe0f07ea16c56bc096312c9cdedd934bc28011839447cf5c594c3d8b6a7ac2d",
+      "archivedBytes": 239,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/include-spent-type.ts",
+      "archivedPath": "raw/author/cases/include-spent-type.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "75dc114f2fa8192fd85827cb7b766831838c20699d2c2b35370f72cefec12d75",
+      "originalBytes": 223,
+      "archivedSha256": "75dc114f2fa8192fd85827cb7b766831838c20699d2c2b35370f72cefec12d75",
+      "archivedBytes": 223,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/missing-adapter-notes.ts",
+      "archivedPath": "raw/author/cases/missing-adapter-notes.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "43ea659edc54b4cbf8d7cb4ccade2d9181086d97ef1fa26fdcf5638654c21888",
+      "originalBytes": 269,
+      "archivedSha256": "43ea659edc54b4cbf8d7cb4ccade2d9181086d97ef1fa26fdcf5638654c21888",
+      "archivedBytes": 269,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/missing-instance-id.ts",
+      "archivedPath": "raw/author/cases/missing-instance-id.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "b294148e86fd0703f5b48a725013dca43de03cdbcf69171a43161bb5a0032873",
+      "originalBytes": 272,
+      "archivedSha256": "b294148e86fd0703f5b48a725013dca43de03cdbcf69171a43161bb5a0032873",
+      "archivedBytes": 272,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/not-generic-factory.ts",
+      "archivedPath": "raw/author/cases/not-generic-factory.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "6e326f90d6ab9ab64835d56de10b5d956509e8abe8a860c77a26418b2cf845f2",
+      "originalBytes": 383,
+      "archivedSha256": "6e326f90d6ab9ab64835d56de10b5d956509e8abe8a860c77a26418b2cf845f2",
+      "archivedBytes": 383,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/not-generic-host.ts",
+      "archivedPath": "raw/author/cases/not-generic-host.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "b4dd97b0b49e958d13b525e2cf135c2a499716c3e4a1437e9c1645088c3531cb",
+      "originalBytes": 269,
+      "archivedSha256": "b4dd97b0b49e958d13b525e2cf135c2a499716c3e4a1437e9c1645088c3531cb",
+      "archivedBytes": 269,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/number-amount.ts",
+      "archivedPath": "raw/author/cases/number-amount.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "75cefca9aeaddf693e3be96368de5a532857249372096b0e37097c8c59bde40c",
+      "originalBytes": 242,
+      "archivedSha256": "75cefca9aeaddf693e3be96368de5a532857249372096b0e37097c8c59bde40c",
+      "archivedBytes": 242,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/positive.ts",
+      "archivedPath": "raw/author/cases/positive.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "840e62f08f76c27367e976e859f1393655898dd8f62785e5b2981f50e881af8a",
+      "originalBytes": 2508,
+      "archivedSha256": "840e62f08f76c27367e976e859f1393655898dd8f62785e5b2981f50e881af8a",
+      "archivedBytes": 2508,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/readonly-result.ts",
+      "archivedPath": "raw/author/cases/readonly-result.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "3ab17299adf1db8dfcd0bc3ef5a07779d3038e0581090ef8f6ab01eb12485720",
+      "originalBytes": 337,
+      "archivedSha256": "3ab17299adf1db8dfcd0bc3ef5a07779d3038e0581090ef8f6ab01eb12485720",
+      "archivedBytes": 337,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/string-nft-token.ts",
+      "archivedPath": "raw/author/cases/string-nft-token.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "362445333212eb4a0345d72bf96c7795f54571503a9d4e97a13f0bd5734cc17a",
+      "originalBytes": 233,
+      "archivedSha256": "362445333212eb4a0345d72bf96c7795f54571503a9d4e97a13f0bd5734cc17a",
+      "archivedBytes": 233,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/upstream-invalid-erc1155.ts",
+      "archivedPath": "raw/author/cases/upstream-invalid-erc1155.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "d1f4f7b15569d27e8e09dfbc0a25e0e58548bba74532086d49bc22d27c6d696e",
+      "originalBytes": 545,
+      "archivedSha256": "d1f4f7b15569d27e8e09dfbc0a25e0e58548bba74532086d49bc22d27c6d696e",
+      "archivedBytes": 545,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/upstream-invalid-number-amount.ts",
+      "archivedPath": "raw/author/cases/upstream-invalid-number-amount.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "de84c1a0931a21843713d9e67b0125ba98e99d55090a7922c799ca84b03ccda5",
+      "originalBytes": 504,
+      "archivedSha256": "de84c1a0931a21843713d9e67b0125ba98e99d55090a7922c799ca84b03ccda5",
+      "archivedBytes": 504,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/wrong-balance.ts",
+      "archivedPath": "raw/author/cases/wrong-balance.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "e04bf694c358a8c33135bb7c53315774fb662f5cff02c5d1126fce25bd168410",
+      "originalBytes": 324,
+      "archivedSha256": "e04bf694c358a8c33135bb7c53315774fb662f5cff02c5d1126fce25bd168410",
+      "archivedBytes": 324,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/wrong-provenance.ts",
+      "archivedPath": "raw/author/cases/wrong-provenance.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "6714f0af9c3ea504164dc34d7f68aa96b1bfead5442d5ae1cfbb172a45736cae",
+      "originalBytes": 224,
+      "archivedSha256": "6714f0af9c3ea504164dc34d7f68aa96b1bfead5442d5ae1cfbb172a45736cae",
+      "archivedBytes": 224,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/wrong-spent-marker.ts",
+      "archivedPath": "raw/author/cases/wrong-spent-marker.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "6cf250445ffbd458431e8123116d0504e1231067536a14c5d46aa128c6f90fb4",
+      "originalBytes": 266,
+      "archivedSha256": "6cf250445ffbd458431e8123116d0504e1231067536a14c5d46aa128c6f90fb4",
+      "archivedBytes": 266,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "cases/wrong-target-notes.ts",
+      "archivedPath": "raw/author/cases/wrong-target-notes.ts.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "d7d31ab604c3a50a63f37c38197730c0aebeb93ccc5784059de3c25383b05b7d",
+      "originalBytes": 306,
+      "archivedSha256": "d7d31ab604c3a50a63f37c38197730c0aebeb93ccc5784059de3c25383b05b7d",
+      "archivedBytes": 306,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "author",
+      "originalName": "PACKAGE.json",
+      "archivedPath": "raw/author/PACKAGE.json.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "01f87be9c4b7f79a1e00b340b07b6a2e337ef3c95f3a8cd12ebb9eea148d1f39",
+      "originalBytes": 3443,
+      "archivedSha256": "01f87be9c4b7f79a1e00b340b07b6a2e337ef3c95f3a8cd12ebb9eea148d1f39",
+      "archivedBytes": 3443,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "compiler-discovery",
+      "originalName": "REPORT.json",
+      "archivedPath": "derived/compiler-discovery/REPORT.json.txt",
+      "representation": "path-normalized-derived",
+      "originalSha256": "2a2aa287f97fcee5e73b53f35fb64f3e8dd6294ac8b1de45f27d640c33eb77dd",
+      "originalBytes": 7851,
+      "archivedSha256": "1beae85f1ca145bb297b15b150b362d260d7fa467893b09101836c2153352071",
+      "archivedBytes": 7760,
+      "transformation": {
+        "recipe": "literal UTF-8 path-prefix replacement only; all other bytes preserved",
+        "substitutions": [
+          {
+            "sourcePathLabel": "typescript-package-root",
+            "placeholder": "<TYPESCRIPT_PACKAGE_ROOT>",
+            "occurrences": 1
+          },
+          {
+            "sourcePathLabel": "node-executable",
+            "placeholder": "<NODE_EXECUTABLE>",
+            "occurrences": 1
+          }
+        ]
+      }
+    },
+    {
+      "sourceGroup": "root-reproduction-20560d86",
+      "originalName": "ROOT-PREPARATION.json",
+      "archivedPath": "raw/root-reproduction-20560d86/ROOT-PREPARATION.json.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "a41ce1aa0b9204de23e6b422e4a55c0d7eea90e229d2f7c2b2999b6b5a29217d",
+      "originalBytes": 505,
+      "archivedSha256": "a41ce1aa0b9204de23e6b422e4a55c0d7eea90e229d2f7c2b2999b6b5a29217d",
+      "archivedBytes": 505,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "root-reproduction-20560d86",
+      "originalName": "ROOT-OBSERVATION.json",
+      "archivedPath": "raw/root-reproduction-20560d86/ROOT-OBSERVATION.json.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "90a4cc0c9a63013384e7b414471ae7947a0dea6ba8f3aab0f915d00942dbee61",
+      "originalBytes": 1049,
+      "archivedSha256": "90a4cc0c9a63013384e7b414471ae7947a0dea6ba8f3aab0f915d00942dbee61",
+      "archivedBytes": 1049,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "root-reproduction-20560d86",
+      "originalName": "SOURCE-FREEZE.json",
+      "archivedPath": "derived/root-reproduction-20560d86/SOURCE-FREEZE.json.txt",
+      "representation": "path-normalized-derived",
+      "originalSha256": "fb234c18861960ce2fd8a5961d57103e566ab4ee67ffa88e7d16579a290473b8",
+      "originalBytes": 66795,
+      "archivedSha256": "f62ab8c0a99b6ef7995781287f8c2eb6a344b923a904941c045ada3647724c60",
+      "archivedBytes": 66610,
+      "transformation": {
+        "recipe": "literal UTF-8 path-prefix replacement only; all other bytes preserved",
+        "substitutions": [
+          {
+            "sourcePathLabel": "repository-root",
+            "placeholder": "<REPOSITORY_ROOT>",
+            "occurrences": 5
+          }
+        ]
+      }
+    },
+    {
+      "sourceGroup": "root-reproduction-20560d86",
+      "originalName": "REPORT.json",
+      "archivedPath": "raw/root-reproduction-20560d86/REPORT.json.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "54318efcb14f040a3a67f7510381e3301cf5847a3c3d565a64f624a2934370df",
+      "originalBytes": 19989,
+      "archivedSha256": "54318efcb14f040a3a67f7510381e3301cf5847a3c3d565a64f624a2934370df",
+      "archivedBytes": 19989,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "root-reproduction-20560d86",
+      "originalName": "root-prepare.log",
+      "archivedPath": "raw/root-reproduction-20560d86/root-prepare.log.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "48f3e412b132b68986cae184de2f7772cbb33b56cdcaf28a6a2ca8e531fff207",
+      "originalBytes": 185,
+      "archivedSha256": "48f3e412b132b68986cae184de2f7772cbb33b56cdcaf28a6a2ca8e531fff207",
+      "archivedBytes": 185,
+      "transformation": null
+    },
+    {
+      "sourceGroup": "root-reproduction-20560d86",
+      "originalName": "root-run.log",
+      "archivedPath": "raw/root-reproduction-20560d86/root-run.log.txt",
+      "representation": "byte-exact-original",
+      "originalSha256": "4ec7e2bbf337d5b727a5e9ac9a43c9c552b7adb184cedb07bced92224d5bb453",
+      "originalBytes": 160,
+      "archivedSha256": "4ec7e2bbf337d5b727a5e9ac9a43c9c552b7adb184cedb07bced92224d5bb453",
+      "archivedBytes": 160,
+      "transformation": null
+    }
+  ]
+}

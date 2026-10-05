@@ -1,0 +1,2 @@
+import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
+export const wrong: ReadAsset = { __type:'erc721', contract:'0x01', tokenId:'1' };
