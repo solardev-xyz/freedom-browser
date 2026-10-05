@@ -107,9 +107,16 @@ function getAddressExplorerUrl(chainId, address) {
  * Get block explorer URL for a transaction
  */
 function getTxExplorerUrl(chainId, txHash) {
-  const chain = getChain(chainId);
-  if (!chain) return null;
-  return `${chain.blockExplorer}/tx/${txHash}`;
+  const base = getChain(chainId)?.blockExplorer;
+  if (typeof base !== 'string' || base !== base.trim() || !/^https?:\/\//i.test(base)) return null;
+  try {
+    const url = new URL(base);
+    if (!url.hostname || url.username || url.password || base.includes('?') || base.includes('#'))
+      return null;
+  } catch {
+    return null;
+  }
+  return `${base}/tx/${txHash}`;
 }
 
 module.exports = {

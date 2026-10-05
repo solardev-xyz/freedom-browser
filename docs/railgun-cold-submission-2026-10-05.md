@@ -147,6 +147,12 @@ bytes were sent. The same-nullifier reservation then continues to block retry.
 That window is treated like a crash and requires a separately reviewed recovery policy;
 this milestone does not silently release or renew it.
 
+Subsequent isolated fix: transaction explorer links now return `null` when the
+configured chain has no usable HTTP(S) explorer base. Actual registry-layering
+tests and Claude review cover the correction. The unused exported address-link
+helper still has the earlier behavior; the pre-transport journal window remains
+open. This follow-up does not change the frozen qualification reports above.
+
 The implementation stays within existing main-process wallet ownership and
 qualification scripts. There are no UI, IPC, dependency, runtime, deployment-pin
 or derived-cache-policy changes. Claude and independent Codex review are
