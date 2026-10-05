@@ -28,6 +28,41 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+test('Agent stays hidden throughout startup and opens only on request', async ({ window }) => {
+  await window.addInitScript(() => {
+    window.agentStartupFrames = [];
+    const sample = () => {
+      const panel = document.getElementById('agent-sidebar');
+      if (panel) {
+        const bounds = panel.getBoundingClientRect();
+        const style = getComputedStyle(panel);
+        window.agentStartupFrames.push({
+          visible: bounds.width > 0 && bounds.height > 0 &&
+            style.visibility === 'visible' && style.display !== 'none',
+          floating: panel.classList.contains('agent-floating'),
+        });
+      }
+      window.agentStartupFrame = requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  await window.reload();
+  await expect(window.locator('#agent-sidebar')).toHaveClass(/agent-floating/);
+  // Include the closing transition interval, not just the settled state.
+  await window.waitForTimeout(500);
+  const frames = await window.evaluate(() => {
+    cancelAnimationFrame(window.agentStartupFrame);
+    return window.agentStartupFrames;
+  });
+  expect(frames.some(frame => frame.floating)).toBe(true);
+  expect(frames.filter(frame => frame.visible)).toEqual([]);
+
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await expect(window.locator('#agent-sidebar')).toBeVisible();
+  await window.locator('#agent-sidebar-close').click();
+  await expect(window.locator('#agent-sidebar')).toBeHidden();
+});
+
 test('ChatGPT callback uses Freedom branding and a declined login can be retried', async ({ electronApp, window }, testInfo) => {
   await electronApp.evaluate(({ shell }) => {
     shell.openExternal = async url => { globalThis.chatGPTAuthorization = url; };

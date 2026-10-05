@@ -51,6 +51,9 @@
 .agent-sidebar.collapsed {
   width: 0;
   border-left-width: 0;
+  /* Stay hidden before floating styles are activated by Agent initialization;
+     otherwise their delayed closing transition briefly reveals the composer. */
+  visibility: hidden;
 }
 
 .agent-sidebar-inner {
