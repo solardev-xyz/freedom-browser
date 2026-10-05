@@ -22,6 +22,8 @@ let mockDescriptor,
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
 jest.mock('./railgun-prover-runtime', () => ({ verifyRailgunProverRuntime: (v) => v }));
 jest.mock('./railgun-private-capsule', () => ({
+  normalizeRailgunPrivateCapsule: (value) =>
+    jest.requireActual('./railgun-private-capsule').normalizeRailgunPrivateCapsule(value),
   normalizeRailgunNewCapsule: (value, owned) => {
     if (mockActualCapsule)
       return jest
@@ -78,21 +80,25 @@ jest.mock('./railgun-process', () => ({
         JSON.stringify({
           id: 1,
           method: 'key',
-          purpose: mockInput.privateOperation
-            ? 'private-operate'
-            : mockInput.privateIntent
-              ? 'private-prepare'
-              : 'wallet-viewing',
+          purpose: mockInput.privateRecovery
+            ? 'private-recover'
+            : mockInput.privateOperation
+              ? 'private-operate'
+              : mockInput.privateIntent
+                ? 'private-prepare'
+                : 'wallet-viewing',
         })
       );
       expect(options.binaryKey).toBe(true);
       expect(options.filename).toBe(
         require.resolve(
-          mockInput.privateOperation
-            ? './railgun-private-operate-job'
-            : mockInput.privateIntent
-              ? './railgun-private-prepare-job'
-              : './railgun-wallet-job'
+          mockInput.privateRecovery
+            ? './railgun-private-recover-job'
+            : mockInput.privateOperation
+              ? './railgun-private-operate-job'
+              : mockInput.privateIntent
+                ? './railgun-private-prepare-job'
+                : './railgun-wallet-job'
         )
       );
       expect(bytes.byteLength).toBe(32);
@@ -101,7 +107,7 @@ jest.mock('./railgun-process', () => ({
       expect([...bytes]).toEqual(Array(32).fill(7));
       bytes.fill(0);
       let resultId = 2,
-        extra = {};
+        extra = mockInput.privateRecovery ? { privateRecovery: { status: 'proved' } } : {};
       if (mockInput.privateOperation && mockOperationMode !== 'early-result') {
         const offer = mockActualCapsule ? mockActualCapsule.preparation : { intent: 'captured' };
         const envelope = {
@@ -740,4 +746,124 @@ test('issuer cleanup failure cannot mask unknown exit or skip original callback 
   expect(error.code).toBe('RAILGUN_WALLET_EXIT_UNOBSERVED');
   expect(error.cause).toBeUndefined();
   expect(error.closed).toBeUndefined();
+});
+
+function recoveryArgs() {
+  mockActualCapsule = require('../../../scripts/fixtures/railgun-capsule-data').capsule(
+    mockDescriptor.walletId
+  );
+  return {
+    ...args,
+    restore: true,
+    privateRecovery: {
+      capsule: mockActualCapsule,
+      signature: {
+        R8: ['0x' + '1'.padStart(64, '0'), '0x' + '2'.padStart(64, '0')],
+        S: '0x' + '3'.padStart(64, '0'),
+      },
+      proverArchive: '/prover.asar',
+      artifactDirectory: '/artifacts',
+    },
+  };
+}
+test('recovery uses its fixed viewing-key job and carries only the canonical original data', async () => {
+  const options = recoveryArgs();
+  const value = await runRailgunWalletSnapshot(options);
+  expect(value.privateRecovery).toEqual({ status: 'proved' });
+  expect(mockInput.privateRecovery).toEqual(options.privateRecovery);
+  expect(mockInput.privateIntent).toBeUndefined();
+  expect(mockInput.privateOperation).toBeUndefined();
+  expect(mockBorrow).toHaveBeenCalledTimes(1);
+  expect([...mockCopy]).toEqual(Array(32).fill(0));
+});
+test.each([
+  'restore',
+  'mixed-intent',
+  'mixed-operation',
+  'foreign-wallet',
+  'extra-option',
+  'bad-signature',
+])('recovery %s input refuses before any viewing credential or worker', async (mode) => {
+  const options = recoveryArgs();
+  if (mode === 'restore') options.restore = false;
+  if (mode === 'mixed-intent') options.privateIntent = {};
+  if (mode === 'mixed-operation') options.privateOperation = {};
+  if (mode === 'foreign-wallet') options.privateRecovery.capsule.walletId = '2'.repeat(64);
+  if (mode === 'extra-option') options.privateRecovery.onIntent = () => {};
+  if (mode === 'bad-signature') options.privateRecovery.signature.S = 'bad';
+  await expect(runRailgunWalletSnapshot(options)).rejects.toThrow();
+  expect(mockTask).toBeNull();
+  expect(mockBorrow).not.toHaveBeenCalled();
+});
+test.each(['private-intent', 'extra-operation', 'duplicate-result'])(
+  'recovery broker refuses %s messages',
+  async (mode) => {
+    mockWorker = async ({ broker }) => {
+      (
+        await broker.dispatch(JSON.stringify({ id: 1, method: 'key', purpose: 'private-recover' }))
+      ).fill(0);
+      if (mode === 'private-intent')
+        await broker.dispatch(JSON.stringify({ id: 2, method: 'private-intent', value: {} }));
+      else {
+        await broker.dispatch(
+          JSON.stringify({
+            id: 2,
+            method: 'result',
+            value: {
+              instanceId: mockDescriptor.instanceId,
+              privateRecovery: { status: 'proved' },
+              ...(mode === 'extra-operation' ? { privateOperation: { status: 'refused' } } : {}),
+            },
+          })
+        );
+        if (mode === 'duplicate-result')
+          await broker.dispatch(JSON.stringify({ id: 3, method: 'result', value: {} }));
+      }
+    };
+    await expect(runRailgunWalletSnapshot(recoveryArgs())).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_BROKER_REFUSED',
+    });
+    expect(mockQuarantine).not.toHaveBeenCalled();
+  }
+);
+test('recovery cancellation holds the original viewing loan until drain and quarantines unobserved child exit', async () => {
+  const entered = deferred(),
+    release = deferred();
+  mockHoldExit = true;
+  mockCredential = async (use) => {
+    entered.resolve();
+    await release.promise;
+    return use({ viewingKey: Buffer.alloc(32, 7) });
+  };
+  let settled = false;
+  const run = runRailgunWalletSnapshot(recoveryArgs())
+    .catch((error) => error)
+    .finally(() => {
+      settled = true;
+    });
+  await entered.promise;
+  mockAbortJob(Error('child unavailable'));
+  await tick();
+  mockRejectClosed(Error('no observed exit'));
+  await tick();
+  expect(settled).toBe(false);
+  expect(mockQuarantine).toHaveBeenCalledWith(args.identity);
+  release.resolve();
+  expect(await run).toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+});
+
+test('ordinary viewing broker refuses an unsolicited recovery result', async () => {
+  mockWorker = async ({ broker }) => {
+    (await broker.dispatch(keyWire())).fill(0);
+    await broker.dispatch(
+      JSON.stringify({
+        id: 2,
+        method: 'result',
+        value: { instanceId: mockDescriptor.instanceId, privateRecovery: { status: 'proved' } },
+      })
+    );
+  };
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
+  });
 });

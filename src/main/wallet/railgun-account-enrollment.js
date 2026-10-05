@@ -238,8 +238,26 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       });
     }
   }
-  async function openReservations() {
+  const registeredGuard = {
+    assert: (target) => guard.assertRegistered(target),
+    remember: (target) => guard.assertRegistered(target),
+  };
+  const privateStorageTarget = (kind) => {
+    const handle = scope.getContext({
+      ...subject,
+      operation: `railgun-private-${kind}-v1:` + descriptor.walletId,
+    });
+    return getPrivacyStoragePath(handle, accountDirectory);
+  };
+  const assertPrivateStorageRegistered = (kind) => {
+    const target = privateStorageTarget(kind);
+    check(regularFileIfPresent(target));
+    guard.assertRegistered(target);
     active();
+  };
+  async function openReservations(existingOnly = false) {
+    active();
+    if (existingOnly) assertPrivateStorageRegistered('reservations');
     if (reservations && !reservations.signal.aborted) return reservations;
     check(!openingReservations);
     openingReservations = true;
@@ -251,7 +269,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       });
       const target = getPrivacyStoragePath(reservationHandle, accountDirectory);
       regularFileIfPresent(target);
-      guard.assert(target);
+      (existingOnly ? registeredGuard : guard).assert(target);
       const floorRecord = 'railgun-private-reservations-floor-v1';
       const decodeFloor = (text) => {
         if (text === null) return null;
@@ -293,8 +311,8 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
         key,
         binding,
         walletId: descriptor.walletId,
-        profileGuard: guard,
-        create: !fs.existsSync(target),
+        profileGuard: existingOnly ? registeredGuard : guard,
+        create: !existingOnly && !fs.existsSync(target),
         readFloor,
         advanceFloor,
         authorizeSigning: (permit, heldStore, receipt, evidence) =>
@@ -315,14 +333,15 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       openingReservations = false;
     }
   }
-  async function openPrivateCapsules() {
+  async function openPrivateCapsules(existingOnly = false) {
     active();
+    if (existingOnly) assertPrivateStorageRegistered('capsules');
     if (capsules && !capsules.signal.aborted) return capsules;
     check(!openingCapsules);
     openingCapsules = true;
     let key;
     try {
-      const held = await openReservations();
+      const held = await openReservations(existingOnly);
       active();
       const capsuleHandle = scope.getContext({
         ...subject,
@@ -330,7 +349,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       });
       const target = getPrivacyStoragePath(capsuleHandle, accountDirectory);
       regularFileIfPresent(target);
-      guard.assert(target);
+      (existingOnly ? registeredGuard : guard).assert(target);
       const floorRecord = 'railgun-private-capsules-floor-v1';
       const decodeFloor = (text) => {
         if (text === null) return null;
@@ -372,9 +391,9 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
         key,
         binding,
         walletId: descriptor.walletId,
-        profileGuard: guard,
+        profileGuard: existingOnly ? registeredGuard : guard,
         reservations: held,
-        create: !fs.existsSync(target),
+        create: !existingOnly && !fs.existsSync(target),
         readFloor,
         advanceFloor,
       });
@@ -383,6 +402,23 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     } finally {
       key?.fill(0);
       openingCapsules = false;
+    }
+  }
+  async function openPrivateRecoveryStores() {
+    active();
+    const phase = require('./railgun-account-phase').claimRailgunAccountPhase(instance, 'recovery');
+    try {
+      // Check both files before either ordinary lease/floor opener can write.
+      // This route may authenticate/refresh existing journals, but never creates
+      // recovery history or registers an unknown file as a side effect.
+      assertPrivateStorageRegistered('reservations');
+      assertPrivateStorageRegistered('capsules');
+      const capsules = await openPrivateCapsules(true);
+      phase.assertCurrent();
+      active();
+      return Object.freeze({ reservations, capsules });
+    } finally {
+      phase.release();
     }
   }
   async function openPoiIntents(options = {}) {
@@ -488,8 +524,9 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     profileGuard: guard,
     signal: scope.signal,
     close,
-    openReservations,
-    openPrivateCapsules,
+    openReservations: () => openReservations(),
+    openPrivateCapsules: () => openPrivateCapsules(),
+    openPrivateRecoveryStores,
     openPoiIntents,
     // Trusted host composition only. Callers must not retain copies of these
     // borrowed buffers; a worker must own/wipe any explicitly copied key.

@@ -229,3 +229,180 @@ test('ordinary wallet runs reject an unsolicited operation result', async () => 
   await expect(f.runner.run(f.args)).rejects.toThrow();
   expect(f.store.finishEngine).not.toHaveBeenCalled();
 });
+
+function recoverySetup(kind = 'railgun-token-unshield', source = 'Shield') {
+  const f = setup(),
+    fixtures = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const data =
+    kind === 'railgun-partial-unshield'
+      ? fixtures.createRailgunPartialCapsuleData()
+      : fixtures.createRailgunLegacyCapsuleData(kind);
+  const { capsule } = data;
+  capsule.walletId = walletId;
+  f.args.privateRecovery = {
+    capsule,
+    signature: { R8: [hash(1), hash(2)], S: hash(3) },
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+  };
+  f.args.snapshot = {
+    ...f.args.snapshot,
+    checkpoint: {
+      ...checkpoint,
+      state: {
+        ...checkpoint.state,
+        trees: [{ tree: 0, length: 2, root: hash(999) }],
+        commitments: { count: 2, sha256: inventory },
+      },
+    },
+    signal: new AbortController().signal,
+  };
+  const pins = require('./railgun-shield-pins.json');
+  f.result.scannedLeaves = 2;
+  f.result.expectedReceived = [{ tree: 0, position: 1 }];
+  f.result.received = [
+    {
+      tree: 0,
+      position: 1,
+      txid: hash(10),
+      hash: capsule.noteHash,
+      tokenHash: '0x' + pins.wrappedNative.slice(2).padStart(64, '0'),
+      tokenData: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hash(0) },
+      value: '1000',
+      spentTxid: false,
+    },
+  ];
+  f.result.ownedPoi = [
+    {
+      id: '0:1',
+      hash: capsule.noteHash,
+      txid: hash(10),
+      npk: hash(8),
+      nullifier: capsule.preparation.expected.nullifier,
+      blindedCommitment: hash(9),
+      type: source,
+      blockNumber: 1,
+    },
+  ];
+  data.inner.proof = { a: { x: 1, y: 2 }, b: { x: [3, 4], y: [5, 6] }, c: { x: 7, y: 8 } };
+  const transaction = { ...capsule.preparation.transaction, data: data.encode() };
+  f.result.privateRecovery = {
+    status: 'proved',
+    transaction,
+    transactionDigest: require('./railgun-private-intent').matchRailgunPrivateProvedTransaction(
+      capsule.preparation.transaction,
+      transaction,
+      capsule.preparation.expected
+    ).digest,
+    independentlyVerified: false,
+  };
+  return f;
+}
+test.each(
+  ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].flatMap(
+    (kind) => ['Shield', 'Transact'].map((source) => [kind, source])
+  )
+)(
+  'fixed %s recovery of %s input yields only genuine restore receipt and unverified local proof',
+  async (kind, source) => {
+    const f = recoverySetup(kind, source),
+      completed = await f.runner.recoverReadOnly(f.args);
+    expect(completed.recovery).toEqual(f.result.privateRecovery);
+    expect(completed.recovery.independentlyVerified).toBe(false);
+    expect(f.runJob.mock.calls[0][0].privateRecovery).toEqual(f.args.privateRecovery);
+    expect(f.store.beginEngine).not.toHaveBeenCalled();
+    expect(f.store.finishRestore).toHaveBeenCalledWith(completed.receipt);
+    expect(() =>
+      f.runner.assertScan(completed.receipt, {
+        session: f.session,
+        walletId,
+        policy,
+        mode: 'restore',
+        checkpoint: f.args.snapshot.checkpoint,
+      })
+    ).not.toThrow();
+  }
+);
+test.each(['run', 'restoreReadOnly', 'prepareReadOnly', 'operateReadOnly'])(
+  '%s cannot select recovery through ordinary options',
+  async (method) => {
+    const f = recoverySetup();
+    const options = { ...f.args, privateIntent: {}, privateOperation: {} };
+    await expect(f.runner[method](options)).rejects.toThrow();
+    expect(f.runJob).not.toHaveBeenCalled();
+    expect(f.session.inspectWalletState).not.toHaveBeenCalled();
+  }
+);
+test.each([
+  'state',
+  'write',
+  'exit',
+  'spent',
+  'hash',
+  'nullifier',
+  'amount',
+  'root-output',
+  'digest',
+  'verified',
+  'refused',
+  'extra-preparation',
+  'extra-operation',
+])('recovery refuses %s without issuing a receipt', async (mode) => {
+  const f = recoverySetup();
+  if (mode === 'state')
+    f.runJob.mockImplementation(async () => {
+      f.mutate();
+      return f.result;
+    });
+  if (mode === 'write') f.grant.getStatus = () => ({ readOnly: true, writeAttempts: 1 });
+  if (mode === 'exit') f.result.closed.code = 'RAILGUN_PROCESS_FAILED';
+  if (mode === 'spent') f.result.received[0].spentTxid = hash(12);
+  if (mode === 'hash') f.result.received[0].hash = hash(12);
+  if (mode === 'nullifier') f.result.ownedPoi[0].nullifier = hash(12);
+  if (mode === 'amount') f.result.received[0].value = '999';
+  if (mode === 'root-output')
+    f.result.privateRecovery.transaction.data =
+      f.args.privateRecovery.capsule.preparation.transaction.data;
+  if (mode === 'digest') f.result.privateRecovery.transactionDigest = '0'.repeat(64);
+  if (mode === 'verified') f.result.privateRecovery.independentlyVerified = true;
+  if (mode === 'refused') f.result.privateRecovery = { status: 'refused' };
+  if (mode === 'extra-preparation') f.result.privatePreparation = {};
+  if (mode === 'extra-operation') f.result.privateOperation = {};
+  await expect(f.runner.recoverReadOnly(f.args)).rejects.toThrow();
+  expect(f.store.finishRestore).not.toHaveBeenCalled();
+  expect(f.store.close).toHaveBeenCalled();
+});
+test('recovery snapshots original data before its first await', async () => {
+  const f = recoverySetup();
+  let release;
+  f.session.inspectWalletState.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = () =>
+          resolve({
+            schema: 'wallet-store-v1',
+            storeId: '4'.repeat(64),
+            count: 0,
+            bytes: 0,
+            sha256: '5'.repeat(64),
+          });
+      })
+  );
+  const signature = structuredClone(f.args.privateRecovery.signature),
+    original = f.args.privateRecovery.capsule.preparation.transaction.data;
+  const running = f.runner.recoverReadOnly(f.args);
+  f.args.privateRecovery.signature.S = hash(99);
+  f.args.privateRecovery.capsule.preparation.transaction.data = '0x';
+  release();
+  await running;
+  expect(f.runJob.mock.calls[0][0].privateRecovery.signature).toEqual(signature);
+  expect(f.runJob.mock.calls[0][0].privateRecovery.capsule.preparation.transaction.data).toBe(
+    original
+  );
+});
+test('ordinary runner rejects unsolicited recovery results', async () => {
+  const f = setup();
+  f.result.privateRecovery = { status: 'proved' };
+  await expect(f.runner.run(f.args)).rejects.toThrow();
+  expect(f.store.finishEngine).not.toHaveBeenCalled();
+});

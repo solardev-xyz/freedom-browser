@@ -11,6 +11,8 @@ const sources = [
   'railgun-wallet-job',
   'railgun-private-prepare-job',
   'railgun-private-operate-job',
+  'railgun-private-recover-job',
+  'railgun-private-recovery-data',
   'railgun-private-capsule',
   'railgun-private-reconstruct',
   'railgun-private-prover',

@@ -51,6 +51,9 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     require.resolve('./railgun-engine-manifest.json'),
     require.resolve('./railgun-identity'),
     require.resolve('./railgun-process'),
+    // Worker transport/storage provenance is an infrastructure boundary;
+    // derived wallet and recovery semantics remain traversed and source-pinned.
+    require.resolve('./railgun-session-worker'),
     require.resolve('./railgun-wallet-journal'),
     require.resolve('./privacy-storage'),
     require.resolve('./privacy-artifacts'),
@@ -70,6 +73,8 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-wallet-job',
     'railgun-private-prepare-job',
     'railgun-private-operate-job',
+    'railgun-private-recover-job',
+    'railgun-private-recovery-data',
     'railgun-wallet-runner',
     'railgun-wallet-run',
     'railgun-wallet-coverage-store',
@@ -77,5 +82,5 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-kohaku-read',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(30);
+  expect(visited.size).toBe(32);
 });

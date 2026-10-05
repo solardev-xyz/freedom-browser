@@ -36,9 +36,25 @@ async function runRailgunWalletSnapshot({
   restore,
   privateIntent,
   privateOperation,
+  privateRecovery,
 }) {
   if (privateIntent !== undefined) assert.equal(restore, true);
-  let operationInput, onIntent;
+  let operationInput, onIntent, recoveryInput;
+  if (privateRecovery !== undefined) {
+    assert.equal(restore, true);
+    assert.equal(privateIntent, undefined);
+    assert.equal(privateOperation, undefined);
+    recoveryInput = require('./railgun-private-recovery-data').normalizeRailgunPrivateRecoveryInput(
+      privateRecovery,
+      { walletId }
+    );
+    recoveryInput = Object.freeze({
+      ...recoveryInput,
+      proverArchive: require('./railgun-prover-runtime').verifyRailgunProverRuntime(
+        recoveryInput.proverArchive
+      ),
+    });
+  }
   if (privateOperation !== undefined) {
     assert.ok(privateIntent && restore === true);
     assert.deepEqual(Object.keys(privateOperation).sort(), [
@@ -56,11 +72,13 @@ async function runRailgunWalletSnapshot({
       artifactDirectory: privateOperation.artifactDirectory,
     });
   }
-  const purpose = operationInput
-    ? 'private-operate'
-    : privateIntent === undefined
-      ? 'wallet-viewing'
-      : 'private-prepare';
+  const purpose = recoveryInput
+    ? 'private-recover'
+    : operationInput
+      ? 'private-operate'
+      : privateIntent === undefined
+        ? 'wallet-viewing'
+        : 'private-prepare';
   if (unobservedExits.has(identity)) throw exitUnobserved();
   const descriptor = assertRailgunIdentity(identity, handle);
   assert.equal(walletId, descriptor.walletId);
@@ -172,6 +190,12 @@ async function runRailgunWalletSnapshot({
         assert.equal(pending.size, 0);
         assert.ok(!operationInput || operationReplied);
         assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+        if (recoveryInput) {
+          assert.ok(message.value && typeof message.value === 'object');
+          assert.equal(message.value.privatePreparation, undefined);
+          assert.equal(message.value.privateOperation, undefined);
+          assert.equal(message.value.privateRecovery?.status, 'proved');
+        } else assert.equal(message.value?.privateRecovery, undefined);
         if (operationInput) {
           assert.deepEqual(
             require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
@@ -264,11 +288,13 @@ async function runRailgunWalletSnapshot({
       binaryKey: true,
       startupMs: 120000,
       lifetimeMs: 180000,
-      filename: operationInput
-        ? require.resolve('./railgun-private-operate-job')
-        : privateIntent === undefined
-          ? require.resolve('./railgun-wallet-job')
-          : require.resolve('./railgun-private-prepare-job'),
+      filename: recoveryInput
+        ? require.resolve('./railgun-private-recover-job')
+        : operationInput
+          ? require.resolve('./railgun-private-operate-job')
+          : privateIntent === undefined
+            ? require.resolve('./railgun-wallet-job')
+            : require.resolve('./railgun-private-prepare-job'),
       input: JSON.stringify({
         archive,
         descriptor,
@@ -277,6 +303,7 @@ async function runRailgunWalletSnapshot({
         restore,
         ...(privateIntent === undefined ? {} : { privateIntent }),
         ...(operationInput ? { privateOperation: operationInput } : {}),
+        ...(recoveryInput ? { privateRecovery: recoveryInput } : {}),
         prefixes: router.prefixes,
       }),
       broker: {

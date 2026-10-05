@@ -7,7 +7,7 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
-The [completed-wallet checkpoint](railgun-completed-wallet-2026-10-05.md) adds authenticated read-only cold restoration, complete runner drainage and shared credential quarantine for unobserved exits. Native restoration and both input-creator partial compatibility runs pass with simulated services. Its wallet-policy change requires explicit derived-generation maintenance; public/TXID policies are unchanged. Signed-unfinished records can be read under genuine recovery receipts, but original-signature proof resumption remains the next implementation step. Partial facade/submission, combined POI persistence, actual change ingestion, fresh-process restart/second spend and live private qualification remain open.
+The [original-signature recovery checkpoint](railgun-proof-recovery-2026-10-05.md) now resumes signed, unfinished proofs through genuine completed-wallet restoration and a fresh independent verifier, preserving the original capsule/signature and writing the proof slot once. Six warm native cases pass across all three private kinds and both input creators with simulated services; retries return stored data without new proving or authority. The [completed-wallet foundation](railgun-completed-wallet-2026-10-05.md) supplies authenticated read-only restoration and drainage/quarantine. Wallet policy changes require explicit derived-generation maintenance. Genuine cold/fresh-process and advanced-root recovery remain next; partial facade/submission, combined POI persistence, actual change ingestion, restart/second spend and live private qualification remain open.
 
 ## Established baseline
 
@@ -86,11 +86,13 @@ POI persistence remain unavailable; the facade stays full-only.
    proof shape, amount conservation, change decryption and cold reconstruction.
    Receipt/TXID primitives, creator authentication and standalone combined POI
    are implemented and qualified independently.
-   Completing it still requires received-input connected controller qualification,
-   live deployed verifier checks, partial submission/capture, connected recovery,
+   Both Shield and received-input connected controller qualification now pass.
+   Completing it still requires live deployed verifier checks, partial
+   submission/capture, connected recovery,
    normal change ingestion and durable post-transaction POI.
-   Signed-but-unfinished proof resumption still needs a production recovery host;
-   native utility replay alone is not that host. Do not merely
+   Signed-but-unfinished proof resumption now has a production recovery host and
+   six warm native cases; fresh-process and advanced-root qualification remain
+   open. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are
    already pinned in `railgun-artifacts.js`; the missing work is integration.

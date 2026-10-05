@@ -477,6 +477,7 @@ test.each([
   ['engine', 'poi-output-recover', './railgun-poi-output-recover-job'],
   ['engine', 'poi-transact-selector', './railgun-poi-transact-selector-job'],
   ['engine', 'private-operate', './railgun-private-operate-job'],
+  ['engine', 'private-recover', './railgun-private-recover-job'],
   ['engine', 'private-receive', './railgun-private-receive-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
 ])(
@@ -561,6 +562,10 @@ test.each([
   ['private-receive', './railgun-private-prepare-job', 'engine'],
   ['private-prepare', './railgun-private-receive-job', 'engine'],
   ['private-operate', './railgun-private-prepare-job', 'engine'],
+  ['private-recover', './railgun-private-operate-job', 'engine'],
+  ['private-operate', './railgun-private-recover-job', 'engine'],
+  ['private-recover', './railgun-spend-sign-job', 'engine'],
+  ['spending-sign', './railgun-private-recover-job'],
   ['private-prepare', './railgun-private-operate-job', 'engine'],
   ['poi-prove', './railgun-private-prepare-job', 'engine'],
   ['private-prepare', './railgun-own-poi-prove-job', 'engine'],

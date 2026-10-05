@@ -121,18 +121,22 @@ async function withWallet(
           checkpoint: input.checkpoint,
           scan: result,
           signal,
-          async exchangePrivateIntent(value) {
-            assert.equal(purpose, 'private-operate');
-            assert.ok(!signal.aborted);
-            const id = ++sequence;
-            const response = JSON.parse(
-              await request(JSON.stringify({ id, method: 'private-intent', value }))
-            );
-            assert.ok(!signal.aborted);
-            assert.deepEqual(Object.keys(response).sort(), ['id', 'value']);
-            assert.equal(response.id, id);
-            return response.value;
-          },
+          ...(purpose === 'private-operate'
+            ? {
+                async exchangePrivateIntent(value) {
+                  assert.equal(purpose, 'private-operate');
+                  assert.ok(!signal.aborted);
+                  const id = ++sequence;
+                  const response = JSON.parse(
+                    await request(JSON.stringify({ id, method: 'private-intent', value }))
+                  );
+                  assert.ok(!signal.aborted);
+                  assert.deepEqual(Object.keys(response).sort(), ['id', 'value']);
+                  assert.equal(response.id, id);
+                  return response.value;
+                },
+              }
+            : {}),
         })
       : {};
     assert.equal(poiCalls, 0);

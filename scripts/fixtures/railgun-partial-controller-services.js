@@ -136,6 +136,7 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
   };
   const clients = new Set();
   const verificationKeyQueries = [],
+    verificationKeyVariants = [],
     privateCallOrder = [];
   let active = true,
     mode = 'healthy',
@@ -226,8 +227,14 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     if (call.name === 'getVerificationKey') {
       verificationKeyQueries.push([...call.args].map(Number));
       privateCallOrder.push('getVerificationKey:' + [...call.args].join(':'));
-      assert.deepEqual([...call.args], [1n, 2n]);
-      return verifiers[mode === 'wrong-verifier' ? '01x01' : '01x02'];
+      assert.equal(call.args.length, 2);
+      assert.equal(call.args[0], 1n);
+      assert.ok(call.args[1] === 1n || call.args[1] === 2n);
+      const requested = call.args[1] === 1n ? '01x01' : '01x02';
+      const executed =
+        mode === 'wrong-verifier' ? (requested === '01x01' ? '01x02' : '01x01') : requested;
+      verificationKeyVariants.push(executed);
+      return verifiers[executed];
     }
     privateCallOrder.push(call.name);
     if (call.name === 'unshieldFee') {
@@ -638,6 +645,7 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
       publicServiceMethods: { ...publicServiceMethods },
       sourceMode: txidRows.length ? 'single-transact-creator' : 'shield-only',
       verificationKeyQueries: copy(verificationKeyQueries),
+      verificationKeyVariants: [...verificationKeyVariants],
       privateCallOrder: [...privateCallOrder],
       signatureChecks: signature.attempts(),
       publicBytecodeMatchesPins: deployment.report().publicBytecodeMatchesPins,

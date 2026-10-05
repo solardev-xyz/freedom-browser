@@ -3,6 +3,17 @@ const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
 let mockProfile, mockParent, mockIdentity, mockVault, mockMnemonic, mockPoiFactoryHook;
+let mockCapsuleFactoryHook;
+jest.mock('./railgun-private-capsule-store', () => {
+  const actual = jest.requireActual('./railgun-private-capsule-store');
+  return {
+    ...actual,
+    createRailgunPrivateCapsuleStore: (options) =>
+      mockCapsuleFactoryHook
+        ? mockCapsuleFactoryHook(options, actual.createRailgunPrivateCapsuleStore)
+        : actual.createRailgunPrivateCapsuleStore(options),
+  };
+});
 jest.mock('./railgun-poi-intent-store', () => {
   const actual = jest.requireActual('./railgun-poi-intent-store');
   return {
@@ -58,6 +69,7 @@ function bind(index = 0) {
 beforeEach(() => {
   enrollments = [];
   mockPoiFactoryHook = undefined;
+  mockCapsuleFactoryHook = undefined;
   mockProfile = {
     id: 'fixture',
     userDataDir: fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-enrollment-'))),
@@ -859,6 +871,116 @@ function expectNoPoiDerivation(spy) {
     spy.mock.calls.filter(([value]) => value === JSON.stringify([1, 'poi-intents', null]))
   ).toEqual([]);
 }
+
+test.each(['neither', 'reservations-only'])(
+  'private recovery with %s history refuses before derivation or writes',
+  async (kind) => {
+    const entry = await open(true);
+    if (kind === 'reservations-only') await entry.openReservations();
+    const before = poiPhysicalSnapshot(),
+      derive = watchPoiDerivation(),
+      rename = jest.spyOn(fs, 'renameSync');
+    await expect(entry.openPrivateRecoveryStores()).rejects.toThrow();
+    expect(
+      derive.mock.calls.filter(([value]) =>
+        ['private-reservations', 'private-capsules'].some(
+          (purpose) => value === JSON.stringify([1, purpose, null])
+        )
+      )
+    ).toEqual([]);
+    expect(rename).not.toHaveBeenCalled();
+    expect(poiPhysicalSnapshot()).toEqual(before);
+  }
+);
+
+test('private recovery reuses healthy registered stores without writes', async () => {
+  const entry = await open(true),
+    capsules = await entry.openPrivateCapsules(),
+    reservations = await entry.openReservations(),
+    before = poiPhysicalSnapshot();
+  expect(await entry.openPrivateRecoveryStores()).toEqual({ capsules, reservations });
+  expect(poiPhysicalSnapshot()).toEqual(before);
+});
+
+test('private recovery opens existing stores after cold enrollment with creation disabled', async () => {
+  const entry = await open(true);
+  await entry.openPrivateCapsules();
+  entry.close();
+  const cold = await open(),
+    beforeInventory = inventory(),
+    factories = [];
+  mockCapsuleFactoryHook = (options, create) => {
+    factories.push(options.create);
+    return create(options);
+  };
+  const { capsules, reservations } = await cold.openPrivateRecoveryStores();
+  expect(factories).toEqual([false]);
+  expect(await capsules.inspect()).toEqual({ records: 0, signatures: 0, proofs: 0, capacity: 32 });
+  expect(await reservations.inspect()).toEqual({ held: 0, signing: 0, abandoned: 0, legacy: 0 });
+  expect(inventory()).toEqual(beforeInventory);
+});
+
+test.each(['capsules', 'reservations'])(
+  'private recovery refuses missing cached %s without replacing it',
+  async (kind) => {
+    const entry = await open(true);
+    await entry.openPrivateCapsules();
+    const file = kind === 'capsules' ? capsuleFile(entry) : reservationFile(entry);
+    fs.renameSync(file, file + '.retained');
+    const before = poiPhysicalSnapshot();
+    await expect(entry.openPrivateRecoveryStores()).rejects.toThrow();
+    expect(fs.existsSync(file)).toBe(false);
+    expect(poiPhysicalSnapshot()).toEqual(before);
+    fs.renameSync(file + '.retained', file);
+    expect(await entry.openPrivateRecoveryStores()).toHaveProperty('capsules');
+  }
+);
+
+test('private recovery refuses unregistered history without adopting either file', async () => {
+  const entry = await open(true),
+    marker = path.join(mockProfile.userDataDir, 'wallet-privacy-inventory.json'),
+    beforeHistory = fs.readFileSync(marker);
+  await entry.openPrivateCapsules();
+  const registered = fs.readFileSync(marker);
+  // Replay a genuine old inventory only as an admission control, not as an
+  // adversarial rollback-protection claim.
+  fs.writeFileSync(marker, beforeHistory);
+  const before = poiPhysicalSnapshot();
+  await expect(entry.openPrivateRecoveryStores()).rejects.toThrow();
+  expect(poiPhysicalSnapshot()).toEqual(before);
+  fs.writeFileSync(marker, registered);
+});
+
+test('private recovery store opening respects account exclusion before writes', async () => {
+  const entry = await open(true);
+  await entry.openPrivateCapsules();
+  const phase = require('./railgun-account-phase').claimRailgunAccountPhase(entry, 'wallet'),
+    before = poiPhysicalSnapshot();
+  try {
+    await expect(entry.openPrivateRecoveryStores()).rejects.toThrow();
+    expect(poiPhysicalSnapshot()).toEqual(before);
+  } finally {
+    phase.release();
+  }
+});
+
+test('private recovery refuses a capsule removed after preflight without creating a replacement', async () => {
+  const entry = await open(true),
+    capsules = await entry.openPrivateCapsules(),
+    file = capsuleFile(entry);
+  capsules.close();
+  let before;
+  mockCapsuleFactoryHook = (options, create) => {
+    expect(options.create).toBe(false);
+    fs.renameSync(file, file + '.retained');
+    before = poiPhysicalSnapshot();
+    return create(options);
+  };
+  await expect(entry.openPrivateRecoveryStores()).rejects.toThrow();
+  expect(before).toBeDefined();
+  expect(fs.existsSync(file)).toBe(false);
+  expect(poiPhysicalSnapshot()).toEqual(before);
+});
 
 test.each([undefined, {}, { existingOnly: false }])(
   'POI opening preserves default creation for options %#',

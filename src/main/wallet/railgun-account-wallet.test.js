@@ -61,6 +61,7 @@ const {
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
+  recoverRailgunAccountPrivateProof,
   prepareRailgunAccountPrivateIntent,
   operateRailgunAccountPrivateIntent,
   assertRailgunAccountPrivateWindow,
@@ -1561,3 +1562,397 @@ test.each([undefined, null, {}, { exitCode: null }])(
     expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
   }
 );
+
+function proofRecoveryFixture(kind = 'railgun-private-transfer', creator = 'Shield') {
+  const builders = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const f =
+    kind === 'railgun-partial-unshield'
+      ? builders.createRailgunPartialCapsuleData()
+      : builders.createRailgunLegacyCapsuleData(kind);
+  f.capsule.walletId = mockEnrollment.descriptor.walletId;
+  mockIdentity.descriptor.instanceId = f.owned.read.instanceId;
+  const txid = '0x' + '8'.repeat(64);
+  Object.assign(f.owned.read.received[0], { hash: f.capsule.noteHash, txid });
+  Object.assign(f.owned.ownedPoi[0], { hash: f.capsule.noteHash, txid, type: creator });
+  f.owned.checkpointHash = '6'.repeat(64);
+  // Current authenticated tree is deliberately newer than the original signed root.
+  f.owned.trees[0].root = '0x' + '0'.repeat(63) + '9';
+  mockRunner.readOwned.mockImplementation(() => f.owned);
+  const recovery = {
+    capsule: f.capsule,
+    signature: {
+      R8: ['0x' + '0'.repeat(63) + '1', '0x' + '0'.repeat(63) + '2'],
+      S: '0x' + '0'.repeat(63) + '3',
+    },
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+  };
+  f.inner.proof.a.x = 1;
+  const transaction = { ...f.capsule.preparation.transaction, data: f.encode() };
+  const candidate = {
+    status: 'proved',
+    transaction,
+    transactionDigest: require('./railgun-private-intent').matchRailgunPrivateProvedTransaction(
+      f.capsule.preparation.transaction,
+      transaction,
+      f.capsule.preparation.expected
+    ).digest,
+    independentlyVerified: false,
+  };
+  mockRunner.recoverReadOnly = jest.fn(async () => ({
+    receipt: {},
+    coverage: {},
+    readOnly: { readOnly: true, writeAttempts: 0 },
+    recovery: candidate,
+  }));
+  return { ...f, recovery, candidate };
+}
+
+for (const kind of [
+  'railgun-private-transfer',
+  'railgun-token-unshield',
+  'railgun-partial-unshield',
+]) {
+  test.each(['Shield', 'Transact'])(
+    `fixed recovery ${kind}/%s returns candidate after revalidation with original root unchanged`,
+    async (creator) => {
+      const input = completedOptions(),
+        f = proofRecoveryFixture(kind, creator);
+      const account = await openRailgunCompletedAccountWallet(input);
+      try {
+        const candidate = await recoverRailgunAccountPrivateProof(account, options, f.recovery);
+        expect(candidate).toEqual(f.candidate);
+        expect(Object.keys(candidate).sort()).toEqual([
+          'independentlyVerified',
+          'status',
+          'transaction',
+          'transactionDigest',
+        ]);
+        expect(Object.isFrozen(candidate)).toBe(true);
+        expect(Object.isFrozen(candidate.transaction)).toBe(true);
+        expect(mockRunner.recoverReadOnly).toHaveBeenCalledTimes(1);
+        const call = mockRunner.recoverReadOnly.mock.calls[0][0];
+        expect(call.privateRecovery).toEqual(f.recovery);
+        expect(call.privateRecovery.capsule).not.toBe(f.recovery.capsule);
+        expect(call.privateRecovery.capsule.preparation.expected.merkleRoot).not.toBe(
+          f.owned.trees[0].root
+        );
+        expect(call).not.toHaveProperty('privateIntent');
+        expect(call).not.toHaveProperty('privateOperation');
+        expect(mockJournal.revalidate).toHaveBeenCalledTimes(2);
+        expect(mockJournal.prepare).not.toHaveBeenCalled();
+        expect(mockJournal.complete).not.toHaveBeenCalled();
+        expect(options.coordinator.withPublicSnapshot).not.toHaveBeenCalled();
+        expect(options.coordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(2);
+        expect(mockRunner.restoreReadOnly).toHaveBeenCalledTimes(1);
+        await restoreRailgunAccountWallet(account, options);
+        expect(mockRunner.restoreReadOnly).toHaveBeenCalledTimes(2);
+      } finally {
+        await account.close();
+      }
+    }
+  );
+}
+
+test('proof recovery cannot adopt ordinary wallet accounts, copied accounts or foreign owners', async () => {
+  const f = proofRecoveryFixture();
+  const ordinary = await openRailgunAccountWallet(options);
+  expect(() => recoverRailgunAccountPrivateProof(ordinary, options, f.recovery)).toThrow();
+  await ordinary.close();
+  // Separate setup after actual ordinary storage exit.
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+  phase.release();
+  expect(() => recoverRailgunAccountPrivateProof({}, options, f.recovery)).toThrow();
+  expect(mockRunner.recoverReadOnly).not.toHaveBeenCalled();
+});
+
+test.each(['copy', 'identity', 'enrollment', 'coordinator'])(
+  'fixed recovery refuses %s owner substitution before queries',
+  async (kind) => {
+    const input = completedOptions(),
+      f = proofRecoveryFixture();
+    const account = await openRailgunCompletedAccountWallet(input);
+    try {
+      expect(() =>
+        recoverRailgunAccountPrivateProof(
+          kind === 'copy' ? { ...account } : account,
+          kind === 'copy' ? options : { ...options, [kind]: {} },
+          f.recovery
+        )
+      ).toThrow();
+      expect(mockRunner.recoverReadOnly).not.toHaveBeenCalled();
+      expect(options.coordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      await account.close();
+    }
+  }
+);
+
+test.each([
+  'callback',
+  'job',
+  'mode',
+  'missing-signature',
+  'wallet',
+  'relative-path',
+  'signature',
+  'getter',
+])('closed recovery input refuses %s without poisoning healthy account', async (kind) => {
+  const input = completedOptions(),
+    f = proofRecoveryFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  const bad = JSON.parse(JSON.stringify(f.recovery));
+  if (['callback', 'job', 'mode'].includes(kind)) bad[kind] = 'not allowed';
+  if (kind === 'missing-signature') delete bad.signature;
+  if (kind === 'wallet') bad.capsule.walletId = 'f'.repeat(64);
+  if (kind === 'relative-path') bad.proverArchive = 'relative.asar';
+  if (kind === 'signature') bad.signature.S = '0x00';
+  const getter = jest.fn(() => '/prover.asar');
+  if (kind === 'getter')
+    Object.defineProperty(bad, 'proverArchive', { enumerable: true, get: getter });
+  try {
+    await expect(recoverRailgunAccountPrivateProof(account, options, bad)).rejects.toThrow();
+    expect(getter).not.toHaveBeenCalled();
+    expect(mockRunner.recoverReadOnly).not.toHaveBeenCalled();
+    expect(options.coordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(1);
+    expect(account.signal.aborted).toBe(false);
+    await expect(recoverRailgunAccountPrivateProof(account, options, f.recovery)).resolves.toEqual(
+      f.candidate
+    );
+  } finally {
+    await account.close();
+  }
+});
+
+test.each([
+  'spent',
+  'hash',
+  'nullifier',
+  'amount',
+  'token',
+  'type',
+  'txid',
+  'duplicate-note',
+  'duplicate-record',
+  'position',
+  'instance',
+])('current owned %s mismatch refuses before recovery utility or source query', async (kind) => {
+  const input = completedOptions(),
+    f = proofRecoveryFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  if (kind === 'spent') f.owned.read.received[0].spentTxid = '0x' + '1'.repeat(64);
+  if (kind === 'hash') f.owned.ownedPoi[0].hash = '0x' + '1'.repeat(64);
+  if (kind === 'nullifier') f.owned.ownedPoi[0].nullifier = '0x' + '1'.repeat(64);
+  if (kind === 'amount') f.owned.read.received[0].amount = 999n;
+  if (kind === 'token') f.owned.read.received[0].asset.contract = '0x' + '1'.repeat(40);
+  if (kind === 'type') f.owned.ownedPoi[0].type = 'unknown';
+  if (kind === 'txid') f.owned.ownedPoi[0].txid = '0x' + '1'.repeat(64);
+  if (kind === 'duplicate-note') f.owned.read.received.push({ ...f.owned.read.received[0] });
+  if (kind === 'duplicate-record') f.owned.ownedPoi.push({ ...f.owned.ownedPoi[0] });
+  if (kind === 'position') f.owned.trees[0].length = 1;
+  if (kind === 'instance') f.owned.read.instanceId = 'foreign';
+  try {
+    await expect(recoverRailgunAccountPrivateProof(account, options, f.recovery)).rejects.toThrow();
+    expect(mockRunner.recoverReadOnly).not.toHaveBeenCalled();
+    expect(options.coordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(1);
+  } finally {
+    await account.close();
+  }
+});
+
+test('recovery captures caller data before awaits and never regenerates the original intent', async () => {
+  const input = completedOptions(),
+    f = proofRecoveryFixture('railgun-partial-unshield');
+  const account = await openRailgunCompletedAccountWallet(input);
+  const original = JSON.parse(JSON.stringify(f.recovery));
+  const gate = completedDeferred();
+  let entered = false;
+  mockJournal.readState.mockImplementationOnce(async () => {
+    entered = true;
+    await gate.promise;
+    return state;
+  });
+  const work = recoverRailgunAccountPrivateProof(account, options, f.recovery);
+  await completedUntil(() => entered);
+  f.recovery.signature.S = '0x00';
+  f.recovery.capsule.pathElements[0] = '0x00';
+  f.recovery.proverArchive = '/changed.asar';
+  gate.resolve();
+  try {
+    expect(await work).toEqual(f.candidate);
+    expect(mockRunner.recoverReadOnly.mock.calls[0][0].privateRecovery).toEqual(original);
+  } finally {
+    await account.close();
+  }
+});
+
+test.each(['type', 'creating-txid', 'checkpoint', 'spent'])(
+  'late coherent %s drift refuses after genuine receipt/journal revalidation',
+  async (kind) => {
+    const input = completedOptions(),
+      f = proofRecoveryFixture();
+    const account = await openRailgunCompletedAccountWallet(input);
+    mockRunner.recoverReadOnly.mockImplementationOnce(async () => {
+      if (kind === 'type') f.owned.ownedPoi[0].type = 'Transact';
+      if (kind === 'creating-txid')
+        f.owned.ownedPoi[0].txid = f.owned.read.received[0].txid = '0x' + '9'.repeat(64);
+      if (kind === 'checkpoint') f.owned.checkpointHash = '9'.repeat(64);
+      if (kind === 'spent') f.owned.read.received[0].spentTxid = '0x' + '9'.repeat(64);
+      return { receipt: {}, coverage: {}, recovery: f.candidate };
+    });
+    await expect(recoverRailgunAccountPrivateProof(account, options, f.recovery)).rejects.toThrow();
+    expect(mockJournal.revalidate).toHaveBeenCalledTimes(2);
+    expect(account.signal.aborted).toBe(true);
+    expect(options.coordinator.signal.aborted).toBe(false);
+  }
+);
+
+test.each(['missing', 'refused', 'digest', 'extra-secret', 'verified', 'different-intent'])(
+  'recovery result %s cannot escape as a candidate',
+  async (kind) => {
+    const input = completedOptions(),
+      f = proofRecoveryFixture();
+    const account = await openRailgunCompletedAccountWallet(input);
+    let recovery = { ...f.candidate };
+    if (kind === 'missing') recovery = undefined;
+    if (kind === 'refused') recovery = { status: 'refused' };
+    if (kind === 'digest') recovery.transactionDigest = '0x' + 'f'.repeat(64);
+    if (kind === 'extra-secret') recovery.witness = 'private';
+    if (kind === 'verified') recovery.independentlyVerified = true;
+    if (kind === 'different-intent') recovery.transaction = { ...recovery.transaction, value: '1' };
+    mockRunner.recoverReadOnly.mockResolvedValueOnce({ receipt: {}, coverage: {}, recovery });
+    await expect(recoverRailgunAccountPrivateProof(account, options, f.recovery)).rejects.toThrow();
+    expect(account.signal.aborted).toBe(true);
+  }
+);
+
+test('recovery cancellation holds the real wallet phase after storage exit until fixed runner drains', async () => {
+  const input = completedOptions(),
+    f = proofRecoveryFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  const gate = completedDeferred();
+  let entered = false,
+    settled = false;
+  mockRunner.recoverReadOnly.mockImplementationOnce(async () => {
+    entered = true;
+    await gate.promise;
+    return { receipt: {}, recovery: f.candidate };
+  });
+  const work = recoverRailgunAccountPrivateProof(account, options, f.recovery).catch((error) => {
+    settled = true;
+    return error;
+  });
+  await completedUntil(() => entered);
+  const closing = account.close();
+  await mockSession.closed;
+  expect(settled).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  gate.resolve();
+  expect(await work).toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' });
+  await closing;
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+  phase.release();
+});
+
+test('recovery unknown utility exit preserves process quarantine and phase instead of returning proof data', async () => {
+  const input = completedOptions(),
+    f = proofRecoveryFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  mockRunner.recoverReadOnly.mockRejectedValueOnce(
+    Object.assign(Error('exit unknown'), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' })
+  );
+  await expect(
+    recoverRailgunAccountPrivateProof(account, options, f.recovery)
+  ).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+});
+
+test.each(['recover', 'restore'])(
+  'held proof regeneration excludes competing %s while preserving admitted recovery',
+  async (kind) => {
+    const input = completedOptions(),
+      f = proofRecoveryFixture();
+    const account = await openRailgunCompletedAccountWallet(input);
+    const gate = completedDeferred();
+    let entered = false;
+    mockRunner.recoverReadOnly.mockImplementationOnce(async () => {
+      entered = true;
+      await gate.promise;
+      return { receipt: {}, recovery: f.candidate };
+    });
+    const work = recoverRailgunAccountPrivateProof(account, options, f.recovery);
+    await completedUntil(() => entered);
+    try {
+      await expect(
+        kind === 'recover'
+          ? recoverRailgunAccountPrivateProof(account, options, f.recovery)
+          : restoreRailgunAccountWallet(account, options)
+      ).rejects.toThrow();
+      expect(mockRunner.recoverReadOnly).toHaveBeenCalledTimes(1);
+      expect(account.signal.aborted).toBe(false);
+      gate.resolve();
+      expect(await work).toEqual(f.candidate);
+    } finally {
+      gate.resolve();
+      await work.catch(() => {});
+      await account.close();
+    }
+  }
+);
+
+test.each(['journal', 'coverage', 'generation', 'deadline'])(
+  'late recovery %s failure refuses without publishing candidate',
+  async (kind) => {
+    const input = completedOptions(),
+      f = proofRecoveryFixture();
+    let now = 100;
+    const clock = jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const account = await openRailgunCompletedAccountWallet({ ...input, timeoutMs: 1000 });
+    mockRunner.recoverReadOnly.mockImplementationOnce(async () => {
+      if (kind === 'journal')
+        mockJournal.revalidate.mockRejectedValueOnce(Error('changed persisted state'));
+      if (kind === 'coverage') mockCoverage.read.mockRejectedValueOnce(Error('changed coverage'));
+      if (kind === 'generation') generation = { ...generation, id: 'f'.repeat(64) };
+      if (kind === 'deadline') now = 1100;
+      return { receipt: {}, recovery: f.candidate };
+    });
+    try {
+      await expect(
+        recoverRailgunAccountPrivateProof(account, options, f.recovery)
+      ).rejects.toThrow();
+      expect(account.signal.aborted).toBe(true);
+      expect(options.coordinator.signal.aborted).toBe(false);
+      expect(mockJournal.complete).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+      await account.close();
+    }
+  }
+);
+
+test('late source failure during proof recovery retains genuine outcome despite caller cancellation', async () => {
+  const caller = new AbortController();
+  const input = { ...completedOptions(), signal: caller.signal },
+    f = proofRecoveryFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  const original = Error('source detail');
+  const outcome = Object.freeze({ fatal: true, reason: 'rpc-failure', rpcFailure: 'response' });
+  mockCompletedOutcome.mockImplementation((coordinator, error) => {
+    expect(coordinator).toBe(options.coordinator);
+    expect(error).toBe(original);
+    return outcome;
+  });
+  options.coordinator.withCompletedPublicSnapshot.mockImplementationOnce(async (_options, use) => {
+    await use({ checkpoint: {}, signal: scope.signal });
+    caller.abort();
+    throw original;
+  });
+  const error = await recoverRailgunAccountPrivateProof(account, options, f.recovery).catch(
+    (error) => error
+  );
+  expect(error).toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED', sourceOutcome: outcome });
+  expect(error.message).not.toContain('source detail');
+  expect(mockRunner.recoverReadOnly).toHaveBeenCalledTimes(1);
+  await account.close();
+});

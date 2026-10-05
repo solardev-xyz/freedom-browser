@@ -33,8 +33,19 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
   }
   async function run(
     { snapshot, walletSession, coverageStore, walletId, restore, ...options },
-    readOnly = false
+    readOnly = false,
+    recoveryMode = false
   ) {
+    if (recoveryMode) {
+      assert.ok(readOnly && options.privateRecovery);
+      assert.equal(options.privateIntent, undefined);
+      assert.equal(options.privateOperation, undefined);
+      options.privateRecovery =
+        require('./railgun-private-recovery-data').normalizeRailgunPrivateRecoveryInput(
+          options.privateRecovery,
+          { walletId }
+        );
+    } else assert.equal(options.privateRecovery, undefined);
     const descriptor = currentIdentity();
     if (descriptor) assert.equal(walletId, descriptor.walletId);
     assert.equal(typeof restore, 'boolean');
@@ -90,6 +101,19 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
               preparation
             );
       if (options.privateOperation === undefined) assert.equal(result.privateOperation, undefined);
+      const recovery = recoveryMode
+        ? require('./railgun-private-recovery-data').normalizeRailgunPrivateRecoveryResult(
+            result.privateRecovery,
+            {
+              capsule: options.privateRecovery.capsule,
+              walletId,
+              read,
+              ownedPoi,
+              trees: snapshot.checkpoint.state.trees,
+            }
+          )
+        : undefined;
+      if (!recoveryMode) assert.equal(result.privateRecovery, undefined);
       if (descriptor) {
         assert.equal(read.instanceId, descriptor.instanceId);
         currentIdentity();
@@ -122,6 +146,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         ...(readOnly ? { readOnly: readOnlyStatus } : {}),
         ...(preparation ? { preparation } : {}),
         ...(operation ? { operation } : {}),
+        ...(recovery ? { recovery } : {}),
       };
     } catch (error) {
       coverageStore.close();
@@ -160,6 +185,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       assert.ok(options.privateIntent && options.privateOperation);
       return run({ ...options, restore: true }, true);
     },
+    recoverReadOnly: (options) => run({ ...options, restore: true }, true, true),
     assertScan,
     read,
     readOwned,

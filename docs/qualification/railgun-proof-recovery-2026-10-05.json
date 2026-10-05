@@ -1,0 +1,128 @@
+{
+  "schema": "railgun-proof-recovery-qualification-v1",
+  "sourceHashes": {
+    "scripts/fixtures/railgun-partial-controller-services.js": "a6ad62aa3dd2e846242915d10ce52c8ee025b88c1df74f9b1bb14593042497ca",
+    "scripts/qualify-railgun-proof-recovery.js": "77a65fefba87f79b81c7a1b1ec501b11817947c1ca6ad13a79254c7dc0e0d9e8",
+    "src/main/wallet/railgun-account-enrollment.js": "b879498df3c5c862fc61b6fb637d76df8484712e05e8be11da5225d487a0d9c4",
+    "src/main/wallet/railgun-account-enrollment.test.js": "aa1ae52cd6c498ec3eaa08f455bafe21944064ae6852fbaba85e4d4dee1defda",
+    "src/main/wallet/railgun-account-wallet.js": "4c9acb675f44a0637b51d67060f2075d2f1c5326eb8bd0053f45149eadd48d22",
+    "src/main/wallet/railgun-account-wallet.test.js": "e34a05cda42759885edd8e562eb8c5b82e57f3f3beaa9c9c737e87bf96cc223f",
+    "src/main/wallet/railgun-private-proof-recovery.js": "6a00f6087e034f03696532300641ffca4847de0fc4b38cd6ecbae6ad24a7618e",
+    "src/main/wallet/railgun-private-proof-recovery.test.js": "d37c2b9db285cac54607e469c1dae15fbcdc4790de867c19a76e902841742d87",
+    "src/main/wallet/railgun-private-recover-job.js": "6758ba57a9b5070dfac7b74be843a0d91a6e4c4111d858696a6f79f80a16f167",
+    "src/main/wallet/railgun-private-recover-job.test.js": "5b1b9ad043d9775a33cef2a4cdaadb4fee53cef8a2bbc9f2914f22667fb07bcc",
+    "src/main/wallet/railgun-private-recovery-data.js": "d434b44fc120d6ce1a959f5553978a04a4c9596776a178365d4fb460766579c6",
+    "src/main/wallet/railgun-private-recovery-data.test.js": "06b2bfdcc3147e84f49cc463e284f8f18c9c6177524a636ba2dbd4b896874b92",
+    "src/main/wallet/railgun-process.js": "2e034c3a12a3b882a6c6408cfc85b6899476f390418ff43878d46c4651bef181",
+    "src/main/wallet/railgun-process.test.js": "19fead79dd8e2a258efe18305a95f249fc7a5111eaab1961bd8b3f6ef643cd49",
+    "src/main/wallet/railgun-wallet-job.js": "2fadcc5bc381088c6a18643c2e88716c8e1e81230e906562c1710ea08eb2ea7b",
+    "src/main/wallet/railgun-wallet-policy.js": "c58e962d09c56188f0124bc8b4c78074942cfccac3271b4b2a115a14b9cf177d",
+    "src/main/wallet/railgun-wallet-policy.test.js": "2fd847447ba3b575d78ca77191812dcaeb1be58972457ff72ab2d4b3517878df",
+    "src/main/wallet/railgun-wallet-run.js": "3ce5fd5031696ece1cc4b77f9e1546b19c74a2b37314412b332c61b7147138c5",
+    "src/main/wallet/railgun-wallet-run.test.js": "30cfd3ba8a14291b891a6926d1cea5e91e8f7f32aee026e53bb2dcb095e2bfdc",
+    "src/main/wallet/railgun-wallet-runner.js": "4124e1d9c02cf539f03d9c31e9ba8f3d30e22b5f31a1b03a671fd8e1169c797e",
+    "src/main/wallet/railgun-wallet-runner.test.js": "a53ac296e4d311ab2b30b86c4f77b4b19e125efbb446ac9dc9c01a88b3211ffa"
+  },
+  "nativeReports": {
+    "railgun-proof-recovery-shield-transfer-2026-10-05.json": "ea55231b7b786df0236ad8dc7f57c8a115b58d8eb82fa72b3fdaeabea8d4ef21",
+    "railgun-proof-recovery-shield-unshield-2026-10-05.json": "c7363d08de9b91e73a5dbb965ae7b37a25ec2203d270552510af28b9bafe5ef3",
+    "railgun-proof-recovery-shield-partial-2026-10-05.json": "251d8e75dedfb144e99f78ac9667de4e9c6da8d9a97083a38c40a07dc8ced408",
+    "railgun-proof-recovery-transact-transfer-2026-10-05.json": "bf7518d6d45af2702596b616e462d9004d7dcfd2ab163fb8ed86f25f9f7b4fb4",
+    "railgun-proof-recovery-transact-unshield-2026-10-05.json": "a98bdfef062eef5194caa9c6d9d36398d91b24064edd7d6c71b7c50070817c0d",
+    "railgun-proof-recovery-transact-partial-2026-10-05.json": "c248db45f84b6499dcd3484a26985c0e257e8b567c76b4c0b8d7d0c060806a1b"
+  },
+  "validation": {
+    "direct": {
+      "passed": 547,
+      "suites": 9,
+      "elapsedSeconds": 13.759,
+      "log": "/private/tmp/railgun-proof-recovery-integrated-oct5-a.log",
+      "sha256": "e7f19d6ea574374d56d2b1573b0752cf7bbe0138c0a7ff6b6caac7282afc0d4f"
+    },
+    "consumers": {
+      "passed": 374,
+      "suites": 7,
+      "elapsedSeconds": 8.56,
+      "log": "/private/tmp/railgun-proof-recovery-consumers-oct5-a.log",
+      "sha256": "1db8b88dd542ba47cd4b97a594222a6ba8e78defce9f7c13dd73b914583eed3a"
+    },
+    "lint": {
+      "command": "npm run lint",
+      "exitCode": 0,
+      "log": "/private/tmp/railgun-proof-recovery-qualifier-lint-oct5.log",
+      "sha256": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f"
+    },
+    "detachedControls": {
+      "scope": "Mocked host orchestration; temporary in-memory transformer, no repository mutation",
+      "baseline": {
+        "passed": 5,
+        "skipped": 74,
+        "log": "/private/tmp/railgun-private-proof-recovery-control-baseline.log",
+        "sha256": "f0834e7bdb64758d3251d91fe19705e7aff33a7770577885800ae039cae2bd4f"
+      },
+      "removePostVerificationCompare": {
+        "failed": 2,
+        "passed": 3,
+        "skipped": 74,
+        "log": "/private/tmp/railgun-private-proof-recovery-control-cas.log",
+        "sha256": "a5490da81df7044fce1a8c4489a9b5958be3ec3685e64b1b679506ed67b0e130"
+      },
+      "removeCandidateDigestCheck": {
+        "failed": 1,
+        "passed": 4,
+        "skipped": 74,
+        "log": "/private/tmp/railgun-private-proof-recovery-control-digest.log",
+        "sha256": "f6ebb0e2037a819004da8ee60509e58fb0ce6b9ad4cf34ed6ac0c4ba578655b0"
+      },
+      "removeAwaitedWalletClose": {
+        "failed": 1,
+        "passed": 4,
+        "skipped": 74,
+        "log": "/private/tmp/railgun-private-proof-recovery-control-drain.log",
+        "sha256": "143f0a6a177883b76ab51bde0b50b0f6f18d035be9acb84692cd9ca55bf9fc7a"
+      }
+    },
+    "regression": {
+      "report": "railgun-proof-recovery-regression-2026-10-05.json",
+      "sha256": "d55bdfd7ba8e99b8cc2a294705e1b85d2f1edcbeec1895d86f58204f398485ef",
+      "passed": 15178,
+      "skipped": 33,
+      "passedSuites": 511,
+      "skippedSuites": 5,
+      "elapsedSeconds": 611.319,
+      "manifestFiles": 1371,
+      "manifestSha256": "3552c205e29e5193cabe333c315e5609c725ce9c841f79c4e454e45345edb233",
+      "command": "npm run test:coverage -- --runInBand --forceExit --testPathIgnorePatterns=openlv-protocol.test.js --reporters=default",
+      "exitCode": 0
+    }
+  },
+  "policies": {
+    "wallet": "e7671ac4aacec46a4d8b099664aebd317b61f2196805301470014e93ccbf8ffa",
+    "public": "d454092c2a951aca09b6f8b6d84196a947c3ae77a003f86e6aed9dd7d0f1b477",
+    "txid": "03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7",
+    "walletInputsChanged": [
+      "railgun-wallet-job",
+      "railgun-wallet-run",
+      "railgun-wallet-runner",
+      "railgun-private-recover-job",
+      "railgun-private-recovery-data"
+    ]
+  },
+  "limits": {
+    "warmCachedPrivateStoresOnly": true,
+    "coldExistingOnlyOpeningNativeQualified": false,
+    "freshProcessRestartQualified": false,
+    "originalRootDifferentFromCurrentNativeQualified": false,
+    "naturalCrashQualified": false,
+    "physicalSocketDrainQualified": false,
+    "liveServicesQualified": false,
+    "partialFacadeEnabled": false,
+    "partialSubmissionEnabled": false,
+    "submissionEnabledByProofRecovery": false,
+    "proofPresentFreshlyVerified": false,
+    "fullRepositoryRegressionRefreshed": true,
+    "regressionOpenlvExcluded": true,
+    "regressionUsesForcedExit": true
+  },
+  "main": "dbfd0e7d35354a40473dc4ce46eeef16eae6b32e"
+}

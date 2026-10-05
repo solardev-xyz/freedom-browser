@@ -47,6 +47,56 @@ const fail = () =>
 const check = (v) => {
   if (!v) throw fail();
 };
+function bindRecoveryInput(capsule, owned, descriptor) {
+  check(
+    capsule.walletId === descriptor.walletId && owned.read.instanceId === descriptor.instanceId
+  );
+  const { selection, preparation, noteHash } = capsule;
+  const id = `${selection.tree}:${selection.position}`;
+  const notes = owned.read.received.filter((note) => note.id === id);
+  const records = owned.ownedPoi.filter((record) => record.id === id);
+  const trees = owned.trees.filter((tree) => tree.tree === selection.tree);
+  check(notes.length === 1 && records.length === 1 && trees.length === 1);
+  const note = notes[0],
+    record = records[0],
+    tree = trees[0];
+  const pins = require('./railgun-shield-pins.json');
+  check(
+    note.tree === selection.tree &&
+      note.position === selection.position &&
+      note.position < tree.length
+  );
+  check(note.hash === noteHash && record.hash === noteHash && note.txid === record.txid);
+  check(['Shield', 'Transact'].includes(record.type));
+  check(
+    note.spentTxid === false &&
+      typeof note.amount === 'bigint' &&
+      note.amount > 0n &&
+      note.amount <= BigInt(pins.maxQualificationAmount)
+  );
+  check(note.asset.__type === 'erc20' && note.asset.contract === pins.wrappedNative);
+  check(record.nullifier === preparation.expected.nullifier);
+  const amount =
+    selection.kind === 'railgun-partial-unshield' ? preparation.inputAmount : preparation.amount;
+  check(note.amount.toString() === amount);
+  if (selection.kind === 'railgun-private-transfer')
+    check(
+      selection.recipient === descriptor.instanceId &&
+        owned.read.instanceId === descriptor.instanceId
+    );
+  // Deliberately no equality against tree.root: the stored signature binds the
+  // capsule's original root/path. Current restoration authenticates ownership,
+  // not current spendability or creator/TXID/POI admission.
+  return Object.freeze({
+    checkpointHash: owned.checkpointHash,
+    id,
+    type: record.type,
+    txid: note.txid,
+    noteHash,
+    nullifier: record.nullifier,
+    amount,
+  });
+}
 function exists(filename) {
   try {
     const stat = fs.lstatSync(filename);
@@ -247,7 +297,7 @@ async function openAccount(
         require('assert/strict').deepEqual(enrollment.catalog.activeFor(policy), generation);
     }
   };
-  const completedRestore = async (state) => {
+  const completedRestore = async (state, privateRecovery) => {
     openingCurrent();
     check(state.checkpoint && !state.pending);
     // A cold restore has no in-process scan receipt. Authenticate the persisted
@@ -286,12 +336,13 @@ async function openAccount(
             checkpointHash(snapshot.checkpoint) !== state.checkpoint.target.hash
           )
             return null;
-          scan = runner.restoreReadOnly({
+          scan = (privateRecovery ? runner.recoverReadOnly : runner.restoreReadOnly)({
             handle,
             snapshot,
             walletSession,
             coverageStore,
             walletId,
+            ...(privateRecovery ? { privateRecovery } : {}),
           });
           // Wallet restoration failure is local to this owned wallet. Genuine
           // source/broker integrity remains latched by the coordinator itself.
@@ -440,14 +491,24 @@ async function openAccount(
       getRailgunAccountPublicIdentity(coordinator, enrollment);
       return runner.readOwned(checked.value.receipt, journal);
     };
-    async function restoreCurrent(request, operation) {
+    async function restoreCurrent(request, operation, recovery) {
       const before = current();
       if (completedOnly) {
         check(request === undefined && operation === undefined);
+        const privateRecovery =
+          recovery === undefined
+            ? undefined
+            : require('./railgun-private-recovery-data').normalizeRailgunPrivateRecoveryInput(
+                recovery,
+                { walletId }
+              );
+        const originalInput = privateRecovery
+          ? bindRecoveryInput(privateRecovery.capsule, before, descriptor)
+          : undefined;
         busy = true;
         restoration = (async () => {
           const state = await journal.readState();
-          const renewed = await completedRestore(state);
+          const renewed = await completedRestore(state, privateRecovery);
           const coverage = await coverageStore.read(renewed.value.receipt);
           const freshState = await walletSession.inspectWalletState();
           await journal.revalidate({
@@ -461,10 +522,30 @@ async function openAccount(
             journal,
             receipt: renewed.value.receipt,
           });
+          let candidate;
+          if (privateRecovery) {
+            const fresh = runner.readOwned(renewed.value.receipt, journal);
+            require('assert/strict').deepEqual(
+              bindRecoveryInput(privateRecovery.capsule, fresh, descriptor),
+              originalInput
+            );
+            check(renewed.value.recovery?.status === 'proved');
+            candidate =
+              require('./railgun-private-recovery-data').normalizeRailgunPrivateRecoveryResult(
+                renewed.value.recovery,
+                {
+                  capsule: privateRecovery.capsule,
+                  walletId,
+                  read: fresh.read,
+                  ownedPoi: fresh.ownedPoi,
+                  trees: fresh.trees,
+                }
+              );
+          }
           openingCurrent();
           checked = renewed;
           view = nextView;
-          return view;
+          return privateRecovery ? candidate : view;
         })();
         try {
           const restored = await restoration;
@@ -716,6 +797,10 @@ async function openAccount(
       coordinator,
       current,
       restoreCurrent,
+      recoverPrivateProof(recovery) {
+        check(completedOnly && recovery !== undefined);
+        return restoreCurrent(undefined, undefined, recovery);
+      },
       reserveHandoff() {
         check(!completedOnly);
         current();
@@ -746,6 +831,12 @@ function readRailgunAccountOwnedNotes(account, owners) {
 }
 function restoreRailgunAccountWallet(account, owners) {
   return owned(account, owners).restoreCurrent();
+}
+/** Fixed proof-data regeneration only. No operation window, signing permit or
+ * completion receipt is issued; independent C and durable reattestation remain
+ * the recovery controller's responsibility after this account fully closes. */
+function recoverRailgunAccountPrivateProof(account, owners, recovery) {
+  return owned(account, owners).recoverPrivateProof(recovery);
 }
 function reserveRailgunAccountWalletHandoff(account, owners) {
   return owned(account, owners).reserveHandoff();
@@ -808,6 +899,7 @@ module.exports = {
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
+  recoverRailgunAccountPrivateProof,
   reserveRailgunAccountWalletHandoff,
   prepareRailgunAccountPrivateIntent,
   operateRailgunAccountPrivateIntent,
