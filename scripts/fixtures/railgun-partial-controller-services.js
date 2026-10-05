@@ -1,6 +1,5 @@
 /** Offline service boundary only. Account/POI/preflight/RPC capabilities remain
  * production objects. Chain state and service-key trust are synthetic. */
-const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { createHash } = require('crypto');
@@ -18,7 +17,17 @@ const abi = new Interface([
   'function getVerificationKey(uint256,uint256) view returns ((string artifactsIPFSHash,(uint256 x,uint256 y) alpha1,(uint256[2] x,uint256[2] y) beta2,(uint256[2] x,uint256[2] y) gamma2,(uint256[2] x,uint256[2] y) delta2,(uint256 x,uint256 y)[] ic))',
 ]);
 let installed = false;
-exports.install = function install({ bytecodes, artifactDirectory, source, anchor }) {
+exports.install = function install({
+  bytecodes,
+  artifactDirectory,
+  source,
+  anchor,
+  perHandlePoi = false,
+}) {
+  const assert = perHandlePoi
+    ? require('./railgun-native-assertions').assert
+    : require('assert/strict');
+  assert.equal(typeof perHandlePoi, 'boolean');
   assert.equal(installed, false);
   installed = true;
   assert.ok(path.isAbsolute(artifactDirectory));
@@ -113,6 +122,7 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     ['rootHistory', 'unshieldFee', 'getVerificationKey', 'nullifiers'].map((v) => [v, 0])
   );
   const publicServiceMethods = { latest: 0, page: 0, validate: 0 };
+  const requestOrder = [];
   const counts = {
     transportEntries: 0,
     unexpectedTransportFailures: 0,
@@ -246,7 +256,9 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
       [BigInt(selectedTree), call.name === 'rootHistory' ? selectedRoot : selected.nullifier]
     );
     if (call.name === 'nullifiers') counts.selectedNullifierQueries++;
-    return abi.encodeFunctionResult(call.name, [call.name === 'rootHistory']);
+    return abi.encodeFunctionResult(call.name, [
+      call.name === 'rootHistory' ? mode !== 'synthetic-missing-root' : mode === 'spent-nullifier',
+    ]);
   }
   function poiRead(wire, client) {
     assert.ok(note && proof && Object.hasOwn(poiMethods, wire.method));
@@ -260,7 +272,11 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
         listKeys: [REQUIRED_LIST],
         blindedCommitmentDatas: [note],
       });
-      return { [note.blindedCommitment]: { [REQUIRED_LIST]: 'Valid' } };
+      return {
+        [note.blindedCommitment]: {
+          [REQUIRED_LIST]: mode === 'not-valid-poi' ? 'ShieldBlocked' : 'Valid',
+        },
+      };
     }
     if (wire.method === 'ppoi_merkle_proofs') {
       assert.deepEqual(wire.params, {
@@ -343,6 +359,7 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
   transport.createWalletTorTransport = () => {
     current();
     counts.transportCreates++;
+    const poiContexts = new WeakMap();
     let closed = false,
       pending = 0,
       resolveClosed;
@@ -377,6 +394,20 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
           const { subject } = getPrivacyContext(handle);
           assert.equal(options.method, 'POST');
           const wire = JSON.parse(options.body);
+          if (
+            subject.kind === 'service' ||
+            subject.role === 'poi' ||
+            subject.operation === 'private-preflight'
+          )
+            requestOrder.push({
+              role: subject.role,
+              operation:
+                typeof subject.operation === 'string' && subject.operation.startsWith('poi:')
+                  ? 'selected-poi'
+                  : subject.operation,
+              method: wire.method ?? 'graphql',
+              at: performance.now(),
+            });
           assert.equal(subject.chainId, pins.chainId);
           if (subject.kind === 'service') {
             const response = publicServiceRead(subject, url, wire);
@@ -396,9 +427,14 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
             assert.equal(subject.deployment, 'sepolia');
             assert.equal(subject.principal, 'railgun:' + accountIndex);
             assert.match(subject.operation, /^poi:[0-9a-f]{64}$/);
-            client.operation ??= subject.operation;
-            assert.equal(subject.operation, client.operation);
-            result = poiRead(wire, client);
+            let poiContext = perHandlePoi ? poiContexts.get(handle) : client;
+            if (!poiContext) {
+              poiContext = { operation: subject.operation, poiCursor: 0 };
+              poiContexts.set(handle, poiContext);
+            }
+            poiContext.operation ??= subject.operation;
+            assert.equal(subject.operation, poiContext.operation);
+            result = poiRead(wire, poiContext);
           } else {
             assert.equal(url, rpcUrl);
             assert.ok(Array.isArray(wire.params));
@@ -450,6 +486,8 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
           };
         } catch (error) {
           counts.unexpectedTransportFailures++;
+          if (perHandlePoi)
+            require('./railgun-native-assertions').record(error, 'service-transport');
           throw error;
         } finally {
           pending--;
@@ -635,11 +673,22 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     },
     setMode(next) {
       current();
-      assert.ok(['healthy', 'wrong-verifier', 'bad-membership', 'bad-txid-root'].includes(next));
+      assert.ok(
+        [
+          'healthy',
+          'wrong-verifier',
+          'bad-membership',
+          'bad-txid-root',
+          'synthetic-missing-root',
+          'spent-nullifier',
+          'not-valid-poi',
+        ].includes(next)
+      );
       mode = next;
     },
     report: () => ({
       ...counts,
+      requestOrder: copy(requestOrder),
       poiMethods: { ...poiMethods },
       privatePreflightMethods: { ...privatePreflightMethods },
       publicServiceMethods: { ...publicServiceMethods },

@@ -1,0 +1,1123 @@
+{
+  "schema": "railgun-cold-submission-launcher-v1",
+  "cases": [
+    {
+      "creator": "Shield",
+      "kind": "transfer",
+      "outcome": "acknowledged",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "62f26205050ffbd81d22f57e2e131b94f4e7fcb9484fddc484d695891469dda0",
+        "resume-report.json": "0763fc5456e4bc1f7c36855973221a3c4167bd8afe99df0edb58df89a55a9763",
+        "cold-submission-handoff.json": "fd8ca1f6cba83e9817a29a6f446d12621a0e3d4020d8d1033dec3bd35a618f59",
+        "cold-submission-acknowledged-report.json": "9fe7e73b3a26a9f263eb496190525146f8c6f6ddbf0a89210788dc9b5d12bfc6"
+      }
+    },
+    {
+      "creator": "Shield",
+      "kind": "transfer",
+      "outcome": "lost-response",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "f76301540216621c93e2713e78413a173928ffb82061391457112d51a44433ae",
+        "resume-report.json": "648635e48d2de279111120bfea1384f7cc095e424fca1e903908b9a273b53ca2",
+        "cold-submission-handoff.json": "32438e2107578fe9a11154944edc94ceed4dd6e7764398cc44c52b20f3d5a2d0",
+        "cold-submission-lost-response-report.json": "005303fe60002cb23fcf472d661b3f1394d15fa731c23fc8176b954637fa163e"
+      }
+    },
+    {
+      "creator": "Shield",
+      "kind": "unshield",
+      "outcome": "acknowledged",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "4aa9a1f025fde2c80d433caefd7d803e528dcb4f6f437b0ac956d1c33e47d53e",
+        "resume-report.json": "92d18cc81c5b1fc3885a5bcf0537012a9933a3f12a73f80e47150a78eeef6758",
+        "cold-submission-handoff.json": "b620eab16630308209a44e53bf919b8501f510ac9e4462a32c83a64e561b80dd",
+        "cold-submission-acknowledged-report.json": "76cd4dd0d23680c4ede8d8a957d16ef39dcd9245c2d6aa863b9322e629230c4e"
+      }
+    },
+    {
+      "creator": "Shield",
+      "kind": "unshield",
+      "outcome": "lost-response",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "0b635ac82992dcf409933ba60026c8596426c8817f69eb145320761d5f8042aa",
+        "resume-report.json": "6cb1c4d21d540ce65b992ad4b359d29cde52c0d443cd9f6c04f1e9d18eddae5f",
+        "cold-submission-handoff.json": "e79c86b7b2d3bf3a9b270cda5120aaa649816083ed26e46ac1450960ae127f87",
+        "cold-submission-lost-response-report.json": "300a15c540c491d13d82733bb565292c34c27deff12ba05dab4d1f8bb44cdcdb"
+      }
+    },
+    {
+      "creator": "Shield",
+      "kind": "partial",
+      "outcome": "acknowledged",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "662ad104398095e377bef09906d32d2e2c4cce5d66e3c274b9a074769e82db85",
+        "resume-report.json": "ecfa9350d96cd54811908b7becd108972bd2ace7ee3ac5623792556ec0fa3b8f",
+        "cold-submission-handoff.json": "3ed6243ef1d36021a8bd926b0ae75b4fc449eaf1826c0c947518dde610958d36",
+        "cold-submission-acknowledged-report.json": "1d94ea23901c0463379b349358b6dbffad83a53db9ce5c5bbb78b52aaa8f5adb"
+      }
+    },
+    {
+      "creator": "Shield",
+      "kind": "partial",
+      "outcome": "lost-response",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "e232ac0b7963e63def54f9038da25a607da62dda7b848678dd80e3937cae9d98",
+        "resume-report.json": "c549e53faff04b9575f0cb269b5fd2c35a51fdb267ac1d5cc200d820e517c6bb",
+        "cold-submission-handoff.json": "aa23ed77c1735ade3757a41f04c9865e62c5754d3a3e2c9132ac1e52b32e31f8",
+        "cold-submission-lost-response-report.json": "0d9e42ad0782adc384f8272fa7c6673e1f2de0ce1749e7b8607f6f05e68ed5d3"
+      }
+    },
+    {
+      "creator": "Transact",
+      "kind": "transfer",
+      "outcome": "acknowledged",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "c7702adb26e21f41159df91423ef3debc4f396f6b320d26c20ed89b513e5ddd3",
+        "resume-report.json": "1812e5bd706b991218170c8b8c2b0c4355e5b3b29d91a1c65dce3113efd1eef4",
+        "cold-submission-handoff.json": "e50c5e33aeca70dbab38165e51f87665283b573d312a067d964b2a0f23c1cb39",
+        "cold-submission-acknowledged-report.json": "e49363a88500d985e0b1fb379dc3e5f06d82696b74b51bbdfad5c9daf84bc68f"
+      }
+    },
+    {
+      "creator": "Transact",
+      "kind": "transfer",
+      "outcome": "lost-response",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "db7de2c975fcbd0496e1331a73dc4e671e1cefddcc2ffa2ff23d4aee4e1131cd",
+        "resume-report.json": "8b4a3c99719854af283181835d7d2eecb5f1f866c78a647ac3cdbbd7c543216f",
+        "cold-submission-handoff.json": "4410b5afcd32a8348d555624339b04da9e91c86ddf4b22421d32111edc226253",
+        "cold-submission-lost-response-report.json": "e0c133484e8e14ab6155c5ae589c1fbde663ce76228b18b7cd8eb2d4bddb4a47"
+      }
+    },
+    {
+      "creator": "Transact",
+      "kind": "unshield",
+      "outcome": "acknowledged",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "93f3f7b7a0f2a41dd4c3d412221d6006870d7524801e8f7fb4032761d0c614db",
+        "resume-report.json": "ee4edbe15c0bccd503e62ef48581ea35ac62e8c89a9745f7da5ba8b7c598191c",
+        "cold-submission-handoff.json": "d142672708a5484c89771c290767e5644113e60cd91991bb943c24ed21865602",
+        "cold-submission-acknowledged-report.json": "7d26649d3f9cc104e5a7c0f0a41027c195a9a161978db9305403cb09057b720d"
+      }
+    },
+    {
+      "creator": "Transact",
+      "kind": "unshield",
+      "outcome": "lost-response",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "18a662025319ad3061c8d3dd79bc5f7e25e71c31572f67a365e829add79010c1",
+        "resume-report.json": "78adc4c7bd355e496a7efd6e2f44e67a6d9ad751d101ea80bbe4fa96fefc7dd4",
+        "cold-submission-handoff.json": "1f538531ed9f51f96643b4c36a58253e5de67a7b8a4d4512b738275e46242923",
+        "cold-submission-lost-response-report.json": "96c637fdb1e802483d931841c59a6d42336191953018c46db665901b2e267ddd"
+      }
+    },
+    {
+      "creator": "Transact",
+      "kind": "partial",
+      "outcome": "acknowledged",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "2c232721fde63235c1840a4187b2c5a893d005e5150cad28882a04c6c5aa0ead",
+        "resume-report.json": "f34827385906e5f3ffbe0164aabb21faeea99b9b5ea7d7723f282b72fe436298",
+        "cold-submission-handoff.json": "b3f6e5948b430812ca02bd6f2b4083909d61d8f8640a51bbeed60635a6ff9157",
+        "cold-submission-acknowledged-report.json": "1ae345d607ebce5b3c6789bf5e2e5fc82d5fbcb9203bf495936ba2f4f1ee982d"
+      }
+    },
+    {
+      "creator": "Transact",
+      "kind": "partial",
+      "outcome": "lost-response",
+      "history": "advanced-root",
+      "evidence": {
+        "restart-handoff.json": "bc9d6d65d5db8d084e64955dbb00079fef7ecfc33da802c3893d18c5ef895eb6",
+        "resume-report.json": "adfebbeed8de0feb5f1286dab6f509dbf793b03a86e3bc62cc923fa31d1fe486",
+        "cold-submission-handoff.json": "0bcbbcf82cab2834da62d7d43e3dc5fd6ecd9e8f2156e4b60baee635b089c588",
+        "cold-submission-lost-response-report.json": "7552cb50ad4d4813942424ebfefc7a5e9433f263a673766cfeeac2de2046afd9"
+      }
+    },
+    {
+      "creator": "Shield",
+      "kind": "transfer",
+      "outcome": "acknowledged",
+      "history": "same-root",
+      "evidence": {
+        "restart-handoff.json": "e56aedd164097cfc65cf313846fbee5e864b57212c2edb36b981bebe025e283e",
+        "resume-report.json": "af23a0c0a05a34f1cbc6d9a3ec49e7aeffb8e8f8aa04195c96cd15a3bcdf687b",
+        "cold-submission-handoff.json": "41ce95690555f0553514f8fafc5de9a4c78f1205638d2016806d24b942c386ec",
+        "cold-submission-acknowledged-report.json": "b36e7825001904dff294451694fd82301d873627782ccda442871cd575822b13"
+      }
+    },
+    {
+      "creator": "Transact",
+      "kind": "partial",
+      "outcome": "lost-response",
+      "history": "same-root",
+      "evidence": {
+        "restart-handoff.json": "24c021aa8db43bf5cd77134d5c2ebd177402354e93c5accb652aae5270689dba",
+        "resume-report.json": "7a2ad1be07a12457ba568a91ec1ab50be06995f060ed461be7a74e28444006a3",
+        "cold-submission-handoff.json": "156799025a185b7518d6dcfd7b88fdbce8b97033c6d8a31103748f6135dbec92",
+        "cold-submission-lost-response-report.json": "c679f9bf860f7a1b19dc95ae33970f451c7151675da89b8afe178d20ab2be3ff"
+      }
+    }
+  ],
+  "launches": [
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 13373,
+      "started": 1791173646213,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 18551,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 13490,
+      "started": 1791173664765,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6111,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "acknowledged"
+      ],
+      "pid": 13507,
+      "started": 1791173670876,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 17053,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 13790,
+      "started": 1791173687930,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 20555,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 14088,
+      "started": 1791173708485,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 5770,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "lost-response"
+      ],
+      "pid": 14180,
+      "started": 1791173714255,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 4979,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-unshield-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "unshield",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 14386,
+      "started": 1791173719235,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 18949,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-unshield-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "unshield",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 14851,
+      "started": 1791173738184,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6049,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-unshield-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "unshield",
+        "acknowledged"
+      ],
+      "pid": 14870,
+      "started": 1791173744233,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 5083,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-unshield-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "unshield",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 15027,
+      "started": 1791173749317,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 19702,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-unshield-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "unshield",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 15252,
+      "started": 1791173769019,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6069,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-unshield-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "unshield",
+        "lost-response"
+      ],
+      "pid": 15300,
+      "started": 1791173775088,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 4934,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-partial-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "partial",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 15321,
+      "started": 1791173780023,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 21167,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-partial-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "partial",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 15621,
+      "started": 1791173801190,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6266,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-partial-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "partial",
+        "acknowledged"
+      ],
+      "pid": 15701,
+      "started": 1791173807456,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 5037,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-partial-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "partial",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 15725,
+      "started": 1791173812494,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 19610,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-partial-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "partial",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 15841,
+      "started": 1791173832105,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6381,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-partial-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "partial",
+        "lost-response"
+      ],
+      "pid": 15863,
+      "started": 1791173838486,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 5094,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-transfer-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "transfer",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 16116,
+      "started": 1791173843582,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 22485,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-transfer-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "transfer",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 16248,
+      "started": 1791173866068,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6109,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-transfer-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "transfer",
+        "acknowledged"
+      ],
+      "pid": 16261,
+      "started": 1791173872178,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6232,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-transfer-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "transfer",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 16299,
+      "started": 1791173878411,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 22150,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-transfer-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "transfer",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 16487,
+      "started": 1791173900561,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6118,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-transfer-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "transfer",
+        "lost-response"
+      ],
+      "pid": 16565,
+      "started": 1791173906679,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6145,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-unshield-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "unshield",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 16586,
+      "started": 1791173912825,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 22356,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-unshield-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "unshield",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 16841,
+      "started": 1791173935181,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6117,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-unshield-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "unshield",
+        "acknowledged"
+      ],
+      "pid": 16862,
+      "started": 1791173941298,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6258,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-unshield-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "unshield",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 16962,
+      "started": 1791173947556,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 23874,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-unshield-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "unshield",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 17365,
+      "started": 1791173971430,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6270,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-unshield-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "unshield",
+        "lost-response"
+      ],
+      "pid": 17480,
+      "started": 1791173977700,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6283,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 17502,
+      "started": 1791173983984,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 26181,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 17961,
+      "started": 1791174010166,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6373,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-acknowledged-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "acknowledged"
+      ],
+      "pid": 17975,
+      "started": 1791174016539,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 94058,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "setup",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 18884,
+      "started": 1791174110602,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 25214,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "resume",
+        "advanced-root",
+        "submission-handoff"
+      ],
+      "pid": 19296,
+      "started": 1791174135817,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6380,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-lost-response-advanced-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "lost-response"
+      ],
+      "pid": 19390,
+      "started": 1791174142197,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 7085,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-acknowledged-same-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "setup",
+        "same-root",
+        "submission-handoff"
+      ],
+      "pid": 19449,
+      "started": 1791174149287,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 18985,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-acknowledged-same-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "resume",
+        "same-root",
+        "submission-handoff"
+      ],
+      "pid": 19911,
+      "started": 1791174168272,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6280,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "shield-transfer-acknowledged-same-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "transfer",
+        "acknowledged"
+      ],
+      "pid": 19983,
+      "started": 1791174174552,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 5143,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-lost-response-same-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "setup",
+        "same-root",
+        "submission-handoff"
+      ],
+      "pid": 20213,
+      "started": 1791174179696,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 22158,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-lost-response-same-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "resume",
+        "same-root",
+        "submission-handoff"
+      ],
+      "pid": 20393,
+      "started": 1791174201855,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6329,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-cold-submission.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "transact-partial-lost-response-same-root",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "partial",
+        "lost-response"
+      ],
+      "pid": 20403,
+      "started": 1791174208184,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 6332,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "default-warm-shield-partial",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Shield",
+        "partial"
+      ],
+      "pid": 20437,
+      "started": 1791174214517,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 23967,
+      "timedOut": false
+    },
+    {
+      "script": "qualify-railgun-proof-recovery.js",
+      "args": [
+        "../railgun-vault-weth-source-oct3-d.json",
+        "default-warm-transact-transfer",
+        "<repository-root>/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+        "<repository-root>/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+        "<repository-root>/tmp/privacy-research-oct2/railgun-artifacts",
+        "../railgun-public-contract-bytecodes-oct4.json",
+        "Transact",
+        "transfer"
+      ],
+      "pid": 20581,
+      "started": 1791174238484,
+      "code": 0,
+      "signal": null,
+      "elapsedMs": 27942,
+      "timedOut": false
+    }
+  ],
+  "compatibility": [
+    {
+      "creator": "Shield",
+      "kind": "partial",
+      "reportSha256": "d0785c511c013528c8b4a7dc017774114021ebc77bdfd40ae51971027a39f530"
+    },
+    {
+      "creator": "Transact",
+      "kind": "transfer",
+      "reportSha256": "e21531083c50d1df713c346a6d5b5e09b4e63ed29f30528f5f7e7f35336b54bd"
+    }
+  ],
+  "allCasesCompleted": true,
+  "fixtureViolations": []
+}

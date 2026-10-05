@@ -200,3 +200,74 @@ test('a pending verifier is terminated when its own process deadline elapses', a
   await rejected;
   expect(mockTask.close).toHaveBeenCalled();
 });
+
+// These exercise the actual private receipt deadline, not a host mock. Timers
+// deliberately stay delayed while monotonic time advances.
+afterEach(() => jest.restoreAllMocks());
+test('genuine receipt margin is strict at the private post-exit deadline and never renews', async () => {
+  let now = 1000;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const result = await verify();
+  const original = assertRailgunPrivateProof(result.receipt, mockEnrollment, input);
+  expect(assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 59999)).toBe(original);
+  expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 60000)).toThrow();
+  now = 10999;
+  expect(assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 50000)).toBe(original);
+  now = 11000;
+  expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 50000)).toThrow();
+  expect(assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 49999)).toBe(original);
+  now = 60999;
+  expect(assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 0)).toBe(original);
+  now = 61000;
+  expect(result.signal.aborted).toBe(false); // Delayed timer is not authority.
+  expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input)).toThrow();
+  expect(startRailgunProcess).toHaveBeenCalledTimes(1);
+});
+test.each([-1, 0.5, NaN, Infinity, null, '0', 60000, Number.MAX_SAFE_INTEGER + 1])(
+  'invalid proof margin %p refuses without revoking otherwise-current evidence',
+  async (margin) => {
+    const result = await verify();
+    expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input, margin)).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_PRIVATE_PROOF_REFUSED' })
+    );
+    expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 0)).not.toThrow();
+    expect(result.signal.aborted).toBe(false);
+  }
+);
+test('margin reads the observed-exit lifetime rather than the shorter verifier job budget', async () => {
+  let now = 1000;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  mockDeferExit = true;
+  const pending = verify({ timeoutMs: 15000 });
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  expect(mockTask.close).toHaveBeenCalled();
+  now = 10000;
+  mockExit();
+  const result = await pending;
+  expect(() =>
+    assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 59999)
+  ).not.toThrow();
+  now = 70000;
+  expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 0)).toThrow();
+});
+test('margin cannot bypass backward time, owner revocation or original evidence binding', async () => {
+  let now = 1000;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const result = await verify();
+  now = 999;
+  expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 0)).toThrow();
+  now = 1000;
+  expect(() =>
+    assertRailgunPrivateProof(
+      result.receipt,
+      mockEnrollment,
+      {
+        ...input,
+        transaction: { data: 'other' },
+      },
+      50000
+    )
+  ).toThrow();
+  controller.abort();
+  expect(() => assertRailgunPrivateProof(result.receipt, mockEnrollment, input, 0)).toThrow();
+});

@@ -6,7 +6,9 @@
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const assert = require('assert/strict');
+const fixtureChecks = require('./fixtures/railgun-native-assertions');
+const assert =
+  process.argv.at(-1) === 'submission-handoff' ? fixtureChecks.assert : require('assert/strict');
 const { createHash, randomUUID } = require('crypto');
 const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
 const sha = (value) => createHash('sha256').update(value).digest('hex');
@@ -23,7 +25,8 @@ const COLD_RECORDS = [
 ];
 let lock,
   phase = 'setup',
-  setupHandoff;
+  setupHandoff,
+  submissionHandoff;
 function snapshot(directory) {
   const entries = {};
   const visit = (current) => {
@@ -59,7 +62,7 @@ async function bounded(work, ms = 30000) {
 }
 async function main() {
   const args = process.argv.slice(2);
-  assert.ok(args.length >= 6 && args.length <= 10);
+  assert.ok(args.length >= 6 && args.length <= 11);
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
@@ -68,6 +71,13 @@ async function main() {
   const runMode = args[8] ?? 'warm';
   assert.ok(['warm', 'setup', 'resume'].includes(runMode));
   const resuming = runMode === 'resume';
+  const observeClosed = (promise, callback) =>
+    process.argv.at(-1) === 'submission-handoff'
+      ? fixtureChecks.observeClosed(promise, callback, 'proof-phase.closed')
+      : promise.then(callback);
+  const forSubmission = args[10] === 'submission-handoff';
+  assert.ok(args[10] === undefined || forSubmission);
+  assert.ok(!forSubmission || runMode !== 'warm');
   const historyMode = args[9] ?? 'same-root';
   assert.ok(['same-root', 'advanced-root'].includes(historyMode));
   const advanced = historyMode === 'advanced-root';
@@ -112,6 +122,7 @@ async function main() {
         'inventoryHash',
         'setupEvidence',
         'cleanlyDrainedAndProfileReleased',
+        ...(forSubmission ? ['submissionBackend', 'metadataSha256'] : []),
       ].sort()
     );
     assert.equal(handoff.schema, 'railgun-proof-recovery-restart-handoff-v1');
@@ -203,6 +214,11 @@ async function main() {
   const inventory = () => {
     const files = [
       __filename,
+      ...(forSubmission
+        ? ['qualify-railgun-cold-submission.js', 'qualify-railgun-cold-submission-matrix.js'].map(
+            (name) => path.join(__dirname, name)
+          )
+        : []),
       ...['profile-lock.js', 'profile-resolver.js', 'settings-store.js', 'tor-manager.js'].map(
         (name) => path.join(__dirname, '../src/main', name)
       ),
@@ -393,7 +409,7 @@ async function main() {
     if (readOnly) counts.readOnlyStorageStarts++;
     const task = start(options);
     workers.add(task);
-    task.closed.then((result) => {
+    observeClosed(task.closed, (result) => {
       workers.delete(task);
       counts.storageExits++;
       workerResults.push({ phase, readOnly, ...result });
@@ -539,7 +555,7 @@ async function main() {
         : {}),
     });
     children.add(task);
-    task.closed.then((result) => {
+    observeClosed(task.closed, (result) => {
       children.delete(task);
       counts.childExits++;
       childResults.push({ job, phase: launchPhase, ...result });
@@ -592,7 +608,9 @@ async function main() {
   try {
     const vaultDirectory = path.join(directory, 'profile', 'identity');
     let publicIdentity, destination, holdId, interruptedResult, faultExits;
-    let coldBootstrap, originalEntry;
+    let coldBootstrap,
+      originalEntry,
+      submissionBackend = handoff?.submissionBackend;
     let rootTransition = null;
     if (!resuming) {
       phase = 'enroll';
@@ -661,6 +679,35 @@ async function main() {
         submitter: recipient,
         merkleRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
       });
+      if (forSubmission) {
+        const identityDirectory = require('../src/main/profile-paths').getIdentityDataDir();
+        const relative = path.relative(directory, identityDirectory);
+        assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+        const metadata = path.join(identityDirectory, 'vault-meta.json');
+        assert.equal(fs.existsSync(metadata), false);
+        fs.writeFileSync(
+          metadata,
+          JSON.stringify({
+            userKnowsPassword: true,
+            addresses: { userWallet: recipient },
+            derivedWallets: [
+              { index: 0, name: 'Offline public vector', type: 'mnemonic', address: recipient },
+            ],
+          }) + '\n',
+          { flag: 'wx', mode: 0o600 }
+        );
+        assert.equal(require('../src/main/identity-manager').getWalletRecord(0).address, recipient);
+      }
+      if (forSubmission)
+        submissionBackend = {
+          record: Object.fromEntries(
+            ['type', 'id', 'hash', 'txid', 'nullifier', 'blindedCommitment', 'blockNumber'].map(
+              (key) => [key, selected[key]]
+            )
+          ),
+          submitter: recipient,
+          originalRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
+        };
       const request = {
         kind: {
           transfer: 'railgun-private-transfer',
@@ -812,6 +859,11 @@ async function main() {
       const marker = path.join(profile.userDataDir, 'wallet-privacy-inventory.json');
       assert.deepEqual(snapshot(accountBase), handoff.accountFiles);
       assert.equal(sha(fs.readFileSync(marker)), handoff.inventoryHash);
+      if (forSubmission)
+        assert.equal(
+          sha(fs.readFileSync(path.join(profile.userDataDir, 'identity', 'vault-meta.json'))),
+          handoff.metadataSha256
+        );
       const beforeBootstrap = evidence();
       await vault.unlockVault(vaultDirectory, 'public-fixture-password-not-a-user-credential', 0);
       identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
@@ -864,6 +916,11 @@ async function main() {
       const bootstrappedFiles = snapshot(accountBase);
       assert.deepEqual(Object.keys(bootstrappedFiles), Object.keys(handoff.accountFiles));
       assert.equal(sha(fs.readFileSync(marker)), handoff.inventoryHash);
+      if (forSubmission)
+        assert.equal(
+          sha(fs.readFileSync(path.join(profile.userDataDir, 'identity', 'vault-meta.json'))),
+          handoff.metadataSha256
+        );
       const changed = Object.keys(bootstrappedFiles).filter(
         (name) => bootstrappedFiles[name] !== handoff.accountFiles[name]
       );
@@ -963,10 +1020,19 @@ async function main() {
       assert.equal(services.report().pendingRequests, 0);
       assert.equal(services.report().transportCreates, services.report().transportCloses);
       assert.deepEqual(inventory(), sourceHashes);
+      if (forSubmission) fixtureChecks.assertEmpty();
       setupHandoff = {
         filename: handoffFilename,
         value: {
           schema: 'railgun-proof-recovery-restart-handoff-v1',
+          ...(forSubmission
+            ? {
+                submissionBackend,
+                metadataSha256: sha(
+                  fs.readFileSync(path.join(profile.userDataDir, 'identity', 'vault-meta.json'))
+                ),
+              }
+            : {}),
           runID,
           setupPID: process.pid,
           inputCreator,
@@ -1031,6 +1097,7 @@ async function main() {
       holdId,
     };
     const result = await resume(resumeOptions);
+    if (forSubmission) fixtureChecks.assertEmpty();
     assert.equal(result.status, 'proof-stored', JSON.stringify(result));
     assert.equal(result.submissionEnabled, false);
     const after = await inspectSigned(false);
@@ -1153,6 +1220,7 @@ async function main() {
     const duplicateBefore = evidence(),
       duplicateDisk = snapshot(accountBase);
     const duplicate = await resume(resumeOptions);
+    if (forSubmission) fixtureChecks.assertEmpty();
     assert.deepEqual(duplicate, { ...result, status: 'proof-present' });
     assert.deepEqual(evidence(), duplicateBefore);
     assert.deepEqual(snapshot(accountBase), duplicateDisk);
@@ -1178,8 +1246,12 @@ async function main() {
     assert.equal(services.report().transportCreates, services.report().transportCloses);
     assert.equal(services.report().unexpectedTransportFailures, 0);
     assert.deepEqual(inventory(), sourceHashes, 'Source changed during qualification');
+    if (forSubmission) fixtureChecks.assertEmpty();
     const report = {
       schema: 'railgun-proof-recovery-offline-v2',
+      ...(forSubmission
+        ? { submitterMetadataFixtureWritten: true, productionMetadataOnboardingQualified: false }
+        : {}),
       runMode,
       historyMode,
       rootTransition,
@@ -1262,6 +1334,47 @@ async function main() {
       flag: 'wx',
       mode: 0o600,
     });
+    if (forSubmission)
+      assert.equal(
+        sha(fs.readFileSync(path.join(profile.userDataDir, 'identity', 'vault-meta.json'))),
+        handoff.metadataSha256
+      );
+    if (forSubmission)
+      submissionHandoff = {
+        filename: path.join(directory, 'cold-submission-handoff.json'),
+        value: {
+          schema: 'railgun-cold-submission-handoff-v1',
+          runID,
+          setupPID: handoff.setupPID,
+          recoveryPID: process.pid,
+          inputCreator,
+          kind,
+          historyMode,
+          sourceSha256: sha(sourceBytes),
+          sourceHashes,
+          runtimeHashes,
+          publicIdentity,
+          checkpoint: restoredCheckpoint ?? originalCheckpoint,
+          originalCheckpoint,
+          rootTransition,
+          submissionBackend,
+          recordHashes: {
+            entry: canonicalHash(after.entry),
+            stored: canonicalHash(after.stored),
+            capsule: canonicalHash(after.stored.capsule),
+            signature: canonicalHash(after.stored.signature),
+            provedTransaction: canonicalHash(after.stored.provedTransaction),
+          },
+          transactionDigest: checked.digest,
+          accountFiles: snapshot(accountBase),
+          inventoryHash: sha(fs.readFileSync(inventoryMarker)),
+          recoveryReportSha256: sha(fs.readFileSync(reportFilename)),
+          metadataSha256: sha(
+            fs.readFileSync(path.join(profile.userDataDir, 'identity', 'vault-meta.json'))
+          ),
+          cleanlyDrainedAndProfileReleased: true,
+        },
+      };
     console.log(JSON.stringify({ status: 'qualified', elapsedMs: report.elapsedMs }));
   } finally {
     measuring = false;
@@ -1327,11 +1440,25 @@ main().then(
         })
       );
     }
+    if (submissionHandoff)
+      fs.writeFileSync(
+        submissionHandoff.filename,
+        JSON.stringify(submissionHandoff.value, null, 2) + '\n',
+        { flag: 'wx', mode: 0o600 }
+      );
     app.exit(0);
   },
   (error) => {
     console.error(
-      JSON.stringify({ phase, code: error.code, message: error.message, stack: error.stack })
+      JSON.stringify({
+        phase,
+        code: error.code,
+        message: error.message,
+        stack: error.stack,
+        ...(process.argv.at(-1) === 'submission-handoff'
+          ? { fixtureViolations: fixtureChecks.report() }
+          : {}),
+      })
     );
     releaseProfileLock(lock);
     app.exit(1);

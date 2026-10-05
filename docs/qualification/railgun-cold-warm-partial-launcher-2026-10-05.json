@@ -1,0 +1,78 @@
+{
+  "completed": [
+    {
+      "creator": "Shield",
+      "mode": "acknowledged",
+      "directory": "/private/tmp/railgun-partial-submission-shield-acknowledged-cold-compat-oct5-a",
+      "reportPath": "/private/tmp/railgun-partial-submission-shield-acknowledged-cold-compat-oct5-a/report.json",
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "pid": 17974
+      },
+      "elapsedMs": 24069
+    },
+    {
+      "creator": "Shield",
+      "mode": "lost-response",
+      "directory": "/private/tmp/railgun-partial-submission-shield-lost-response-cold-compat-oct5-a",
+      "reportPath": "/private/tmp/railgun-partial-submission-shield-lost-response-cold-compat-oct5-a/report.json",
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "pid": 18165
+      },
+      "elapsedMs": 22749
+    },
+    {
+      "creator": "Shield",
+      "mode": "bad-verifier",
+      "directory": "/private/tmp/railgun-partial-submission-shield-bad-verifier-cold-compat-oct5-a",
+      "reportPath": "/private/tmp/railgun-partial-submission-shield-bad-verifier-cold-compat-oct5-a/report.json",
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "pid": 18464
+      },
+      "elapsedMs": 19801
+    },
+    {
+      "creator": "Transact",
+      "mode": "acknowledged",
+      "directory": "/private/tmp/railgun-partial-submission-transact-acknowledged-cold-compat-oct5-a",
+      "reportPath": "/private/tmp/railgun-partial-submission-transact-acknowledged-cold-compat-oct5-a/report.json",
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "pid": 18681
+      },
+      "elapsedMs": 27775
+    },
+    {
+      "creator": "Transact",
+      "mode": "lost-response",
+      "directory": "/private/tmp/railgun-partial-submission-transact-lost-response-cold-compat-oct5-a",
+      "reportPath": "/private/tmp/railgun-partial-submission-transact-lost-response-cold-compat-oct5-a/report.json",
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "pid": 18937
+      },
+      "elapsedMs": 26860
+    },
+    {
+      "creator": "Transact",
+      "mode": "bad-verifier",
+      "directory": "/private/tmp/railgun-partial-submission-transact-bad-verifier-cold-compat-oct5-a",
+      "reportPath": "/private/tmp/railgun-partial-submission-transact-bad-verifier-cold-compat-oct5-a/report.json",
+      "exit": {
+        "code": 0,
+        "signal": null,
+        "pid": 19311
+      },
+      "elapsedMs": 25446
+    }
+  ],
+  "failed": false,
+  "totalPlanned": 6
+}

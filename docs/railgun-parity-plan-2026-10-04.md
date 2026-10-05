@@ -7,9 +7,22 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
-The [cold-submission prerequisites](railgun-cold-submission-prerequisites-2026-10-05.md) add atomic prior-attempt protection across active/archive Railgun history and a completed-only input data reader. All 805 affected tests pass; no new native claim is made. The fixed host, fresh final-phase eligibility composition and three-process qualification remain in progress.
+The [submission-after-restart checkpoint](railgun-cold-submission-2026-10-05.md)
+qualifies the fixed cold host across fourteen three-process cases, with fresh
+final-phase eligibility, original proof/signature reuse, exact submitter binding
+and atomic prior-attempt protection. Two default proof-recovery and six warm
+partial-submission cases also pass. The frozen regression passes 15,457 tests
+across 512 suites, retaining the documented exclusion/skips/forced-exit limits.
+Services and transport remain synthetic; no funded profile was opened. The
+[earlier prerequisites](railgun-cold-submission-prerequisites-2026-10-05.md) remain
+part of this host. Next are durable combined POI, normal change ingestion,
+restart/second spend, partial facade integration and live private qualification.
+Real transport latency still needs measurement under the 50-second margin.
+The [durable combined-POI plan](railgun-durable-combined-poi-plan-2026-10-05.md)
+records the producer/consumer changes, lazy version-3 migration and connected
+change/second-spend qualification required next.
 
-The [partial submission and capture checkpoint](railgun-partial-submission-2026-10-05.md) connects the genuine 01x02 controller/completion to fresh submission checks, real vault EOA signing and durable attempted-before-send journals. Six controlled native cases cover both input creators and acknowledged, lost-reply and wrong-verifier outcomes; the four submitted cases reach strict resolution and active/archive/same-process reopened capture. All cases use simulated external services and share 528 source hashes; 2,163 affected tests pass and lint is clean. Partial facade, durable combined POI and change credit remain closed. The preceding [fresh-process proof recovery](railgun-proof-restart-2026-10-05.md) remains separately qualified; its diagnostics do not authorize submission. Next: a fixed cold-proof submission path with fresh live eligibility and atomic prior-attempt protection, durable combined POI, actual change ingestion, restart/second spend and live private qualification.
+The [partial submission and capture checkpoint](railgun-partial-submission-2026-10-05.md) connects the genuine 01x02 controller/completion to fresh submission checks, real vault EOA signing and durable attempted-before-send journals. Six controlled native cases cover both input creators and acknowledged, lost-reply and wrong-verifier outcomes; the four submitted cases reach strict resolution and active/archive/same-process reopened capture. All cases use simulated external services and share 528 source hashes; 2,163 affected tests pass and lint is clean. Partial facade, durable combined POI and change credit remain closed. The preceding [fresh-process proof recovery](railgun-proof-restart-2026-10-05.md) remains separately qualified; its diagnostics do not authorize submission. Its cold-submission successor is described above; durable combined POI, actual change ingestion, restart/second spend and live private qualification remain open.
 
 ## Established baseline
 
@@ -67,8 +80,9 @@ qualifies one actual proof for change plus withdrawal, both input creator types
 and exact application marker binding. The subsequent
 [protected internal controller](railgun-partial-controller-2026-10-05.md) qualifies
 a genuine Shield-input hold/sign/prove/verify and encrypted account reopen, with
-real POI/preflight hosts over simulated services. Partial submission and combined
-POI persistence remain unavailable; the facade stays full-only.
+real POI/preflight hosts over simulated services. That controller checkpoint did not yet qualify submission or combined POI
+persistence. Submission is now qualified above; combined persistence remains
+open and the facade stays full-only.
 
 ## Next technical work
 
@@ -91,12 +105,12 @@ POI persistence remain unavailable; the facade stays full-only.
    Both Shield and received-input connected controller qualification now pass.
    Partial submission and authenticated capture now pass six controlled native
    cases across both input creators. Completing it still requires live deployed
-   verifier checks, cold-proof submission, connected recovery,
+   verifier checks, connected change recovery,
    normal change ingestion and durable post-transaction POI.
    Signed-but-unfinished proof resumption now has a production recovery host and
    six warm native cases plus twelve genuine fresh-process cases, including
-   explicitly advanced trees. Submission of recovered proofs remains separately
-   gated. Do not merely
+   explicitly advanced trees. The fixed recovered-proof submission host now has fourteen three-process
+   native cases; it remains an internal entry point with synthetic service evidence. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are
    already pinned in `railgun-artifacts.js`; the missing work is integration.

@@ -60,12 +60,15 @@ async function verify({
     task?.close();
   };
   scope.signal.addEventListener('abort', close, { once: true });
-  const active = () => {
+  const active = (minimumRemainingMs = 0) => {
     if (
+      !Number.isSafeInteger(minimumRemainingMs) ||
+      minimumRemainingMs < 0 ||
+      minimumRemainingMs >= 60000 ||
       closed ||
       scope.signal.aborted ||
       performance.now() < started ||
-      performance.now() >= deadline
+      performance.now() + minimumRemainingMs >= deadline
     )
       throw fail();
     getPrivacyContext(parent);
@@ -150,11 +153,18 @@ async function verifyRailgunPrivateProof(options) {
     throw fail();
   }
 }
-function assertRailgunPrivateProof(receipt, enrollment, { intent, transaction, expected }) {
+// Remaining lifetime is read from the genuine receipt's private deadline;
+// callers cannot renew static proof evidence by asking for another margin.
+function assertRailgunPrivateProof(
+  receipt,
+  enrollment,
+  { intent, transaction, expected },
+  minimumRemainingMs = 0
+) {
   const value = receipts.get(receipt);
   if (!value || value.enrollment !== enrollment || !isRailgunAccountEnrollment(enrollment))
     throw fail();
-  value.active();
+  value.active(minimumRemainingMs);
   assert.deepEqual(intent, value.intent);
   assert.deepEqual(transaction, value.transaction);
   assert.deepEqual(expected, value.expected);

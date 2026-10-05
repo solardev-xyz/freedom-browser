@@ -1,5 +1,9 @@
 # Cold-submission prerequisites — October 5, 2026
 
+This prerequisite checkpoint is now incorporated into the [qualified cold-submission
+host](railgun-cold-submission-2026-10-05.md); the original evidence below remains
+scoped to its recorded sources.
+
 Two independently reviewed prerequisites for submitting a saved Railgun proof
 are implemented. They do not yet expose a cold-submission entry point or turn
 proof-recovery diagnostics into permission to send.

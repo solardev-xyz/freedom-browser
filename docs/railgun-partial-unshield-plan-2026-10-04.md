@@ -25,8 +25,9 @@ The [combined local POI checkpoint](railgun-combined-poi-2026-10-05.md) qualifie
 one proof for withdrawal and original private change. Combined POI persistence/recovery,
 authenticated change ingestion and the second spend remain to be implemented and qualified.
 Original-signature proof recovery also passes fresh-process qualification;
-[submission after restart](railgun-cold-submission-prerequisites-2026-10-05.md)
-still requires its separate host and qualification. This is not evidence of deployed
+[submission after restart](railgun-cold-submission-2026-10-05.md)
+now passes fourteen three-process controlled native cases across all kinds and
+both input creators. This is not evidence of deployed
 contract acceptance, a funded partial transaction or live service eligibility.
 
 ## Complete target

@@ -18,7 +18,8 @@ jest.mock('./railgun-private-proof', () => ({
     mock.step('C');
     return mock.proof;
   },
-  assertRailgunPrivateProof: () => {
+  assertRailgunPrivateProof: (_receipt, _enrollment, _evidence, margin = 0) => {
+    mock.proofMargins.push(margin);
     if (mock.proofClosed) throw Error('C');
   },
 }));
@@ -63,6 +64,7 @@ beforeEach(() => {
     identity: {},
     claimed: false,
     events: [],
+    proofMargins: [],
     scope: createPrivacyScope({
       profileId: 'submission-unit',
       signal: new AbortController().signal,
@@ -188,13 +190,15 @@ beforeEach(() => {
       };
     },
   };
-  mock.send = async (params, _signer, config) => {
+  mock.send = async (params, signer, config) => {
     mock.step('transaction-service');
     mock.handle = config.privacyContext;
     mock.intent = config.intent;
     authorize(mock.handle, mock.intent);
     const transaction = { ...params, gasPrice: '100', nonce: 1 };
     if (!(await config.review({ from: mock.owner, transaction }))) throw Error('review');
+    await signer.getAddress();
+    await signer.signTransaction(transaction);
     authorize(mock.handle, mock.intent);
     mock.step('broadcast');
     return { hash: '0x' + 'c'.repeat(64) };
@@ -588,4 +592,38 @@ describe.each([false, true])('legacy observed-kind exclusion, full-unshield=%s',
       expect(mock.phase).toBe(false);
     }
   );
+});
+
+// The final service mock above actually invokes the borrowed signer. These
+// controls fail if only the post-signing durable reattestation is removed.
+test.each(['hold', 'capsule'])(
+  'warm held signer rechecks %s before exposing signed bytes',
+  async (target) => {
+    let release, entered;
+    const pendingSign = new Promise((resolve) => {
+      release = resolve;
+    });
+    const called = new Promise((resolve) => {
+      entered = resolve;
+    });
+    mock.signer.signTransaction = async () => {
+      entered();
+      await pendingSign;
+      return '0x1234';
+    };
+    const pending = submit(options);
+    await called;
+    if (target === 'hold') mock.records[0].entry.signing.changed = true;
+    else mock.stored.changed = true;
+    release();
+    expect(await pending).toEqual({ status: 'recovery-required', stage: 'submission' });
+    expect(mock.events).not.toContain('broadcast');
+    expect(mock.phase).toBe(false);
+  }
+);
+
+test('warm completion preserves zero default proof review margin', async () => {
+  expect(await submit(options)).toEqual({ hash: '0x' + 'c'.repeat(64) });
+  expect(mock.proofMargins.length).toBeGreaterThan(0);
+  expect(mock.proofMargins.every((value) => value === 0)).toBe(true);
 });
