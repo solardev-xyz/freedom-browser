@@ -501,6 +501,70 @@ async function loadAgentUi(options = {}) {
 }
 
 describe('Agent UI', () => {
+  function messages(ctx) {
+    return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
+      if (row.classList.contains('agent-helper-list')) return row.children.map(card => card.querySelector('.agent-helper-title').textContent);
+      const text = row.querySelector('.agent-output') || row.querySelector('.agent-user-message');
+      return text?.textContent ? [text.textContent] : [];
+    }));
+  }
+
+  test('keeps helper starts and user guidance before the final response without moving updated cards', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_text_delta', text: 'Starting.' });
+    emit({ type: 'tool_started', toolCallId: 'first', operation: 'delegate_task' });
+    const helper = { type: 'tool_finished', toolCallId: 'first', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'First helper', state: 'running' } };
+    emit(helper);
+    emit({ type: 'guidance_queued', guidance: { guidanceId: 'guide', text: 'Focus on dates.', status: 'queued' } });
+    emit({ type: 'assistant_text_delta', text: 'Checking.' });
+    emit({ type: 'tool_started', toolCallId: 'second', operation: 'delegate_task' });
+    emit({ type: 'tool_finished', toolCallId: 'second', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Second helper', state: 'completed', report: 'Findings' } });
+    emit({ ...helper, subagent: { ...helper.subagent, state: 'completed', report: 'Done' } });
+    emit({ type: 'assistant_text_delta', text: 'Final ' });
+    emit({ type: 'assistant_text_delta', text: 'answer.' });
+    emit({ type: 'run_finished', status: 'completed' });
+    expect(messages(ctx)).toEqual(['Research', 'Starting.', 'First helper', 'Focus on dates.', 'Checking.', 'Second helper', 'Final answer.']);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-activity').open).toBe(false);
+  });
+
+  test.each([true, false])('restores chronological messages with timeline metadata present=%s', async hasOffsets => {
+    const position = (textOffset, timelineOrder) => hasOffsets ? { textOffset, timelineOrder } : {};
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Starting.Final answer.', status: 'completed',
+          activity: [{ toolCallId: 'first', operation: 'delegate_task', status: 'succeeded', ...position(9, 0),
+            subagent: { title: 'First helper', state: 'completed', report: 'Done' } }],
+          guidance: [{ guidanceId: 'guide', text: 'Focus on dates.', status: 'applied', ...position(9, 1) }],
+        }],
+      } }),
+    } });
+    expect(messages(ctx)).toEqual(hasOffsets
+      ? ['Research', 'Starting.', 'First helper', 'Focus on dates.', 'Final answer.']
+      : ['Research', 'First helper', 'Focus on dates.', 'Starting.Final answer.']);
+  });
+
+  test('incoming text and status follow the bottom but preserve a reader scroll position', async () => {
+    const ctx = await loadAgentUi();
+    const scroller = createElement('div', { classes: ['agent-workspace-scroll'] });
+    ctx.elements['agent-workspace-body'].appendChild(scroller);
+    scroller.scrollHeight = 2000;
+    scroller.clientHeight = 500;
+    scroller.scrollTop = 100;
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'New output' });
+    ctx.emit({ type: 'run_thinking', runId: 'run_test' });
+    expect(scroller.scrollTop).toBe(100);
+    scroller.scrollTop = 1490;
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: ' continues' });
+    expect(scroller.scrollTop).toBe(2000);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-output').textContent).toBe('New output continues');
+  });
+
   test('renders separate parallel reports and neutral completion/stopping without a recovery warning', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
@@ -4034,7 +4098,7 @@ describe('Agent UI', () => {
       label: 'Published website to Swarm',
       publication,
     });
-    const card = ctx.elements['agent-transcript'].children[0].children[4].children[0];
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
     expect(card.dataset.publicationId).toBe(publication.publicationId);
     card.children[1].children[0].dispatch('click');
     await flush();
@@ -4303,7 +4367,7 @@ describe('Agent UI', () => {
       publication,
     });
 
-    const card = ctx.elements['agent-transcript'].children[0].children[4].children[0];
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
     expect(card.children[0].children[0].textContent).toBe('Text');
     expect(card.textContent).not.toContain('.txt');
   });

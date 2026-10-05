@@ -2508,16 +2508,9 @@ function createTurnView(turn) {
   artifactList.className = 'agent-artifact-list';
   artifactList.hidden = true;
 
-  const helperList = document.createElement('div');
-  helperList.className = 'agent-helper-list';
-  helperList.hidden = true;
-
-  const guidanceList = document.createElement('div');
-  guidanceList.className = 'agent-guidance-list';
-
   const activity = document.createElement('details');
   activity.className = 'agent-turn-activity';
-  activity.open = true;
+  activity.open = false;
   activity.hidden = true;
   const activitySummary = document.createElement('summary');
   activitySummary.textContent = 'Working…';
@@ -2543,11 +2536,9 @@ function createTurnView(turn) {
   liveStatus.appendChild(liveStatusLabel);
 
   section.appendChild(userRow);
-  section.appendChild(guidanceList);
   section.appendChild(assistantRow);
   section.appendChild(outcome);
   section.appendChild(artifactList);
-  section.appendChild(helperList);
   section.appendChild(activity);
   section.appendChild(liveStatus);
   elements.transcript.appendChild(section);
@@ -2558,6 +2549,9 @@ function createTurnView(turn) {
   const view = {
     section,
     output,
+    assistantRow,
+    outputSegments: [{ output, text: turn.assistantText || '' }],
+    assistantSegmentClosed: false,
     outcome,
     outcomeIcon,
     outcomeHeadline,
@@ -2568,14 +2562,12 @@ function createTurnView(turn) {
     outcomeActions,
     outcomeRetry,
     artifactList,
-    helperList,
     helperCards: new Map(),
     activity,
     activitySummary,
     toolList,
     liveStatus,
     liveStatusLabel,
-    guidanceList,
     userText: turn.userText || '',
     assistantText: turn.assistantText || '',
     actionCount: 0,
@@ -2584,8 +2576,40 @@ function createTurnView(turn) {
   for (const guidance of Array.isArray(turn.guidance) ? turn.guidance : []) {
     createGuidanceView(turn.runId, guidance);
   }
-  section.scrollIntoView?.({ block: 'end' });
   return view;
+}
+
+// A message stays where it was spoken. Tool starts and user guidance close
+// the current segment; the next assistant text gets a new bubble after them.
+function closeAssistantSegment(view) {
+  if (view.assistantSegmentClosed) return;
+  view.assistantSegmentClosed = true;
+  const segment = view.outputSegments.at(-1);
+  if (segment.text) renderAgentMarkdown(segment.output, segment.text);
+}
+
+function appendAssistantText(view, text) {
+  if (!text) return;
+  if (view.assistantSegmentClosed) {
+    if (view.outputSegments.at(-1).text) {
+      view.output.removeAttribute('id');
+      view.assistantRow = document.createElement('div');
+      view.assistantRow.className = 'agent-message-row assistant';
+      view.output = document.createElement('div');
+      view.output.id = 'agent-output';
+      view.output.className = 'agent-output';
+      view.assistantRow.appendChild(view.output);
+      view.outputSegments.push({ output: view.output, text: '' });
+    }
+    view.section.insertBefore(view.assistantRow, view.outcome);
+    view.assistantSegmentClosed = false;
+  }
+  view.assistantText += text;
+  const segment = view.outputSegments.at(-1);
+  segment.text += text;
+  // Keep the streaming text node rather than replacing an ever-growing answer.
+  if (view.output.lastChild?.nodeType === 3) view.output.lastChild.appendData(text);
+  else view.output.insertAdjacentText('beforeend', text);
 }
 
 function setLiveStatus(runId, label, { active = true } = {}) {
@@ -2600,7 +2624,6 @@ function setLiveStatus(runId, label, { active = true } = {}) {
   view.liveStatus.hidden = false;
   view.liveStatus.classList.toggle('active', active);
   view.liveStatus.classList.toggle('waiting', !active);
-  view.section.scrollIntoView?.({ block: 'end' });
 }
 
 function clearLiveStatus(runId) {
@@ -2643,11 +2666,14 @@ function createGuidanceView(runId, guidance) {
   content.appendChild(message);
   content.appendChild(status);
   row.appendChild(content);
-  view.guidanceList.appendChild(row);
+  closeAssistantSegment(view);
+  const group = document.createElement('div');
+  group.className = 'agent-guidance-list';
+  group.appendChild(row);
+  view.section.insertBefore(group, view.outcome);
   const record = { row, status };
   guidanceViews.set(key, record);
   updateGuidanceView(runId, guidance.guidanceId, guidance.status);
-  row.scrollIntoView?.({ block: 'end' });
   return record;
 }
 
@@ -2717,19 +2743,36 @@ function restoreTranscript(transcript = []) {
   resetConversationUi();
   for (const turn of transcript) {
     if (!turn || typeof turn.runId !== 'string') continue;
-    const view = createTurnView(turn);
-    for (const item of Array.isArray(turn.activity) ? turn.activity : []) {
-      addToolRow({ ...item, runId: turn.runId });
-      if (item.status !== 'running') finishToolRow({ ...item, runId: turn.runId });
+    const view = createTurnView({ ...turn, assistantText: '', guidance: [] });
+    const text = turn.assistantText || '';
+    const entries = [
+      ...(Array.isArray(turn.activity) ? turn.activity : []).map(item => ({ kind: 'tool', item })),
+      ...(Array.isArray(turn.guidance) ? turn.guidance : []).map(item => ({ kind: 'guidance', item })),
+    ].map(entry => ({ ...entry, offset: Number.isSafeInteger(entry.item.textOffset)
+      ? Math.max(0, Math.min(text.length, entry.item.textOffset)) : 0 }));
+    // Older history has no offsets: retain its work before the final answer.
+    entries.sort((a, b) => a.offset - b.offset ||
+      (a.item.timelineOrder || 0) - (b.item.timelineOrder || 0));
+    let cursor = 0;
+    for (const { kind, item, offset } of entries) {
+      appendAssistantText(view, text.slice(cursor, offset));
+      cursor = offset;
+      if (kind === 'guidance') createGuidanceView(turn.runId, item);
+      else {
+        addToolRow({ ...item, runId: turn.runId });
+        if (item.status !== 'running') finishToolRow({ ...item, runId: turn.runId });
+      }
     }
+    appendAssistantText(view, text.slice(cursor));
     if (
       turn.status &&
       !['starting', 'running', 'pausing', 'paused', 'resuming'].includes(turn.status)
     ) {
       finishTurnView(turn.runId, turn);
     }
-    if (view.assistantText && turn.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
   }
+  const scroller = elements.workspaceBody?.querySelector('.agent-workspace-scroll');
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
 }
 
 function clearApproval() {
@@ -3647,6 +3690,7 @@ function addToolRow(event) {
   if (!view || typeof event.toolCallId !== 'string') return;
   const row = document.createElement('li');
   row.className = 'agent-tool-item';
+  row.dataset.state = 'running';
   const state = document.createElement('span');
   state.className = 'agent-tool-state';
   state.textContent = '•';
@@ -3660,9 +3704,17 @@ function addToolRow(event) {
   row.appendChild(approval);
   view.toolList.appendChild(row);
   view.activity.hidden = false;
-  view.activity.open = true;
+  view.activity.dataset.state = 'working';
   view.actionCount += 1;
-  toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state, label, approval });
+  closeAssistantSegment(view);
+  let helperList = null;
+  if (event.operation === 'delegate_task') {
+    helperList = document.createElement('div');
+    helperList.className = 'agent-helper-list';
+    helperList.hidden = true;
+    view.section.insertBefore(helperList, view.outcome);
+  }
+  toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state, label, approval, helperList });
   renderToolPage(toolRows.get(`${event.runId}:${event.toolCallId}`), event);
   updateToolApproval(event.runId, event.toolCallId, event.approval);
 }
@@ -3680,6 +3732,7 @@ function updateToolApproval(runId, toolCallId, decision) {
   };
   record.approval.textContent = labels[decision] || '';
   record.approval.hidden = !labels[decision];
+  record.row.dataset.approval = labels[decision] ? decision : '';
 }
 
 function attachmentDisplayKey(event) {
@@ -3726,6 +3779,7 @@ function finishToolRow(event) {
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
+  record.row.dataset.state = userCancelled ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded';
   record.row.title = '';
   if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);
@@ -3737,7 +3791,7 @@ function finishToolRow(event) {
     const view = turnView(event.runId);
     record.row.hidden = true;
     view.activity.hidden = [...view.toolList.children].every(row => row.hidden);
-    view.helperList.hidden = false;
+    record.helperList.hidden = false;
     for (const receipt of receipts) {
       const key = receipt.taskId || `${event.toolCallId}:${receipts.indexOf(receipt)}`;
       let card = view.helperCards.get(key);
@@ -3782,7 +3836,7 @@ function finishToolRow(event) {
         summary.appendChild(copy); summary.appendChild(stop); summary.appendChild(chevron);
         details.appendChild(summary);
         view.helperCards.set(key, card);
-        view.helperList.appendChild(details);
+        record.helperList.appendChild(details);
       }
       const { details, summary } = card;
       card.state = receipt.state;
@@ -3839,6 +3893,7 @@ function finishToolRow(event) {
     }
     if (receipts.some(receipt => receipt.state === 'running')) {
       record.state.textContent = '•';
+      record.row.dataset.state = 'running';
       record.row.classList.remove('failed');
     }
     if (receipts.every(receipt => ['completed', 'cancelled'].includes(receipt.state)) &&
@@ -3846,6 +3901,7 @@ function finishToolRow(event) {
       record.state.textContent = '•';
       record.row.classList.remove('failed');
       record.row.classList.add('cancelled');
+      record.row.dataset.state = 'cancelled';
     }
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
@@ -3941,6 +3997,7 @@ function finishTurnView(runId, event = {}) {
   const view = turnView(runId);
   if (!view) return;
   clearLiveStatus(runId);
+  view.activity.dataset.state = [...view.toolList.children].some(row => row.classList.contains('failed')) ? 'failed' : 'done';
   const actionCount = Number.isSafeInteger(event.actionCount)
     ? event.actionCount
     : view.actionCount;
@@ -3953,7 +4010,11 @@ function finishTurnView(runId, event = {}) {
     view.activity.hidden = true;
   }
   renderTurnOutcome(view, event.outcome, event.error);
-  if (event.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
+  if (event.status === 'completed') {
+    for (const segment of view.outputSegments) {
+      if (!segment.output.classList.contains('rendered-markdown')) renderAgentMarkdown(segment.output, segment.text);
+    }
+  }
 }
 
 function applyReadyConversationState(state) {
@@ -4145,6 +4206,18 @@ function applyConversationCleared() {
 }
 
 function handleAgentEvent(event) {
+  const scroller = elements.workspaceBody?.querySelector('.agent-workspace-scroll');
+  const follow = scroller && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 48;
+  try {
+    applyAgentEvent(event);
+  } finally {
+    // Incoming tokens and helper updates must not fight someone reading above.
+    // Only scroll this container, never the page or its overflow ancestors.
+    if (follow) scroller.scrollTop = scroller.scrollHeight;
+  }
+}
+
+function applyAgentEvent(event) {
   if (event?.type === 'conversation_cleared') {
     if (!currentConversationId || event.conversationId === currentConversationId) {
       applyConversationCleared();
@@ -4269,10 +4342,8 @@ function handleAgentEvent(event) {
   } else if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
     const view = turnView(event.runId);
     if (!view) return;
-    view.assistantText += event.text;
-    view.output.textContent = view.assistantText;
+    appendAssistantText(view, event.text);
     setLiveStatus(event.runId, 'Responding…');
-    view.section.scrollIntoView?.({ block: 'end' });
     elements.emptyState.hidden = true;
   } else if (event.type === 'workspace_checkpoint_started') {
     setLiveStatus(event.runId, 'Saving workspace version…');

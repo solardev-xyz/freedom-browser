@@ -96,6 +96,8 @@ describe('AgentSessionHistoryStore', () => {
         {
           guidanceId: 'guidance_one',
           text: 'Prefer primary sources',
+          textOffset: 2,
+          timelineOrder: 1,
           status: 'applied',
           createdAt: 1_000,
           ignored: 'not persisted',
@@ -112,6 +114,8 @@ describe('AgentSessionHistoryStore', () => {
       activity: [
         {
           toolCallId: 'call_1',
+          textOffset: 1,
+          timelineOrder: 0,
           operation: 'browser_snapshot',
           status: 'succeeded',
           label: 'Read https://example.test',
@@ -206,6 +210,8 @@ describe('AgentSessionHistoryStore', () => {
         {
           guidanceId: 'guidance_one',
           text: 'Prefer primary sources',
+          textOffset: 2,
+          timelineOrder: 1,
           status: 'applied',
           createdAt: 1_000,
         },
@@ -248,6 +254,8 @@ describe('AgentSessionHistoryStore', () => {
           activity: [
             {
               toolCallId: 'call_1',
+              textOffset: 1,
+              timelineOrder: 0,
               operation: 'browser_snapshot',
               status: 'succeeded',
               label: 'Read https://example.test',
@@ -336,6 +344,8 @@ describe('AgentSessionHistoryStore', () => {
             {
               guidanceId: 'guidance_one',
               text: 'Prefer primary sources',
+              textOffset: 2,
+              timelineOrder: 1,
               status: 'applied',
               createdAt: 1_000,
             },

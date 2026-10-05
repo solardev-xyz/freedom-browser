@@ -636,6 +636,8 @@ describe('FreedomAgentService', () => {
         conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'tool_started',
+        textOffset: 7,
+        timelineOrder: 0,
         toolCallId: 'call_1',
         operation: 'browser_snapshot',
         intent: 'Reading the current page',
@@ -1778,6 +1780,8 @@ describe('FreedomAgentService', () => {
       durationMs: 0,
       activity: [
         {
+          textOffset: 0,
+          timelineOrder: 0,
           toolCallId: 'call_1',
           operation: 'browser_snapshot',
           status: 'running',
@@ -2400,6 +2404,8 @@ describe('FreedomAgentService', () => {
     await service.start(startOptions());
 
     await expect(service.steer('run_test', 'Focus on primary sources')).resolves.toEqual({
+      textOffset: 0,
+      timelineOrder: 0,
       guidanceId: 'guidance_test',
       text: 'Focus on primary sources',
       status: 'queued',
@@ -2436,6 +2442,8 @@ describe('FreedomAgentService', () => {
           text: 'Focus on primary sources',
           status: 'applied',
           createdAt: 1_000,
+          textOffset: 0,
+          timelineOrder: 0,
         },
       ],
     });

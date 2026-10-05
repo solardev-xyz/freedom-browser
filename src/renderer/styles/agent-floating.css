@@ -239,11 +239,19 @@
 .agent-floating[data-presentation='column'] .agent-setup-view,
 .agent-floating[data-presentation='column'] #agent-run-message:not(:empty),
 .agent-floating[data-presentation='column'] .agent-output:not(:empty),
+.agent-floating[data-presentation='column'] .agent-subagent-report,
 .agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]),
 .agent-floating[data-presentation='column'] .agent-live-status {
   background: var(--agent-bubble-agent);
   border: 1px solid var(--agent-bubble-border);
   box-shadow: var(--agent-bubble-shadow);
+}
+
+/* Helper reports are agent speech too: same surface, shape and width. */
+.agent-floating[data-presentation='column'] .agent-subagent-report {
+  max-width: 94%;
+  padding: 10px 14px;
+  border-radius: 18px 18px 18px 6px;
 }
 
 /* Header, help note and system notices use a denser fill than the bubbles. */
@@ -372,7 +380,9 @@
   scrollbar-width: thin;
 }
 
-/* Runtime notices: a small system line, errors keep their colour. */
+/* Runtime notices: a small system line, errors keep their colour. It stays
+   in DOM order: reordering it below the transcript (flex `order`) made it the
+   scroll anchor, which pinned the view while an answer streamed in. */
 .agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
   width: fit-content;
   max-width: 100%;
@@ -399,7 +409,10 @@
 .agent-floating[data-presentation='column'] .agent-turn {
   min-width: 0;
   gap: 8px;
-  animation: agent-floating-turn 320ms var(--agent-float-ease) both;
+  /* `backwards`, not `both`: a finished animation that keeps filling stays
+     "active" and leaves every turn, however tall, on its own compositor
+     layer for the life of the conversation. */
+  animation: agent-floating-turn 320ms var(--agent-float-ease) backwards;
 }
 
 .agent-floating[data-presentation='column'] .agent-turn + .agent-turn {
@@ -453,11 +466,186 @@
   white-space: nowrap;
 }
 
+/* Activity: a quiet capsule ("Worked for 42s · 11 actions") that opens into
+   a timeline. The list keeps every step, failure and approval; the step
+   glyphs stay in the text for assistive technology and become dots here. */
 .agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]) {
   width: fit-content;
   max-width: 94%;
-  padding: 6px 12px;
-  border-radius: 14px;
+  padding: 5px 12px 5px 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+  border-radius: 999px;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[open]:not([hidden]) {
+  width: 94%;
+  padding: 7px 14px 9px 12px;
+  border-radius: 16px;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: auto;
+  list-style: none;
+  line-height: 1.4;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  content: '';
+  background: var(--accent);
+  border-radius: 50%;
+  opacity: 0.85;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary::after {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  margin-left: 2px;
+  content: '';
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-1px) rotate(-45deg);
+  transition: transform 160ms ease;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[open] > summary::after {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity > summary:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-list {
+  position: relative;
+  margin: 8px 0 0 2px;
+  padding: 0 0 0 16px;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-list::before {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 3px;
+  width: 1px;
+  content: '';
+  background: currentColor;
+  opacity: 0.25;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item {
+  position: relative;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  border-bottom: 0;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-state {
+  position: absolute;
+  top: 8px;
+  left: -16px;
+  width: 7px;
+  height: 7px;
+  overflow: hidden;
+  color: transparent;
+  font-size: 7px;
+  line-height: 7px;
+  background: var(--agent-bubble-agent);
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item:not(.failed):not(.cancelled) .agent-tool-state {
+  border-color: var(--accent);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item.failed {
+  color: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item.failed .agent-tool-state {
+  background: var(--agent-danger);
+  border-color: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item.cancelled .agent-tool-state {
+  border-style: dashed;
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-approval {
+  font-size: 10.5px;
+  border-color: var(--agent-bubble-border);
+}
+
+/* Live state from agent-ui.js: the activity is working|done|failed, each
+   step running|succeeded|failed|cancelled, and data-approval mirrors the
+   step's approval label. Only the live dots move, and only while working. */
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='working'] > summary::before,
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='working'] .agent-tool-item[data-state='running'] .agent-tool-state {
+  animation: agent-floating-live 1.6s ease-in-out infinite;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='done'] > summary::before {
+  width: 4px;
+  height: 8px;
+  margin: 0 1px 2px;
+  background: none;
+  border-right: 1.5px solid var(--secure-fg);
+  border-bottom: 1.5px solid var(--secure-fg);
+  border-radius: 0;
+  opacity: 1;
+  transform: rotate(45deg);
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='failed'] > summary {
+  color: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity[data-state='failed'] > summary::before {
+  background: var(--agent-danger);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-state='running'] {
+  color: var(--text);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-state='running'] .agent-tool-state,
+.agent-floating[data-presentation='column'] .agent-tool-item[data-state='succeeded'] .agent-tool-state {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-approval='requested'] .agent-tool-approval {
+  color: var(--agent-caution);
+  border-color: color-mix(in srgb, var(--agent-caution) 45%, transparent);
+}
+
+.agent-floating[data-presentation='column'] .agent-tool-item[data-approval='approved'] .agent-tool-approval,
+.agent-floating[data-presentation='column'] .agent-tool-item[data-approval='reviewer_approved'] .agent-tool-approval {
+  color: var(--secure-fg);
+  border-color: color-mix(in srgb, var(--secure-fg) 45%, transparent);
+}
+
+@keyframes agent-floating-live {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
 }
 
 .agent-floating[data-presentation='column'] .agent-live-status {
@@ -518,7 +706,10 @@
     transform: none;
   }
 
-  .agent-floating[data-presentation='column'] .agent-turn {
+  /* Same specificity as the live-state rules, later in the sheet. */
+  .agent-floating[data-presentation='column'] .agent-turn,
+  .agent-floating[data-presentation='column'] .agent-turn-activity[data-state] > summary::before,
+  .agent-floating[data-presentation='column'] .agent-turn-activity[data-state] .agent-tool-item[data-state] .agent-tool-state {
     animation: none;
   }
 }
