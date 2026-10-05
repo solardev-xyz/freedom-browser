@@ -16,6 +16,10 @@ A separate same-process pair of actual Kohaku instances consumes normally scanne
 change. Both initial histories and acknowledged/lost-response recovery outcomes
 pass. Root checks pass 719 tests/36 suites and full lint. These are controlled
 fixtures with simulated external services, not live private or power-loss evidence.
+Native evidence is pinned to `b4e85dbb`; the subsequent
+[main a1438027 synchronization](privacy-main-sync-a1438027-2026-10-05.md) refreshes
+bundled nodes and passes 709 affected tests/20 suites with four skips plus lint.
+It does not relabel the original native campaign.
 Next are pinned Kohaku contract checks/extraction preparation, public-facade cold
 resolution/ingestion, and external-service/live-private qualification. The historical
 checkpoints below retain their recorded sources and then-open work.

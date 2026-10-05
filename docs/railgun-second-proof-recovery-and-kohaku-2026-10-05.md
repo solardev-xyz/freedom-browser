@@ -2,6 +2,8 @@
 
 Twenty-five native Electron processes pass on one 928-source inventory: four four-process recovery cases, two same-process sequential Kohaku cases and seven compatibility processes. Every original driver exited 0 and was drained. Both initial note histories (Shield and Transact) and acknowledged/lost-response submission outcomes pass. This extends qualification fixtures; production policy, dependencies, activation and APIs are unchanged.
 
+The native campaign is pinned to `b4e85dbbccc3bd394bfb9b2638dc74fdd921f0aa`. Main subsequently advanced to `a1438027`; its merge, repeated node refresh and targeted tests are recorded in the [post-qualification synchronization](privacy-main-sync-a1438027-2026-10-05.md). The original reports retain their recorded source inventory.
+
 ## Original-signature recovery across four processes
 
 1. Setup makes the first partial withdrawal, normally scans its change and persists the combined POI attempt with disposable signed list acceptance.
