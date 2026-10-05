@@ -20,7 +20,8 @@
      list) while the non-glass content around it fades with opacity, and it
      moves with transform, which is safe.
    The conversation has no enclosing background or blur. Its speech bubbles
-   use plain translucent fills; only the stationary composer uses glass.
+   use plain translucent fills; the stationary header, Workspace slip and
+   composer use glass.
 
    Everything here is scoped under `.agent-floating`, so Agent-first mode
    keeps the layout in agent.css untouched. */
@@ -78,6 +79,7 @@
 
 .agent-floating[data-presentation='launcher'] .agent-sidebar-inner,
 .agent-floating[data-presentation='column'] .agent-composer-wrap,
+.agent-floating[data-presentation='column'] .agent-sidebar-header,
 .agent-floating[data-presentation='column'] .agent-process-compact,
 .agent-floating-ghost {
   background-color: var(--agent-glass);
@@ -96,6 +98,7 @@
 
 .agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner,
 .agent-floating.collapsed[data-presentation='column'] .agent-composer-wrap,
+.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-header,
 .agent-floating.collapsed[data-presentation='column'] .agent-process-compact {
   background-color: transparent;
   backdrop-filter: var(--agent-glass-filter-hidden);
@@ -105,7 +108,7 @@
 
 /* Non-glass content fades on its own, never an ancestor of glass. */
 .agent-floating[data-presentation='launcher'] .agent-sidebar-inner > *,
-.agent-floating[data-presentation='column'] .agent-sidebar-header,
+.agent-floating[data-presentation='column'] .agent-sidebar-header > *,
 .agent-floating[data-presentation='column'] .agent-scope-help,
 .agent-floating[data-presentation='column'] .agent-loading-view,
 .agent-floating[data-presentation='column'] .agent-setup-view,
@@ -116,7 +119,7 @@
 }
 
 .agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner > *,
-.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-header,
+.agent-floating.collapsed[data-presentation='column'] .agent-sidebar-header > *,
 .agent-floating.collapsed[data-presentation='column'] .agent-scope-help,
 .agent-floating.collapsed[data-presentation='column'] .agent-loading-view,
 .agent-floating.collapsed[data-presentation='column'] .agent-setup-view,
@@ -235,9 +238,7 @@
   transform: translateX(28px);
 }
 
-/* Bubbles, header and notices carry their own translucent fills; none of
-   them has a backdrop-filter. */
-.agent-floating[data-presentation='column'] .agent-sidebar-header,
+/* Scrolling bubbles and notices use translucent fills without live blur. */
 .agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
 .agent-floating[data-presentation='column'] .agent-loading-view,
 .agent-floating[data-presentation='column'] .agent-setup-view,
@@ -258,8 +259,7 @@
   border-radius: 18px 18px 18px 6px;
 }
 
-/* Header, help note and system notices use a denser fill than the bubbles. */
-.agent-floating[data-presentation='column'] .agent-sidebar-header,
+/* Help and system notices use a denser fill than the bubbles. */
 .agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
 .agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
   background: color-mix(in srgb, var(--agent-bubble-agent) 70%, var(--bg));

@@ -1644,7 +1644,7 @@ function animateFloatingPresentation(previous, next, before) {
   }
   if (next === 'column') {
     materialise(elements.composerWrap, 'none', 0, false);
-    fadeIn(panelHeader, 160);
+    materialise(panelHeader, 'none', 160);
   } else {
     materialise(panelInner, 'translateY(10px) scale(0.985)', 40);
   }
