@@ -134,7 +134,6 @@ let launcherSnapshot = null;
 // a missing one only loses decoration, never Agent itself.
 let panelInner = null;
 let panelHeader = null;
-let panelSurface = null;
 let floatTitle = null;
 let runHeader = null;
 let runHeaderHome = null;
@@ -1287,7 +1286,6 @@ function observeComposerHeight() {
     const height = elements.composerWrap.getBoundingClientRect().height;
     if (height > 0) {
       elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
-      elements.panel.style?.setProperty?.('--agent-float-composer-height', `${height}px`);
     }
     captureLauncherSnapshot();
   };
@@ -1553,7 +1551,6 @@ function animateFloatingPresentation(previous, next, before) {
     dissolveLauncherGhost(before.launcher, before.greeting);
   }
   if (next === 'column') {
-    materialise(panelSurface, 'translateY(-8px)', 120, false);
     materialise(elements.composerWrap, 'none', 0, false);
     fadeIn(panelHeader, 160);
   } else {
@@ -4913,7 +4910,6 @@ export function initAgentUi(options = {}) {
   if (Object.values(elements).some((element) => !element)) return;
   panelInner = elements.panel.querySelector?.('.agent-sidebar-inner') || null;
   panelHeader = elements.panel.querySelector?.('.agent-sidebar-header') || null;
-  panelSurface = elements.panel.querySelector?.('.agent-float-surface') || null;
   runHeader = elements.panel.querySelector?.('.agent-run-header') || null;
   runHeaderHome = runHeader?.parentNode || null;
   floatTitle = byId('agent-float-title');

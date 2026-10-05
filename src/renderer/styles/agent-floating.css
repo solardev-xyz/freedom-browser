@@ -6,9 +6,9 @@
    `data-agent-view`:
 
      launcher  no task yet: one centred glass card holding the composer;
-     column    a task exists or a conversation was reopened: one stationary
-               glass surface for the header and the conversation, and one
-               separate glass composer below it.
+     column    a task exists or a conversation was reopened: individual
+               speech bubbles and a persistent header, with a separate
+               glass composer below them.
 
    The glass is real: backdrop-filter blurs the <webview> guest beneath,
    which the compositor draws into the same frame. Chromium only keeps that
@@ -19,9 +19,8 @@
      border and shadow (`--agent-glass-filter-hidden` is the resting filter
      list) while the non-glass content around it fades with opacity, and it
      moves with transform, which is safe.
-   In the column the only blur is a fixed-size veil (.agent-float-surface)
-   behind the scrolling conversation; the message bubbles that move with it
-   use plain translucent fills, so scrolling never moves a blurred region.
+   The conversation has no enclosing background or blur. Its speech bubbles
+   use plain translucent fills; only the stationary composer uses glass.
 
    Everything here is scoped under `.agent-floating`, so Agent-first mode
    keeps the layout in agent.css untouched. */
@@ -31,7 +30,6 @@
 }
 
 /* Floating-only nodes stay out of every other layout. */
-.agent-float-surface,
 .agent-float-title,
 .agent-scope-help {
   display: none;
@@ -96,7 +94,6 @@
 }
 
 .agent-floating.collapsed[data-presentation='launcher'] .agent-sidebar-inner,
-.agent-floating.collapsed[data-presentation='column'] .agent-float-surface,
 .agent-floating.collapsed[data-presentation='column'] .agent-composer-wrap {
   background-color: transparent;
   backdrop-filter: var(--agent-glass-filter-hidden);
@@ -219,7 +216,7 @@
   box-shadow: none;
 }
 
-/* ── Column: chat bubbles over one stationary veil ──────────────────────── */
+/* ── Column: chat bubbles over the page ────────────────────────────────── */
 
 .agent-floating[data-presentation='column'] .agent-sidebar-inner {
   top: 10px;
@@ -234,36 +231,8 @@
   transform: translateX(28px);
 }
 
-/* The only blur behind the conversation: sized to the column, never moving,
-   no border. Its edges fade through a mask on the veil itself; a mask on an
-   ancestor would leave it nothing to blur. Its bottom follows the composer
-   card (agent-ui.js measures it). */
-.agent-floating[data-presentation='column'] .agent-float-surface {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: calc(var(--agent-float-composer-height, 0px) + 8px);
-  left: 0;
-  z-index: -1;
-  display: block;
-  pointer-events: auto;
-  background-color: var(--agent-veil);
-  backdrop-filter: var(--agent-veil-filter);
-  mask-image:
-    linear-gradient(to bottom, transparent, var(--text) 12px, var(--text) calc(100% - 28px), transparent),
-    linear-gradient(to right, transparent, var(--text) 24px, var(--text) calc(100% - 24px), transparent);
-  mask-composite: intersect;
-  transition:
-    background-color 240ms ease,
-    backdrop-filter 300ms ease;
-}
-
-.agent-floating[data-presentation='column']:not([data-agent-view='workspace']) .agent-float-surface {
-  bottom: 0;
-}
-
-/* Bubbles, header and notices carry their own translucent fills, so text
-   never depends on the veil alone; none of them has a backdrop-filter. */
+/* Bubbles, header and notices carry their own translucent fills; none of
+   them has a backdrop-filter. */
 .agent-floating[data-presentation='column'] .agent-sidebar-header,
 .agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
 .agent-floating[data-presentation='column'] .agent-loading-view,
@@ -277,8 +246,7 @@
   box-shadow: var(--agent-bubble-shadow);
 }
 
-/* Header, help note and system notices sit where the veil's edge is still
-   fading in, so they use a denser fill than the bubbles. */
+/* Header, help note and system notices use a denser fill than the bubbles. */
 .agent-floating[data-presentation='column'] .agent-sidebar-header,
 .agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
 .agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
@@ -299,24 +267,6 @@
   padding: 6px 6px 6px 12px;
   border-radius: 16px;
   pointer-events: auto;
-}
-
-/* In the conversation, with a pointer, the header steps back until the
-   column is hovered or holds keyboard focus (composer included) or the help
-   note is open; it keeps its space, so nothing moves. Touch and other
-   no-hover devices, and the provider and services screens, always show it. */
-@media (hover: hover) {
-  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-header {
-    opacity: 0;
-    transition: opacity 200ms ease 320ms;
-  }
-
-  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-inner:hover .agent-sidebar-header,
-  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-inner:focus-within .agent-sidebar-header,
-  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-inner:has(.agent-scope-help:not([hidden])) .agent-sidebar-header {
-    opacity: 1;
-    transition-delay: 0s;
-  }
 }
 
 .agent-floating[data-presentation='column'] .agent-sidebar-title-row {
