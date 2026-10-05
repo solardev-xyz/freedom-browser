@@ -11,6 +11,7 @@ const {
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 const { trustBuiltInToolOverride } = require('./pi-trusted-tools');
 const { VIRTUAL_AGENT_CWD } = require('./pi-virtual-paths');
+const { validateHistoryRequest } = require('./workspace-history-policy');
 
 const WORKSPACE_TOOL_NAMES = Object.freeze([
   'bash',
@@ -379,26 +380,36 @@ function assertBrowserEnvelope(envelope) {
 function createWorkspaceHistoryTool(sdk, options) {
   return sdk.defineTool({
     name: 'workspace_history', label: 'Review project history',
-    description: 'Inspect project Git history and read bounded diffs with action diff and a path. Status reports workspaceKind: managed or external. Proactively checkpoint reviewed meaningful milestones in managed workspaces; commit external repository changes only when authorized. Review exact file revisions and save only selected review tokens. Status, diff and review work with read-only project access; use these instead of shell Git for inspection. For interrupted external commits, inspect recovery then call recover with its fresh token and resolution automatic. If intent is ambiguous, ask in chat; keep_current with a reason only archives the old record and preserves all repository state. Load the workspace-history skill first. No unreviewed snapshots or remote operations.',
+    description: 'Inspect project Git history. Load the workspace-history skill first. Workflow: status to identify workspaceKind and changed paths; review each selected exact file path and assess its returned contents; checkpoint (managed) or commit (authorized external project) with those returned reviewIds AND a short label. Reading, writing and diffing do not create review tokens. Proactively checkpoint meaningful managed milestones; commit external changes only when authorized. Diff requires one exact file path, not a directory. Status, diff and review work with read-only access; use these instead of shell Git. For interrupted external commits, inspect recovery then recover with its fresh token and resolution automatic. Ask in chat if intent is ambiguous; keep_current with a reason only archives the old record. No unreviewed snapshots or remote operations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         action: { type: 'string', enum: ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint', 'recovery', 'recover'] },
-        path: { type: 'string', minLength: 1, maxLength: 1024 },
+        path: { type: 'string', minLength: 1, maxLength: 1024, description: 'Required for diff/review/exclude/include. One exact project-relative file, e.g. index.html; not "." or a directory.' },
         reason: { type: 'string', minLength: 1, maxLength: 160 },
-        label: { type: 'string', minLength: 1, maxLength: 80 },
+        label: { type: 'string', minLength: 1, maxLength: 80, description: 'Required for checkpoint/commit: a short meaningful commit message.' },
         token: { type: 'string', pattern: '^[a-f0-9]{64}$' },
         resolution: { type: 'string', enum: ['automatic', 'keep_current'] },
-        reviewIds: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'string', pattern: '^review_[a-f0-9]{32}$' } },
+        reviewIds: { type: 'array', minItems: 1, maxItems: 200, uniqueItems: true, items: { type: 'string', pattern: '^review_[a-f0-9]{32}$' }, description: 'Required for checkpoint/commit. Use only reviewId values returned by review in this conversation, after assessing each revision. Never invent IDs.' },
       }, required: ['action'],
+      oneOf: [
+        { properties: { action: { enum: ['status', 'recovery'] } } },
+        { properties: { action: { enum: ['diff', 'review'] } }, required: ['path'] },
+        { properties: { action: { enum: ['exclude', 'include'] } }, required: ['path', 'reason'] },
+        { properties: { action: { enum: ['commit', 'checkpoint'] } }, required: ['reviewIds', 'label'] },
+        { properties: { action: { enum: ['recover'] }, resolution: { enum: ['automatic'] } }, required: ['token'] },
+        { properties: { action: { enum: ['recover'] }, resolution: { enum: ['keep_current'] } }, required: ['token', 'resolution', 'reason'] },
+      ],
     },
     executionMode: 'sequential',
     execute: async (toolCallId, params, signal) => {
+      params ??= {};
       const operation = 'workspace_history';
       const abort = combinedAbortSignal(signal, options.getRunSignal?.());
       let receipt;
       try {
         if (abort.signal?.aborted) throw new Error('Stopped');
+        validateHistoryRequest(params);
         await ensureWorkspaceEnabled(options, operation, toolCallId, abort.signal);
         notify(options.onToolPhase, { toolCallId, operation, phase: 'executing_operation' });
         const result = await options.controller.reviewWorkspaceHistory(options.conversationId, params, { signal: abort.signal });
@@ -416,6 +427,7 @@ function createWorkspaceHistoryTool(sdk, options) {
         let safe;
         if (error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE') safe = error;
         else if (abort.signal?.aborted) safe = safeWorkspaceError({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+        else if (['WORKSPACE_HISTORY_INVALID_REQUEST', 'WORKSPACE_HISTORY_INVALID_PATH', 'WORKSPACE_HISTORY_REVIEW_REQUIRED'].includes(error?.code)) safe = error;
         else if (WORKSPACE_ERROR_MESSAGES[error?.code]) safe = safeWorkspaceError(error);
         else safe = Object.assign(new Error('Project Git operation unavailable or stopped. Check repository state before retrying; no automatic retry was attempted.'),
           { code: 'WORKSPACE_HISTORY_UNAVAILABLE' });

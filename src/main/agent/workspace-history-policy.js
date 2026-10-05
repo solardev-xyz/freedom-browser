@@ -96,4 +96,45 @@ function historyContainsSecret(value) {
   return false;
 }
 
-module.exports = { HISTORY_LIMITS, historyPathReason, historyContainsSecret };
+// Validate before acquiring a workspace lease or starting a Git operation. These
+// messages contain no caller-supplied data and can be returned directly to models.
+function validateHistoryRequest(request) {
+  const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
+  const invalid = message => fail('WORKSPACE_HISTORY_INVALID_REQUEST', message);
+  const actions = ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint', 'recovery', 'recover'];
+  if (!request || typeof request !== 'object' || Array.isArray(request) || !actions.includes(request.action)) {
+    invalid('Choose a supported workspace_history action: status, diff, review, exclude, include, commit, checkpoint, recovery or recover.');
+  }
+  if (Object.keys(request).some(key => !['action', 'path', 'reason', 'label', 'token', 'resolution', 'reviewIds'].includes(key))) {
+    invalid('Use only the documented workspace_history fields. Checkpoint and commit take reviewIds and label, not file paths or shell commands.');
+  }
+  if (['diff', 'review', 'exclude', 'include'].includes(request.action)) {
+    if (typeof request.path !== 'string' || !request.path.trim() || request.path === '.') {
+      fail('WORKSPACE_HISTORY_INVALID_PATH', 'Supply path as one exact project-relative filename from status or ls, not the project directory. For example: {"action":"review","path":"index.html"}.');
+    }
+    if (historyPathReason(request.path)) {
+      fail('WORKSPACE_PROTECTED_PATH', 'This path is excluded from project history or is outside the supported project-relative file boundary.');
+    }
+  }
+  if (['commit', 'checkpoint'].includes(request.action)) {
+    if (!Array.isArray(request.reviewIds) || !request.reviewIds.length || request.reviewIds.length > HISTORY_LIMITS.files ||
+        request.reviewIds.some(id => typeof id !== 'string' || !/^review_[a-f0-9]{32}$/.test(id)) || new Set(request.reviewIds).size !== request.reviewIds.length) {
+      fail('WORKSPACE_HISTORY_REVIEW_REQUIRED', 'No commit was attempted. Call workspace_history action review with each selected file path, assess the returned contents, then pass the returned reviewId values in reviewIds with a label. Reading, writing or diffing a file does not create a review token. Never invent tokens.');
+    }
+    if (typeof request.label !== 'string' || !request.label.trim() || request.label.length > 80 ||
+        [...request.label].some(character => character.charCodeAt(0) < 32) || historyContainsSecret(request.label)) {
+      invalid('No commit was attempted. Supply label as a short commit message (1–80 characters), without credentials or control characters. Keep the selected reviewIds.');
+    }
+  }
+  if (['exclude', 'include'].includes(request.action) || (request.action === 'recover' && request.resolution === 'keep_current')) {
+    if (typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 160 || historyContainsSecret(request.reason)) {
+      invalid('Supply reason as a short explanation (1–160 characters) without private data.');
+    }
+  }
+  if (request.action === 'recover' && (typeof request.token !== 'string' || !/^[a-f0-9]{64}$/.test(request.token) ||
+      (request.resolution !== undefined && !['automatic', 'keep_current'].includes(request.resolution)))) {
+    invalid('First call action recovery. Use its returned token with action recover and resolution automatic, or keep_current with a reason when appropriate. Do not invent a recovery token.');
+  }
+}
+
+module.exports = { HISTORY_LIMITS, historyPathReason, historyContainsSecret, validateHistoryRequest };

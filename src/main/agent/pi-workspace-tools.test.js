@@ -1156,7 +1156,7 @@ describe('reviewed workspace history tool', () => {
     const outcome = jest.fn();
     const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
     const tool = tools.find(entry => entry.name === 'workspace_history');
-    await expect(tool.execute('commit_read_only', { action: 'commit', reviewIds: ['review_one'], label: 'Update cookbook' })).rejects.toMatchObject({
+    await expect(tool.execute('commit_read_only', { action: 'commit', reviewIds: ['review_' + 'a'.repeat(32)], label: 'Update cookbook' })).rejects.toMatchObject({
       code: 'PROJECT_READ_ONLY', message: expect.stringContaining('request_permissions'),
     });
     expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1164,6 +1164,40 @@ describe('reviewed workspace history tool', () => {
     }));
     expect(access.grants.get(workspaceId).mode).toBe('read');
     expect(controller.reviewWorkspaceHistory).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    [{ action: 'checkpoint' }, 'WORKSPACE_HISTORY_REVIEW_REQUIRED', 'refresh_state', 'action review'],
+    [{ action: 'commit', reviewIds: [] }, 'WORKSPACE_HISTORY_REVIEW_REQUIRED', 'refresh_state', 'action review'],
+    [{ action: 'checkpoint', reviewIds: ['invented'] }, 'WORKSPACE_HISTORY_REVIEW_REQUIRED', 'refresh_state', 'Never invent'],
+    [{ action: 'checkpoint', reviewIds: ['review_' + 'a'.repeat(32)] }, 'WORKSPACE_HISTORY_INVALID_REQUEST', 'correct_input', 'label'],
+    [{ action: 'diff' }, 'WORKSPACE_HISTORY_INVALID_PATH', 'correct_input', 'exact project-relative filename'],
+    [{ action: 'review', path: '.' }, 'WORKSPACE_HISTORY_INVALID_PATH', 'correct_input', 'exact project-relative filename'],
+    [{ action: 'review', path: '.git/config' }, 'WORKSPACE_PROTECTED_PATH', 'stop', 'protected'],
+    [{ action: 'exclude', path: 'notes.md' }, 'WORKSPACE_HISTORY_INVALID_REQUEST', 'correct_input', 'reason'],
+    [{ action: 'recover', token: 'invented' }, 'WORKSPACE_HISTORY_INVALID_REQUEST', 'correct_input', 'action recovery'],
+    [{ action: 'recover', token: 'a'.repeat(64), resolution: 'keep_current' }, 'WORKSPACE_HISTORY_INVALID_REQUEST', 'correct_input', 'reason'],
+    [{ action: 'shell_git' }, 'WORKSPACE_HISTORY_INVALID_REQUEST', 'correct_input', 'supported'],
+  ])('gives actionable history validation before workspace execution: %j', async (params, code, action, message) => {
+    const controller = createController();
+    controller.reviewWorkspaceHistory = jest.fn();
+    const requestApproval = jest.fn(); const outcome = jest.fn();
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval, onToolOutcome: outcome });
+    await expect(tools.find(entry => entry.name === 'workspace_history').execute('bad_request', params)).rejects.toMatchObject({
+      code, message: expect.stringContaining(message), recovery: { action },
+    });
+    expect(controller.reviewWorkspaceHistory).not.toHaveBeenCalled();
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(outcome).toHaveBeenCalledWith(expect.objectContaining({ errorCode: code, status: 'failed' }));
+  });
+
+  test('preserves stale-review guidance from the controller', async () => {
+    const controller = createController();
+    controller.reviewWorkspaceHistory = jest.fn().mockRejectedValue(Object.assign(new Error('File changed since review. Call action review again.'), { code: 'WORKSPACE_HISTORY_REVIEW_REQUIRED' }));
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn() });
+    await expect(tools.find(entry => entry.name === 'workspace_history').execute('stale', {
+      action: 'checkpoint', reviewIds: ['review_' + 'a'.repeat(32)], label: 'Save milestone',
+    })).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_REVIEW_REQUIRED', message: expect.stringContaining('File changed since review'), recovery: { arguments: { action: 'review' } } });
   });
 
   test.each(['PROJECT_RECONNECT_REQUIRED', 'PROJECT_CHANGED'])('preserves %s during history operations without leaking host paths', async (code) => {
@@ -1183,7 +1217,7 @@ describe('reviewed workspace history tool', () => {
     const message = `The outcome of commit ${'c'.repeat(40)} is uncertain. Inspect Git history and the retained recovery record before retrying.`;
     controller.reviewWorkspaceHistory = jest.fn(async () => { stopped.abort(); throw new WorkspaceHistoryError(message); });
     const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn() });
-    await expect(tools.find(entry => entry.name === 'workspace_history').execute('uncertain_commit', { action: 'commit' }, stopped.signal))
+    await expect(tools.find(entry => entry.name === 'workspace_history').execute('uncertain_commit', { action: 'commit', reviewIds: ['review_' + 'a'.repeat(32)], label: 'Commit changes' }, stopped.signal))
       .rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_UNAVAILABLE', message: expect.stringContaining(message) });
   });
 
@@ -1193,7 +1227,7 @@ describe('reviewed workspace history tool', () => {
     controller.reviewWorkspaceHistory = jest.fn(async () => ({ saved, id: 'b'.repeat(40), label: 'Private label' }));
     const outcome = jest.fn();
     const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
-    await tools.find(entry => entry.name === 'workspace_history').execute('save', { action: 'checkpoint', reviewIds: ['review_' + 'a'.repeat(32)] });
+    await tools.find(entry => entry.name === 'workspace_history').execute('save', { action: 'checkpoint', reviewIds: ['review_' + 'a'.repeat(32)], label: 'Save milestone' });
     expect(outcome.mock.calls[0][0].workspace.history).toEqual({ action: 'checkpoint', source: 'repository', saved, checkpointId: 'b'.repeat(40) });
     expect(JSON.stringify(outcome.mock.calls)).not.toContain('Private label');
   });

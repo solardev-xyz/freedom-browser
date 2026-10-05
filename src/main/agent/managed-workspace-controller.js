@@ -7,7 +7,7 @@ const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
 const { ManagedWorkspaceHistory, WorkspaceHistoryError, fingerprint } = require('./managed-workspace-history');
 const { ExternalProjectGit } = require('./external-project-git');
 const crypto = require('crypto');
-const { historyPathReason, historyContainsSecret } = require('./workspace-history-policy');
+const { historyPathReason, historyContainsSecret, validateHistoryRequest } = require('./workspace-history-policy');
 const { WORKSPACE_INSPECTION_HELPER } = require('./workspace-inspection-helper');
 const path = require('path');
 const {
@@ -1669,6 +1669,7 @@ class ManagedWorkspaceController {
   }
 
   async reviewWorkspaceHistory(conversationId, request = {}, options = {}) {
+    validateHistoryRequest(request);
     return this.#withHistory(conversationId, async (history) => {
       if (request.action === 'diff') {
         const excluded = history instanceof ExternalProjectGit ? [] : await history.exclusions();
@@ -1690,7 +1691,7 @@ class ManagedWorkspaceController {
       const exclusions = await history.exclusions();
       if (request.action === 'status') {
         return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })), exclusions, workspaceKind: 'managed',
-          message: 'This is a Freedom-owned workspace. Proactively save reviewed checkpoints at meaningful milestones unless the user asks otherwise. No separate commit request is needed. Unselected changes are never saved automatically.' };
+          message: 'This is a Freedom-owned workspace. Proactively checkpoint meaningful milestones unless the user asks otherwise. For each selected changed file, call workspace_history with action review and its exact path, assess the returned contents, then call action checkpoint with those returned reviewIds and a short label. Status, read, write and diff do not create review tokens. No separate commit request is needed. Unselected changes are never saved automatically.' };
       }
       if (request.action === 'exclude' || request.action === 'include') {
         if (historyPathReason(request.path) || typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 160 || historyContainsSecret(request.reason)) throw new WorkspaceHistoryError('Use an eligible exact file path and a short reason without private data');
@@ -1703,9 +1704,9 @@ class ManagedWorkspaceController {
         return { exclusions: next, message: 'Exclusions affect future checkpoints and restores, not copies in earlier versions. Including a path does not approve its contents.' };
       }
       if (request.action === 'review') {
-        if (historyPathReason(request.path) || exclusions.some((entry) => entry.path === request.path)) throw new WorkspaceHistoryError('This file is excluded from history');
+        if (exclusions.some((entry) => entry.path === request.path)) throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'This file is excluded from history');
         const snapshot = await this.#stableHistorySnapshot(conversationId, [request.path]);
-        if (snapshot.excludedCount) throw new WorkspaceHistoryError('This file is excluded, unsafe, or oversized');
+        if (snapshot.excludedCount) throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'This file is excluded, unsafe, or oversized');
         const file = snapshot.files[0] || null;
         const head = await history.currentSnapshot();
         if (!file && !head.files.some((entry) => entry.path === request.path)) throw new WorkspaceHistoryError('No current or previously committed file at this path');
@@ -1718,15 +1719,15 @@ class ManagedWorkspaceController {
           text: bytes && !bytes.includes(0) ? bytes.toString('utf8') : '', bytes: bytes?.length || 0,
           message: 'Assess this exact revision in context. Binary content requires appropriate separate inspection; a token alone does not establish suitability.' };
       }
-      if (!['commit', 'checkpoint'].includes(request.action) || !Array.isArray(request.reviewIds) || !request.reviewIds.length || request.reviewIds.length > 200 || new Set(request.reviewIds).size !== request.reviewIds.length) throw new WorkspaceHistoryError('Select explicit file review tokens for this commit');
       const reviews = request.reviewIds.map((id) => this.historyReviews.get(id));
-      if (reviews.some((review) => !review || review.conversationId !== conversationId || review.expires < Date.now() || exclusions.some((entry) => entry.path === review.path)) || new Set(reviews.map((review) => review.path)).size !== reviews.length) throw new WorkspaceHistoryError('Review expired, excluded, or belongs to another conversation');
+      if (reviews.some(review => review && exclusions.some(entry => entry.path === review.path))) throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'A selected file is excluded from history');
+      if (reviews.some((review) => !review || review.conversationId !== conversationId || review.expires < Date.now()) || new Set(reviews.map((review) => review.path)).size !== reviews.length) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_REVIEW_REQUIRED', 'Review expired, excluded, already used, or belongs to another conversation. No commit was attempted. Review each selected file again with action review and its exact path; assess the contents, then use the newly returned reviewIds.');
       const current = await this.#stableHistorySnapshot(conversationId, reviews.map((review) => review.path));
-      if (current.excludedCount) throw new WorkspaceHistoryError('Reviewed files are now excluded or unsafe');
+      if (current.excludedCount) throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'Reviewed files are now excluded or unsafe');
       const files = new Map((await history.currentSnapshot()).files.filter((file) => !exclusions.some((entry) => entry.path === file.path)).map((file) => [file.path, file]));
       for (const review of reviews) {
         const now = current.files.find((file) => file.path === review.path) || null;
-        if (JSON.stringify(now) !== JSON.stringify(review.file)) throw new WorkspaceHistoryError('File changed since review; inspect its new contents');
+        if (JSON.stringify(now) !== JSON.stringify(review.file)) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_REVIEW_REQUIRED', 'File changed since review. No commit was attempted. Call action review again for the selected files, assess the new contents, and use the new reviewIds.');
         if (review.file) files.set(review.path, review.file); else files.delete(review.path);
       }
       const snapshot = { files: [...files.values()].sort((a, b) => a.path < b.path ? -1 : 1), excluded: exclusions.map((entry) => ({ ...entry, reason: 'Agent/user exclusion: ' + entry.reason })), excludedCount: exclusions.length };
@@ -1739,7 +1740,7 @@ class ManagedWorkspaceController {
 
   async #reviewProjectGit(conversationId, history, request) {
     if (request.action === 'status') return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })),
-      ...(await history.list()), recovery: await history.recovery(), workspaceKind: 'external', message: 'This is the project repository. Commit only when requested or authorized by the task and repository instructions. No separate checkpoint history is written.' };
+      ...(await history.list()), recovery: await history.recovery(), workspaceKind: 'external', message: 'This is the project repository. Commit only when requested or authorized by the task and repository instructions. Review each selected exact file path with action review, assess its returned contents, then call action commit with the returned reviewIds and a short label. No separate checkpoint history is written.' };
     if (!await history.validate()) throw new WorkspaceHistoryError('This folder has no Git repository. Files can be edited, but no history is created. Initialize Git explicitly with your Git client if wanted.');
     if (request.action === 'recovery') return history.recovery();
     if (request.action === 'recover') {
@@ -1750,10 +1751,9 @@ class ManagedWorkspaceController {
     }
     if (['include', 'exclude'].includes(request.action)) throw new WorkspaceHistoryError('Use repository ignore rules and select the intended files for each commit. Freedom has no separate exclusion history for this project.');
     if (request.action === 'review') {
-      if (historyPathReason(request.path)) throw new WorkspaceHistoryError('This file is excluded from commit review.');
       const baseline = await history.baseline();
       const snapshot = await this.#stableHistorySnapshot(conversationId, [request.path]);
-      if (snapshot.excludedCount) throw new WorkspaceHistoryError('This file is unsafe, excluded, or oversized.');
+      if (snapshot.excludedCount) throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'This file is unsafe, excluded, or oversized.');
       const file = snapshot.files[0] || null;
       if (!file && !(baseline.id && (await history.entries(baseline.id)).some(entry => entry.path === request.path))) throw new WorkspaceHistoryError('No current or tracked file at this path.');
       for (const [id, review] of this.historyReviews) if (review.expires < Date.now()) this.historyReviews.delete(id);
@@ -1764,14 +1764,14 @@ class ManagedWorkspaceController {
       return { reviewId, path: request.path, deleted: !file, binary: bytes?.includes(0) || false,
         text: bytes && !bytes.includes(0) ? bytes.toString() : '', bytes: bytes?.length || 0, source: 'repository' };
     }
-    if (!['commit', 'checkpoint'].includes(request.action) || !Array.isArray(request.reviewIds) || !request.reviewIds.length || request.reviewIds.length > 200) throw new WorkspaceHistoryError('Select reviewed files and provide a commit message.');
     const reviews = request.reviewIds.map(id => this.historyReviews.get(id));
     if (reviews.some(review => !review || !review.baseline || review.conversationId !== conversationId || review.expires < Date.now()) || new Set(reviews.map(review => review.path)).size !== reviews.length ||
-        reviews.some(review => JSON.stringify(review.baseline) !== JSON.stringify(reviews[0].baseline))) throw new WorkspaceHistoryError('Reviews expired or Git changed. Review the files again.');
+        reviews.some(review => JSON.stringify(review.baseline) !== JSON.stringify(reviews[0].baseline))) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_REVIEW_REQUIRED', 'Reviews expired or Git changed. No commit was attempted. Call action review for each selected file, assess the contents, then use the newly returned reviewIds.');
     if (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some(command => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Stop project commands before committing.');
     const recheck = async () => {
       const snapshot = await this.#stableHistorySnapshot(conversationId, reviews.map(review => review.path));
-      if (snapshot.excludedCount || reviews.some(review => JSON.stringify(review.file) !== JSON.stringify(snapshot.files.find(file => file.path === review.path) || null))) throw new WorkspaceHistoryError('Files changed since review. Review their current contents.');
+      if (snapshot.excludedCount) throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'Reviewed files are now excluded or unsafe.');
+      if (reviews.some(review => JSON.stringify(review.file) !== JSON.stringify(snapshot.files.find(file => file.path === review.path) || null))) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_REVIEW_REQUIRED', 'Files changed since review. Call action review for each selected file, assess the contents, and use the newly returned reviewIds.');
     };
     await recheck();
     const result = await history.commit(reviews, reviews[0].baseline, request.label, recheck);

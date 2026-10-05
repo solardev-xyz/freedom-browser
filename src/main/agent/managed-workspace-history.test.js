@@ -120,13 +120,41 @@ describe('managed workspace checkpoints and restore', () => {
     expect(git('fsck', '--no-reflogs')).not.toContain('error');
   });
 
+  test('recovers a missing-review checkpoint through explicit reviews without saving unrelated files', async () => {
+    write('index.html', '<h1>Hello</h1>');
+    write('style.css', 'body { color: green; }');
+    write('notes.txt', 'unrelated notes');
+    await expect(review({ action: 'checkpoint', label: 'Build website' })).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_REVIEW_REQUIRED' });
+    await expect(review({ action: 'diff', path: '.' })).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_INVALID_PATH' });
+    expect((await history({ action: 'list' })).versions).toHaveLength(0);
+    const status = await review({ action: 'status' });
+    expect(status.message).toContain('action review');
+    const first = await review({ action: 'review', path: 'index.html' });
+    const second = await review({ action: 'review', path: 'style.css' });
+    const reviewIds = [first.reviewId, second.reviewId];
+    await expect(review({ action: 'checkpoint', reviewIds })).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_INVALID_REQUEST' });
+    const saved = await review({ action: 'checkpoint', reviewIds, label: 'Build website' });
+    expect(saved).toMatchObject({ saved: true, reviewedPaths: ['index.html', 'style.css'] });
+    expect(git('ls-tree', '--name-only', 'HEAD').trim().split('\n')).toEqual(['index.html', 'style.css']);
+    expect(fs.readFileSync(path.join(root, 'notes.txt'), 'utf8')).toBe('unrelated notes');
+  });
+
+  test.each(['expired', 'invented', 'duplicate'])('rejects %s reviews before saving history', async kind => {
+    write('game.js', 'one');
+    const first = await review({ action: 'review', path: 'game.js' });
+    if (kind === 'expired') controller.historyReviews.get(first.reviewId).expires = Date.now() - 1;
+    const reviewIds = kind === 'invented' ? ['review_' + 'f'.repeat(32)] : kind === 'duplicate' ? [first.reviewId, first.reviewId] : [first.reviewId];
+    await expect(review({ action: 'checkpoint', reviewIds, label: 'Save' })).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_REVIEW_REQUIRED' });
+    expect((await history({ action: 'list' })).versions).toHaveLength(0);
+  });
+
   test('rejects changed, replayed, foreign and cancelled reviews', async () => {
     write('game.js', 'one');
     const token = (await review({ action: 'review', path: 'game.js' })).reviewId;
     write('game.js', 'two');
     await expect(
       review({ action: 'checkpoint', reviewIds: [token], label: 'Stale' })
-    ).rejects.toThrow('changed');
+    ).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_REVIEW_REQUIRED', message: expect.stringContaining('changed') });
     const fresh = (await review({ action: 'review', path: 'game.js' })).reviewId;
     controller.historyReviews.get(fresh).conversationId = 'other';
     await expect(

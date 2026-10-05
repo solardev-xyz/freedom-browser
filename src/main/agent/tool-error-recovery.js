@@ -51,6 +51,14 @@ function recoveryForToolError(code, operation) {
     'Request network: "full" through request_permissions for the exact server launch command and workingDirectory. Only launch after approval; then preview its returned processId.', { tool: 'request_permissions' });
   if (code === 'WORKSPACE_DIFF_UNAVAILABLE') return step('inspect_state',
     'Read accessible current files and explain that an exact bounded diff is unavailable, or ask the user to inspect it in their Git client. Editing access does not fix this limitation; do not bypass the diff limits with shell Git.', { tool: 'read' });
+  if (code === 'WORKSPACE_HISTORY_INVALID_PATH') return step('correct_input',
+    'Use workspace_history status or ls to identify one exact project-relative file. Then call diff or review with that path, not "." or a directory. This is an argument error, not a permission request.',
+    { tool: 'workspace_history', arguments: { action: 'status' } });
+  if (code === 'WORKSPACE_HISTORY_INVALID_REQUEST') return step('correct_input',
+    'Follow the specific argument error. Checkpoint/commit require both reviewIds returned by review and a short label. Correct only the missing or invalid fields; do not invent tokens or use shell Git.', { tool: 'workspace_history' });
+  if (code === 'WORKSPACE_HISTORY_REVIEW_REQUIRED') return step('refresh_state',
+    'For each intended eligible file, call workspace_history with action review and its exact project-relative path. Assess the returned contents, retain its reviewId, then checkpoint (managed) or commit (authorized external project) with those reviewIds and a short label. Read, write, diff and status do not mint review tokens. Never invent or reuse expired tokens; leave excluded files out. This is not a request for broader permission.',
+    { tool: 'workspace_history', arguments: { action: 'review' } });
   if (code === 'WORKSPACE_HISTORY_CHANGED') return step('refresh_state',
     'Read the file again, reassess the intended change against its current contents, then retry only if still appropriate.', { tool: 'read' });
   if (code === 'WORKSPACE_HISTORY_UNAVAILABLE') return step('inspect_outcome',

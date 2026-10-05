@@ -422,7 +422,13 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
     const subagent = normalizeSubagentReceipt(toolOutcome?.subagent || event.result?.details?.subagent);
     const subagents = normalizeSubagentReceipts(toolOutcome?.subagents || event.result?.details?.subagents);
     const failed = subagents?.some(item => !['running', 'completed'].includes(item.state)) || event.isError || toolOutcome?.status === 'failed' || (subagent && !['running', 'completed'].includes(subagent.state));
-    const errorCode = failed ? toolOutcome?.errorCode : undefined;
+    // Pi rejects malformed arguments before the adapter executes, so there is
+    // no controller outcome. Classify only its known validation prefix; never
+    // forward the raw error, which includes all supplied arguments.
+    const historyValidationFailed = !toolOutcome && event.isError && event.toolName === 'workspace_history' &&
+      event.result?.content?.[0]?.type === 'text' &&
+      event.result.content[0].text?.startsWith('Validation failed for tool "workspace_history":');
+    const errorCode = failed ? (toolOutcome?.errorCode || (historyValidationFailed ? 'WORKSPACE_HISTORY_INVALID_REQUEST' : undefined)) : undefined;
     const operation = String(event.toolName);
     const attachment = normalizeAttachmentReceipt(event.result?.details, operation);
     const progress =

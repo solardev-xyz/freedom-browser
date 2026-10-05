@@ -3620,6 +3620,17 @@ describe('FreedomAgentService', () => {
     expect(dependencies.loadSdk).not.toHaveBeenCalled();
   });
 
+  test('identifies Pi history schema failures without exposing arguments or misclassifying controller failures', () => {
+    const event = { type: 'tool_execution_end', toolCallId: 'missing_review', toolName: 'workspace_history', isError: true,
+      result: { content: [{ type: 'text', text: 'Validation failed for tool "workspace_history":\nMissing reviewIds\nReceived arguments: private-project-label' }] } };
+    expect(normalizePiEvent(event)).toMatchObject({ status: 'failed', errorCode: 'WORKSPACE_HISTORY_INVALID_REQUEST' });
+    expect(JSON.stringify(normalizePiEvent(event))).not.toContain('private-project-label');
+    expect(normalizePiEvent(event, { status: 'failed', errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE' })).toMatchObject({ errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE' });
+    expect(normalizePiEvent({ ...event, isError: false }).errorCode).toBeUndefined();
+    expect(normalizePiEvent({ ...event, toolName: 'browser_snapshot' }).errorCode).toBeUndefined();
+    expect(normalizePiEvent({ ...event, result: { content: [{ type: 'text', text: 'Other failure' }] } }).errorCode).toBeUndefined();
+  });
+
   test('normalizes only the safe event subset and known tool errors', () => {
     expect(normalizePiEvent({ type: 'turn_start' })).toEqual({ type: 'run_thinking' });
     expect(
