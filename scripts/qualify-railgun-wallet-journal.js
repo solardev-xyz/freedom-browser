@@ -33,6 +33,26 @@ async function main() {
   } else app.setPath('userData', path.join(directory, 'electron'));
   app.dock?.hide();
   await app.whenReady();
+  const snapshotFlag = process.env.FREEDOM_RAILGUN_KOHAKU_SNAPSHOT;
+  assert.ok(snapshotFlag === undefined || snapshotFlag === '1');
+  if (snapshotFlag) {
+    assert.equal(composition, 'enrolled');
+    assert.equal(proverArchive, undefined);
+    assert.equal(artifactDirectory, undefined);
+    for (const name of [
+      'FREEDOM_RAILGUN_KOHAKU',
+      'FREEDOM_RAILGUN_PRIVATE_OPERATION',
+      'FREEDOM_RAILGUN_PRIVATE_SUBMISSION',
+      'FREEDOM_RAILGUN_TRANSACT_STAGING',
+      'FREEDOM_RAILGUN_TRANSACT_CONTROLLER',
+      'FREEDOM_RAILGUN_SIMULATE_LOST_ACK',
+    ])
+      assert.equal(process.env[name], undefined);
+  }
+  const snapshotProbe = snapshotFlag
+    ? require('./fixtures/railgun-kohaku-snapshot-native').install()
+    : null;
+  let snapshotAdapterQualification;
   const kohakuMode = process.env.FREEDOM_RAILGUN_KOHAKU;
   const publicShield = kohakuMode === 'public-shield';
   if (publicShield) {
@@ -119,6 +139,7 @@ async function main() {
   const transport = require('../src/main/networks/wallet-tor-transport');
   const originalTransport = transport.createWalletTorTransport;
   transport.createWalletTorTransport = (...args) => {
+    snapshotProbe?.count('transportFactories');
     if (stagingGuard) {
       forbiddenStaging.transports++;
       throw Error('External transport forbidden during synthetic staging');
@@ -130,7 +151,7 @@ async function main() {
     productionPrivateOperation = null;
   const contractResources = kohaku
     ? require('./fixtures/railgun-kohaku-contract-observer').installResourceMeter()
-    : null;
+    : (snapshotProbe?.resources ?? null);
   const readContracts = [];
   let restoreContractRuntime;
   const walletRestores = [],
@@ -178,7 +199,9 @@ async function main() {
           ...original,
           async dispatch(wire) {
             messages++;
+            snapshotProbe?.count('brokerMessages');
             const message = JSON.parse(wire);
+            if (message.method === 'key') snapshotProbe?.count('railgunKeyRequests');
             if (stagingGuard && message.method === 'key' && message.purpose === 'spending-sign') {
               forbiddenStaging.spendingKeys++;
               assert.ok(
@@ -200,6 +223,7 @@ async function main() {
               throw Error('Injected read-only restore interruption');
             }
             const reply = await original.dispatch(wire);
+            if (message.method === 'key') snapshotProbe?.count('railgunKeyReplies');
             if (
               message.method === 'key' &&
               message.purpose === 'spending-sign' &&
@@ -343,6 +367,7 @@ async function main() {
   let requests = 0,
     provider = 'archived-source-a.invalid';
   const archivedRpc = (handle, _role, { signal }) => {
+    snapshotProbe?.count('rpcFactories');
     const lifetime = AbortSignal.any([getPrivacyContext(handle).signal, signal]);
     const active = () => {
       getPrivacyContext(handle);
@@ -354,6 +379,7 @@ async function main() {
       release: () => {},
       assertActive: active,
       request: async (method, params, validate) => {
+        snapshotProbe?.count('rpcRequests');
         if (stagingGuard && !['eth_getLogs', 'eth_getBlockByNumber'].includes(method)) {
           forbiddenStaging.rpc++;
           throw Error('Private RPC forbidden during synthetic staging');
@@ -568,6 +594,22 @@ async function main() {
           'src/main/wallet/railgun-kohaku-plugin.js',
           'src/main/wallet/railgun-kohaku-read-dispatch.js',
           'src/main/wallet/railgun-kohaku-broadcaster.js',
+        ]
+      : []),
+    ...(snapshotProbe
+      ? [
+          'scripts/fixtures/railgun-kohaku-snapshot-native.js',
+          'scripts/fixtures/railgun-kohaku-snapshot-native.test.js',
+          'scripts/fixtures/railgun-kohaku-snapshot-conformance.js',
+          'scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts',
+          'scripts/fixtures/railgun-public-cold-data.js',
+          'src/main/wallet/railgun-shield-policy.js',
+          'src/main/wallet/railgun-shield-receipt.js',
+          'src/main/wallet/railgun-kohaku-snapshot-host.js',
+          'src/main/wallet/railgun-kohaku-snapshot-host.test.js',
+          'src/main/wallet/railgun-kohaku-snapshot-plugin.js',
+          'src/main/wallet/railgun-kohaku-snapshot-plugin.test.js',
+          'src/main/wallet/railgun-kohaku-read-dispatch.js',
         ]
       : []),
     ...(publicShield
@@ -935,6 +977,22 @@ async function main() {
             assert.ok(
               retainedDirectories.every((dir) => fs.existsSync(path.join(dir, 'wallet.sqlite')))
             );
+            if (snapshotProbe && stage === 30 && attempt === 'restore') {
+              assert.equal(snapshotAdapterQualification, undefined);
+              snapshotAdapterQualification =
+                await require('./fixtures/railgun-kohaku-snapshot-native').qualify({
+                  account: opened,
+                  owners: { identity: accountIdentity, enrollment, coordinator },
+                  signal: opened.signal,
+                  profile: path.join(directory, 'profile'),
+                  walletDirectory,
+                  measure: () =>
+                    snapshotProbe.measure({
+                      applications: applications.length,
+                      walletRestores: walletRestores.length,
+                    }),
+                });
+            }
             const accountWindows = [];
             const privatePreparations = [];
             const privateOperations = [];
@@ -2124,6 +2182,7 @@ async function main() {
       assert.equal(kohakuQualification.contract.forwarding.checkedCalls, 1);
     }
     nativeAssertions.assertEmpty();
+    if (snapshotProbe) assert.equal(snapshotAdapterQualification?.instances, 1);
     assert.deepEqual(hashes(), sourceSha256);
     assert.doesNotMatch(JSON.stringify(runs), /"(?:ownedPoi|npk|nullifier|blindedCommitment)"\s*:/);
     fs.writeFileSync(
@@ -2132,6 +2191,7 @@ async function main() {
         {
           observedAt: new Date().toISOString(),
           sourceSha256,
+          ...(snapshotProbe ? { snapshotAdapterQualification } : {}),
           syntheticPublicHistory: true,
           liveAcquisition: false,
           publicViewingVector: true,
