@@ -7,6 +7,19 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [interrupted-proof and sequential Kohaku checkpoint](railgun-second-proof-recovery-and-kohaku-2026-10-05.md)
+passes four four-process original-signature recovery cases, two sequential real
+adapter cases and seven compatibility processes: 25 native processes on 928
+identical source hashes. The second original signature survives restart; a fresh
+process fills its missing proof once and another submits through fresh authority.
+A separate same-process pair of actual Kohaku instances consumes normally scanned
+change. Both initial histories and acknowledged/lost-response recovery outcomes
+pass. Root checks pass 719 tests/36 suites and full lint. These are controlled
+fixtures with simulated external services, not live private or power-loss evidence.
+Next are pinned Kohaku contract checks/extraction preparation, public-facade cold
+resolution/ingestion, and external-service/live-private qualification. The historical
+checkpoints below retain their recorded sources and then-open work.
+
 The [second cold-submission checkpoint](railgun-second-cold-submission-2026-10-05.md)
 now passes both original input histories through separate setup, prove-and-stop,
 and reopened submission processes, including acknowledged and lost-response
@@ -116,9 +129,9 @@ native runs. Those runs include real POI proofs and durable recovery, but their
 spend transactions and external service observations have the explicit simulated
 boundaries recorded there. They do not prove a live private transfer or unshield.
 
-The supported private operation shape is presently one pinned-WETH input and
-one self-transfer output, or a full-value unshield to the enrolled Ethereum
-submitter. This is an integration restriction, not a statement about Railgun's
+At that baseline the supported private operation shape was one pinned-WETH input
+and one self-transfer output, or a full-value unshield to the enrolled Ethereum
+submitter. The latest checkpoints additionally qualify bounded partial withdrawal. This is an integration restriction, not a statement about Railgun's
 general capabilities. Balance reads continue to report unverified amounts;
 reading a note never authorizes spending it.
 
@@ -175,8 +188,12 @@ Later checkpoints above supersede those restrictions within their stated scope.
    input/withdrawal/change review. Genuine change scanning, disposable-list
    acceptance, second spending, terminal ingestion, two-process restart and
    three-process second recovered submission are qualified in controlled runs.
-   Next are original-signature recovery when the second proof is interrupted
-   after signing, and a fresh second Kohaku instance spending the scanned change.
+   Original-signature recovery after the second signature commits but before
+   its proof is made, and
+   a fresh second Kohaku instance spending scanned change now pass separate
+   controlled native campaigns. Next are pinned contract/conformance checks and
+   a restricted host contract to make portable extraction reviewable. The current
+   facade remains Freedom-owned; a generic Kohaku Host is not yet qualified.
    Real deployed verifier checks, service list acceptance and private broadcasts
    remain separate live qualification. Earlier warm and advanced-root recovery
    evidence retains its own source inventory. The
@@ -261,7 +278,7 @@ specialized result. This is a pinned local source check, not a claim about the
 latest upstream revision.
 
 The private instance requires an explicit selected note identifier,
-exact asset and full amount; it does not invent coin selection. Preparation
+exact asset and an explicit full or bounded partial amount; it does not invent coin selection. Preparation
 review precedes input-specific POI disclosure and private signing. The later
 Ethereum transaction review cannot retroactively authorize those earlier
 actions. Denied review performs no subsequent staging, query or proving.

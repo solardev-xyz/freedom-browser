@@ -41,7 +41,9 @@ function selectChange(owned, continuation) {
   return { note, record, merkleRoot: trees[0].root };
 }
 exports.selectChange = selectChange;
-async function run(h, restart, proveStop = false) {
+async function run(h, restart, proveStop = false, signStop = false, facadeMode = false) {
+  assert.equal(facadeMode && (restart || proveStop || signStop), false);
+  assert.equal(proveStop && signStop, false);
   const {
     identity,
     enrollment,
@@ -102,9 +104,16 @@ async function run(h, restart, proveStop = false) {
   const constraints = [];
   let secondStored, secondEntry, secondCapture, terminalBaseline;
   try {
+    const facadeBeforeOpen = facadeMode ? h.facadeMeasure() : undefined;
     h.phase('second-open-wallet');
     account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'active' });
     assert.equal(signal.aborted, false);
+    if (facadeMode)
+      require('./railgun-kohaku-partial-native').assertCounts(
+        facadeBeforeOpen,
+        h.facadeMeasure(),
+        require('./railgun-kohaku-second-instance').accountOpenCounts()
+      );
     const owned = wallet.readRailgunAccountOwnedNotes(account, owners);
     const { note, record, merkleRoot } = selectChange(owned, continuation);
     if (restart) h.replay.assertChange(record);
@@ -135,86 +144,177 @@ async function run(h, restart, proveStop = false) {
       firstReceipt: continuation.ownEvidence.receipt,
     });
     h.installTransport(secondChain);
-    const {
-      createPrivacyScope,
-      getPrivacyContext,
-    } = require('../../src/main/networks/privacy-context');
-    const rpc = require('../../src/main/networks/private-rpc');
-    const parent = getPrivacyContext(enrollment.getContext('engine'));
-    scope = createPrivacyScope({ profileId: parent.profileId, signal });
-    const subject = { ...parent.subject, role: 'protocol-rpc' };
-    delete subject.operation;
-    for (const descriptor of [
-      subject,
-      {
-        kind: 'public-address',
-        principal: recipient,
-        chainId: 11155111,
-        role: 'transaction-rpc',
-      },
-    ]) {
-      const handle = scope.getContext(descriptor);
-      const client = rpc.createPrivateRpc(handle, descriptor.role);
-      const observation = rpc.getPrivateRpcDestination(client, handle);
+    let proved, facadeResult;
+    if (facadeMode) {
+      h.phase('second-facade');
+      facadeResult = await h.facade.second({
+        identity,
+        enrollment,
+        coordinator,
+        account,
+        capsules,
+        archive,
+        proverArchive,
+        artifactDirectory,
+        note,
+        record,
+        recipient,
+        amount: note.amount,
+        measure: h.facadeMeasure,
+        recordReview: h.recordReview,
+        onStored(value) {
+          secondStored = value;
+          secondChain.bindProved(value);
+        },
+      });
+      account = undefined;
+      proved = { holdId: secondStored.holdId };
+    } else {
+      const {
+        createPrivacyScope,
+        getPrivacyContext,
+      } = require('../../src/main/networks/privacy-context');
+      const rpc = require('../../src/main/networks/private-rpc');
+      const parent = getPrivacyContext(enrollment.getContext('engine'));
+      scope = createPrivacyScope({ profileId: parent.profileId, signal });
+      const subject = { ...parent.subject, role: 'protocol-rpc' };
+      delete subject.operation;
+      for (const descriptor of [
+        subject,
+        {
+          kind: 'public-address',
+          principal: recipient,
+          chainId: 11155111,
+          role: 'transaction-rpc',
+        },
+      ]) {
+        const handle = scope.getContext(descriptor);
+        const client = rpc.createPrivateRpc(handle, descriptor.role);
+        const observation = rpc.getPrivateRpcDestination(client, handle);
+        assert.equal(
+          rpc.getPrivateRpcDestinationDetails(observation).url,
+          'https://synthetic.invalid/railgun-partial-controller'
+        );
+        constraints.push(
+          rpc.createPrivateRpcDestinationConstraint({
+            observation,
+            signal,
+            deadline: performance.now() + 660000,
+          })
+        );
+      }
+      const destinationConstraints = Object.freeze({
+        protocol: constraints[0].constraint,
+        transaction: constraints[1].constraint,
+      });
+      h.phase('second-transact-staging');
+      staged = await staging.stageRailgunTransactInput({
+        account,
+        owners,
+        request,
+        archive,
+        signal,
+      });
+      assert.equal(staged.status, 'staged');
+      account = staged.account;
+      const facts = staging.assertRailgunTransactStaging(staged.receipt, account, owners, request);
+      assert.deepEqual(facts.state, continuation.state);
+      assert.deepEqual(facts.noteWitness.witness.row, continuation.ownEvidence.row);
+      assert.equal(facts.noteWitness.outputIndex, 0);
+      assert.equal(facts.noteWitness.witness.row.commitments.length, 2);
       assert.equal(
-        rpc.getPrivateRpcDestinationDetails(observation).url,
-        'https://synthetic.invalid/railgun-partial-controller'
+        facts.noteWitness.witness.row.commitments[1],
+        continuation.ownEvidence.capsule.preparation.expected.unshieldCommitment
       );
-      constraints.push(
-        rpc.createPrivateRpcDestinationConstraint({
-          observation,
-          signal,
-          deadline: performance.now() + 660000,
-        })
-      );
+      assert.deepEqual(facts.baseline.owned, record);
+      assert.deepEqual(facts.baseline.received, note);
+      h.phase('second-prove');
+      proved = await require(
+        walletPath + 'railgun-private-operation'
+      ).proveRailgunAccountPrivateOperation({
+        account,
+        owners,
+        archive,
+        proverArchive,
+        artifactDirectory,
+        request,
+        destinationConstraints,
+        stagingReceipt: staged.receipt,
+      });
+      if (signStop) {
+        assert.equal(proved.status, 'signed-unfinished');
+        assert.match(proved.holdId, /^[a-f0-9]{64}$/);
+        await account.close();
+        account = undefined;
+        staged.close();
+        staged = undefined;
+        let second;
+        await reservations.withSigningRecovery(async (records, context) => {
+          context.assertCurrent();
+          assert.equal(records.length, 2);
+          const old = records.find((v) => v.entry.id === originalPrivate.entry.id);
+          assert.deepEqual(old.entry, originalPrivate.entry);
+          assert.deepEqual(await capsules.readSigned(old.receipt), originalPrivate.stored);
+          const item = records.find((v) => v.entry.id === proved.holdId);
+          assert.ok(item);
+          assert.equal(item.entry.facts.nullifier, record.nullifier);
+          second = {
+            entry: copy(item.entry),
+            stored: copy(await capsules.readSignedUnfinished(item.receipt)),
+          };
+          context.assertCurrent();
+        });
+        assert.equal(signal.aborted, false);
+        h.signatureStop.assertStopped(second.stored);
+        const firstNow = (await h.journal().list())[0];
+        secondChain.assertFirstRecord(firstNow);
+        assert.equal(secondChain.report().firstCanonicalRefreshReads, 1);
+        assert.equal(secondChain.report().sends, 0);
+        assert.equal(secondChain.report().signatures, 0);
+        assert.deepEqual(await store.get(capsuleDigest), retainedBefore);
+        assert.deepEqual(await store.inspect(), retainedInspect);
+        assert.deepEqual(fs.readFileSync(retainedFile), retainedBytes);
+        require('./railgun-combined-poi-second-sign-counts').assertSignStop(
+          before,
+          h.activity(),
+          secondChain.report(),
+          h.wire
+        );
+        assert.equal(h.pendingChildren(), 0);
+        assert.equal(h.unwipedLoans(), 0);
+        sticky.assertEmpty();
+        return {
+          report: {
+            genuineSignedUnfinishedSecond: true,
+            originalSignatureCommittedBeforeInterruption: true,
+            secondColdSubmitQualified: false,
+            secondSignedUnfinishedRecoveryQualified: false,
+            interruption: h.signatureStop.report(),
+            traffic: secondChain.report(),
+          },
+          sealed: {
+            records: require('./railgun-combined-poi-second-recovery-data').signedHashes(
+              originalPrivate,
+              second,
+              firstNow
+            ),
+            retained: {
+              entrySha256: require('./railgun-combined-poi-restart-data').digest(retainedBefore),
+              inspectSha256: require('./railgun-combined-poi-restart-data').digest(retainedInspect),
+            },
+          },
+        };
+      }
+      assert.equal(proved.status, 'proved');
+      completion = proved.completion;
+      secondStored = await capsules.get(proved.holdId);
+      assert.ok(secondStored.signature && secondStored.provedTransaction);
+      secondChain.bindProved(secondStored);
+      await account.close();
+      account = undefined;
+      staged.close();
+      staged = undefined;
     }
-    const destinationConstraints = Object.freeze({
-      protocol: constraints[0].constraint,
-      transaction: constraints[1].constraint,
-    });
-    h.phase('second-transact-staging');
-    staged = await staging.stageRailgunTransactInput({
-      account,
-      owners,
-      request,
-      archive,
-      signal,
-    });
-    assert.equal(staged.status, 'staged');
-    account = staged.account;
-    const facts = staging.assertRailgunTransactStaging(staged.receipt, account, owners, request);
-    assert.deepEqual(facts.state, continuation.state);
-    assert.deepEqual(facts.noteWitness.witness.row, continuation.ownEvidence.row);
-    assert.equal(facts.noteWitness.outputIndex, 0);
-    assert.equal(facts.noteWitness.witness.row.commitments.length, 2);
-    assert.equal(
-      facts.noteWitness.witness.row.commitments[1],
-      continuation.ownEvidence.capsule.preparation.expected.unshieldCommitment
-    );
-    assert.deepEqual(facts.baseline.owned, record);
-    assert.deepEqual(facts.baseline.received, note);
-    h.phase('second-prove');
-    const proved = await require(
-      walletPath + 'railgun-private-operation'
-    ).proveRailgunAccountPrivateOperation({
-      account,
-      owners,
-      archive,
-      proverArchive,
-      artifactDirectory,
-      request,
-      destinationConstraints,
-      stagingReceipt: staged.receipt,
-    });
-    assert.equal(proved.status, 'proved');
-    completion = proved.completion;
-    secondStored = await capsules.get(proved.holdId);
-    assert.ok(secondStored.signature && secondStored.provedTransaction);
-    secondChain.bindProved(secondStored);
-    await account.close();
-    account = undefined;
-    staged.close();
-    staged = undefined;
     await reservations.withSigningRecovery(async (records, context) => {
       context.assertCurrent();
       assert.equal(records.length, 2);
@@ -272,39 +372,20 @@ async function run(h, restart, proveStop = false) {
         },
       };
     }
-    const submit = require(
-      walletPath + 'railgun-private-submission'
-    ).submitRailgunPrivateTransaction;
-    h.phase('second-submit');
-    let reviewCalls = 0;
-    const submitted = await submit({
-      identity,
-      enrollment,
-      completion: completion.receipt,
-      proverArchive,
-      artifactDirectory,
-      gasLimit: 1500000n,
-      maxGasFee: 2000000000000000n,
-      review: async (request) => {
-        reviewCalls++;
-        h.recordReview();
-        assert.equal(reviewCalls, 1);
-        assert.equal(request.operation, 'railgun-token-unshield');
-        assert.equal(request.transaction.data, secondStored.provedTransaction.data);
-        assert.equal(request.from.toLowerCase(), recipient);
-        assert.equal(request.fundingAddressPublic, true);
-        assert.equal(secondChain.report().sends, 0);
-        assert.equal(secondChain.report().signatures, 0);
-        return true;
-      },
-    });
-    assert.equal(submitted.hash.toLowerCase(), secondChain.evidence().transaction.hash);
-    assert.equal(Object.hasOwn(submitted, 'submissionState'), false);
-    assert.equal(Object.hasOwn(submitted, 'status'), false);
-    assert.equal(reviewCalls, 1);
-    const afterSend = secondChain.report();
-    assert.deepEqual(
-      await submit({
+    let reviewCalls = facadeMode ? facadeResult.report.transactionReviews : 0;
+    if (facadeMode) {
+      assert.equal(
+        facadeResult.submitted.hash.toLowerCase(),
+        secondChain.evidence().transaction.hash
+      );
+      assert.equal(Object.hasOwn(facadeResult.submitted, 'status'), false);
+    } else {
+      const submit = require(
+        walletPath + 'railgun-private-submission'
+      ).submitRailgunPrivateTransaction;
+      h.phase('second-submit');
+
+      const submitted = await submit({
         identity,
         enrollment,
         completion: completion.receipt,
@@ -312,13 +393,41 @@ async function run(h, restart, proveStop = false) {
         artifactDirectory,
         gasLimit: 1500000n,
         maxGasFee: 2000000000000000n,
-        review: async () => assert.fail('Replayed review'),
-      }),
-      { status: 'recovery-required', stage: 'completion' }
-    );
-    assert.deepEqual(secondChain.report(), afterSend);
-    completion.close();
-    completion = undefined;
+        review: async (request) => {
+          reviewCalls++;
+          h.recordReview();
+          assert.equal(reviewCalls, 1);
+          assert.equal(request.operation, 'railgun-token-unshield');
+          assert.equal(request.transaction.data, secondStored.provedTransaction.data);
+          assert.equal(request.from.toLowerCase(), recipient);
+          assert.equal(request.fundingAddressPublic, true);
+          assert.equal(secondChain.report().sends, 0);
+          assert.equal(secondChain.report().signatures, 0);
+          return true;
+        },
+      });
+      assert.equal(submitted.hash.toLowerCase(), secondChain.evidence().transaction.hash);
+      assert.equal(Object.hasOwn(submitted, 'submissionState'), false);
+      assert.equal(Object.hasOwn(submitted, 'status'), false);
+      assert.equal(reviewCalls, 1);
+      const afterSend = secondChain.report();
+      assert.deepEqual(
+        await submit({
+          identity,
+          enrollment,
+          completion: completion.receipt,
+          proverArchive,
+          artifactDirectory,
+          gasLimit: 1500000n,
+          maxGasFee: 2000000000000000n,
+          review: async () => assert.fail('Replayed review'),
+        }),
+        { status: 'recovery-required', stage: 'completion' }
+      );
+      assert.deepEqual(secondChain.report(), afterSend);
+      completion.close();
+      completion = undefined;
+    }
     const { transaction, receipt } = secondChain.evidence();
     assert.notEqual(transaction.hash, firstRecord.hash);
     const nextRecords = await h.journal().list();
@@ -328,6 +437,7 @@ async function run(h, restart, proveStop = false) {
     assert.equal(next.state, 'submitted');
     assert.equal(next.intent.operation, 'railgun-token-unshield');
     assert.equal(next.intent.nullifier, record.nullifier);
+    const facadeBeforeResolutionAndCapture = facadeMode ? h.facadeMeasure() : undefined;
     h.phase('second-resolution');
     recovery = require(walletPath + 'railgun-transact-recovery').openRailgunTransactRecovery(
       recipient
@@ -368,6 +478,12 @@ async function run(h, restart, proveStop = false) {
     secondChain.assertFirstRecord(
       (await h.journal().list()).find((value) => value.hash === firstRecord.hash)
     );
+    if (facadeMode)
+      require('./railgun-kohaku-partial-native').assertCounts(
+        facadeBeforeResolutionAndCapture,
+        h.facadeMeasure(),
+        require('./railgun-kohaku-second-instance').resolutionAndCaptureCounts()
+      );
     const after = h.activity();
     const jobs = delta(after.audit.starts, before.audit.starts);
     assert.deepEqual(jobs, {
@@ -432,6 +548,7 @@ async function run(h, restart, proveStop = false) {
     return Object.freeze({
       report: Object.freeze({
         genuineScannedTransactChange: true,
+        ...(facadeMode ? { secondFacade: facadeResult.report } : {}),
         existingFullMirrorPreserved: true,
         originalPartialCreatorFinalUnshieldHashVerified: true,
         freshWindowPoiAndRoot: true,
@@ -483,4 +600,7 @@ async function run(h, restart, proveStop = false) {
 exports.run = (h) => run(h, false);
 exports.runRestart = (h) => run(h, true);
 
+exports.runFacade = (h) => run(h, false, false, false, true);
 exports.proveAndStopRestart = (h) => run(h, true, true);
+
+exports.signAndStopRestart = (h) => run(h, true, false, true);

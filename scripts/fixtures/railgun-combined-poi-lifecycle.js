@@ -998,7 +998,13 @@ exports.run = async (h) => {
     if (h.secondSpendMode) {
       assert.equal(changeMode, true);
       assert.equal(changeVerified, true);
-      secondSpend = await require('./railgun-combined-poi-second-spend').run({
+      secondSpend = await (
+        h.facade
+          ? require('./railgun-combined-poi-second-spend').runFacade
+          : require('./railgun-combined-poi-second-spend').run
+      )({
+        facade: h.facade,
+        facadeMeasure: h.facadeMeasure,
         terminalMode: h.terminalMode,
         identity,
         enrollment,

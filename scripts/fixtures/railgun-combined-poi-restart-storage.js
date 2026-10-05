@@ -44,6 +44,7 @@ function install({ directory, phase }) {
     undefined
   );
   const writes = [];
+  const recovery = require('./railgun-combined-poi-second-recovery-storage').create();
   storage.createPrivacyStorage = (options) => {
     const filename = storage.getPrivacyStoragePath(options.handle, options.directory);
     assert.equal(fs.existsSync(filename), true);
@@ -87,17 +88,27 @@ function install({ directory, phase }) {
               throw error;
             }
           }
+          if (phase() === 'second-proof-recovery' || phase() === 'second-proof-present') {
+            try {
+              recovery.inspect(name, old, next, path.relative(directory, filename));
+            } catch (error) {
+              sticky.record(error, 'recovery-storage.transition');
+              throw error;
+            }
+          }
           return next;
         });
         if (record) writes.push(record);
       },
       async set(name, value) {
         assert.equal(phase().startsWith('restart-'), false);
+        assert.ok(!['second-proof-recovery', 'second-proof-present'].includes(phase()));
         return genuine.set(name, value);
       },
     });
   };
   return Object.freeze({
+    recovery,
     report: () => writes.map((v) => ({ ...v })),
     close() {
       storage.createPrivacyStorage = original;

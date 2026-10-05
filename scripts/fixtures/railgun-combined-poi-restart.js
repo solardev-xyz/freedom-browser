@@ -107,9 +107,17 @@ async function resume(h, mode = 'complete') {
   try {
     h.phase('restart-private-records');
     const pair =
-      mode === 'cold-submit' || mode === 'cold-submit-lost'
-        ? await require('./railgun-combined-poi-second-cold').readPair(enrollment, h.sealed.records)
-        : undefined;
+      mode === 'recover-stop'
+        ? await require('./railgun-combined-poi-second-recovery-data').readUnfinishedPair(
+            enrollment,
+            h.sealed.records
+          )
+        : mode === 'cold-submit' || mode === 'cold-submit-lost'
+          ? await require('./railgun-combined-poi-second-cold').readPair(
+              enrollment,
+              h.sealed.records
+            )
+          : undefined;
     const privateState = pair ? pair.first : await original(enrollment);
     current();
     const records = await h.journal().list();
@@ -181,7 +189,13 @@ async function resume(h, mode = 'complete') {
       h.assertBootstrapDrained();
       h.beforeSecond();
       const cold = require('./railgun-combined-poi-second-cold');
-      const result = await (mode === 'cold-submit-lost' ? cold.runLost : cold.run)({
+      const result = await (
+        mode === 'recover-stop'
+          ? require('./railgun-combined-poi-second-recovery').run
+          : mode === 'cold-submit-lost'
+            ? cold.runLost
+            : cold.run
+      )({
         ...h,
         coordinator,
         pair,
@@ -283,7 +297,11 @@ async function resume(h, mode = 'complete') {
     h.beforeSecond();
     const secondModule = require('./railgun-combined-poi-second-spend');
     const second = await (
-      mode === 'prove-stop' ? secondModule.proveAndStopRestart : secondModule.runRestart
+      mode === 'sign-stop'
+        ? secondModule.signAndStopRestart
+        : mode === 'prove-stop'
+          ? secondModule.proveAndStopRestart
+          : secondModule.runRestart
     )({
       ...h,
       coordinator,
@@ -293,7 +311,8 @@ async function resume(h, mode = 'complete') {
       terminalMode: true,
     });
     current();
-    if (mode === 'prove-stop') return { report: second.report, sealed: second.sealed, chain };
+    if (mode === 'prove-stop' || mode === 'sign-stop')
+      return { report: second.report, sealed: second.sealed, chain };
     const terminal = await require('./railgun-combined-poi-terminal-ingest').runRestart({
       ...h,
       first: continuation,
@@ -342,4 +361,6 @@ module.exports = {
   coldSubmit: (h) => resume(h, 'cold-submit'),
   coldSubmitLost: (h) => resume(h, 'cold-submit-lost'),
   hashes,
+  signStop: (h) => resume(h, 'sign-stop'),
+  recoverStop: (h) => resume(h, 'recover-stop'),
 };
