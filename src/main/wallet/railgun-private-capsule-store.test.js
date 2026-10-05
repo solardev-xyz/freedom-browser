@@ -590,3 +590,239 @@ test.each(['copied', 'foreign'])(
     expect(s.signal.aborted).toBe(true);
   }
 );
+
+describe('readSignedUnfinished', () => {
+  function recoveryCapsule(kind) {
+    if (kind === 'full') return capsule();
+    const {
+      createRailgunPartialCapsuleData,
+    } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+    return { ...createRailgunPartialCapsuleData().capsule, walletId: options.walletId };
+  }
+  test.each(['full', 'partial'])(
+    'returns a frozen %s snapshot only through a genuine live recovery receipt without writes',
+    async (kind) => {
+      const advanceFloor = jest.fn(options.advanceFloor);
+      let s = await open(true, { advanceFloor });
+      const c = recoveryCapsule(kind),
+        held = await hold(c);
+      await s.put(held, c, signing.gatesDigest);
+      const signed = await s.markSigning(held, signing);
+      const saved = await s.saveSignature(signed, signature);
+      s.close();
+      s = await open(false, { advanceFloor });
+      advanceFloor.mockClear();
+      const before = fs.readFileSync(filename()),
+        inventory = fs.readdirSync(options.directory).sort();
+      for (const invalid of [null, {}, held, signed])
+        await expect(s.readSignedUnfinished(invalid)).rejects.toThrow();
+      let escaped;
+      await reservations.withSigningRecovery(async ([record]) => {
+        escaped = record.receipt;
+        await expect(s.readSignedUnfinished({ ...escaped })).rejects.toThrow();
+        const snapshot = await s.readSignedUnfinished(escaped);
+        expect(snapshot).toEqual(saved);
+        expect(snapshot.provedTransaction).toBeNull();
+        for (const value of [
+          snapshot,
+          snapshot.signature,
+          snapshot.signature.R8,
+          snapshot.capsule,
+          snapshot.capsule.pathElements,
+          snapshot.capsule.preparation.expected,
+        ])
+          expect(Object.isFrozen(value)).toBe(true);
+        expect(Reflect.set(snapshot.signature, 'S', hex(99))).toBe(false);
+        expect(await s.readSignedUnfinished(escaped)).toEqual(saved);
+        await expect(s.readSigned(escaped)).rejects.toMatchObject({
+          code: 'RAILGUN_CAPSULE_NOT_READY',
+        });
+      });
+      await expect(s.readSignedUnfinished(escaped)).rejects.toThrow();
+      expect(fs.readFileSync(filename())).toEqual(before);
+      expect(fs.readdirSync(options.directory).sort()).toEqual(inventory);
+      expect(advanceFloor).not.toHaveBeenCalled();
+      expect(floor).toBe(2);
+      expect(s.signal.aborted).toBe(false);
+      expect(reservations.signal.aborted).toBe(false);
+    }
+  );
+  test.each(
+    ['full', 'partial'].flatMap((kind) =>
+      ['missing-signature', 'completed'].map((state) => [kind, state])
+    )
+  )(
+    'refuses %s %s as not ready while retaining healthy stores and the ordinary reader',
+    async (kind, state) => {
+      const s = await open(),
+        c = recoveryCapsule(kind),
+        held = await hold(c);
+      await s.put(held, c, signing.gatesDigest);
+      const signed = await s.markSigning(held, signing);
+      if (state === 'completed') {
+        await s.saveSignature(signed, signature);
+        await s.saveProvedTransaction(signed, c.preparation.transaction);
+      }
+      const before = fs.readFileSync(filename()),
+        previousFloor = floor;
+      await reservations.withSigningRecovery(async ([record]) => {
+        await expect(s.readSignedUnfinished(record.receipt)).rejects.toMatchObject({
+          code: 'RAILGUN_CAPSULE_NOT_READY',
+        });
+        if (state === 'completed')
+          expect((await s.readSigned(record.receipt)).provedTransaction).toEqual(
+            c.preparation.transaction
+          );
+        else
+          await expect(s.readSigned(record.receipt)).rejects.toMatchObject({
+            code: 'RAILGUN_CAPSULE_NOT_READY',
+          });
+      });
+      expect(fs.readFileSync(filename())).toEqual(before);
+      expect(floor).toBe(previousFloor);
+      expect(s.signal.aborted).toBe(false);
+      expect(reservations.signal.aborted).toBe(false);
+    }
+  );
+  test('refuses a live recovery receipt from a foreign genuine reservation store before disturbing either store', async () => {
+    const s = await open(),
+      c = capsule(),
+      held = await hold(c);
+    await s.put(held, c, signing.gatesDigest);
+    const signed = await s.markSigning(held, signing);
+    await s.saveSignature(signed, signature);
+    const directory = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-foreign-recovery-'))
+    );
+    const { getPrivacyContext } = require('../networks/privacy-context');
+    const subject = getPrivacyContext(options.handle).subject;
+    let foreignFloor = null,
+      foreignCapsules;
+    const foreign = await createRailgunPrivateReservations({
+      ...options,
+      directory,
+      create: true,
+      handle: scope.getContext({
+        ...subject,
+        operation: 'railgun-private-reservations-v1:' + options.walletId,
+      }),
+      key: Buffer.alloc(32, 6),
+      readFloor: async () => foreignFloor,
+      advanceFloor: async (value) => {
+        foreignFloor = value;
+      },
+      claimRecovery: () => ({ assertCurrent() {}, release() {} }),
+      authorizeSigning: (permit, store, receipt, evidence) =>
+        require('./railgun-private-capsule-store').consumeRailgunCapsuleSigningPermit(
+          permit,
+          foreignCapsules,
+          store,
+          receipt,
+          evidence
+        ),
+    });
+    let foreignCapsuleFloor = null;
+    try {
+      foreignCapsules = await createRailgunPrivateCapsuleStore({
+        ...options,
+        directory,
+        reservations: foreign,
+        create: true,
+        readFloor: async () => foreignCapsuleFloor,
+        advanceFloor: async (value) => {
+          foreignCapsuleFloor = value;
+        },
+      });
+      const facts = await reservations.assertReceipt(signed),
+        foreignHeld = await foreign.reserve(facts.facts);
+      await foreignCapsules.put(foreignHeld, c, signing.gatesDigest);
+      await foreignCapsules.saveSignature(
+        await foreignCapsules.markSigning(foreignHeld, signing),
+        signature
+      );
+      const before = fs.readFileSync(filename());
+      await foreign.withSigningRecovery(async ([record]) => {
+        await expect(s.readSignedUnfinished(record.receipt)).rejects.toThrow();
+        expect((await foreignCapsules.readSignedUnfinished(record.receipt)).signature).toEqual(
+          signature
+        );
+      });
+      expect(fs.readFileSync(filename())).toEqual(before);
+      expect(floor).toBe(2);
+      expect(s.signal.aborted).toBe(false);
+      expect(foreignCapsules.signal.aborted).toBe(false);
+    } finally {
+      foreignCapsules?.close();
+      foreign.close();
+    }
+  });
+  test.each(['factsDigest', 'signingDigest'])(
+    'fails closed on a structurally valid encrypted %s substitution against the genuine receipt',
+    async (fieldName) => {
+      let s = await open();
+      const c = capsule(),
+        held = await hold(c);
+      await s.put(held, c, signing.gatesDigest);
+      await s.saveSignature(await s.markSigning(held, signing), signature);
+      s.close();
+      // Test storage-key seam: authenticated encoding is not reservation authority.
+      await createPrivacyStorage(options).update('railgun-private-capsules-v1', (text) => {
+        const document = JSON.parse(text);
+        document.entries[0][fieldName] = 'f'.repeat(64);
+        return JSON.stringify(document);
+      });
+      s = await open(false);
+      const before = fs.readFileSync(filename());
+      await reservations.withSigningRecovery(async ([record]) => {
+        await expect(s.readSignedUnfinished(record.receipt)).rejects.toMatchObject({
+          code: 'RAILGUN_CAPSULE_STORE_REFUSED',
+        });
+      });
+      expect(s.signal.aborted).toBe(true);
+      await expect(s.readSignedUnfinished({})).rejects.toThrow();
+      expect(s.signal.aborted).toBe(true);
+      expect(fs.readFileSync(filename())).toEqual(before);
+      expect(floor).toBe(2);
+    }
+  );
+  test.each(['expiry', 'floor-drift'])(
+    'fails closed on %s during final attestation without rewriting signed data',
+    async (fault) => {
+      let armed = false,
+        reads = 0;
+      const s = await open(true, {
+        readFloor: async () => {
+          if (armed && ++reads === 2) {
+            if (fault === 'expiry') jest.advanceTimersByTime(11);
+            else return floor + 1;
+          }
+          return floor;
+        },
+      });
+      const c = capsule(),
+        held = await hold(c);
+      await s.put(held, c, signing.gatesDigest);
+      await s.saveSignature(await s.markSigning(held, signing), signature);
+      const before = fs.readFileSync(filename());
+      jest.useFakeTimers();
+      try {
+        await expect(
+          reservations.withSigningRecovery(
+            async ([record]) => {
+              armed = true;
+              return s.readSignedUnfinished(record.receipt);
+            },
+            { timeoutMs: 10 }
+          )
+        ).rejects.toThrow();
+        expect(reads).toBe(2);
+        expect(s.signal.aborted).toBe(true);
+        await expect(s.inspect()).rejects.toThrow();
+        expect(fs.readFileSync(filename())).toEqual(before);
+        expect(floor).toBe(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+  );
+});

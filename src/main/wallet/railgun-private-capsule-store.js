@@ -418,10 +418,30 @@ async function createRailgunPrivateCapsuleStore({
       return entry;
     });
   }
+  async function readSignedUnfinished(receipt) {
+    reservations.assertReceiptContext(receipt, 'recovery');
+    return exclusive(async () => {
+      const held = await reservations.assertReceipt(receipt);
+      active();
+      reservations.assertReceiptContext(receipt, 'recovery');
+      check(held.state === 'signing');
+      const entry = current.entries.find((value) => value.holdId === held.id);
+      if (!entry) throw fail('RAILGUN_CAPSULE_NOT_FOUND');
+      assertBinding(entry, held);
+      if (entry.signature === null || entry.provedTransaction !== null)
+        throw fail('RAILGUN_CAPSULE_NOT_READY');
+      check(entry.signingDigest === hash(held.signing));
+      await attest();
+      active();
+      reservations.assertReceiptContext(receipt, 'recovery');
+      return entry;
+    });
+  }
   const instance = Object.freeze({
     put,
     markSigning,
     readSigned,
+    readSignedUnfinished,
     saveSignature: (receipt, value) => fill(receipt, 'signature', normalizeRailgunSignature(value)),
     saveProvedTransaction: (receipt, value) =>
       fill(receipt, 'provedTransaction', Object.freeze({ ...value })),

@@ -5,6 +5,10 @@ implemented PPv2 backend, rather than treating either protocol as a finished
 wallet product. Historical qualification reports remain evidence for their
 recorded sources; a later passing unit suite does not refresh their native runs.
 
+## Latest checkpoint
+
+The [received-input partial-controller checkpoint](railgun-partial-transact-controller-2026-10-05.md) qualifies real internal partial proving for both input creators with simulated chain/services. Signed-unfinished records can now be read under genuine recovery receipts, but proof resumption remains open. The immediate prerequisite is completed-only read-only wallet restoration and complete runner drainage, followed by proof regeneration using the original signature. Partial facade/submission, combined POI persistence, actual change ingestion, restart/second spend and live private qualification remain open.
+
 ## Established baseline
 
 PPv2 has a funded native Sepolia journey through registration, deposits, a

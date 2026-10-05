@@ -1,7 +1,7 @@
 /** Offline internal partial withdrawal over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron script SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES
+ * electron script SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact]
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -16,9 +16,12 @@ let lock,
   phase = 'setup';
 async function main() {
   const args = process.argv.slice(2);
-  assert.equal(args.length, 6);
+  assert.ok(args.length === 6 || args.length === 7);
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
-  assert.ok(args.every((value) => path.isAbsolute(value)));
+  const inputCreator = args[6] ?? 'Shield';
+  assert.ok(['Shield', 'Transact'].includes(inputCreator));
+  const transact = inputCreator === 'Transact';
+  assert.ok(args.slice(0, 6).every((value) => path.isAbsolute(value)));
   assert.equal(fs.existsSync(directory), false);
   const sourceBytes = fs.readFileSync(sourceFilename);
   // This one published public-vector source is allowed. Never accept a real
@@ -27,8 +30,16 @@ async function main() {
     sha(sourceBytes),
     'bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc1e41'
   );
-  const source = JSON.parse(sourceBytes);
+  let source = JSON.parse(sourceBytes);
   assert.equal(source.publicVaultVector, true);
+  if (transact) {
+    const derived = require('./fixtures/railgun-transact-staging-source').derive(source);
+    source = derived.source;
+    derived.row.blockNumber += OFFSET;
+    derived.row.timestamp += OFFSET;
+    derived.row.graphID = hex(derived.row.blockNumber) + derived.row.graphID.slice(66);
+    source.txidRows = [derived.row];
+  }
   for (const log of source.logs) {
     log.blockNumber += OFFSET;
     log.blockHash = hex(log.blockNumber + 1000);
@@ -142,7 +153,8 @@ async function main() {
     anchor,
   });
   const vault = require('../src/main/identity/vault');
-  let identity, enrollment, publicAccount, account, completion;
+  let identity, enrollment, publicAccount, account, completion, txid, staged;
+  let stagingRuns = 0;
   const started = performance.now();
   try {
     phase = 'enroll';
@@ -172,12 +184,33 @@ async function main() {
       await publicAccount.advance({ to: Math.min(from + 99999, anchor.number), anchor });
     const wallet = require('../src/main/wallet/railgun-account-wallet');
     const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
+    if (transact) {
+      phase = 'txid-checkpoint';
+      const state = await services.initializeTxid({ archive, enrollment });
+      txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
+        enrollment,
+        coordinator: owners.coordinator,
+        archive,
+        create: true,
+      });
+      await txid.advance();
+      assert.deepEqual((await txid.inspect()).checkpoint.state, state);
+      await txid.close();
+      txid = null;
+      // Advance observes the latest index once, then acquires root acceptance
+      // before preparing and again before completing the durable checkpoint.
+      assert.deepEqual(services.report().publicServiceMethods, {
+        latest: 3,
+        page: 1,
+        validate: 2,
+      });
+    }
     phase = 'wallet-scan';
     account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'new' });
     const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
     const selected = baseline.ownedPoi.find(
       (record) =>
-        record.type === 'Shield' &&
+        record.type === inputCreator &&
         baseline.read.received.some(
           (note) => note.id === record.id && note.spentTxid === false && note.amount > 1n
         )
@@ -218,14 +251,61 @@ async function main() {
       proveRailgunAccountPrivateOperation: prove,
       claimRailgunPrivateCompletion: claim,
     } = require('../src/main/wallet/railgun-private-operation');
+    if (transact) {
+      const before = services.report();
+      assert.deepEqual(await prove(options), { status: 'refused', stage: 'input-provenance' });
+      assert.deepEqual(services.report(), before);
+      assert.equal(spendingKeys, 0);
+    }
+    const stageAttempt = async () => {
+      if (!transact) return;
+      staged?.close();
+      const before = services.report();
+      const previous = account;
+      staged =
+        await require('../src/main/wallet/railgun-transact-staging').stageRailgunTransactInput({
+          account,
+          owners,
+          request: options.request,
+          archive,
+          signal: enrollment.signal,
+        });
+      assert.equal(staged.status, 'staged', JSON.stringify(staged));
+      assert.equal(previous.signal.aborted, true);
+      account = options.account = staged.account;
+      options.stagingReceipt = staged.receipt;
+      stagingRuns++;
+      // Checkpoint-only staging revalidates service acceptance twice, without
+      // fetching another indexer page or advancing the persisted checkpoint.
+      assert.equal(services.report().publicServiceMethods.page, before.publicServiceMethods.page);
+      assert.equal(
+        services.report().publicServiceMethods.latest,
+        before.publicServiceMethods.latest + 2
+      );
+      assert.equal(
+        services.report().publicServiceMethods.validate,
+        before.publicServiceMethods.validate + 2
+      );
+      if (stagingRuns === 1) {
+        const admitted = services.report();
+        assert.deepEqual(await prove({ ...options, stagingReceipt: { ...staged.receipt } }), {
+          status: 'refused',
+          stage: 'input-provenance',
+        });
+        assert.deepEqual(services.report(), admitted);
+      }
+    };
     const refusals = [];
     for (const [mode, expectedStage] of [
       ['receive-credential-mismatch', 'receiver'],
       ['bad-membership', 'poi'],
       ['wrong-verifier', 'preflight'],
+      ...(transact ? [['bad-txid-root', 'txid-root']] : []),
     ]) {
       phase = mode;
       corruptReceiver = mode === 'receive-credential-mismatch';
+      services.setMode('healthy');
+      await stageAttempt();
       services.setMode(corruptReceiver ? 'healthy' : mode);
       const before = services.report();
       const result = await prove(options);
@@ -234,17 +314,22 @@ async function main() {
       assert.equal(spendingKeys, 0);
       const after = services.report();
       assert.equal(after.unexpectedTransportFailures, before.unexpectedTransportFailures);
-      assert.equal(after.selectedNullifierQueries, before.selectedNullifierQueries);
+      assert.equal(
+        after.selectedNullifierQueries,
+        before.selectedNullifierQueries + (mode === 'bad-txid-root' ? 1 : 0)
+      );
       if (corruptReceiver) assert.equal(after.poiRequests, before.poiRequests);
-      if (mode === 'wrong-verifier')
+      if (mode === 'wrong-verifier' || mode === 'bad-txid-root')
         assert.deepEqual(after.verificationKeyQueries.slice(before.verificationKeyQueries.length), [
           [1, 2],
         ]);
       for (const name of ['rootHistory', 'unshieldFee', 'getVerificationKey', 'nullifiers'])
         assert.equal(
           after.privatePreflightMethods[name] - before.privatePreflightMethods[name],
-          mode === 'wrong-verifier' && name !== 'nullifiers' ? 1 : 0
+          mode === 'bad-txid-root' || (mode === 'wrong-verifier' && name !== 'nullifiers') ? 1 : 0
         );
+      if (mode === 'bad-txid-root')
+        assert.equal(after.txidRootRejections, before.txidRootRejections + 1);
       assert.deepEqual(
         { reservations: await reservations.inspect(), capsules: await capsules.inspect() },
         empty
@@ -254,13 +339,21 @@ async function main() {
     corruptReceiver = false;
     services.setMode('healthy');
     phase = 'prove';
+    await stageAttempt();
     const beforeHealthy = services.report();
     const result = await prove(options);
     assert.equal(result.status, 'proved', JSON.stringify(result));
     assert.equal(result.submissionEnabled, false);
     completion = result.completion;
     assert.equal(spendingKeys, 1);
-    assert.equal(receiveKeys, 4);
+    assert.equal(receiveKeys, transact ? 5 : 4);
+    if (transact) {
+      assert.equal(stagingRuns, 5);
+      assert.equal(
+        services.report().publicServiceMethods.validate,
+        beforeHealthy.publicServiceMethods.validate + 1
+      );
+    }
     assert.equal(
       services.report().selectedNullifierQueries,
       beforeHealthy.selectedNullifierQueries + 1
@@ -290,11 +383,15 @@ async function main() {
       stored.capsule.preparation.expected
     );
     const beforeDuplicate = services.report();
-    assert.deepEqual(await prove(options), { status: 'refused', stage: 'local' });
+    assert.deepEqual(await prove(options), {
+      status: 'refused',
+      stage: transact ? 'input-provenance' : 'local',
+    });
     assert.equal(spendingKeys, 1);
     assert.deepEqual(services.report(), beforeDuplicate);
     await account.close();
     account = null;
+    staged?.close();
     const claimed = claim(completion.receipt, identity, enrollment);
     assert.deepEqual(claimed.assertCurrent().stored, stored);
     assert.throws(() => claim(completion.receipt, identity, enrollment));
@@ -317,10 +414,11 @@ async function main() {
     assert.equal(children.size, 0);
     const jobEvidence = {};
     for (const [job, count] of [
-      ['railgun-private-receive-job.js', 4],
+      ['railgun-private-receive-job.js', transact ? 5 : 4],
       ['railgun-spend-sign-job.js', 1],
-      ['railgun-private-operate-job.js', 4],
+      ['railgun-private-operate-job.js', transact ? 5 : 4],
       ['railgun-private-verify-job.js', 1],
+      ...(transact ? [['railgun-note-provenance-job.js', 5]] : []),
     ]) {
       const jobs = childResults.filter((value) => value.job === job);
       assert.equal(jobs.length, count, job);
@@ -329,7 +427,11 @@ async function main() {
           jobs.every((value) => value.code === 'RAILGUN_PROCESS_CLOSED'),
           job
         );
-      else assert.equal(jobs.filter((value) => value.code === 'RAILGUN_PROCESS_CLOSED').length, 3);
+      else
+        assert.equal(
+          jobs.filter((value) => value.code === 'RAILGUN_PROCESS_CLOSED').length,
+          transact ? 4 : 3
+        );
       jobEvidence[job] = jobs.map(({ code }) => code);
     }
     phase = 'reopen';
@@ -366,11 +468,31 @@ async function main() {
     assert.equal(serviceEvidence.unexpectedTransportFailures, 0);
     assert.equal(serviceEvidence.poiPathJobs, 1);
     assert.equal(serviceEvidence.poiPathExits, 1);
+    assert.equal(serviceEvidence.txidFixtureJobs, transact ? 1 : 0);
+    assert.equal(serviceEvidence.txidFixtureExits, transact ? 1 : 0);
+    assert.deepEqual(serviceEvidence.publicServiceMethods, {
+      latest: transact ? 15 : 0,
+      page: transact ? 1 : 0,
+      validate: transact ? 14 : 0,
+    });
     const report = {
-      schema: 'railgun-partial-controller-offline-v1',
+      schema: 'railgun-partial-controller-offline-v2',
       sourceSha256: sha(sourceBytes),
       sourceHashes,
-      inputCreator: 'Shield',
+      inputCreator,
+      ...(transact
+        ? {
+            stagingRuns,
+            actualCompletedTxidCheckpoint: true,
+            copiedStagingReceiptRefused: true,
+            missingStagingReceiptRefused: true,
+            creatorSpendProved: false,
+            boundParamsChecked: false,
+            globalTxidCompleteness: false,
+            creatorRowHasUnshield: false,
+            txidRootAcceptanceSimulated: true,
+          }
+        : {}),
       internalController: true,
       realAccountPoiAndPrivatePreflightHosts: true,
       syntheticChainAndServiceResponses: true,
@@ -385,6 +507,7 @@ async function main() {
       processLauncherInstrumented: true,
       corruptionControl: 'receive-credential-mismatch',
       duplicateRefusedBeforeServices: true,
+      duplicateRefusalReason: transact ? 'consumed-staging-receipt' : 'held-input',
       storedProofReadableUnderRecovery: true,
       enrollmentReopenedFromEncryptedStorage: true,
       newProcessRestartQualified: false,
@@ -405,7 +528,9 @@ async function main() {
     console.log(JSON.stringify({ status: 'qualified', elapsedMs: report.elapsedMs }));
   } finally {
     completion?.close();
+    staged?.close();
     await account?.close();
+    await txid?.close();
     await publicAccount?.close();
     enrollment?.close();
     identity?.close();

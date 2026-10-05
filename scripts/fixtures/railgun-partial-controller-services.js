@@ -26,6 +26,14 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
   assert.equal(anchor.hash, blockHash(anchor.number));
   const publicAnchor = copy(anchor);
   const logs = copy(source.logs);
+  const txidRows = Object.hasOwn(source, 'txidRows') ? copy(source.txidRows) : [];
+  assert.ok(Array.isArray(txidRows));
+  assert.equal(txidRows.length, Object.hasOwn(source, 'txidRows') ? 1 : 0);
+  if (txidRows.length) {
+    assert.ok(Buffer.byteLength(JSON.stringify(txidRows)) <= 16384);
+    assert.ok(txidRows[0].blockNumber >= 5944700 && txidRows[0].blockNumber <= publicAnchor.number);
+    assert.equal(Object.hasOwn(txidRows[0], 'unshield'), false);
+  }
   assert.ok(Array.isArray(logs) && logs.length > 0 && logs.length <= 1000);
   for (const log of logs) {
     assert.ok(Number.isSafeInteger(log.blockNumber) && log.blockNumber <= publicAnchor.number);
@@ -104,6 +112,7 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
   const privatePreflightMethods = Object.fromEntries(
     ['rootHistory', 'unshieldFee', 'getVerificationKey', 'nullifiers'].map((v) => [v, 0])
   );
+  const publicServiceMethods = { latest: 0, page: 0, validate: 0 };
   const counts = {
     transportEntries: 0,
     unexpectedTransportFailures: 0,
@@ -119,6 +128,11 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     poiPathJobs: 0,
     poiPathExits: 0,
     poiPathGuardHooks: 0,
+    publicServiceRequests: 0,
+    txidRootRejections: 0,
+    txidFixtureJobs: 0,
+    txidFixtureExits: 0,
+    txidFixtureGuardHooks: 0,
   };
   const clients = new Set();
   const verificationKeyQueries = [],
@@ -131,7 +145,11 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     submitter,
     note,
     proof;
-  let accountIndex, internalAnchor, latest;
+  let accountIndex,
+    internalAnchor,
+    latest,
+    txidFixture,
+    txidInitializing = false;
   const header = (number) => ({
     number: quantity(number),
     hash: blockHash(number),
@@ -271,6 +289,50 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     });
     return true;
   }
+  function publicServiceRead(subject, url, wire) {
+    counts.publicServiceRequests++;
+    assert.ok(txidFixture);
+    assert.equal(subject.principal, 'railgun-public-sync');
+    assert.equal(subject.protocol, 'railgun');
+    assert.equal(subject.deployment, 'sepolia');
+    assert.equal(subject.operation, null);
+    const base = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
+    if (subject.role === 'indexer') {
+      assert.equal(url, 'https://rail-squid.squids.live/squid-railgun-eth-sepolia-v2/graphql');
+      assert.deepEqual(Object.keys(wire).sort(), ['query', 'variables']);
+      assert.equal(
+        wire.query,
+        'query RailgunPublicTxids($after: String!) { transactions(orderBy: id_ASC, limit: 100, where: { id_gt: $after }) { id nullifiers commitments transactionHash boundParamsHash blockNumber utxoTreeIn utxoTreeOut utxoBatchStartPositionOut hasUnshield unshieldToken { tokenType tokenSubID tokenAddress } unshieldToAddress unshieldValue blockTimestamp verificationHash } }'
+      );
+      assert.deepEqual(Object.keys(wire.variables), ['after']);
+      assert.ok(['0x00', txidFixture.row.graphID].includes(wire.variables.after));
+      publicServiceMethods.page++;
+      return { data: { transactions: wire.variables.after === '0x00' ? [txidFixture.graph] : [] } };
+    }
+    assert.equal(subject.role, 'poi');
+    assert.equal(url, 'https://ppoi.fdi.network');
+    assert.deepEqual(Object.keys(wire).sort(), ['id', 'jsonrpc', 'method', 'params']);
+    assert.equal(wire.jsonrpc, '2.0');
+    assert.equal(typeof wire.id, 'string');
+    let result;
+    if (wire.method === 'ppoi_validated_txid') {
+      assert.deepEqual(wire.params, base);
+      publicServiceMethods.latest++;
+      result = { validatedTxidIndex: 0, validatedTxidMerkleroot: txidFixture.state.root };
+    } else {
+      assert.equal(wire.method, 'ppoi_validate_txid_merkleroot');
+      assert.deepEqual(wire.params, {
+        ...base,
+        tree: 0,
+        index: 0,
+        merkleroot: txidFixture.state.root,
+      });
+      publicServiceMethods.validate++;
+      result = mode !== 'bad-txid-root';
+      if (!result) counts.txidRootRejections++;
+    }
+    return { jsonrpc: '2.0', id: wire.id, result };
+  }
   transport.createWalletTorTransport = () => {
     current();
     counts.transportCreates++;
@@ -308,6 +370,13 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
           const { subject } = getPrivacyContext(handle);
           assert.equal(options.method, 'POST');
           const wire = JSON.parse(options.body);
+          assert.equal(subject.chainId, pins.chainId);
+          if (subject.kind === 'service') {
+            const response = publicServiceRead(subject, url, wire);
+            current();
+            assert.equal(options.signal.aborted, false);
+            return { status: 200, body: Buffer.from(JSON.stringify(response)) };
+          }
           assert.deepEqual(Object.keys(wire).sort(), ['id', 'jsonrpc', 'method', 'params']);
           assert.equal(wire.jsonrpc, '2.0');
           assert.equal(typeof wire.id, 'string');
@@ -386,6 +455,97 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     return client;
   };
   return Object.freeze({
+    async initializeTxid({ archive, enrollment }) {
+      current();
+      assert.equal(txidRows.length, 1);
+      assert.equal(txidInitializing, false);
+      assert.equal(txidFixture, undefined);
+      txidInitializing = true;
+      const parent = getPrivacyContext(enrollment.getContext('engine'));
+      const scope = createPrivacyScope({ profileId: parent.profileId, signal: parent.signal });
+      let task, result;
+      try {
+        counts.txidFixtureJobs++;
+        task = require('../../src/main/wallet/railgun-process').startRailgunProcess({
+          handle: scope.getContext({
+            ...parent.subject,
+            operation: 'partial-controller-txid-fixture',
+          }),
+          filename: require.resolve('./railgun-transact-staging-row'),
+          input: JSON.stringify({ archive, row: txidRows[0] }),
+          startupMs: 30000,
+          lifetimeMs: 60000,
+          broker: {
+            signal: scope.signal,
+            dispatch: async (wire) => {
+              assert.equal(result, undefined);
+              assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 65536);
+              const message = JSON.parse(wire);
+              assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+              assert.equal(message.id, 1);
+              assert.equal(message.method, 'result');
+              result = message.value;
+              assert.deepEqual(Object.keys(result).sort(), ['guards', 'row', 'state']);
+              assert.equal(result.guards.attempts, 0);
+              assert.ok(Array.isArray(result.guards.hooks) && result.guards.hooks.length > 0);
+              assert.equal(result.guards.canaries, result.guards.hooks.length);
+              assert.equal(new Set(result.guards.hooks).size, result.guards.hooks.length);
+              counts.txidFixtureGuardHooks = result.guards.hooks.length;
+              const { verificationHash, ...originalRow } = result.row;
+              assert.deepEqual(originalRow, txidRows[0]);
+              assert.match(verificationHash, /^0x[0-9a-f]{64}$/);
+              assert.equal(result.state.count, 1);
+              assert.equal(result.state.after, result.row.graphID);
+              return JSON.stringify({ id: 1, value: null });
+            },
+          },
+        });
+        await task.ready;
+        assert.ok(result && !scope.signal.aborted);
+        current();
+        task.close();
+        assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
+        counts.txidFixtureExits++;
+        const row = copy(result.row);
+        const graph = {
+          id: row.graphID,
+          nullifiers: row.nullifiers,
+          commitments: row.commitments,
+          transactionHash: '0x' + row.txid,
+          boundParamsHash: row.boundParamsHash,
+          blockNumber: String(row.blockNumber),
+          utxoTreeIn: String(row.utxoTreeIn),
+          utxoTreeOut: String(row.utxoTreeOut),
+          utxoBatchStartPositionOut: String(row.utxoBatchStartPositionOut),
+          hasUnshield: false,
+          unshieldToken: {
+            tokenType: 'ERC20',
+            tokenSubID: hash(0),
+            tokenAddress: '0x' + '0'.repeat(40),
+          },
+          unshieldToAddress: '0x' + '0'.repeat(40),
+          unshieldValue: '0',
+          blockTimestamp: String(row.timestamp),
+          verificationHash: row.verificationHash,
+        };
+        assert.deepEqual(
+          require('../../src/main/wallet/railgun-public-services').normalizeTxidPage(
+            [graph],
+            '0x00'
+          ).transactions,
+          [row]
+        );
+        txidFixture = { row, state: copy(result.state), graph };
+        return copy(txidFixture.state);
+      } finally {
+        try {
+          task?.close();
+        } finally {
+          await task?.closed;
+          scope.close();
+        }
+      }
+    },
     async setSelected({ archive, enrollment, record, merkleRoot, submitter: owner }) {
       current();
       assert.equal(selected, undefined);
@@ -395,6 +555,17 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
       assert.match(selected.id, /^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/);
       selectedTree = Number(selected.id.split(':')[0]);
       assert.ok(Number.isSafeInteger(selectedTree) && selectedTree < 65536);
+      if (selected.type === 'Transact') {
+        assert.ok(txidFixture);
+        const position = Number(selected.id.split(':')[1]);
+        assert.equal(selectedTree, txidFixture.row.utxoTreeOut);
+        assert.equal(
+          selected.hash,
+          txidFixture.row.commitments[position - txidFixture.row.utxoBatchStartPositionOut]
+        );
+        assert.equal(selected.txid, '0x' + txidFixture.row.txid);
+        assert.equal(selected.blockNumber, txidFixture.row.blockNumber);
+      }
       selectedRoot = merkleRoot;
       submitter = owner;
       note = { blindedCommitment: selected.blindedCommitment, type: selected.type };
@@ -457,13 +628,15 @@ exports.install = function install({ bytecodes, artifactDirectory, source, ancho
     },
     setMode(next) {
       current();
-      assert.ok(['healthy', 'wrong-verifier', 'bad-membership'].includes(next));
+      assert.ok(['healthy', 'wrong-verifier', 'bad-membership', 'bad-txid-root'].includes(next));
       mode = next;
     },
     report: () => ({
       ...counts,
       poiMethods: { ...poiMethods },
       privatePreflightMethods: { ...privatePreflightMethods },
+      publicServiceMethods: { ...publicServiceMethods },
+      sourceMode: txidRows.length ? 'single-transact-creator' : 'shield-only',
       verificationKeyQueries: copy(verificationKeyQueries),
       privateCallOrder: [...privateCallOrder],
       signatureChecks: signature.attempts(),
