@@ -7,6 +7,19 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [read-data extraction and diagnostic checkpoint](railgun-read-data-and-origin-2026-10-05.md)
+separates pure Kohaku projections while retaining genuine account admission.
+Its changed policy is qualified with fresh generations: nine adapter/ordinary
+wallet processes plus six public cold-credit processes all pass at `6c845e5c`.
+There are 924 adapter read checks and eight synthetic sends across the campaign.
+The broad regression passes 16,826 tests with natural runner exit, plus six
+OpenLV cases separately; focused wallet/fixture checks pass 9,741 with force-exit.
+Selected report maps and the 11,522-file outer freeze retain their distinct
+scope. Origin matching remains dormant supplied-data diagnostics with every
+authority flag false. Next: an existing-only journal reader and restricted
+host diagnostics, then portable-host and live-private qualification. The earlier
+checkpoints below retain their original sources and runtime versions.
+
 The [public-facade cold-credit checkpoint](railgun-public-facade-cold-credit-2026-10-05.md)
 passes acknowledged and lost-response deposit, receipt-resolution/normal-scan and
 completed-only restore in six fresh processes. Each sequence signs and sends once,
@@ -241,7 +254,11 @@ Later checkpoints above supersede those restrictions within their stated scope.
    [bounded partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md)
    records the creator shapes and combined output/unshield POI requirements;
    the latest checkpoints above distinguish implemented and still-open work.
-3. **Design a restricted return-to-origin recovery path.** The inspected engine
+3. **Bind restricted origin diagnostics to genuine local evidence.** The
+   supplied-data matcher is implemented but dormant; it authenticates no
+   ownership or chain state and grants no permission. An existing-only journal
+   reader and a main-only host joining already-open account evidence remain
+   next. The inspected engine
    and wallet SDK implement origin selection as client policy. The inspected
    contract's `validateTransaction` checks the ordinary unshield proof and
    recipient commitment, without an origin or POI field/check. This source

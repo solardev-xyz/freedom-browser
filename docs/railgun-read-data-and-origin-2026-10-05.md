@@ -70,9 +70,8 @@ changelog fragment is added under the repository's internal-work exclusion.
 Root lint and formatting pass. The explicit 260-file wallet/fixture regression
 passes 9,741 tests across 259 suites in 590.569 seconds. Its one skipped suite
 contains four upstream PPv2 storage-adapter checks, gated by the absent
-`FREEDOM_PP_V2_STORAGE_FIXTURE` input. Fresh native contract/cold-credit campaigns
-are planned, with no new native result claimed
-yet. The initial test invocation accidentally treated folder arguments as Jest
+`FREEDOM_PP_V2_STORAGE_FIXTURE` input. Fresh native contract/cold-credit campaigns now pass under the changed wallet
+policy; their exact scope is recorded below. The initial test invocation accidentally treated folder arguments as Jest
 exclusions and started unrelated integration suites inside the sandbox. It was
 stopped and retained as excluded diagnostic output. The corrected run uses an
 explicit test-file list. Native campaigns use fresh disposable generations and
@@ -90,3 +89,51 @@ PPv2/Kohaku fixtures whose prerequisites are absent; they are not new skips.
 The complete 11,522-file pre-run source/input inventory remains byte-identical
 after the run. This broader all-file inventory differs from the historical
 5,795-file JS/JSON-oriented inventory; neither is an execution coverage count.
+
+Both repository test runs executed outside the sandbox. The five-case Safe fork
+suite passed in both runs and uses public Gnosis and Base RPCs through local
+Anvil with public test keys. The full run also passed two Ant migration cases
+that start the real bundled node on disposable identities with a public RPC
+resolver configured. These integration checks are distinct from the
+synthetic-only Railgun native campaign. No funded privacy-wallet profile was
+used by these tests.
+
+## Fresh native qualification
+
+At source commit `6c845e5c37610f878b3cb4c3d377ce79892b82f3`, all fifteen
+fresh Electron processes and the original campaign driver exit zero. The
+[aggregate](qualification/railgun-kohaku-read-data-2026-10-05.json) and
+[audit](qualification/railgun-kohaku-read-data-audit-2026-10-05.md)
+record eight actual adapter cases, ordinary-wallet compatibility, and two
+three-process public-deposit recovery sequences. The adapter cases retain
+924 checked reads and six synthetic Ethereum sends across acknowledged,
+lost-response and cancelled-review outcomes. Each cold sequence adds exactly
+one signature/send, resolves and scans in another process, then restores the
+one credited net-WETH note in a third process without resending.
+
+The private/public/default selected maps have 143/178/140 entries, respectively;
+the cold maps each have 5,549. Their combined union is 5,559 paths. These are
+selected byte inventories, not executed coverage. Fresh disposable profiles create
+new generations under the current source-derived wallet policy; the reports do
+not separately record that wallet-policy digest. Reopening legacy generations
+is not qualified. Before and after every process,
+the driver verifies the complete 11,522-file inventory, 15 source symlinks, ten
+runtime/input pins and 25 additional prover artifact hashes. Electron is 44.4.5
+for this campaign. A subsequent dependency or source update does not relabel
+these reports as evidence for newer bytes.
+
+Contract resource snapshots precede final cleanup. The last public account's
+two worker callbacks can still be pending when the report is written; actual
+counts are preserved. The reviewed validator accepts only zero to two pending
+workers, with ten exact lifecycle source pins enforcing that bound. Native
+exit zero still requires the later bounded cleanup and sticky-failure check.
+This establishes the measured lifecycle gates, not physical socket drainage.
+The first campaign attempt is excluded: its native process exited zero, but the
+older launcher rejected a permitted pre-cleanup count variation and exited one.
+All fifteen accepted cases use fresh profiles in the second campaign.
+
+Private contract cases retain synthetic POI and preflight authority seams;
+public recovery uses the genuine journal and scanner against simulated chain
+responses. The dormant origin matcher is not activated by these runs. No live
+private spend, service acceptance, network anonymity, portable Kohaku Host,
+funded-profile migration or production activation follows from this milestone.
