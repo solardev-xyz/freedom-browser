@@ -53,14 +53,18 @@ exports.create = ({
   const pins = require('../../src/main/wallet/railgun-shield-pins.json');
   assert.ok(Array.isArray(checkpoints));
   assert.equal(checkpoints.length, rows.length);
-  const knownCheckpoints = copy(checkpoints);
+  let knownCheckpoints = copy(checkpoints);
+  rows = copy(rows);
+  state = copy(state);
+  const proofState = copy(state);
+  let appended = false;
   knownCheckpoints.forEach((checkpoint, index) => {
     assert.equal(checkpoint.count, index + 1);
     assert.equal(checkpoint.after, rows[index].graphID);
     assert.match(checkpoint.root, /^[0-9a-f]{64}$/);
   });
   assert.deepEqual(knownCheckpoints.at(-1), state);
-  const graphs = rows.map(graph);
+  let graphs = rows.map(graph);
   assert.equal(
     JSON.stringify(normalizeTxidPage(graphs, '0x00').transactions),
     JSON.stringify(rows)
@@ -69,7 +73,7 @@ exports.create = ({
     (log) => log.address.toLowerCase() === pins.proxy.toLowerCase()
   );
   assert.equal(actualLogs.length, 3);
-  const logs = [
+  let logs = [
     ...source.logs.map((log) => ({
       ...log,
       blockNumber: quantity(log.blockNumber),
@@ -100,6 +104,57 @@ exports.create = ({
       rows: copy(rows),
       receipt: copy(receipt),
     }),
+    inspectHistory: () => copy({ rows, state, checkpoints: knownCheckpoints, finalized }),
+    appendFinalizedUnshield(value) {
+      assert.equal(appended, false);
+      const next = copy(value);
+      assert.deepEqual(Object.keys(next).sort(), [
+        'checkpoints',
+        'finalized',
+        'receipt',
+        'rows',
+        'state',
+      ]);
+      assert.equal(next.rows.length, rows.length + 1);
+      assert.equal(JSON.stringify(next.rows.slice(0, -1)), JSON.stringify(rows));
+      assert.equal(JSON.stringify(next.checkpoints.slice(0, -1)), JSON.stringify(knownCheckpoints));
+      assert.equal(next.checkpoints.length, next.rows.length);
+      assert.deepEqual(next.checkpoints.at(-1), next.state);
+      assert.equal(next.state.count, next.rows.length);
+      const row = next.rows.at(-1);
+      assert.equal(next.state.after, row.graphID);
+      assert.match(next.state.root, /^[0-9a-f]{64}$/);
+      assert.ok(row.graphID > rows.at(-1).graphID && row.blockNumber > rows.at(-1).blockNumber);
+      assert.equal(row.commitments.length, 1);
+      assert.equal(row.nullifiers.length, 1);
+      assert.equal(row.utxoTreeOut, 99999);
+      assert.equal(row.utxoBatchStartPositionOut, 99999);
+      assert.ok(!rows.some((r) => r.txid === row.txid || r.nullifiers.includes(row.nullifiers[0])));
+      const nextGraphs = next.rows.map(graph);
+      assert.equal(
+        JSON.stringify(normalizeTxidPage(nextGraphs, '0x00').transactions),
+        JSON.stringify(next.rows)
+      );
+      const extraLogs = require('./railgun-combined-poi-terminal-data').assertReceipt(
+        next.receipt,
+        row
+      );
+      assert.ok(
+        Number.isSafeInteger(next.finalized) &&
+          next.finalized > finalized &&
+          next.finalized >= row.blockNumber
+      );
+      assert.equal(header(row.blockNumber).hash, next.receipt.blockHash);
+      // Validate every proposed field before changing any retained service state.
+      logs = [...logs, ...extraLogs];
+      rows = next.rows;
+      state = next.state;
+      knownCheckpoints = next.checkpoints;
+      graphs = nextGraphs;
+      finalized = next.finalized;
+      appended = true;
+      return copy({ rows, state, checkpoints: knownCheckpoints, finalized });
+    },
     bindProof(value) {
       assert.equal(payload, undefined);
       payload = copy(value);
@@ -244,7 +299,7 @@ exports.create = ({
           // A reopened creator mirror validates its retained prefix before
           // advancing. Only the independently projected canonical prefixes
           // are accepted; private proof checks still require the full root.
-          const checkpoint = (publicService ? knownCheckpoints : [state]).find(
+          const checkpoint = (publicService ? knownCheckpoints : [proofState]).find(
             (value) => value.count - 1 === wire.params?.index
           );
           assert.ok(checkpoint);
@@ -255,8 +310,8 @@ exports.create = ({
             merkleroot: checkpoint.root,
           });
           if (!publicService) {
-            assert.equal(payload.txidMerkleroot, state.root);
-            assert.equal(payload.txidMerklerootIndex, rows.length - 1);
+            assert.equal(payload.txidMerkleroot, proofState.root);
+            assert.equal(payload.txidMerklerootIndex, proofState.count - 1);
           }
           result = true;
         } else if (wire.method === 'ppoi_validate_poi_merkleroots') {

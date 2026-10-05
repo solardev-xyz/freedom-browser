@@ -1,7 +1,7 @@
 /** Offline actual partial EOA submission through durable combined POI over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [change|second-spend]
+ * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [change|second-spend|second-spend-ingest]
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -35,8 +35,9 @@ async function main() {
   const args = process.argv.slice(2);
   assert.ok(args.length >= 6 && args.length <= 8);
   const changeMode = args.length === 8;
-  if (changeMode) assert.ok(['change', 'second-spend'].includes(args[7]));
-  const secondSpendMode = args[7] === 'second-spend';
+  if (changeMode) assert.ok(['change', 'second-spend', 'second-spend-ingest'].includes(args[7]));
+  const terminalMode = args[7] === 'second-spend-ingest';
+  const secondSpendMode = args[7] === 'second-spend' || terminalMode;
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
@@ -1159,6 +1160,8 @@ async function main() {
       const completed = await lifecycle.run({
         changeMode,
         secondSpendMode,
+        terminalMode,
+        header,
         bytecodes,
         signature,
         outerSignal: identity.signal,
@@ -1296,13 +1299,16 @@ async function main() {
     sticky.assertEmpty();
     assert.deepEqual(inventory(), sourceHashes);
     const report = {
-      schema: secondSpendMode
-        ? 'railgun-combined-poi-second-spend-native-v1'
-        : changeMode
-          ? 'railgun-combined-poi-change-native-v1'
-          : 'railgun-combined-poi-native-v1',
+      schema: terminalMode
+        ? 'railgun-combined-poi-second-ingest-native-v1'
+        : secondSpendMode
+          ? 'railgun-combined-poi-second-spend-native-v1'
+          : changeMode
+            ? 'railgun-combined-poi-change-native-v1'
+            : 'railgun-combined-poi-native-v1',
       changeMode,
       secondSpendMode,
+      terminalMode,
       connected,
       combinedChain: postChain.report(),
       roleMethods,
@@ -1354,7 +1360,7 @@ async function main() {
         : { noChangeCreditingOrSecondSpendClaim: true }),
       secondSpendQualified: secondSpendMode,
       secondColdSubmitQualified: false,
-      secondSpendWalletIngestionQualified: false,
+      secondSpendWalletIngestionQualified: terminalMode,
       newProcessRestartQualified: false,
       unchangedOriginalCapsuleSignatureProofAndSigningHold: true,
       elapsedMs: Math.round(performance.now() - started),
@@ -1431,7 +1437,7 @@ main().then(
       .split('\n')
       .map((part) =>
         part.match(
-          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer|change-scan|change-inventory|list-acceptance|second-chain|second-spend))\.js:(\d+):\d+/
+          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer|change-scan|change-inventory|list-acceptance|second-chain|second-spend|terminal-data|terminal-ingest))\.js:(\d+):\d+/
         )
       )
       .find(Boolean);

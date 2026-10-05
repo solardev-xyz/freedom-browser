@@ -7,6 +7,17 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [terminal second-spend checkpoint](railgun-terminal-ingest-integration-2026-10-05.md)
+now advances the actual second withdrawal through the existing public/TXID history
+and ordinary wallet scanner. Both initial histories pass with the same 868-source
+inventory. The selected change becomes spent while unrelated notes and balances
+remain intact; total unspent WETH falls by exactly the change amount. Private and
+resolved EOA records, first retained-POI state and prior canonical prefixes remain
+preserved through terminal work. Second-spend, change-only and default compatibility pass against the same sources in 97,197/89,402/84,531 ms.
+External services remain simulated and composition is same-process. Full process
+restart, cold second submission/recovery, partial facade and live qualification
+remain open. The checkpoints below retain their historical scope.
+
 The [connected second-spend checkpoint](railgun-combined-second-spend-integration-2026-10-05.md)
 now spends actual first-transaction change through fresh production staging,
 creator/list/root/preflight authority, signing/proving, second journaled Ethereum

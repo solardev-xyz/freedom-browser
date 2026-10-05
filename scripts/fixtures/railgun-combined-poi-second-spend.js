@@ -97,13 +97,19 @@ exports.run = async (h) => {
   const before = h.activity();
   let account, staged, completion, recovery, scope, secondChain;
   const constraints = [];
-  let secondStored, secondEntry, secondCapture;
+  let secondStored, secondEntry, secondCapture, terminalBaseline;
   try {
     h.phase('second-open-wallet');
     account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'active' });
     assert.equal(signal.aborted, false);
     const owned = wallet.readRailgunAccountOwnedNotes(account, owners);
     const { note, record, merkleRoot } = selectChange(owned, continuation);
+    if (h.terminalMode)
+      terminalBaseline = require('./railgun-combined-poi-terminal-data').beforeSecond(
+        owned,
+        continuation,
+        note
+      );
     assert.equal(record.blindedCommitment, retainedBefore.payload.blindedCommitmentsOut[0]);
     const request = Object.freeze({
       kind: 'railgun-token-unshield',
@@ -397,7 +403,12 @@ exports.run = async (h) => {
         jobs,
         traffic,
       }),
-      continuation: { capture: secondCapture, receipt, transaction },
+      continuation: {
+        capture: secondCapture,
+        receipt,
+        transaction,
+        ...(h.terminalMode ? { terminalBaseline } : {}),
+      },
     });
   } finally {
     try {

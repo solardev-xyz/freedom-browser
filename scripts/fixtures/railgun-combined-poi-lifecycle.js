@@ -134,7 +134,7 @@ exports.run = async (h) => {
     changeVerified = false;
   const changeMode = h.changeMode === true;
   const runs = [];
-  let continuation, secondSpend;
+  let continuation, secondSpend, terminalIngest;
   const setPhase = (name) => h.phase('combined-' + name);
   const common = () => ({
     identity,
@@ -986,6 +986,7 @@ exports.run = async (h) => {
       assert.equal(changeMode, true);
       assert.equal(changeVerified, true);
       secondSpend = await require('./railgun-combined-poi-second-spend').run({
+        terminalMode: h.terminalMode,
         identity,
         enrollment,
         coordinator: publicAccount.coordinator,
@@ -1007,6 +1008,28 @@ exports.run = async (h) => {
         adoptStores: h.adoptStores,
       });
       assertDrain();
+      if (h.terminalMode) {
+        terminalIngest = await require('./railgun-combined-poi-terminal-ingest').run({
+          identity,
+          enrollment,
+          publicAccount,
+          archive,
+          first: continuation,
+          second: secondSpend.continuation,
+          chain,
+          store,
+          acceptance,
+          signal: h.outerSignal,
+          header: h.header,
+          phase: h.phase,
+          journal: h.journal,
+          activity,
+          adoptStores: h.adoptStores,
+          pendingChildren: h.pendingChildren,
+          unwipedLoans: h.unwipedLoans,
+        });
+        assertDrain();
+      }
     }
 
     sticky.assertEmpty();
@@ -1026,6 +1049,7 @@ exports.run = async (h) => {
           : {}),
         secondSpendQualified: !!secondSpend,
         ...(secondSpend ? { secondSpend: secondSpend.report } : {}),
+        ...(terminalIngest ? { terminalIngest } : {}),
         originalInputMembershipSimulated: true,
         attemptReservesRemaining: 2,
         postResponseAcceptance: false,
