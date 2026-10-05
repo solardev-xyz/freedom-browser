@@ -16,8 +16,11 @@ settle, and the bridge always forwards its signed Gnosis transactions. Freedom
 writes no chain RPC URL into the YAML config at all; the capability is never
 persisted. External, disabled and reused nodes are not reconfigured.
 
-The bridge fixes the chain to Gnosis (100), accepts the eight methods Ant's
-chain module issues, and forwards the original params and JSON-RPC id. Reads
+The bridge fixes the chain to Gnosis (100) and accepts the nine methods Ant's
+chain module issues. It forwards eight of them (seven reads plus
+`eth_sendRawTransaction`) with the original params and JSON-RPC id, and
+answers the ninth, `eth_chainId`, itself (`0x64`): Ant v0.5.58+ keys its saved
+wallet scan by the chain id and asks for it before every scan. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
 → direct RPC), with one exception: `eth_getLogs` never reaches Colibri, for
 Ant or any other caller (Colibri's entry in the router's

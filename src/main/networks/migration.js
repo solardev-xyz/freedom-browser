@@ -53,6 +53,11 @@ function resolveQuorum(settings) {
   return { ...LEGACY_QUORUM_DEFAULTS, ...dropUndefined(tuned) };
 }
 
+// Former builtin public RPCs that no longer answer without an API key. The
+// legacy default list carried them, so a saved copy of that list must not
+// read as the user adding them (a user source is queried first).
+const RETIRED_PUBLIC_RPC_URLS = new Set(['https://rpc.ankr.com/eth']);
+
 // Diff an edited public-RPC list against the builtin mainnet keyless rpc
 // sources. Returns { removed: [builtinId], added: {id: source} }, or null
 // when the list is absent or unchanged from the builtin set.
@@ -66,7 +71,9 @@ function diffPublicRpcList(userList, builtinSources) {
     }
   }
   const builtinUrls = new Set(Object.values(builtinUrlById));
-  const userUrls = new Set(userList.map((u) => (u || '').trim()).filter(Boolean));
+  const userUrls = new Set(
+    userList.map((u) => (u || '').trim()).filter((u) => u && !RETIRED_PUBLIC_RPC_URLS.has(u))
+  );
 
   // An empty list is not "the user removed every RPC" — the legacy resolver
   // fell back to the default set when ensPublicRpcProviders was empty, so an

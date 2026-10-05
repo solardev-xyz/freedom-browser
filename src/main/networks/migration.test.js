@@ -142,4 +142,17 @@ describe('migrateLegacyConfig — the 11-case matrix', () => {
   test('an empty public-RPC list is no customization (legacy fell back to defaults)', () => {
     expect(run({ ensPublicRpcProviders: [] })).toEqual(EMPTY);
   });
+
+  // Ankr's public endpoint now needs an API key, so it left the builtins. A
+  // saved legacy default list still names it; that is not the user adding it.
+  test('a retired builtin RPC in a saved list is neither a user source nor a change', () => {
+    expect(run({ ensPublicRpcProviders: [...DEFAULT_LIST, 'https://rpc.ankr.com/eth'] })).toEqual(
+      EMPTY
+    );
+    const edited = run({
+      ensPublicRpcProviders: ['https://ethereum.publicnode.com', 'https://rpc.ankr.com/eth'],
+    });
+    expect(edited.removedSources.sort()).toEqual(['eth-cloudflare', 'eth-drpc-public']);
+    expect(edited.endpointSources).toEqual({});
+  });
 });

@@ -260,7 +260,7 @@ async function main() {
     assert(typeof version === 'string' && version.length > 0, 'native version is empty');
     const buildInfo = parseJson('native build info', node.buildInfoJson());
 
-    started = node.start();
+    started = await node.start();
     assert(started, 'native node failed to start');
     assert(node.isHealthy(), 'native node did not become healthy after start');
 

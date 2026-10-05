@@ -237,6 +237,30 @@ class NativeGatewayController {
   }
 }
 
+// The Promise-returning lifecycle exports arrived in freedom-ipfs v0.4.5. An
+// older addon (FREEDOM_IPFS_RELEASE_TAG pointed back at v0.4.3, or a stale
+// --from-source build) only has the sync ones, which would block the main
+// thread again — fail the start loudly instead of quietly falling back.
+function asyncLifecycleExport(addon, name) {
+  const fn = addon[name];
+  if (typeof fn !== 'function') {
+    const err = new Error(
+      `freedom-ipfs native addon has no ${name}; v0.4.5 or newer is required (run npm run ipfs:download)`
+    );
+    err.code = 'FREEDOM_IPFS_NATIVE_ADDON_TOO_OLD';
+    throw err;
+  }
+  return fn.bind(addon);
+}
+
+async function freeNativeHandle(addon, handle) {
+  try {
+    await asyncLifecycleExport(addon, 'nodeFreeAsync')(handle);
+  } catch (err) {
+    log.warn('[IPFS] native node free failed:', err.message);
+  }
+}
+
 class FreedomIpfsNativeNode {
   constructor({
     dataDir,
@@ -255,6 +279,9 @@ class FreedomIpfsNativeNode {
     this.stoppingDispatcher = false;
     this.failed = false;
     this.failureError = null;
+    this.lifecycle = Promise.resolve();
+    this.queuedStart = null;
+    this.queuedStop = null;
   }
 
   static isAvailable() {
@@ -280,49 +307,105 @@ class FreedomIpfsNativeNode {
     return parseJson(this.buildInfoJson(), null);
   }
 
+  // The node lifecycle runs through the addon's Promise-returning *Async
+  // exports (freedom-ipfs v0.4.5+), which do the native work — opening the
+  // SQLite cache, building the Tokio runtime and binding the gateway on start;
+  // shutting that runtime down and closing the cache on free — on the libuv
+  // thread pool instead of Electron's main thread (#503 item 13). The addon's
+  // contract (freedom-ipfs docs/release.md): async start/stop/free on one
+  // handle run one at a time in call order; while one is pending the *sync*
+  // start/stop/free throw for that handle; and a handle must never be used
+  // after nodeFreeAsync. So this class never calls the sync ones, runs its own
+  // start()/stop() one at a time in call order too (a stop waits for a start
+  // still in flight before it frees anything, and a start waits for a stop
+  // still closing the cache database it is about to reopen), and `nodeHandle`
+  // only ever names a fully started node — published once the start has
+  // settled, cleared before the free begins — so no request, stats or progress
+  // read can reach a handle that is half-started or being freed.
+  //
+  // Back-to-back calls of the same kind join the one already queued: a second
+  // stop() (quit landing on a failure cleanup, say) gets the first one's
+  // promise instead of reaching for a handle that one is already freeing.
   start() {
+    if (!this.queuedStart) {
+      this.queuedStop = null;
+      this.queuedStart = this.queueLifecycle(() => this.startNative(), 'queuedStart');
+    }
+    return this.queuedStart;
+  }
+
+  stop() {
+    if (!this.queuedStop) {
+      this.queuedStart = null;
+      this.queuedStop = this.queueLifecycle(() => this.stopNative(), 'queuedStop');
+    }
+    return this.queuedStop;
+  }
+
+  queueLifecycle(step, slot) {
+    const run = this.lifecycle.then(step);
+    this.lifecycle = run.catch(() => {});
+    const clear = () => {
+      if (this[slot] === run) this[slot] = null;
+    };
+    run.then(clear, clear);
+    return run;
+  }
+
+  async startNative() {
     if (normalizeNativeHandle(this.nodeHandle)) return true;
     this.failed = false;
     this.failureError = null;
+    const addon = binding();
     const handle = normalizeNativeHandle(
-      binding().nodeNewWithDataDir(this.dataDir, this.maxCacheBytes)
+      await asyncLifecycleExport(addon, 'nodeNewWithDataDirAsync')(this.dataDir, this.maxCacheBytes)
     );
     if (!handle) return false;
-    this.nodeHandle = handle;
 
-    const ok = binding().nodeStartNativeGatewayOnline(
-      this.nodeHandle,
-      '',
-      binding().constants.ROUTING_MODE_AUTO,
-      0,
-      3,
-      0,
-      this.requestQueueTimeoutMs
-    );
+    let ok;
+    try {
+      ok = await asyncLifecycleExport(addon, 'nodeStartNativeGatewayOnlineAsync')(
+        handle,
+        '',
+        addon.constants.ROUTING_MODE_AUTO,
+        0,
+        3,
+        0,
+        this.requestQueueTimeoutMs
+      );
+    } catch (err) {
+      await freeNativeHandle(addon, handle);
+      throw err;
+    }
     if (!ok) {
-      binding().nodeFree(this.nodeHandle);
-      this.nodeHandle = '0';
+      await freeNativeHandle(addon, handle);
       return false;
     }
+    this.nodeHandle = handle;
     this.startDispatcher();
     return true;
   }
 
-  async stop() {
+  async stopNative() {
     await this.stopDispatcher();
     for (const request of this.requests.values()) {
       request.cancel();
       request.finish();
     }
     this.requests.clear();
-    if (this.nodeHandle !== '0') {
+    const handle = normalizeNativeHandle(this.nodeHandle);
+    this.nodeHandle = '0';
+    if (handle) {
+      const addon = binding();
       try {
-        binding().nodeStopGateway(this.nodeHandle);
+        await asyncLifecycleExport(addon, 'nodeStopGatewayAsync')(handle);
       } catch (err) {
         log.warn('[IPFS] native gateway stop failed:', err.message);
       }
-      binding().nodeFree(this.nodeHandle);
-      this.nodeHandle = '0';
+      // Queued behind the stop above by the addon itself; awaited so the cache
+      // database is closed (or its bounded close has given up) before a
+      // restart reopens the same data dir.
+      await asyncLifecycleExport(addon, 'nodeFreeAsync')(handle);
     }
     this.failed = false;
     this.failureError = null;
@@ -364,7 +447,7 @@ class FreedomIpfsNativeNode {
   // worker acknowledges with `stopped` from the top of its loop — i.e. with no
   // gatewayWaitNextEvent in flight — and then closes its port and exits on its
   // own, so waiting for that acknowledgement is what makes the
-  // nodeStopGateway/nodeFree below safe. terminate() stays as a backstop only,
+  // nodeStopGatewayAsync/nodeFreeAsync in stopNative() safe. terminate() stays as a backstop only,
   // for a worker that never answers: quit-time callers should not have to fall
   // all the way through to the shutdown watchdog in src/main/index.js.
   stopDispatcher() {

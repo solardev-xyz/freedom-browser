@@ -71,7 +71,14 @@ function loadIpfsManagerModule(options = {}) {
   class MockFreedomIpfsNativeNode {
     constructor(config) {
       this.config = config;
-      this.start = jest.fn(() => options.startOk !== false);
+      // FreedomIpfsNativeNode.start() is async (the addon's non-blocking
+      // lifecycle, #503 item 13): resolve rather than return the boolean, so a
+      // caller that forgets to await it sees a truthy Promise and fails here.
+      this.start = jest.fn(async () => {
+        if (options.startImpl) return options.startImpl();
+        if (options.startError) throw options.startError;
+        return options.startOk !== false;
+      });
       this.stop = jest.fn(async () => {});
       this.request = jest.fn(async () => new Response('native-body', { status: 200 }));
       this.isHealthy = jest.fn(() => options.isHealthy !== false);
@@ -358,6 +365,59 @@ describe('ipfs-manager', () => {
     expect((await stopResult).status).toBe('stopped');
     expect((await startResult).status).toBe('running');
     expect(ctx.nativeInstances).toHaveLength(2);
+  });
+
+  test('a native start that resolves false lands in ERROR, not RUNNING', async () => {
+    const ctx = loadIpfsManagerModule({ startOk: false });
+    ctx.mod.registerIpfsIpc();
+
+    const result = await ctx.ipcMain.invoke(IPC.IPFS_START);
+
+    expect(result).toEqual({ status: 'error', error: 'Failed to start freedom-ipfs native node' });
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node failed to start');
+    expect(ctx.updateService).not.toHaveBeenCalledWith(
+      'ipfs',
+      expect.objectContaining({ mode: 'bundled' })
+    );
+  });
+
+  test('a native start that rejects lands in ERROR with its message', async () => {
+    const ctx = loadIpfsManagerModule({ startError: new Error('cache database is locked') });
+    ctx.mod.registerIpfsIpc();
+
+    const result = await ctx.ipcMain.invoke(IPC.IPFS_START);
+
+    expect(result).toEqual({ status: 'error', error: 'cache database is locked' });
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node failed to start');
+  });
+
+  test('a stop requested while the native start is still pending waits for it, then stops that node', async () => {
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    let finishStart;
+    const ctx = loadIpfsManagerModule({
+      startImpl: () =>
+        new Promise((resolve) => {
+          finishStart = resolve;
+        }),
+    });
+    ctx.mod.registerIpfsIpc();
+
+    const startResult = ctx.ipcMain.invoke(IPC.IPFS_START);
+    await flush();
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'starting',
+    });
+
+    // Quit or a toggle-off lands mid-start: it queues behind the start rather
+    // than tearing down a node whose handle isn't published yet.
+    const stopResult = ctx.ipcMain.invoke(IPC.IPFS_STOP);
+    await flush();
+    expect(ctx.nativeInstances[0].stop).not.toHaveBeenCalled();
+
+    finishStart(true);
+    expect((await startResult).status).toBe('running');
+    expect((await stopResult).status).toBe('stopped');
+    expect(ctx.nativeInstances[0].stop).toHaveBeenCalledTimes(1);
   });
 
   test('moves to error and cleans up when the native node reports failure', async () => {

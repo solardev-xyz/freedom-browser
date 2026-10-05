@@ -270,7 +270,11 @@ Same shape, different pin location:
   `sha256` entries to `prebuiltAssets` in
   `scripts/fetch-freedom-ipfs-native.js`, then `npm run ipfs:download` and
   `npm run check-binaries`. Prebuilts are Electron-ABI-specific, so an Electron
-  bump can require a new upstream release.
+  bump can require a new upstream release. Since v0.4.5 the node lifecycle
+  goes through the addon's Promise-returning `*Async` exports
+  (`src/main/ipfs/freedom-ipfs-native-node.js`), so an addon without them —
+  any release before v0.4.5 — fails the node's start rather than blocking the
+  main thread; `npm run ipfs:native:smoke` exercises a real start/stop.
 - **Radicle** — bump `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` **and** the `tag`/`digest` pair in
   `PINNED_SHA256SUMS` in `scripts/fetch-radicle-addon.js`, then

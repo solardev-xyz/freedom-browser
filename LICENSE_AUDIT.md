@@ -90,7 +90,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### freedom-ipfs (Native IPFS Addon)
 
 - **Source:** https://github.com/solardev-xyz/freedom-ipfs
-- **Version:** `v0.4.3` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
+- **Version:** `v0.4.5` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Native addon loaded by the Electron main process
