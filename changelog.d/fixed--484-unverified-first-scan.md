@@ -1,0 +1,1 @@
+- When Blockscout can't confirm a wallet's history, the Swarm node still finds its storage within seconds from a single RPC, and confirms it in the background ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))

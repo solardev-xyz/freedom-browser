@@ -214,6 +214,7 @@ function loadAntManagerModule(options = {}) {
   const updateActiveProfileNodeConfig = options.updateActiveProfileNodeConfig || jest.fn();
   const spawnedProcesses = [];
   const bridge = { url: 'http://127.0.0.1:43210/ant-chain/test-capability',
+    unverifiedLogsUrl: 'http://127.0.0.1:43210/ant-chain/test-capability/unverified-logs',
     close: jest.fn().mockResolvedValue(), pipeLog: jest.fn() };
   const startBridge = options.startBridge || jest.fn().mockResolvedValue(bridge);
   const execSync = options.execSync || jest.fn();
@@ -833,6 +834,7 @@ describe('ant-manager', () => {
       '--no-control-socket',
       `--gnosis-logs-rpc-url=${ctx.bridge.url}`,
       `--gnosis-rpc-url=${ctx.bridge.url}`,
+      `--gnosis-unverified-logs-rpc-url=${ctx.bridge.unverifiedLogsUrl}`,
     ]);
     expect(ctx.mod.getActivePort()).toBe(1634);
     expect(ctx.updateService).toHaveBeenCalledWith('ant', {

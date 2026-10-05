@@ -775,7 +775,13 @@ async function startAnt() {
   const args = [`--config=${configPath}`, '--no-control-socket'];
 
   log.info(`[Ant] Starting: ${binPath} ${args.join(' ')} (private chain transport)`);
-  args.push(`--gnosis-logs-rpc-url=${bridge.url}`, `--gnosis-rpc-url=${bridge.url}`);
+  // The unverified logs route (Ant v0.5.59+) is a fallback for the wallet
+  // scan when the verified route cannot serve the full history (#484).
+  args.push(
+    `--gnosis-logs-rpc-url=${bridge.url}`,
+    `--gnosis-rpc-url=${bridge.url}`,
+    `--gnosis-unverified-logs-rpc-url=${bridge.unverifiedLogsUrl}`
+  );
 
   try {
     antProcess = spawn(binPath, args);

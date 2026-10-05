@@ -1,0 +1,2 @@
+- Updated bundled nodes:
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.45 to 0.5.59

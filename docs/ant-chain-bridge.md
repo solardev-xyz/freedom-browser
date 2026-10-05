@@ -1,6 +1,6 @@
 # Ant chain transport through Freedom
 
-Freedom runs Ant v0.5.58 as a separate `antd` process. The host callback added
+Freedom runs Ant v0.5.59 as a separate `antd` process. The host callback added
 in ant#77 is for embedded FFI consumers; the daemon can already use an HTTP
 JSON-RPC endpoint. The main-process Swarm service therefore owns a private
 loopback bridge to the existing chain-data router. No native patch, dependency
@@ -168,6 +168,20 @@ gets the same https-or-loopback check as RPC URLs, on every redirect hop, and
 a hop that leaves the configured URL's origin must also be https to a host
 that is not this machine, so a remote Blockscout cannot redirect the request
 to a plaintext or local service.
+
+When neither can verify a span (Blockscout down, disagreeing or still
+indexing), Ant v0.5.59+ has an explicitly unverified fallback
+(freedom-hq/ant#143). The bridge serves it under the same capability at
+`…/unverified-logs`, which Freedom passes as `--gnosis-unverified-logs-rpc-url`:
+`eth_getLogs` only (everything else is refused with `-32601`), answered by one
+endpoint through the router's Direct tier, the first in registry order (in
+practice the one that serves the full history), with no quorum. Ant reads a
+span from it only when the verified route cannot serve that span in a few
+requests, checks every batch and chequebook it finds through the verified
+route before using it, reports `/health.walletScan.state` `confirming` until
+the verified route confirms the span in the background, and never deploys a
+chequebook on its word. Its answers are logged as `via direct (unverified
+route)`.
 
 ### Which error Ant sees: one ranking rule
 

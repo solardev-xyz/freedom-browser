@@ -22,7 +22,7 @@ const MAX_ERROR_MESSAGE = 500;
 // with room for the router's own handling.
 const LOG_SCAN_QUORUM_TIMEOUT_MS = 30000;
 
-// Ant v0.5.58 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
+// Ant v0.5.59 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
 // unchanged since v0.5.45): its eth_getLogs scan shrinks the window only when
 // the error message contains one of these needles, and aborts
 // owned-batch/chequebook recovery otherwise.
@@ -237,6 +237,21 @@ function logScanQuorumMissing(error) {
   return /RPC quorum needs \d+ endpoints|No chain source left for eth_getLogs/.test(message);
 }
 
+// Router options for Ant's explicitly unverified log source (Ant v0.5.59+,
+// `--gnosis-unverified-logs-rpc-url`, freedom-hq/ant#143): one endpoint's
+// answer, no quorum. Ant asks it only for a wallet-scan span the verified
+// route cannot serve in a few requests, checks every batch and chequebook it
+// finds through the verified route, reports `walletScan.confirming` until the
+// verified route confirms the span, and never deploys a chequebook on its
+// word. The first endpoint in registry order answers (in practice the one
+// that serves the full history); a range refusal still reaches Ant, which
+// halves its window.
+const UNVERIFIED_LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
+  excludeSources: Object.freeze(['myotis', 'colibri', 'quorum']),
+  directTimeoutMs: 60000,
+  rankError: rankLogScanError,
+});
+
 // The JSON-RPC error Ant receives for a failed routed request. This is the
 // daemon's URL transport, not the FFI callback: real -32000 codes are
 // preserved and no second fallback/rebroadcast occurs here.
@@ -293,6 +308,8 @@ async function startAntChainBridge({
 } = {}) {
   const token = randomBytes(32).toString('hex');
   const route = `/ant-chain/${token}`;
+  // Same capability, second path: the unverified log source (above).
+  const unverifiedRoute = `${route}/unverified-logs`;
   const active = new Set();
   let closed = false;
   let closePromise;
@@ -306,10 +323,11 @@ async function startAntChainBridge({
   const server = http.createServer(async (req, res) => {
     // Host check prevents DNS rebinding; Origin/Sec-Fetch rejection and the
     // unguessable path prevent websites from using local node authority.
+    const unverified = req.url === unverifiedRoute;
     if (
       closed ||
       req.headers.host !== authority ||
-      req.url !== route ||
+      (req.url !== route && !unverified) ||
       req.headers.origin !== undefined ||
       req.headers['sec-fetch-site'] !== undefined
     ) {
@@ -389,6 +407,10 @@ async function startAntChainBridge({
         send(res, 200, { jsonrpc: '2.0', id, result: `0x${CHAIN_ID.toString(16)}` });
         return;
       }
+      if (unverified && method !== 'eth_getLogs') {
+        fail(-32601, 'Only eth_getLogs is served on the unverified logs route');
+        return;
+      }
       if (!READ_METHODS.has(method) && !(allowBroadcast && method === 'eth_sendRawTransaction')) {
         fail(-32601, 'Method not available to Ant');
         return;
@@ -415,11 +437,13 @@ async function startAntChainBridge({
               signal: controller.signal,
               // Ant's polling must not queue ahead of wallet/app reads.
               background: true,
-              ...(method === 'eth_getLogs'
-                ? // The router fits its Blockscout check inside this bridge's
-                  // own deadline, so Ant gets its range refusal, not a timeout.
-                  { ...LOG_SCAN_ROUTER_OPTIONS, budgetMs: timeoutMs }
-                : {}),
+              ...(unverified
+                ? UNVERIFIED_LOG_SCAN_ROUTER_OPTIONS
+                : method === 'eth_getLogs'
+                  ? // The router fits its Blockscout check inside this bridge's
+                    // own deadline, so Ant gets its range refusal, not a timeout.
+                    { ...LOG_SCAN_ROUTER_OPTIONS, budgetMs: timeoutMs }
+                  : {}),
             });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');
@@ -434,7 +458,7 @@ async function startAntChainBridge({
         : 'unknown';
       // One line per Ant chain read (hundreds during a startup scan): verbose
       // keeps it out of main.log (#511). Failures below stay at warn.
-      log.verbose(`[Ant chain] ${method} via ${source}`);
+      log.verbose(`[Ant chain] ${method} via ${source}${unverified ? ' (unverified route)' : ''}`);
       send(res, 200, body);
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -445,7 +469,12 @@ async function startAntChainBridge({
             READ_METHODS.has(method) || method === 'eth_sendRawTransaction' ? method : 'request'
           } failed (${code})`
         );
-        if (method === 'eth_getLogs' && !warnedNoLogQuorum && logScanQuorumMissing(error)) {
+        if (
+          method === 'eth_getLogs' &&
+          !unverified &&
+          !warnedNoLogQuorum &&
+          logScanQuorumMissing(error)
+        ) {
           // Ant only sees an error it does not halve on, ends the scan and
           // retries later, forever: say once why its batches and chequebook
           // are not being found.
@@ -477,6 +506,7 @@ async function startAntChainBridge({
   server.on('error', () => log.warn('[Ant chain] Local transport error'));
   return {
     url: `http://${authority}${route}`,
+    unverifiedLogsUrl: `http://${authority}${unverifiedRoute}`,
     // Buffer child output by line before redacting, so chunk boundaries cannot
     // split a capability across log calls. An oversized line is redacted, then
     // cut to its first MAX_LOG_LINE characters with a truncation marker, so a
@@ -544,6 +574,7 @@ module.exports = {
   XBZZ_TOKEN,
   antErrorReply,
   LOG_SCAN_ROUTER_OPTIONS,
+  UNVERIFIED_LOG_SCAN_ROUTER_OPTIONS,
   LOG_SCAN_ERROR_RANK: RANK,
   ANT_LOG_SCAN_SHRINK_NEEDLES,
 };

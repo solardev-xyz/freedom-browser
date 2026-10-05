@@ -87,6 +87,46 @@ test.each(
   expect(router.request).not.toHaveBeenCalled();
 });
 
+// Ant v0.5.59's unverified log source (#484, freedom-hq/ant#143): the same
+// capability under a second path, eth_getLogs only, one endpoint's answer.
+test('the unverified logs route serves eth_getLogs from a single endpoint', async () => {
+  expect(bridge.unverifiedLogsUrl).toBe(`${bridge.url}/unverified-logs`);
+  router.request.mockResolvedValue({ result: ['LOG'], source: 'direct', verified: false });
+  const response = await post(bridge.unverifiedLogsUrl, rpc('eth_getLogs', [{ fromBlock: '0x1' }]));
+  expect(response.body).toEqual({ jsonrpc: '2.0', id: 7, result: ['LOG'] });
+  expect(router.request).toHaveBeenCalledWith(100, 'eth_getLogs', [{ fromBlock: '0x1' }], {
+    signal: expect.any(AbortSignal),
+    background: true,
+    excludeSources: ['myotis', 'colibri', 'quorum'],
+    directTimeoutMs: 60000,
+    rankError: rankLogScanError,
+  });
+  expect(log.verbose).toHaveBeenLastCalledWith(
+    '[Ant chain] eth_getLogs via direct (unverified route)'
+  );
+});
+
+test('the unverified logs route refuses every other method', async () => {
+  for (const method of [
+    'eth_call',
+    'eth_getBalance',
+    'eth_blockNumber',
+    'eth_sendRawTransaction',
+  ]) {
+    const response = await post(bridge.unverifiedLogsUrl, rpc(method, []));
+    expect(response.body.error.code).toBe(-32601);
+  }
+  expect(router.request).not.toHaveBeenCalled();
+  expect(router.broadcastRawTransaction).not.toHaveBeenCalled();
+});
+
+test('the unverified logs route needs the same capability', async () => {
+  const wrong = bridge.unverifiedLogsUrl.replace('/ant-chain/', '/ant-chain/0');
+  expect((await post(wrong, rpc('eth_getLogs', [{}]))).status).toBe(403);
+  expect((await post(`${bridge.unverifiedLogsUrl}/x`, rpc('eth_getLogs', [{}]))).status).toBe(403);
+  expect(router.request).not.toHaveBeenCalled();
+});
+
 // Ant v0.5.58+ asks for the chain id before every wallet scan and keys the
 // saved scan by it; the bridge serves Gnosis only, so it answers 100 itself.
 test('answers eth_chainId with Gnosis without routing', async () => {
@@ -453,7 +493,7 @@ test('says once why log scans fail when no RPC quorum is configured (R1-M3)', as
   expect(log.warn.mock.calls.flat().join('\n')).not.toContain('none is configured');
 });
 
-test("Ant's shrink needles match v0.5.58 is_range_limit_error", () => {
+test("Ant's shrink needles match v0.5.59 is_range_limit_error", () => {
   expect(antShrinksLogScanOn('Query Timeout')).toBe(true);
   expect(antShrinksLogScanOn('Log response size exceeded')).toBe(true);
   expect(antShrinksLogScanOn('the method eth_getLogs does not exist/is not available')).toBe(false);
