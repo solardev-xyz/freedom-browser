@@ -1,7 +1,7 @@
 /** Offline actual partial EOA submission through durable combined POI over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [change]
+ * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [change|second-spend]
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -35,7 +35,8 @@ async function main() {
   const args = process.argv.slice(2);
   assert.ok(args.length >= 6 && args.length <= 8);
   const changeMode = args.length === 8;
-  if (changeMode) assert.equal(args[7], 'change');
+  if (changeMode) assert.ok(['change', 'second-spend'].includes(args[7]));
+  const secondSpendMode = args[7] === 'second-spend';
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
@@ -188,12 +189,41 @@ async function main() {
                   assert.ok(reply instanceof Uint8Array && reply.byteLength === 32);
                   loans.push(reply);
                   if (message.purpose === 'spending-sign') {
-                    assert.equal((await reservations.inspect()).signing, 1);
+                    const second = launchPhase.startsWith('second-');
+                    assert.equal((await reservations.inspect()).signing, second ? 2 : 1);
+                    if (second) {
+                      assert.equal(secondCreatorVerified, true);
+                      assert.equal(secondCreatorExited, true);
+                      assert.equal(secondPoiExited, true);
+                      secondTransport.assertKeyAdmission();
+                      for (const method of [
+                        'ppoi_validated_txid',
+                        'ppoi_validate_txid_merkleroot',
+                      ]) {
+                        const key = 'service:poi:' + method;
+                        assert.equal(
+                          (postChain.report().validated[key] || 0) - (secondRootBaseline[key] || 0),
+                          3
+                        );
+                      }
+                    }
                     const saved = await capsules.inspect();
-                    assert.equal(saved.records, 1);
-                    assert.equal(saved.signatures, 0);
-                    assert.equal(saved.proofs, 0);
+                    assert.equal(saved.records, second ? 2 : 1);
+                    assert.equal(saved.signatures, second ? 1 : 0);
+                    assert.equal(saved.proofs, second ? 1 : 0);
                   }
+                }
+                if (
+                  launchPhase.startsWith('second-') &&
+                  job === 'railgun-note-provenance-job.js' &&
+                  message.method === 'result'
+                ) {
+                  assert.equal(message.value.unshieldCommitmentVerified, true);
+                  assert.equal(message.value.pathVerified, true);
+                  assert.equal(message.value.suppliedCreatorEventsMatched, true);
+                  assert.equal(message.value.coverage.matchedRows, 1);
+                  assert.equal(message.value.coverage.knownOmissions, 0);
+                  secondCreatorVerified = true;
                 }
                 if (message.method === 'result' && message.value?.guards) {
                   const value = message.value.guards;
@@ -218,6 +248,17 @@ async function main() {
       task.closed,
       (result) => {
         audit.closed(job, result);
+        if (
+          launchPhase.startsWith('second-') &&
+          ['railgun-note-provenance-job.js', 'railgun-poi-job.js'].includes(job)
+        ) {
+          assert.equal(result.code, 'RAILGUN_PROCESS_CLOSED');
+          assert.ok(Number.isInteger(result.exitCode));
+          assert.equal(result.escalated, false);
+          assert.equal(result.peerDisconnected, false);
+          if (job === 'railgun-note-provenance-job.js') secondCreatorExited = true;
+          else secondPoiExited = true;
+        }
         children.delete(task);
         childResults.push({ job, phase: launchPhase, ...result });
       },
@@ -283,7 +324,13 @@ async function main() {
     creatorCheckpoint;
   let fixtureCurrent = true,
     postChain,
+    secondTransport,
+    lastSecondTransportReport,
     connected;
+  let secondCreatorVerified = false,
+    secondCreatorExited = false,
+    secondPoiExited = false,
+    secondRootBaseline;
   const roleMethods = {};
   const wrapperClients = new Set();
   const wrapperTransport = { creates: 0, closes: 0, entries: 0, transactionEntries: 0, pending: 0 };
@@ -381,9 +428,10 @@ async function main() {
       },
       async signTransaction(value) {
         eoa.signatureAttempts++;
-        assert.equal(eoa.signatureAttempts, 1);
+        assert.equal(eoa.signatureAttempts, secondTransport ? 2 : 1);
         assert.equal(value.to.toLowerCase(), pins.proxy.toLowerCase());
-        assert.equal(value.data, expectedTransaction.data);
+        if (secondTransport) secondTransport.assertSigning(value);
+        else assert.equal(value.data, expectedTransaction.data);
         assert.equal(BigInt(value.value), 0n);
         const raw = await genuine.signTransaction(value);
         eoa.signatures++;
@@ -442,6 +490,22 @@ async function main() {
           const called = JSON.parse(options.body);
           const roleKey = subject.kind + ':' + subject.role + ':' + (called.method ?? 'page');
           roleMethods[roleKey] = (roleMethods[roleKey] || 0) + 1;
+          if (secondTransport) {
+            if (subject.role === 'transaction-rpc') {
+              wrapperTransport.transactionEntries++;
+              methods[called.method] = (methods[called.method] || 0) + 1;
+            }
+            const handled = await secondTransport.route(subject, url, options, handle);
+            if (handled !== undefined) {
+              current();
+              if (called.method === 'eth_sendRawTransaction') {
+                eoa.sends++;
+                eoa.journalBeforeSend++;
+                assert.equal(eoa.sends, 2);
+              }
+              return handled;
+            }
+          }
           if (postChain) {
             const handled = await postChain.route(subject, url, options, handle);
             if (handled !== undefined) {
@@ -1094,6 +1158,8 @@ async function main() {
       txid = null;
       const completed = await lifecycle.run({
         changeMode,
+        secondSpendMode,
+        bytecodes,
         signature,
         outerSignal: identity.signal,
         archive,
@@ -1123,6 +1189,22 @@ async function main() {
           },
           roleMethods: { ...roleMethods },
         }),
+        recordSecondReview() {
+          eoa.reviews++;
+          assert.equal(eoa.reviews, 2);
+        },
+        installSecondTransport(value) {
+          if (value) {
+            assert.equal(secondTransport, undefined);
+            secondRootBaseline = postChain.report().validated;
+          }
+          if (!value && secondTransport) lastSecondTransportReport = secondTransport.report();
+          secondTransport = value;
+        },
+        adoptStores(nextReservations, nextCapsules) {
+          reservations = nextReservations;
+          capsules = nextCapsules;
+        },
         pendingChildren: () => children.size,
         unwipedLoans: () => loans.filter((key) => key.some((v) => v !== 0)).length,
         adopt: (nextEnrollment, nextPublic) => {
@@ -1146,23 +1228,25 @@ async function main() {
         realPublicProjectionAndTxidMirror: true,
         rows: projected.rows.length,
         changeCreditedByWallet: changeMode,
-        secondSpend: false,
+        secondSpend: secondSpendMode,
       });
     }
     phase = 'private-history';
     ({ reservations, capsules } = await enrollment.openPrivateRecoveryStores());
     await reservations.withSigningRecovery(async (records, context) => {
       context.assertCurrent();
-      assert.equal(records.length, 1);
-      assert.deepEqual(records[0].entry, savedBefore);
-      assert.deepEqual(await capsules.readSigned(records[0].receipt), stored);
+      assert.equal(records.length, secondSpendMode ? 2 : 1);
+      const original = records.find((value) => value.entry.id === savedBefore.id);
+      assert.ok(original);
+      assert.deepEqual(original.entry, savedBefore);
+      assert.deepEqual(await capsules.readSigned(original.receipt), stored);
     });
-    assert.equal(keys['spending-sign'], 1);
-    assert.equal(eoa.sends, testCase === 'bad-verifier' ? 0 : 1);
+    assert.equal(keys['spending-sign'], secondSpendMode ? 2 : 1);
+    assert.equal(eoa.sends, secondSpendMode ? 2 : testCase === 'bad-verifier' ? 0 : 1);
     assert.equal(eoa.unexpectedFailures, 0);
-    assert.equal(jobs['railgun-private-operate-job.js'], 1);
-    assert.equal(jobs['railgun-spend-sign-job.js'], 1);
-    assert.equal(jobs['railgun-private-verify-job.js'], 2);
+    assert.equal(jobs['railgun-private-operate-job.js'], secondSpendMode ? 2 : 1);
+    assert.equal(jobs['railgun-spend-sign-job.js'], secondSpendMode ? 2 : 1);
+    assert.equal(jobs['railgun-private-verify-job.js'], secondSpendMode ? 4 : 2);
     assert.equal(jobs['railgun-private-receive-job.js'], 1);
     assert.equal(jobs['railgun-private-recover-job.js'] || 0, 0);
     assert.ok(loans.every((key) => key.every((value) => value === 0)));
@@ -1212,10 +1296,13 @@ async function main() {
     sticky.assertEmpty();
     assert.deepEqual(inventory(), sourceHashes);
     const report = {
-      schema: changeMode
-        ? 'railgun-combined-poi-change-native-v1'
-        : 'railgun-combined-poi-native-v1',
+      schema: secondSpendMode
+        ? 'railgun-combined-poi-second-spend-native-v1'
+        : changeMode
+          ? 'railgun-combined-poi-change-native-v1'
+          : 'railgun-combined-poi-native-v1',
       changeMode,
+      secondSpendMode,
       connected,
       combinedChain: postChain.report(),
       roleMethods,
@@ -1265,7 +1352,9 @@ async function main() {
       ...(changeMode
         ? { changeCreditedByNormalScan: true }
         : { noChangeCreditingOrSecondSpendClaim: true }),
-      secondSpendQualified: false,
+      secondSpendQualified: secondSpendMode,
+      secondColdSubmitQualified: false,
+      secondSpendWalletIngestionQualified: false,
       newProcessRestartQualified: false,
       unchangedOriginalCapsuleSignatureProofAndSigningHold: true,
       elapsedMs: Math.round(performance.now() - started),
@@ -1311,7 +1400,17 @@ async function main() {
             fs.writeFileSync(
               path.join(directory, 'diagnostic.json'),
               JSON.stringify(
-                { phase, keys, jobs, childResults, eoa, methods, services: services.report() },
+                {
+                  phase,
+                  keys,
+                  jobs,
+                  childResults,
+                  eoa,
+                  methods,
+                  services: services.report(),
+                  secondTransport: lastSecondTransportReport,
+                  fixtureAssertions: sticky.report(),
+                },
                 null,
                 2
               ) + '\n',
@@ -1332,7 +1431,7 @@ main().then(
       .split('\n')
       .map((part) =>
         part.match(
-          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer|change-scan|change-inventory|list-acceptance))\.js:(\d+):\d+/
+          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer|change-scan|change-inventory|list-acceptance|second-chain|second-spend))\.js:(\d+):\d+/
         )
       )
       .find(Boolean);

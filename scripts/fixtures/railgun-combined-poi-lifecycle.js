@@ -134,7 +134,7 @@ exports.run = async (h) => {
     changeVerified = false;
   const changeMode = h.changeMode === true;
   const runs = [];
-  let continuation;
+  let continuation, secondSpend;
   const setPhase = (name) => h.phase('combined-' + name);
   const common = () => ({
     identity,
@@ -982,9 +982,37 @@ exports.run = async (h) => {
       assert.equal(recovered[flag], false);
     assert.equal(chain.report().posts, 1);
     assert.equal(audit.snapshot().changedOutputs, 2);
+    if (h.secondSpendMode) {
+      assert.equal(changeMode, true);
+      assert.equal(changeVerified, true);
+      secondSpend = await require('./railgun-combined-poi-second-spend').run({
+        identity,
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        archive,
+        proverArchive,
+        artifactDirectory,
+        continuation,
+        store,
+        acceptance,
+        signal: h.outerSignal,
+        bytecodes: h.bytecodes,
+        phase: h.phase,
+        journal: h.journal,
+        activity,
+        pendingChildren: h.pendingChildren,
+        unwipedLoans: h.unwipedLoans,
+        installTransport: h.installSecondTransport,
+        recordReview: h.recordSecondReview,
+        adoptStores: h.adoptStores,
+      });
+      assertDrain();
+    }
+
     sticky.assertEmpty();
     return {
       continuation,
+      ...(secondSpend ? { secondContinuation: secondSpend.continuation } : {}),
       report: {
         runs,
         sameProcessColdReopen: true,
@@ -996,7 +1024,8 @@ exports.run = async (h) => {
               acceptance: acceptance.report(),
             }
           : {}),
-        secondSpendQualified: false,
+        secondSpendQualified: !!secondSpend,
+        ...(secondSpend ? { secondSpend: secondSpend.report } : {}),
         originalInputMembershipSimulated: true,
         attemptReservesRemaining: 2,
         postResponseAcceptance: false,

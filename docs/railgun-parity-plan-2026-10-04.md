@@ -7,6 +7,14 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [connected second-spend checkpoint](railgun-combined-second-spend-integration-2026-10-05.md)
+now spends actual first-transaction change through fresh production staging,
+creator/list/root/preflight authority, signing/proving, second journaled Ethereum
+submission and receipt capture. Both initial input histories pass with identical
+860-source inventories and simulated external services. Terminal wallet ingestion,
+full process restart, cold second submission/recovery, partial facade and live
+qualification remain open. The following checkpoints retain their historical scope.
+
 The [normal change checkpoint](railgun-combined-change-integration-2026-10-05.md)
 connects actual first-transaction change to the ordinary wallet scan and
 Missing-to-Valid membership through a disposable proof-verifying list service.
