@@ -720,8 +720,12 @@ async function doStartIpfs() {
     onFailure: (reason, failedNode) => handleNativeNodeFailure(reason, failedNode),
   });
 
+  // start() resolves once the addon has opened the cache and bound the gateway
+  // on the libuv thread pool; the main thread keeps serving the UI meanwhile
+  // (#503 item 13). The state stays STARTING throughout, and enqueueOp holds
+  // any stop/sync requested meanwhile until this settles.
   try {
-    if (!node.start()) {
+    if (!(await node.start())) {
       updateState(STATUS.ERROR, 'Failed to start freedom-ipfs native node');
       setStatusMessage('ipfs', 'Node failed to start');
       return;

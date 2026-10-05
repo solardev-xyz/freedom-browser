@@ -16,10 +16,28 @@ const addonPath = path.join(outDir, ADDON_FILENAME);
 const rustRepo = process.env.FREEDOM_IPFS_RUST_REPO
   ? path.resolve(process.env.FREEDOM_IPFS_RUST_REPO)
   : path.resolve(projectRoot, '..', 'nodes', 'freedom-ipfs');
-const releaseTag = process.env.FREEDOM_IPFS_RELEASE_TAG || 'v0.4.3';
+const releaseTag = process.env.FREEDOM_IPFS_RELEASE_TAG || 'v0.4.5';
 const releaseBaseUrl = `https://github.com/solardev-xyz/freedom-ipfs/releases/download/${releaseTag}`;
 
 const prebuiltAssets = {
+  'v0.4.5': {
+    'darwin-arm64': {
+      name: 'freedom-ipfs-node-electron41-darwin-arm64.tar.gz',
+      sha256: '74c3fd2f264d42ad9470773b82e7200bd7900dc5ec6f758288c90355ed75caa4',
+    },
+    'linux-arm64': {
+      name: 'freedom-ipfs-node-electron41-linux-arm64.tar.gz',
+      sha256: '254f4e419373130ab477b622643d7bd412c1f381fb38a5e7a35a0efb54e2975f',
+    },
+    'linux-x64': {
+      name: 'freedom-ipfs-node-electron41-linux-x64.tar.gz',
+      sha256: '289cb6146b913ad542d22fc419f45f08f9f7c5a538aa60c80d42b8bf5cc424cb',
+    },
+    'win32-x64': {
+      name: 'freedom-ipfs-node-electron41-win32-x64.tar.gz',
+      sha256: '2b04d57aadee22f0d85536356d0c4bcc616c2aff6bca77a1b4c0b69053123d0b',
+    },
+  },
   'v0.4.3': {
     'darwin-arm64': {
       name: 'freedom-ipfs-node-electron41-darwin-arm64.tar.gz',

@@ -96,7 +96,7 @@ for (const theme of ['dark', 'light']) {
     }, testInfo) => {
       test.skip(!live, 'Set ENSV2_UI_LIVE=1 to retrieve the actual ENS checker content');
       test.setTimeout(90000);
-      await electronApp.evaluate(({ session, app, ipcMain }) => {
+      await electronApp.evaluate(async ({ session, app, ipcMain }) => {
         const load = process.mainModule.require.bind(process.mainModule);
         const path = load('node:path');
         const { FreedomIpfsNativeNode } = load('./src/main/ipfs/freedom-ipfs-native-node');
@@ -119,7 +119,9 @@ for (const theme of ['dark', 'light']) {
         const node = new FreedomIpfsNativeNode({
           dataDir: path.join(app.getPath('userData'), 'ens-checker-ipfs'),
         });
-        node.start();
+        // start() is async since the addon's non-blocking lifecycle (#503);
+        // the protocol handler below must not see a node that isn't up yet.
+        if (!(await node.start())) throw new Error('freedom-ipfs native node failed to start');
         globalThis.__ensCheckerNode = node;
         globalThis.__ensCheckerDownloads = 0;
         for (const partition of [session.defaultSession]) {

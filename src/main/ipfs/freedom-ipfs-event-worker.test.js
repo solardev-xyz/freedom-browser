@@ -116,7 +116,7 @@ describe('freedom-ipfs event dispatcher worker', () => {
     expect(exitCode).toBe(0);
     expect(terminate).not.toHaveBeenCalled();
     // Nothing may enter native after the acknowledgement: that is what makes
-    // it safe for the parent to call nodeStopGateway/nodeFree next.
+    // it safe for the parent to call nodeStopGatewayAsync/nodeFreeAsync next.
     expect(nativeCalls()).toBe(callsAtAck);
     // Comfortably inside the parent's 2s terminate backstop.
     expect(elapsed).toBeLessThan(1000);
