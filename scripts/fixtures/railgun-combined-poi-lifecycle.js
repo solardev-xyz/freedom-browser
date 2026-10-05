@@ -134,7 +134,7 @@ exports.run = async (h) => {
     changeVerified = false;
   const changeMode = h.changeMode === true;
   const runs = [];
-  let continuation, secondSpend, terminalIngest;
+  let continuation, secondSpend, terminalIngest, restartWire;
   const setPhase = (name) => h.phase('combined-' + name);
   const common = () => ({
     identity,
@@ -982,6 +982,19 @@ exports.run = async (h) => {
       assert.equal(recovered[flag], false);
     assert.equal(chain.report().posts, 1);
     assert.equal(audit.snapshot().changedOutputs, 2);
+    if (h.restartSetup) {
+      assert.equal(changeVerified, true);
+      assert.equal(h.secondSpendMode, false);
+      restartWire = await require('./railgun-combined-poi-restart').snapshotSetup({
+        ...h,
+        enrollment,
+        publicAccount,
+        store,
+        continuation,
+        acceptance,
+      });
+      assertDrain();
+    }
     if (h.secondSpendMode) {
       assert.equal(changeMode, true);
       assert.equal(changeVerified, true);
@@ -1035,6 +1048,7 @@ exports.run = async (h) => {
     sticky.assertEmpty();
     return {
       continuation,
+      ...(restartWire ? { restartWire } : {}),
       ...(secondSpend ? { secondContinuation: secondSpend.continuation } : {}),
       report: {
         runs,

@@ -12,7 +12,7 @@ const delta = (after, before) =>
       .map((k) => [k, (after[k] || 0) - (before[k] || 0)])
       .filter(([, v]) => v)
   );
-async function project({ enrollment, archive, signal, row, history }) {
+async function projectCore({ enrollment, archive, signal, row, history }, terminal) {
   const {
     createPrivacyScope,
     getPrivacyContext,
@@ -34,7 +34,7 @@ async function project({ enrollment, archive, signal, row, history }) {
         archive,
         priorRows: history.rows,
         row,
-        kind: 'terminal-full-unshield',
+        ...(terminal ? { kind: 'terminal-full-unshield' } : {}),
       }),
       startupMs: 30000,
       lifetimeMs: 60000,
@@ -105,8 +105,10 @@ async function project({ enrollment, archive, signal, row, history }) {
   sticky.assertEmpty();
   return result;
 }
+const project = (options) => projectCore(options, true);
+exports.projectRetainedPartial = (options) => projectCore(options, false);
 exports.project = project; // Fixture-only test boundary, never a production issuer.
-exports.run = async (h) => {
+async function run(h, restart) {
   const {
     identity,
     enrollment,
@@ -132,8 +134,11 @@ exports.run = async (h) => {
     hash: header(history.finalized).hash,
   });
   const generation = publicAccount.generationId;
-  const acceptanceBefore = copy(h.acceptance.report());
-  assert.equal(acceptanceBefore.accepted, true);
+  const list = restart
+    ? require('./railgun-combined-poi-list-replay').assertProvider(h.replay)
+    : h.acceptance;
+  const acceptanceBefore = copy(list.report());
+  if (!restart) assert.equal(acceptanceBefore.accepted, true);
   const { reservations, capsules } = await enrollment.openPrivateRecoveryStores();
   h.adoptStores(reservations, capsules);
   const privateRecords = async () => {
@@ -244,7 +249,7 @@ exports.run = async (h) => {
   assert.deepEqual(await store.get(digest), entry);
   assert.deepEqual(await store.inspect(), inspect);
   assert.deepEqual(fs.readFileSync(filename), bytes);
-  assert.deepEqual(h.acceptance.report(), acceptanceBefore);
+  assert.deepEqual(list.report(), acceptanceBefore);
   const after = h.activity();
   assert.deepEqual(after.eoa, before.eoa);
   assert.deepEqual(after.methods, before.methods);
@@ -308,4 +313,6 @@ exports.run = async (h) => {
     newProcessRestartQualified: false,
     liveEligibilityOrSubmissionQualified: false,
   });
-};
+}
+exports.run = (h) => run(h, false);
+exports.runRestart = (h) => run(h, true);

@@ -1,7 +1,7 @@
 /** Offline actual partial EOA submission through durable combined POI over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [change|second-spend|second-spend-ingest]
+ * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [change|second-spend|second-spend-ingest|restart-setup|restart-resume]
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -10,14 +10,16 @@ const sticky = require('./fixtures/railgun-native-assertions');
 const { assert } = sticky;
 const lifecycle = require('./fixtures/railgun-combined-poi-lifecycle');
 const audit = lifecycle.createAudit();
-const { createHash } = require('crypto');
+const { createHash, randomUUID } = require('crypto');
+const restartData = require('./fixtures/railgun-combined-poi-restart-data');
 const { Interface, Transaction } = require('ethers');
 const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const OFFSET = 5944700;
 let lock,
-  phase = 'setup';
+  phase = 'setup',
+  sealRestart;
 async function bounded(work, ms = 30000) {
   let timer;
   try {
@@ -35,8 +37,15 @@ async function main() {
   const args = process.argv.slice(2);
   assert.ok(args.length >= 6 && args.length <= 8);
   const changeMode = args.length === 8;
-  if (changeMode) assert.ok(['change', 'second-spend', 'second-spend-ingest'].includes(args[7]));
-  const terminalMode = args[7] === 'second-spend-ingest';
+  if (changeMode)
+    assert.ok(
+      ['change', 'second-spend', 'second-spend-ingest', 'restart-setup', 'restart-resume'].includes(
+        args[7]
+      )
+    );
+  const restartSetup = args[7] === 'restart-setup';
+  const restartResume = args[7] === 'restart-resume';
+  const terminalMode = args[7] === 'second-spend-ingest' || restartResume;
   const secondSpendMode = args[7] === 'second-spend' || terminalMode;
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
@@ -45,7 +54,14 @@ async function main() {
   assert.equal(testCase, 'acknowledged');
   const transact = inputCreator === 'Transact';
   assert.ok(args.slice(0, 6).every((value) => path.isAbsolute(value)));
-  assert.equal(fs.existsSync(directory), false);
+  assert.equal(fs.existsSync(directory), restartResume);
+  const restored = restartResume ? restartData.load(directory, { inputCreator }) : undefined;
+  const runID = restored?.handoff.runID ?? randomUUID();
+  const reportFilename = path.join(
+    directory,
+    restartResume ? 'restart-report.json' : 'report.json'
+  );
+  assert.equal(fs.existsSync(reportFilename), false);
   const sourceBytes = fs.readFileSync(sourceFilename);
   // This one published public-vector source is allowed. Never accept a real
   // wallet export just because its JSON claims to be a disposable fixture.
@@ -68,7 +84,7 @@ async function main() {
     log.blockHash = hex(log.blockNumber + 1000);
   }
   const anchor = { number: OFFSET + 100, hash: hex(OFFSET + 1100) };
-  fs.mkdirSync(directory, { mode: 0o700 });
+  if (!restartResume) fs.mkdirSync(directory, { mode: 0o700 });
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
     env: { FREEDOM_TEST_USER_DATA: path.join(directory, 'profile') },
   });
@@ -107,6 +123,27 @@ async function main() {
     );
   };
   const sourceHashes = inventory();
+  const runtimes =
+    restartSetup || restartResume
+      ? restartData.runtimeHashes({
+          archive,
+          proverArchive,
+          artifactDirectory,
+          bytecodes,
+        })
+      : undefined;
+  if (restartResume) {
+    assert.deepEqual(sourceHashes, restored.handoff.sourceHashes);
+    assert.deepEqual(runtimes, restored.handoff.runtimes);
+    assert.equal(sha(sourceBytes), restored.handoff.sourceSha256);
+    assert.deepEqual(restartData.profileSnapshot(directory), restored.handoff.files);
+  }
+  const coldStorage = restartResume
+    ? require('./fixtures/railgun-combined-poi-restart-storage').install({
+        directory,
+        phase: () => phase,
+      })
+    : undefined;
   const runtime = require('../src/main/wallet/railgun-process');
   const originalStart = runtime.startRailgunProcess;
   const sessionModule = require('../src/main/wallet/railgun-session-worker');
@@ -248,6 +285,7 @@ async function main() {
     sticky.observeClosed(
       task.closed,
       (result) => {
+        childResults.push({ job, phase: launchPhase, ...result });
         audit.closed(job, result);
         if (
           launchPhase.startsWith('second-') &&
@@ -261,7 +299,6 @@ async function main() {
           else secondPoiExited = true;
         }
         children.delete(task);
-        childResults.push({ job, phase: launchPhase, ...result });
       },
       'utility.closed'
     );
@@ -273,7 +310,11 @@ async function main() {
   try {
     signatureModule.install = (...args) => {
       assert.equal(signature, undefined);
-      signature = originalInstallSignature(...args);
+      signature = restartResume
+        ? signatureModule.installReplay(
+            require('./fixtures/railgun-combined-poi-list-replay').replayOptions(restored.wire.list)
+          )
+        : originalInstallSignature(...args);
       return signature;
     };
     services = require('./fixtures/railgun-partial-controller-services').install({
@@ -284,6 +325,10 @@ async function main() {
       perHandlePoi: true,
     });
     assert.ok(signature);
+    if (restartResume) {
+      assert.equal(Object.hasOwn(signature, 'sign'), false);
+      assert.equal(Object.hasOwn(signature, 'exportPublicKey'), false);
+    }
   } finally {
     signatureModule.install = originalInstallSignature;
   }
@@ -327,7 +372,9 @@ async function main() {
     postChain,
     secondTransport,
     lastSecondTransportReport,
-    connected;
+    connected,
+    restartWire,
+    restartBootstrap;
   let secondCreatorVerified = false,
     secondCreatorExited = false,
     secondPoiExited = false,
@@ -429,7 +476,7 @@ async function main() {
       },
       async signTransaction(value) {
         eoa.signatureAttempts++;
-        assert.equal(eoa.signatureAttempts, secondTransport ? 2 : 1);
+        assert.equal(eoa.signatureAttempts, secondTransport && !restartResume ? 2 : 1);
         assert.equal(value.to.toLowerCase(), pins.proxy.toLowerCase());
         if (secondTransport) secondTransport.assertSigning(value);
         else assert.equal(value.data, expectedTransaction.data);
@@ -502,7 +549,7 @@ async function main() {
               if (called.method === 'eth_sendRawTransaction') {
                 eoa.sends++;
                 eoa.journalBeforeSend++;
-                assert.equal(eoa.sends, 2);
+                assert.equal(eoa.sends, restartResume ? 1 : 2);
               }
               return handled;
             }
@@ -514,6 +561,7 @@ async function main() {
               return handled;
             }
           }
+          assert.equal(restartResume, false, 'Unexpected resume RPC/service admission');
           if (subject.role !== 'transaction-rpc') {
             const response = await client.request(handle, url, options);
             current();
@@ -674,529 +722,77 @@ async function main() {
   const started = performance.now();
   const runs = [];
   try {
-    phase = 'enroll';
-    const vaultDirectory = path.join(directory, 'profile', 'identity');
-    await vault.importVault(
-      vaultDirectory,
-      'public-fixture-password-not-a-user-credential',
-      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
-    );
-    await vault.unlockVault(vaultDirectory, 'public-fixture-password-not-a-user-credential', 0);
-    identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
-      archive,
-    });
-    enrollment =
-      await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment({
-        identity,
-        create: true,
-      });
-    phase = 'public-scan';
-    publicAccount =
-      await require('../src/main/wallet/railgun-account-public').openRailgunAccountPublic({
-        enrollment,
-        archive,
-        create: true,
-      });
-    for (let from = 0; from <= anchor.number; from += 100000)
-      await publicAccount.advance({ to: Math.min(from + 99999, anchor.number), anchor });
-    const wallet = require('../src/main/wallet/railgun-account-wallet');
-    const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
-    if (transact) {
-      phase = 'txid-checkpoint';
-      const state = await services.initializeTxid({ archive, enrollment });
-      txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
-        enrollment,
-        coordinator: owners.coordinator,
-        archive,
-        create: true,
-      });
-      await txid.advance();
-      creatorCheckpoint = (await txid.inspect()).checkpoint.state;
-      assert.deepEqual(creatorCheckpoint, state);
-      await txid.close();
-      txid = null;
-      // Advance observes the latest index once, then acquires root acceptance
-      // before preparing and again before completing the durable checkpoint.
-      assert.deepEqual(services.report().publicServiceMethods, {
-        latest: 3,
-        page: 1,
-        validate: 2,
-      });
-    }
-    phase = 'wallet-scan';
-    account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'new' });
-    const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
-    changeStartPosition = baseline.trees.find((tree) => tree.tree === 0).length;
-    assert.equal(changeStartPosition, 3);
-    const selected = baseline.ownedPoi.find(
-      (record) =>
-        record.type === inputCreator &&
-        baseline.read.received.some(
-          (note) => note.id === record.id && note.spentTxid === false && note.amount > 1n
-        )
-    );
-    assert.ok(selected);
-    const note = baseline.read.received.find((note) => note.id === selected.id);
-    assert.ok(selected.blockNumber >= OFFSET);
-    reservations = await enrollment.openReservations();
-    capsules = await enrollment.openPrivateCapsules();
-    const recipient = (
-      await require('../src/main/wallet/signers').getSigner(0).getAddress()
-    ).toLowerCase();
-    await services.setSelected({
-      archive,
-      enrollment,
-      record: selected,
-      submitter: recipient,
-      merkleRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
-    });
-    expectedOwner = recipient;
-    const rpc = require('../src/main/networks/private-rpc');
-    preview = createPrivacyScope({
-      profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
-      signal: enrollment.signal,
-    });
-    const protocolSubject = {
-      ...getPrivacyContext(enrollment.getContext('engine')).subject,
-      role: 'protocol-rpc',
-    };
-    delete protocolSubject.operation;
-    const protocolHandle = preview.getContext(protocolSubject);
-    const transactionHandle = preview.getContext({
-      kind: 'public-address',
-      principal: recipient,
-      chainId: 11155111,
-      role: 'transaction-rpc',
-    });
-    for (const [handle, role] of [
-      [protocolHandle, 'protocol-rpc'],
-      [transactionHandle, 'transaction-rpc'],
-    ]) {
-      const client = rpc.createPrivateRpc(handle, role);
-      const observation = rpc.getPrivateRpcDestination(client, handle);
-      const details = rpc.getPrivateRpcDestinationDetails(observation);
-      assert.equal(details.url, 'https://synthetic.invalid/railgun-partial-controller');
-      if (role === 'transaction-rpc') reviewedEndpoint = details.url;
-      constraints.push(
-        rpc.createPrivateRpcDestinationConstraint({
-          observation,
-          signal: enrollment.signal,
-          deadline: performance.now() + 300000,
-        })
+    if (restartResume) {
+      phase = 'restart-bootstrap';
+      await vault.unlockVault(
+        path.join(directory, 'profile', 'identity'),
+        'public-fixture-password-not-a-user-credential',
+        0
       );
-    }
-    const destinationConstraints = Object.freeze({
-      protocol: constraints[0].constraint,
-      transaction: constraints[1].constraint,
-    });
-    const options = {
-      account,
-      owners,
-      archive,
-      proverArchive,
-      artifactDirectory,
-      destinationConstraints,
-      request: {
-        kind: 'railgun-partial-unshield',
-        noteId: selected.id,
-        recipient,
-        unshieldAmount: (note.amount / 2n).toString(),
-      },
-    };
-    if (transact) {
-      phase = 'transact-staging';
-      staged =
-        await require('../src/main/wallet/railgun-transact-staging').stageRailgunTransactInput({
-          account,
-          owners,
-          request: options.request,
+      identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
+        archive,
+      });
+      enrollment =
+        await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
+          { identity, create: false }
+        );
+      publicAccount =
+        await require('../src/main/wallet/railgun-account-public').openRailgunAccountPublic({
+          enrollment,
           archive,
-          signal: enrollment.signal,
+          create: false,
         });
-      assert.equal(staged.status, 'staged');
-      account = options.account = staged.account;
-      options.stagingReceipt = staged.receipt;
-    }
-    phase = 'prove';
-    const proved =
-      await require('../src/main/wallet/railgun-private-operation').proveRailgunAccountPrivateOperation(
-        options
-      );
-    assert.equal(proved.status, 'proved', JSON.stringify(proved));
-    completion = proved.completion;
-    const stored = await capsules.get(proved.holdId);
-    assert.equal(stored.capsule.version, 2);
-    assert.ok(stored.signature && stored.provedTransaction);
-    expectedTransaction = stored.provedTransaction;
-    assert.equal(keys['spending-sign'], 1);
-    await account.close();
-    account = null;
-    staged?.close();
-    staged = null;
-    const savedBefore = await reservations.withSigningRecovery(async (records, context) => {
-      context.assertCurrent();
-      assert.equal(records.length, 1);
-      const entry = records[0];
-      assert.equal(entry.entry.state, 'signing');
-      assert.deepEqual(await capsules.readSigned(entry.receipt), stored);
-      return entry.entry;
-    });
-    const captureSelector = Object.fromEntries(
-      ['tree', 'position', 'nullifier', 'noteHash'].map((key) => [key, savedBefore.facts[key]])
-    );
-    const capture = () =>
-      require('../src/main/wallet/railgun-own-operation').captureRailgunOwnOperation({
-        enrollment,
-        selector: captureSelector,
-        signal: enrollment.signal,
-      });
-    const submit =
-      require('../src/main/wallet/railgun-private-submission').submitRailgunPrivateTransaction;
-    const submitOptions = {
-      identity,
-      enrollment,
-      completion: completion.receipt,
-      proverArchive,
-      artifactDirectory,
-      gasLimit: 1500000n,
-      maxGasFee: 2000000000000000n,
-      review: async (request) => {
-        eoa.reviews++;
-        assert.equal(methods.eth_estimateGas, 1);
-        assert.equal(methods.eth_call, 1);
-        assert.equal(eoa.sends, 0);
-        assert.equal(eoa.signatureAttempts, 0);
-        assert.equal(request.fundingAddressPublic, true);
-        assert.equal(request.operation, 'railgun-partial-unshield');
-        assert.equal(request.transaction.data, expectedTransaction.data);
-        assert.equal(request.from.toLowerCase(), recipient);
-        return true;
-      },
-    };
-    phase = 'copied-completion';
-    const beforeCopy = snapshot();
-    assert.deepEqual(await submit({ ...submitOptions, completion: { ...completion.receipt } }), {
-      status: 'recovery-required',
-      stage: 'completion',
-    });
-    assert.deepEqual(snapshot(), beforeCopy);
-    phase = 'submit';
-    if (testCase === 'bad-verifier') services.setMode('wrong-verifier');
-    const beforeSubmit = snapshot();
-    const submitted = await submit(submitOptions);
-    if (testCase === 'bad-verifier') {
-      assert.deepEqual(submitted, { status: 'recovery-required', stage: 'preflight' });
-      assert.equal(eoa.signatureAttempts, 0);
-      assert.equal(eoa.sends, 0);
-      assert.equal(eoa.reviews, 0);
-      assert.deepEqual(methods, beforeSubmit.methods);
-      assert.equal(
-        services.report().selectedNullifierQueries,
-        beforeSubmit.services.selectedNullifierQueries
-      );
-      assert.deepEqual(
-        services
-          .report()
-          .verificationKeyVariants.slice(beforeSubmit.services.verificationKeyVariants.length),
-        ['01x01']
-      );
-      assert.deepEqual(await capture(), { status: 'refused', stage: 'journal' });
-      runs.push({
-        mode: 'bad-verifier',
-        actualWrong01x01Rejected: true,
-        noEoaSignatureOrSend: true,
-        eoaSigningExercised: false,
-        receiptResolutionExercised: false,
-      });
-    } else {
-      if (testCase === 'lost-response') {
-        assert.equal(submitted.transactionHash, signedTransaction.hash.toLowerCase());
-        assert.equal(submitted.submissionStatus, 'unknown');
-      } else assert.equal(submitted.hash.toLowerCase(), signedTransaction.hash.toLowerCase());
-      assert.equal(eoa.signatures, 1);
-      assert.equal(eoa.sends, 1);
-      assert.equal(eoa.journalBeforeSend, 1);
-      assert.equal(eoa.reviews, 1);
-      assert.equal(eoa.unexpectedFailures, 0);
-      assert.deepEqual(
-        services
-          .report()
-          .verificationKeyVariants.slice(beforeSubmit.services.verificationKeyVariants.length),
-        ['01x02']
-      );
-      assert.equal(
-        services.report().selectedNullifierQueries,
-        beforeSubmit.services.selectedNullifierQueries + 1
-      );
-      assert.deepEqual(await capture(), { status: 'refused', stage: 'journal' });
-      runs.push({
-        mode: 'submitted',
-        acknowledged: testCase === 'acknowledged',
-        uncertainHashPreserved: testCase === 'lost-response',
-        unresolvedCaptureRefused: true,
-      });
-    }
-    const beforeReplay = snapshot();
-    assert.deepEqual(await submit(submitOptions), {
-      status: 'recovery-required',
-      stage: 'completion',
-    });
-    assert.deepEqual(snapshot(), beforeReplay);
-    completion.close();
-    completion = null;
-    for (const constraint of constraints) constraint.close();
-    preview.close();
-    preview = null;
-    const openJournal = () => {
-      journalScope?.close();
+      expectedOwner = restored.wire.transaction.from;
+      transaction = restored.wire.transaction;
+      receipt = restored.wire.receipt;
+      // Header fixture uses the saved public transaction hash, never a signing capability.
+      signedTransaction = { hash: transaction.hash };
       journalScope = createPrivacyScope({
         profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
         signal: enrollment.signal,
       });
-      return journalFor(
+      const journal = journalFor(
         journalScope.getContext({
           kind: 'public-address',
-          principal: recipient,
+          principal: expectedOwner,
           chainId: 11155111,
           role: 'transaction-rpc',
         })
       );
-    };
-    if (testCase !== 'bad-verifier') {
-      let journal = openJournal();
-      const attempted = (await journal.list())[0];
-      assert.equal(attempted.state, testCase === 'lost-response' ? 'attempted' : 'submitted');
-      await assert.rejects(journal.assertCanSubmit());
-      phase = 'resolve';
-      recovery =
-        require('../src/main/wallet/railgun-transact-recovery').openRailgunTransactRecovery(
-          recipient
-        );
-      const canonicalReceipt = receipt;
-      const canonicalObservation = await recovery.observe(signedTransaction.hash.toLowerCase());
-      assert.equal(canonicalObservation.transact.status, 'matched');
-      assert.equal(canonicalObservation.transact.version, 2);
-      assert.equal(canonicalObservation.transact.output.kind, 'partial-unshield');
-      let invalidReceiptReviews = 0;
-      try {
-        receipt = { ...canonicalReceipt, logs: [...canonicalReceipt.logs].reverse() };
-        await assert.rejects(
-          recovery.resolve(signedTransaction.hash.toLowerCase(), {
-            minimumConfirmations: 3,
-            review: async () => {
-              invalidReceiptReviews++;
-              return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
-            },
-          })
-        );
-        assert.equal(invalidReceiptReviews, 0);
-        assert.deepEqual(await capture(), { status: 'refused', stage: 'journal' });
-      } finally {
-        receipt = canonicalReceipt;
-      }
-      runs.push({
-        mode: 'reversed-receipt-order',
-        refusedBeforeReview: true,
-        unresolvedCaptureStillRefused: true,
-      });
-      const resolved = await recovery.resolve(signedTransaction.hash.toLowerCase(), {
-        minimumConfirmations: 3,
-        review: async (request) => {
-          assert.equal(request.transact.status, 'matched');
-          assert.equal(request.transact.version, 2);
-          assert.equal(request.transact.output.kind, 'partial-unshield');
-          assert.equal(request.transact.output.change.position, changeStartPosition);
-          assert.equal(request.transact.output.unshield.recipient, recipient);
-          assert.equal(
-            request.transact.receiptPolicy,
-            require('../src/main/wallet/railgun-transact-receipt-policy').id
-          );
-          return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
+      const activity = () => ({
+        ...captureActivity(),
+        services: services.report(),
+        storageWorkers: {
+          starts: workerStarts,
+          exits: workerResults.length,
+          pending: workers.size,
         },
+        roleMethods: { ...roleMethods },
+        chain: postChain?.report(),
+        audit: audit.snapshot(),
       });
-      assert.ok(resolved.resolution);
-      recovery.close();
-      recovery = null;
-      const noCaptureWork = captureActivity();
-      const active = await capture();
-      assert.equal(active.status, 'captured', JSON.stringify(active));
-      assert.equal(active.capture.version, 1);
-      assert.equal(active.capture.capsule.version, 2);
-      for (const flag of [
-        'accountAuthenticated',
-        'sourceAuthenticated',
-        'currentFinalityVerified',
-        'txidPathVerified',
-        'txidRootAccepted',
-        'poiVerified',
-        'spendingEnabled',
-      ])
-        assert.equal(active.capture[flag], false);
-      assert.deepEqual(captureActivity(), noCaptureWork);
-      phase = 'actual-partial-row';
-      const expected = active.capture.capsule.preparation.expected;
-      const [[actual]] = abi.decodeFunctionData('transact', signedTransaction.data);
-      assert.deepEqual(Array.from(actual.commitments), [
-        expected.changeCommitment,
-        expected.unshieldCommitment,
-      ]);
-      assert.deepEqual(Array.from(actual.nullifiers), [expected.nullifier]);
-      assert.equal(actual.unshieldPreimage.value.toString(), expected.unshieldAmount);
-      const row = {
-        version: 'V2',
-        // Own-operation matching uses the existing zero-slot indexer policy;
-        // the third ID limb is not the receipt's Transact log index.
-        graphID: hex(inclusion) + hex(0).slice(2) + hex(0).slice(2),
-        commitments: Array.from(actual.commitments),
-        nullifiers: Array.from(actual.nullifiers),
-        boundParamsHash: expected.boundParamsHash,
-        blockNumber: inclusion,
-        txid: signedTransaction.hash.toLowerCase().slice(2),
-        timestamp: inclusion,
-        utxoTreeIn: Number(actual.boundParams.treeNumber),
-        utxoTreeOut: 0,
-        utxoBatchStartPositionOut: changeStartPosition,
-        unshield: {
-          tokenData: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
-          toAddress: recipient,
-          value: actual.unshieldPreimage.value.toString(),
-        },
-      };
-      const parent = getPrivacyContext(enrollment.getContext('engine'));
-      const rowScope = createPrivacyScope({ profileId: parent.profileId, signal: parent.signal });
-      let rowTask, projected;
-      try {
-        rowTask = runtime.startRailgunProcess({
-          handle: rowScope.getContext({ ...parent.subject, operation: 'combined-poi-row-fixture' }),
-          filename: require.resolve('./fixtures/railgun-combined-poi-row-job'),
-          input: JSON.stringify({ archive, priorRows: source.txidRows ?? [], row }),
-          startupMs: 30000,
-          lifetimeMs: 60000,
-          broker: {
-            signal: rowScope.signal,
-            dispatch: async (text) => {
-              assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 65536);
-              assert.equal(projected, undefined);
-              const m = JSON.parse(text);
-              assert.deepEqual(Object.keys(m).sort(), ['id', 'method', 'value']);
-              assert.equal(m.id, 1);
-              assert.equal(m.method, 'result');
-              assert.deepEqual(Object.keys(m.value).sort(), [
-                'checkpoints',
-                'guards',
-                'rows',
-                'state',
-              ]);
-              projected = m.value;
-              assert.equal(projected.rows.length, transact ? 2 : 1);
-              assert.equal(projected.checkpoints.length, projected.rows.length);
-              assert.deepEqual(projected.checkpoints.at(-1), projected.state);
-              if (transact) assert.deepEqual(projected.checkpoints[0], creatorCheckpoint);
-              const { verificationHash, ...actualRow } = projected.rows.at(-1);
-              assert.match(verificationHash, /^0x[0-9a-f]{64}$/);
-              assert.deepEqual(actualRow, row);
-              return JSON.stringify({ id: 1, value: null });
-            },
-          },
-        });
-        await rowTask.ready;
-        assert.ok(projected);
-      } finally {
-        try {
-          rowTask?.close();
-        } finally {
-          await rowTask?.closed;
-          rowScope.close();
-        }
-      }
-      sticky.assertEmpty();
-      const rowMatch = require('../src/main/wallet/railgun-own-txid').matchRailgunOwnTxid({
-        capsule: active.capture.capsule,
-        record: active.capture.record,
-        transaction,
-        receipt,
-        row: projected.rows.at(-1),
-      });
-      assert.equal(rowMatch.output.kind, 'partial-unshield');
-      postChain = require('./fixtures/railgun-combined-poi-chain').create({
-        source,
-        receipt,
-        rows: projected.rows,
-        state: projected.state,
-        checkpoints: projected.checkpoints,
-        finalized,
-        header,
-        accountIndex: enrollment.descriptor.accountIndex,
-      });
-      phase = 'ingest-actual-partial-events';
-      assert.ok(
-        inclusion >=
-          anchor.number + 1 + Math.floor((finalized - anchor.number - 1) / 100000) * 100000
-      );
-      for (let from = anchor.number + 1; from <= finalized; from += 100000)
-        await publicAccount.advance({
-          to: Math.min(from + 99999, finalized),
-          anchor: { number: finalized, hash: header(finalized).hash },
-        });
-      phase = 'ingest-actual-partial-txid';
-      txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
-        enrollment,
-        coordinator: publicAccount.coordinator,
-        archive,
-        create: !transact,
-      });
-      await txid.advance();
-      const actualTxidState = (await txid.inspect()).checkpoint.state;
-      const differingFields = [
-        ...new Set([...Object.keys(actualTxidState), ...Object.keys(projected.state)]),
-      ].filter(
-        (key) => JSON.stringify(actualTxidState[key]) !== JSON.stringify(projected.state[key])
-      );
-      if (differingFields.length)
-        console.error(JSON.stringify({ diagnostic: 'txid-state-difference', differingFields }));
-      assert.deepEqual(actualTxidState, projected.state);
-      await txid.close();
-      txid = null;
-      const completed = await lifecycle.run({
-        changeMode,
-        secondSpendMode,
-        terminalMode,
-        header,
-        bytecodes,
-        signature,
-        outerSignal: identity.signal,
-        archive,
-        proverArchive,
-        artifactDirectory,
+      const result = await require('./fixtures/railgun-combined-poi-restart').resume({
         identity,
         enrollment,
         publicAccount,
-        inputCreator,
-        selector: captureSelector,
-        capture: active.capture,
-        chain: postChain,
-        audit,
-        storeObserver,
-        timings: () => copyTimings(),
+        archive,
+        proverArchive,
+        artifactDirectory,
+        source,
+        wire: restored.wire,
+        signal: identity.signal,
+        bytecodes,
+        header,
+        journal: () => journal,
+        activity,
         phase: (name) => {
           phase = name;
         },
-        journal: () => journal,
-        activity: () => ({
-          ...captureActivity(),
-          services: services.report(),
-          storageWorkers: {
-            starts: workerStarts,
-            exits: workerResults.length,
-            pending: workers.size,
-          },
-          roleMethods: { ...roleMethods },
-        }),
-        recordSecondReview() {
-          eoa.reviews++;
-          assert.equal(eoa.reviews, 2);
+        installChain: (value) => {
+          assert.equal(postChain, undefined);
+          postChain = value;
         },
-        installSecondTransport(value) {
+        installTransport(value) {
           if (value) {
             assert.equal(secondTransport, undefined);
             secondRootBaseline = postChain.report().validated;
@@ -1204,54 +800,655 @@ async function main() {
           if (!value && secondTransport) lastSecondTransportReport = secondTransport.report();
           secondTransport = value;
         },
-        adoptStores(nextReservations, nextCapsules) {
-          reservations = nextReservations;
-          capsules = nextCapsules;
+        recordReview() {
+          eoa.reviews++;
+          assert.equal(eoa.reviews, 1);
+        },
+        adoptStores(a, b) {
+          reservations = a;
+          capsules = b;
         },
         pendingChildren: () => children.size,
         unwipedLoans: () => loans.filter((key) => key.some((v) => v !== 0)).length,
-        adopt: (nextEnrollment, nextPublic) => {
-          enrollment = nextEnrollment;
-          publicAccount = nextPublic;
-          journalScope?.close();
-          journalScope = null;
-          journal = openJournal();
+        assertBootstrapDrained() {
+          assert.equal(children.size, 0);
+          assert.equal(workers.size, 2);
+          assert.ok(loans.every((key) => key.every((v) => v === 0)));
+          assert.equal(keys['spending-sign'] || 0, 0);
+          assert.equal(eoa.signatureAttempts, 0);
+          assert.equal(eoa.sends, 0);
+          assert.equal(eoa.reviews, 0);
+          assert.equal(postChain.report().posts, 0);
+          assert.equal(services.report().poiMethods.ppoi_pois_per_list || 0, 0);
+          sticky.assertEmpty();
+        },
+        beforeSecond() {
+          restartBootstrap = {
+            observed: activity(),
+            expected: require('./fixtures/railgun-combined-poi-restart-counts').assertBootstrap(
+              activity(),
+              restored.wire,
+              source
+            ),
+          };
+          assert.deepEqual(
+            Object.keys(restartData.profileSnapshot(directory).accounts),
+            Object.keys(restored.handoff.files.accounts)
+          );
+          assert.equal(
+            restartData.profileSnapshot(directory).inventory,
+            restored.handoff.files.inventory
+          );
+          assert.equal(
+            restartData.profileSnapshot(directory).encryptedVault,
+            restored.handoff.files.encryptedVault
+          );
+          assert.deepEqual(
+            restartData.profileSnapshot(directory).submissions,
+            restored.handoff.files.submissions
+          );
         },
       });
-      connected = completed.report;
-      // Kept privately for the later genuine normal-scan + acceptance adapter.
-      // Never serialized into report.json or used to fabricate an owned note.
-      assert.equal(completed.continuation.ownEvidence.row.txid, row.txid);
-      assert.deepEqual(completed.continuation.events, postChain.continuation.logs);
-      runs.push({
-        mode: 'actual-partial-source-and-mirror',
-        protocolLogs: 3,
-        totalReceiptLogs: 5,
-        actualSignedCalldata: true,
-        realPublicProjectionAndTxidMirror: true,
-        rows: projected.rows.length,
-        changeCreditedByWallet: changeMode,
-        secondSpend: secondSpendMode,
+      connected = result.report;
+      assert.equal(keys['spending-sign'], 1);
+      assert.equal(eoa.sends, 1);
+      assert.equal(eoa.signatures, 1);
+      assert.equal(eoa.reviews, 1);
+      assert.equal(jobs['railgun-private-operate-job.js'], 1);
+      assert.equal(jobs['railgun-spend-sign-job.js'], 1);
+      assert.equal(jobs['railgun-private-verify-job.js'], 2);
+      assert.equal(jobs['railgun-private-receive-job.js'] || 0, 0);
+      assert.equal(jobs['railgun-own-poi-prove-job.js'] || 0, 0);
+      assert.equal(jobs['railgun-private-recover-job.js'] || 0, 0);
+      assert.equal(postChain.report().posts, 0);
+      assert.equal(eoa.unexpectedFailures, 0);
+    } else {
+      phase = 'enroll';
+      const vaultDirectory = path.join(directory, 'profile', 'identity');
+      await vault.importVault(
+        vaultDirectory,
+        'public-fixture-password-not-a-user-credential',
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+      );
+      await vault.unlockVault(vaultDirectory, 'public-fixture-password-not-a-user-credential', 0);
+      identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
+        archive,
       });
+      enrollment =
+        await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
+          {
+            identity,
+            create: true,
+          }
+        );
+      phase = 'public-scan';
+      publicAccount =
+        await require('../src/main/wallet/railgun-account-public').openRailgunAccountPublic({
+          enrollment,
+          archive,
+          create: true,
+        });
+      for (let from = 0; from <= anchor.number; from += 100000)
+        await publicAccount.advance({ to: Math.min(from + 99999, anchor.number), anchor });
+      const wallet = require('../src/main/wallet/railgun-account-wallet');
+      const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
+      if (transact) {
+        phase = 'txid-checkpoint';
+        const state = await services.initializeTxid({ archive, enrollment });
+        txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
+          enrollment,
+          coordinator: owners.coordinator,
+          archive,
+          create: true,
+        });
+        await txid.advance();
+        creatorCheckpoint = (await txid.inspect()).checkpoint.state;
+        assert.deepEqual(creatorCheckpoint, state);
+        await txid.close();
+        txid = null;
+        // Advance observes the latest index once, then acquires root acceptance
+        // before preparing and again before completing the durable checkpoint.
+        assert.deepEqual(services.report().publicServiceMethods, {
+          latest: 3,
+          page: 1,
+          validate: 2,
+        });
+      }
+      phase = 'wallet-scan';
+      account = await wallet.openRailgunAccountWallet({ ...owners, archive, mode: 'new' });
+      const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
+      changeStartPosition = baseline.trees.find((tree) => tree.tree === 0).length;
+      assert.equal(changeStartPosition, 3);
+      const selected = baseline.ownedPoi.find(
+        (record) =>
+          record.type === inputCreator &&
+          baseline.read.received.some(
+            (note) => note.id === record.id && note.spentTxid === false && note.amount > 1n
+          )
+      );
+      assert.ok(selected);
+      const note = baseline.read.received.find((note) => note.id === selected.id);
+      assert.ok(selected.blockNumber >= OFFSET);
+      reservations = await enrollment.openReservations();
+      capsules = await enrollment.openPrivateCapsules();
+      const recipient = (
+        await require('../src/main/wallet/signers').getSigner(0).getAddress()
+      ).toLowerCase();
+      await services.setSelected({
+        archive,
+        enrollment,
+        record: selected,
+        submitter: recipient,
+        merkleRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
+      });
+      expectedOwner = recipient;
+      const rpc = require('../src/main/networks/private-rpc');
+      preview = createPrivacyScope({
+        profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
+        signal: enrollment.signal,
+      });
+      const protocolSubject = {
+        ...getPrivacyContext(enrollment.getContext('engine')).subject,
+        role: 'protocol-rpc',
+      };
+      delete protocolSubject.operation;
+      const protocolHandle = preview.getContext(protocolSubject);
+      const transactionHandle = preview.getContext({
+        kind: 'public-address',
+        principal: recipient,
+        chainId: 11155111,
+        role: 'transaction-rpc',
+      });
+      for (const [handle, role] of [
+        [protocolHandle, 'protocol-rpc'],
+        [transactionHandle, 'transaction-rpc'],
+      ]) {
+        const client = rpc.createPrivateRpc(handle, role);
+        const observation = rpc.getPrivateRpcDestination(client, handle);
+        const details = rpc.getPrivateRpcDestinationDetails(observation);
+        assert.equal(details.url, 'https://synthetic.invalid/railgun-partial-controller');
+        if (role === 'transaction-rpc') reviewedEndpoint = details.url;
+        constraints.push(
+          rpc.createPrivateRpcDestinationConstraint({
+            observation,
+            signal: enrollment.signal,
+            deadline: performance.now() + 300000,
+          })
+        );
+      }
+      const destinationConstraints = Object.freeze({
+        protocol: constraints[0].constraint,
+        transaction: constraints[1].constraint,
+      });
+      const options = {
+        account,
+        owners,
+        archive,
+        proverArchive,
+        artifactDirectory,
+        destinationConstraints,
+        request: {
+          kind: 'railgun-partial-unshield',
+          noteId: selected.id,
+          recipient,
+          unshieldAmount: (note.amount / 2n).toString(),
+        },
+      };
+      if (transact) {
+        phase = 'transact-staging';
+        staged =
+          await require('../src/main/wallet/railgun-transact-staging').stageRailgunTransactInput({
+            account,
+            owners,
+            request: options.request,
+            archive,
+            signal: enrollment.signal,
+          });
+        assert.equal(staged.status, 'staged');
+        account = options.account = staged.account;
+        options.stagingReceipt = staged.receipt;
+      }
+      phase = 'prove';
+      const proved =
+        await require('../src/main/wallet/railgun-private-operation').proveRailgunAccountPrivateOperation(
+          options
+        );
+      assert.equal(proved.status, 'proved', JSON.stringify(proved));
+      completion = proved.completion;
+      const stored = await capsules.get(proved.holdId);
+      assert.equal(stored.capsule.version, 2);
+      assert.ok(stored.signature && stored.provedTransaction);
+      expectedTransaction = stored.provedTransaction;
+      assert.equal(keys['spending-sign'], 1);
+      await account.close();
+      account = null;
+      staged?.close();
+      staged = null;
+      const savedBefore = await reservations.withSigningRecovery(async (records, context) => {
+        context.assertCurrent();
+        assert.equal(records.length, 1);
+        const entry = records[0];
+        assert.equal(entry.entry.state, 'signing');
+        assert.deepEqual(await capsules.readSigned(entry.receipt), stored);
+        return entry.entry;
+      });
+      const captureSelector = Object.fromEntries(
+        ['tree', 'position', 'nullifier', 'noteHash'].map((key) => [key, savedBefore.facts[key]])
+      );
+      const capture = () =>
+        require('../src/main/wallet/railgun-own-operation').captureRailgunOwnOperation({
+          enrollment,
+          selector: captureSelector,
+          signal: enrollment.signal,
+        });
+      const submit =
+        require('../src/main/wallet/railgun-private-submission').submitRailgunPrivateTransaction;
+      const submitOptions = {
+        identity,
+        enrollment,
+        completion: completion.receipt,
+        proverArchive,
+        artifactDirectory,
+        gasLimit: 1500000n,
+        maxGasFee: 2000000000000000n,
+        review: async (request) => {
+          eoa.reviews++;
+          assert.equal(methods.eth_estimateGas, 1);
+          assert.equal(methods.eth_call, 1);
+          assert.equal(eoa.sends, 0);
+          assert.equal(eoa.signatureAttempts, 0);
+          assert.equal(request.fundingAddressPublic, true);
+          assert.equal(request.operation, 'railgun-partial-unshield');
+          assert.equal(request.transaction.data, expectedTransaction.data);
+          assert.equal(request.from.toLowerCase(), recipient);
+          return true;
+        },
+      };
+      phase = 'copied-completion';
+      const beforeCopy = snapshot();
+      assert.deepEqual(await submit({ ...submitOptions, completion: { ...completion.receipt } }), {
+        status: 'recovery-required',
+        stage: 'completion',
+      });
+      assert.deepEqual(snapshot(), beforeCopy);
+      phase = 'submit';
+      if (testCase === 'bad-verifier') services.setMode('wrong-verifier');
+      const beforeSubmit = snapshot();
+      const submitted = await submit(submitOptions);
+      if (testCase === 'bad-verifier') {
+        assert.deepEqual(submitted, { status: 'recovery-required', stage: 'preflight' });
+        assert.equal(eoa.signatureAttempts, 0);
+        assert.equal(eoa.sends, 0);
+        assert.equal(eoa.reviews, 0);
+        assert.deepEqual(methods, beforeSubmit.methods);
+        assert.equal(
+          services.report().selectedNullifierQueries,
+          beforeSubmit.services.selectedNullifierQueries
+        );
+        assert.deepEqual(
+          services
+            .report()
+            .verificationKeyVariants.slice(beforeSubmit.services.verificationKeyVariants.length),
+          ['01x01']
+        );
+        assert.deepEqual(await capture(), { status: 'refused', stage: 'journal' });
+        runs.push({
+          mode: 'bad-verifier',
+          actualWrong01x01Rejected: true,
+          noEoaSignatureOrSend: true,
+          eoaSigningExercised: false,
+          receiptResolutionExercised: false,
+        });
+      } else {
+        if (testCase === 'lost-response') {
+          assert.equal(submitted.transactionHash, signedTransaction.hash.toLowerCase());
+          assert.equal(submitted.submissionStatus, 'unknown');
+        } else assert.equal(submitted.hash.toLowerCase(), signedTransaction.hash.toLowerCase());
+        assert.equal(eoa.signatures, 1);
+        assert.equal(eoa.sends, 1);
+        assert.equal(eoa.journalBeforeSend, 1);
+        assert.equal(eoa.reviews, 1);
+        assert.equal(eoa.unexpectedFailures, 0);
+        assert.deepEqual(
+          services
+            .report()
+            .verificationKeyVariants.slice(beforeSubmit.services.verificationKeyVariants.length),
+          ['01x02']
+        );
+        assert.equal(
+          services.report().selectedNullifierQueries,
+          beforeSubmit.services.selectedNullifierQueries + 1
+        );
+        assert.deepEqual(await capture(), { status: 'refused', stage: 'journal' });
+        runs.push({
+          mode: 'submitted',
+          acknowledged: testCase === 'acknowledged',
+          uncertainHashPreserved: testCase === 'lost-response',
+          unresolvedCaptureRefused: true,
+        });
+      }
+      const beforeReplay = snapshot();
+      assert.deepEqual(await submit(submitOptions), {
+        status: 'recovery-required',
+        stage: 'completion',
+      });
+      assert.deepEqual(snapshot(), beforeReplay);
+      completion.close();
+      completion = null;
+      for (const constraint of constraints) constraint.close();
+      preview.close();
+      preview = null;
+      const openJournal = () => {
+        journalScope?.close();
+        journalScope = createPrivacyScope({
+          profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
+          signal: enrollment.signal,
+        });
+        return journalFor(
+          journalScope.getContext({
+            kind: 'public-address',
+            principal: recipient,
+            chainId: 11155111,
+            role: 'transaction-rpc',
+          })
+        );
+      };
+      if (testCase !== 'bad-verifier') {
+        let journal = openJournal();
+        const attempted = (await journal.list())[0];
+        assert.equal(attempted.state, testCase === 'lost-response' ? 'attempted' : 'submitted');
+        await assert.rejects(journal.assertCanSubmit());
+        phase = 'resolve';
+        recovery =
+          require('../src/main/wallet/railgun-transact-recovery').openRailgunTransactRecovery(
+            recipient
+          );
+        const canonicalReceipt = receipt;
+        const canonicalObservation = await recovery.observe(signedTransaction.hash.toLowerCase());
+        assert.equal(canonicalObservation.transact.status, 'matched');
+        assert.equal(canonicalObservation.transact.version, 2);
+        assert.equal(canonicalObservation.transact.output.kind, 'partial-unshield');
+        let invalidReceiptReviews = 0;
+        try {
+          receipt = { ...canonicalReceipt, logs: [...canonicalReceipt.logs].reverse() };
+          await assert.rejects(
+            recovery.resolve(signedTransaction.hash.toLowerCase(), {
+              minimumConfirmations: 3,
+              review: async () => {
+                invalidReceiptReviews++;
+                return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
+              },
+            })
+          );
+          assert.equal(invalidReceiptReviews, 0);
+          assert.deepEqual(await capture(), { status: 'refused', stage: 'journal' });
+        } finally {
+          receipt = canonicalReceipt;
+        }
+        runs.push({
+          mode: 'reversed-receipt-order',
+          refusedBeforeReview: true,
+          unresolvedCaptureStillRefused: true,
+        });
+        const resolved = await recovery.resolve(signedTransaction.hash.toLowerCase(), {
+          minimumConfirmations: 3,
+          review: async (request) => {
+            assert.equal(request.transact.status, 'matched');
+            assert.equal(request.transact.version, 2);
+            assert.equal(request.transact.output.kind, 'partial-unshield');
+            assert.equal(request.transact.output.change.position, changeStartPosition);
+            assert.equal(request.transact.output.unshield.recipient, recipient);
+            assert.equal(
+              request.transact.receiptPolicy,
+              require('../src/main/wallet/railgun-transact-receipt-policy').id
+            );
+            return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
+          },
+        });
+        assert.ok(resolved.resolution);
+        recovery.close();
+        recovery = null;
+        const noCaptureWork = captureActivity();
+        const active = await capture();
+        assert.equal(active.status, 'captured', JSON.stringify(active));
+        assert.equal(active.capture.version, 1);
+        assert.equal(active.capture.capsule.version, 2);
+        for (const flag of [
+          'accountAuthenticated',
+          'sourceAuthenticated',
+          'currentFinalityVerified',
+          'txidPathVerified',
+          'txidRootAccepted',
+          'poiVerified',
+          'spendingEnabled',
+        ])
+          assert.equal(active.capture[flag], false);
+        assert.deepEqual(captureActivity(), noCaptureWork);
+        phase = 'actual-partial-row';
+        const expected = active.capture.capsule.preparation.expected;
+        const [[actual]] = abi.decodeFunctionData('transact', signedTransaction.data);
+        assert.deepEqual(Array.from(actual.commitments), [
+          expected.changeCommitment,
+          expected.unshieldCommitment,
+        ]);
+        assert.deepEqual(Array.from(actual.nullifiers), [expected.nullifier]);
+        assert.equal(actual.unshieldPreimage.value.toString(), expected.unshieldAmount);
+        const row = {
+          version: 'V2',
+          // Own-operation matching uses the existing zero-slot indexer policy;
+          // the third ID limb is not the receipt's Transact log index.
+          graphID: hex(inclusion) + hex(0).slice(2) + hex(0).slice(2),
+          commitments: Array.from(actual.commitments),
+          nullifiers: Array.from(actual.nullifiers),
+          boundParamsHash: expected.boundParamsHash,
+          blockNumber: inclusion,
+          txid: signedTransaction.hash.toLowerCase().slice(2),
+          timestamp: inclusion,
+          utxoTreeIn: Number(actual.boundParams.treeNumber),
+          utxoTreeOut: 0,
+          utxoBatchStartPositionOut: changeStartPosition,
+          unshield: {
+            tokenData: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
+            toAddress: recipient,
+            value: actual.unshieldPreimage.value.toString(),
+          },
+        };
+        const parent = getPrivacyContext(enrollment.getContext('engine'));
+        const rowScope = createPrivacyScope({ profileId: parent.profileId, signal: parent.signal });
+        let rowTask, projected;
+        try {
+          rowTask = runtime.startRailgunProcess({
+            handle: rowScope.getContext({
+              ...parent.subject,
+              operation: 'combined-poi-row-fixture',
+            }),
+            filename: require.resolve('./fixtures/railgun-combined-poi-row-job'),
+            input: JSON.stringify({ archive, priorRows: source.txidRows ?? [], row }),
+            startupMs: 30000,
+            lifetimeMs: 60000,
+            broker: {
+              signal: rowScope.signal,
+              dispatch: async (text) => {
+                assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 65536);
+                assert.equal(projected, undefined);
+                const m = JSON.parse(text);
+                assert.deepEqual(Object.keys(m).sort(), ['id', 'method', 'value']);
+                assert.equal(m.id, 1);
+                assert.equal(m.method, 'result');
+                assert.deepEqual(Object.keys(m.value).sort(), [
+                  'checkpoints',
+                  'guards',
+                  'rows',
+                  'state',
+                ]);
+                projected = m.value;
+                assert.equal(projected.rows.length, transact ? 2 : 1);
+                assert.equal(projected.checkpoints.length, projected.rows.length);
+                assert.deepEqual(projected.checkpoints.at(-1), projected.state);
+                if (transact) assert.deepEqual(projected.checkpoints[0], creatorCheckpoint);
+                const { verificationHash, ...actualRow } = projected.rows.at(-1);
+                assert.match(verificationHash, /^0x[0-9a-f]{64}$/);
+                assert.deepEqual(actualRow, row);
+                return JSON.stringify({ id: 1, value: null });
+              },
+            },
+          });
+          await rowTask.ready;
+          assert.ok(projected);
+        } finally {
+          try {
+            rowTask?.close();
+          } finally {
+            await rowTask?.closed;
+            rowScope.close();
+          }
+        }
+        sticky.assertEmpty();
+        const rowMatch = require('../src/main/wallet/railgun-own-txid').matchRailgunOwnTxid({
+          capsule: active.capture.capsule,
+          record: active.capture.record,
+          transaction,
+          receipt,
+          row: projected.rows.at(-1),
+        });
+        assert.equal(rowMatch.output.kind, 'partial-unshield');
+        postChain = require('./fixtures/railgun-combined-poi-chain').create({
+          source,
+          receipt,
+          rows: projected.rows,
+          state: projected.state,
+          checkpoints: projected.checkpoints,
+          finalized,
+          header,
+          accountIndex: enrollment.descriptor.accountIndex,
+        });
+        phase = 'ingest-actual-partial-events';
+        assert.ok(
+          inclusion >=
+            anchor.number + 1 + Math.floor((finalized - anchor.number - 1) / 100000) * 100000
+        );
+        for (let from = anchor.number + 1; from <= finalized; from += 100000)
+          await publicAccount.advance({
+            to: Math.min(from + 99999, finalized),
+            anchor: { number: finalized, hash: header(finalized).hash },
+          });
+        phase = 'ingest-actual-partial-txid';
+        txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
+          enrollment,
+          coordinator: publicAccount.coordinator,
+          archive,
+          create: !transact,
+        });
+        await txid.advance();
+        const actualTxidState = (await txid.inspect()).checkpoint.state;
+        const differingFields = [
+          ...new Set([...Object.keys(actualTxidState), ...Object.keys(projected.state)]),
+        ].filter(
+          (key) => JSON.stringify(actualTxidState[key]) !== JSON.stringify(projected.state[key])
+        );
+        if (differingFields.length)
+          console.error(JSON.stringify({ diagnostic: 'txid-state-difference', differingFields }));
+        assert.deepEqual(actualTxidState, projected.state);
+        await txid.close();
+        txid = null;
+        const completed = await lifecycle.run({
+          changeMode,
+          restartSetup,
+          secondSpendMode,
+          terminalMode,
+          header,
+          bytecodes,
+          signature,
+          outerSignal: identity.signal,
+          archive,
+          proverArchive,
+          artifactDirectory,
+          identity,
+          enrollment,
+          publicAccount,
+          inputCreator,
+          selector: captureSelector,
+          capture: active.capture,
+          chain: postChain,
+          audit,
+          storeObserver,
+          timings: () => copyTimings(),
+          phase: (name) => {
+            phase = name;
+          },
+          journal: () => journal,
+          activity: () => ({
+            ...captureActivity(),
+            services: services.report(),
+            storageWorkers: {
+              starts: workerStarts,
+              exits: workerResults.length,
+              pending: workers.size,
+            },
+            roleMethods: { ...roleMethods },
+          }),
+          recordSecondReview() {
+            eoa.reviews++;
+            assert.equal(eoa.reviews, 2);
+          },
+          installSecondTransport(value) {
+            if (value) {
+              assert.equal(secondTransport, undefined);
+              secondRootBaseline = postChain.report().validated;
+            }
+            if (!value && secondTransport) lastSecondTransportReport = secondTransport.report();
+            secondTransport = value;
+          },
+          adoptStores(nextReservations, nextCapsules) {
+            reservations = nextReservations;
+            capsules = nextCapsules;
+          },
+          pendingChildren: () => children.size,
+          unwipedLoans: () => loans.filter((key) => key.some((v) => v !== 0)).length,
+          adopt: (nextEnrollment, nextPublic) => {
+            enrollment = nextEnrollment;
+            publicAccount = nextPublic;
+            journalScope?.close();
+            journalScope = null;
+            journal = openJournal();
+          },
+        });
+        connected = completed.report;
+        restartWire = completed.restartWire;
+        // Kept privately for the later genuine normal-scan + acceptance adapter.
+        // Never serialized into report.json or used to fabricate an owned note.
+        assert.equal(completed.continuation.ownEvidence.row.txid, row.txid);
+        assert.deepEqual(completed.continuation.events, postChain.continuation.logs);
+        runs.push({
+          mode: 'actual-partial-source-and-mirror',
+          protocolLogs: 3,
+          totalReceiptLogs: 5,
+          actualSignedCalldata: true,
+          realPublicProjectionAndTxidMirror: true,
+          rows: projected.rows.length,
+          changeCreditedByWallet: changeMode,
+          secondSpend: secondSpendMode,
+        });
+      }
+      phase = 'private-history';
+      ({ reservations, capsules } = await enrollment.openPrivateRecoveryStores());
+      await reservations.withSigningRecovery(async (records, context) => {
+        context.assertCurrent();
+        assert.equal(records.length, secondSpendMode ? 2 : 1);
+        const original = records.find((value) => value.entry.id === savedBefore.id);
+        assert.ok(original);
+        assert.deepEqual(original.entry, savedBefore);
+        assert.deepEqual(await capsules.readSigned(original.receipt), stored);
+      });
+      assert.equal(keys['spending-sign'], secondSpendMode ? 2 : 1);
+      assert.equal(eoa.sends, secondSpendMode ? 2 : testCase === 'bad-verifier' ? 0 : 1);
+      assert.equal(eoa.unexpectedFailures, 0);
+      assert.equal(jobs['railgun-private-operate-job.js'], secondSpendMode ? 2 : 1);
+      assert.equal(jobs['railgun-spend-sign-job.js'], secondSpendMode ? 2 : 1);
+      assert.equal(jobs['railgun-private-verify-job.js'], secondSpendMode ? 4 : 2);
+      assert.equal(jobs['railgun-private-receive-job.js'], 1);
+      assert.equal(jobs['railgun-private-recover-job.js'] || 0, 0);
     }
-    phase = 'private-history';
-    ({ reservations, capsules } = await enrollment.openPrivateRecoveryStores());
-    await reservations.withSigningRecovery(async (records, context) => {
-      context.assertCurrent();
-      assert.equal(records.length, secondSpendMode ? 2 : 1);
-      const original = records.find((value) => value.entry.id === savedBefore.id);
-      assert.ok(original);
-      assert.deepEqual(original.entry, savedBefore);
-      assert.deepEqual(await capsules.readSigned(original.receipt), stored);
-    });
-    assert.equal(keys['spending-sign'], secondSpendMode ? 2 : 1);
-    assert.equal(eoa.sends, secondSpendMode ? 2 : testCase === 'bad-verifier' ? 0 : 1);
-    assert.equal(eoa.unexpectedFailures, 0);
-    assert.equal(jobs['railgun-private-operate-job.js'], secondSpendMode ? 2 : 1);
-    assert.equal(jobs['railgun-spend-sign-job.js'], secondSpendMode ? 2 : 1);
-    assert.equal(jobs['railgun-private-verify-job.js'], secondSpendMode ? 4 : 2);
-    assert.equal(jobs['railgun-private-receive-job.js'], 1);
-    assert.equal(jobs['railgun-private-recover-job.js'] || 0, 0);
     assert.ok(loans.every((key) => key.every((value) => value === 0)));
     phase = 'close';
     await publicAccount?.close();
@@ -1280,14 +1477,16 @@ async function main() {
       }));
     assert.deepEqual(
       expectedUtilityFailures,
-      ['combined-wrong-output', 'combined-attempted-wrong-output'].map((phase) => ({
-        phase,
-        job: 'railgun-poi-output-recover-job.js',
-        code: 'RAILGUN_SESSION_REVOKED',
-        exitCode: 15,
-        escalated: false,
-        peerDisconnected: false,
-      }))
+      (restartResume ? [] : ['combined-wrong-output', 'combined-attempted-wrong-output']).map(
+        (phase) => ({
+          phase,
+          job: 'railgun-poi-output-recover-job.js',
+          code: 'RAILGUN_SESSION_REVOKED',
+          exitCode: 15,
+          escalated: false,
+          peerDisconnected: false,
+        })
+      )
     );
     await closeWrapperClients();
     await services.close();
@@ -1299,13 +1498,27 @@ async function main() {
     sticky.assertEmpty();
     assert.deepEqual(inventory(), sourceHashes);
     const report = {
-      schema: terminalMode
-        ? 'railgun-combined-poi-second-ingest-native-v1'
-        : secondSpendMode
-          ? 'railgun-combined-poi-second-spend-native-v1'
-          : changeMode
-            ? 'railgun-combined-poi-change-native-v1'
-            : 'railgun-combined-poi-native-v1',
+      schema: restartResume
+        ? 'railgun-combined-change-restart-native-v1'
+        : terminalMode
+          ? 'railgun-combined-poi-second-ingest-native-v1'
+          : secondSpendMode
+            ? 'railgun-combined-poi-second-spend-native-v1'
+            : changeMode
+              ? 'railgun-combined-poi-change-native-v1'
+              : 'railgun-combined-poi-native-v1',
+      runID,
+      ...(restartSetup ? { setupPID: process.pid } : {}),
+      ...(restartResume
+        ? {
+            setupPID: restored.handoff.setupPID,
+            resumePID: process.pid,
+            bootstrap: restartBootstrap,
+            coldStorageWrites: coldStorage.report(),
+          }
+        : {}),
+      restartSetup,
+      restartResume,
       changeMode,
       secondSpendMode,
       terminalMode,
@@ -1331,7 +1544,7 @@ async function main() {
       eoa,
       methods,
       services: services.report(),
-      genuinePartialProofAndCompletion: true,
+      genuinePartialProofAndCompletion: !restartResume,
       genuineRpcClientsAndDestinationConstraints: true,
       syntheticInterceptedTransport: true,
       delegatingGenuineVaultSignerObserver: true,
@@ -1345,7 +1558,7 @@ async function main() {
       realTorOrLiveSubmissionQualified: false,
       partialFacadeQualified: false,
       partialPoiLifecycleQualified: false,
-      combinedPoiRetainedFirstStageQualified: true,
+      combinedPoiRetainedFirstStageQualified: !restartResume,
       legacyMixedV1V2MigrationNativeQualified: false,
       hostOsEgressTraced: false,
       hostTransportFactoryIntercepted: true,
@@ -1353,24 +1566,40 @@ async function main() {
       sourceAndMirrorActualFirstTransaction: true,
       changeEligibilityEstablished: false,
       disposableChangeMembershipQualified: changeMode,
-      normalChangeScanQualified: changeMode,
+      normalChangeScanQualified: changeMode && !restartResume,
       actualServiceAcceptance: false,
       ...(changeMode
-        ? { changeCreditedByNormalScan: true }
+        ? {
+            changeCreditedByNormalScan: !restartResume,
+            restoredPreviouslyScannedChange: restartResume,
+          }
         : { noChangeCreditingOrSecondSpendClaim: true }),
       secondSpendQualified: secondSpendMode,
       secondColdSubmitQualified: false,
       secondSpendWalletIngestionQualified: terminalMode,
-      newProcessRestartQualified: false,
+      newProcessRestartQualified: restartResume,
+      secondSignedUnfinishedRecoveryQualified: false,
       unchangedOriginalCapsuleSignatureProofAndSigningHold: true,
       elapsedMs: Math.round(performance.now() - started),
     };
     assert.ok(Buffer.byteLength(JSON.stringify(report)) <= 524288);
-    fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', {
+    fs.writeFileSync(reportFilename, JSON.stringify(report, null, 2) + '\n', {
       flag: 'wx',
       mode: 0o600,
     });
-    console.log(JSON.stringify({ status: 'qualified', elapsedMs: report.elapsedMs }));
+    if (restartSetup)
+      sealRestart = () =>
+        restartData.seal({
+          directory,
+          wire: restartWire,
+          report,
+          sourceHashes,
+          runtimes,
+          sourceSha256: sha(sourceBytes),
+          runID,
+        });
+    if (!restartSetup)
+      console.log(JSON.stringify({ status: 'qualified', elapsedMs: report.elapsedMs }));
   } finally {
     recovery?.close();
     completion?.close();
@@ -1397,14 +1626,15 @@ async function main() {
           await closeWrapperClients();
           await services.close();
           storeObserver.close();
+          coldStorage?.close();
           for (const restore of restoreTimings) restore();
           signers.getSigner = originalSigner;
           runtime.startRailgunProcess = originalStart;
           sessionModule.startRailgunSessionWorker = originalSession;
           sessionModule.startRailgunReadOnlySessionWorker = originalReadOnlySession;
-          if (!fs.existsSync(path.join(directory, 'report.json')))
+          if (!fs.existsSync(reportFilename))
             fs.writeFileSync(
-              path.join(directory, 'diagnostic.json'),
+              path.join(directory, restartResume ? 'restart-diagnostic.json' : 'diagnostic.json'),
               JSON.stringify(
                 {
                   phase,
@@ -1429,15 +1659,29 @@ async function main() {
 }
 main().then(
   () => {
-    releaseProfileLock(lock);
-    app.exit(0);
+    try {
+      const released = releaseProfileLock(lock);
+      if (sealRestart) assert.equal(released, true);
+      sealRestart?.();
+      if (sealRestart)
+        console.log(JSON.stringify({ status: 'qualified', phase: 'restart-sealed' }));
+      app.exit(0);
+    } catch (error) {
+      const location = String(error?.stack ?? '').match(
+        /railgun-combined-poi-restart-data\.js:(\d+):\d+/
+      );
+      console.error(
+        JSON.stringify({ status: 'refused', phase: 'restart-seal', line: location?.[1] ?? null })
+      );
+      app.exit(1);
+    }
   },
   (error) => {
     const line = String(error?.stack ?? '')
       .split('\n')
       .map((part) =>
         part.match(
-          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer|change-scan|change-inventory|list-acceptance|second-chain|second-spend|terminal-data|terminal-ingest))\.js:(\d+):\d+/
+          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer|change-scan|change-inventory|list-acceptance|second-chain|second-spend|terminal-data|terminal-ingest|restart|restart-data|restart-storage|list-replay))\.js:(\d+):\d+/
         )
       )
       .find(Boolean);

@@ -41,7 +41,7 @@ function selectChange(owned, continuation) {
   return { note, record, merkleRoot: trees[0].root };
 }
 exports.selectChange = selectChange;
-exports.run = async (h) => {
+async function run(h, restart) {
   const {
     identity,
     enrollment,
@@ -54,9 +54,12 @@ exports.run = async (h) => {
     acceptance,
     signal,
   } = h;
-  assert.equal(acceptance.report().accepted, true);
-  assert.equal(acceptance.report().verifierExits, 1);
-  assert.equal(acceptance.report().bindingExits, 1);
+  if (restart) require('./railgun-combined-poi-list-replay').assertProvider(h.replay);
+  else {
+    assert.equal(acceptance.report().accepted, true);
+    assert.equal(acceptance.report().verifierExits, 1);
+    assert.equal(acceptance.report().bindingExits, 1);
+  }
   assert.ok(signal instanceof AbortSignal && !signal.aborted);
   const wallet = require(walletPath + 'railgun-account-wallet');
   const staging = require(walletPath + 'railgun-transact-staging');
@@ -104,6 +107,7 @@ exports.run = async (h) => {
     assert.equal(signal.aborted, false);
     const owned = wallet.readRailgunAccountOwnedNotes(account, owners);
     const { note, record, merkleRoot } = selectChange(owned, continuation);
+    if (restart) h.replay.assertChange(record);
     if (h.terminalMode)
       terminalBaseline = require('./railgun-combined-poi-terminal-data').beforeSecond(
         owned,
@@ -432,4 +436,6 @@ exports.run = async (h) => {
       }
     }
   }
-};
+}
+exports.run = (h) => run(h, false);
+exports.runRestart = (h) => run(h, true);

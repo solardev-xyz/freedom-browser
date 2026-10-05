@@ -35,16 +35,10 @@ function graph(row) {
 }
 // Shared fixture-only wire encoding: both projection and service use it.
 exports.graph = graph;
-exports.create = ({
-  source,
-  receipt,
-  rows,
-  state,
-  checkpoints,
-  finalized,
-  header,
-  accountIndex,
-}) => {
+function create(
+  { source, receipt, rows, state, checkpoints, finalized, header, accountIndex },
+  replay
+) {
   const {
     normalizeTxidPage,
     POI_URL,
@@ -86,7 +80,8 @@ exports.create = ({
   let payload,
     attempted,
     postGate,
-    acceptance,
+    acceptance = replay,
+    acceptedBody,
     postsAllowed = false;
   const changeHandles = new WeakSet();
   const key = (subject, wire) => subject.kind + ':' + subject.role + ':' + (wire.method ?? 'page');
@@ -159,7 +154,14 @@ exports.create = ({
       assert.equal(payload, undefined);
       payload = copy(value);
     },
+    exportAcceptedBody() {
+      assert.equal(replay, undefined);
+      assert.equal(counts.posts, 1);
+      assert.ok(acceptedBody);
+      return acceptedBody;
+    },
     bindChangeAcceptance(value) {
+      assert.equal(replay, undefined);
       assert.equal(acceptance, undefined);
       assert.ok(
         payload &&
@@ -178,6 +180,7 @@ exports.create = ({
       acceptance = value;
     },
     allowPost(readAttempt, gate) {
+      assert.equal(replay, undefined);
       assert.equal(postsAllowed, false);
       attempted = readAttempt;
       postGate = gate;
@@ -367,6 +370,7 @@ exports.create = ({
               bindingExits: 1,
               signedEvents: 1,
             });
+            acceptedBody = options.body;
             counts.acceptedPostElapsedMs = performance.now() - started;
             assert.ok(counts.acceptedPostElapsedMs < options.timeoutMs);
             add('validated', k);
@@ -379,4 +383,9 @@ exports.create = ({
       return response(wire, result);
     },
   });
+}
+exports.create = (options) => create(options);
+exports.createReplay = (options, replay) => {
+  require('./railgun-combined-poi-list-replay').assertProvider(replay);
+  return create(options, replay);
 };
