@@ -48,6 +48,7 @@ const { netGatewayFetch } = require('../ipfs/gateway-transport');
 const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
 const { loadSettings } = require('../settings-store');
 const engineBuildHost = require('./engine-build-host');
+const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const {
   installAdblockInterception,
@@ -799,6 +800,260 @@ describe('scriptlets', () => {
     } finally {
       build.open();
       build.spy.mockRestore();
+    }
+  });
+
+  // #524: the hold is one budget for the session. A build that starts with
+  // still no engine — the first one failed after the hold lapsed, and a
+  // settings change queued another — must not hold pages for a second full
+  // timeout.
+  test('the hold budget is per session: a second engine-less build holds nothing once it lapsed', async () => {
+    const realBuild = engineBuildHost.buildEngine;
+    let openFirst;
+    const firstGate = new Promise((resolve) => (openFirst = resolve));
+    let openSecond;
+    const secondGate = new Promise((resolve) => (openSecond = resolve));
+    let secondStarted;
+    const second = new Promise((resolve) => (secondStarted = resolve));
+    let firstStarted;
+    const first = new Promise((resolve) => (firstStarted = resolve));
+    let calls = 0;
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      calls += 1;
+      if (calls === 1) {
+        firstStarted();
+        await firstGate;
+        throw new Error('first build failed');
+      }
+      secondStarted();
+      const result = await realBuild(job);
+      await secondGate;
+      return result;
+    });
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
+    try {
+      _resetAdblockForTests();
+      _setFirstEngineHoldForTests(30);
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null });
+      await first;
+      const held = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      expect(typeof held?.then).toBe('function');
+      await expect(held).resolves.toBe(null);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/not ready after \d+ ms; 1 request\(s\)\/lookup\(s\) held/)
+      );
+
+      const rebuilt = refreshEngine();
+      openFirst();
+      await second;
+      // Still no engine, but the budget is spent: answer now, unfiltered.
+      expect(
+        adblockRequestForDispatch(
+          makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+        )
+      ).toBe(null);
+      const scriptlets = askScriptlets('https://video.test/watch');
+      expect(scriptlets.returnValue).toEqual({ script: '' });
+
+      openSecond();
+      await rebuilt;
+      expect(
+        adblockRequestForDispatch(
+          makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+        )
+      ).toEqual({ cancel: true });
+    } finally {
+      openFirst();
+      openSecond();
+      spy.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  test('a later engine-less build only holds for what is left of the budget', async () => {
+    const realBuild = engineBuildHost.buildEngine;
+    let calls = 0;
+    let openFirst;
+    const firstGate = new Promise((resolve) => (openFirst = resolve));
+    let firstStarted;
+    const first = new Promise((resolve) => (firstStarted = resolve));
+    let openSecond;
+    const secondGate = new Promise((resolve) => (openSecond = resolve));
+    let secondStarted;
+    const second = new Promise((resolve) => (secondStarted = resolve));
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      calls += 1;
+      if (calls === 1) {
+        // The first build holds a request for ~120 ms, then finds nothing
+        // to compile (no engine, no timeout).
+        firstStarted();
+        await firstGate;
+        return { bytes: null, warnings: [], inWorker: true };
+      }
+      secondStarted();
+      const result = await realBuild(job);
+      await secondGate;
+      return result;
+    });
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
+    const info = jest.spyOn(log, 'info').mockImplementation(() => {});
+    try {
+      _resetAdblockForTests();
+      _setFirstEngineHoldForTests(200);
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null });
+      await first;
+      const firstHeld = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      expect(typeof firstHeld?.then).toBe('function');
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      openFirst();
+      await expect(firstHeld).resolves.toBe(null);
+      // Let install's own build settle (its release is logged synchronously).
+      const holdLogged = () =>
+        [...warn.mock.calls, ...info.mock.calls].some(([line]) => /first-engine hold/.test(line));
+      for (let i = 0; i < 400 && !holdLogged(); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      // The build ended without an engine: say so, not "released" as if the
+      // engine had landed (R1-M2).
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /first-engine hold ended after \d+ ms with no engine built; 1 request\(s\)\/lookup\(s\) held released unfiltered/
+        )
+      );
+      expect(info).not.toHaveBeenCalledWith(expect.stringMatching(/first-engine hold released/));
+
+      // Idle time between builds does not spend the budget (R1-M1): after
+      // another 150 ms, ~80 ms of it are still left.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const rebuilt = refreshEngine();
+      await second;
+      const startedWaiting = Date.now();
+      const held = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      expect(typeof held?.then).toBe('function');
+      await expect(held).resolves.toBe(null);
+      // ~80 ms left of 200, not a fresh 200.
+      expect(Date.now() - startedWaiting).toBeLessThan(150);
+      openSecond();
+      await rebuilt;
+    } finally {
+      openFirst();
+      openSecond();
+      spy.mockRestore();
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  // R2-M1: every category unticked is a supported configuration, not an
+  // engine still on its way — no hold is armed, nothing waits, and no
+  // "hold ended with no engine built" warning is logged for it.
+  test('no hold is armed when every category is unticked', async () => {
+    const realBuild = engineBuildHost.buildEngine;
+    let openGate;
+    const gate = new Promise((resolve) => (openGate = resolve));
+    let started;
+    const building = new Promise((resolve) => (started = resolve));
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      started(job);
+      await gate;
+      return realBuild(job);
+    });
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
+    const info = jest.spyOn(log, 'info').mockImplementation(() => {});
+    try {
+      loadSettings.mockReturnValue({
+        ...DEFAULT_TEST_SETTINGS,
+        adblockAds: false,
+        adblockPrivacy: false,
+        adblockCookies: false,
+        adblockAnnoyances: false,
+      });
+      _resetAdblockForTests();
+      _setFirstEngineHoldForTests(200);
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null });
+      const job = await building;
+      expect(job.lists).toEqual([]);
+      // Mid-build, a request answers synchronously instead of being held.
+      expect(
+        adblockRequestForDispatch(
+          makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+        )
+      ).toBe(null);
+      openGate();
+      await refreshEngine();
+      const holdLines = [...warn.mock.calls, ...info.mock.calls].filter(([line]) =>
+        /hold/.test(line)
+      );
+      expect(holdLines).toEqual([]);
+    } finally {
+      openGate();
+      spy.mockRestore();
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  // R1-M1: an engine landing refills the budget, so an engine-less rebuild
+  // later in the session (every category unticked, then one re-ticked) holds
+  // like the first one did, however long ago that was.
+  test('the hold budget is refilled once an engine lands', async () => {
+    const realBuild = engineBuildHost.buildEngine;
+    let calls = 0;
+    let openThird;
+    const thirdGate = new Promise((resolve) => (openThird = resolve));
+    let thirdStarted;
+    const third = new Promise((resolve) => (thirdStarted = resolve));
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      calls += 1;
+      // 1: install's build lands an engine. 2: the lists resolve to nothing
+      // (bytes: null), so the engine is dropped. 3: rebuilt, slowly.
+      if (calls === 2) return { bytes: null, warnings: [], inWorker: true };
+      if (calls === 3) thirdStarted();
+      const result = await realBuild(job);
+      if (calls === 3) await thirdGate;
+      return result;
+    });
+    const info = jest.spyOn(log, 'info').mockImplementation(() => {});
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
+    try {
+      _resetAdblockForTests();
+      _setFirstEngineHoldForTests(100);
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null });
+      await refreshEngine(); // install's build lands, then this one drops it
+      expect(
+        adblockRequestForDispatch(
+          makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+        )
+      ).toBe(null);
+      // Longer than the whole budget since the first hold started.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const rebuilt = refreshEngine();
+      await third;
+      const held = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      expect(typeof held?.then).toBe('function');
+      openThird();
+      await expect(held).resolves.toEqual({ cancel: true });
+      await rebuilt;
+      expect(info).not.toHaveBeenCalledWith(expect.stringMatching(/hold budget spent/));
+      expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/not ready after/));
+    } finally {
+      openThird();
+      spy.mockRestore();
+      info.mockRestore();
+      warn.mockRestore();
     }
   });
 

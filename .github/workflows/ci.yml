@@ -613,6 +613,12 @@ jobs:
   # `error-page.spec.js` covers the error page's title and node-state copy
   # (#236, #445), and `internal-page-theme.spec.js` asserts the pages follow
   # Settings > Appearance rather than the OS scheme (#233).
+  #
+  # This is also the per-PR job with the real filter lists downloaded, so
+  # `adblock-first-engine.spec.js` runs here: the first page of a fresh
+  # profile, with no engine cache, held behind the first ad-block engine build
+  # (#524). Without the real lists that build takes milliseconds and the path
+  # was only ever exercised by the nightly's full harness run.
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -650,6 +656,7 @@ jobs:
           xvfb-run -a npm run test:e2e --
           test-e2e/settings.spec.js
           test-e2e/settings-adblock.spec.js
+          test-e2e/adblock-first-engine.spec.js
           test-e2e/myotis-recovery.spec.js
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
