@@ -19,9 +19,9 @@
      border and shadow (`--agent-glass-filter-hidden` is the resting filter
      list) while the non-glass content around it fades with opacity, and it
      moves with transform, which is safe.
-   In the column the glass is a fixed-size layer (.agent-float-surface)
-   behind a scrolling transcript, so scrolling moves text, never the blurred
-   region itself.
+   In the column the only blur is a fixed-size veil (.agent-float-surface)
+   behind the scrolling conversation; the message bubbles that move with it
+   use plain translucent fills, so scrolling never moves a blurred region.
 
    Everything here is scoped under `.agent-floating`, so Agent-first mode
    keeps the layout in agent.css untouched. */
@@ -79,7 +79,6 @@
 /* ── Glass ──────────────────────────────────────────────────────────────── */
 
 .agent-floating[data-presentation='launcher'] .agent-sidebar-inner,
-.agent-floating[data-presentation='column'] .agent-float-surface,
 .agent-floating[data-presentation='column'] .agent-composer-wrap,
 .agent-floating-ghost {
   background-color: var(--agent-glass);
@@ -220,7 +219,7 @@
   box-shadow: none;
 }
 
-/* ── Column: one conversation surface, one composer ─────────────────────── */
+/* ── Column: chat bubbles over one stationary veil ──────────────────────── */
 
 .agent-floating[data-presentation='column'] .agent-sidebar-inner {
   top: 10px;
@@ -235,8 +234,10 @@
   transform: translateX(28px);
 }
 
-/* Stationary: sized to the column, behind everything in it. Its bottom
-   follows the composer card (agent-ui.js measures it). */
+/* The only blur behind the conversation: sized to the column, never moving,
+   no border. Its edges fade through a mask on the veil itself; a mask on an
+   ancestor would leave it nothing to blur. Its bottom follows the composer
+   card (agent-ui.js measures it). */
 .agent-floating[data-presentation='column'] .agent-float-surface {
   position: absolute;
   top: 0;
@@ -245,16 +246,47 @@
   left: 0;
   z-index: -1;
   display: block;
-  border-radius: 22px;
   pointer-events: auto;
+  background-color: var(--agent-veil);
+  backdrop-filter: var(--agent-veil-filter);
+  mask-image:
+    linear-gradient(to bottom, transparent, var(--text) 12px, var(--text) calc(100% - 28px), transparent),
+    linear-gradient(to right, transparent, var(--text) 24px, var(--text) calc(100% - 24px), transparent);
+  mask-composite: intersect;
+  transition:
+    background-color 240ms ease,
+    backdrop-filter 300ms ease;
 }
 
 .agent-floating[data-presentation='column']:not([data-agent-view='workspace']) .agent-float-surface {
   bottom: 0;
 }
 
+/* Bubbles, header and notices carry their own translucent fills, so text
+   never depends on the veil alone; none of them has a backdrop-filter. */
+.agent-floating[data-presentation='column'] .agent-sidebar-header,
+.agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-loading-view,
+.agent-floating[data-presentation='column'] .agent-setup-view,
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty),
+.agent-floating[data-presentation='column'] .agent-output:not(:empty),
+.agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]),
+.agent-floating[data-presentation='column'] .agent-live-status {
+  background: var(--agent-bubble-agent);
+  border: 1px solid var(--agent-bubble-border);
+  box-shadow: var(--agent-bubble-shadow);
+}
+
+/* Header, help note and system notices sit where the veil's edge is still
+   fading in, so they use a denser fill than the bubbles. */
+.agent-floating[data-presentation='column'] .agent-sidebar-header,
+.agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]),
+.agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
+  background: color-mix(in srgb, var(--agent-bubble-agent) 70%, var(--bg));
+}
+
 /* Compact header: title over status on the left; New chat, help and the
-   window controls on the right. Long statuses wrap to the title's width. */
+   window controls on the right. Long statuses ellipsize under the title. */
 .agent-floating[data-presentation='column'] .agent-sidebar-header {
   display: grid;
   grid-template-areas:
@@ -263,9 +295,28 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: 4px;
-  padding: 9px 8px 9px 16px;
-  border-bottom: 1px solid var(--agent-glass-border);
+  margin: 6px 6px 4px;
+  padding: 6px 6px 6px 12px;
+  border-radius: 16px;
   pointer-events: auto;
+}
+
+/* In the conversation, with a pointer, the header steps back until the
+   column is hovered or holds keyboard focus (composer included) or the help
+   note is open; it keeps its space, so nothing moves. Touch and other
+   no-hover devices, and the provider and services screens, always show it. */
+@media (hover: hover) {
+  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-header {
+    opacity: 0;
+    transition: opacity 200ms ease 320ms;
+  }
+
+  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-inner:hover .agent-sidebar-header,
+  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-inner:focus-within .agent-sidebar-header,
+  .agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-inner:has(.agent-scope-help:not([hidden])) .agent-sidebar-header {
+    opacity: 1;
+    transition-delay: 0s;
+  }
 }
 
 .agent-floating[data-presentation='column'] .agent-sidebar-title-row {
@@ -331,12 +382,12 @@
 
 .agent-floating[data-presentation='column'] .agent-scope-help:not([hidden]) {
   display: block;
-  margin: 0;
-  padding: 10px 16px;
+  margin: 0 6px 6px;
+  padding: 9px 12px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
-  border-bottom: 1px solid var(--agent-glass-border);
+  border-radius: 14px;
   pointer-events: auto;
 }
 
@@ -348,6 +399,8 @@
 .agent-floating[data-presentation='column'] .agent-setup-view {
   flex: 1 1 auto;
   min-height: 0;
+  margin: 0 6px 6px;
+  border-radius: 18px;
 }
 
 .agent-floating[data-presentation='column'] .agent-workspace-view {
@@ -360,17 +413,24 @@
   pointer-events: auto;
 }
 
+/* The conversation's one scrollbar. Bubbles grow with their content; only
+   code and tables scroll sideways, inside themselves. */
 .agent-floating[data-presentation='column'] .agent-workspace-scroll {
-  padding: 12px 16px 18px;
+  padding: 4px 8px 16px;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
 }
 
-/* Runtime notices stay a plain live line (errors keep their colour). */
+/* Runtime notices: a small system line, errors keep their colour. */
 .agent-floating[data-presentation='column'] #agent-run-message:not(:empty) {
-  margin: 0 0 12px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px auto 14px;
+  padding: 6px 12px;
   font-size: 12px;
   line-height: 1.45;
+  border-radius: 12px;
 }
 
 .agent-floating[data-presentation='column'] #agent-run-message:not(:empty):not(.error) {
@@ -381,28 +441,81 @@
   display: none;
 }
 
-/* Turns are separated by space and a hairline, not by cards; helper
-   reports and approvals keep their own cards. */
 .agent-floating[data-presentation='column'] .agent-transcript {
   gap: 0;
   padding: 0;
 }
 
 .agent-floating[data-presentation='column'] .agent-turn {
+  min-width: 0;
+  gap: 8px;
   animation: agent-floating-turn 320ms var(--agent-float-ease) both;
 }
 
 .agent-floating[data-presentation='column'] .agent-turn + .agent-turn {
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid var(--agent-glass-border);
+  margin-top: 20px;
 }
 
+/* User and guidance bubbles: right, accent-tinted. Guidance keeps its own
+   sizing inside .agent-guidance-content. */
 .agent-floating[data-presentation='column'] .agent-user-message {
-  background: var(--agent-glass-user);
-  border-color: var(--agent-glass-border);
+  padding: 9px 13px;
+  font-size: 12.5px;
+  background: var(--agent-bubble-user);
+  border: 1px solid var(--agent-bubble-border);
+  border-radius: 18px 18px 6px 18px;
+  box-shadow: var(--agent-bubble-shadow);
 }
 
+.agent-floating[data-presentation='column'] .agent-user-message:not(.agent-guidance-message) {
+  max-width: 86%;
+}
+
+/* Agent bubble: left, neutral; absent until the first token arrives. */
+.agent-floating[data-presentation='column'] .agent-output:empty {
+  display: none;
+}
+
+.agent-floating[data-presentation='column'] .agent-output:not(:empty) {
+  width: fit-content;
+  min-width: 0;
+  max-width: 94%;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  border-radius: 18px 18px 18px 6px;
+}
+
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown pre,
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown table {
+  max-width: 100%;
+}
+
+/* Prose and URLs may break anywhere; table cells wrap only between words
+   and the table scrolls sideways instead of crushing its columns. */
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown th,
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown td {
+  min-width: 7ch;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.agent-floating[data-presentation='column'] .agent-output.rendered-markdown th {
+  white-space: nowrap;
+}
+
+.agent-floating[data-presentation='column'] .agent-turn-activity:not([hidden]) {
+  width: fit-content;
+  max-width: 94%;
+  padding: 6px 12px;
+  border-radius: 14px;
+}
+
+.agent-floating[data-presentation='column'] .agent-live-status {
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+/* The composer stays its own stationary glass card. */
 .agent-floating[data-presentation='column'] .agent-composer-wrap {
   margin-top: 8px;
   padding: 4px;
