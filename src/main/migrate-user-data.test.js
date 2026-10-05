@@ -134,9 +134,7 @@ describe('migrateBeeDataToAntData (bee → ant upgrade)', () => {
     const mod = loadMigrationModule(userDataDir);
 
     expect(mod.migrateBeeDataToAntData()).toBe(false);
-    expect(fs.readFileSync(path.join(antData, 'keys', 'swarm.key'), 'utf-8')).toContain(
-      'already'
-    );
+    expect(fs.readFileSync(path.join(antData, 'keys', 'swarm.key'), 'utf-8')).toContain('already');
     expect(fs.existsSync(path.join(userDataDir, 'bee-data', 'keys', 'swarm.key'))).toBe(true);
   });
 
@@ -241,24 +239,198 @@ describe('migrateBeeDataToAntData (bee → ant upgrade)', () => {
     const mod = loadMigrationModule(userDataDir);
 
     // The Bee-only cleanup runs after the keystore landed; a stray lock on
-    // dead LevelDB cache must not report the identity migration as failed.
+    // dead LevelDB cache must not report the identity migration as failed —
+    // neither the set-aside rename nor its in-place fallback.
+    const lockErr = (code) =>
+      Object.assign(new Error(`${code}: resource busy or locked`), { code });
+    const realRename = fs.renameSync.bind(fs);
+    const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+      if (String(src).endsWith('statestore')) throw lockErr('EBUSY');
+      return realRename(src, dest);
+    });
     const realRm = fs.rmSync.bind(fs);
-    const spy = jest.spyOn(fs, 'rmSync').mockImplementation((target, opts) => {
-      if (String(target).endsWith('statestore')) {
-        const err = new Error('EBUSY: resource busy or locked');
-        err.code = 'EBUSY';
-        throw err;
-      }
+    const rmSpy = jest.spyOn(fs, 'rmSync').mockImplementation((target, opts) => {
+      if (String(target).endsWith('statestore')) throw lockErr('EBUSY');
       return realRm(target, opts);
     });
 
     expect(mod.migrateBeeDataToAntData()).toBe(true);
-    spy.mockRestore();
+    renameSpy.mockRestore();
+    rmSpy.mockRestore();
 
     const antData = path.join(userDataDir, 'ant-data');
     expect(fs.existsSync(path.join(antData, 'keys', 'swarm.key'))).toBe(true);
     expect(fs.existsSync(path.join(antData, 'stamperstore'))).toBe(true);
     expect(mod.isBeeDataMigrationPending()).toBe(false);
+  });
+
+  // #526: the delete of Bee-only state used to run synchronously before the
+  // first window. The migration now only renames it aside; the delete runs
+  // in a worker once the window is up.
+  describe('Bee-only state is set aside, then purged off the main thread', () => {
+    const SET_ASIDE = '.bee-only-data-pending-delete';
+    const BEE_ONLY = ['statestore', 'localstore', 'kademlia-metrics'];
+
+    // jest.resetModules() keeps doMock registrations; don't let one test's
+    // fs-offload stub leak into the real-worker test.
+    afterEach(() => {
+      jest.dontMock(require.resolve('./fs-offload'));
+    });
+
+    test('the migration renames Bee-only dirs aside and never rmSyncs them', () => {
+      writeBeeData(userDataDir, { extras: [...BEE_ONLY, 'stamperstore'] });
+      const mod = loadMigrationModule(userDataDir);
+      const rmSpy = jest.spyOn(fs, 'rmSync');
+
+      expect(mod.migrateBeeDataToAntData()).toBe(true);
+      const rmTargets = rmSpy.mock.calls.map(([target]) => path.basename(String(target)));
+      rmSpy.mockRestore();
+
+      expect(rmTargets.filter((name) => BEE_ONLY.includes(name))).toEqual([]);
+      const antData = path.join(userDataDir, 'ant-data');
+      for (const dir of BEE_ONLY) {
+        expect(fs.existsSync(path.join(antData, dir))).toBe(false);
+      }
+      const setAside = fs.readdirSync(path.join(userDataDir, SET_ASIDE));
+      for (const dir of BEE_ONLY) {
+        expect(setAside.filter((name) => name.startsWith(`${dir}-`))).toHaveLength(1);
+      }
+      // Moved, not copied: the contents came along.
+      const localstore = setAside.find((name) => name.startsWith('localstore-'));
+      expect(fs.readFileSync(path.join(userDataDir, SET_ASIDE, localstore, 'data'), 'utf-8')).toBe(
+        'x'
+      );
+      expect(fs.existsSync(path.join(antData, 'stamperstore'))).toBe(true);
+    });
+
+    test('the merge path sets aside too, next to an earlier un-purged set-aside', () => {
+      // Leftover from a launch that quit before its purge finished.
+      const leftover = path.join(userDataDir, SET_ASIDE, 'statestore-1-1');
+      fs.mkdirSync(leftover, { recursive: true });
+      writeBeeData(userDataDir, { extras: ['statestore', 'stamperstore'] });
+      const antData = path.join(userDataDir, 'ant-data');
+      fs.mkdirSync(antData, { recursive: true });
+      fs.writeFileSync(path.join(antData, 'identity.json'), '{}');
+      // antd's own statestore from its throwaway identity: dropped on the
+      // merge path, as before — now by moving it aside.
+      fs.mkdirSync(path.join(antData, 'statestore'));
+      fs.writeFileSync(path.join(antData, 'statestore', 'CURRENT'), 'antd');
+      const mod = loadMigrationModule(userDataDir);
+
+      expect(mod.migrateBeeDataToAntData()).toBe(true);
+      expect(fs.existsSync(path.join(antData, 'keys', 'swarm.key'))).toBe(true);
+      expect(fs.existsSync(path.join(antData, 'statestore'))).toBe(false);
+      const setAside = fs.readdirSync(path.join(userDataDir, SET_ASIDE));
+      expect(setAside).toHaveLength(2);
+      expect(setAside).toContain('statestore-1-1');
+      const fresh = setAside.find((name) => name !== 'statestore-1-1');
+      expect(fs.readFileSync(path.join(userDataDir, SET_ASIDE, fresh, 'CURRENT'), 'utf-8')).toBe(
+        'antd'
+      );
+    });
+
+    test('a failed set-aside rename falls back to deleting in place', () => {
+      writeBeeData(userDataDir, { extras: ['localstore', 'stamperstore'] });
+      const mod = loadMigrationModule(userDataDir);
+      const realRename = fs.renameSync.bind(fs);
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
+        if (String(dest).includes(SET_ASIDE)) {
+          throw Object.assign(new Error('EXDEV: cross-device link'), { code: 'EXDEV' });
+        }
+        return realRename(src, dest);
+      });
+
+      expect(mod.migrateBeeDataToAntData()).toBe(true);
+      renameSpy.mockRestore();
+
+      expect(fs.existsSync(path.join(userDataDir, 'ant-data', 'localstore'))).toBe(false);
+      expect(fs.existsSync(path.join(userDataDir, 'ant-data', 'keys', 'swarm.key'))).toBe(true);
+    });
+
+    test('purgeSetAsideBeeData removes the set-aside dir through fs-offload', async () => {
+      writeBeeData(userDataDir, { extras: [...BEE_ONLY, 'stamperstore'] });
+      const removePath = jest.fn((target, options) => {
+        fs.rmSync(target, options);
+        return Promise.resolve();
+      });
+      const mod = loadMainModule(require.resolve('./migrate-user-data'), {
+        app: createAppMock({ isPackaged: true, userDataDir }),
+        extraMocks: {
+          [require.resolve('./logger')]: () => ({
+            info: jest.fn(),
+            warn: jest.fn(),
+            error: jest.fn(),
+          }),
+          [require.resolve('./fs-offload')]: () => ({ removePath }),
+        },
+      }).mod;
+
+      expect(mod.migrateBeeDataToAntData()).toBe(true);
+      expect(removePath).not.toHaveBeenCalled();
+      await expect(mod.purgeSetAsideBeeData()).resolves.toBe(true);
+
+      expect(removePath).toHaveBeenCalledTimes(1);
+      expect(removePath).toHaveBeenCalledWith(path.join(userDataDir, SET_ASIDE), {
+        recursive: true,
+        force: true,
+      });
+      expect(fs.existsSync(path.join(userDataDir, SET_ASIDE))).toBe(false);
+      // Only the set-aside went: the migrated identity is untouched.
+      expect(fs.existsSync(path.join(userDataDir, 'ant-data', 'keys', 'swarm.key'))).toBe(true);
+      expect(fs.existsSync(path.join(userDataDir, 'ant-data', 'stamperstore'))).toBe(true);
+    });
+
+    test('purgeSetAsideBeeData deletes for real in a worker (real fs-offload)', async () => {
+      writeBeeData(userDataDir, { extras: ['localstore', 'statestore'] });
+      const mod = loadMigrationModule(userDataDir);
+      expect(mod.migrateBeeDataToAntData()).toBe(true);
+      const rmSpy = jest.spyOn(fs, 'rmSync');
+
+      await expect(mod.purgeSetAsideBeeData()).resolves.toBe(true);
+      const mainThreadRms = rmSpy.mock.calls.length;
+      rmSpy.mockRestore();
+
+      expect(mainThreadRms).toBe(0);
+      expect(fs.existsSync(path.join(userDataDir, SET_ASIDE))).toBe(false);
+    });
+
+    test('purgeSetAsideBeeData is a no-op without a set-aside dir', async () => {
+      const removePath = jest.fn();
+      const mod = loadMainModule(require.resolve('./migrate-user-data'), {
+        app: createAppMock({ isPackaged: true, userDataDir }),
+        extraMocks: {
+          [require.resolve('./logger')]: () => ({
+            info: jest.fn(),
+            warn: jest.fn(),
+            error: jest.fn(),
+          }),
+          [require.resolve('./fs-offload')]: () => ({ removePath }),
+        },
+      }).mod;
+
+      await expect(mod.purgeSetAsideBeeData()).resolves.toBe(false);
+      expect(removePath).not.toHaveBeenCalled();
+    });
+
+    test('a failed purge resolves false and leaves the dir for the next launch', async () => {
+      const leftover = path.join(userDataDir, SET_ASIDE, 'localstore-1-1');
+      fs.mkdirSync(leftover, { recursive: true });
+      const warn = jest.fn();
+      const removePath = jest.fn(() =>
+        Promise.reject(Object.assign(new Error('EBUSY: locked'), { code: 'EBUSY' }))
+      );
+      const mod = loadMainModule(require.resolve('./migrate-user-data'), {
+        app: createAppMock({ isPackaged: true, userDataDir }),
+        extraMocks: {
+          [require.resolve('./logger')]: () => ({ info: jest.fn(), warn, error: jest.fn() }),
+          [require.resolve('./fs-offload')]: () => ({ removePath }),
+        },
+      }).mod;
+
+      await expect(mod.purgeSetAsideBeeData()).resolves.toBe(false);
+      expect(fs.existsSync(leftover)).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('will retry'), 'EBUSY: locked');
+    });
   });
 
   test('isBeeDataMigrationPending tracks the migration lifecycle', () => {

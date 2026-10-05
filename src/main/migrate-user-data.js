@@ -14,6 +14,7 @@
 const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const fsOffload = require('./fs-offload');
 
 const OLD_APP_NAME = 'Freedom Browser';
 const MIGRATION_MARKER = '.migrated-from-freedom-browser';
@@ -195,6 +196,61 @@ const BEE_ONLY_DIRS = ['statestore', 'localstore', 'kademlia-metrics'];
 // bee-data, with no retry.
 const BEE_CARRY_ITEMS = ['config.yaml', 'stamperstore', 'keys'];
 
+// Where Bee-only dirs wait for their off-main-thread delete. Inside the
+// profile's userData (so a profile delete takes it along) and next to
+// ant-data, so moving a dir here is a plain rename.
+const BEE_SET_ASIDE_DIR = '.bee-only-data-pending-delete';
+
+function getBeeSetAsideDir() {
+  return path.join(getNodeDataBaseDir(), BEE_SET_ASIDE_DIR);
+}
+
+// Move one Bee-only dir out of ant-data. If the rename fails (it shouldn't:
+// same parent filesystem), fall back to the synchronous delete this replaced,
+// so ant-data never keeps Bee state antd can't read.
+function setAsideBeeOnlyDir(stale, dir, log) {
+  const setAside = getBeeSetAsideDir();
+  try {
+    fs.mkdirSync(setAside, { recursive: true });
+    // Unique name: an earlier set-aside may still be waiting for its purge.
+    fs.renameSync(stale, path.join(setAside, `${dir}-${Date.now()}-${process.pid}`));
+    log.info(`[Migration] Set aside Bee-only ${dir}/ for background removal`);
+  } catch (renameErr) {
+    log.warn(
+      `[Migration] Could not set aside Bee-only ${dir}/, removing it in place:`,
+      renameErr.message
+    );
+    fs.rmSync(stale, { recursive: true, force: true });
+    log.info(`[Migration] Removed Bee-only ${dir}/`);
+  }
+}
+
+/**
+ * Delete the Bee-only data migrateBeeDataToAntData() set aside, in a worker
+ * thread (fs-offload, #513) so the main thread never blocks on it. Call once
+ * the first window is up. Also picks up a set-aside dir left by a launch that
+ * quit before its purge finished; does nothing (one existsSync) otherwise.
+ *
+ * @returns {Promise<boolean>} true if a set-aside dir was removed
+ */
+async function purgeSetAsideBeeData(options = {}) {
+  const log = getLogger(options.logger);
+  const setAside = getBeeSetAsideDir();
+  if (!fs.existsSync(setAside)) {
+    return false;
+  }
+  const startedAt = Date.now();
+  try {
+    await fsOffload.removePath(setAside, { recursive: true, force: true });
+    log.info(`[Migration] Removed set-aside Bee-only data in ${Date.now() - startedAt} ms`);
+    return true;
+  } catch (err) {
+    // Retried on the next launch: the set-aside dir is still there.
+    log.warn('[Migration] Could not remove set-aside Bee-only data (will retry):', err.message);
+    return false;
+  }
+}
+
 function getNodeDataBaseDir() {
   // The Bee -> Ant migration must operate on the active profile's userData
   // directory. In profile-aware dev builds that is
@@ -311,7 +367,13 @@ function migrateBeeDataToAntData(options = {}) {
       }
     }
 
-    // Drop Bee-only LevelDB state antd can't use (can be gigabytes).
+    // Drop Bee-only LevelDB state antd can't use (can be gigabytes). Deleting
+    // it here would hold up the first window for as long as the delete takes
+    // (#526), so each dir is only *renamed* out of ant-data into a sibling
+    // set-aside dir — instant, same filesystem — and purgeSetAsideBeeData()
+    // deletes that off the main thread once the window is up. The rename has
+    // to happen now, not later: antd keeps its own `statestore/` in ant-data,
+    // so a deferred delete of `ant-data/statestore` could hit the live one.
     // Best-effort: this runs after the keystore landed (the commit point
     // above, or the whole-directory rename), so a stray lock here must not
     // report the already-complete identity migration as failed.
@@ -319,8 +381,7 @@ function migrateBeeDataToAntData(options = {}) {
       const stale = path.join(newDir, dir);
       try {
         if (fs.existsSync(stale)) {
-          fs.rmSync(stale, { recursive: true, force: true });
-          log.info(`[Migration] Removed Bee-only ${dir}/`);
+          setAsideBeeOnlyDir(stale, dir, log);
         }
       } catch (err) {
         log.warn(`[Migration] Could not remove Bee-only ${dir}/ (continuing):`, err.message);
@@ -340,6 +401,7 @@ function migrateBeeDataToAntData(options = {}) {
 module.exports = {
   migrateUserData,
   migrateBeeDataToAntData,
+  purgeSetAsideBeeData,
   isBeeDataMigrationPending,
   getOldUserDataPath,
 };
