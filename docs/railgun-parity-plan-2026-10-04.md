@@ -7,6 +7,14 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [local Shield-origin diagnostic](railgun-shield-origin-diagnostic-2026-10-05.md)
+now joins genuine account handles with two existing-only journal reads and
+reattests the selected note, view, generations and record before reporting.
+Both reviewers cleared the final deadline correction; all 315 combined focused
+tests, lint and formatting pass. It remains unconnected to production operations.
+Next is disposable native integration and restart qualification; this unit-tested
+host grants no ownership, chain, POI or spending authority.
+
 The [existing-only journal reader](railgun-existing-journal-reader-2026-10-05.md)
 now authenticates registered encrypted snapshots without storage creation or
 adoption. Shared plaintext-buffer cleanup also covers authentication failure.
