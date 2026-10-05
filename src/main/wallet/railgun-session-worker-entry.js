@@ -3,7 +3,7 @@
  */
 const { isMainThread, parentPort, workerData } = require('worker_threads');
 const { createPrivacyScope } = require('../networks/privacy-context');
-const { createRailgunSession } = require('./railgun-session');
+const { createRailgunSession, createRailgunReadOnlySession } = require('./railgun-session');
 if (isMainThread || !parentPort) throw new Error('Railgun worker entry only');
 const revoked = new Int32Array(workerData.revoked);
 const controller = new AbortController();
@@ -26,12 +26,22 @@ function close() {
   if (stopping) return;
   stopping = true;
   Atomics.store(revoked, 0, 1);
-  controller.abort();
-  session?.close();
-  for (const request of requests.values()) request.reject(fail());
-  requests.clear();
-  observations.clear();
-  parentPort.close();
+  try {
+    controller.abort();
+  } finally {
+    try {
+      session?.close();
+    } catch {
+      // A drained worker with failed storage closure is not a clean close.
+      // Keep the failure observable through the actual worker exit status.
+      process.exitCode = 1;
+    } finally {
+      for (const request of requests.values()) request.reject(fail());
+      requests.clear();
+      observations.clear();
+      parentPort.close();
+    }
+  }
 }
 parentPort.on('close', close);
 parentPort.once('messageerror', close);
@@ -113,7 +123,9 @@ parentPort.on('message', (message) => {
 const key = Buffer.from(workerData.storage.key);
 workerData.storage.key.fill(0);
 try {
-  session = createRailgunSession({
+  if (Object.hasOwn(workerData, 'readOnly') && workerData.readOnly !== true) throw fail();
+  if (Object.hasOwn(workerData.storage, 'readOnly')) throw fail();
+  session = (workerData.readOnly === true ? createRailgunReadOnlySession : createRailgunSession)({
     handle: scope.getContext(workerData.subject, workerData.requirements),
     storage: { ...workerData.storage, key },
     onClose: close,

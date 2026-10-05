@@ -1,3 +1,13 @@
+let mockDatabaseOpens;
+jest.mock('better-sqlite3', () => {
+  const Actual = jest.requireActual('better-sqlite3');
+  function Database(...args) {
+    mockDatabaseOpens?.push(args);
+    return new Actual(...args);
+  }
+  Database.prototype = Actual.prototype;
+  return Database;
+});
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -5,7 +15,7 @@ const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
-const { createRailgunPagedStore } = require('./railgun-paged-store');
+const { createRailgunPagedStore, openRailgunReadOnlyPagedStore } = require('./railgun-paged-store');
 let scope, options, store;
 const key = (n) => {
   const b = Buffer.alloc(4);
@@ -23,6 +33,7 @@ const read = (cursor) => {
   return rows;
 };
 beforeEach(() => {
+  mockDatabaseOpens = [];
   scope = createPrivacyScope({ profileId: 'paged-fixture', signal: new AbortController().signal });
   options = {
     handle: scope.getContext({
@@ -539,4 +550,253 @@ test('LevelDOWN presentation options stay out of strict paged storage ranges', a
   expect(store.get(key(1)).toString()).toBe('value-1');
   expect(store.get(key(2))).toBe(null);
   expect(store.get(key(3)).toString()).toBe('value-3');
+});
+
+function directorySnapshot() {
+  const directory = path.dirname(options.filename);
+  return fs
+    .readdirSync(directory)
+    .sort()
+    .map((name) => {
+      const filename = path.join(directory, name),
+        stat = fs.lstatSync(filename, { bigint: true });
+      return {
+        name,
+        size: stat.size,
+        mtime: stat.mtimeNs,
+        bytes: stat.isFile() ? fs.readFileSync(filename) : null,
+        link: stat.isSymbolicLink() ? fs.readlinkSync(filename) : null,
+      };
+    });
+}
+function retainedFixture() {
+  store.batch([put(1, Buffer.from('before'))]);
+  const snapshot = store.openSnapshot();
+  store.batch([put(1, Buffer.from('after')), put(2)]);
+  expect(store.stats().retiredPages).toBeGreaterThan(0);
+  snapshot.close();
+  store.close();
+}
+test('fixed read-only open authenticates and preserves current and retired pages across reads, cursors and close', () => {
+  retainedFixture();
+  const before = directorySnapshot();
+  mockDatabaseOpens = [];
+  store = openRailgunReadOnlyPagedStore(options);
+  expect(mockDatabaseOpens).toEqual([
+    [options.filename, { fileMustExist: true, timeout: 0, readonly: true }],
+  ]);
+  expect(store.stats().retiredPages).toBeGreaterThan(0);
+  const id = store.getInstanceId();
+  expect(store.get(key(1)).toString()).toBe('after');
+  const snapshot = store.openSnapshot({ reverse: true });
+  expect(snapshot.next()).toEqual([key(2), Buffer.from('value-2')]);
+  snapshot.seek(key(1));
+  expect(snapshot.next()).toEqual([key(1), Buffer.from('after')]);
+  expect(directorySnapshot()).toEqual(before);
+  store.close();
+  expect(() => snapshot.next()).toThrow();
+  expect(directorySnapshot()).toEqual(before);
+  store = openRailgunReadOnlyPagedStore(options);
+  expect(store.getInstanceId()).toBe(id);
+  expect(store.stats().retiredPages).toBeGreaterThan(0);
+  store.close();
+  expect(directorySnapshot()).toEqual(before);
+});
+test('ordinary open still performs mutable initialization and collects retained pages', () => {
+  retainedFixture();
+  const before = directorySnapshot();
+  const pragma = jest.spyOn(Database.prototype, 'pragma');
+  store = createRailgunPagedStore(options);
+  expect(pragma).toHaveBeenCalledWith('journal_mode = DELETE');
+  expect(store.stats().retiredPages).toBe(0);
+  pragma.mockRestore();
+  store.close();
+  expect(directorySnapshot()).not.toEqual(before);
+});
+test('reader uses only connection-local protections and a deferred read transaction', () => {
+  store.close();
+  const pragma = jest.spyOn(Database.prototype, 'pragma'),
+    exec = jest.spyOn(Database.prototype, 'exec');
+  try {
+    store = openRailgunReadOnlyPagedStore(options);
+    expect(pragma.mock.calls.map((call) => call[0])).toEqual([
+      'query_only = ON',
+      'temp_store = MEMORY',
+      'journal_mode',
+      'trusted_schema = OFF',
+      'cache_size = -4096',
+      'mmap_size = 0',
+    ]);
+    expect(exec.mock.calls).toEqual([['BEGIN']]);
+  } finally {
+    pragma.mockRestore();
+    exec.mockRestore();
+  }
+});
+test.each(['batch', 'clear'])(
+  'reader %s refuses before any SQLite write and preserves the whole directory',
+  (method) => {
+    retainedFixture();
+    const before = directorySnapshot();
+    store = openRailgunReadOnlyPagedStore(options);
+    const prepare = jest.spyOn(Database.prototype, 'prepare'),
+      transaction = jest.spyOn(Database.prototype, 'transaction');
+    try {
+      expect(() => store[method](method === 'batch' ? [put(9)] : {})).toThrow(
+        expect.objectContaining({ code: 'RAILGUN_STORE_READ_ONLY' })
+      );
+      expect(prepare).not.toHaveBeenCalled();
+      expect(transaction).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+      transaction.mockRestore();
+    }
+    expect(options.onFatal).toHaveBeenCalledTimes(1);
+    expect(directorySnapshot()).toEqual(before);
+  }
+);
+test('SQLite readonly backstop denies writes even if connection query_only is disabled', () => {
+  store.close();
+  let connection;
+  const original = Database.prototype.pragma;
+  const pragma = jest.spyOn(Database.prototype, 'pragma').mockImplementation(function (...args) {
+    connection = this;
+    return original.apply(this, args);
+  });
+  store = openRailgunReadOnlyPagedStore(options);
+  pragma.mockRestore();
+  const before = directorySnapshot();
+  connection.pragma('query_only = OFF');
+  expect(() => connection.prepare("DELETE FROM records WHERE id = 'manifest'").run()).toThrow(
+    expect.objectContaining({ code: 'SQLITE_READONLY' })
+  );
+  store.close();
+  expect(directorySnapshot()).toEqual(before);
+});
+test('read-only route never creates a file or accepts create:true; caller flags cannot switch its policy', () => {
+  store.close();
+  mockDatabaseOpens = [];
+  const before = directorySnapshot();
+  expect(() => openRailgunReadOnlyPagedStore({ ...options, create: true })).toThrow();
+  expect(() =>
+    openRailgunReadOnlyPagedStore({ ...options, filename: options.filename + '.absent' })
+  ).toThrow(expect.objectContaining({ code: 'RAILGUN_STORE_MISSING' }));
+  expect(mockDatabaseOpens).toEqual([]);
+  expect(directorySnapshot()).toEqual(before);
+  store = openRailgunReadOnlyPagedStore({ ...options, readOnly: false });
+  expect(() => store.batch([put(1)])).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_STORE_READ_ONLY' })
+  );
+});
+test.each(
+  ['-journal', '-wal', '-shm'].flatMap((suffix) =>
+    ['empty', 'hot-marker', 'broken-link'].map((kind) => [suffix, kind])
+  )
+)(
+  'reader rejects existing %s %s before opening SQLite and preserves every byte',
+  (suffix, kind) => {
+    store.close();
+    if (kind === 'broken-link')
+      fs.symlinkSync(options.filename + '.missing-target', options.filename + suffix);
+    else
+      fs.writeFileSync(
+        options.filename + suffix,
+        kind === 'hot-marker' ? Buffer.from('d9d505f920a163d7', 'hex') : Buffer.alloc(0)
+      );
+    const before = directorySnapshot();
+    mockDatabaseOpens = [];
+    expect(() => openRailgunReadOnlyPagedStore(options)).toThrow();
+    expect(mockDatabaseOpens).toEqual([]);
+    expect(directorySnapshot()).toEqual(before);
+  }
+);
+test.each([
+  'wal-write',
+  'wal-read',
+  'bad-magic',
+  'truncated',
+  'empty',
+  'directory',
+  'symlink',
+  'oversized',
+])('reader refuses %s file/header before opening SQLite', (mode) => {
+  store.close();
+  let filename = options.filename;
+  if (mode === 'directory') filename = path.dirname(filename);
+  else if (mode === 'symlink') {
+    filename += '.link';
+    fs.symlinkSync(options.filename, filename);
+  } else if (mode === 'oversized') fs.truncateSync(filename, 4 * 1024 * 1024 * 1024 + 1);
+  else {
+    const bytes = fs.readFileSync(filename);
+    if (mode === 'wal-write') bytes[18] = 2;
+    if (mode === 'wal-read') bytes[19] = 2;
+    if (mode === 'bad-magic') bytes[0] ^= 1;
+    fs.writeFileSync(
+      filename,
+      mode === 'truncated' ? bytes.subarray(0, 99) : mode === 'empty' ? Buffer.alloc(0) : bytes
+    );
+  }
+  mockDatabaseOpens = [];
+  // Avoid materializing the intentionally oversized sparse fixture.
+  const before = mode === 'oversized' ? null : directorySnapshot();
+  expect(() => openRailgunReadOnlyPagedStore({ ...options, filename })).toThrow();
+  expect(mockDatabaseOpens).toEqual([]);
+  if (before) expect(directorySnapshot()).toEqual(before);
+});
+test('read-only open still authenticates retired ciphertext and refuses corruption without collection', () => {
+  retainedFixture();
+  // The initial row is retired; current rows were inserted by the later publish.
+  const db = new Database(options.filename);
+  const row = db
+    .prepare("SELECT id,ciphertext FROM records WHERE id != 'manifest' ORDER BY rowid LIMIT 1")
+    .get();
+  row.ciphertext[20] ^= 1;
+  db.prepare('UPDATE records SET ciphertext=? WHERE id=?').run(row.ciphertext, row.id);
+  db.close();
+  const before = directorySnapshot();
+  expect(() => openRailgunReadOnlyPagedStore(options)).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_STORE_UNREADABLE' })
+  );
+  expect(directorySnapshot()).toEqual(before);
+});
+test.each(['sidecar', 'size', 'mtime'])(
+  'close reports sticky %s change after unconditional cleanup',
+  (mode) => {
+    store.close();
+    store = openRailgunReadOnlyPagedStore(options);
+    const snapshot = store.openSnapshot();
+    if (mode === 'sidecar') fs.writeFileSync(options.filename + '-journal', 'external change');
+    if (mode === 'size') fs.appendFileSync(options.filename, Buffer.alloc(1));
+    if (mode === 'mtime') fs.utimesSync(options.filename, new Date(), new Date(Date.now() + 10000));
+    const reader = store;
+    expect(() => reader.close()).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_STORE_UNREADABLE' })
+    );
+    expect(() => reader.close()).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_STORE_UNREADABLE' })
+    );
+    expect(reader.signal.aborted).toBe(true);
+    expect(() => snapshot.next()).toThrow();
+    expect(() => reader.get(key(1))).toThrow();
+    // The filename owner was released even though validation failed.
+    try {
+      const next = openRailgunReadOnlyPagedStore(options);
+      next.close();
+    } catch (error) {
+      expect(error.code).not.toBe('RAILGUN_STORE_BUSY');
+    }
+    store = { close() {} };
+  }
+);
+test('abort close records a sticky integrity failure without throwing out of the signal callback', () => {
+  store.close();
+  store = openRailgunReadOnlyPagedStore(options);
+  fs.utimesSync(options.filename, new Date(), new Date(Date.now() + 10000));
+  expect(() => scope.close()).not.toThrow();
+  expect(options.onFatal).toHaveBeenCalledTimes(1);
+  expect(() => store.close()).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_STORE_UNREADABLE' })
+  );
+  store = { close() {} };
 });

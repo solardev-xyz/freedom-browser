@@ -6,6 +6,7 @@ let mockIdentity,
   mockInput,
   mockCopy,
   mockCredential;
+const mockQuarantine = jest.fn();
 const mockStart = jest.fn(),
   mockViewingKey = Buffer.alloc(32, 7);
 jest.mock('./railgun-process', () => ({ startRailgunProcess: (...args) => mockStart(...args) }));
@@ -21,6 +22,7 @@ jest.mock('./railgun-private-intent', () => ({
   },
 }));
 jest.mock('./railgun-identity', () => ({
+  quarantineRailgunIdentityCredentials: (...args) => mockQuarantine(...args),
   assertRailgunIdentity: (v) => {
     if (v !== mockIdentity || v.signal.aborted) throw Error('identity');
     return v.descriptor;
@@ -458,4 +460,107 @@ test('rejected child barrier returns no result and does not release identity exc
   await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
   await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
   expect(mockStart).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
 });
+
+test.each([undefined, null, {}, { code: 7 }])(
+  'malformed fulfilled exit %j quarantines rather than inventing child exit',
+  async (value) => {
+    mockStart.mockImplementation(() => ({
+      ready: Promise.reject(Error('failed')),
+      closed: Promise.resolve(value),
+      close: () => {},
+    }));
+    await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+    expect(mockQuarantine).toHaveBeenCalledTimes(1);
+    expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+  }
+);
+
+test('unknown exit quarantines before borrowed credential callback drains, even with identity already aborted', async () => {
+  const entered = deferred(),
+    release = deferred(),
+    exit = deferred();
+  exit.promise.catch(() => {});
+  mockCredential = async (use) => {
+    entered.resolve();
+    await release.promise;
+    return use({ viewingKey: mockViewingKey });
+  };
+  let settled = false;
+  mockStart.mockImplementation(({ broker }) => ({
+    ready: Promise.resolve().then(async () => {
+      void broker.dispatch(keyWire).catch(() => {});
+      await entered.promise;
+      throw Error('failed child');
+    }),
+    closed: exit.promise,
+    close: () => exit.reject(Error('exit not observed')),
+  }));
+  const work = verifyRailgunPrivateReceiver(args).catch((error) => {
+    settled = true;
+    return error;
+  });
+  await entered.promise;
+  mockEnrollment.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+  release.resolve();
+  expect(await work).toMatchObject(refused);
+  expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+});
+
+test.each(['RAILGUN_PROCESS_CLOSED', 'RAILGUN_PROCESS_FAILED'])(
+  'observed failure %s does not quarantine and allows a healthy retry',
+  async (code) => {
+    mockStart.mockImplementationOnce(() => ({
+      ready: Promise.reject(Error('job failed')),
+      closed: Promise.resolve({ code }),
+      close: () => {},
+    }));
+    await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+    expect(mockQuarantine).not.toHaveBeenCalled();
+    await expect(verifyRailgunPrivateReceiver(args)).resolves.toHaveProperty(
+      'recipientVerified',
+      true
+    );
+    expect(mockQuarantine).not.toHaveBeenCalled();
+  }
+);
+
+test('startup failure before a task exists never quarantines issued identity', async () => {
+  mockStart.mockImplementationOnce(() => {
+    throw Error('startup unavailable');
+  });
+  await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+  expect(mockQuarantine).not.toHaveBeenCalled();
+  await expect(verifyRailgunPrivateReceiver(args)).resolves.toHaveProperty(
+    'recipientVerified',
+    true
+  );
+});
+
+test.each(['missing', 'throwing-getter'])(
+  '%s child exit barrier quarantines with the bounded receiver error',
+  async (kind) => {
+    mockStart.mockImplementation(() => {
+      const task = { ready: Promise.reject(Error('failed')), close: () => {} };
+      if (kind === 'throwing-getter')
+        Object.defineProperty(task, 'closed', {
+          get() {
+            throw Error('private barrier detail');
+          },
+        });
+      return task;
+    });
+    const error = await verifyRailgunPrivateReceiver(args).catch((error) => error);
+    expect(error).toMatchObject(refused);
+    expect(error.message).toBe('Railgun private receiver unavailable');
+    expect(mockQuarantine).toHaveBeenCalledTimes(1);
+    expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+  }
+);

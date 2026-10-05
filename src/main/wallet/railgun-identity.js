@@ -14,13 +14,43 @@ const identities = new WeakMap(),
   owners = new Set(),
   signers = new WeakMap(),
   signing = new WeakSet();
+// Process-lifetime quarantine deliberately survives identity/vault replacement.
+// The key is the same stable owner used for identity opening, not a caller ID.
+const quarantinedOwners = new Set(),
+  ownerScopes = new Map(),
+  ownerLoans = new Map();
+function retainLoan(owner, key) {
+  // A previously admitted derivation may finish after quarantine. Wipe before
+  // any subsequent asynchronous reattestation or credential callback can run.
+  if (quarantinedOwners.has(owner)) key.fill(0);
+  if (!ownerLoans.has(owner)) ownerLoans.set(owner, new Set());
+  ownerLoans.get(owner).add(key);
+  return () => {
+    key.fill(0);
+    const loans = ownerLoans.get(owner);
+    loans?.delete(key);
+    if (loans?.size === 0) ownerLoans.delete(owner);
+  };
+}
+/** Trusted hosts call only after an issued identity's child exit is unobserved.
+ * No currency check: the original lifetime may already be revoked. There is no
+ * reset or account-selector API; a fresh application process is required. */
+function quarantineRailgunIdentityCredentials(identity) {
+  const saved = identities.get(identity);
+  if (!saved) throw fail();
+  quarantinedOwners.add(saved.owner);
+  for (const key of ownerLoans.get(saved.owner) || []) key.fill(0);
+  // Closing one scope can synchronously remove it or trigger a reopen attempt.
+  // Quarantine is installed first, and every current sibling is revoked.
+  for (const scope of [...(ownerScopes.get(saved.owner) || [])]) scope.close();
+}
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const fail = () =>
   Object.assign(new Error('Railgun identity unavailable'), { code: 'RAILGUN_IDENTITY_REFUSED' });
 const field = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s) && BigInt('0x' + s) < FIELD;
 function assertRailgunIdentity(identity, expectedHandle) {
   const saved = identities.get(identity);
-  if (!saved || identity.signal.aborted) throw fail();
+  if (!saved || quarantinedOwners.has(saved.owner) || identity.signal.aborted) throw fail();
   const context = getPrivacyContext(saved.handle);
   if (expectedHandle !== undefined) {
     const expected = getPrivacyContext(expectedHandle);
@@ -36,6 +66,7 @@ async function withRailgunViewingCredential(identity, use) {
   assert.equal(typeof use, 'function');
   const saved = identities.get(identity),
     key = await saved.view.deriveBytesAt(`m/420'/1984'/0'/0'/${saved.accountIndex}'`);
+  const releaseLoan = retainLoan(saved.owner, key);
   const wipe = () => key.fill(0);
   identity.signal.addEventListener('abort', wipe, { once: true });
   try {
@@ -48,7 +79,7 @@ async function withRailgunViewingCredential(identity, use) {
     return result;
   } finally {
     identity.signal.removeEventListener('abort', wipe);
-    wipe();
+    releaseLoan();
   }
 }
 async function openRailgunIdentity({ archive, accountIndex = 0 }) {
@@ -67,25 +98,38 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
   const parentHandle = parent.getContext(subject),
     context = getPrivacyContext(parentHandle);
   const owner = JSON.stringify([context.profileId, accountIndex]);
+  if (quarantinedOwners.has(owner)) throw fail();
   assert.ok(!owners.has(owner));
   const scope = createPrivacyScope({
     profileId: context.profileId,
     signal: AbortSignal.any([parent.signal, vaultSignal]),
     isCurrent: () => {
       getPrivacyContext(parentHandle);
-      return vaultSignal === vault.getSessionSignal();
+      return !quarantinedOwners.has(owner) && vaultSignal === vault.getSessionSignal();
     },
   });
   const handle = scope.getContext(subject);
+  if (!ownerScopes.has(owner)) ownerScopes.set(owner, new Set());
+  ownerScopes.get(owner).add(scope);
+  scope.signal.addEventListener(
+    'abort',
+    () => {
+      const scopes = ownerScopes.get(owner);
+      scopes?.delete(scope);
+      if (scopes?.size === 0) ownerScopes.delete(owner);
+    },
+    { once: true }
+  );
+  owners.add(owner);
   let keystore, view;
   try {
     keystore = createRailgunKeystore(handle, accountIndex);
     view = createRailgunViewingKeystore(handle, accountIndex);
   } catch (error) {
     scope.close();
+    owners.delete(owner);
     throw error;
   }
-  owners.add(owner);
   let task;
   const close = () => scope.close();
   const releaseOwner = () => {
@@ -96,6 +140,7 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
     let sequence = 0,
       result,
       guards;
+    const loans = new Set();
     const keyPath = `m/${purpose === 'spending-public' ? 44 : 420}'/1984'/0'/0'/${accountIndex}'`;
     task = startRailgunProcess({
       handle: scope.getContext({ ...subject, operation: purpose }),
@@ -121,6 +166,8 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
             const bytes = await (purpose === 'spending-public' ? keystore : view).deriveBytesAt(
               keyPath
             );
+            const releaseLoan = retainLoan(owner, bytes);
+            loans.add(releaseLoan);
             try {
               getPrivacyContext(handle);
               // Ownership passes to the supervisor, which wipes even a late
@@ -155,6 +202,7 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
     } finally {
       task.close();
       await task.closed;
+      for (const releaseLoan of loans) releaseLoan();
       task = null;
       releaseOwner();
     }
@@ -185,7 +233,7 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
       accountIndex,
     });
     const identity = Object.freeze({ descriptor, signal: scope.signal, close });
-    identities.set(identity, { handle, vaultSignal, view, keystore, accountIndex });
+    identities.set(identity, { handle, vaultSignal, view, keystore, accountIndex, owner });
     assertRailgunIdentity(identity);
     return identity;
   } catch {
@@ -252,7 +300,8 @@ async function signPrivateIntent({
     assert.ok(!scope.signal.aborted && task && !task.signal.aborted);
     getPrivacyContext(handle);
   };
-  const requests = new Set();
+  const requests = new Set(),
+    loans = new Set();
   async function dispatch(wire) {
     current();
     assert.equal(typeof wire, 'string');
@@ -272,9 +321,12 @@ async function signPrivateIntent({
       await gate.assertCurrent();
       current();
       const bytes = await saved.keystore.deriveBytesAt(`m/44'/1984'/0'/0'/${saved.accountIndex}'`);
+      const releaseLoan = retainLoan(saved.owner, bytes);
+      loans.add(releaseLoan);
       const wipe = () => bytes.fill(0);
       scope.signal.addEventListener('abort', wipe, { once: true });
       try {
+        current();
         await gate.assertCurrent();
         current();
         // Ownership passes directly to the supervisor, which always wipes
@@ -338,6 +390,7 @@ async function signPrivateIntent({
     // A child can exit while its host durability callback is still pending.
     // Keep identity exclusion until that callback has observed revocation.
     await Promise.allSettled([...requests]);
+    for (const releaseLoan of loans) releaseLoan();
     signing.delete(identity);
   }
 }
@@ -362,6 +415,7 @@ function assertRailgunPrivateSigner(token, identity, { transaction, expected, ex
 module.exports = {
   openRailgunIdentity,
   assertRailgunIdentity,
+  quarantineRailgunIdentityCredentials,
   withRailgunViewingCredential,
   signRailgunPrivateIntent,
   assertRailgunPrivateSigner,

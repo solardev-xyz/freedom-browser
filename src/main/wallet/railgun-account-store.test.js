@@ -11,7 +11,10 @@ const fs = require('fs'),
   os = require('os'),
   path = require('path');
 const { createPrivacyScope } = require('../networks/privacy-context');
-const { openRailgunAccountStore } = require('./railgun-account-store');
+const {
+  openRailgunAccountStore,
+  openRailgunCompletedAccountStore,
+} = require('./railgun-account-store');
 const { createHash } = require('crypto');
 const { startRailgunSessionWorker } = require('./railgun-session-worker');
 const { railgunSourceBinding } = require('./railgun-source-ledger');
@@ -520,3 +523,88 @@ test.each(['source', 'public', 'wallet', 'txid'])(
     expect(reopened.session.signal.aborted).toBe(false);
   }
 );
+
+describe('fixed completed wallet store', () => {
+  async function fixture() {
+    const first = await open({ kind: 'wallet', generationId, create: true });
+    first.session.close();
+    await first.session.closed;
+    current = { active: { ...current.pending, storeId: first.storeId }, pending: null };
+    enrollment.profileGuard.assertRegistered = jest.fn((file) => {
+      enrollment.profileGuard.assert(file);
+      if (!remembered.has(file)) throw Error('unregistered');
+    });
+    return first;
+  }
+  async function completed(first, extra = {}) {
+    const result = await openRailgunCompletedAccountStore({
+      enrollment,
+      generationId,
+      expectedStoreId: first.storeId,
+      ...extra,
+    });
+    opened.push(result);
+    return result;
+  }
+  test('opens a genuine read-only worker with no adoption or database mutation', async () => {
+    const first = await fixture();
+    const filename = first.filename,
+      directory = path.dirname(filename);
+    const before = fs.readFileSync(filename),
+      files = fs.readdirSync(directory).sort();
+    const remember = jest.spyOn(enrollment.profileGuard, 'remember');
+    const value = await completed(first);
+    expect(value.storeId).toBe(first.storeId);
+    expect((await value.session.inspectStoreIdentity()).instanceId).toBe(first.storeId);
+    value.session.close();
+    expect((await value.session.closed).exitCode).toBe(0);
+    expect(enrollment.profileGuard.assertRegistered).toHaveBeenCalledWith(filename);
+    expect(remember).not.toHaveBeenCalled();
+    expect(fs.readFileSync(filename)).toEqual(before);
+    expect(fs.readdirSync(directory).sort()).toEqual(files);
+  });
+  test('unregistered and pending stores refuse before worker launch without mutation', async () => {
+    const first = await fixture();
+    const before = fs.readFileSync(first.filename);
+    const identity = enrollment.withGenerationKeys;
+    const borrowed = jest.spyOn(enrollment, 'withGenerationKeys');
+    remembered.delete(first.filename);
+    await expect(completed(first)).rejects.toThrow('unregistered');
+    expect(borrowed).not.toHaveBeenCalled();
+    remembered.add(first.filename);
+    current.pending = { id: '8'.repeat(64), policy: '2'.repeat(64) };
+    await expect(completed(first)).rejects.toThrow();
+    current.pending = null;
+    enrollment.withGenerationKeys = identity;
+    const reopened = await completed(first);
+    reopened.session.close();
+    expect((await reopened.session.closed).exitCode).toBe(0);
+    expect(fs.readFileSync(first.filename)).toEqual(before);
+  });
+  test.each(['kind', 'create', 'readOnly', 'publicCatalog', 'txidPolicy'])(
+    'rejects caller %s switches',
+    async (name) => {
+      const first = await fixture();
+      await expect(completed(first, { [name]: true })).rejects.toThrow();
+      const reopened = await completed(first);
+      reopened.session.close();
+      await reopened.session.closed;
+    }
+  );
+  test('rejects accessor, symbol and proxy options without invoking accessors', async () => {
+    const getter = jest.fn(() => enrollment);
+    const options = { generationId, expectedStoreId: 'a'.repeat(64) };
+    Object.defineProperty(options, 'enrollment', { enumerable: true, get: getter });
+    await expect(openRailgunCompletedAccountStore(options)).rejects.toThrow();
+    expect(getter).not.toHaveBeenCalled();
+    await expect(
+      openRailgunCompletedAccountStore({
+        enrollment,
+        generationId,
+        expectedStoreId: 'a'.repeat(64),
+        [Symbol('extra')]: true,
+      })
+    ).rejects.toThrow();
+    await expect(openRailgunCompletedAccountStore(new Proxy({}, {}))).rejects.toThrow();
+  });
+});

@@ -58,10 +58,11 @@ function createPrivacyProfileGuard({ handle, profile, seed }) {
       }
     }
   }
-  function read() {
+  function readInventory(createMissing) {
     getPrivacyContext(handle);
     try {
       if (!fs.existsSync(marker)) {
+        if (!createMissing) throw fail('PRIVATE_PROFILE_INVENTORY_MISSING');
         if (
           STORES.some((dir) => {
             const location = path.join(profile.userDataDir, dir);
@@ -96,6 +97,8 @@ function createPrivacyProfileGuard({ handle, profile, seed }) {
       throw fail();
     }
   }
+  const read = () => readInventory(true);
+  const readExisting = () => readInventory(false);
   function name(file) {
     const relative = path.relative(profile.userDataDir, file).split(path.sep).join('/');
     if (!validName(relative)) throw fail();
@@ -106,6 +109,15 @@ function createPrivacyProfileGuard({ handle, profile, seed }) {
     assert(file) {
       name(file);
       read();
+    },
+    // Completed-only restoration must not adopt an unregistered store or
+    // recreate a missing inventory. Membership is checked against each read.
+    assertRegistered(file) {
+      if (typeof file !== 'string') throw fail();
+      const relative = name(file),
+        state = readExisting();
+      if (!state.files.includes(relative)) throw fail();
+      getPrivacyContext(handle);
     },
     // Called only after this store has authenticated an existing file or has
     // durably written a new file. A crash before inventory update is repairable.

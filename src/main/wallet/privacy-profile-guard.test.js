@@ -226,3 +226,189 @@ test('an unlisted ciphertext must authenticate before it is adopted', async () =
       .state.files
   ).toEqual([]);
 });
+
+describe('assertRegistered', () => {
+  const marker = () => path.join(profile.userDataDir, 'wallet-privacy-inventory.json');
+  const relative =
+    'wallet-railgun-accounts/account-' +
+    'a'.repeat(64) +
+    '/railgun-cache-' +
+    'b'.repeat(64) +
+    '/wallet.sqlite';
+  const file = () => path.join(profile.userDataDir, relative);
+  function createFile(location = file()) {
+    fs.mkdirSync(path.dirname(location), { recursive: true });
+    fs.writeFileSync(location, 'retained store fixture');
+  }
+  function snapshot(directory = profile.userDataDir) {
+    return fs
+      .readdirSync(directory)
+      .sort()
+      .map((name) => {
+        const location = path.join(directory, name);
+        return [
+          name,
+          fs.statSync(location).isDirectory() ? snapshot(location) : fs.readFileSync(location),
+        ];
+      });
+  }
+  function resign(record, signingSeed = seed) {
+    const markerKey = createHmac('sha256', signingSeed)
+      .update('Freedom privacy inventory v1\0')
+      .update(profile.id)
+      .digest();
+    record.mac = createHmac('sha256', markerKey).update(JSON.stringify(record.state)).digest('hex');
+    markerKey.fill(0);
+    fs.writeFileSync(marker(), JSON.stringify(record));
+  }
+  test('authenticates registered files with no writes or return capability', () => {
+    const inventory = guard();
+    createFile();
+    inventory.remember(file());
+    const before = snapshot();
+    const write = jest.spyOn(fs, 'writeFileSync'),
+      rename = jest.spyOn(fs, 'renameSync'),
+      mkdir = jest.spyOn(fs, 'mkdirSync');
+    expect(Object.isFrozen(inventory)).toBe(true);
+    expect(inventory.assertRegistered(file())).toBeUndefined();
+    expect(inventory.assertRegistered(file())).toBeUndefined();
+    expect(snapshot()).toEqual(before);
+    expect(write).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled();
+  });
+  test('refuses an unregistered existing file without adoption, while ordinary assert and remember remain compatible', () => {
+    const inventory = guard();
+    createFile();
+    const before = snapshot();
+    expect(() => inventory.assertRegistered(file())).toThrow(
+      expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' })
+    );
+    inventory.assert(file());
+    expect(snapshot()).toEqual(before);
+    inventory.remember(file());
+    expect(inventory.assertRegistered(file())).toBeUndefined();
+  });
+  test.each(['empty-profile', 'empty-store-directory'])(
+    'missing inventory in %s refuses without recreating a marker',
+    (kind) => {
+      const inventory = guard();
+      fs.renameSync(marker(), marker() + '.preserved');
+      if (kind === 'empty-store-directory')
+        fs.mkdirSync(path.join(profile.userDataDir, 'wallet-railgun-accounts'));
+      const before = snapshot();
+      expect(() => inventory.assertRegistered(file())).toThrow(
+        expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_MISSING' })
+      );
+      expect(fs.existsSync(marker())).toBe(false);
+      expect(snapshot()).toEqual(before);
+      // The existing general assertion still initializes an empty inventory.
+      inventory.assert(file());
+      expect(fs.existsSync(marker())).toBe(true);
+    }
+  );
+  test('reads current authenticated membership instead of retaining a prior registration', () => {
+    const inventory = guard();
+    createFile();
+    inventory.remember(file());
+    inventory.assertRegistered(file());
+    // Authenticated inventory replacement fixture; no replay-protection claim.
+    const record = JSON.parse(fs.readFileSync(marker()));
+    record.state.files = [];
+    resign(record);
+    const before = snapshot();
+    expect(() => inventory.assertRegistered(file())).toThrow(
+      expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' })
+    );
+    expect(snapshot()).toEqual(before);
+  });
+  test.each(['requested', 'other-required'])(
+    'missing %s registered file refuses without rewriting inventory',
+    (which) => {
+      const inventory = guard(),
+        other = path.join(profile.userDataDir, 'wallet-railgun-accounts', 'c'.repeat(64) + '.json');
+      createFile();
+      createFile(other);
+      inventory.remember(file());
+      inventory.remember(other);
+      const missing = which === 'requested' ? file() : other;
+      fs.renameSync(missing, missing + '.preserved');
+      const before = snapshot();
+      expect(() => inventory.assertRegistered(file())).toThrow(
+        expect.objectContaining({ code: 'PRIVATE_PROFILE_STORE_MISSING' })
+      );
+      expect(snapshot()).toEqual(before);
+    }
+  );
+  test.each(['modified', 'foreign-key', 'moved'])(
+    '%s current inventory refuses without mutation',
+    (fault) => {
+      const inventory = guard();
+      createFile();
+      inventory.remember(file());
+      const record = JSON.parse(fs.readFileSync(marker()));
+      if (fault === 'modified') {
+        record.state.files = [];
+        fs.writeFileSync(marker(), JSON.stringify(record));
+      } else if (fault === 'foreign-key') resign(record, Buffer.alloc(64, 3));
+      else {
+        // Same profile/seed at another path authenticates but is not this profile.
+        record.state.profileId = createHash('sha256')
+          .update(JSON.stringify([profile.id, profile.userDataDir + '-moved']))
+          .digest('hex');
+        resign(record);
+      }
+      const before = snapshot();
+      expect(() => inventory.assertRegistered(file())).toThrow(
+        expect.objectContaining({
+          code: fault === 'moved' ? 'PRIVATE_PROFILE_MOVED' : 'PRIVATE_PROFILE_INVENTORY_INVALID',
+        })
+      );
+      expect(snapshot()).toEqual(before);
+    }
+  );
+  test.each([null, undefined, {}, '', '../outside.json', 'private.key', 'source.sqlite-wal'])(
+    'refuses invalid file %p before inventory I/O',
+    (value) => {
+      const inventory = guard(),
+        before = snapshot();
+      const read = jest.spyOn(fs, 'readFileSync');
+      expect(() =>
+        inventory.assertRegistered(
+          typeof value === 'string' ? path.join(profile.userDataDir, value) : value
+        )
+      ).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_INVALID' }));
+      expect(read).not.toHaveBeenCalled();
+      expect(snapshot()).toEqual(before);
+    }
+  );
+  test('refuses cancellation before any inventory read', () => {
+    const inventory = guard();
+    createFile();
+    inventory.remember(file());
+    const before = snapshot();
+    scope.close();
+    const read = jest.spyOn(fs, 'readFileSync');
+    expect(() => inventory.assertRegistered(file())).toThrow(
+      expect.objectContaining({ code: 'PRIVACY_CONTEXT_REVOKED' })
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(snapshot()).toEqual(before);
+  });
+  test('rechecks lifetime after authenticated file-existence checks', () => {
+    const inventory = guard();
+    createFile();
+    inventory.remember(file());
+    const before = snapshot(),
+      exists = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((location) => {
+      const present = exists(location);
+      if (location === file()) scope.close();
+      return present;
+    });
+    expect(() => inventory.assertRegistered(file())).toThrow(
+      expect.objectContaining({ code: 'PRIVACY_CONTEXT_REVOKED' })
+    );
+    expect(snapshot()).toEqual(before);
+  });
+});

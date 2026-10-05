@@ -1,4 +1,9 @@
-let mockSignJob, mockPermitConsume, mockDerived;
+let mockSignJob,
+  mockPermitConsume,
+  mockDerived,
+  mockViewingDerived,
+  mockDeferViewing,
+  mockDeferSpending;
 let mockVault, mockParent, mockOnJob, mockInputs, mockClosed, mockCurrent;
 jest.mock('../identity/vault', () => ({
   getMnemonic: () =>
@@ -12,6 +17,18 @@ jest.mock('../identity/privacy-keys', () => {
   const actual = jest.requireActual('../identity/privacy-keys');
   return {
     ...actual,
+    createRailgunViewingKeystore: (...args) => {
+      const store = actual.createRailgunViewingKeystore(...args);
+      return {
+        ...store,
+        deriveBytesAt: async (path) => {
+          const key = await store.deriveBytesAt(path);
+          mockViewingDerived.push({ path, key });
+          if (mockDeferViewing) await mockDeferViewing(key);
+          return key;
+        },
+      };
+    },
     createRailgunKeystore: (...args) => {
       const store = actual.createRailgunKeystore(...args);
       return {
@@ -19,6 +36,7 @@ jest.mock('../identity/privacy-keys', () => {
         deriveBytesAt: async (path) => {
           const key = await store.deriveBytesAt(path);
           mockDerived.push({ path, key });
+          if (mockDeferSpending) await mockDeferSpending(key);
           return key;
         },
       };
@@ -104,6 +122,7 @@ const { createPrivacyScope } = require('../networks/privacy-context');
 const {
   openRailgunIdentity,
   assertRailgunIdentity,
+  quarantineRailgunIdentityCredentials,
   withRailgunViewingCredential,
   signRailgunPrivateIntent,
   assertRailgunPrivateSigner,
@@ -111,6 +130,8 @@ const {
 let identity;
 beforeEach(() => {
   mockDerived = [];
+  mockViewingDerived = [];
+  mockDeferViewing = mockDeferSpending = undefined;
   mockPermitConsume = () => {
     throw Error('no permit');
   };
@@ -444,3 +465,227 @@ test.each([false, true])(
     expect(onKeyRequest).toHaveBeenCalledTimes(1);
   }
 );
+
+function quarantineDeferred() {
+  let resolve;
+  const promise = new Promise((yes) => {
+    resolve = yes;
+  });
+  return { promise, resolve };
+}
+let quarantineProfile = 0;
+describe('process-lifetime credential quarantine', () => {
+  // Different test profiles isolate permanent state. No reset API or simulated
+  // relock clears the production registry in these tests.
+  let profileId;
+  beforeEach(() => {
+    mockParent.close();
+    profileId = `identity-quarantine-${++quarantineProfile}`;
+    mockParent = createPrivacyScope({ profileId, signal: mockVault.signal });
+  });
+  function relock() {
+    mockVault.abort();
+    mockParent.close();
+    mockVault = new AbortController();
+    mockParent = createPrivacyScope({ profileId, signal: mockVault.signal });
+  }
+  test.each(['current', 'closed', 'locked'])(
+    'genuine %s identity quarantines its stable account before any reopening derivation',
+    async (state) => {
+      identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+      if (state === 'closed') identity.close();
+      if (state === 'locked') relock();
+      quarantineRailgunIdentityCredentials(identity);
+      expect(identity.signal.aborted).toBe(true);
+      expect(() => quarantineRailgunIdentityCredentials(identity)).not.toThrow();
+      const spending = mockDerived.length,
+        viewing = mockViewingDerived.length,
+        jobs = mockInputs.length;
+      const use = jest.fn();
+      await expect(withRailgunViewingCredential(identity, use)).rejects.toMatchObject({
+        code: 'RAILGUN_IDENTITY_REFUSED',
+      });
+      await expect(signRailgunPrivateIntent({ identity })).rejects.toMatchObject({
+        code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+      });
+      relock();
+      await expect(openRailgunIdentity({ archive: '/fixture.asar' })).rejects.toMatchObject({
+        code: 'RAILGUN_IDENTITY_REFUSED',
+      });
+      expect(mockDerived).toHaveLength(spending);
+      expect(mockViewingDerived).toHaveLength(viewing);
+      expect(mockInputs).toHaveLength(jobs);
+      expect(use).not.toHaveBeenCalled();
+    }
+  );
+  test('copied/forged identity cannot quarantine a healthy account or select another owner', async () => {
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    for (const value of [{}, { ...identity }, { owner: [profileId, 0] }, null])
+      expect(() => quarantineRailgunIdentityCredentials(value)).toThrow(
+        'Railgun identity unavailable'
+      );
+    expect(() => assertRailgunIdentity(identity)).not.toThrow();
+    await withRailgunViewingCredential(identity, ({ viewingKey }) =>
+      expect(viewingKey.some((v) => v !== 0)).toBe(true)
+    );
+    identity.close();
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    expect(identity.signal.aborted).toBe(false);
+  });
+  test('another account remains current and may derive after quarantining account zero', async () => {
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    const other = await openRailgunIdentity({ archive: '/fixture.asar', accountIndex: 1 });
+    try {
+      quarantineRailgunIdentityCredentials(identity);
+      expect(assertRailgunIdentity(other).accountIndex).toBe(1);
+      await withRailgunViewingCredential(other, ({ viewingKey }) =>
+        expect(viewingKey.some((v) => v !== 0)).toBe(true)
+      );
+    } finally {
+      other.close();
+    }
+  });
+  test('same account index in another profile remains issuable', async () => {
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    quarantineRailgunIdentityCredentials(identity);
+    mockParent.close();
+    mockParent = createPrivacyScope({ profileId: profileId + '-other', signal: mockVault.signal });
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    expect(assertRailgunIdentity(identity).accountIndex).toBe(0);
+  });
+  test('old closed identity quarantines a reopened sibling and wipes its held viewing loan immediately', async () => {
+    const original = await openRailgunIdentity({ archive: '/fixture.asar' });
+    original.close();
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred();
+    let key,
+      settled = false;
+    const work = withRailgunViewingCredential(identity, async ({ viewingKey }) => {
+      key = viewingKey;
+      entered.resolve();
+      await release.promise;
+    }).catch((error) => {
+      settled = true;
+      return error;
+    });
+    await entered.promise;
+    quarantineRailgunIdentityCredentials(original);
+    expect(identity.signal.aborted).toBe(true);
+    expect(key.equals(Buffer.alloc(32))).toBe(true);
+    expect(settled).toBe(false);
+    release.resolve();
+    expect(await work).toMatchObject({ code: 'RAILGUN_IDENTITY_REFUSED' });
+  });
+  test('quarantine blocks reentrant reopen from an abort listener before any key work', async () => {
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    let reopening;
+    identity.signal.addEventListener(
+      'abort',
+      () => {
+        reopening = openRailgunIdentity({ archive: '/fixture.asar' }).catch((error) => error);
+      },
+      { once: true }
+    );
+    const count = mockDerived.length;
+    quarantineRailgunIdentityCredentials(identity);
+    expect(await reopening).toMatchObject({ code: 'RAILGUN_IDENTITY_REFUSED' });
+    expect(mockDerived).toHaveLength(count);
+  });
+  test('late viewing derivation is wiped without callback admission after quarantine', async () => {
+    identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred();
+    let key;
+    mockDeferViewing = async (value) => {
+      key = value;
+      entered.resolve();
+      await release.promise;
+    };
+    const use = jest.fn();
+    const work = withRailgunViewingCredential(identity, use).catch((error) => error);
+    await entered.promise;
+    quarantineRailgunIdentityCredentials(identity);
+    release.resolve();
+    expect(await work).toMatchObject({ code: 'RAILGUN_IDENTITY_REFUSED' });
+    expect(key.equals(Buffer.alloc(32))).toBe(true);
+    expect(use).not.toHaveBeenCalled();
+  });
+  test('quarantine of an old issuer closes a replacement still deriving its initial descriptor', async () => {
+    const original = await openRailgunIdentity({ archive: '/fixture.asar' });
+    original.close();
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred();
+    let key;
+    mockDeferSpending = async (value) => {
+      key = value;
+      entered.resolve();
+      await release.promise;
+    };
+    const jobs = mockInputs.length;
+    const opening = openRailgunIdentity({ archive: '/fixture.asar' }).catch((error) => error);
+    await entered.promise;
+    quarantineRailgunIdentityCredentials(original);
+    release.resolve();
+    expect(await opening).toMatchObject({ code: 'RAILGUN_IDENTITY_REFUSED' });
+    expect(key.equals(Buffer.alloc(32))).toBe(true);
+    expect(mockInputs).toHaveLength(jobs + 1);
+  });
+  test('spending permit callback cannot derive after quarantine', async () => {
+    const options = await signingFixture();
+    options.onKeyRequest = async () => {
+      quarantineRailgunIdentityCredentials(identity);
+      return {};
+    };
+    await expect(signRailgunPrivateIntent(options)).rejects.toMatchObject({
+      code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+    });
+    expect(mockDerived).toHaveLength(0);
+  });
+  test('quarantine wipes a spending loan immediately and retains its unfinished gate callback', async () => {
+    const options = await signingFixture();
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred();
+    let checks = 0,
+      settled = false;
+    mockPermitConsume = () => ({
+      assertCurrent: async () => {
+        if (++checks === 2) {
+          entered.resolve();
+          await release.promise;
+        }
+      },
+    });
+    const work = signRailgunPrivateIntent(options).catch((error) => {
+      settled = true;
+      return error;
+    });
+    await entered.promise;
+    quarantineRailgunIdentityCredentials(identity);
+    expect(mockDerived[0].key.equals(Buffer.alloc(32))).toBe(true);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release.resolve();
+    expect(await work).toMatchObject({ code: 'RAILGUN_PRIVATE_SIGNING_REFUSED' });
+  });
+  test('late spending derivation after quarantine is wiped and never passed to the signer', async () => {
+    const options = await signingFixture();
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred();
+    const attest = jest.fn(async () => {});
+    mockPermitConsume = () => ({ assertCurrent: attest });
+    let key;
+    mockDeferSpending = async (value) => {
+      key = value;
+      entered.resolve();
+      await release.promise;
+    };
+    const work = signRailgunPrivateIntent(options).catch((error) => error);
+    await entered.promise;
+    quarantineRailgunIdentityCredentials(identity);
+    release.resolve();
+    expect(await work).toMatchObject({ code: 'RAILGUN_PRIVATE_SIGNING_REFUSED' });
+    expect(key.equals(Buffer.alloc(32))).toBe(true);
+    expect(attest).toHaveBeenCalledTimes(1);
+  });
+});

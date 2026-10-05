@@ -30,7 +30,7 @@ const shape = (value, keys) =>
   Object.keys(value).length === keys.length &&
   keys.every((key) => Object.hasOwn(value, key));
 
-function startRailgunSessionWorker({ handle, storage, createProvider, onClose }) {
+function startSessionWorker({ handle, storage, createProvider, onClose }, readOnly) {
   const context = getPrivacyContext(handle);
   if (
     context.subject.kind !== 'private-account' ||
@@ -47,7 +47,9 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     storage.key.length !== 32 ||
     typeof storage.binding !== 'string' ||
     !/^[0-9a-f]{64}$/.test(storage.binding) ||
-    (storage.create !== undefined && typeof storage.create !== 'boolean')
+    (storage.create !== undefined && typeof storage.create !== 'boolean') ||
+    Object.hasOwn(storage, 'readOnly') ||
+    (readOnly && storage.create === true)
   )
     throw fail();
   const filename = path.resolve(storage.filename);
@@ -210,6 +212,7 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
         profileId: context.profileId,
         subject,
         requirements: context.requirements,
+        ...(readOnly ? { readOnly: true } : {}),
         storage: {
           filename,
           key: secret,
@@ -356,8 +359,16 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     inspectPosition,
     assertFresh,
   });
-  instances.set(session, { handle, filename, binding: storage.binding });
+  instances.set(session, { handle, filename, binding: storage.binding, readOnly });
   return session;
+}
+function startRailgunSessionWorker(options) {
+  if (Object.hasOwn(options, 'readOnly')) throw fail();
+  return startSessionWorker(options, false);
+}
+function startRailgunReadOnlySessionWorker(options) {
+  if (Object.hasOwn(options, 'readOnly')) throw fail();
+  return startSessionWorker(options, true);
 }
 function assertRailgunSessionWorker(session, { handle, filename, binding }) {
   const entry = instances.get(session);
@@ -369,6 +380,11 @@ function assertRailgunSessionWorker(session, { handle, filename, binding }) {
   for (const key of ['kind', 'principal', 'protocol', 'deployment', 'chainId'])
     if (actual.subject[key] !== expected.subject[key]) throw fail();
 }
+function assertRailgunReadOnlySessionWorker(session) {
+  const entry = instances.get(session);
+  if (!entry?.readOnly || session.signal.aborted) throw fail();
+  getPrivacyContext(entry.handle);
+}
 function assertRailgunSessionDirectoryClosed(directory) {
   for (const filename of owners)
     if (path.dirname(filename) === directory)
@@ -376,6 +392,8 @@ function assertRailgunSessionDirectoryClosed(directory) {
 }
 module.exports = {
   startRailgunSessionWorker,
+  startRailgunReadOnlySessionWorker,
   assertRailgunSessionWorker,
+  assertRailgunReadOnlySessionWorker,
   assertRailgunSessionDirectoryClosed,
 };

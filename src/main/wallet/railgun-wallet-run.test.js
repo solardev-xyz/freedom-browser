@@ -9,7 +9,16 @@ let mockDescriptor,
   mockOperationMode,
   mockReply,
   mockAbortJob,
-  mockActualCapsule;
+  mockActualCapsule,
+  mockWorker,
+  mockCredential,
+  mockLoan,
+  mockBorrow,
+  mockResolveClosed,
+  mockRejectClosed,
+  mockHoldExit,
+  mockCloseFailure,
+  mockQuarantine;
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
 jest.mock('./railgun-prover-runtime', () => ({ verifyRailgunProverRuntime: (v) => v }));
 jest.mock('./railgun-private-capsule', () => ({
@@ -32,18 +41,21 @@ jest.mock('./railgun-private-preparation', () => ({
       : Object.freeze({ ...value }),
 }));
 jest.mock('./railgun-identity', () => ({
+  quarantineRailgunIdentityCredentials: (identity) => mockQuarantine(identity),
   assertRailgunIdentity: () => {
     if (mockRefuse) throw Error('identity refused');
     return mockDescriptor;
   },
   withRailgunViewingCredential: async (_identity, use) => {
-    const viewingKey = Buffer.alloc(32, 7);
+    mockBorrow();
+    if (mockCredential) return mockCredential(use);
+    const viewingKey = mockLoan ?? Buffer.alloc(32, 7);
     try {
       mockCopy = await use({ viewingKey });
       if (mockCancelledCopy) throw mockFailure || Error('identity revoked');
       return mockCopy;
     } finally {
-      viewingKey.fill(0);
+      if (viewingKey instanceof Uint8Array) viewingKey.fill(0);
     }
   },
 }));
@@ -53,13 +65,15 @@ jest.mock('./railgun-process', () => ({
     mockInput = JSON.parse(options.input);
     const controller = new AbortController();
     let resolveClosed;
-    const closed = new Promise((resolve) => {
-      resolveClosed = resolve;
+    const closed = new Promise((resolve, reject) => {
+      mockResolveClosed = resolveClosed = resolve;
+      mockRejectClosed = reject;
     });
     const failed = new Promise((_resolve, reject) => {
       mockAbortJob = reject;
     });
     const running = (async () => {
+      if (mockWorker) return mockWorker(options);
       const bytes = await options.broker.dispatch(
         JSON.stringify({
           id: 1,
@@ -137,7 +151,8 @@ jest.mock('./railgun-process', () => ({
       signal: controller.signal,
       close: jest.fn(() => {
         controller.abort();
-        resolveClosed({ code: 'RAILGUN_PROCESS_CLOSED' });
+        if (!mockHoldExit) resolveClosed({ code: 'RAILGUN_PROCESS_CLOSED' });
+        if (mockCloseFailure) throw Error('private cleanup detail');
       }),
     });
   },
@@ -147,6 +162,10 @@ const { runRailgunWalletSnapshot } = require('./railgun-wallet-run');
 let scope, args;
 beforeEach(() => {
   mockActualCapsule = null;
+  mockWorker = mockCredential = mockLoan = null;
+  mockBorrow = jest.fn();
+  mockQuarantine = jest.fn();
+  mockHoldExit = mockCloseFailure = false;
   mockRefuse = false;
   mockCancelledCopy = false;
   mockFailure = null;
@@ -186,7 +205,8 @@ test('the viewing key is copied into a dedicated 32-byte backing buffer and neve
 test('revocation after making the viewing-key copy wipes it even though no response is delivered', async () => {
   mockCancelledCopy = true;
   await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
-    cause: new Error('identity revoked'),
+    cause: new Error('Railgun wallet broker unavailable'),
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
   });
   expect([...mockCopy]).toEqual(Array(32).fill(0));
   expect(mockTask.close).toHaveBeenCalled();
@@ -196,8 +216,8 @@ test('frozen shared revocation reasons stay intact while utility exit is drained
   mockCancelledCopy = true;
   mockFailure = Object.freeze(Object.assign(new Error('shared reason'), { code: 'REVOKED' }));
   await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
-    cause: mockFailure,
-    code: 'REVOKED',
+    cause: new Error('Railgun wallet broker unavailable'),
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
     closed: { code: 'RAILGUN_PROCESS_CLOSED' },
   });
   expect(Object.keys(mockFailure)).toEqual(['code']);
@@ -344,3 +364,380 @@ test.each(['foreign-wallet', 'missing-capsule', 'extra-envelope'])(
     expect(mockTask.close).toHaveBeenCalled();
   }
 );
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const keyWire = () => JSON.stringify({ id: 1, method: 'key', purpose: 'wallet-viewing' });
+const resultWire = (id) =>
+  JSON.stringify({
+    id,
+    method: 'result',
+    value: {
+      instanceId: mockDescriptor.instanceId,
+    },
+  });
+const storageWire = (id) => JSON.stringify({ id, channel: 'wallet', wire: '{}' });
+
+test.each([
+  null,
+  [],
+  1,
+  { id: 0 },
+  { id: 1.5 },
+  { id: 1, method: 'key', purpose: 'other' },
+  { id: 1, method: 'key', purpose: 'wallet-viewing', extra: true },
+])(
+  'malformed first message permanently refuses even when a child catches it (%#)',
+  async (value) => {
+    mockWorker = async ({ broker }) => {
+      await expect(broker.dispatch(JSON.stringify(value))).rejects.toMatchObject({
+        code: 'RAILGUN_WALLET_BROKER_REFUSED',
+      });
+      await expect(broker.dispatch(keyWire())).rejects.toMatchObject({
+        code: 'RAILGUN_WALLET_BROKER_REFUSED',
+      });
+      await expect(broker.dispatch(resultWire(2))).rejects.toThrow('broker unavailable');
+    };
+    await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_BROKER_REFUSED',
+    });
+    expect(mockBorrow).not.toHaveBeenCalled();
+  }
+);
+test.each([{}, 'x'.repeat(2 * 1024 * 1024 + 1), '{'])(
+  'invalid wire is refused without borrowing (%#)',
+  async (wire) => {
+    mockWorker = async ({ broker }) => {
+      await broker.dispatch(wire);
+    };
+    await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_BROKER_REFUSED',
+    });
+    expect(mockBorrow).not.toHaveBeenCalled();
+  }
+);
+test.each([0, 31, 33, 64])('viewing loan must be exactly 32 bytes, not %i', async (size) => {
+  mockLoan = Buffer.alloc(size, 7);
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
+  });
+  expect(mockCopy).toBeNull();
+  expect([...mockLoan]).toEqual(Array(size).fill(0));
+});
+test('a plain Uint8Array loan remains supported', async () => {
+  mockLoan = new Uint8Array(32).fill(7);
+  await expect(runRailgunWalletSnapshot(args)).resolves.toMatchObject({
+    instanceId: mockDescriptor.instanceId,
+  });
+});
+test.each(['getter', 'proxy', 'key-proxy', 'string'])(
+  'credential %s is rejected without invoking a getter or copying',
+  async (mode) => {
+    const accessed = jest.fn(() => Buffer.alloc(32, 7));
+    let credential =
+      mode === 'getter'
+        ? Object.defineProperty({}, 'viewingKey', { get: accessed })
+        : {
+            viewingKey:
+              mode === 'string'
+                ? '07'.repeat(32)
+                : new Proxy(Buffer.alloc(32, 7), { get: accessed }),
+          };
+    if (mode === 'proxy') credential = new Proxy({}, { getOwnPropertyDescriptor: accessed });
+    mockCredential = async (use) => use(credential);
+    await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_BROKER_REFUSED',
+    });
+    expect(accessed).not.toHaveBeenCalled();
+    expect(mockCopy).toBeNull();
+  }
+);
+test.each(['before-copy', 'after-copy'])(
+  'cancelled run waits for original viewing callback %s and wipes refused copy',
+  async (when) => {
+    const entered = deferred(),
+      release = deferred();
+    let borrowedCopy;
+    mockCredential = async (use) => {
+      if (when === 'after-copy') borrowedCopy = use({ viewingKey: Buffer.alloc(32, 7) });
+      entered.resolve();
+      await release.promise;
+      if (when === 'before-copy') borrowedCopy = use({ viewingKey: Buffer.alloc(32, 7) });
+      return borrowedCopy;
+    };
+    let settled = false;
+    const observed = runRailgunWalletSnapshot(args)
+      .catch((error) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await entered.promise;
+    scope.close();
+    mockAbortJob(Error('worker stopped'));
+    await tick();
+    expect(settled).toBe(false);
+    if (borrowedCopy) expect([...borrowedCopy]).toEqual(Array(32).fill(0));
+    release.resolve();
+    expect(await observed).toMatchObject({
+      code: 'RAILGUN_WALLET_BROKER_REFUSED',
+      closed: { code: 'RAILGUN_PROCESS_CLOSED' },
+    });
+    if (when === 'before-copy') expect(borrowedCopy).toBeUndefined();
+  }
+);
+test('result racing the initial loan refuses and waits for its original callback', async () => {
+  const entered = deferred(),
+    release = deferred();
+  mockCredential = async (use) => {
+    entered.resolve();
+    await release.promise;
+    return use({ viewingKey: Buffer.alloc(32, 7) });
+  };
+  mockWorker = async ({ broker }) => {
+    const key = broker.dispatch(keyWire()).catch((error) => error);
+    await entered.promise;
+    await expect(broker.dispatch(resultWire(2))).rejects.toThrow('broker unavailable');
+    release.resolve();
+    await key;
+  };
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
+  });
+});
+test('independent storage requests may complete out of order but preserve per-request ids', async () => {
+  const first = deferred(),
+    second = deferred();
+  mockRouter.dispatch = jest.fn((wire) =>
+    JSON.parse(wire).id === 1 ? first.promise : second.promise
+  );
+  mockWorker = async ({ broker }) => {
+    (await broker.dispatch(keyWire())).fill(0);
+    const one = broker.dispatch(storageWire(2)),
+      two = broker.dispatch(storageWire(3));
+    second.resolve(JSON.stringify({ id: 2, value: 'two' }));
+    expect(JSON.parse(await two)).toEqual({ id: 3, value: 'two' });
+    first.resolve(JSON.stringify({ id: 1, value: 'one' }));
+    expect(JSON.parse(await one)).toEqual({ id: 2, value: 'one' });
+    await broker.dispatch(resultWire(4));
+  };
+  await expect(runRailgunWalletSnapshot(args)).resolves.toMatchObject({
+    instanceId: mockDescriptor.instanceId,
+  });
+});
+test('result cannot overtake pending storage even when the child catches the refusal', async () => {
+  const release = deferred();
+  mockRouter.dispatch = jest.fn(() => release.promise);
+  mockWorker = async ({ broker }) => {
+    (await broker.dispatch(keyWire())).fill(0);
+    const storage = broker.dispatch(storageWire(2)).catch((error) => error);
+    await expect(broker.dispatch(resultWire(3))).rejects.toThrow('broker unavailable');
+    release.resolve(JSON.stringify({ id: 1, value: null }));
+    await storage;
+    await expect(broker.dispatch(resultWire(4))).rejects.toThrow('broker unavailable');
+  };
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
+  });
+});
+test.each(['resolved', 'rejected'])(
+  'throwing closes still drain held storage and the independently %s exit barrier',
+  async (outcome) => {
+    const entered = deferred(),
+      release = deferred();
+    mockHoldExit = true;
+    mockCloseFailure = true;
+    mockRouter.close.mockImplementation(() => {
+      throw Error('private router cleanup detail');
+    });
+    mockRouter.dispatch = jest.fn(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    mockWorker = async ({ broker }) => {
+      (await broker.dispatch(keyWire())).fill(0);
+      await broker.dispatch(storageWire(2));
+    };
+    let settled = false;
+    const run = runRailgunWalletSnapshot(args)
+      .catch((error) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await entered.promise;
+    mockAbortJob(Error('worker timeout'));
+    await tick();
+    expect(settled).toBe(false);
+    release.resolve(JSON.stringify({ id: 1, value: null }));
+    await tick();
+    expect(settled).toBe(false);
+    if (outcome === 'resolved') mockResolveClosed({ code: 'RAILGUN_PROCESS_CLOSED' });
+    else mockRejectClosed(Error('exit observation unavailable'));
+    const error = await run;
+    expect(error.code).toBe(
+      outcome === 'resolved' ? 'RAILGUN_WALLET_BROKER_REFUSED' : 'RAILGUN_WALLET_EXIT_UNOBSERVED'
+    );
+    if (outcome === 'resolved')
+      expect(error.cause.message).toBe('Railgun wallet broker unavailable');
+    else expect(error.cause).toBeUndefined();
+    expect(error.closed).toEqual(
+      outcome === 'resolved' ? { code: 'RAILGUN_PROCESS_CLOSED' } : undefined
+    );
+  }
+);
+test('a rejected exit barrier still waits for an outstanding credential callback', async () => {
+  const entered = deferred(),
+    release = deferred();
+  mockHoldExit = true;
+  mockCredential = async (use) => {
+    entered.resolve();
+    await release.promise;
+    return use({ viewingKey: Buffer.alloc(32, 7) });
+  };
+  let settled = false;
+  const run = runRailgunWalletSnapshot(args)
+    .catch((error) => error)
+    .finally(() => {
+      settled = true;
+    });
+  await entered.promise;
+  mockAbortJob(Error('worker timeout'));
+  await tick();
+  mockRejectClosed(Error('exit observation unavailable'));
+  await tick();
+  expect(settled).toBe(false);
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).toHaveBeenCalledWith(args.identity);
+  release.resolve();
+  expect(await run).toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+});
+
+test('a short typed loan cannot spoof its intrinsic length through an own getter', async () => {
+  const accessed = jest.fn(() => 32);
+  mockLoan = new Uint8Array(31).fill(7);
+  Object.defineProperty(mockLoan, 'byteLength', { get: accessed });
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
+  });
+  expect(accessed).not.toHaveBeenCalled();
+  expect(mockCopy).toBeNull();
+});
+test('a malformed storage reply permanently stops subsequent storage', async () => {
+  mockRouter.dispatch = jest.fn(async () => JSON.stringify({ id: 900, value: null }));
+  mockWorker = async ({ broker }) => {
+    (await broker.dispatch(keyWire())).fill(0);
+    await expect(broker.dispatch(storageWire(2))).rejects.toThrow('broker unavailable');
+    await expect(broker.dispatch(storageWire(3))).rejects.toThrow('broker unavailable');
+  };
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
+  });
+  expect(mockRouter.dispatch).toHaveBeenCalledTimes(1);
+});
+
+test('an unobserved child exit quarantines credentials and the same identity before any new process or loan', async () => {
+  mockQuarantine.mockImplementation(() => {
+    mockRefuse = true;
+  });
+  const entered = deferred(),
+    release = deferred();
+  mockHoldExit = true;
+  mockCredential = async (use) => {
+    entered.resolve();
+    await release.promise;
+    return use({ viewingKey: Buffer.alloc(32, 7) });
+  };
+  const run = runRailgunWalletSnapshot(args).catch((error) => error);
+  await entered.promise;
+  mockAbortJob(Error('worker unavailable'));
+  await tick();
+  mockRejectClosed(Error('private exit failure'));
+  release.resolve();
+  const error = await run;
+  expect(error).toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect(error.cause).toBeUndefined();
+  expect(error.closed).toBeUndefined();
+  const originalTask = mockTask;
+  mockBorrow.mockClear();
+  mockCredential = null;
+  mockHoldExit = false;
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+  });
+  expect(mockTask).toBe(originalTask);
+  expect(mockBorrow).not.toHaveBeenCalled();
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).toHaveBeenCalledWith(args.identity);
+  // This unit fixture models issuer refusal only; genuine cross-identity scope
+  // and loan revocation are covered by the issuer's independent tests.
+  const replacement = { signal: scope.signal };
+  await expect(runRailgunWalletSnapshot({ ...args, identity: replacement })).rejects.toThrow(
+    'identity refused'
+  );
+  expect(mockTask).toBe(originalTask);
+  expect(mockBorrow).not.toHaveBeenCalled();
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+});
+test('an observed unsuccessful child exit does not quarantine a still-current identity', async () => {
+  const entered = deferred();
+  mockHoldExit = true;
+  mockWorker = async ({ broker }) => {
+    (await broker.dispatch(keyWire())).fill(0);
+    entered.resolve();
+    throw Object.assign(Error('child failed'), { code: 'RAILGUN_PROCESS_FAILED' });
+  };
+  const run = runRailgunWalletSnapshot(args).catch((error) => error);
+  await entered.promise;
+  mockAbortJob(Object.assign(Error('child failed'), { code: 'RAILGUN_PROCESS_FAILED' }));
+  mockResolveClosed({ code: 'RAILGUN_PROCESS_FAILED', exitCode: 1 });
+  expect(await run).toMatchObject({
+    code: 'RAILGUN_PROCESS_FAILED',
+    closed: { code: 'RAILGUN_PROCESS_FAILED', exitCode: 1 },
+  });
+  mockWorker = null;
+  mockHoldExit = false;
+  mockBorrow.mockClear();
+  await expect(runRailgunWalletSnapshot(args)).resolves.toMatchObject({
+    instanceId: mockDescriptor.instanceId,
+  });
+  expect(mockBorrow).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).not.toHaveBeenCalled();
+});
+
+test('issuer cleanup failure cannot mask unknown exit or skip original callback drainage', async () => {
+  const entered = deferred(),
+    release = deferred();
+  mockHoldExit = true;
+  mockQuarantine.mockImplementation(() => {
+    throw Error('private issuer cleanup detail');
+  });
+  mockCredential = async (use) => {
+    entered.resolve();
+    await release.promise;
+    return use({ viewingKey: Buffer.alloc(32, 7) });
+  };
+  let settled = false;
+  const run = runRailgunWalletSnapshot(args)
+    .catch((error) => error)
+    .finally(() => {
+      settled = true;
+    });
+  await entered.promise;
+  mockAbortJob(Error('worker failed'));
+  await tick();
+  mockRejectClosed(Error('exit unavailable'));
+  await tick();
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).toHaveBeenCalledWith(args.identity);
+  expect(settled).toBe(false);
+  release.resolve();
+  const error = await run;
+  expect(error.code).toBe('RAILGUN_WALLET_EXIT_UNOBSERVED');
+  expect(error.cause).toBeUndefined();
+  expect(error.closed).toBeUndefined();
+});

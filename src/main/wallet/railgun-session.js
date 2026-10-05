@@ -4,7 +4,7 @@
  */
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunStore } = require('./railgun-store');
-const { createRailgunPagedStore } = require('./railgun-paged-store');
+const { createRailgunPagedStore, openRailgunReadOnlyPagedStore } = require('./railgun-paged-store');
 const { createRailgunStoreCursor, clearRailgunStore } = require('./railgun-store-cursor');
 const { inspectPublicRecords } = require('./railgun-public-records');
 const { inspectRailgunWalletState } = require('./railgun-wallet-state');
@@ -63,7 +63,7 @@ function range(input) {
   }
   return result;
 }
-function createRailgunSession({ handle, storage, createProvider, onClose, onRevision }) {
+function createSession({ handle, storage, createProvider, onClose, onRevision }, readOnly) {
   const owner = getPrivacyContext(handle);
   if (
     owner.subject.kind !== 'private-account' ||
@@ -143,7 +143,13 @@ function createRailgunSession({ handle, storage, createProvider, onClose, onRevi
   scope.signal.addEventListener('abort', close, { once: true });
   try {
     if (storage.format !== undefined && storage.format !== 'paged-v2') throw fail();
-    const factory = storage.format === 'paged-v2' ? createRailgunPagedStore : createRailgunStore;
+    if (Object.hasOwn(storage, 'readOnly') || (readOnly && storage.format !== 'paged-v2'))
+      throw fail();
+    const factory = readOnly
+      ? openRailgunReadOnlyPagedStore
+      : storage.format === 'paged-v2'
+        ? createRailgunPagedStore
+        : createRailgunStore;
     store = factory({ ...storage, handle: storeHandle, onFatal: close });
     provider = createProvider({ handle: rpcHandle, signal: scope.signal });
     if (typeof provider?.request !== 'function' || provider.signal !== scope.signal) throw fail();
@@ -487,4 +493,12 @@ function createRailgunSession({ handle, storage, createProvider, onClose, onRevi
     assertFresh,
   });
 }
-module.exports = { createRailgunSession };
+function createRailgunSession(options) {
+  if (Object.hasOwn(options, 'readOnly')) throw fail();
+  return createSession(options, false);
+}
+function createRailgunReadOnlySession(options) {
+  if (Object.hasOwn(options, 'readOnly')) throw fail();
+  return createSession(options, true);
+}
+module.exports = { createRailgunSession, createRailgunReadOnlySession };

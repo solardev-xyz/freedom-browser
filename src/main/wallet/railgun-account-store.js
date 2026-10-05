@@ -10,7 +10,10 @@ const fs = require('fs'),
   path = require('path');
 const { randomBytes } = require('crypto');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
-const { startRailgunSessionWorker } = require('./railgun-session-worker');
+const {
+  startRailgunSessionWorker,
+  startRailgunReadOnlySessionWorker,
+} = require('./railgun-session-worker');
 const { createRailgunSourceLedger, railgunSourceBinding } = require('./railgun-source-ledger');
 const { claimRailgunAccountStore } = require('./railgun-store-owners');
 const { railgunTxidBinding } = require('./railgun-txid-policy');
@@ -35,16 +38,19 @@ function fileExists(target) {
     throw error;
   }
 }
-async function openRailgunAccountStore({
-  enrollment,
-  kind,
-  generationId,
-  publicCatalog,
-  txidPolicy,
-  create = false,
-  expectedStoreId,
-  signal,
-}) {
+async function openAccountStore(
+  {
+    enrollment,
+    kind,
+    generationId,
+    publicCatalog,
+    txidPolicy,
+    create = false,
+    expectedStoreId,
+    signal,
+  },
+  readOnly
+) {
   check(signal === undefined || signal instanceof AbortSignal);
   check(!signal?.aborted);
   check(isRailgunAccountEnrollment(enrollment));
@@ -65,6 +71,7 @@ async function openRailgunAccountStore({
   );
   check(!create || expectedStoreId === undefined);
   check(publicCatalog === undefined || kind !== 'wallet');
+  check(!readOnly || (kind === 'wallet' && !create && expectedStoreId !== undefined));
   const handle = enrollment.getContext('engine');
   realDirectory(enrollment.directory);
   const directory =
@@ -93,12 +100,13 @@ async function openRailgunAccountStore({
     enrollment.getContext('engine');
     realDirectory(enrollment.directory);
     realDirectory(directory);
-    enrollment.profileGuard.assert(filename);
+    if (readOnly) enrollment.profileGuard.assertRegistered(filename);
+    else enrollment.profileGuard.assert(filename);
     check(!signal?.aborted);
   };
   const open = async (name, key, initialize) => {
     active();
-    worker = startRailgunSessionWorker({
+    worker = (readOnly ? startRailgunReadOnlySessionWorker : startRailgunSessionWorker)({
       handle,
       storage: {
         format: 'paged-v2',
@@ -159,6 +167,7 @@ async function openRailgunAccountStore({
       active();
       const current = await (publicCatalog ?? enrollment.catalog).inspect();
       active();
+      if (readOnly) check(current.active?.id === generationId && current.pending === null);
       const selected = current.active?.id === generationId ? current.active : current.pending;
       check(selected?.id === generationId);
       return selected;
@@ -217,7 +226,8 @@ async function openRailgunAccountStore({
       if (expected !== undefined) check(storeId === expected);
     }
     active();
-    enrollment.profileGuard.remember(filename);
+    if (readOnly) enrollment.profileGuard.assertRegistered(filename);
+    else enrollment.profileGuard.remember(filename);
     return Object.freeze({ session: worker, storeId, filename, ...(ledger ? { ledger } : {}) });
   };
   try {
@@ -241,4 +251,28 @@ async function openRailgunAccountStore({
     throw error;
   }
 }
-module.exports = { openRailgunAccountStore };
+async function openRailgunAccountStore(options) {
+  check(options && !Object.hasOwn(options, 'readOnly'));
+  return openAccountStore(options, false);
+}
+async function openRailgunCompletedAccountStore(options) {
+  check(options && typeof options === 'object' && !Array.isArray(options));
+  check(
+    !require('util').types.isProxy(options) && Object.getPrototypeOf(options) === Object.prototype
+  );
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  check(
+    Reflect.ownKeys(descriptors).every(
+      (name) =>
+        ['enrollment', 'generationId', 'expectedStoreId', 'signal'].includes(name) &&
+        Object.hasOwn(descriptors[name], 'value')
+    )
+  );
+  check(
+    ['enrollment', 'generationId', 'expectedStoreId'].every((name) =>
+      Object.hasOwn(descriptors, name)
+    )
+  );
+  return openAccountStore({ ...options, kind: 'wallet', create: false }, true);
+}
+module.exports = { openRailgunAccountStore, openRailgunCompletedAccountStore };

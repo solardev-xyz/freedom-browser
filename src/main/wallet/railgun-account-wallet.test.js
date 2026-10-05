@@ -1,15 +1,23 @@
 let mockEnrollment, mockIdentity, mockSession, mockCoverage, mockJournal, mockRunner, mockView;
+const mockCompletedStore = jest.fn();
+const mockQuarantine = jest.fn();
 const mockOpenStore = jest.fn(),
   mockCreateJournal = jest.fn(),
   mockRead = jest.fn();
 const mockAssertCoordinator = jest.fn();
+const mockCompletedOutcome = jest.fn();
 const mockAssertPublic = jest.fn();
+const mockDestination = Object.freeze({});
+const mockAssertDestination = jest.fn();
+const mockReadOnlyJournal = jest.fn();
 jest.mock('./railgun-account-public', () => ({
   getRailgunAccountPublicIdentity: (...args) => mockAssertPublic(...args),
+  assertRailgunAccountPublicDestination: (...args) => mockAssertDestination(...args),
 }));
 jest.mock('./railgun-public-policy', () => ({ getRailgunPublicPolicy: () => 'a'.repeat(64) }));
 jest.mock('./railgun-scan-coordinator', () => ({
   assertRailgunScanCoordinator: (...args) => mockAssertCoordinator(...args),
+  getRailgunCompletedSnapshotOutcome: (...args) => mockCompletedOutcome(...args),
 }));
 jest.mock('./railgun-wallet-policy', () => ({ getRailgunWalletPolicy: () => '2'.repeat(64) }));
 jest.mock('./railgun-wallet-coverage', () => ({
@@ -19,6 +27,7 @@ jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
 }));
 jest.mock('./railgun-identity', () => ({
+  quarantineRailgunIdentityCredentials: (...args) => mockQuarantine(...args),
   assertRailgunIdentity: (v) => {
     if (v !== mockIdentity) throw Error('identity');
     return v.descriptor;
@@ -26,13 +35,16 @@ jest.mock('./railgun-identity', () => ({
 }));
 jest.mock('./railgun-account-store', () => ({
   openRailgunAccountStore: (...args) => mockOpenStore(...args),
+  openRailgunCompletedAccountStore: (...args) => mockCompletedStore(...args),
 }));
 jest.mock('./railgun-wallet-runner', () => ({ createRailgunAccountRunner: () => mockRunner }));
 jest.mock('./railgun-wallet-coverage-store', () => ({
   createRailgunWalletCoverageStore: () => mockCoverage,
+  createRailgunCompletedWalletCoverageStore: () => mockCoverage,
 }));
 jest.mock('./railgun-wallet-journal', () => ({
   createRailgunWalletJournal: (...args) => mockCreateJournal(...args),
+  openRailgunWalletJournalReadOnly: (...args) => mockReadOnlyJournal(...args),
 }));
 jest.mock('./railgun-kohaku-read', () => ({
   createRailgunKohakuRead: (...args) => mockRead(...args),
@@ -45,6 +57,7 @@ const { getPrivacyStoragePath } = require('./privacy-storage');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const {
   openRailgunAccountWallet,
+  openRailgunCompletedAccountWallet,
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
@@ -55,6 +68,9 @@ const {
 let scope, options, directory, generation, events, state;
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCompletedOutcome.mockImplementation(() => {
+    throw Error('unknown outcome');
+  });
   mockAssertPublic.mockImplementation(() => ({
     generationId: 'a'.repeat(64),
     sourceId: 'b'.repeat(64),
@@ -114,9 +130,10 @@ beforeEach(() => {
     }),
     close: jest.fn(() => {
       controller.abort();
-      exited();
+      exited({ exitCode: 0 });
     }),
     inspectWalletState: jest.fn(async () => ({ state: true })),
+    assertFresh: jest.fn(),
   };
   mockOpenStore.mockImplementation(async () => ({
     session: mockSession,
@@ -210,7 +227,7 @@ test('an open wallet view holds its phase until its storage worker has exited', 
   const closing = value.close();
   await Promise.resolve();
   expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
-  finish();
+  finish({ exitCode: 0 });
   await closing;
   const phase = claimRailgunAccountPhase(mockEnrollment, 'txid');
   phase.release();
@@ -993,14 +1010,14 @@ test('failed replacement wallet drains before phase release and cannot release t
     await new Promise((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
     expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid', handoff.token)).toThrow();
-    finish();
+    finish({ exitCode: 0 });
     expect(await observed).toBeInstanceOf(Error);
     handoff.assertCurrent();
     expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
     const next = claimRailgunAccountPhase(mockEnrollment, 'wallet', handoff.token);
     next.release();
   } finally {
-    finish();
+    finish({ exitCode: 0 });
     await observed;
     handoff.release();
   }
@@ -1066,5 +1083,481 @@ test.each(['prepare', 'operate'])(
     } finally {
       await opened.close();
     }
+  }
+);
+
+function completedOptions() {
+  mockCompletedStore.mockImplementation(async () => ({
+    session: mockSession,
+    storeId: generation.storeId,
+  }));
+  state.checkpoint = {
+    target: { hash: '{}', plan: {} },
+    coverage: {},
+    wallet: { state: true },
+  };
+  mockCoverage.read.mockImplementation(async () => {
+    events.push('coverage-read');
+    return { checkpoint: {}, summary: {}, coverage: {} };
+  });
+  mockEnrollment.profileGuard.assertRegistered = jest.fn();
+  mockReadOnlyJournal.mockImplementation(async () => mockJournal);
+  mockAssertDestination.mockImplementation((coordinator, enrollment, destination) => {
+    if (
+      coordinator !== options.coordinator ||
+      enrollment !== mockEnrollment ||
+      destination !== mockDestination
+    )
+      throw Error('destination');
+  });
+  options.coordinator.withCompletedPublicSnapshot = jest.fn(async (input, run) => {
+    expect(input.destination).toBe(mockDestination);
+    expect(input.signal.aborted).toBe(false);
+    return { value: await run({ checkpoint: {}, signal: input.signal }), evidence: {} };
+  });
+  options.coordinator.withPublicSnapshot = jest.fn(() => {
+    throw Error('ordinary route');
+  });
+  return { ...options, destination: mockDestination };
+}
+function completedDeferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+async function completedUntil(predicate) {
+  for (let i = 0; i < 100; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw Error('fixture did not enter');
+}
+
+test('completed-only open and repeated restore keep fixed read-only route and account registry', async () => {
+  const input = completedOptions();
+  const wallet = await openRailgunCompletedAccountWallet(input);
+  try {
+    expect(wallet.view).toBe(mockView);
+    expect(wallet.generationId).toBe(generation.id);
+    expect(readRailgunAccountOwnedNotes(wallet, options).ownedPoi).toEqual([]);
+    await restoreRailgunAccountWallet(wallet, options);
+    expect(mockRunner.restoreReadOnly).toHaveBeenCalledTimes(2);
+    expect(options.coordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(2);
+    expect(mockCompletedStore).toHaveBeenCalledWith({
+      enrollment: mockEnrollment,
+      generationId: generation.id,
+      expectedStoreId: generation.storeId,
+      signal: expect.any(AbortSignal),
+    });
+    expect(mockOpenStore).not.toHaveBeenCalled();
+    expect(mockReadOnlyJournal).toHaveBeenCalledTimes(1);
+    expect(mockReadOnlyJournal.mock.calls[0][0]).not.toHaveProperty('create');
+    expect(mockCreateJournal).not.toHaveBeenCalled();
+    expect(mockRunner.run).not.toHaveBeenCalled();
+    expect(mockJournal.prepare).not.toHaveBeenCalled();
+    expect(mockJournal.complete).not.toHaveBeenCalled();
+    expect(mockCoverage.write).not.toHaveBeenCalled();
+    expect(mockEnrollment.catalog.begin).not.toHaveBeenCalled();
+    expect(mockEnrollment.catalog.publish).not.toHaveBeenCalled();
+    expect(options.coordinator.withPublicSnapshot).not.toHaveBeenCalled();
+  } finally {
+    await wallet.close();
+  }
+});
+
+test.each(['prepare', 'operate', 'handoff'])(
+  'completed-only account refuses ordinary %s before any additional work',
+  async (kind) => {
+    const input = completedOptions();
+    const wallet = await openRailgunCompletedAccountWallet(input);
+    try {
+      const work = () =>
+        kind === 'prepare'
+          ? prepareRailgunAccountPrivateIntent(wallet, options, {})
+          : kind === 'operate'
+            ? operateRailgunAccountPrivateIntent(wallet, options, {}, {})
+            : require('./railgun-account-wallet').reserveRailgunAccountWalletHandoff(
+                wallet,
+                options
+              );
+      await expect(Promise.resolve().then(work)).rejects.toThrow();
+      expect(mockRunner.restoreReadOnly).toHaveBeenCalledTimes(1);
+      expect(wallet.signal.aborted).toBe(false);
+    } finally {
+      await wallet.close();
+    }
+  }
+);
+
+test.each([
+  'mode',
+  'handoff',
+  'callback',
+  'job',
+  'create',
+  'timeout-zero',
+  'timeout-large',
+  'signal',
+  'destination',
+])('completed-only %s admission refuses before store work', async (kind) => {
+  const input = completedOptions();
+  if (kind === 'timeout-zero') input.timeoutMs = 0;
+  else if (kind === 'timeout-large') input.timeoutMs = 180001;
+  else if (kind === 'signal') input.signal = null;
+  else input[kind] = {};
+  await expect(openRailgunCompletedAccountWallet(input)).rejects.toThrow();
+  expect(mockCompletedStore).not.toHaveBeenCalled();
+  expect(mockReadOnlyJournal).not.toHaveBeenCalled();
+});
+
+test.each(['pending', 'missing', 'checkpoint-mismatch', 'unregistered', 'policy'])(
+  'completed-only %s refuses without restoration or repair',
+  async (kind) => {
+    const input = completedOptions();
+    if (kind === 'pending') state.pending = {};
+    if (kind === 'missing') state.checkpoint = null;
+    if (kind === 'checkpoint-mismatch') state.checkpoint.target.hash = 'different';
+    if (kind === 'unregistered')
+      mockEnrollment.profileGuard.assertRegistered.mockImplementation(() => {
+        throw Error('inventory');
+      });
+    if (kind === 'policy') generation.policy = 'f'.repeat(64);
+    await expect(openRailgunCompletedAccountWallet(input)).rejects.toThrow();
+    expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+    expect(mockJournal.prepare).not.toHaveBeenCalled();
+    expect(options.coordinator.signal.aborted).toBe(false);
+    expect(options.coordinator.withCompletedPublicSnapshot).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['missing-coverage', 'checkpoint', 'summary', 'wallet', 'stale-wallet'])(
+  'completed persisted %s mismatch refuses before source or viewing work',
+  async (kind) => {
+    const input = completedOptions();
+    if (kind === 'missing-coverage') mockCoverage.read.mockResolvedValueOnce(null);
+    if (kind === 'checkpoint') state.checkpoint.target.plan = { changed: true };
+    if (kind === 'summary') state.checkpoint.coverage = { changed: true };
+    if (kind === 'wallet') state.checkpoint.wallet = { state: false };
+    if (kind === 'stale-wallet')
+      mockSession.assertFresh.mockImplementationOnce(() => {
+        throw Error('stale wallet state');
+      });
+    await expect(openRailgunCompletedAccountWallet(input)).rejects.toThrow();
+    expect(options.coordinator.withCompletedPublicSnapshot).not.toHaveBeenCalled();
+    expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+    expect(mockRunner.run).not.toHaveBeenCalled();
+    expect(mockOpenStore).not.toHaveBeenCalled();
+    expect(mockCoverage.write).not.toHaveBeenCalled();
+    expect(mockJournal.prepare).not.toHaveBeenCalled();
+    expect(options.coordinator.signal.aborted).toBe(false);
+  }
+);
+
+test('late wallet restoration rejection is data inside completed snapshot, not a shared coordinator exception', async () => {
+  const input = completedOptions();
+  mockRunner.restoreReadOnly.mockRejectedValueOnce(Error('wallet failure'));
+  await expect(openRailgunCompletedAccountWallet(input)).rejects.toThrow();
+  expect(await options.coordinator.withCompletedPublicSnapshot.mock.results[0].value).toEqual({
+    value: null,
+    evidence: {},
+  });
+  expect(options.coordinator.signal.aborted).toBe(false);
+});
+
+test.each(['store', 'journal', 'runner', 'revalidate'])(
+  'cancellation during held %s retains genuine phase until borrowed work and child drain',
+  async (kind) => {
+    const input = completedOptions();
+    const caller = new AbortController();
+    input.signal = caller.signal;
+    const gate = completedDeferred(),
+      exited = completedDeferred();
+    mockSession.closed = exited.promise;
+    let entered = false;
+    const hold = async (value) => {
+      entered = true;
+      await gate.promise;
+      return value;
+    };
+    if (kind === 'store')
+      mockCompletedStore.mockImplementationOnce(() => hold({ session: mockSession }));
+    if (kind === 'journal')
+      mockEnrollment.withGenerationKeys = async (_id, use) => {
+        const value = await use({ 'wallet-journal': Buffer.alloc(32) });
+        return hold(value);
+      };
+    if (kind === 'runner')
+      mockRunner.restoreReadOnly.mockImplementationOnce(() => hold({ receipt: {}, coverage: {} }));
+    if (kind === 'revalidate') mockJournal.revalidate.mockImplementationOnce(() => hold());
+    let settled = false;
+    const pending = openRailgunCompletedAccountWallet(input).catch((error) => {
+      settled = true;
+      return error;
+    });
+    await completedUntil(() => entered);
+    caller.abort();
+    exited.resolve({ exitCode: 0 });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    gate.resolve();
+    expect(await pending).toBeInstanceOf(Error);
+    const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+    phase.release();
+    expect(options.coordinator.signal.aborted).toBe(false);
+  }
+);
+
+test('completed account close drains a repeated restore even after worker exit, including reentrant close', async () => {
+  const wallet = await openRailgunCompletedAccountWallet(completedOptions());
+  const gate = completedDeferred();
+  let entered = false;
+  mockRunner.restoreReadOnly.mockImplementationOnce(async () => {
+    entered = true;
+    await gate.promise;
+    return { receipt: {} };
+  });
+  const restoring = restoreRailgunAccountWallet(wallet, options).catch((error) => error);
+  await completedUntil(() => entered);
+  mockSession.close.mockImplementationOnce(() => {
+    void wallet.close();
+  });
+  let closed = false;
+  const closing = wallet.close().then(() => {
+    closed = true;
+  });
+  await mockSession.closed;
+  expect(closed).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  gate.resolve();
+  expect(await restoring).toBeInstanceOf(Error);
+  await closing;
+});
+
+test('completed lifetime checks monotonic expiry without timer delivery and current generation/destination', async () => {
+  const clock = jest.spyOn(performance, 'now').mockReturnValue(100);
+  const wallet = await openRailgunCompletedAccountWallet({
+    ...completedOptions(),
+    timeoutMs: 1000,
+  });
+  try {
+    clock.mockReturnValue(1100);
+    expect(() => readRailgunAccountOwnedNotes(wallet, options)).toThrow();
+    clock.mockReturnValue(101);
+    mockAssertDestination.mockImplementationOnce(() => {
+      throw Error('revoked destination');
+    });
+    expect(() => readRailgunAccountOwnedNotes(wallet, options)).toThrow();
+    generation = { ...generation, id: 'f'.repeat(64) };
+    expect(() => readRailgunAccountOwnedNotes(wallet, options)).toThrow();
+  } finally {
+    await wallet.close();
+  }
+});
+
+test('pre-aborted completed open has zero inventory/storage/source work and leaves phase free', async () => {
+  const input = completedOptions();
+  const caller = new AbortController();
+  caller.abort();
+  await expect(
+    openRailgunCompletedAccountWallet({ ...input, signal: caller.signal })
+  ).rejects.toThrow();
+  expect(mockEnrollment.profileGuard.assertRegistered).not.toHaveBeenCalled();
+  expect(mockCompletedStore).not.toHaveBeenCalled();
+  expect(options.coordinator.withCompletedPublicSnapshot).not.toHaveBeenCalled();
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+  phase.release();
+});
+
+test('unregistered journal refuses before wallet worker initialization', async () => {
+  const input = completedOptions();
+  mockEnrollment.profileGuard.assertRegistered.mockImplementation((file) => {
+    if (file.endsWith('.json')) throw Error('not registered');
+  });
+  await expect(openRailgunCompletedAccountWallet(input)).rejects.toThrow();
+  expect(mockCompletedStore).not.toHaveBeenCalled();
+  expect(mockReadOnlyJournal).not.toHaveBeenCalled();
+});
+
+test('completed source pending refusal never invokes wallet worker restoration or ordinary repair', async () => {
+  const input = completedOptions();
+  options.coordinator.withCompletedPublicSnapshot.mockRejectedValueOnce(Error('pending'));
+  await expect(openRailgunCompletedAccountWallet(input)).rejects.toThrow(
+    'Railgun wallet requires recovery'
+  );
+  expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+  expect(mockRunner.run).not.toHaveBeenCalled();
+  expect(options.coordinator.withPublicSnapshot).not.toHaveBeenCalled();
+  expect(options.coordinator.signal.aborted).toBe(false);
+});
+
+test('throwing journal close cannot skip worker close or release phase before actual exit', async () => {
+  const wallet = await openRailgunCompletedAccountWallet(completedOptions());
+  const exited = completedDeferred();
+  mockSession.closed = exited.promise;
+  mockJournal.close.mockImplementation(() => {
+    throw Error('close fault');
+  });
+  let settled = false;
+  const closing = wallet.close().catch((error) => {
+    settled = true;
+    return error;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(mockSession.close).toHaveBeenCalled();
+  expect(settled).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  exited.resolve({ exitCode: 0 });
+  expect(await closing).toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' });
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+  phase.release();
+});
+
+test('final revalidation cancellation cannot publish a late view and drains the borrowed callback', async () => {
+  const input = completedOptions();
+  const caller = new AbortController();
+  const gate = completedDeferred();
+  let entered = false;
+  mockJournal.revalidate.mockImplementationOnce(async () => {
+    entered = true;
+    await gate.promise;
+  });
+  const opening = openRailgunCompletedAccountWallet({ ...input, signal: caller.signal });
+  const refused = expect(opening).rejects.toThrow();
+  await completedUntil(() => entered);
+  caller.abort();
+  await mockSession.closed;
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  expect(mockRead).not.toHaveBeenCalled();
+  gate.resolve();
+  await refused;
+  expect(mockRead).not.toHaveBeenCalled();
+});
+
+test('completed restore overlapping caller neither issues a second source read nor closes first operation', async () => {
+  const wallet = await openRailgunCompletedAccountWallet(completedOptions());
+  const gate = completedDeferred();
+  let entered = false;
+  mockRunner.restoreReadOnly.mockImplementationOnce(async () => {
+    entered = true;
+    await gate.promise;
+    return { receipt: {}, coverage: {} };
+  });
+  const first = restoreRailgunAccountWallet(wallet, options);
+  await completedUntil(() => entered);
+  await expect(restoreRailgunAccountWallet(wallet, options)).rejects.toThrow();
+  expect(wallet.signal.aborted).toBe(false);
+  expect(options.coordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(2);
+  gate.resolve();
+  await first;
+  await wallet.close();
+});
+
+test.each(['open', 'restore'])(
+  'completed %s preserves only genuine source failure provenance even with cancellation',
+  async (kind) => {
+    const caller = new AbortController();
+    const input = { ...completedOptions(), signal: caller.signal };
+    const wallet = kind === 'restore' ? await openRailgunCompletedAccountWallet(input) : undefined;
+    const original = Error('source secret');
+    const outcome = Object.freeze({ fatal: true, reason: 'rpc-failure', rpcFailure: 'response' });
+    mockCompletedOutcome.mockImplementation((coordinator, error) => {
+      expect(coordinator).toBe(options.coordinator);
+      expect(error).toBe(original);
+      return outcome;
+    });
+    options.coordinator.withCompletedPublicSnapshot.mockImplementationOnce(async () => {
+      caller.abort();
+      throw original;
+    });
+    const error = await (
+      wallet
+        ? restoreRailgunAccountWallet(wallet, options)
+        : openRailgunCompletedAccountWallet(input)
+    ).catch((error) => error);
+    expect(error).toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED', sourceOutcome: outcome });
+    expect(error.message).not.toContain('source secret');
+    expect(error.sourceOutcome).toBe(outcome);
+    if (wallet) await wallet.close();
+  }
+);
+
+test('public generation changes while waiting for completed source refuse before viewing credential admission', async () => {
+  const input = completedOptions();
+  options.coordinator.withCompletedPublicSnapshot.mockImplementationOnce(async (_options, run) => {
+    generation = { ...generation, id: 'f'.repeat(64) };
+    return { value: await run({ checkpoint: {}, signal: scope.signal }), evidence: {} };
+  });
+  await expect(openRailgunCompletedAccountWallet(input)).rejects.toThrow();
+  expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+  expect(options.coordinator.signal.aborted).toBe(false);
+});
+
+test.each([false, true])(
+  'unknown utility exit retains account exclusion across identity replacement (wrapped=%s)',
+  async (wrapped) => {
+    const input = completedOptions();
+    const unknown = Object.assign(Error('unobserved'), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    mockRunner.restoreReadOnly.mockRejectedValueOnce(
+      wrapped ? Error('outer', { cause: unknown }) : unknown
+    );
+    await expect(openRailgunCompletedAccountWallet(input)).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+    });
+    expect(mockSession.close).toHaveBeenCalled();
+    await mockSession.closed;
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+    const original = mockEnrollment;
+    mockEnrollment = { ...original };
+    mockIdentity = { descriptor: { ...mockIdentity.descriptor } };
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  }
+);
+test('observed failed storage exit rejects close after drain but releases the phase', async () => {
+  const account = await openRailgunCompletedAccountWallet(completedOptions());
+  mockSession.closed = Promise.resolve({ exitCode: 1 });
+  await expect(account.close()).rejects.toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' });
+  const claim = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+  claim.release();
+});
+test('unobserved storage exit rejects close and retains the phase', async () => {
+  const account = await openRailgunCompletedAccountWallet(completedOptions());
+  mockSession.closed = Promise.reject(Error('missing exit evidence'));
+  await expect(account.close()).rejects.toThrow();
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  mockSession.closed = Promise.resolve({ exitCode: 0 });
+});
+
+test.each(['ordinary-open', 'repeated-restore'])(
+  'unknown exit retains phase on %s and quarantines credentials',
+  async (mode) => {
+    const unknown = Object.assign(Error('unobserved'), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    if (mode === 'ordinary-open') {
+      mockRunner.run.mockRejectedValueOnce(unknown);
+      await expect(openRailgunAccountWallet(options)).rejects.toMatchObject({
+        code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+      });
+    } else {
+      const account = await openRailgunCompletedAccountWallet(completedOptions());
+      mockRunner.restoreReadOnly.mockRejectedValueOnce(unknown);
+      await expect(restoreRailgunAccountWallet(account, options)).rejects.toMatchObject({
+        code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+      });
+    }
+    expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  }
+);
+test.each([undefined, null, {}, { exitCode: null }])(
+  'invalid storage exit evidence %p cannot release phase',
+  async (value) => {
+    const account = await openRailgunCompletedAccountWallet(completedOptions());
+    mockSession.closed = Promise.resolve(value);
+    await expect(account.close()).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
   }
 );

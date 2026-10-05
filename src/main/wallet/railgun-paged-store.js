@@ -60,7 +60,8 @@ const overlaps = (page, options) =>
   (!options.gte || Buffer.compare(page.last, options.gte) >= 0) &&
   (!options.lt || Buffer.compare(page.first, options.lt) < 0) &&
   (!options.lte || Buffer.compare(page.first, options.lte) <= 0);
-function createRailgunPagedStore({ handle, filename, key, binding, onFatal, create = false }) {
+// The read policy is selected only by the fixed main-owned entry point below.
+function openPagedStore({ handle, filename, key, binding, onFatal, create = false }, readOnly) {
   const context = getPrivacyContext(handle);
   if (
     context.subject.kind !== 'private-account' ||
@@ -74,7 +75,8 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     typeof binding !== 'string' ||
     !/^[0-9a-f]{64}$/.test(binding) ||
     typeof onFatal !== 'function' ||
-    typeof create !== 'boolean'
+    typeof create !== 'boolean' ||
+    (readOnly && create)
   )
     throw refused();
   filename = path.resolve(filename);
@@ -99,6 +101,8 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
   let db,
     directory = [],
     closed = false,
+    closeFailure,
+    readerBaseline,
     totalKeys = 0,
     totalBytes = 0,
     manifestBytes = 0,
@@ -110,11 +114,51 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     if (closed) throw refused('RAILGUN_STORE_REVOKED');
     getPrivacyContext(handle);
   };
+  const noSidecars = () => {
+    for (const suffix of ['-journal', '-wal', '-shm']) {
+      try {
+        // existsSync would miss broken symlinks, which are also refused.
+        fs.lstatSync(filename + suffix);
+      } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        throw error;
+      }
+      throw refused('RAILGUN_STORE_UNREADABLE');
+    }
+  };
+  const readerStat = () => {
+    const stat = fs.lstatSync(filename, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 100n || stat.size > BigInt(MAX_DISK))
+      throw refused('RAILGUN_STORE_UNREADABLE');
+    return stat;
+  };
+  const sameReaderFile = (stat) =>
+    stat.dev === readerBaseline.dev &&
+    stat.ino === readerBaseline.ino &&
+    stat.size === readerBaseline.size &&
+    stat.mtimeNs === readerBaseline.mtimeNs;
+  const notifyFatal = () => {
+    try {
+      onFatal();
+    } catch {
+      /* Already revoked. */
+    }
+  };
+  const abortClose = () => {
+    try {
+      close();
+    } catch {
+      notifyFatal();
+    }
+  };
   const close = () => {
-    if (closed) return;
+    if (closed) {
+      if (closeFailure) throw closeFailure;
+      return;
+    }
     closed = true;
     stop.abort();
-    context.signal.removeEventListener('abort', close);
+    context.signal.removeEventListener('abort', abortClose);
     const pages = new Set(directory);
     for (const snapshot of snapshots) {
       for (const page of snapshot.pages) pages.add(page);
@@ -134,21 +178,33 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     writtenPages.clear();
     try {
       db?.close();
+    } catch {
+      closeFailure = refused('RAILGUN_STORE_UNREADABLE');
     } finally {
       opened.delete(filename);
+      if (readOnly && readerBaseline) {
+        try {
+          noSidecars();
+          if (!sameReaderFile(readerStat())) closeFailure = refused('RAILGUN_STORE_UNREADABLE');
+        } catch {
+          closeFailure = refused('RAILGUN_STORE_UNREADABLE');
+        }
+      }
     }
+    if (closeFailure) throw closeFailure;
   };
   const guarded = (work) => {
     try {
       active();
       return work();
     } catch (error) {
-      close();
       try {
-        onFatal();
+        close();
       } catch {
-        /* Already revoked. */
+        /* Preserve failure while still notifying the owner. */
       }
+      notifyFatal();
+      if (closeFailure) throw closeFailure;
       if (error.code?.startsWith('RAILGUN_') || error.code?.startsWith('PRIVACY_')) throw error;
       throw refused('RAILGUN_STORE_UNREADABLE');
     }
@@ -379,6 +435,7 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     return result;
   };
   const publish = (makePages, maintenance = true) => {
+    if (readOnly) throw refused('RAILGUN_STORE_READ_ONLY');
     let next, manifest, plan;
     writtenBytes = 0;
     writtenPages = new Map();
@@ -404,26 +461,65 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
   };
   try {
     active();
-    if (create) {
-      fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
-      fs.closeSync(fs.openSync(filename, 'wx', 0o600));
-    } else if (!fs.existsSync(filename)) throw refused('RAILGUN_STORE_MISSING');
-    if (fs.lstatSync(filename).isSymbolicLink() || fs.statSync(filename).size > MAX_DISK)
-      throw refused();
+    if (readOnly) {
+      let stat;
+      try {
+        stat = readerStat();
+      } catch (error) {
+        if (error.code === 'ENOENT') throw refused('RAILGUN_STORE_MISSING');
+        throw error;
+      }
+      noSidecars();
+      const fd = fs.openSync(filename, 'r');
+      try {
+        const header = Buffer.alloc(100);
+        if (
+          fs.readSync(fd, header, 0, header.length, 0) !== header.length ||
+          !header.subarray(0, 16).equals(Buffer.from('SQLite format 3\0')) ||
+          header[18] !== 1 ||
+          header[19] !== 1
+        )
+          throw refused();
+      } finally {
+        fs.closeSync(fd);
+      }
+      readerBaseline = stat;
+      if (!sameReaderFile(readerStat())) throw refused();
+    } else {
+      if (create) {
+        fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+        fs.closeSync(fs.openSync(filename, 'wx', 0o600));
+      } else if (!fs.existsSync(filename)) throw refused('RAILGUN_STORE_MISSING');
+      if (fs.lstatSync(filename).isSymbolicLink() || fs.statSync(filename).size > MAX_DISK)
+        throw refused();
+    }
     const Database = require('better-sqlite3');
-    db = new Database(filename, { fileMustExist: true, timeout: 0 });
-    db.pragma('journal_mode = DELETE');
-    db.pragma('synchronous = FULL');
-    if (process.platform === 'darwin') db.pragma('fullfsync = ON');
-    db.pragma('secure_delete = ON');
+    db = new Database(filename, {
+      fileMustExist: true,
+      timeout: 0,
+      ...(readOnly ? { readonly: true } : {}),
+    });
+    if (readOnly) {
+      db.pragma('query_only = ON');
+      db.pragma('temp_store = MEMORY');
+      if (db.pragma('journal_mode', { simple: true }) !== 'delete') throw refused();
+    } else {
+      db.pragma('journal_mode = DELETE');
+      db.pragma('synchronous = FULL');
+      if (process.platform === 'darwin') db.pragma('fullfsync = ON');
+      db.pragma('secure_delete = ON');
+    }
     db.pragma('trusted_schema = OFF');
     db.pragma('cache_size = -4096');
     db.pragma('mmap_size = 0');
-    db.pragma('locking_mode = EXCLUSIVE');
-    db.exec('BEGIN EXCLUSIVE; COMMIT;');
-    db.pragma(
-      'max_page_count = ' + Math.floor(MAX_DISK / db.pragma('page_size', { simple: true }))
-    );
+    if (readOnly) db.exec('BEGIN');
+    else {
+      db.pragma('locking_mode = EXCLUSIVE');
+      db.exec('BEGIN EXCLUSIVE; COMMIT;');
+      db.pragma(
+        'max_page_count = ' + Math.floor(MAX_DISK / db.pragma('page_size', { simple: true }))
+      );
+    }
     if (create)
       db.transaction(() => {
         db.exec('CREATE TABLE records (id TEXT PRIMARY KEY, ciphertext BLOB NOT NULL)');
@@ -572,7 +668,8 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     }
     manifestBytes = manifestSize;
     // Collection is safe only after complete current-state authentication.
-    while (persistedPages.size > directory.length) publish(() => directory, false);
+    // A reader authenticates retired rows too, but must not collect or reseal them.
+    if (!readOnly) while (persistedPages.size > directory.length) publish(() => directory, false);
     if (create && process.platform !== 'win32') {
       const parent = fs.openSync(path.dirname(filename), 'r');
       try {
@@ -582,10 +679,14 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
       }
     }
     opened.add(filename);
-    context.signal.addEventListener('abort', close, { once: true });
+    context.signal.addEventListener('abort', abortClose, { once: true });
     active();
   } catch (error) {
-    close();
+    try {
+      close();
+    } catch {
+      /* Opening already failed; cleanup still completed. */
+    }
     if (['RAILGUN_STORE_MISSING', 'RAILGUN_STORE_INCOMPLETE'].includes(error.code)) throw error;
     if (error.code === 'EEXIST') throw refused('RAILGUN_STORE_EXISTS');
     if (['SQLITE_BUSY', 'SQLITE_LOCKED'].includes(error.code)) throw refused('RAILGUN_STORE_BUSY');
@@ -705,6 +806,7 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     },
     batch(operations) {
       return guarded(() => {
+        if (readOnly) throw refused('RAILGUN_STORE_READ_ONLY');
         if (!Array.isArray(operations) || !operations.length || operations.length > 65536)
           throw refused();
         let bytes = 0;
@@ -754,6 +856,7 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     },
     clear(input = {}) {
       return guarded(() => {
+        if (readOnly) throw refused('RAILGUN_STORE_READ_ONLY');
         const options = bounds(input);
         let remaining = options.limit >= 0 ? options.limit : Infinity;
         try {
@@ -797,4 +900,10 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     },
   });
 }
-module.exports = { createRailgunPagedStore };
+function createRailgunPagedStore(options) {
+  return openPagedStore(options, false);
+}
+function openRailgunReadOnlyPagedStore(options) {
+  return openPagedStore(options, true);
+}
+module.exports = { createRailgunPagedStore, openRailgunReadOnlyPagedStore };

@@ -7,7 +7,7 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
-The [received-input partial-controller checkpoint](railgun-partial-transact-controller-2026-10-05.md) qualifies real internal partial proving for both input creators with simulated chain/services. Signed-unfinished records can now be read under genuine recovery receipts, but proof resumption remains open. The immediate prerequisite is completed-only read-only wallet restoration and complete runner drainage, followed by proof regeneration using the original signature. Partial facade/submission, combined POI persistence, actual change ingestion, restart/second spend and live private qualification remain open.
+The [completed-wallet checkpoint](railgun-completed-wallet-2026-10-05.md) adds authenticated read-only cold restoration, complete runner drainage and shared credential quarantine for unobserved exits. Native restoration and both input-creator partial compatibility runs pass with simulated services. Its wallet-policy change requires explicit derived-generation maintenance; public/TXID policies are unchanged. Signed-unfinished records can be read under genuine recovery receipts, but original-signature proof resumption remains the next implementation step. Partial facade/submission, combined POI persistence, actual change ingestion, fresh-process restart/second spend and live private qualification remain open.
 
 ## Established baseline
 

@@ -74,20 +74,31 @@ function target(v) {
   check(v.hash === checkpointHash(plan));
   return { plan, hash: v.hash };
 }
-async function createRailgunWalletJournal({
-  handle,
-  directory,
-  key,
-  binding,
-  walletId,
-  policy,
-  storeSession,
-  coverageStore,
-  coordinator,
-  assertScan,
-  create = false,
-  profileGuard,
-}) {
+function createRailgunWalletJournal(options) {
+  return openJournal(options, false);
+}
+/** Existing completed state only: no lease acquisition, rotation or repair. */
+function openRailgunWalletJournalReadOnly(options) {
+  check(options && !Object.hasOwn(options, 'create'));
+  return openJournal(options, true);
+}
+async function openJournal(
+  {
+    handle,
+    directory,
+    key,
+    binding,
+    walletId,
+    policy,
+    storeSession,
+    coverageStore,
+    coordinator,
+    assertScan,
+    create = false,
+    profileGuard,
+  },
+  readOnly
+) {
   const context = getPrivacyContext(handle),
     subject = context.subject;
   check(digest(binding) && digest(walletId) && digest(policy) && typeof create === 'boolean');
@@ -113,8 +124,9 @@ async function createRailgunWalletJournal({
   const owner = getPrivacyStoragePath(handle, directory);
   check(!owners.has(owner));
   owners.add(owner);
-  const lease = randomBytes(32).toString('hex'),
-    tokens = new WeakMap();
+  let lease = readOnly ? undefined : randomBytes(32).toString('hex');
+  const tokens = new WeakMap();
+  let initializing = true;
   let closed = false,
     busy = false,
     current,
@@ -138,13 +150,17 @@ async function createRailgunWalletJournal({
     );
     getPrivacyContext(handle);
   };
+  function releaseOwner() {
+    if (!closed || initializing || busy) return;
+    if (lifetime) lifetime.journalClosed = true;
+    releaseGeneration();
+    owners.delete(owner);
+  }
   function close() {
     if (closed) return;
     closed = true;
-    if (lifetime) lifetime.journalClosed = true;
-    releaseGeneration();
+    releaseOwner();
     ready = null;
-    owners.delete(owner);
     scope?.close();
     for (const signal of [
       context.signal,
@@ -167,7 +183,7 @@ async function createRailgunWalletJournal({
   storeSession.closed.then(() => {
     lifetime.workerClosed = true;
     releaseGeneration();
-  });
+  }, close);
   function unpack(text) {
     check(typeof text === 'string' && Buffer.byteLength(text) <= 128 * 1024);
     const v = JSON.parse(text);
@@ -214,7 +230,12 @@ async function createRailgunWalletJournal({
   }
   try {
     active();
+    if (readOnly) {
+      check(typeof profileGuard?.assertRegistered === 'function');
+      profileGuard.assertRegistered(owner);
+    }
     identity = await storeSession.inspectStoreIdentity();
+    active();
     storeSession.assertFresh(identity);
     check(identity.format === 'paged-v2' && digest(identity.instanceId));
     storeId = identity.instanceId;
@@ -226,38 +247,55 @@ async function createRailgunWalletJournal({
         return true;
       },
     });
+    if (readOnly) {
+      check(typeof profileGuard?.assertRegistered === 'function');
+      profileGuard.assertRegistered(owner);
+    }
     storage = createPrivacyStorage({
       handle: scope.getContext(subject),
       directory,
       key,
-      profileGuard,
+      profileGuard: readOnly
+        ? {
+            assert: (file) => profileGuard.assertRegistered(file),
+            remember: (file) => profileGuard.assertRegistered(file),
+          }
+        : profileGuard,
     });
-    await storage.update(RECORD_KEY, (text) => {
-      active();
-      check(create ? text === null : text !== null);
-      const old =
-        text === null
-          ? {
-              version: 1,
-              binding,
-              walletId,
-              policy,
-              storeId,
-              lease,
-              generation: 0,
-              sequence: 0,
-              checkpoint: null,
-              pending: null,
-            }
-          : unpack(text);
-      current = { ...old, lease, generation: old.generation + 1, sequence: old.sequence + 1 };
-      return encode(current);
-    });
+    if (readOnly) {
+      current = unpack(await storage.get(RECORD_KEY));
+      check(current.checkpoint && !current.pending);
+      lease = current.lease;
+    } else
+      await storage.update(RECORD_KEY, (text) => {
+        active();
+        check(create ? text === null : text !== null);
+        const old =
+          text === null
+            ? {
+                version: 1,
+                binding,
+                walletId,
+                policy,
+                storeId,
+                lease,
+                generation: 0,
+                sequence: 0,
+                checkpoint: null,
+                pending: null,
+              }
+            : unpack(text);
+        current = { ...old, lease, generation: old.generation + 1, sequence: old.sequence + 1 };
+        return encode(current);
+      });
     active();
     storeSession.assertFresh(identity);
   } catch {
     close();
     throw fail();
+  } finally {
+    initializing = false;
+    releaseOwner();
   }
   function owned(v) {
     check(
@@ -265,6 +303,7 @@ async function createRailgunWalletJournal({
     );
   }
   async function update(change) {
+    check(!readOnly);
     active();
     check(!busy);
     busy = true;
@@ -283,6 +322,7 @@ async function createRailgunWalletJournal({
       throw fail();
     } finally {
       busy = false;
+      releaseOwner();
     }
   }
   async function readState() {
@@ -300,6 +340,7 @@ async function createRailgunWalletJournal({
       throw fail();
     } finally {
       busy = false;
+      releaseOwner();
     }
   }
   async function prepare(input) {
@@ -403,8 +444,7 @@ async function createRailgunWalletJournal({
   }
   const instance = Object.freeze({
     identity: Object.freeze({ walletId, policy, storeId, directory }),
-    prepare,
-    complete,
+    ...(readOnly ? {} : { prepare, complete }),
     readState,
     revalidate,
     assertReady,
@@ -417,6 +457,7 @@ async function createRailgunWalletJournal({
 }
 module.exports = {
   createRailgunWalletJournal,
+  openRailgunWalletJournalReadOnly,
   RECORD_KEY,
   isRailgunWalletJournal: (value) => instances.has(value),
   assertRailgunWalletGenerationClosed,

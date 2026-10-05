@@ -2,9 +2,27 @@
  * The worker receives one viewing key, public identity data and scoped storage.
  */
 const assert = require('assert/strict');
+const { types } = require('util');
+const unobservedExits = new WeakSet();
+const exitUnobserved = () =>
+  Object.assign(new Error('Railgun wallet exit unobserved'), {
+    code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+  });
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'byteLength'
+).get;
+const brokerFailure = () =>
+  Object.assign(new Error('Railgun wallet broker unavailable'), {
+    code: 'RAILGUN_WALLET_BROKER_REFUSED',
+  });
 const { startRailgunProcess } = require('./railgun-process');
 const { createRailgunWalletStorage } = require('./railgun-wallet-storage');
-const { assertRailgunIdentity, withRailgunViewingCredential } = require('./railgun-identity');
+const {
+  assertRailgunIdentity,
+  withRailgunViewingCredential,
+  quarantineRailgunIdentityCredentials,
+} = require('./railgun-identity');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 async function runRailgunWalletSnapshot({
@@ -43,6 +61,7 @@ async function runRailgunWalletSnapshot({
     : privateIntent === undefined
       ? 'wallet-viewing'
       : 'private-prepare';
+  if (unobservedExits.has(identity)) throw exitUnobserved();
   const descriptor = assertRailgunIdentity(identity, handle);
   assert.equal(walletId, descriptor.walletId);
   archive = verifyRailgunEngineRuntime(archive);
@@ -69,14 +88,177 @@ async function runRailgunWalletSnapshot({
   }
   let result,
     task,
+    closed,
+    failure,
     sequence = 0,
     storageSequence = 0,
     intentSeen = false,
     operationReplied = false,
     offered,
     operationStatus,
-    intentWork;
+    keyCopy,
+    keyDelivered = false,
+    failed = false,
+    stopping = false,
+    closeRequested = false,
+    exitObserved = false;
+  const pending = new Set(),
+    controller = new AbortController(),
+    lifetime = AbortSignal.any([router.signal, scope.signal]);
+  const observeExit = async () => {
+    const barrier = task.closed;
+    assert.ok(barrier && typeof barrier.then === 'function');
+    const value = await barrier;
+    assert.ok(value && typeof value.code === 'string');
+    exitObserved = true;
+    return value;
+  };
+  const closeTask = () => {
+    if (!task || closeRequested) return;
+    closeRequested = true;
+    try {
+      task.close();
+    } catch {
+      failed = true;
+    }
+  };
+  const stop = () => {
+    stopping = true;
+    keyCopy?.fill(0);
+    controller.abort();
+    closeTask();
+  };
+  const active = () => {
+    assert.ok(!failed && !stopping && !lifetime.aborted && !task?.signal.aborted);
+    assertRailgunIdentity(identity, handle);
+    getPrivacyContext(handle);
+  };
+  const dispatch = async (wire) => {
+    try {
+      active();
+      assert.equal(typeof wire, 'string');
+      assert.ok(Buffer.byteLength(wire) <= 2 * 1024 * 1024);
+      const message = JSON.parse(wire);
+      assert.ok(message && typeof message === 'object' && !Array.isArray(message));
+      assert.ok(Number.isSafeInteger(message.id));
+      assert.equal(message.id, ++sequence);
+      assert.equal(result, undefined);
+      if (message.id === 1) {
+        assert.equal(pending.size, 0);
+        assert.deepEqual(message, { id: 1, method: 'key', purpose });
+        const output = await withRailgunViewingCredential(identity, (credential) => {
+          active();
+          assert.ok(credential && !types.isProxy(credential));
+          const loan = Object.getOwnPropertyDescriptor(credential, 'viewingKey');
+          assert.ok(loan && Object.hasOwn(loan, 'value'));
+          const viewingKey = loan.value;
+          assert.ok(
+            !keyCopy &&
+              !types.isProxy(viewingKey) &&
+              types.isUint8Array(viewingKey) &&
+              typedArrayByteLength.call(viewingKey) === 32
+          );
+          keyCopy = Buffer.alloc(32);
+          keyCopy.set(viewingKey);
+          return keyCopy;
+        });
+        active();
+        assert.ok(output === keyCopy && keyCopy?.byteLength === 32);
+        keyDelivered = true;
+        return output;
+      }
+      assert.ok(keyDelivered);
+      if (message.method === 'result') {
+        assert.equal(pending.size, 0);
+        assert.ok(!operationInput || operationReplied);
+        assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+        if (operationInput) {
+          assert.deepEqual(
+            require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
+              message.value.privatePreparation,
+              privateIntent
+            ),
+            offered
+          );
+          assert.equal(
+            message.value.privateOperation?.status,
+            operationStatus === 'signed' ? 'proved' : 'refused'
+          );
+        }
+        router.assertIdle();
+        result = message.value;
+        return JSON.stringify({ id: message.id, value: null });
+      }
+      if (message.method === 'private-intent') {
+        assert.equal(pending.size, 0);
+        assert.ok(operationInput && !intentSeen && !operationReplied);
+        assert.ok(Buffer.byteLength(wire) <= 65536);
+        assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+        router.assertIdle();
+        intentSeen = true;
+        // A trusted main operation handles this typed request. The callback
+        // is not a key capability; it must establish its own real authority.
+        const offer = require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
+          message.value.preparation,
+          privateIntent
+        );
+        assert.deepEqual(Object.keys(message.value).sort(), ['capsule', 'preparation']);
+        const capsule = require('./railgun-private-capsule').normalizeRailgunNewCapsule(
+          message.value.capsule,
+          { walletId, selection: privateIntent, preparation: offer }
+        );
+        offered = offer;
+        const operationSignal = AbortSignal.any([
+          router.signal,
+          scope.signal,
+          task.signal,
+          controller.signal,
+        ]);
+        const response = await onIntent(offer, operationSignal, capsule);
+        active();
+        assert.ok(!operationSignal.aborted);
+        assertRailgunIdentity(identity, handle);
+        router.assertIdle();
+        getPrivacyContext(handle);
+        let value;
+        if (response?.status === 'refused') {
+          assert.deepEqual(Object.keys(response), ['status']);
+          value = { status: 'refused' };
+        } else {
+          assert.deepEqual(Object.keys(response).sort(), ['signature', 'status']);
+          assert.equal(response.status, 'signed');
+          value = {
+            status: 'signed',
+            signature: require('./railgun-private-signature').normalizeRailgunSignature(
+              response.signature
+            ),
+          };
+        }
+        operationReplied = true;
+        operationStatus = value.status;
+        return JSON.stringify({ id: message.id, value });
+      }
+      assert.equal(intentSeen, false);
+      assert.deepEqual(Object.keys(message).sort(), ['channel', 'id', 'wire']);
+      assert.ok(message.channel === 'public' || message.channel === 'wallet');
+      assert.equal(typeof message.wire, 'string');
+      const storageSequenceForReply = ++storageSequence;
+      const reply = JSON.parse(
+        await router.dispatch(JSON.stringify({ ...message, id: storageSequenceForReply }))
+      );
+      active();
+      assert.equal(reply.id, storageSequenceForReply);
+      return JSON.stringify({ ...reply, id: message.id });
+    } catch {
+      failed = true;
+      stop();
+      throw brokerFailure();
+    }
+  };
+  lifetime.addEventListener('abort', stop, { once: true });
+
   try {
+    active();
     task = startRailgunProcess({
       handle: scope.getContext({ ...context.subject, role: 'engine', operation: purpose }),
       binaryKey: true,
@@ -98,121 +280,80 @@ async function runRailgunWalletSnapshot({
         prefixes: router.prefixes,
       }),
       broker: {
-        signal: router.signal,
-        async dispatch(wire) {
-          const message = JSON.parse(wire);
-          assert.equal(message.id, ++sequence);
-          assert.equal(result, undefined);
-          assertRailgunIdentity(identity, handle);
-          if (message.id === 1) {
-            assert.deepEqual(message, { id: 1, method: 'key', purpose });
-            let output;
-            try {
-              return await withRailgunViewingCredential(identity, ({ viewingKey }) => {
-                output = Buffer.alloc(32);
-                viewingKey.copy(output);
-                return output;
-              });
-            } catch (error) {
-              output?.fill(0);
-              throw error;
-            }
-          }
-          if (message.method === 'result') {
-            assert.ok(!operationInput || operationReplied);
-            assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
-            if (operationInput) {
-              assert.deepEqual(
-                require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
-                  message.value.privatePreparation,
-                  privateIntent
-                ),
-                offered
-              );
-              assert.equal(
-                message.value.privateOperation?.status,
-                operationStatus === 'signed' ? 'proved' : 'refused'
-              );
-            }
-            router.assertIdle();
-            result = message.value;
-            return JSON.stringify({ id: message.id, value: null });
-          }
-          if (message.method === 'private-intent') {
-            assert.ok(operationInput && !intentSeen && !operationReplied);
-            assert.ok(Buffer.byteLength(wire) <= 65536);
-            assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
-            router.assertIdle();
-            intentSeen = true;
-            // A trusted main operation handles this typed request. The callback
-            // is not a key capability; it must establish its own real authority.
-            const offer = require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
-              message.value.preparation,
-              privateIntent
-            );
-            assert.deepEqual(Object.keys(message.value).sort(), ['capsule', 'preparation']);
-            const capsule = require('./railgun-private-capsule').normalizeRailgunNewCapsule(
-              message.value.capsule,
-              { walletId, selection: privateIntent, preparation: offer }
-            );
-            offered = offer;
-            const operationSignal = AbortSignal.any([router.signal, scope.signal, task.signal]);
-            intentWork = Promise.resolve().then(() => onIntent(offer, operationSignal, capsule));
-            const response = await intentWork;
-            assert.ok(!operationSignal.aborted);
-            assertRailgunIdentity(identity, handle);
-            router.assertIdle();
-            getPrivacyContext(handle);
-            let value;
-            if (response?.status === 'refused') {
-              assert.deepEqual(Object.keys(response), ['status']);
-              value = { status: 'refused' };
-            } else {
-              assert.deepEqual(Object.keys(response).sort(), ['signature', 'status']);
-              assert.equal(response.status, 'signed');
-              value = {
-                status: 'signed',
-                signature: require('./railgun-private-signature').normalizeRailgunSignature(
-                  response.signature
-                ),
-              };
-            }
-            operationReplied = true;
-            operationStatus = value.status;
-            return JSON.stringify({ id: message.id, value });
-          }
-          assert.equal(intentSeen, false);
-          const reply = JSON.parse(
-            await router.dispatch(JSON.stringify({ ...message, id: ++storageSequence }))
+        signal: controller.signal,
+        dispatch(wire) {
+          const work = dispatch(wire);
+          pending.add(work);
+          work.then(
+            () => pending.delete(work),
+            () => pending.delete(work)
           );
-          return JSON.stringify({ ...reply, id: message.id });
+          return work;
         },
       },
     });
+    if (stopping) closeTask();
     await task.ready;
+    active();
+    assert.equal(pending.size, 0);
     router.assertIdle();
-    task.close();
-    const closed = await task.closed;
+    closeTask();
+    closed = await observeExit();
     assert.equal(closed.code, 'RAILGUN_PROCESS_CLOSED');
+    assert.ok(!failed && !lifetime.aborted);
     assert.ok(result);
     assertRailgunIdentity(identity, handle);
     assert.equal(result.instanceId, descriptor.instanceId);
-    return { ...result, closed };
   } catch (error) {
-    task?.close();
-    const closed = await task?.closed;
-    throw Object.assign(new Error('Railgun wallet job failed', { cause: error }), {
-      code: error?.code,
-      closed,
-    });
+    failure = error;
   } finally {
-    task?.close();
-    if (task) await task.closed;
-    router.close();
-    scope.close();
-    // A may time out while its main-side handler is draining a secondary job.
-    // Keep the account phase until that handler has observed its own exits too.
-    if (intentWork) await intentWork.catch(() => {});
+    lifetime.removeEventListener('abort', stop);
+    stop();
+    // Closing is a request, not evidence of exit. Each cleanup is independent:
+    // even a throwing close or rejected child barrier must drain borrowed work.
+    for (const close of [() => router.close(), () => scope.close()]) {
+      try {
+        close();
+      } catch {
+        failed = true;
+      }
+    }
+    try {
+      if (task) closed = await observeExit();
+    } catch {
+      // A rejected barrier is not an observed child exit.
+      failed = true;
+      closed = undefined;
+    } finally {
+      // A missing exit quarantines credential issuance immediately, including
+      // sibling identities for this profile/account, while borrowed work drains.
+      // The account owner also retains its phase on this distinct outcome.
+      if (task && !exitObserved) {
+        unobservedExits.add(identity);
+        try {
+          quarantineRailgunIdentityCredentials(identity);
+        } catch {
+          // Never let a revocation/cleanup error mask the unknown-exit outcome
+          // that the account owner uses to retain its independent phase lock.
+        }
+      }
+      while (pending.size) await Promise.allSettled([...pending]);
+      keyCopy?.fill(0);
+    }
   }
+  if (unobservedExits.has(identity)) throw exitUnobserved();
+  if (failure || failed) {
+    // Broker and cleanup errors never expose callback errors or key-bearing input.
+    throw Object.assign(
+      new Error('Railgun wallet job failed', {
+        cause: failed ? brokerFailure() : failure,
+      }),
+      {
+        code: failed ? 'RAILGUN_WALLET_BROKER_REFUSED' : failure?.code,
+        closed,
+      }
+    );
+  }
+  return { ...result, closed };
 }
 module.exports = { runRailgunWalletSnapshot };

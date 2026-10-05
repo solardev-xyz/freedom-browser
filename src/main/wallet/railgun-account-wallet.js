@@ -9,16 +9,34 @@ const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
-const { assertRailgunIdentity } = require('./railgun-identity');
-const { openRailgunAccountStore } = require('./railgun-account-store');
+const {
+  assertRailgunIdentity,
+  quarantineRailgunIdentityCredentials,
+} = require('./railgun-identity');
+const {
+  openRailgunAccountStore,
+  openRailgunCompletedAccountStore,
+} = require('./railgun-account-store');
 const { createRailgunAccountRunner } = require('./railgun-wallet-runner');
-const { createRailgunWalletCoverageStore } = require('./railgun-wallet-coverage-store');
-const { createRailgunWalletJournal } = require('./railgun-wallet-journal');
+const {
+  createRailgunWalletCoverageStore,
+  createRailgunCompletedWalletCoverageStore,
+} = require('./railgun-wallet-coverage-store');
+const {
+  createRailgunWalletJournal,
+  openRailgunWalletJournalReadOnly,
+} = require('./railgun-wallet-journal');
 const { getPrivacyStoragePath } = require('./privacy-storage');
 const { createRailgunKohakuRead } = require('./railgun-kohaku-read');
-const { assertRailgunScanCoordinator } = require('./railgun-scan-coordinator');
+const {
+  assertRailgunScanCoordinator,
+  getRailgunCompletedSnapshotOutcome,
+} = require('./railgun-scan-coordinator');
 const { getRailgunWalletPolicy } = require('./railgun-wallet-policy');
-const { getRailgunAccountPublicIdentity } = require('./railgun-account-public');
+const {
+  getRailgunAccountPublicIdentity,
+  assertRailgunAccountPublicDestination,
+} = require('./railgun-account-public');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const { checkpointHash } = require('./railgun-wallet-coverage');
@@ -57,15 +75,56 @@ function getRailgunAccountWalletPolicy({ archive, coordinator, enrollment }) {
     )
     .digest('hex');
 }
-async function openRailgunAccountWallet({
-  identity,
-  enrollment,
-  archive,
-  coordinator,
-  policy: expectedPolicy,
-  mode = 'active',
-  handoff,
-}) {
+function openRailgunAccountWallet(options) {
+  return openAccount(options, false);
+}
+/** Fixed existing-generation restore. Public completed reads may query the
+ * retained source; this route never repairs, scans forward or creates stores. */
+async function openRailgunCompletedAccountWallet(options) {
+  check(options && typeof options === 'object' && !Array.isArray(options));
+  check(
+    Object.keys(options).every((key) =>
+      [
+        'identity',
+        'enrollment',
+        'archive',
+        'coordinator',
+        'destination',
+        'signal',
+        'timeoutMs',
+        'policy',
+      ].includes(key)
+    )
+  );
+  check(
+    options.destination && (options.signal === undefined || options.signal instanceof AbortSignal)
+  );
+  const timeoutMs = options.timeoutMs === undefined ? 180000 : options.timeoutMs;
+  check(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 180000);
+  const account = await openAccount({ ...options, timeoutMs }, true);
+  try {
+    readRailgunAccountOwnedNotes(account, options);
+    return account;
+  } catch {
+    await account.close();
+    throw fail();
+  }
+}
+async function openAccount(
+  {
+    identity,
+    enrollment,
+    archive,
+    coordinator,
+    policy: expectedPolicy,
+    mode = 'active',
+    handoff,
+    destination,
+    signal,
+    timeoutMs,
+  },
+  completedOnly
+) {
   check(isRailgunAccountEnrollment(enrollment));
   const policy = getRailgunAccountWalletPolicy({ archive, coordinator, enrollment });
   check(expectedPolicy === undefined || expectedPolicy === policy);
@@ -77,6 +136,10 @@ async function openRailgunAccountWallet({
   check(walletId === enrollment.descriptor.walletId);
   assertRailgunScanCoordinator(coordinator, handle);
   const runner = createRailgunAccountRunner({ identity, archive, policy });
+  if (completedOnly) {
+    check(!signal?.aborted && typeof enrollment.profileGuard.assertRegistered === 'function');
+    assertRailgunAccountPublicDestination(coordinator, enrollment, destination);
+  }
   const phase = claimRailgunAccountPhase(enrollment, 'wallet', handoff);
   let generation,
     candidate,
@@ -88,19 +151,169 @@ async function openRailgunAccountWallet({
     onAbort,
     restoration,
     busy = false;
-  const close = async () => {
-    if (lifetime && onAbort) lifetime.removeEventListener('abort', onAbort);
-    journal?.close();
-    coverageStore?.close();
-    walletSession?.close();
-    // A revoked snapshot may return before the runner has observed utility
-    // exit. Drain that runner too, not only the separate storage worker.
-    if (scan) await scan.catch(() => {});
-    if (restoration) await restoration.catch(() => {});
-    if (walletSession) await walletSession.closed;
-    phase.release();
+  let sourceOutcome;
+  const refused = () => Object.assign(fail(), sourceOutcome ? { sourceOutcome } : {});
+  const controller = new AbortController();
+  const parentSignal = AbortSignal.any([
+    controller.signal,
+    enrollment.signal,
+    coordinator.signal,
+    ...(identity.signal ? [identity.signal] : []),
+    ...(completedOnly && signal ? [signal] : []),
+  ]);
+  const deadline = completedOnly ? performance.now() + timeoutMs : Infinity;
+  let closing = false,
+    closeWork,
+    finishSetup,
+    cleanupFailed = false;
+  const setup = new Promise((resolve) => {
+    finishSetup = resolve;
+  });
+  const stop = () => {
+    for (const resource of [journal, coverageStore, walletSession]) {
+      try {
+        resource?.close();
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+  };
+  const close = () => {
+    if (closeWork) return closeWork;
+    closing = true;
+    clearTimeout(timer);
+    parentSignal.removeEventListener('abort', onAbort);
+    if (lifetime) lifetime.removeEventListener('abort', onAbort);
+    // Install the promise before abort listeners can reenter close().
+    let resolve, reject;
+    closeWork = new Promise((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    controller.abort();
+    stop();
+    (async () => {
+      await setup;
+      stop();
+      const outcomes = await Promise.allSettled([scan, restoration].filter(Boolean));
+      stop();
+      const refuseUnobserved = () => {
+        quarantineRailgunIdentityCredentials(identity);
+        throw Object.assign(fail(), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+      };
+      if (walletSession) {
+        let closed;
+        try {
+          closed = await walletSession.closed;
+        } catch {
+          refuseUnobserved();
+        }
+        if (!Number.isInteger(closed?.exitCode) || closed.exitCode < 0) refuseUnobserved();
+        if (closed.exitCode !== 0) cleanupFailed = true;
+      }
+      const unobserved = (error) => {
+        const seen = new Set();
+        while (error && typeof error === 'object' && !seen.has(error)) {
+          seen.add(error);
+          if (error.code === 'RAILGUN_WALLET_EXIT_UNOBSERVED') return true;
+          error = error.cause;
+        }
+        return false;
+      };
+      if (outcomes.some((result) => result.status === 'rejected' && unobserved(result.reason))) {
+        // Filename ownership outlives identities/enrollments. Unknown utility
+        // exit keeps this account unavailable until the application restarts.
+        refuseUnobserved();
+      }
+      phase.release();
+      if (cleanupFailed) throw fail();
+    })().then(resolve, reject);
+    return closeWork;
+  };
+  onAbort = () => {
+    void close().catch(() => {});
+  };
+  const timer = completedOnly ? setTimeout(onAbort, timeoutMs) : undefined;
+  timer?.unref?.();
+  parentSignal.addEventListener('abort', onAbort, { once: true });
+  const openingCurrent = () => {
+    check(!closing && !parentSignal.aborted && performance.now() < deadline);
+    phase.assertCurrent();
+    if (completedOnly) {
+      assertRailgunIdentity(identity, handle);
+      check(getRailgunAccountWalletPolicy({ archive, coordinator, enrollment }) === policy);
+      assertRailgunAccountPublicDestination(coordinator, enrollment, destination);
+      if (generation)
+        require('assert/strict').deepEqual(enrollment.catalog.activeFor(policy), generation);
+    }
+  };
+  const completedRestore = async (state) => {
+    openingCurrent();
+    check(state.checkpoint && !state.pending);
+    // A cold restore has no in-process scan receipt. Authenticate the persisted
+    // coverage and exact wallet state against the completed journal before
+    // asking the public source or lending a viewing credential to the engine.
+    const storedCoverage = await coverageStore.read();
+    openingCurrent();
+    check(storedCoverage);
+    check(checkpointHash(storedCoverage.checkpoint) === state.checkpoint.target.hash);
+    require('assert/strict').deepEqual(storedCoverage.checkpoint, state.checkpoint.target.plan);
+    require('assert/strict').deepEqual(storedCoverage.summary, state.checkpoint.coverage);
+    const storedWallet = await walletSession.inspectWalletState();
+    check(walletSession.assertFresh(storedWallet) === undefined);
+    openingCurrent();
+    require('assert/strict').deepEqual(storedWallet, state.checkpoint.wallet);
+    sourceOutcome = undefined;
+    const checked = await coordinator
+      .withCompletedPublicSnapshot(
+        {
+          destination,
+          signal: parentSignal,
+          timeoutMs: Math.max(1, Math.floor(deadline - performance.now())),
+        },
+        (snapshot) => {
+          // Expected local mismatch/cancellation is data: it must not poison the
+          // caller-owned coordinator's authenticated completed source.
+          try {
+            openingCurrent();
+          } catch {
+            return null;
+          }
+          if (
+            parentSignal.aborted ||
+            closing ||
+            performance.now() >= deadline ||
+            checkpointHash(snapshot.checkpoint) !== state.checkpoint.target.hash
+          )
+            return null;
+          scan = runner.restoreReadOnly({
+            handle,
+            snapshot,
+            walletSession,
+            coverageStore,
+            walletId,
+          });
+          // Wallet restoration failure is local to this owned wallet. Genuine
+          // source/broker integrity remains latched by the coordinator itself.
+          return scan.catch(() => null);
+        }
+      )
+      .catch((error) => {
+        // Only the exact coordinator rejection can supply provenance; never
+        // infer benign/fatal status from an error code or concurrent abort.
+        try {
+          sourceOutcome = getRailgunCompletedSnapshotOutcome(coordinator, error);
+        } catch {
+          /* Unknown callback/owner errors carry no source claim. */
+        }
+        throw refused();
+      });
+    openingCurrent();
+    check(checked.value);
+    return checked;
   };
   try {
+    openingCurrent();
     if (mode === 'new') {
       const pending = (await enrollment.catalog.inspect()).pending;
       // This runtime cannot complete an obsolete-policy candidate. Preserve
@@ -112,29 +325,48 @@ async function openRailgunAccountWallet({
     } else if (mode === 'pending') candidate = generation = await enrollment.catalog.resume();
     else generation = enrollment.catalog.activeFor(policy);
     check(generation && generation.policy === policy);
+    if (completedOnly) generation = Object.freeze({ ...generation });
     const filename = path.join(generation.directory, 'wallet.sqlite');
-    enrollment.profileGuard.assert(filename);
+    (completedOnly
+      ? enrollment.profileGuard.assertRegistered
+      : enrollment.profileGuard.assert
+    ).call(enrollment.profileGuard, filename);
+    if (completedOnly) check(exists(filename));
+    const journalHandle = enrollment.getContext('storage', 'railgun-wallet-v1:' + walletId),
+      journalFile = getPrivacyStoragePath(journalHandle, generation.directory);
+    (completedOnly
+      ? enrollment.profileGuard.assertRegistered
+      : enrollment.profileGuard.assert
+    ).call(enrollment.profileGuard, journalFile);
+    if (completedOnly) check(exists(journalFile));
     const createStore = !!candidate && !exists(filename);
-    const opened = await openRailgunAccountStore({
-      enrollment,
-      kind: 'wallet',
-      generationId: generation.id,
-      create: createStore,
-      expectedStoreId: candidate ? undefined : generation.storeId,
-    });
+    const opened = completedOnly
+      ? await openRailgunCompletedAccountStore({
+          enrollment,
+          generationId: generation.id,
+          expectedStoreId: generation.storeId,
+          signal: parentSignal,
+        })
+      : await openRailgunAccountStore({
+          enrollment,
+          kind: 'wallet',
+          generationId: generation.id,
+          create: createStore,
+          expectedStoreId: candidate ? undefined : generation.storeId,
+        });
     walletSession = opened.session;
-    coverageStore = createRailgunWalletCoverageStore({
+    openingCurrent();
+    coverageStore = (
+      completedOnly ? createRailgunCompletedWalletCoverageStore : createRailgunWalletCoverageStore
+    )({
       session: walletSession,
       walletId,
       policy,
       assertScan: runner.assertScan,
     });
-    const journalHandle = enrollment.getContext('storage', 'railgun-wallet-v1:' + walletId),
-      journalFile = getPrivacyStoragePath(journalHandle, generation.directory);
-    enrollment.profileGuard.assert(journalFile);
     const createJournal = !!candidate && !exists(journalFile);
     journal = await enrollment.withGenerationKeys(generation.id, (keys) =>
-      createRailgunWalletJournal({
+      (completedOnly ? openRailgunWalletJournalReadOnly : createRailgunWalletJournal)({
         handle: journalHandle,
         directory: generation.directory,
         key: keys['wallet-journal'],
@@ -145,22 +377,33 @@ async function openRailgunAccountWallet({
         coverageStore,
         coordinator,
         assertScan: runner.assertScan,
-        create: createJournal,
+        ...(completedOnly ? {} : { create: createJournal }),
         profileGuard: enrollment.profileGuard,
       })
     );
+    openingCurrent();
     const state = await journal.readState();
+    openingCurrent();
     if (mode === 'active') check(state.checkpoint && !state.pending);
     const restore =
       mode === 'active' || (mode === 'pending' && !!state.checkpoint && !state.pending);
     let pending;
-    let checked = await coordinator.withPublicSnapshot((snapshot) => {
-      scan = (async () => {
-        if (!restore) pending = await journal.prepare(snapshot.checkpoint);
-        return runner.run({ handle, snapshot, walletSession, coverageStore, walletId, restore });
-      })();
-      return scan;
-    });
+    let checked = completedOnly
+      ? await completedRestore(state)
+      : await coordinator.withPublicSnapshot((snapshot) => {
+          scan = (async () => {
+            if (!restore) pending = await journal.prepare(snapshot.checkpoint);
+            return runner.run({
+              handle,
+              snapshot,
+              walletSession,
+              coverageStore,
+              walletId,
+              restore,
+            });
+          })();
+          return scan;
+        });
     const coverage = restore
       ? await coverageStore.read(checked.value.receipt)
       : await coverageStore.write(
@@ -177,28 +420,64 @@ async function openRailgunAccountWallet({
     if (restore) await journal.revalidate(evidence);
     else await journal.complete(pending, evidence);
     if (candidate) await enrollment.catalog.publish(candidate, journal);
+    openingCurrent();
     let view = createRailgunKohakuRead({ runner, journal, receipt: checked.value.receipt });
     lifetime = AbortSignal.any([
+      parentSignal,
       walletSession.signal,
       coverageStore.signal,
       coordinator.signal,
       enrollment.signal,
       journal.signal,
     ]);
-    onAbort = () => {
-      close().catch(() => {});
-    };
     lifetime.addEventListener('abort', onAbort, { once: true });
     if (lifetime.aborted) throw fail();
     const current = () => {
       phase.assertCurrent();
       check(!busy && !lifetime.aborted);
+      openingCurrent();
       assertRailgunIdentity(identity, handle);
       getRailgunAccountPublicIdentity(coordinator, enrollment);
       return runner.readOwned(checked.value.receipt, journal);
     };
     async function restoreCurrent(request, operation) {
       const before = current();
+      if (completedOnly) {
+        check(request === undefined && operation === undefined);
+        busy = true;
+        restoration = (async () => {
+          const state = await journal.readState();
+          const renewed = await completedRestore(state);
+          const coverage = await coverageStore.read(renewed.value.receipt);
+          const freshState = await walletSession.inspectWalletState();
+          await journal.revalidate({
+            snapshot: renewed.evidence,
+            coverage,
+            state: freshState,
+            receipt: renewed.value.receipt,
+          });
+          const nextView = createRailgunKohakuRead({
+            runner,
+            journal,
+            receipt: renewed.value.receipt,
+          });
+          openingCurrent();
+          checked = renewed;
+          view = nextView;
+          return view;
+        })();
+        try {
+          const restored = await restoration;
+          openingCurrent();
+          return restored;
+        } catch {
+          await close();
+          throw refused();
+        } finally {
+          restoration = null;
+          busy = false;
+        }
+      }
       const privateIntent =
         request === undefined
           ? undefined
@@ -438,14 +717,18 @@ async function openRailgunAccountWallet({
       current,
       restoreCurrent,
       reserveHandoff() {
+        check(!completedOnly);
         current();
         return phase.reserveHandoff();
       },
     });
     return account;
   } catch (error) {
+    finishSetup();
     await close();
     throw error;
+  } finally {
+    finishSetup();
   }
 }
 function owned(account, { identity, enrollment, coordinator }) {
@@ -521,6 +804,7 @@ function assertRailgunAccountPrivateCreator(
 }
 module.exports = {
   openRailgunAccountWallet,
+  openRailgunCompletedAccountWallet,
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,

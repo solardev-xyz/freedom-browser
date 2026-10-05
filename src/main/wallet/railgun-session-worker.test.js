@@ -539,3 +539,73 @@ test('wallet-store evidence binds exact persisted content and becomes stale on d
   await call(5, 'txAbort', { transaction });
   worker.assertFresh(await worker.inspectWalletState());
 });
+
+describe('fixed read-only session worker', () => {
+  const {
+    startRailgunReadOnlySessionWorker,
+    assertRailgunReadOnlySessionWorker,
+  } = require('./railgun-session-worker');
+  test('reads through the real worker and rejects mutation without touching disk', async () => {
+    start();
+    await worker.ready;
+    expect(() => assertRailgunReadOnlySessionWorker(worker)).toThrow();
+    await call(1, 'batch', { operations: [put('read-only-key', 'retained-value')] });
+    worker.close();
+    await worker.closed;
+    const filename = options.storage.filename;
+    const before = fs.readFileSync(filename),
+      files = fs.readdirSync(path.dirname(filename)).sort();
+    worker = startRailgunReadOnlySessionWorker({
+      ...options,
+      storage: { ...options.storage, create: false },
+    });
+    workers.push(worker);
+    await worker.ready;
+    expect(assertRailgunReadOnlySessionWorker(worker)).toBeUndefined();
+    expect(() => assertRailgunReadOnlySessionWorker({ ...worker })).toThrow();
+    expect(() => assertRailgunReadOnlySessionWorker(new Proxy(worker, {}))).toThrow();
+    expect(await call(1, 'get', { key: b64('read-only-key') })).toBe(b64('retained-value'));
+    await expect(
+      call(2, 'batch', { operations: [put('read-only-key', 'changed')] })
+    ).rejects.toThrow();
+    await worker.closed;
+    expect(() => assertRailgunReadOnlySessionWorker(worker)).toThrow();
+    expect(fs.readFileSync(filename)).toEqual(before);
+    expect(fs.readdirSync(path.dirname(filename)).sort()).toEqual(files);
+    start({ storage: { ...options.storage, create: false } });
+    await worker.ready;
+    expect(await call(1, 'get', { key: b64('read-only-key') })).toBe(b64('retained-value'));
+  });
+  test('cannot create or select its mode through caller flags', () => {
+    expect(() => startRailgunReadOnlySessionWorker(options)).toThrow();
+    expect(() => startRailgunSessionWorker({ ...options, readOnly: true })).toThrow();
+    expect(() =>
+      startRailgunSessionWorker({ ...options, storage: { ...options.storage, readOnly: true } })
+    ).toThrow();
+    expect(fs.existsSync(options.storage.filename)).toBe(false);
+  });
+});
+
+test('read-only storage close failure is observable as an actual nonzero worker exit', async () => {
+  start();
+  await worker.ready;
+  worker.close();
+  await worker.closed;
+  const filename = options.storage.filename;
+  const before = fs.readFileSync(filename),
+    original = fs.statSync(filename);
+  worker = require('./railgun-session-worker').startRailgunReadOnlySessionWorker({
+    ...options,
+    storage: { ...options.storage, create: false },
+  });
+  workers.push(worker);
+  await worker.ready;
+  // Deliberate out-of-band metadata change: the reader must not report a clean
+  // close after detecting a violation of its unchanged-file assumptions.
+  fs.utimesSync(filename, original.atime, new Date(original.mtimeMs + 2000));
+  worker.close();
+  const ended = await worker.closed;
+  expect(Number.isInteger(ended.exitCode)).toBe(true);
+  expect(ended.exitCode).not.toBe(0);
+  expect(fs.readFileSync(filename)).toEqual(before);
+});

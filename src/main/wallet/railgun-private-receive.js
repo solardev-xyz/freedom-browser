@@ -4,7 +4,11 @@
  */
 const assert = require('assert/strict');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
-const { assertRailgunIdentity, withRailgunViewingCredential } = require('./railgun-identity');
+const {
+  assertRailgunIdentity,
+  withRailgunViewingCredential,
+  quarantineRailgunIdentityCredentials,
+} = require('./railgun-identity');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { validateRailgunPrivateSigningIntent } = require('./railgun-private-intent');
 const { normalizeRailgunPrivateReceiver } = require('./railgun-private-results');
@@ -61,7 +65,8 @@ async function verify(options) {
     accepting = true,
     keyDelivered = false,
     closeRequested = false,
-    exitObserved = false;
+    exitObserved = false,
+    quarantined = false;
   const current = () => {
     const now = performance.now();
     assert.ok(!failed && !lifetime.aborted && now >= started && now < deadline);
@@ -94,11 +99,22 @@ async function verify(options) {
     close();
   };
   const observeExit = async () => {
-    const barrier = task.closed;
-    assert.ok(barrier && typeof barrier.then === 'function');
-    const value = await barrier;
-    exitObserved = true;
-    return value;
+    try {
+      const barrier = task.closed;
+      assert.ok(barrier && typeof barrier.then === 'function');
+      const value = await barrier;
+      assert.ok(value && typeof value.code === 'string');
+      exitObserved = true;
+      return value;
+    } catch (error) {
+      // Revoke every sibling/loan immediately. A borrowed callback may ignore
+      // cancellation forever; cleanup must still wait for it below.
+      if (!exitObserved && !quarantined) {
+        quarantined = true;
+        quarantineRailgunIdentityCredentials(identity);
+      }
+      throw error;
+    }
   };
   const dispatch = async (wire) => {
     try {

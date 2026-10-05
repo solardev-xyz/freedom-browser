@@ -82,7 +82,7 @@ beforeEach(() => {
       role: 'storage',
       operation: 'railgun-wallet-v1:' + walletId,
     }),
-    directory: fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-wallet-journal-')),
+    directory: fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-wallet-journal-'))),
     key: Buffer.alloc(32, 44),
     binding: '5'.repeat(64),
     walletId,
@@ -235,4 +235,145 @@ test('read evidence requires the exact current receipt and cannot be reassigned 
   expect(() => j.assertReceipt(receipt)).not.toThrow();
   await j.prepare(plan());
   expect(() => j.assertReceipt(receipt)).toThrow();
+});
+
+async function completedReadOnlyFixture() {
+  const writer = await open();
+  await writer.complete(await writer.prepare(plan()), currentEvidence);
+  const before = await writer.readState();
+  writer.close();
+  mode = 'restore';
+  const { getPrivacyStoragePath } = require('./privacy-storage');
+  const filename = getPrivacyStoragePath(options.handle, options.directory);
+  const bytes = fs.readFileSync(filename);
+  const registered = new Set([filename]);
+  const profileGuard = {
+    assertRegistered: jest.fn((file) => {
+      if (!registered.has(file) || !fs.existsSync(file)) throw Error('unregistered');
+    }),
+    remember: jest.fn(() => {
+      throw Error('must not adopt');
+    }),
+  };
+  const readOnly = () =>
+    require('./railgun-wallet-journal').openRailgunWalletJournalReadOnly({
+      ...options,
+      profileGuard,
+    });
+  return { before, bytes, filename, profileGuard, registered, readOnly };
+}
+
+test('read-only reopen/revalidate preserves ciphertext, lease, generation and sequence', async () => {
+  const f = await completedReadOnlyFixture();
+  for (let i = 0; i < 2; i++) {
+    const journal = await f.readOnly();
+    journals.push(journal);
+    expect(require('./railgun-wallet-journal').isRailgunWalletJournal(journal)).toBe(true);
+    expect(journal.prepare).toBeUndefined();
+    expect(journal.complete).toBeUndefined();
+    expect(await journal.readState()).toEqual(f.before);
+    expect(() => journal.assertReady()).toThrow();
+    await journal.revalidate(currentEvidence);
+    expect(journal.assertReady().spendableGranted).toBe(false);
+    expect(fs.readFileSync(f.filename)).toEqual(f.bytes);
+    journal.close();
+  }
+  expect(f.profileGuard.remember).not.toHaveBeenCalled();
+});
+
+test.each(['unregistered', 'missing', 'corrupt', 'policy', 'binding', 'walletId', 'create'])(
+  'read-only journal refuses %s without writing or adopting',
+  async (kind) => {
+    const f = await completedReadOnlyFixture();
+    let override = {};
+    if (kind === 'unregistered') f.registered.clear();
+    if (kind === 'missing') fs.renameSync(f.filename, f.filename + '.held');
+    if (kind === 'corrupt') fs.writeFileSync(f.filename, 'corrupt');
+    if (['policy', 'binding', 'walletId'].includes(kind)) override[kind] = 'a'.repeat(64);
+    if (kind === 'create') override.create = false;
+    const before = fs.existsSync(f.filename) ? fs.readFileSync(f.filename) : null;
+    await expect(
+      Promise.resolve().then(() =>
+        require('./railgun-wallet-journal').openRailgunWalletJournalReadOnly({
+          ...options,
+          profileGuard: f.profileGuard,
+          ...override,
+        })
+      )
+    ).rejects.toThrow();
+    expect(fs.existsSync(f.filename) ? fs.readFileSync(f.filename) : null).toEqual(before);
+    expect(f.profileGuard.remember).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['empty', 'pending'])(
+  'read-only journal refuses %s persisted state without lease rotation',
+  async (kind) => {
+    const writer = await open();
+    if (kind === 'pending') await writer.prepare(plan());
+    writer.close();
+    const filename = require('./privacy-storage').getPrivacyStoragePath(
+      options.handle,
+      options.directory
+    );
+    const bytes = fs.readFileSync(filename);
+    await expect(
+      require('./railgun-wallet-journal').openRailgunWalletJournalReadOnly({
+        ...options,
+        profileGuard: { assertRegistered: () => {} },
+      })
+    ).rejects.toThrow();
+    expect(fs.readFileSync(filename)).toEqual(bytes);
+  }
+);
+
+test('read-only journal rechecks inventory on later reads without adopting', async () => {
+  const f = await completedReadOnlyFixture();
+  const journal = await f.readOnly();
+  journals.push(journal);
+  f.registered.clear();
+  await expect(journal.readState()).rejects.toThrow();
+  expect(journal.signal.aborted).toBe(true);
+  expect(fs.readFileSync(f.filename)).toEqual(f.bytes);
+  expect(f.profileGuard.remember).not.toHaveBeenCalled();
+});
+
+test('read-only journal detects a coherently encrypted concurrent lease change', async () => {
+  const f = await completedReadOnlyFixture();
+  const journal = await f.readOnly();
+  journals.push(journal);
+  const storage = require('./privacy-storage').createPrivacyStorage(options);
+  await storage.update(require('./railgun-wallet-journal').RECORD_KEY, (text) => {
+    const value = JSON.parse(text);
+    value.lease = 'a'.repeat(64);
+    return JSON.stringify(value);
+  });
+  const changed = fs.readFileSync(f.filename);
+  await expect(journal.readState()).rejects.toThrow();
+  expect(fs.readFileSync(f.filename)).toEqual(changed);
+});
+
+test('read-only initialization retains journal owner through a late identity read after cancellation', async () => {
+  const f = await completedReadOnlyFixture();
+  let finish,
+    entered = false;
+  const gate = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const controller = new AbortController();
+  options.storeSession.signal = controller.signal;
+  options.storeSession.inspectStoreIdentity = async () => {
+    entered = true;
+    await gate;
+    return { format: 'paged-v2', instanceId: storeId };
+  };
+  const opening = f.readOnly();
+  const refused = expect(opening).rejects.toThrow();
+  expect(entered).toBe(true);
+  controller.abort();
+  await expect(f.readOnly()).rejects.toThrow();
+  finish();
+  await refused;
+  expect(fs.readFileSync(f.filename)).toEqual(f.bytes);
+  expect(f.profileGuard.remember).not.toHaveBeenCalled();
 });
