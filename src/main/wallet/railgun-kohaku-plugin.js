@@ -6,6 +6,7 @@ const assert = require('assert/strict');
 const path = require('path');
 const { isProxy } = require('util').types;
 const { dispatchRailgunKohakuRead } = require('./railgun-kohaku-read-dispatch');
+const { dispatchRailgunKohakuPreparedOperation } = require('./railgun-kohaku-operation-dispatch');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { assertRailgunIdentity } = require('./railgun-identity');
 const {
@@ -877,25 +878,90 @@ function create(options) {
     }
   }
   function submitPublic(token) {
-    try {
-      current();
-      assert.equal(mode, 'public');
-      assert.ok(!busy && operation && token === operation && shield && !shield.signal.aborted);
-    } catch {
-      return Promise.reject(fail());
-    }
-    operation = null;
-    busy = true;
-    state = 'broadcasting';
     let preservedError;
-    const pending = Promise.resolve()
-      .then(async () => {
-        reviewedCurrent();
-        const signer = require('./signers').getSigner(0);
-        reviewedCurrent();
-        try {
-          const outcome = await shield.submit({
-            signer,
+    return dispatchRailgunKohakuPreparedOperation(
+      {
+        // Fixed owner closures; caller-supplied ports never enter this boundary.
+        claim() {
+          current();
+          assert.equal(mode, 'public');
+          assert.ok(!busy && operation && token === operation && shield && !shield.signal.aborted);
+          operation = null;
+          busy = true;
+          state = 'broadcasting';
+        },
+        async invoke() {
+          reviewedCurrent();
+          const signer = require('./signers').getSigner(0);
+          reviewedCurrent();
+          try {
+            const outcome = await shield.submit({
+              signer,
+              gasLimit: resources.gasLimit,
+              maxGasFee: resources.maxGasFee,
+              review: async (summary) => {
+                reviewedCurrent();
+                const approved = await runReview(resources.reviewTransaction, summary);
+                reviewedCurrent();
+                return approved === true;
+              },
+            });
+            recoveryRequired = true;
+            return outcome;
+          } catch (error) {
+            // Only the genuine Shield controller's journal outcomes are preserved;
+            // it sanitizes exceptions thrown by the reviewer and signer callbacks.
+            if (
+              ['PRIVATE_BROADCAST_UNCERTAIN', 'PRIVATE_SUBMISSION_UNRESOLVED'].includes(error?.code)
+            ) {
+              preservedError = error;
+              recoveryRequired = true;
+            }
+            throw error;
+          }
+        },
+        onRejected(error) {
+          throw preservedError && error === preservedError ? error : fail();
+        },
+        finish() {
+          close();
+          busy = false;
+          finish();
+        },
+        retain: track,
+        // The Shield controller bounds outward cancellation; its separately
+        // tracked closed promise retains ownership through original work.
+        outward: (pending) => pending,
+        refused: fail,
+      },
+      token
+    );
+  }
+  function submit(token) {
+    return dispatchRailgunKohakuPreparedOperation(
+      {
+        // Fixed owner closures; caller-supplied ports never enter this boundary.
+        claim() {
+          current();
+          assert.equal(mode, 'private');
+          assert.ok(
+            !busy && operation && token === operation && completion && !completion.signal.aborted
+          );
+          operation = null;
+          busy = true;
+          state = 'broadcasting';
+        },
+        async invoke() {
+          reviewedCurrent();
+          await closeAccount(account);
+          account = null;
+          reviewedCurrent();
+          const result = await submitRailgunPrivateTransaction({
+            identity,
+            enrollment,
+            completion: completion.receipt,
+            proverArchive: resources.proverArchive,
+            artifactDirectory: resources.artifactDirectory,
             gasLimit: resources.gasLimit,
             maxGasFee: resources.maxGasFee,
             review: async (summary) => {
@@ -905,79 +971,24 @@ function create(options) {
               return approved === true;
             },
           });
-          recoveryRequired = true;
-          return outcome;
-        } catch (error) {
-          // Only the genuine Shield controller's journal outcomes are preserved;
-          // it sanitizes exceptions thrown by the reviewer and signer callbacks.
-          if (
-            ['PRIVATE_BROADCAST_UNCERTAIN', 'PRIVATE_SUBMISSION_UNRESOLVED'].includes(error?.code)
-          ) {
-            preservedError = error;
-            recoveryRequired = true;
-          }
-          throw error;
-        }
-      })
-      .catch((error) => {
-        throw preservedError && error === preservedError ? error : fail();
-      })
-      .finally(() => {
-        close();
-        busy = false;
-        finish();
-      });
-    track(pending);
-    // The controller bounds outward callback cancellation; its separate closed
-    // promise, already tracked, keeps our ownership through original work.
-    return pending;
-  }
-  function submit(token) {
-    try {
-      current();
-      assert.equal(mode, 'private');
-      assert.ok(
-        !busy && operation && token === operation && completion && !completion.signal.aborted
-      );
-    } catch {
-      return Promise.reject(fail());
-    }
-    operation = null;
-    busy = true;
-    state = 'broadcasting';
-    const pending = Promise.resolve()
-      .then(async () => {
-        reviewedCurrent();
-        await closeAccount(account);
-        account = null;
-        reviewedCurrent();
-        const result = await submitRailgunPrivateTransaction({
-          identity,
-          enrollment,
-          completion: completion.receipt,
-          proverArchive: resources.proverArchive,
-          artifactDirectory: resources.artifactDirectory,
-          gasLimit: resources.gasLimit,
-          maxGasFee: resources.maxGasFee,
-          review: async (summary) => {
-            reviewedCurrent();
-            const approved = await runReview(resources.reviewTransaction, summary);
-            reviewedCurrent();
-            return approved === true;
-          },
-        });
-        // An acknowledged/uncertain journal-backed result survives cancellation
-        // during the controller's final drain; never replace it with a retry.
-        return result;
-      })
-      .catch(() => Object.freeze({ status: 'recovery-required', stage: 'kohaku' }))
-      .finally(() => {
-        close();
-        busy = false;
-        finish();
-      });
-    track(pending);
-    return publicSettlement(pending, true);
+          // An acknowledged/uncertain journal-backed result survives cancellation
+          // during the controller's final drain; never replace it with a retry.
+          return result;
+        },
+        onRejected() {
+          return Object.freeze({ status: 'recovery-required', stage: 'kohaku' });
+        },
+        finish() {
+          close();
+          busy = false;
+          finish();
+        },
+        retain: track,
+        outward: (pending) => publicSettlement(pending, true),
+        refused: fail,
+      },
+      token
+    );
   }
   const plugin = Object.freeze({
     instanceId: () => {

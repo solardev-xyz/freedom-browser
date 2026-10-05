@@ -2495,3 +2495,77 @@ test('synchronous view throw remains asynchronous refusal and permits a later he
   expect(await plugin.notes()).toBe(mock.owned.read.received);
   expect(account.view.notes).toHaveBeenCalledTimes(2);
 });
+
+test.each(['operationPorts', 'transactionHost'])(
+  'caller %s cannot supply prepared-operation authority',
+  (name) => {
+    const supplied = { claim: jest.fn(), invoke: jest.fn() };
+    expect(() => create({ [name]: supplied })).toThrow(refusal.message);
+    expect(supplied.claim).not.toHaveBeenCalled();
+    expect(supplied.invoke).not.toHaveBeenCalled();
+    expect(account.close).not.toHaveBeenCalled();
+    expect(create().signal.aborted).toBe(false);
+  }
+);
+test.each(['private', 'public'])(
+  '%s dispatch consumes before a same-turn replay and retains original work through close',
+  async (lane) => {
+    const gate = deferred(),
+      value = Object.freeze({ hash: '0x' + '7'.repeat(64) }),
+      plugin = lane === 'private' ? create() : publicPlugin(),
+      op =
+        lane === 'private'
+          ? await plugin.prepareTransfer(amount(), '0zk-self')
+          : await plugin.prepareShield(nativeAmount()),
+      invoke = lane === 'private' ? mock.submit : mock.shieldSubmit,
+      submit =
+        lane === 'private'
+          ? createRailgunKohakuBroadcaster(plugin).broadcast
+          : (token) => submitRailgunKohakuPublicOperation(plugin, token);
+    invoke.mockReturnValue(gate.promise);
+    const pending = submit(op),
+      replay = submit(op);
+    expect(plugin.status().state).toBe('broadcasting');
+    expect(plugin.status().operationPending).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+    await expect(replay).rejects.toMatchObject(refusal);
+    await tick();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    let drained = false;
+    plugin.closed.then(() => (drained = true));
+    plugin.close();
+    await tick();
+    expect(drained).toBe(false);
+    expect(() => create({ account: makeAccount() })).toThrow(refusal.message);
+    gate.resolve(value);
+    expect(await pending).toBe(value);
+    await plugin.closed;
+    expect(drained).toBe(true);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(create({ account: makeAccount() }).signal.aborted).toBe(false);
+  }
+);
+
+test.each(['private', 'public'])(
+  '%s close between synchronous claim and deferred invocation revokes controller admission',
+  async (lane) => {
+    const plugin = lane === 'private' ? create() : publicPlugin(),
+      token =
+        lane === 'private'
+          ? await plugin.prepareTransfer(amount(), '0zk-self')
+          : await plugin.prepareShield(nativeAmount());
+    const pending =
+      lane === 'private'
+        ? createRailgunKohakuBroadcaster(plugin).broadcast(token)
+        : submitRailgunKohakuPublicOperation(plugin, token);
+    expect(plugin.status().state).toBe('broadcasting');
+    plugin.close();
+    if (lane === 'private')
+      await expect(pending).resolves.toEqual({ status: 'recovery-required', stage: 'kohaku' });
+    else await expect(pending).rejects.toMatchObject(refusal);
+    await plugin.closed;
+    expect(mock.submit).not.toHaveBeenCalled();
+    expect(mock.shieldSubmit).not.toHaveBeenCalled();
+    expect(plugin.status().operationPending).toBe(false);
+  }
+);
