@@ -999,6 +999,37 @@ describe('Blockscout check (#484)', () => {
     expect(indexCalls(got)).toBe(0);
   });
 
+  // R4-M1 (#509): an index-verified answer that looks cut (a fresh wallet's
+  // only transfers are recent) gets the #496 check as a plain quorum read of
+  // the blocks before it, not a second Blockscout check; so a Blockscout that
+  // fails after answering leaves no cooldown behind for the next scan.
+  test('the truncation check of an index-verified answer never asks Blockscout', async () => {
+    const recent = [transfer(HEAD - 500, 0), transfer(HEAD - 100, 1)];
+    const index = blockscoutIndex({ items: recent.map(asItem) });
+    let reads = 0;
+    useEndpoints(
+      { a: serves(recent), b: PUBLICNODE_T(recent), c: serves(recent, 10_000) },
+      {
+        indexer: (url, signal) => {
+          reads += 1;
+          // Blockscout answers one full check (status, height, transfers),
+          // then goes down.
+          return reads > 3 ? Promise.reject(new TypeError('fetch failed')) : index(url, signal);
+        },
+      }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got).toMatchObject({ result: recent, source: 'quorum' });
+    expect(indexCalls(got)).toBe(3);
+
+    // Blockscout is back: the next scan is checked against it, not refused
+    // by a cooldown the truncation check left behind.
+    reads = -Infinity;
+    const again = await scanOnce(scanOver(FULL_HISTORY));
+    expect(again).toMatchObject({ result: recent, source: 'quorum' });
+    expect(indexCalls(again)).toBeGreaterThan(0);
+  });
+
   test('without a configured indexer, the span is refused as before', async () => {
     useEndpoints({
       a: serves(TRANSFERS),

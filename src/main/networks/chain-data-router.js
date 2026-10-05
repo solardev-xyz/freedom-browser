@@ -788,7 +788,9 @@ async function answerFromIndex(chainId, method, params, options) {
     signal?.throwIfAborted();
     // Only the indexer's own failures cool it down: not the check's budget
     // running out, nor the pages abandoned because no RPC answered.
+    // A router-issued check (learn: false) cools nothing down either.
     if (
+      logRange.learn !== false &&
       err instanceof blockscout.IndexUnavailableError &&
       !checkSignal.aborted &&
       !paging.signal.aborted
@@ -1775,8 +1777,12 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
       : await requestSource(source, chainId, method, probe.params, {
         ...rest,
         signal: checkSignal,
+        // A plain quorum read of the blocks before the answer, never another
+        // Blockscout check (indexQueryOf off): an index-verified answer would
+        // otherwise re-run the whole index check on itself, and a failure of
+        // that second read would cool the indexer down for the next scan.
         logRange: logRange && SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint'
-          ? { ...logRange, span: probe.span, learn: false }
+          ? { ...logRange, span: probe.span, learn: false, indexQueryOf: null }
           : null,
       });
   } catch (err) {
