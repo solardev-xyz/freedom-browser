@@ -1,1 +1,1 @@
-- Publish setup no longer offers to buy storage while the Swarm node is still finding the storage a wallet already owns on its first start on a device ([#510](https://github.com/solardev-xyz/freedom-browser/issues/510))
+- Publish setup no longer offers to buy storage while the Swarm node is still looking for the storage a wallet already owns, and shows how far it has got ([#510](https://github.com/solardev-xyz/freedom-browser/issues/510))

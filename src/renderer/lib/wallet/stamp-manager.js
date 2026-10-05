@@ -21,12 +21,15 @@ let stampManagerScreen;
 let stampManagerBackBtn;
 let batchListContainer;
 let emptyText;
+let scanStatus;
 let buyMoreBtn;
 let depositWarning;
 let depositTopUpBtn;
 
 let isOpen = false;
 let setupState = null;
+// Batches in the list last rendered.
+let batchCount = 0;
 let loadedKey = null;
 let loadRequestId = 0;
 
@@ -35,6 +38,7 @@ export function initStampManager() {
   stampManagerBackBtn = document.getElementById('stamp-manager-back');
   batchListContainer = document.getElementById('stamp-batch-list');
   emptyText = document.getElementById('stamp-list-empty');
+  scanStatus = document.getElementById('stamp-scan-status');
   buyMoreBtn = document.getElementById('stamp-buy-another-btn');
   depositWarning = document.getElementById('stamp-deposit-warning');
   depositTopUpBtn = document.getElementById('stamp-deposit-topup');
@@ -52,6 +56,7 @@ export function initStampManager() {
     setupState = state;
     if (!isOpen) return;
     renderDepositWarning();
+    renderScanStatus();
     if (stampsKey(state) !== loadedKey) loadBatchList();
   });
 }
@@ -66,13 +71,17 @@ export async function openStampManager() {
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
+  renderScanStatus();
   loadBatchList();
   try {
     setupState = (await window.publishSetup?.getState()) || setupState;
   } catch {
     // The push subscription fills it in.
   }
-  if (isOpen) renderDepositWarning();
+  if (isOpen) {
+    renderDepositWarning();
+    renderScanStatus();
+  }
 }
 
 export function closeStampManager() {
@@ -93,6 +102,34 @@ function renderDepositWarning() {
   const dry = Boolean(chequebook?.needsTopUp) && chequebook.managed !== false;
   depositWarning?.classList.toggle('hidden', !dry);
   depositTopUpBtn?.classList.toggle('hidden', !dry || !setupState?.canBuy);
+}
+
+// Ant's wallet-history scan (/health.walletScan): while it is still looking
+// for storage this wallet owns, the list may be incomplete, so the screen
+// says so (with the setup's progress message) instead of "no storage yet".
+// While it confirms storage it found from its unverified source, a subtle
+// line says so; the storage itself is usable.
+function scanStatusText() {
+  const hold = setupState?.readiness?.walletScan;
+  if (hold === 'running' || hold === 'retrying') return setupState.readiness.message;
+  if (setupState?.walletScan?.state === 'confirming') {
+    return 'Still confirming your storage history in the background.';
+  }
+  return null;
+}
+
+function renderScanStatus() {
+  const text = scanStatusText();
+  if (scanStatus) {
+    scanStatus.textContent = text || '';
+    scanStatus.classList.toggle('hidden', !text);
+  }
+  renderEmptyText();
+}
+
+function renderEmptyText() {
+  const looking = ['running', 'retrying'].includes(setupState?.readiness?.walletScan);
+  emptyText?.classList.toggle('hidden', looking || batchCount > 0);
 }
 
 async function loadBatchList() {
@@ -126,7 +163,8 @@ function renderBatchList(stamps) {
   if (!batchListContainer) return;
 
   batchListContainer.innerHTML = '';
-  emptyText?.classList.toggle('hidden', stamps.length > 0);
+  batchCount = stamps.length;
+  renderEmptyText();
   if (buyMoreBtn) buyMoreBtn.textContent = stamps.length > 0 ? 'Buy More Storage' : 'Buy Storage';
   buyMoreBtn?.classList.toggle('hidden', setupState?.canBuy === false);
 

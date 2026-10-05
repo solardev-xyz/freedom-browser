@@ -209,28 +209,26 @@ describe('swarm-readiness view helpers', () => {
       ).toMatchObject({ disabled: true, target: 'setup' });
     });
 
-    test('opens setup while Ant rediscovers the wallet storage, so its message and Restart are reachable (#510)', () => {
+    test('opens setup while Ant looks for the wallet storage, where its progress is (#510)', () => {
       expect(
         mod.describePublishCta(
-          stateWith({ readiness: { ok: false, key: 'checking', rediscovery: 'running' } })
+          stateWith({ readiness: { ok: false, key: 'checking', walletScan: 'running' } })
         )
       ).toMatchObject({
         visible: true,
         disabled: false,
         target: 'setup',
-        hint: 'Checking for storage this wallet already owns…',
+        hint: 'Looking for your existing storage…',
       });
       expect(
         mod.describePublishCta(
-          stateWith({
-            readiness: { ok: false, key: 'checking', rediscovery: 'failed', slow: true },
-          })
+          stateWith({ readiness: { ok: false, key: 'checking', walletScan: 'retrying' } })
         )
       ).toMatchObject({
         visible: true,
         disabled: false,
         target: 'setup',
-        hint: 'Restart the node before buying storage',
+        hint: 'Retrying the search for your existing storage',
       });
     });
   });
