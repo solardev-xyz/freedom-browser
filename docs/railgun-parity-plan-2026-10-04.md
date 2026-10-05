@@ -7,6 +7,15 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [complete connected restart checkpoint](railgun-connected-change-restart-2026-10-05.md)
+now passes both original input histories through separate setup/resume processes,
+including genuine encrypted restoration, fresh second proof/signature and terminal
+balance ingestion. Four compatibility modes pass on the same 902 source hashes
+at merged commit `4ab31ac1`; bundled nodes were explicitly refreshed. External
+services remain simulated. Cold second-operation submission/recovery, partial
+Kohaku facade and live private qualification remain next. The prior checkpoints
+below retain their historical scope.
+
 The [terminal second-spend checkpoint](railgun-terminal-ingest-integration-2026-10-05.md)
 now advances the actual second withdrawal through the existing public/TXID history
 and ordinary wallet scanner. Both initial histories pass with the same 868-source
