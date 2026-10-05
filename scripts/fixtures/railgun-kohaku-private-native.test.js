@@ -254,3 +254,110 @@ test.each(['field', 'type'])(
     await expect(observer.close()).rejects.toThrow();
   }
 );
+
+test('native key deltas follow actual job purposes and count requests before dispatch failure', async () => {
+  const fs = require('fs'),
+    path = require('path'),
+    vm = require('vm'),
+    parser = require('acorn');
+  const source = (file) => fs.readFileSync(path.join(__dirname, '..', '..', file), 'utf8');
+  const nodes = (text, predicate) => {
+    const result = [];
+    const walk = (value) => {
+      if (!value || typeof value !== 'object') return;
+      if (predicate(value)) result.push(value);
+      for (const item of Object.values(value))
+        if (Array.isArray(item)) item.forEach(walk);
+        else if (item && typeof item === 'object') walk(item);
+    };
+    walk(parser.parse(text, { ecmaVersion: 'latest' }));
+    return result;
+  };
+  const operate = source('src/main/wallet/railgun-private-operate-job.js');
+  const operateCalls = nodes(
+    operate,
+    (node) => node.type === 'CallExpression' && node.callee.property?.name === 'withWallet'
+  );
+  expect(operateCalls).toHaveLength(1);
+  const operatePurpose = operateCalls[0].arguments[2].value;
+  expect(operatePurpose).toBe('private-operate');
+  const walletJob = source('src/main/wallet/railgun-wallet-job.js');
+  const keyCalls = nodes(
+    walletJob,
+    (node) => node.type === 'CallExpression' && node.callee.name === 'requestKey'
+  );
+  expect(keyCalls).toHaveLength(1);
+  const operateWire = vm.runInNewContext(
+    walletJob.slice(keyCalls[0].arguments[0].start, keyCalls[0].arguments[0].end),
+    { purpose: operatePurpose }
+  );
+  const receive = source('src/main/wallet/railgun-private-receive-job.js');
+  const receiveCalls = nodes(
+    receive,
+    (node) => node.type === 'CallExpression' && node.callee.name === 'requestKey'
+  );
+  expect(receiveCalls).toHaveLength(1);
+  const receiveWire = vm.runInNewContext(
+    receive.slice(receiveCalls[0].arguments[0].start, receiveCalls[0].arguments[0].end)
+  );
+  const qualifier = source('scripts/qualify-railgun-wallet-journal.js');
+  const dispatches = nodes(
+    qualifier,
+    (node) => node.type === 'Property' && node.method && node.key.name === 'dispatch'
+  );
+  expect(dispatches).toHaveLength(1);
+  const body = qualifier.slice(
+    dispatches[0].value.body.start + 1,
+    dispatches[0].value.body.end - 1
+  );
+  const reply = body.indexOf('const reply = await original.dispatch(wire);');
+  expect(reply).toBeGreaterThan(0);
+  const error = Error('Dispatch rejected after request admission');
+  const original = { dispatch: jest.fn().mockRejectedValue(error) };
+  // Execute the real observer prefix; replace only the unrelated post-dispatch
+  // fixture branches. A rejected delegate must still increment request counts.
+  const context = vm.createContext({
+    messages: 0,
+    snapshotProbe: undefined,
+    stagingGuard: false,
+    failReadOnlyRestore: false,
+    privateViewingKeys: 0,
+    privateReceiveKeys: 0,
+    original,
+  });
+  const dispatch = vm.runInContext(
+    `(async function(wire) { ${body.slice(0, reply)} return original.dispatch(wire); })`,
+    context
+  );
+  const integration = source('scripts/fixtures/railgun-kohaku-integration.js');
+  const start = integration.indexOf('          const keyCounts = readKeyCounts();');
+  const end = integration.indexOf('          const closedReads =', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const report = (inputType) =>
+    vm.runInNewContext(
+      `(function() { ${integration.slice(start, end)} return keyRequestDeltas; })()`,
+      {
+        inputType,
+        readKeyCounts: () => ({
+          privateViewingKeys: context.privateViewingKeys,
+          privateReceiveKeys: context.privateReceiveKeys,
+        }),
+        branchBefore: { keys: { privateViewingKeys: 0, privateReceiveKeys: 0 } },
+        assert: require('assert/strict'),
+      }
+    );
+  await expect(dispatch(operateWire)).rejects.toBe(error);
+  expect(report('Transact')).toEqual({ privatePrepare: 0, privateReceive: 0 });
+  await expect(dispatch(receiveWire)).rejects.toBe(error);
+  expect(report('Shield')).toEqual({ privatePrepare: 0, privateReceive: 1 });
+  expect(original.dispatch).toHaveBeenNthCalledWith(1, operateWire);
+  expect(original.dispatch).toHaveBeenNthCalledWith(2, receiveWire);
+  await expect(
+    dispatch(JSON.stringify({ id: 1, method: 'key', purpose: 'private-prepare' }))
+  ).rejects.toBe(error);
+  expect(context.privateViewingKeys).toBe(1);
+  expect(context.privateReceiveKeys).toBe(1);
+  expect(context.messages).toBe(3);
+  expect(() => report('Shield')).toThrow();
+});

@@ -745,15 +745,16 @@ exports.install = function install(mode) {
               ? { latest: 6, page: 1, root: 5 }
               : { latest: 0, page: 0, root: 0 }
           );
-          const keyRepliesDelta = Object.fromEntries(
-            Object.entries(readKeyCounts()).map(([key, value]) => [
-              key,
-              value - branchBefore.keys[key],
-            ])
-          );
-          assert.deepEqual(keyRepliesDelta, {
-            privateViewingKeys: 1,
-            privateReceiveKeys: inputType === 'Transact' ? 0 : 1,
+          // Existing broker counters increment before dispatch, for these purposes
+          // only. private-operate is deliberately not measured by privateViewingKeys.
+          const keyCounts = readKeyCounts();
+          const keyRequestDeltas = {
+            privatePrepare: keyCounts.privateViewingKeys - branchBefore.keys.privateViewingKeys,
+            privateReceive: keyCounts.privateReceiveKeys - branchBefore.keys.privateReceiveKeys,
+          };
+          assert.deepEqual(keyRequestDeltas, {
+            privatePrepare: 0,
+            privateReceive: inputType === 'Transact' ? 0 : 1,
           });
           const closedReads = await adapterTools.assertPrivateAdapterReadRefusals(
             plugin,
@@ -822,7 +823,8 @@ exports.install = function install(mode) {
               adoptingAccountClosed: true,
               copiedAndRepeatedOperationRefused: true,
               originalSettlementValuePreserved: true,
-              keyRepliesDelta,
+              keyRequestDeltas,
+              operateRequestsMeasured: false,
             },
             productionFacade: true,
             productionRestrictedPrivateHost: true,
