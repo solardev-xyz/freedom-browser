@@ -1,0 +1,3 @@
+- Switching an ad-blocking category on or off no longer freezes the browser ([#512](https://github.com/solardev-xyz/freedom-browser/issues/512))
+  - Building the filter engine ran on the browser's main thread and stalled every window and every loading page for about a quarter of a second; it now runs in a background thread, as does the build at first launch and after a filter-list update
+  - Pages also make three fewer blocking calls into the browser while they load

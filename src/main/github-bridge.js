@@ -7,13 +7,13 @@ const https = require('https');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const {
-  getRadicleDataPath,
   getCurrentStatus,
   isDisabledForProfile,
   STATUS,
 } = require('./radicle-manager');
 const embedded = require('./radicle-embedded');
-const { createProfileTempDir } = require('./profile-paths');
+const { createProfileTempDir, prepareRadicleDataDir } = require('./profile-paths');
+const fsOffload = require('./fs-offload');
 
 const execFileAsync = promisify(execFile);
 
@@ -44,50 +44,75 @@ function toBridgeRepoKey(owner, repo) {
   return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 }
 
-function getBridgeMapPath() {
-  return path.join(getRadicleDataPath(), GITHUB_BRIDGE_MAP_FILE);
+// The map lives in the Radicle home, which a legacy profile's first launch
+// after upgrade may still be carrying over (profile-paths.js, async, possibly
+// GB). Always resolve it through prepareRadicleDataDir so neither a read caches
+// an empty map for the session nor a write lands in the destination mid-copy
+// (which would abort the carry-over, or be overwritten by it).
+async function getBridgeMapPath() {
+  return path.join(await prepareRadicleDataDir(), GITHUB_BRIDGE_MAP_FILE);
 }
 
+let bridgeMapLoading = null;
+
+// Loads once per session. A failed Radicle-home preparation is not latched:
+// the next call retries.
 function loadBridgeMap() {
-  if (bridgeMapLoaded) return;
-  bridgeMapLoaded = true;
-
-  const mapPath = getBridgeMapPath();
-  if (!fs.existsSync(mapPath)) return;
-
-  try {
-    const parsed = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-    for (const [repoKey, rid] of Object.entries(parsed || {})) {
-      if (validateNonEmptyString(repoKey) && validateNonEmptyString(rid)) {
-        bridgeMapCache.set(repoKey, normalizeRid(rid));
+  if (bridgeMapLoaded) return Promise.resolve();
+  if (!bridgeMapLoading) {
+    bridgeMapLoading = (async () => {
+      const mapPath = await getBridgeMapPath();
+      bridgeMapLoaded = true;
+      if (!fs.existsSync(mapPath)) return;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+        for (const [repoKey, rid] of Object.entries(parsed || {})) {
+          if (
+            validateNonEmptyString(repoKey)
+            && validateNonEmptyString(rid)
+            && !bridgeMapCache.has(repoKey)
+          ) {
+            bridgeMapCache.set(repoKey, normalizeRid(rid));
+          }
+        }
+      } catch (err) {
+        console.warn('[GitHubBridge] Failed to load bridge map:', err.message);
       }
-    }
-  } catch (err) {
-    console.warn('[GitHubBridge] Failed to load bridge map:', err.message);
+    })().finally(() => {
+      bridgeMapLoading = null;
+    });
   }
+  return bridgeMapLoading;
 }
 
-function persistBridgeMap() {
+async function persistBridgeMap() {
+  const mapPath = await getBridgeMapPath();
+  fs.writeFileSync(mapPath, JSON.stringify(Object.fromEntries(bridgeMapCache), null, 2));
+}
+
+// Best-effort: a bridge that cannot be remembered is rediscovered from the
+// repo description next time, so never let this fail an import.
+async function rememberBridge(owner, repo, rid) {
+  const normalizedRid = normalizeRid(rid);
+  if (!validateNonEmptyString(owner) || !validateNonEmptyString(repo) || !normalizedRid) return;
+
   try {
-    const mapPath = getBridgeMapPath();
-    fs.writeFileSync(mapPath, JSON.stringify(Object.fromEntries(bridgeMapCache), null, 2));
+    await loadBridgeMap();
+    bridgeMapCache.set(toBridgeRepoKey(owner, repo), normalizedRid);
+    await persistBridgeMap();
   } catch (err) {
     console.warn('[GitHubBridge] Failed to persist bridge map:', err.message);
   }
 }
 
-function rememberBridge(owner, repo, rid) {
-  const normalizedRid = normalizeRid(rid);
-  if (!validateNonEmptyString(owner) || !validateNonEmptyString(repo) || !normalizedRid) return;
-
-  loadBridgeMap();
-  bridgeMapCache.set(toBridgeRepoKey(owner, repo), normalizedRid);
-  persistBridgeMap();
-}
-
-function lookupBridge(owner, repo) {
+async function lookupBridge(owner, repo) {
   if (!validateNonEmptyString(owner) || !validateNonEmptyString(repo)) return null;
-  loadBridgeMap();
+  try {
+    await loadBridgeMap();
+  } catch (err) {
+    console.warn('[GitHubBridge] Failed to load bridge map:', err.message);
+    return null;
+  }
   return bridgeMapCache.get(toBridgeRepoKey(owner, repo)) || null;
 }
 
@@ -99,13 +124,13 @@ function stripAnsi(str) {
   return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
-function cleanupTempDir(tempDir) {
+// Off the main thread (#513): a cloned repo can be large, and this runs at the
+// end of every import. `force` already makes a missing dir a no-op.
+async function cleanupTempDir(tempDir) {
   if (!tempDir) return;
 
   try {
-    if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
+    await fsOffload.removePath(tempDir, { recursive: true, force: true });
   } catch (err) {
     console.warn('[GitHubBridge] Cleanup failed:', err.message);
   } finally {
@@ -268,7 +293,7 @@ async function checkExistingBridge(url) {
     return failure('INVALID_URL_FORMAT', 'Invalid GitHub repository URL');
   }
 
-  const knownRid = lookupBridge(parsed.owner, parsed.repo);
+  const knownRid = await lookupBridge(parsed.owner, parsed.repo);
   if (knownRid) {
     return success({ bridged: true, rid: knownRid });
   }
@@ -285,7 +310,7 @@ async function checkExistingBridge(url) {
     if (description.toLowerCase().includes(marker)) {
       const rid = normalizeRid(repo?.rid || '');
       if (rid) {
-        rememberBridge(parsed.owner, parsed.repo, rid);
+        await rememberBridge(parsed.owner, parsed.repo, rid);
         return success({ bridged: true, rid });
       }
     }
@@ -443,7 +468,7 @@ async function importGitHubRepo(url, sender) {
     console.log(
       `[GitHubBridge] Success: ${validation.owner}/${validation.repo} -> ${normalizedRid}`
     );
-    rememberBridge(validation.owner, validation.repo, normalizedRid);
+    await rememberBridge(validation.owner, validation.repo, normalizedRid);
 
     return {
       ...success(),
@@ -466,7 +491,7 @@ async function importGitHubRepo(url, sender) {
 
     if (alreadyBridged) {
       if (parsed && ridFromError) {
-        rememberBridge(parsed.owner, parsed.repo, ridFromError);
+        await rememberBridge(parsed.owner, parsed.repo, ridFromError);
       }
       return failure(
         'ALREADY_BRIDGED',
@@ -474,7 +499,7 @@ async function importGitHubRepo(url, sender) {
         ridFromError ? { rid: ridFromError } : undefined,
         {
           step: 'initializing',
-          rid: ridFromError || (parsed ? lookupBridge(parsed.owner, parsed.repo) : null),
+          rid: ridFromError || (parsed ? await lookupBridge(parsed.owner, parsed.repo) : null),
         }
       );
     }
@@ -485,7 +510,7 @@ async function importGitHubRepo(url, sender) {
 
     return failure(friendlyError.code, friendlyError.message);
   } finally {
-    cleanupTempDir(clonePath);
+    await cleanupTempDir(clonePath);
   }
 }
 

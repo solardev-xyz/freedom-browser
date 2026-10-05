@@ -47,6 +47,33 @@ describe('shutdown signal handlers', () => {
     );
   });
 
+  test('runs beforeForceExit before a forced exit, and only then', () => {
+    const { app, logger, processTarget } = createHarness();
+    const order = [];
+    const beforeForceExit = jest.fn(() => order.push('flush'));
+    app.exit.mockImplementation(() => order.push('exit'));
+
+    registerShutdownSignalHandlers({ app, logger, processTarget, beforeForceExit });
+    processTarget.emit('SIGINT');
+    expect(beforeForceExit).not.toHaveBeenCalled();
+    processTarget.emit('SIGINT');
+
+    expect(order).toEqual(['flush', 'exit']);
+  });
+
+  test('a throwing beforeForceExit does not stop the forced exit', () => {
+    const { app, logger, processTarget } = createHarness();
+    const beforeForceExit = () => {
+      throw new Error('disk full');
+    };
+
+    registerShutdownSignalHandlers({ app, logger, processTarget, beforeForceExit });
+    processTarget.emit('SIGTERM');
+    processTarget.emit('SIGTERM');
+
+    expect(app.exit).toHaveBeenCalledWith(SIGNAL_EXIT_CODES.SIGTERM);
+  });
+
   test('uses the SIGTERM exit code when SIGTERM repeats', () => {
     const { app, logger, processTarget } = createHarness();
 

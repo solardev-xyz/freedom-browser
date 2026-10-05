@@ -15,6 +15,7 @@ const {
   sanitizeProfileId,
   updateProfileNodeConfig,
   validateProfileDeletion,
+  waitForCatalogWriteLockIdle,
 } = require('./profile-catalog');
 const { isProfileLocked } = require('./profile-lock');
 
@@ -301,6 +302,19 @@ function updateActiveProfileNodeConfig(protocol, updates) {
   return result;
 }
 
+// Same as updateActiveProfileNodeConfig, but first waits out any in-process
+// async catalog write (a profile deletion running its multi-GB rm off the main
+// thread) instead of failing fast with ELOCKED. For node managers persisting a
+// fallback port during start, where a transient "catalog busy" would otherwise
+// leave the node in ERROR.
+async function updateActiveProfileNodeConfigWhenIdle(protocol, updates) {
+  if (!activeProfile || activeProfile.source !== 'catalog') {
+    return null;
+  }
+  await waitForCatalogWriteLockIdle(activeProfile.appRoot);
+  return updateActiveProfileNodeConfig(protocol, updates);
+}
+
 function getReservedProfilePorts(profile = activeProfile) {
   if (!profile || profile.source !== 'catalog') {
     return new Set();
@@ -417,7 +431,7 @@ function validateProfileDeletionForActiveApp(profileId, expectedDisplayName) {
   return true;
 }
 
-function deleteProfileForActiveApp(profileId, expectedDisplayName) {
+async function deleteProfileForActiveApp(profileId, expectedDisplayName) {
   if (!activeProfile || activeProfile.source !== 'catalog') {
     return null;
   }
@@ -459,6 +473,7 @@ module.exports = {
   resolveLastOpenedProfileId,
   resolveProfile,
   updateActiveProfileNodeConfig,
+  updateActiveProfileNodeConfigWhenIdle,
   validateProfileDeletionForActiveApp,
   warnAboutLegacyDevData,
 };

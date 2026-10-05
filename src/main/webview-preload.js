@@ -26,6 +26,17 @@ const { contextBridge, ipcRenderer } = require('electron');
 // web frames: internal pages are file:, and dweb frames (bzz/ipfs/web3)
 // carry no list-targeted ads.
 //
+// The lookup stays synchronous on purpose (#512). Its answer depends on the
+// frame's URL and the live engine/settings/allowlist, so it can't ride on the
+// renderer's command line like the constants below; and an async answer
+// would land after the parser has run the page's first inline scripts —
+// exactly the ones a YouTube watch page uses to read its player config. No
+// main-process hook reaches a document before that either (see the
+// about:blank note further down). What #512 changed instead is what the
+// lookup waits on: the engine build no longer runs on the main thread, so a
+// list update or category toggle doesn't hold every frame's lookup for the
+// length of a parse.
+//
 // about:srcdoc and blob: documents are web frames too: they inherit their
 // creator's origin, so a same-origin page can reach straight into one and
 // pick up an unpatched global (`iframe.contentWindow.JSON.parse`). As in
@@ -531,25 +542,84 @@ if (globalThis.window && globalThis.window.top !== globalThis.window) {
   return;
 }
 
+// Per-load constants, delivered with the renderer process (#512): the main
+// process puts them on this webview's command line when it attaches
+// (src/main/webview-boot.js, webcontents-setup.js), so reading them here costs
+// no round trip to the main thread — before, each was a sync IPC that held the
+// page while the main process was busy. A renderer started without the switch
+// (or with a malformed one) falls back to the sync IPC, which still answers.
+// Keep in sync with WEBVIEW_BOOT_SWITCH in webview-boot.js (a sandboxed preload
+// cannot require it; webview-boot.test.js pins the two together).
+const WEBVIEW_BOOT_SWITCH = '--freedom-webview-boot=';
+function readWebviewBoot() {
+  try {
+    // `process` is the sandboxed preload's own binding (its wrapper's
+    // parameter), not a global: globalThis.process is undefined here.
+    const argv = typeof process !== 'undefined' && Array.isArray(process.argv) ? process.argv : [];
+    const args = argv.filter(
+      (arg) => typeof arg === 'string' && arg.startsWith(WEBVIEW_BOOT_SWITCH)
+    );
+    // Main drops any copy the embedder supplied; two would be a bug — ask.
+    if (args.length !== 1) return null;
+    const binary = atob(args[0].slice(WEBVIEW_BOOT_SWITCH.length));
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    const boot = JSON.parse(new TextDecoder().decode(bytes));
+    if (typeof boot?.isPrivate !== 'boolean' || !boot.internalPages?.routable) return null;
+    if (!boot.isPrivate && typeof boot.ethereum?.source !== 'string') return null;
+    return boot;
+  } catch {
+    return null;
+  }
+}
+const WEBVIEW_BOOT = readWebviewBoot();
+
+// EIP-6963's uuid is per page session: one per preload run (each document),
+// stable across requestProvider re-announcements, as the sync-IPC path mints
+// it. crypto.randomUUID is secure-context only, so build the v4 uuid by hand.
+function mintUuidV4() {
+  const b = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // PRIVATE MODE GUARD (providers): webviews in private windows never get
 // the wallet providers. `window.ethereum` / `window.swarm` are not
 // injected and the request/response bridges are not installed, so a dApp
 // probing for a wallet sees nothing and EIP-6963's requestProvider gets
-// no announcement (silent). Resolved synchronously, before any page
-// script can run, via the main process (src/main/ipc-handlers.js), which
-// checks this webContents' session/window against the private-window
-// registry (src/main/private/private-windows.js).
-const IS_PRIVATE_WINDOW = ipcRenderer.sendSync('private:is-private') === true;
+// no announcement (silent). Resolved before any page script can run: from
+// the boot switch, which main derives from this webview's window and
+// partition at attach time, or else synchronously via the main process
+// (src/main/ipc-handlers.js), which checks this webContents' session/window
+// against the private-window registry (src/main/private/private-windows.js).
+const IS_PRIVATE_WINDOW = WEBVIEW_BOOT
+  ? WEBVIEW_BOOT.isPrivate
+  : ipcRenderer.sendSync('private:is-private') === true;
 
 // The webview preload runs in a sandbox — require() is restricted to a small
 // whitelist (electron, events, timers, url), so we cannot read provider
-// injection sources from disk here. The main process reads them and serves
-// the content over sync IPC.
-const ETHEREUM_INJECT_SOURCE = ipcRenderer.sendSync('internal:get-ethereum-inject-source');
+// injection sources from disk here. The main process reads them and hands
+// them over with the boot switch (sync IPC as the fallback). Only needed
+// outside private windows, which never get a provider.
+function ethereumInjectSource() {
+  if (!WEBVIEW_BOOT) return ipcRenderer.sendSync('internal:get-ethereum-inject-source');
+  // Same shape as the IPC answer (webview-boot.js buildEthereumInjectSource),
+  // '<' escaped so a field can't close the fallback <script> tag.
+  const info = JSON.stringify({ ...WEBVIEW_BOOT.ethereum.info, uuid: mintUuidV4() }).replace(
+    /</g,
+    '\\u003c'
+  );
+  return `window.__FREEDOM_PROVIDER_CONFIG__ = ${info};\n${WEBVIEW_BOOT.ethereum.source}`;
+}
+const ETHEREUM_INJECT_SOURCE = IS_PRIVATE_WINDOW ? '' : ethereumInjectSource();
 
 // Internal pages list — canonical source is src/shared/internal-pages.json,
-// served by the main process via sync IPC so preloads don't need require().
-const internalPages = ipcRenderer.sendSync('internal:get-pages');
+// handed over with the boot switch (sync IPC as the fallback) so preloads
+// don't need require().
+const internalPages = WEBVIEW_BOOT
+  ? WEBVIEW_BOOT.internalPages
+  : ipcRenderer.sendSync('internal:get-pages');
 
 // Whitelist of all internal page files (routable + other like error.html)
 const ALLOWED_FILES = [...Object.values(internalPages.routable), ...internalPages.other];

@@ -68,6 +68,8 @@ function loadTorManager(options = {}) {
         getActiveProfile: jest.fn(() => options.activeProfile || null),
         getReservedProfilePorts: jest.fn(() => options.reservedPorts || new Set()),
         updateActiveProfileNodeConfig,
+        updateActiveProfileNodeConfigWhenIdle: jest.fn(async (...args) =>
+          updateActiveProfileNodeConfig(...args)),
       }),
       [require.resolve('./socks-probe')]: () => ({
         probeSocks5Endpoint: jest.fn().mockResolvedValue(options.socksProbeResult === true),
@@ -265,6 +267,36 @@ describe('tor-manager IPC', () => {
     expect(mod.getActivePort()).toBe(9150);
     await mod.stopTor();
     await flushMicrotasks();
+  });
+
+  // #517 R2-M1: a failure saving the decision must settle Tor's state, not
+  // leave it in STARTING behind an un-awaited rejected start.
+  test('a failed external-candidate save puts Tor in ERROR instead of wedging STARTING', async () => {
+    const ipcMain = createIpcMainMock();
+    const activeProfile = {
+      id: 'default',
+      source: 'catalog',
+      metadata: { nodes: { tor: { mode: 'managed', socksPort: 19150 } } },
+    };
+    const promptForDefaultExternalCandidateProtocol = jest.fn(async () => {
+      throw new Error('profile catalog is busy');
+    });
+    const { mod } = loadTorManager({
+      ipcMain,
+      enableTorIntegration: true,
+      activeProfile,
+      promptForDefaultExternalCandidateProtocol,
+    });
+    mod.registerTorIpc();
+
+    await ipcMain.invoke(IPC.TOR_START);
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(promptForDefaultExternalCandidateProtocol).toHaveBeenCalled();
+    const res = await ipcMain.invoke(IPC.TOR_GET_STATUS);
+    expect(res.status).toBe('error');
+    expect(res.error).toMatch(/Tor node choice/);
   });
 
   test('a stop during the external-candidate prompt cancels the pending start', async () => {

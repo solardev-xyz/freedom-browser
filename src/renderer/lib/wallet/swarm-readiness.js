@@ -64,7 +64,9 @@ export function describeOperationTarget(operation, plans = []) {
   }
   if (request.kind === 'deposit') {
     const amount = request.amountPlur ? formatXbzz(request.amountPlur) : null;
-    return amount ? `Add ${amount} xBZZ to the chequebook deposit` : 'Top up the chequebook deposit';
+    return amount
+      ? `Add ${amount} xBZZ to the chequebook deposit`
+      : 'Top up the chequebook deposit';
   }
   return '';
 }
@@ -185,6 +187,15 @@ export function describePublishCta(state, credit = null) {
     case 'needs-storage':
       return cta('Set Up Publishing', 'Buy storage to publish on Swarm');
     case 'checking':
+      // Ant is still looking for storage this wallet bought before (#510).
+      // That can take minutes, so the card opens setup, where the message
+      // (and, after a failed scan, Restart Node) lives.
+      if (state.readiness.rediscovery === 'failed') {
+        return cta('Publishing Setup', 'Restart the node before buying storage');
+      }
+      if (state.readiness.rediscovery === 'running') {
+        return cta('Publishing Setup', 'Checking for storage this wallet already owns…');
+      }
       return cta('Checking Node Status…', '', 'setup', true);
     case 'chain-syncing':
       return cta('Publishing Setup', 'Connecting to Gnosis Chain…');

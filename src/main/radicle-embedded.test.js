@@ -108,6 +108,122 @@ describe('radicle-embedded addon loading', () => {
   });
 });
 
+describe('raw reads (#514)', () => {
+  const BIG = 'x'.repeat(64 * 1024);
+  // The addon's own spacing: anything JSON.stringify would not produce shows
+  // the text was passed through, not round-tripped.
+  const BLOB = `{"binary":false, "name":"README.md","content":"${BIG}"}`;
+
+  function withFakeAddon(body, run) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(fake, `module.exports = {${REQUIRED_FAKE_EXPORTS}${body}};`);
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    return jest
+      .isolateModulesAsync(async () => run(require('./radicle-embedded')))
+      .finally(() => {
+        delete process.env.FREEDOM_RADICLE_ADDON;
+        jest.resetModules();
+        fs.rmSync(dir, { recursive: true, force: true });
+      });
+  }
+
+  const TREE =
+    'treeAt: async () => JSON.stringify({ entries: [' +
+    '{ name: "src", kind: "tree" }, { name: "README.md", kind: "blob" }] }),';
+
+  test('resolve to the addon text verbatim, without parsing it', () =>
+    withFakeAddon(
+      `blobAt: async () => ${JSON.stringify(BLOB)},` +
+        'commit: async () => \'{"commit":{},"diff":{"files":[]}} \',' +
+        'treeAt: async () => "[1,2]",' +
+        'commits: async () => "[]",',
+      async (embedded) => {
+        const parse = jest.spyOn(JSON, 'parse');
+        try {
+          await expect(embedded.blobAtRaw('rad:zAbc', 'r', 'README.md')).resolves.toBe(BLOB);
+          await expect(embedded.commitRaw('rad:zAbc', 'r')).resolves.toBe(
+            '{"commit":{},"diff":{"files":[]}} '
+          );
+          await expect(embedded.treeAtRaw('rad:zAbc', 'r')).resolves.toBe('[1,2]');
+          await expect(embedded.commitsRaw('rad:zAbc', 'r')).resolves.toBe('[]');
+          expect(parse).not.toHaveBeenCalled();
+        } finally {
+          parse.mockRestore();
+        }
+      }
+    ));
+
+  test.each([
+    ['compact', '{"error":"the path does not exist"}'],
+    ['spaced', ' { "error" : "the path does not exist" }'],
+  ])('throw on a %s addon error payload, as call() does', (_label, payload) =>
+    withFakeAddon(`blobAt: async () => ${JSON.stringify(payload)},`, async (embedded) => {
+      await expect(embedded.blobAtRaw('rad:zAbc', 'r', 'x')).rejects.toThrow(
+        'the path does not exist'
+      );
+    }));
+
+  test('reject a non-string addon result', () =>
+    withFakeAddon('commit: async () => undefined,', async (embedded) => {
+      await expect(embedded.commitRaw('rad:zAbc', 'r')).rejects.toThrow(/no JSON text/);
+    }));
+
+  test('readmeAtRaw splices `path` into the blob text, equal to readmeAt', () =>
+    withFakeAddon(`${TREE}blobAt: async () => ${JSON.stringify(`${BLOB}\n`)},`, async (embedded) => {
+      const raw = await embedded.readmeAtRaw('rad:zAbc', 'r');
+      expect(raw.startsWith(BLOB.slice(0, -1))).toBe(true);
+      expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc', 'r'));
+      expect(JSON.parse(raw)).toEqual({
+        binary: false,
+        name: 'README.md',
+        content: BIG,
+        path: 'README.md',
+      });
+    }));
+
+  test('readmeAtRaw: a `path` already in the blob is overridden, as the spread does', () =>
+    withFakeAddon(
+      `${TREE}blobAt: async () => '{"path":"elsewhere","content":"a"}',`,
+      async (embedded) => {
+        const raw = await embedded.readmeAtRaw('rad:zAbc', 'r');
+        expect(JSON.parse(raw)).toEqual({ path: 'README.md', content: 'a' });
+        expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc', 'r'));
+      }
+    ));
+
+  test('readmeAtRaw falls back to an exact parse for a payload it cannot splice', () =>
+    withFakeAddon(`${TREE}blobAt: async () => '{}',`, async (embedded) => {
+      await expect(embedded.readmeAtRaw('rad:zAbc', 'r')).resolves.toBe('{"path":"README.md"}');
+    }));
+
+  test('readmeAtRaw without a revision reads the head, as readmeAt does', () =>
+    withFakeAddon(
+      'tree: async () => JSON.stringify({ entries: [{ name: "README.md", kind: "blob" }] }),' +
+        'treeAt: async () => { throw new Error("treeAt needs a revision"); },' +
+        `blob: async () => ${JSON.stringify(BLOB)},` +
+        'blobAt: async () => { throw new Error("blobAt needs a revision"); },',
+      async (embedded) => {
+        const raw = await embedded.readmeAtRaw('rad:zAbc');
+        expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc'));
+        expect(JSON.parse(raw)).toEqual({
+          binary: false,
+          name: 'README.md',
+          content: BIG,
+          path: 'README.md',
+        });
+      }
+    ));
+
+  test('readmeAtRaw is null when the root has no readme', () =>
+    withFakeAddon(
+      'treeAt: async () => JSON.stringify({ entries: [{ name: "a.md", kind: "blob" }] }),',
+      async (embedded) => {
+        await expect(embedded.readmeAtRaw('rad:zAbc', 'r')).resolves.toBeNull();
+      }
+    ));
+});
+
 describe('buildRepoMeta shape', () => {
   afterEach(() => {
     delete process.env.FREEDOM_RADICLE_ADDON;

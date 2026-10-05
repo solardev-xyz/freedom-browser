@@ -15,6 +15,7 @@ const { noUsableBatchError, isNoUsableBatchError } = require('./batch-errors');
 const { addEntry, updateEntry } = require('./publish-history');
 const { isPrivateWebContents } = require('../private/private-windows');
 const { createProfileTempDir } = require('../profile-paths');
+const fsOffload = require('../fs-offload');
 const log = require('electron-log');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 
@@ -184,7 +185,7 @@ async function publishFilesFromContent(files, options = {}) {
     });
   } finally {
     try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      await fsOffload.removePath(tempDir, { recursive: true, force: true });
     } catch (err) {
       log.error('[PublishService] Failed to clean up temp dir:', err.message);
     }

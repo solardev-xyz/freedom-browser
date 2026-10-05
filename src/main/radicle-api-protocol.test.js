@@ -8,11 +8,11 @@ jest.mock('./radicle-embedded', () => ({
   status: jest.fn(),
   listRepos: jest.fn(),
   buildRepoMeta: jest.fn(),
-  treeAt: jest.fn(),
-  blobAt: jest.fn(),
-  readmeAt: jest.fn(),
-  commits: jest.fn(),
-  commit: jest.fn(),
+  treeAtRaw: jest.fn(),
+  blobAtRaw: jest.fn(),
+  readmeAtRaw: jest.fn(),
+  commitsRaw: jest.fn(),
+  commitRaw: jest.fn(),
   remotes: jest.fn(),
   repoStats: jest.fn(),
   issues: jest.fn(),
@@ -36,6 +36,8 @@ const {
   guardRadicleApiRequest,
   serveRepoApi,
   decodeRepoApiPath,
+  mapWithConcurrency,
+  REPO_LIST_CONCURRENCY,
 } = require('./radicle-api-protocol');
 
 const INTERNAL_PAGE = 'file:///app/src/renderer/pages/rad-browser.html';
@@ -161,6 +163,61 @@ describe('radapi protocol', () => {
     expect(embedded.buildRepoMeta).toHaveBeenCalledWith(RID);
   });
 
+  test('lists repositories with a bounded metadata fan-out, in listing order', async () => {
+    const rids = Array.from({ length: 9 }, (_, index) => `${RID}${index}`);
+    embedded.listRepos.mockResolvedValueOnce(rids.map((rid) => ({ rid })));
+    let inFlight = 0;
+    let peak = 0;
+    embedded.buildRepoMeta.mockImplementation(async (rid) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      // Later repos finish first, so order comes from the listing, not timing.
+      await new Promise((resolve) => setTimeout(resolve, 20 - rids.indexOf(rid) * 2));
+      inFlight -= 1;
+      return { rid };
+    });
+
+    const response = await handleRadicleApiRequest(new Request('radapi://local/api/v1/repos'));
+
+    await expect(response.json()).resolves.toEqual(rids.map((rid) => ({ rid })));
+    expect(REPO_LIST_CONCURRENCY).toBe(2);
+    expect(peak).toBe(REPO_LIST_CONCURRENCY);
+    expect(embedded.buildRepoMeta).toHaveBeenCalledTimes(rids.length);
+  });
+
+  test('a failing repository read still fails the whole listing', async () => {
+    embedded.listRepos.mockResolvedValueOnce([{ rid: RID }, { rid: `${RID}x` }]);
+    embedded.buildRepoMeta
+      .mockResolvedValueOnce({ rid: RID })
+      .mockRejectedValueOnce(new Error('storage gone'));
+    const response = await handleRadicleApiRequest(new Request('radapi://local/api/v1/repos'));
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ error: 'storage gone' });
+  });
+
+  describe('mapWithConcurrency', () => {
+    test('maps an empty list without calling the mapper', async () => {
+      const fn = jest.fn();
+      await expect(mapWithConcurrency([], 2, fn)).resolves.toEqual([]);
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    test('keeps input order and passes the index', async () => {
+      await expect(
+        mapWithConcurrency(['a', 'b', 'c'], 5, async (item, index) => `${item}${index}`)
+      ).resolves.toEqual(['a0', 'b1', 'c2']);
+    });
+
+    test('starts no further calls after one rejects', async () => {
+      const fn = jest.fn(async (item) => {
+        if (item === 1) throw new Error('nope');
+        return item;
+      });
+      await expect(mapWithConcurrency([0, 1, 2, 3, 4], 1, fn)).rejects.toThrow('nope');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+  });
+
   test('routes repository metadata through the embedded serving core', async () => {
     embedded.buildRepoMeta.mockResolvedValue({ rid: RID });
 
@@ -200,9 +257,11 @@ describe('radapi protocol', () => {
   });
 
   test('pins tree, blob, and readme reads to the requested commit', async () => {
-    embedded.treeAt.mockResolvedValue({ entries: [], lastCommit: { id: REVISION } });
-    embedded.blobAt.mockResolvedValue({ name: 'README.md', content: 'old' });
-    embedded.readmeAt.mockResolvedValue({ name: 'README.md', content: 'old' });
+    embedded.treeAtRaw.mockResolvedValue(
+      JSON.stringify({ entries: [], lastCommit: { id: REVISION } })
+    );
+    embedded.blobAtRaw.mockResolvedValue(JSON.stringify({ name: 'README.md', content: 'old' }));
+    embedded.readmeAtRaw.mockResolvedValue(JSON.stringify({ name: 'README.md', content: 'old' }));
 
     const tree = await serveRepoApi(RID, `/tree/${REVISION}/src`);
     const blob = await serveRepoApi(RID, `/blob/${REVISION}/README.md`);
@@ -211,9 +270,54 @@ describe('radapi protocol', () => {
     expect(tree.status).toBe(200);
     expect(blob.status).toBe(200);
     expect(readme.status).toBe(200);
-    expect(embedded.treeAt).toHaveBeenCalledWith(RID, REVISION, 'src');
-    expect(embedded.blobAt).toHaveBeenCalledWith(RID, REVISION, 'README.md');
-    expect(embedded.readmeAt).toHaveBeenCalledWith(RID, REVISION);
+    expect(embedded.treeAtRaw).toHaveBeenCalledWith(RID, REVISION, 'src');
+    expect(embedded.blobAtRaw).toHaveBeenCalledWith(RID, REVISION, 'README.md');
+    expect(embedded.readmeAtRaw).toHaveBeenCalledWith(RID, REVISION);
+  });
+
+  // #514: a big blob or diff must not be parsed and re-stringified on main.
+  // The addon's text is the body, byte for byte — spacing that
+  // JSON.stringify would never produce proves no round trip happened.
+  test.each([
+    ['tree', `/tree/${REVISION}`, 'treeAtRaw'],
+    ['blob', `/blob/${REVISION}/big.bin`, 'blobAtRaw'],
+    ['readme', `/readme/${REVISION}`, 'readmeAtRaw'],
+    ['commit diff', `/commits/${REVISION}`, 'commitRaw'],
+  ])('forwards the addon JSON text of a %s read untouched', async (_label, apiPath, fn) => {
+    const text = '{ "content" :  "x\\u0041" ,"binary":false }';
+    embedded[fn].mockResolvedValue(text);
+    for (const allowPrivate of [false, true]) {
+      const response = await serveRepoApi(RID, apiPath, { allowPrivate });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe('application/json');
+      expect(response.headers.get('access-control-allow-origin')).toBe(
+        allowPrivate ? null : '*'
+      );
+      await expect(response.text()).resolves.toBe(text);
+    }
+  });
+
+  test('forwards a commit history page untouched', async () => {
+    const text = '[ {"id": "x"} ]';
+    embedded.commitsRaw.mockResolvedValue(text);
+    const response = await serveRepoApi(RID, '/commits', { search: `?parent=${REVISION}` });
+    await expect(response.text()).resolves.toBe(text);
+  });
+
+  test('still maps a missing blob to 404 and other read failures to 500', async () => {
+    embedded.blobAtRaw.mockRejectedValueOnce(new Error("the path 'x' does not exist"));
+    expect((await serveRepoApi(RID, `/blob/${REVISION}/x`)).status).toBe(404);
+    embedded.commitRaw.mockRejectedValueOnce(new Error('odb corrupted'));
+    const failed = await serveRepoApi(RID, `/commits/${REVISION}`);
+    expect(failed.status).toBe(500);
+    await expect(failed.json()).resolves.toEqual({ error: 'odb corrupted' });
+  });
+
+  test('a missing readme is a 404', async () => {
+    embedded.readmeAtRaw.mockResolvedValue(null);
+    const response = await serveRepoApi(RID, `/readme/${REVISION}`);
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: 'no readme' });
   });
 
   test('serves signed remotes and revision-scoped repository stats', async () => {
@@ -234,11 +338,13 @@ describe('radapi protocol', () => {
   });
 
   test('serves paginated commit history and structured commit diffs', async () => {
-    embedded.commits.mockResolvedValue([{ id: REVISION, summary: 'head' }]);
-    embedded.commit.mockResolvedValue({
-      commit: { id: REVISION, summary: 'head' },
-      diff: { stats: { insertions: 2, deletions: 1 }, files: [] },
-    });
+    embedded.commitsRaw.mockResolvedValue(JSON.stringify([{ id: REVISION, summary: 'head' }]));
+    embedded.commitRaw.mockResolvedValue(
+      JSON.stringify({
+        commit: { id: REVISION, summary: 'head' },
+        diff: { stats: { insertions: 2, deletions: 1 }, files: [] },
+      })
+    );
 
     const history = await serveRepoApi(RID, '/commits', {
       search: `?parent=${REVISION}&page=2&perPage=5`,
@@ -250,16 +356,16 @@ describe('radapi protocol', () => {
       commit: { id: REVISION, summary: 'head' },
       diff: { stats: { insertions: 2, deletions: 1 }, files: [] },
     });
-    expect(embedded.commits).toHaveBeenCalledWith(RID, REVISION, 2, 5);
-    expect(embedded.commit).toHaveBeenCalledWith(RID, REVISION);
+    expect(embedded.commitsRaw).toHaveBeenCalledWith(RID, REVISION, 2, 5);
+    expect(embedded.commitRaw).toHaveBeenCalledWith(RID, REVISION);
   });
 
   test('bounds commit pagination before crossing the native boundary', async () => {
-    embedded.commits.mockResolvedValue([]);
+    embedded.commitsRaw.mockResolvedValue('[]');
     await serveRepoApi(RID, '/commits', {
       search: `?parent=${REVISION}&page=9999999999&perPage=9999999999`,
     });
-    expect(embedded.commits).toHaveBeenCalledWith(RID, REVISION, 1_000_000, 100);
+    expect(embedded.commitsRaw).toHaveBeenCalledWith(RID, REVISION, 1_000_000, 100);
   });
 
   test.each([
@@ -269,8 +375,8 @@ describe('radapi protocol', () => {
   ])('rejects invalid commit revisions in %s%s', async (apiPath, search) => {
     const response = await serveRepoApi(RID, apiPath, { search });
     expect(response.status).toBe(400);
-    expect(embedded.commits).not.toHaveBeenCalled();
-    expect(embedded.commit).not.toHaveBeenCalled();
+    expect(embedded.commitsRaw).not.toHaveBeenCalled();
+    expect(embedded.commitRaw).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -282,9 +388,9 @@ describe('radapi protocol', () => {
   ])('rejects non-object-id revisions in %s', async (apiPath) => {
     const response = await serveRepoApi(RID, apiPath);
     expect(response.status).toBe(400);
-    expect(embedded.treeAt).not.toHaveBeenCalled();
-    expect(embedded.blobAt).not.toHaveBeenCalled();
-    expect(embedded.readmeAt).not.toHaveBeenCalled();
+    expect(embedded.treeAtRaw).not.toHaveBeenCalled();
+    expect(embedded.blobAtRaw).not.toHaveBeenCalled();
+    expect(embedded.readmeAtRaw).not.toHaveBeenCalled();
     expect(embedded.repoStats).not.toHaveBeenCalled();
   });
 
@@ -332,8 +438,8 @@ describe('radapi protocol', () => {
   ])('rejects encoded traversal and separator tricks in %s', async (apiPath) => {
     const response = await serveRepoApi(RID, apiPath);
     expect(response.status).toBe(400);
-    expect(embedded.treeAt).not.toHaveBeenCalled();
-    expect(embedded.blobAt).not.toHaveBeenCalled();
+    expect(embedded.treeAtRaw).not.toHaveBeenCalled();
+    expect(embedded.blobAtRaw).not.toHaveBeenCalled();
   });
 
   // The viewer builds these paths (rad-browser.js encodePathSegments). A
@@ -373,7 +479,7 @@ describe('radapi protocol', () => {
   // must redact — otherwise a private window leaves a history-grade trace.
   test('redacts the RID, path and error text for a private-session registration', async () => {
     const log = require('./logger');
-    embedded.treeAt.mockRejectedValue(new Error(`tree read failed for ${RID}:/secret/plans.md`));
+    embedded.treeAtRaw.mockRejectedValue(new Error(`tree read failed for ${RID}:/secret/plans.md`));
     const privateSession = { protocol: { handle: jest.fn() } };
     registerRadicleApiProtocol(privateSession, { privatePartition: 'private-abc' });
     const handler = privateSession.protocol.handle.mock.calls[0][1];
@@ -392,7 +498,7 @@ describe('radapi protocol', () => {
 
   test('logs the RID and path normally outside a private session', async () => {
     const log = require('./logger');
-    embedded.treeAt.mockRejectedValue(new Error('tree read failed'));
+    embedded.treeAtRaw.mockRejectedValue(new Error('tree read failed'));
     const defaultSession = { protocol: { handle: jest.fn() } };
     registerRadicleApiProtocol(defaultSession);
     const handler = defaultSession.protocol.handle.mock.calls[0][1];

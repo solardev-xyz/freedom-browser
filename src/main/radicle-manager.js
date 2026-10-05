@@ -4,7 +4,7 @@ const { ipcMain, BrowserWindow } = require('electron');
 const log = require('./logger');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
-const { getRadicleDataDir } = require('./profile-paths');
+const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
 const seedStatus = require('./radicle/seed-status');
@@ -152,7 +152,7 @@ async function startRadicleInternal() {
 
   updateState(STATUS.STARTING);
   try {
-    const radHome = getRadicleDataDir();
+    const radHome = await prepareRadicleDataDir();
     const result = await embedded.start(radHome, 'FreedomBrowser');
     updateService('radicle', {
       api: 'radapi://local',
@@ -421,7 +421,7 @@ function setNodeAlias(alias) {
   return enqueueLifecycle(async () => {
     const restart = currentState === STATUS.RUNNING;
     if (restart) await stopRadicleInternal();
-    const configPath = path.join(getRadicleDataDir(), 'config.json');
+    const configPath = path.join(await prepareRadicleDataDir(), 'config.json');
     try {
       let config = {};
       if (fs.existsSync(configPath)) config = JSON.parse(fs.readFileSync(configPath, 'utf8'));

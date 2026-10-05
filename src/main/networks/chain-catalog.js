@@ -5,12 +5,17 @@
  * of chains, each with its RPC endpoints, native currency, and explorer.
  * The add-chain search reads from here. The catalog is cached on disk so
  * search works offline and doesn't re-download a ~2 MB file on every use.
+ *
+ * This module normally runs inside `chain-catalog-worker.js` (#503 item 12):
+ * parsing and re-serializing the ~2.3 MB catalog, and filtering it per
+ * keystroke, is kept off Electron's main thread — `chain-catalog-host.js` is
+ * what the IPC handlers call. The worker passes the cache path and a log
+ * sink through `configure()`; with no configuration (the host's main-thread
+ * fallback, unit tests) it uses Electron's userData and the main logger.
  */
 
 const path = require('node:path');
 const fs = require('node:fs');
-const { app } = require('electron');
-const log = require('../logger');
 
 const CATALOG_URL = 'https://chainlist.org/rpcs.json';
 const CACHE_FILE = 'chain-catalog.json';
@@ -18,8 +23,23 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_SEARCH_RESULTS = 50;
 
+let configuredCachePath = null;
+let configuredLog = null;
+
+// Electron and the main logger are only required when nothing was
+// configured: neither is usable from a worker thread.
 function cachePath() {
-  return path.join(app.getPath('userData'), CACHE_FILE);
+  if (configuredCachePath) return configuredCachePath;
+  return path.join(require('electron').app.getPath('userData'), CACHE_FILE);
+}
+
+function logError(message) {
+  (configuredLog || require('../logger')).error(message);
+}
+
+function configure({ cachePath: file = null, log = null } = {}) {
+  configuredCachePath = file;
+  configuredLog = log;
 }
 
 // In-memory copy of the on-disk cache: { fetchedAt, chains }.
@@ -75,11 +95,11 @@ async function loadCatalog() {
       try {
         fs.writeFileSync(cachePath(), JSON.stringify(memo), 'utf-8');
       } catch (err) {
-        log.error(`[chain-catalog] failed to write cache: ${err.message}`);
+        logError(`[chain-catalog] failed to write cache: ${err.message}`);
       }
       return chains;
     } catch (err) {
-      log.error(`[chain-catalog] fetch failed: ${err.message}`);
+      logError(`[chain-catalog] fetch failed: ${err.message}`);
       if (cached) {
         memo = cached;
         return cached.chains;
@@ -156,4 +176,4 @@ async function getCatalogChain(chainId) {
   };
 }
 
-module.exports = { searchChains, getCatalogChain };
+module.exports = { CACHE_FILE, configure, searchChains, getCatalogChain };

@@ -13,11 +13,13 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const IPC = require('../shared/ipc-channels');
+const fsOffload = require('./fs-offload');
 const {
   getAntDataDir,
   getIdentityDataDir,
   getIpfsDataDir,
   getRadicleDataDir,
+  prepareRadicleDataDir,
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
@@ -348,7 +350,7 @@ function readIpfsPeerId() {
  * @returns {Promise<string|null>}
  */
 async function readRadicleDid() {
-  const dataDir = getRadicleDataDir();
+  const dataDir = await prepareRadicleDataDir();
   const pubKeyPath = path.join(dataDir, 'keys', 'radicle.pub');
 
   if (!fs.existsSync(pubKeyPath)) {
@@ -422,44 +424,49 @@ function getBeeP2pPortForIdentityConfig() {
 
 // On Windows, deleting LevelDB-backed dirs (statestore/localstore) throws
 // EPERM while the node still holds the `LOCK` file open without
-// FILE_SHARE_DELETE (issue #90). Node's own rmSync maxRetries/retryDelay does
+// FILE_SHARE_DELETE (issue #90). Node's own rm maxRetries/retryDelay does
 // NOT help here: on Windows an open-handle EPERM is short-circuited by
 // libuv/Node's fixWinEPERM path (which only clears a read-only *attribute*) and
 // never reaches the retry-sleep loop, so it throws immediately. We therefore
-// run our own synchronous retry loop, giving the node a moment to exit and the
-// OS to release the handle. Verified on Windows on ARM against a real Bee node.
+// run our own retry loop, giving the node a moment to exit and the OS to
+// release the handle. Verified on Windows on ARM against a real Bee node.
+//
+// Neither the delete nor the back-off blocks the main thread (#513): node data
+// can be several GB (the rm runs in a worker via fs-offload, which preserves
+// rmSync's error codes for the check below), and the back-off adds up to
+// ~4.5 s across attempts (an async delay, not Atomics.wait).
 const RM_MAX_ATTEMPTS = 10;
 const RM_RETRY_DELAY_MS = 100;
 
-/**
- * Block the current thread for `ms` without spinning the event loop.
- * @param {number} ms
- */
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * Recursively remove a path, retrying on transient Windows lock errors
  * (EPERM/EBUSY) until the holding process exits and releases the handle.
- * Returns true if the path existed and was removed.
+ * Resolves true if the path existed and was removed.
  * @param {string} targetPath - Absolute path to remove
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-function removePathWithRetry(targetPath) {
-  if (!fs.existsSync(targetPath)) {
+async function removePathWithRetry(targetPath) {
+  // Same "does it exist" answer fs.existsSync gave (follows symlinks, any
+  // stat error reads as absent), without the sync syscall.
+  try {
+    await fs.promises.stat(targetPath);
+  } catch {
     return false;
   }
   for (let attempt = 1; attempt <= RM_MAX_ATTEMPTS; attempt++) {
     try {
-      fs.rmSync(targetPath, { recursive: true, force: true });
+      await fsOffload.removePath(targetPath, { recursive: true, force: true });
       return true;
     } catch (err) {
       const transient = err.code === 'EPERM' || err.code === 'EBUSY' || err.code === 'ENOTEMPTY';
       if (!transient || attempt === RM_MAX_ATTEMPTS) {
         throw err;
       }
-      sleepSync(attempt * RM_RETRY_DELAY_MS);
+      await delay(attempt * RM_RETRY_DELAY_MS);
     }
   }
   return true;
@@ -467,13 +474,14 @@ function removePathWithRetry(targetPath) {
 
 /**
  * Remove Bee's persisted state directories so a freshly injected identity
- * isn't mixed with state derived from the previous key.
+ * isn't mixed with state derived from the previous key. Sequential, in the
+ * listed order.
  * @param {string} dataDir - Bee data directory
  */
-function removeStaleBeeDirs(dataDir) {
+async function removeStaleBeeDirs(dataDir) {
   const staleDirs = ['statestore', 'localstore', 'kademlia-metrics', 'stamperstore'];
   for (const dir of staleDirs) {
-    if (removePathWithRetry(path.join(dataDir, dir))) {
+    if (await removePathWithRetry(path.join(dataDir, dir))) {
       console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
     }
   }
@@ -483,7 +491,7 @@ function removeStaleBeeDirs(dataDir) {
  * Wipe Bee's stale persisted state ahead of a fresh key injection.
  *
  * A running Bee node holds an exclusive LevelDB lock on `statestore`; on Windows
- * deleting it then fails with EPERM (issue #90). The synchronous retry loop in
+ * deleting it then fails with EPERM (issue #90). The retry loop in
  * removePathWithRetry only helps if the holder exits, so we first stop the node
  * via the registered lifecycle hook and wait for it to exit, releasing the lock.
  *
@@ -504,7 +512,7 @@ async function wipeStaleBeeState(dataDir) {
   // auxiliary keys) becomes invalid. Remove everything except the directories
   // we're about to write fresh (keys/ and config.yaml).
   try {
-    removeStaleBeeDirs(dataDir);
+    await removeStaleBeeDirs(dataDir);
   } catch (err) {
     if (err.code === 'EPERM' || err.code === 'EBUSY') {
       throw new Error(
@@ -516,7 +524,7 @@ async function wipeStaleBeeState(dataDir) {
     throw err;
   }
   for (const keyFile of ['libp2p_v2.key', 'pss.key']) {
-    if (removePathWithRetry(path.join(dataDir, 'keys', keyFile))) {
+    if (await removePathWithRetry(path.join(dataDir, 'keys', keyFile))) {
       console.log(`[IdentityManager] Removed old ${keyFile} (password mismatch prevention)`);
     }
   }
@@ -529,7 +537,7 @@ async function wipeStaleBeeState(dataDir) {
   // wallet (different overlay, none of the user's postage stamps or chequebook).
   // Remove them so the injected keystore becomes the sole identity on restart.
   for (const idFile of ['identity.json', 'signing.key']) {
-    if (removePathWithRetry(path.join(dataDir, idFile))) {
+    if (await removePathWithRetry(path.join(dataDir, idFile))) {
       console.log(`[IdentityManager] Removed antd self-generated ${idFile} (identity injection)`);
     }
   }
@@ -625,7 +633,7 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
   }
 
   const identity = await loadIdentityModule();
-  const dataDir = getRadicleDataDir();
+  const dataDir = await prepareRadicleDataDir();
 
   // Ensure directory exists
   if (!fs.existsSync(dataDir)) {
@@ -636,7 +644,7 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
   // routing db, etc.) becomes invalid. Remove stale state directories.
   const staleDirs = ['node', 'cobs', 'storage'];
   for (const dir of staleDirs) {
-    if (removePathWithRetry(path.join(dataDir, dir))) {
+    if (await removePathWithRetry(path.join(dataDir, dir))) {
       console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
     }
   }
@@ -693,7 +701,11 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
   // intentional identity mode rather than a failed injection.
   results.ipfs = await injectIpfsIdentity();
 
-  // Inject Radicle (only if not already injected OR force)
+  // Inject Radicle (only if not already injected OR force). Finish any pending
+  // carry-over of an older profile's Radicle home first: judged against a
+  // short home still being migrated, the identity would read as missing and
+  // re-injection would wipe the node/cobs/storage that are on their way in.
+  await prepareRadicleDataDir();
   if (force || !isRadicleIdentityInjected()) {
     const wasInjected = isRadicleIdentityInjected();
     results.radicle = await injectRadicleIdentity(radicleAlias);
@@ -725,6 +737,7 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
  * @returns {Promise<Object>}
  */
 async function getIdentityStatus() {
+  await prepareRadicleDataDir();
   const hasVaultResult = await hasVault();
   const isUnlocked = await isVaultUnlocked();
 

@@ -545,6 +545,19 @@ const loadGithubRepoPage = async (window, harness) => {
   await input.fill(url);
   await input.press('Enter');
   await expect(window.locator('#github-bridge-btn')).toBeVisible({ timeout: 15_000 });
+  // The button shows as soon as the address commits, before the page itself
+  // does. Wait for the page too: a test that goes on to drive the guest
+  // (`openPageContextMenuInGuest`) needs a visible, loaded webview, and on a
+  // fresh profile with the real filter lists the first page is held until the
+  // first ad-block engine is built (#524) — long after the button is up.
+  await expect
+    .poll(() =>
+      window.evaluate((u) => {
+        const webview = document.querySelector('webview:not(.hidden)');
+        return Boolean(webview) && webview.getURL() === u && !webview.isLoading();
+      }, url)
+    )
+    .toBe(true);
 };
 
 // The panel open *and* the backdrop up — keyboard-driven past the button click

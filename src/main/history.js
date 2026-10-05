@@ -141,7 +141,8 @@ function addHistoryEntry(entry) {
   const stmt = getStatements().upsert;
   const result = stmt.run(url, title || '', timestamp, protocol || 'unknown');
 
-  log.info('[History] Added/updated entry:', url, '(changes:', result.changes, ')');
+  // Every navigation lands here: verbose keeps it out of main.log (#511).
+  log.verbose('[History] Added/updated entry:', url, '(changes:', result.changes, ')');
 
   return {
     id: result.lastInsertRowid,

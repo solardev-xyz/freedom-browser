@@ -23,6 +23,8 @@
  *   - favicons:  src/main/favicons.js        (PRIVATE MODE GUARD)
  *   - publish:   src/main/swarm/publish-service.js (PRIVATE MODE GUARD)
  *   - providers: src/main/webview-preload.js (PRIVATE MODE GUARD, via the
+ *                boot switch webcontents-setup.js derives from this registry
+ *                when a webview attaches — see webview-boot.js — or the
  *                `private:is-private` sync IPC in ipc-handlers.js)
  *
  * The persistent-log guards (window title, downloads, navigation URLs,

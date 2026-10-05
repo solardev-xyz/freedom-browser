@@ -45,6 +45,9 @@ const {
   broadcastRawTransaction,
   clearAdaptiveRoutingForTest,
   ERROR_RANK,
+  SOURCE_CAPABILITIES,
+  LOG_TRUNCATION_TAIL_BLOCKS,
+  LOG_TRUNCATION_MIN_SPAN,
 } = require('./chain-data-router');
 const originalFetch = global.fetch;
 
@@ -1526,5 +1529,239 @@ describe('Ant bridge cancellation', () => {
     await expect(broadcastRawTransaction(100, '0xsigned', { signal: controller.signal }))
       .rejects.toMatchObject({ name: 'AbortError' });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  describe('source capabilities (#497)', () => {
+    test('each source declares what it never serves', () => {
+      expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_getLogs')).toBe(true);
+      for (const source of ['myotis', 'colibri', 'quorum']) {
+        expect(SOURCE_CAPABILITIES[source].unsupported.has('eth_newFilter')).toBe(true);
+        expect(SOURCE_CAPABILITIES[source].unsupported.has('web3_clientVersion')).toBe(true);
+      }
+      expect(SOURCE_CAPABILITIES.direct.unsupported.size).toBe(0);
+      expect(SOURCE_CAPABILITIES.quorum.logSpan).toBe('learned-per-endpoint');
+      expect(SOURCE_CAPABILITIES.myotis.cost).toBe('serialized');
+    });
+
+    test('names the sources that cannot serve a filter when none is left', async () => {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['myotis', 'colibri', 'quorum'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      global.fetch = jest.fn();
+      await expect(request(1, 'eth_newFilter', [{}])).rejects.toThrow(
+        'No chain source left for eth_newFilter on chain 1: read order ' +
+          '[myotis, colibri, quorum], excluded for this request: myotis, colibri, quorum'
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+  });
+
+  // Public Gnosis RPCs answer a query matching more than ~50k logs with only
+  // the latest ~474 blocks' logs and no error (#496).
+  describe('silently truncated eth_getLogs answers (#496)', () => {
+    const HEAD = 48_574_494;
+    const hex = (n) => `0x${n.toString(16)}`;
+    const FULL = [{ fromBlock: hex(16_514_506), toBlock: hex(HEAD) }];
+    const log = (block) => ({ blockNumber: hex(block), logIndex: '0x0' });
+    const TAIL = [log(HEAD - 473), log(HEAD - 10)];
+
+    function useRpc(answer) {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['colibri', 'direct'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+        role === 'prover' ? ['https://prover.example'] : ['https://a.example', 'https://b.example']
+      );
+      global.fetch = jest.fn(async (_url, options) => {
+        const { params } = JSON.parse(options.body);
+        const reply = answer(params[0]);
+        return { ok: true, json: async () => reply };
+      });
+    }
+    const asked = () =>
+      global.fetch.mock.calls.map(([url, options]) => {
+        const { fromBlock, toBlock } = JSON.parse(options.body).params[0];
+        return `${new URL(url).hostname} ${fromBlock}-${toBlock}`;
+      });
+
+    test('logs before the answer\'s oldest one fail the request, at once', async () => {
+      // The re-query is itself cut to its own latest blocks: any log proves it.
+      useRpc(({ toBlock }) => ({
+        result: toBlock === FULL[0].toBlock ? TAIL : [log(Number(toBlock) - 5)],
+      }));
+      const error = await request(100, 'eth_getLogs', FULL).catch((err) => err);
+      expect(error).toMatchObject({ name: 'TruncatedLogsError', code: -32005 });
+      expect(error.message).toMatch(
+        /too many logs: the RPC returned only the 2 logs in the last 474 blocks of the 32059989-block range/
+      );
+      // The check asks the same source for the blocks before the oldest log;
+      // no later endpoint or source is asked.
+      expect(asked()).toEqual([
+        `a.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `a.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+      ]);
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('an answer whose earlier blocks hold no logs is accepted (a new wallet)', async () => {
+      useRpc(({ toBlock }) => ({ result: toBlock === FULL[0].toBlock ? TAIL : [] }));
+      await expect(request(100, 'eth_getLogs', FULL)).resolves.toMatchObject({
+        result: TAIL,
+        source: 'direct',
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    test('a failed check accepts the answer as before', async () => {
+      useRpc(({ toBlock }) =>
+        toBlock === FULL[0].toBlock
+          ? { result: TAIL }
+          : { error: { code: -32005, message: 'query exceeds max block range 10000' } }
+      );
+      await expect(request(100, 'eth_getLogs', FULL)).resolves.toMatchObject({ result: TAIL });
+    });
+
+    test('a Direct check is bounded to one endpoint attempt, not one per endpoint', async () => {
+      jest.useFakeTimers({ now: 1_000_000 });
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['direct'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue([
+        'https://a.example', 'https://b.example', 'https://c.example',
+      ]);
+      // The full range answers at once; every check query hangs until aborted.
+      global.fetch = jest.fn((_url, options) => {
+        const { toBlock } = JSON.parse(options.body).params[0];
+        if (toBlock === FULL[0].toBlock) {
+          return Promise.resolve({ ok: true, json: async () => ({ result: TAIL }) });
+        }
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      });
+      let settled = false;
+      const pending = request(100, 'eth_getLogs', FULL).finally(() => { settled = true; });
+      await jest.advanceTimersByTimeAsync(4999);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      // Accepted after one 5s budget, not 3 × 5s; later endpoints are never
+      // started once the bound has run out.
+      await expect(pending).resolves.toMatchObject({ result: TAIL, source: 'direct' });
+      expect(asked()).toEqual([
+        `a.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `a.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+      ]);
+    });
+
+    test('a Direct check asks the endpoint that answered, not a hung earlier one', async () => {
+      jest.useFakeTimers({ now: 1_000_000 });
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['direct'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://c.example']);
+      // a hangs on everything; c cuts the full range to its tail and finds
+      // logs before it.
+      global.fetch = jest.fn((url, options) => {
+        if (new URL(url).hostname === 'a.example') {
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        const { toBlock } = JSON.parse(options.body).params[0];
+        const result = toBlock === FULL[0].toBlock ? TAIL : [log(Number(toBlock) - 5)];
+        return Promise.resolve({ ok: true, json: async () => ({ result }) });
+      });
+      const pending = request(100, 'eth_getLogs', FULL).catch((err) => err);
+      await jest.advanceTimersByTimeAsync(5000);
+      // The hung a must not use up the check's one attempt: the truncated
+      // answer from c is caught by asking c.
+      await expect(pending).resolves.toMatchObject({ name: 'TruncatedLogsError' });
+      expect(asked()).toEqual([
+        `a.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `c.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `c.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+      ]);
+    });
+
+    test('a Direct check of a reused quorum answer asks the member that gave it', async () => {
+      jest.useFakeTimers({ now: 1_000_000 });
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum', 'direct'] },
+        quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue([
+        'https://a.example', 'https://b.example', 'https://c.example',
+      ]);
+      // a hangs on everything; b cuts the full range to its tail and finds
+      // logs before it; c disagrees, so quorum fails and Direct reuses b's
+      // answer without asking again.
+      global.fetch = jest.fn((url, options) => {
+        const host = new URL(url).hostname;
+        if (host === 'a.example') {
+          return new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        const { toBlock } = JSON.parse(options.body).params[0];
+        const result = host === 'c.example'
+          ? []
+          : toBlock === FULL[0].toBlock ? TAIL : [log(Number(toBlock) - 5)];
+        return Promise.resolve({ ok: true, json: async () => ({ result }) });
+      });
+      const pending = request(100, 'eth_getLogs', FULL).catch((err) => err);
+      await jest.advanceTimersByTimeAsync(10_000);
+      // The check goes to b, the member whose answer was reused, not through
+      // a registry-order walk where the hung a would use up its one attempt.
+      await expect(pending).resolves.toMatchObject({ name: 'TruncatedLogsError' });
+      expect(asked()).toEqual([
+        `a.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `b.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `c.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `b.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+      ]);
+    });
+
+    test.each([
+      ['an empty answer', FULL, []],
+      ['logs spread past the tail', FULL, [log(HEAD - LOG_TRUNCATION_TAIL_BLOCKS), log(HEAD)]],
+      [
+        'a range narrower than the minimum span',
+        [{ fromBlock: hex(HEAD - LOG_TRUNCATION_MIN_SPAN + 2), toBlock: hex(HEAD) }],
+        TAIL,
+      ],
+      ['a range ending at a tag', [{ fromBlock: FULL[0].fromBlock, toBlock: 'latest' }], TAIL],
+      ['logs without a block number', FULL, [{ logIndex: '0x0' }]],
+    ])('%s is not checked', async (_name, params, result) => {
+      useRpc(() => ({ result }));
+      await expect(request(100, 'eth_getLogs', params)).resolves.toMatchObject({ result });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('a quorum that agrees on a truncated answer is checked through the quorum', async () => {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum', 'direct'] },
+        quorum: { k: 2, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example']);
+      global.fetch = jest.fn(async (_url, options) => {
+        const { toBlock } = JSON.parse(options.body).params[0];
+        const result = toBlock === FULL[0].toBlock ? TAIL : [log(Number(toBlock) - 5)];
+        return { ok: true, json: async () => ({ result }) };
+      });
+      await expect(request(100, 'eth_getLogs', FULL)).rejects.toMatchObject({
+        name: 'TruncatedLogsError',
+      });
+      expect(asked()).toEqual([
+        `a.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `b.example ${FULL[0].fromBlock}-${FULL[0].toBlock}`,
+        `a.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+        `b.example ${FULL[0].fromBlock}-${hex(HEAD - 474)}`,
+      ]);
+    });
   });
 });

@@ -1,3 +1,7 @@
+// Before anything can queue libuv threadpool work: the pool is sized once,
+// on first use (uv-threadpool.js, #514).
+require('./uv-threadpool').applyThreadpoolSize();
+
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog, ipcMain } = require('electron');
 
@@ -165,7 +169,12 @@ const eventLoopWatchdog = require('./event-loop-watchdog').startEventLoopWatchdo
 });
 
 const { registerShutdownSignalHandlers } = require('./shutdown-signals');
-const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({ app, logger: log });
+const { drainLogFile, flushLogFileSync } = require('./log-file-flush');
+const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({
+  app,
+  logger: log,
+  beforeForceExit: () => flushLogFileSync(log.transports.file),
+});
 const { BrowserWindow, protocol, session } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
 const { watchProfileRegistry } = require('./profile-registry-watcher');
@@ -767,6 +776,7 @@ app.on('before-quit', async (event) => {
 
   const watchdog = setTimeout(() => {
     log.warn('[App] Shutdown watchdog fired; quitting with the wind-down unfinished');
+    flushLogFileSync(log.transports.file);
     shutdownSettled = true;
     app.quit();
   }, SHUTDOWN_WATCHDOG_MS);
@@ -777,6 +787,9 @@ app.on('before-quit', async (event) => {
     // A manager that rejects must not strand the app in a half-quit state.
     log.error('[App] Wind-down failed:', err);
   } finally {
+    // The log file is written asynchronously (#511): write everything still
+    // pending, in order, and make the quit handlers' lines land at once.
+    await drainLogFile(log.transports.file);
     clearTimeout(watchdog);
     shutdownSettled = true;
   }

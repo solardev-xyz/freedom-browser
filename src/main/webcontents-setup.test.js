@@ -84,6 +84,7 @@ function loadWebContentsSetupModule(options = {}) {
       [require.resolve('./logger')]: () => log,
       [require.resolve('./private/private-windows')]: () => ({
         isPrivateWebContents: options.isPrivateWebContents || (() => false),
+        isPrivatePartition: options.isPrivatePartition || (() => false),
         getPartitionForWebContents: options.getPartitionForWebContents || (() => null),
       }),
       [require.resolve('./permissions/permissions-manager')]: () => ({
@@ -159,6 +160,7 @@ describe('webcontents-setup', () => {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       nodeIntegrationInSubFrames: true,
+      additionalArguments: [expect.stringMatching(/^--freedom-webview-boot=/)],
     });
   });
 
@@ -194,8 +196,76 @@ describe('webcontents-setup', () => {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       nodeIntegrationInSubFrames: true,
+      additionalArguments: [expect.stringMatching(/^--freedom-webview-boot=/)],
     });
     expect(ctx.mod.WEBVIEW_PRELOAD_PATH).toMatch(/[\\/]src[\\/]main[\\/]webview-preload\.js$/);
+  });
+
+  // #512: the preload's per-load constants ride on the guest's command line.
+  const bootOf = (webPreferences) => {
+    const args = webPreferences.additionalArguments.filter((arg) =>
+      arg.startsWith('--freedom-webview-boot=')
+    );
+    expect(args).toHaveLength(1);
+    return JSON.parse(
+      Buffer.from(args[0].slice('--freedom-webview-boot='.length), 'base64').toString('utf-8')
+    );
+  };
+  const attach = (ctx, params = {}, webPreferences = { preload: '/app/webview-preload.js' }) => {
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+    host.emit('will-attach-webview', {}, webPreferences, params);
+    return { host, webPreferences };
+  };
+
+  test('hands a normal tab webview its preload constants, provider included', () => {
+    const { webPreferences } = attach(loadWebContentsSetupModule(), { partition: 'persist:p' });
+    const boot = bootOf(webPreferences);
+    expect(boot.isPrivate).toBe(false);
+    expect(boot.internalPages).toEqual(require('../shared/internal-pages.json'));
+    expect(boot.ethereum.info).toEqual(
+      expect.objectContaining({ name: expect.any(String), rdns: expect.any(String) })
+    );
+    expect(boot.ethereum.source).toBe(
+      require('fs').readFileSync(
+        path.join(__dirname, 'webview-preload-ethereum-inject.js'),
+        'utf-8'
+      )
+    );
+  });
+
+  test('a private partition is private, and gets no provider source', () => {
+    const isPrivatePartition = jest.fn((partition) => partition === 'private-abc');
+    const { webPreferences } = attach(loadWebContentsSetupModule({ isPrivatePartition }), {
+      partition: 'private-abc',
+    });
+    expect(isPrivatePartition).toHaveBeenCalledWith('private-abc');
+    const boot = bootOf(webPreferences);
+    expect(boot.isPrivate).toBe(true);
+    expect(boot).not.toHaveProperty('ethereum');
+  });
+
+  test("a private window's webview is private whatever its partition says", () => {
+    const isPrivateWebContents = jest.fn((contents) => contents.id === 3);
+    const { webPreferences } = attach(loadWebContentsSetupModule({ isPrivateWebContents }), {
+      partition: 'persist:p',
+    });
+    expect(bootOf(webPreferences).isPrivate).toBe(true);
+  });
+
+  test('the embedder cannot hand the guest its own boot switch', () => {
+    const forged =
+      '--freedom-webview-boot=' +
+      Buffer.from(JSON.stringify({ isPrivate: false, internalPages: {} })).toString('base64');
+    const { webPreferences } = attach(
+      loadWebContentsSetupModule({ isPrivatePartition: () => true }),
+      { partition: 'private-abc' },
+      { preload: '/app/webview-preload.js', additionalArguments: [forged, '--other'] }
+    );
+    expect(webPreferences.additionalArguments).not.toContain(forged);
+    expect(webPreferences.additionalArguments).toContain('--other');
+    expect(bootOf(webPreferences).isPrivate).toBe(true);
   });
 
   test('a webview that asked for no preload is not given one', () => {
@@ -207,6 +277,7 @@ describe('webcontents-setup', () => {
     const webPreferences = {};
     host.emit('will-attach-webview', {}, webPreferences, {});
     expect(webPreferences).not.toHaveProperty('preload');
+    expect(webPreferences).not.toHaveProperty('additionalArguments');
     expect(webPreferences.sandbox).toBe(true);
   });
 

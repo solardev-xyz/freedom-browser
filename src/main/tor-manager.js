@@ -27,7 +27,7 @@ const { getTorDataDir } = require('./profile-paths');
 const {
   getActiveProfile,
   getReservedProfilePorts,
-  updateActiveProfileNodeConfig,
+  updateActiveProfileNodeConfigWhenIdle,
 } = require('./profile-resolver');
 const {
   promptForDefaultExternalCandidateProtocol,
@@ -155,8 +155,8 @@ function getConfiguredTorSocksPort(config = getProfileTorConfig()) {
   return Number.isInteger(config?.socksPort) ? config.socksPort : DEFAULTS.tor.socksPort;
 }
 
-function persistManagedTorPort(socksPort) {
-  const result = updateActiveProfileNodeConfig('tor', { socksPort });
+async function persistManagedTorPort(socksPort) {
+  const result = await updateActiveProfileNodeConfigWhenIdle('tor', { socksPort });
   if (result) {
     log.info('[Tor] Persisted managed profile SOCKS port:', socksPort);
   }
@@ -510,10 +510,22 @@ async function startTor(opts = {}) {
   }
 
   if (managedProfileNode && opts.checkDefaultExternalCandidate === true) {
-    await promptForDefaultExternalCandidateProtocol(getActiveProfile(), 'tor', {
-      window: opts.promptWindow,
-      logger: log,
-    });
+    try {
+      // Saving the decision waits out an in-process async catalog write (a
+      // profile deletion). Anything else that fails here (another process
+      // holding the catalog) must still settle the state, not leave Tor in
+      // STARTING with nobody awaiting this start.
+      await promptForDefaultExternalCandidateProtocol(getActiveProfile(), 'tor', {
+        window: opts.promptWindow,
+        logger: log,
+      });
+    } catch (err) {
+      if (superseded()) return;
+      log.error('[Tor] Failed to save external Tor decision:', err.message);
+      updateState(STATUS.ERROR, 'Failed to save Tor node choice');
+      setStatusMessage('tor', 'Tor failed to start');
+      return;
+    }
     if (superseded()) return;
     profileConfig = getProfileTorConfig();
     managedProfileNode = isManagedTorConfig(profileConfig);
@@ -561,13 +573,17 @@ async function startTor(opts = {}) {
 
   if (managedProfileNode && socksPort !== configuredSocksPort) {
     try {
-      persistManagedTorPort(socksPort);
+      // Waits out an in-process async catalog write (a profile deletion)
+      // rather than failing on it, so re-check for a stop afterwards.
+      await persistManagedTorPort(socksPort);
     } catch (err) {
+      if (superseded()) return;
       log.error('[Tor] Failed to persist managed profile SOCKS port:', err.message);
       updateState(STATUS.ERROR, 'Failed to save Tor port assignment');
       setStatusMessage('tor', 'Tor failed to start');
       return;
     }
+    if (superseded()) return;
   }
 
   setCurrentSocksEndpoint(`127.0.0.1:${socksPort}`);

@@ -13,7 +13,7 @@ const { getAntDataDir } = require('./profile-paths');
 const {
   getActiveProfile,
   getReservedProfilePorts,
-  updateActiveProfileNodeConfig,
+  updateActiveProfileNodeConfigWhenIdle,
 } = require('./profile-resolver');
 const {
   MODE,
@@ -26,6 +26,7 @@ const {
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
 const { antApiGet } = require('./swarm/ant-api-chrome');
+const { createRediscoveryTracker } = require('./swarm/ant-rediscovery');
 const { loadSettings } = require('./settings-store');
 
 // States
@@ -46,6 +47,9 @@ let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
 const statusListeners = new Set();
+// The bundled node's background batch rediscovery, read from its log
+// (ant-rediscovery.js, #510). Null for a node Freedom did not spawn.
+const rediscovery = createRediscoveryTracker();
 
 function closeChainBridge(bridge = chainBridge) {
   if (chainBridge === bridge) chainBridge = null;
@@ -171,8 +175,8 @@ function getHttpClient(rawUrl) {
   return rawUrl.startsWith('https:') ? https : http;
 }
 
-function persistManagedAntPorts(updates) {
-  const result = updateActiveProfileNodeConfig('bee', updates);
+async function persistManagedAntPorts(updates) {
+  const result = await updateActiveProfileNodeConfigWhenIdle('bee', updates);
   if (result) {
     log.info('[Ant] Persisted managed profile ports:', updates);
   }
@@ -350,6 +354,18 @@ function onStatusChange(listener) {
 }
 
 /**
+ * `{ run, state: 'running' | 'finished', failed }` for the bundled node
+ * Freedom spawned, or null (reused, external, disabled or stopped node).
+ */
+function getRediscoveryState() {
+  return rediscovery.get();
+}
+
+function onRediscoveryChange(listener) {
+  return rediscovery.onChange(listener);
+}
+
+/**
  * Check if a port is open (something is listening)
  */
 function isPortOpen(port, host = '127.0.0.1') {
@@ -520,6 +536,7 @@ async function startExternalAnt(config) {
   noteAntApiUrl(currentApiUrl);
   currentApiPort = getPortFromUrl(apiUrl);
   currentMode = MODE.EXTERNAL;
+  rediscovery.end();
 
   updateService('ant', {
     api: currentApiUrl,
@@ -537,6 +554,7 @@ function startDisabledAnt() {
   currentApiPort = null;
   currentApiUrl = null;
   currentMode = MODE.DISABLED;
+  rediscovery.end();
   updateService('ant', {
     api: null,
     gateway: null,
@@ -593,6 +611,7 @@ async function startAnt() {
     currentApiUrl = `http://127.0.0.1:${currentApiPort}`;
     noteAntApiUrl(currentApiUrl);
     currentMode = MODE.REUSED;
+    rediscovery.end();
 
     updateService('ant', {
       api: currentApiUrl,
@@ -688,8 +707,12 @@ async function startAnt() {
 
   if (managedProfileNode && (apiPort !== configuredApiPort || p2pPort !== configuredP2pPort)) {
     try {
-      persistManagedAntPorts({ apiPort, p2pPort });
+      // Waits out an in-process async catalog write (a profile deletion)
+      // rather than failing on it; the generation check below covers a stop
+      // that lands meanwhile.
+      await persistManagedAntPorts({ apiPort, p2pPort });
     } catch (err) {
+      if (generation !== startGeneration) return;
       log.error('[Ant] Failed to persist managed profile ports:', err.message);
       updateState(STATUS.ERROR, 'Failed to save Ant port assignment');
       setStatusMessage('ant', 'Node failed to start');
@@ -757,12 +780,20 @@ async function startAnt() {
   try {
     antProcess = spawn(binPath, args);
     const child = antProcess;
+    const run = rediscovery.begin();
 
-    bridge.pipeLog(child.stdout, (line) => log.info(`[Ant stdout]: ${line}`));
-    bridge.pipeLog(child.stderr, (line) => log.error(`[Ant stderr]: ${line}`));
+    bridge.pipeLog(child.stdout, (line) => {
+      log.info(`[Ant stdout]: ${line}`);
+      rediscovery.noteLine(run, line);
+    });
+    bridge.pipeLog(child.stderr, (line) => {
+      log.error(`[Ant stderr]: ${line}`);
+      rediscovery.noteLine(run, line);
+    });
 
     antProcess.on('close', (code) => {
       void closeChainBridge(bridge);
+      rediscovery.end(run);
       if (antProcess !== child) return;
       log.info(`[Ant] Process exited with code ${code}`);
       antProcess = null;
@@ -796,6 +827,7 @@ async function startAnt() {
 
     antProcess.on('error', (err) => {
       void closeChainBridge(bridge);
+      rediscovery.end(run);
       if (antProcess !== child) return;
       log.error('[Ant] Failed to start process:', err);
       updateState(STATUS.ERROR, err.message);
@@ -1030,6 +1062,8 @@ module.exports = {
   getActivePort,
   getStatus,
   onStatusChange,
+  getRediscoveryState,
+  onRediscoveryChange,
   getAntDataPath,
   setUseInjectedIdentity,
   hasInjectedKeys,

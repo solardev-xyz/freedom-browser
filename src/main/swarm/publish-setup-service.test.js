@@ -31,7 +31,10 @@ const {
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
   CHAIN_INIT_SLOW_MS,
+  REDISCOVERY_MAX_WAIT_MS,
+  REDISCOVERY_SLOW_MS,
 } = require('./publish-setup-service');
+const { createRediscoveryTracker, FINISHED_LINE, FAILED_LINE } = require('./ant-rediscovery');
 
 const WALLET = '0x1234567890abcdef1234567890abcdef12345678';
 const CHEQUEBOOK = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd';
@@ -125,6 +128,8 @@ function setup({
   error = null,
   registryMode = 'bundled',
   api = createApi(),
+  getRediscovery,
+  getWalletTxCount,
 } = {}) {
   const node = { status, error, registryMode };
   const published = [];
@@ -136,6 +141,8 @@ function setup({
     getRegistryMode: () => node.registryMode,
     restartNode,
     getTransactionStatus,
+    getRediscovery,
+    getWalletTxCount,
     publish: (state) => published.push(state),
     now: () => Date.now(),
   });
@@ -325,6 +332,311 @@ describe('classifyReadiness', () => {
       message: 'Ready to publish. 2 storage batches available.',
       slow: false,
     });
+  });
+});
+
+describe('classifyReadiness while Ant rediscovers batches (#510)', () => {
+  const running = { status: 'running', error: null, registryMode: 'bundled' };
+  const withStamps = (stamps) => ({
+    at: 0,
+    unreachable: false,
+    chainReady: true,
+    nodeMode: 'light',
+    peersReady: true,
+    stamps: { known: true, pending: 0, propagating: 0, ...stamps },
+  });
+  const empty = withStamps({ usable: 0, total: 0 });
+
+  test('an empty list is "checking", not "pick a plan", while the hold is on', () => {
+    const held = classifyReadiness({
+      node: running,
+      probe: empty,
+      rediscovery: { failed: false, slow: false },
+    });
+    expect(held).toMatchObject({
+      ok: false,
+      key: 'checking',
+      reason: 'node-not-ready',
+      slow: false,
+    });
+    expect(held.message).toBe('Checking Gnosis Chain for storage this wallet already owns…');
+    // Full or expired batches are no proof either: the scan may add more.
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 0, full: 1, total: 1 }),
+        rediscovery: { failed: false, slow: false },
+      }).key
+    ).toBe('checking');
+  });
+
+  test('says a long first check is expected, without offering a restart', () => {
+    const slow = classifyReadiness({
+      node: running,
+      probe: empty,
+      rediscovery: { failed: false, slow: true },
+    });
+    expect(slow).toMatchObject({ key: 'checking', slow: false });
+    expect(slow.message).toMatch(/can take several minutes/);
+  });
+
+  test('a failed scan asks for a restart before buying', () => {
+    const failed = classifyReadiness({
+      node: running,
+      probe: empty,
+      rediscovery: { failed: true, slow: false },
+    });
+    expect(failed).toMatchObject({ key: 'checking', reason: 'node-not-ready', slow: true });
+    expect(failed.message).toMatch(/Restart the node to check again/);
+  });
+
+  test('storage the node already lists wins over the hold', () => {
+    const hold = { failed: false, slow: false };
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 1, total: 1 }),
+        rediscovery: hold,
+      }).key
+    ).toBe('ready');
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 0, pending: 1, propagating: 1, total: 1 }),
+        rediscovery: hold,
+      }).key
+    ).toBe('storage-pending');
+  });
+});
+
+describe('publish setup while Ant rediscovers batches (#510)', () => {
+  function rediscoverySetup({ txCount = 3, api = createApi() } = {}) {
+    const tracker = createRediscoveryTracker();
+    const run = tracker.begin();
+    const getWalletTxCount = jest.fn(async () => {
+      if (txCount instanceof Error) throw txCount;
+      return txCount;
+    });
+    const ctx = setup({ api, getRediscovery: tracker.get, getWalletTxCount });
+    tracker.onChange(() => ctx.service.handleRediscovery());
+    return { ...ctx, tracker, run, getWalletTxCount };
+  }
+
+  test('a wallet with history waits for the scan, then shows the storage it found', async () => {
+    const { service, api, tracker, run, getWalletTxCount } = rediscoverySetup({ txCount: 5 });
+
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      ok: false,
+      reason: 'node-not-ready',
+    });
+    expect(service.getState().readiness.key).toBe('checking');
+    expect(getWalletTxCount).toHaveBeenCalledWith(WALLET.toLowerCase());
+
+    // The scan finds a batch the wallet bought on another device.
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ batchID: BATCH_A, usable: true }] }));
+    tracker.noteLine(run, `INFO antd: ${FINISHED_LINE}; /stamps lists every batch found`);
+    await settle();
+    expect(service.getState().readiness.key).toBe('ready');
+  });
+
+  test('a finished scan that found nothing offers a plan', async () => {
+    const { service, tracker, run } = rediscoverySetup({ txCount: 5 });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    tracker.noteLine(run, FINISHED_LINE);
+    await settle();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'needs-storage',
+      reason: 'no-usable-stamps',
+    });
+  });
+
+  test('a wallet that never sent a transaction has nothing to rediscover', async () => {
+    const { service, getWalletTxCount } = rediscoverySetup({ txCount: 0 });
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      reason: 'no-usable-stamps',
+    });
+    expect(service.getState().readiness.key).toBe('needs-storage');
+
+    // Known for this run: later probes do not read it again.
+    await service.refresh();
+    expect(getWalletTxCount).toHaveBeenCalledTimes(1);
+  });
+
+  test('a history that cannot be read holds, and is read again next probe', async () => {
+    const { service, getWalletTxCount } = rediscoverySetup({ txCount: new Error('no quorum') });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    getWalletTxCount.mockResolvedValue(0);
+    await service.refresh();
+    expect(getWalletTxCount).toHaveBeenCalledTimes(2);
+    expect(service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('without the wallet address it holds rather than guess', async () => {
+    const api = createApi();
+    api.getAddresses.mockResolvedValue(fail(503));
+    const { service, getWalletTxCount } = rediscoverySetup({ api, txCount: 0 });
+    await service.refresh();
+    expect(getWalletTxCount).not.toHaveBeenCalled();
+    expect(service.getState().readiness.key).toBe('checking');
+  });
+
+  test('says when the check is slow, and gives up holding after the bound', async () => {
+    const { service } = rediscoverySetup({ txCount: 5 });
+    await service.refresh();
+    expect(service.getState().readiness.message).not.toMatch(/several minutes/);
+
+    jest.setSystemTime(Date.now() + REDISCOVERY_SLOW_MS + 1);
+    expect(service.getState().readiness).toMatchObject({ key: 'checking', slow: false });
+    expect(service.getState().readiness.message).toMatch(/several minutes/);
+
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS);
+    expect(service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('a failed scan keeps the plans back and offers a restart', async () => {
+    const { service, tracker, run } = rediscoverySetup({ txCount: 5 });
+    await service.refresh();
+    tracker.noteLine(run, `WARN antd: ${FAILED_LINE}: rpc error; continuing without it`);
+    tracker.noteLine(run, FINISHED_LINE);
+    await settle();
+    expect(service.getState().readiness).toMatchObject({ key: 'checking', slow: true });
+    expect(service.getState().readiness.message).toMatch(/Restart the node/);
+  });
+
+  test('a history read from before a restart does not answer for the new run', async () => {
+    const { service, tracker, getWalletTxCount } = rediscoverySetup({ txCount: 0 });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+
+    // Restarted, maybe with another key: the old "no history" no longer
+    // holds, even while the new run's own read fails.
+    tracker.begin();
+    getWalletTxCount.mockRejectedValue(new Error('no quorum'));
+    await service.refresh();
+    expect(getWalletTxCount).toHaveBeenCalledTimes(2);
+    expect(service.getState().readiness.key).toBe('checking');
+
+    getWalletTxCount.mockResolvedValue(4);
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+  });
+
+  test('a read still in flight across a restart is dropped', async () => {
+    const { service, tracker } = rediscoverySetup();
+    let answer;
+    const getWalletTxCount = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    const held = setup({ getRediscovery: tracker.get, getWalletTxCount }).service;
+    const pending = held.refresh();
+    await settle();
+    tracker.begin();
+    answer(0);
+    await pending;
+    // Run 1's "no history" must not release run 2's hold.
+    expect(held.getState().readiness.key).toBe('checking');
+    service.dispose();
+    held.dispose();
+  });
+
+  test('a probe that read /stamps before the scan finished does not lift the hold (R1-M1)', async () => {
+    const { service, api, tracker, run, published } = rediscoverySetup({ txCount: 5 });
+    await service.refresh();
+    await settle();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    // A probe is mid-flight: /stamps already answered empty, /node has not.
+    let releaseNode;
+    api.getNode.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseNode = () => resolve(ok({ beeMode: 'light' }));
+        })
+    );
+    const inflight = service.refresh();
+    await settle();
+    // The scan finishes and /stamps now lists what it found.
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ batchID: BATCH_A, usable: true }] }));
+    published.length = 0;
+    tracker.noteLine(run, FINISHED_LINE);
+    expect(service.getState().readiness.key).toBe('checking');
+    releaseNode();
+    await inflight;
+    await settle();
+    expect(service.getState().readiness.key).toBe('ready');
+    // The stale empty list never showed as "pick a plan" on the way.
+    expect(published.map((st) => st.readiness.key)).not.toContain('needs-storage');
+  });
+
+  test('the bound runs from the spawn, not from when the service first saw the node (R1-M2)', async () => {
+    const tracker = createRediscoveryTracker();
+    tracker.begin();
+    // The service is created 25 minutes into the scan.
+    jest.setSystemTime(Date.now() + 25 * 60_000);
+    const getWalletTxCount = jest.fn(async () => 5);
+    const { service } = setup({ getRediscovery: tracker.get, getWalletTxCount });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS - 25 * 60_000 + 1);
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    service.dispose();
+  });
+
+  test('the pre-flight does not wait for the wallet history read (R1-M3)', async () => {
+    const tracker = createRediscoveryTracker();
+    tracker.begin();
+    let answer;
+    const getWalletTxCount = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    const { service, published } = setup({ getRediscovery: tracker.get, getWalletTxCount });
+    // Resolves while the RPC read is still out, holding meanwhile.
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      ok: false,
+      reason: 'node-not-ready',
+    });
+    expect(getWalletTxCount).toHaveBeenCalledTimes(1);
+    // The answer lands later and is broadcast on its own.
+    answer(0);
+    await settle();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    expect(published.at(-1).readiness.key).toBe('needs-storage');
+    service.dispose();
+  });
+
+  test('tags the hold so the node card can still open setup (R1-F2)', async () => {
+    const { service, tracker, run } = rediscoverySetup({ txCount: 5 });
+    await service.refresh();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'checking',
+      rediscovery: 'running',
+      slow: false,
+    });
+    tracker.noteLine(run, FAILED_LINE);
+    await settle();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'checking',
+      rediscovery: 'failed',
+      slow: true,
+    });
+  });
+
+  test('a node Freedom cannot see the scan of is not held', async () => {
+    const getWalletTxCount = jest.fn();
+    const { service } = setup({ getRediscovery: () => null, getWalletTxCount });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    expect(getWalletTxCount).not.toHaveBeenCalled();
   });
 });
 
@@ -1184,12 +1496,23 @@ describe('a deposit of a chosen amount (freedom-hq/ant#126)', () => {
     api.topUpSettlementDeposit.mockResolvedValue(fail(400, 'not enough xDAI'));
     service.arm({ kind: 'deposit', amountPlur: AMOUNT });
     await settle();
-    expect(service.getState().operation).toMatchObject({ phase: 'failed', error: 'not enough xDAI' });
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      error: 'not enough xDAI',
+    });
   });
 
   test('an amount out of range or not a PLUR integer is refused before anything runs', () => {
     const { service, api } = setup();
-    for (const amountPlur of ['0', '-1', '1.5', 'abc', '01000000000000000', 1e15, '9999999999999']) {
+    for (const amountPlur of [
+      '0',
+      '-1',
+      '1.5',
+      'abc',
+      '01000000000000000',
+      1e15,
+      '9999999999999',
+    ]) {
       expect(service.arm({ kind: 'deposit', amountPlur })).toEqual({
         ok: false,
         error: expect.stringMatching(/between 0\.001 and 10 xBZZ/),
@@ -1399,9 +1722,12 @@ describe('registerPublishSetupIpc', () => {
   const RENDERER = path.resolve(__dirname, '..', '..', 'renderer');
 
   const statusListeners = [];
+  const rediscoveryListeners = [];
   const antManager = {
     getStatus: jest.fn(() => ({ status: 'stopped', error: null })),
     onStatusChange: jest.fn((listener) => statusListeners.push(listener)),
+    getRediscoveryState: jest.fn(() => null),
+    onRediscoveryChange: jest.fn((listener) => rediscoveryListeners.push(listener)),
     stopAnt: jest.fn().mockResolvedValue(),
     startAnt: jest.fn().mockResolvedValue(),
   };
@@ -1444,6 +1770,9 @@ describe('registerPublishSetupIpc', () => {
       ].sort()
     );
     expect(statusListeners).toHaveLength(1);
+    // Ant's rediscovery progress (#510) re-reads readiness too.
+    expect(rediscoveryListeners).toHaveLength(1);
+    expect(() => rediscoveryListeners[0](null)).not.toThrow();
 
     await expect(mockIpcHandlers.get('swarm:setup-get-state')()).resolves.toMatchObject({
       readiness: { key: 'stopped' },

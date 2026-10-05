@@ -135,10 +135,13 @@ function sanitizeErrorMessage(message) {
     .slice(0, MAX_ERROR_MESSAGE);
 }
 
-// The block-range cap an endpoint names when it refuses a log query, as a
-// number, or null when its reply names none (or is a throttle or a lagging
-// endpoint, whose numbers say nothing about the range it serves). The router
-// learns each endpoint's cap from it. Measured wordings (2026-10-03):
+// The widest block span an endpoint serves, read from its refusal of a log
+// query over `span` blocks: the cap it names, or span - 1 for a range limit
+// that names none. Null for anything that is no block-range limit: a throttle
+// or a lagging endpoint (whose numbers say nothing about the range it
+// serves), a timeout, and a cap on results, logs or response size, which
+// depends on the filter (a sparse filter over the same range may answer), not
+// on the endpoint. The router learns each endpoint's cap from it. Measured wordings (2026-10-03):
 // Nethermind ("Block range 50000 exceeds the maximum of 10000 blocks per logs
 // request", Colibri's RPC and publicnode below 50k), publicnode's gateway
 // ("exceed maximum block range: 50000"), dRPC's free plan ("ranges over 10000
@@ -152,7 +155,10 @@ const BLOCK_RANGE_CAP_TEXT = [
   /ranges? (?:over|above|greater than|larger than|wider than) ([\d,]+)(k?) blocks?\b/i,
 ];
 
-function logScanRangeCap(error) {
+// Wordings about the size of the answer rather than of the block range.
+const RESULT_SIZE_TEXT = /\bresults?\b|\blogs?\b|response size/i;
+
+function logScanRangeCap(error, span = null) {
   const message = typeof error?.message === 'string' ? error.message : '';
   if (
     !Number.isSafeInteger(error?.code) ||
@@ -166,6 +172,14 @@ function logScanRangeCap(error) {
     if (!match) continue;
     const cap = Number(match[1].replace(/,/g, '')) * (match[2] ? 1000 : 1);
     return Number.isSafeInteger(cap) && cap > 0 ? cap : null;
+  }
+  if (
+    Number.isSafeInteger(span) &&
+    span > 1 &&
+    rankLogScanError(error) === RANK.REQUEST &&
+    !RESULT_SIZE_TEXT.test(message)
+  ) {
+    return span - 1;
   }
   return null;
 }
@@ -214,6 +228,14 @@ const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
   rangeCapOf: logScanRangeCap,
   indexQueryOf: logScanIndexQuery,
 });
+
+// Whether a failed log scan failed because the configuration leaves no RPC
+// quorum at all (fewer endpoints than the quorum size, or no quorum in the
+// read order), rather than because endpoints are down for now.
+function logScanQuorumMissing(error) {
+  const message = typeof error?.message === 'string' ? error.message : '';
+  return /RPC quorum needs \d+ endpoints|No chain source left for eth_getLogs/.test(message);
+}
 
 // The JSON-RPC error Ant receives for a failed routed request. This is the
 // daemon's URL transport, not the FFI callback: real -32000 codes are
@@ -274,6 +296,7 @@ async function startAntChainBridge({
   const active = new Set();
   let closed = false;
   let closePromise;
+  let warnedNoLogQuorum = false;
   let authority;
   function send(res, status, body) {
     if (res.destroyed || res.writableEnded) return;
@@ -402,7 +425,9 @@ async function startAntChainBridge({
       const source = ['myotis', 'colibri', 'quorum', 'direct'].includes(answer.source)
         ? answer.source
         : 'unknown';
-      log.info(`[Ant chain] ${method} via ${source}`);
+      // One line per Ant chain read (hundreds during a startup scan): verbose
+      // keeps it out of main.log (#511). Failures below stay at warn.
+      log.verbose(`[Ant chain] ${method} via ${source}`);
       send(res, 200, body);
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -413,6 +438,17 @@ async function startAntChainBridge({
             READ_METHODS.has(method) || method === 'eth_sendRawTransaction' ? method : 'request'
           } failed (${code})`
         );
+        if (method === 'eth_getLogs' && !warnedNoLogQuorum && logScanQuorumMissing(error)) {
+          // Ant only sees an error it does not halve on, ends the scan and
+          // retries later, forever: say once why its batches and chequebook
+          // are not being found.
+          warnedNoLogQuorum = true;
+          log.warn(
+            '[Ant chain] eth_getLogs is answered by the RPC quorum only, and none is configured ' +
+              'for Gnosis: add RPC endpoints (at least the quorum size, m) and keep "quorum" in ' +
+              "the read order, or Ant cannot find its postage batches or chequebook"
+          );
+        }
       }
     } finally {
       clearTimeout(timer);

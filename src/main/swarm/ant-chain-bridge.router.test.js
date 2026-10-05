@@ -58,7 +58,7 @@ beforeEach(async () => {
   mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
     role === 'prover' ? ['https://prover.example'] : RPCS
   );
-  bridge = await startAntChainBridge({ router, log: { info: jest.fn(), warn: jest.fn() } });
+  bridge = await startAntChainBridge({ router, log: { info: jest.fn(), verbose: jest.fn(), warn: jest.fn() } });
 });
 afterEach(async () => {
   await bridge.close();

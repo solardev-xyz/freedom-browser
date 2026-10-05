@@ -63,7 +63,10 @@ describe('swarm-readiness view helpers', () => {
       )
     ).toBe('Grow your storage to 5 GB');
     expect(
-      mod.describeOperationTarget({ request: { kind: 'deposit', amountPlur: '5000000000000000' } }, PLANS)
+      mod.describeOperationTarget(
+        { request: { kind: 'deposit', amountPlur: '5000000000000000' } },
+        PLANS
+      )
     ).toBe('Add 0.5 xBZZ to the chequebook deposit');
     expect(mod.describeOperationTarget({ request: { kind: 'deposit' } }, PLANS)).toBe(
       'Top up the chequebook deposit'
@@ -78,7 +81,9 @@ describe('swarm-readiness view helpers', () => {
     );
     expect(
       mod.describeDone({ request: { kind: 'deposit', amountPlur: '1000000000000000' }, result: {} })
-    ).toBe('Added 0.1 xBZZ to the chequebook deposit. It pays for faster downloads and for uploads.');
+    ).toBe(
+      'Added 0.1 xBZZ to the chequebook deposit. It pays for faster downloads and for uploads.'
+    );
     expect(mod.describeDone({ request: { kind: 'deposit' }, result: { alreadyFull: true } })).toBe(
       'The chequebook deposit is already full.'
     );
@@ -202,6 +207,31 @@ describe('swarm-readiness view helpers', () => {
       expect(
         mod.describePublishCta(stateWith({ readiness: { ok: false, key: 'checking' } }))
       ).toMatchObject({ disabled: true, target: 'setup' });
+    });
+
+    test('opens setup while Ant rediscovers the wallet storage, so its message and Restart are reachable (#510)', () => {
+      expect(
+        mod.describePublishCta(
+          stateWith({ readiness: { ok: false, key: 'checking', rediscovery: 'running' } })
+        )
+      ).toMatchObject({
+        visible: true,
+        disabled: false,
+        target: 'setup',
+        hint: 'Checking for storage this wallet already owns…',
+      });
+      expect(
+        mod.describePublishCta(
+          stateWith({
+            readiness: { ok: false, key: 'checking', rediscovery: 'failed', slow: true },
+          })
+        )
+      ).toMatchObject({
+        visible: true,
+        disabled: false,
+        target: 'setup',
+        hint: 'Restart the node before buying storage',
+      });
     });
   });
 });

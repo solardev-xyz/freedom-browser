@@ -2,6 +2,7 @@ const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { getActiveProfile } = require('./profile-resolver');
+const fsOffload = require('./fs-offload');
 
 const RADICLE_SOCKET_PATH_LIMIT = 100;
 const RADICLE_SHORT_HOME_DIR = 'R';
@@ -13,14 +14,6 @@ function ensureDir(dirPath) {
   return dirPath;
 }
 
-function hasEntries(dirPath) {
-  try {
-    return fs.existsSync(dirPath) && fs.readdirSync(dirPath).length > 0;
-  } catch {
-    return false;
-  }
-}
-
 function resolveDir(envName, fallbackName) {
   const override = process.env[envName];
   if (override) {
@@ -29,17 +22,117 @@ function resolveDir(envName, fallbackName) {
   return ensureDir(path.join(app.getPath('userData'), fallbackName));
 }
 
-function copyProfileRadicleDataIfNeeded(profileRadicleDir, radicleDir) {
-  if (!hasEntries(profileRadicleDir) || hasEntries(radicleDir)) {
+async function hasEntriesAsync(dirPath) {
+  try {
+    return (await fs.promises.readdir(dirPath)).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+const RADICLE_STAGING_INFIX = '.migrating-';
+
+function isProcessAlive(pid) {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: it exists, we just may not signal it.
+    return err.code === 'EPERM';
+  }
+}
+
+// A migration interrupted mid-copy (quit, crash) never reaches its `finally`,
+// leaving a possibly multi-GB `<radicleDir>.migrating-<pid>-<ts>` sibling that
+// the next attempt (with a new name) would not reuse and profile deletion would
+// not see. Remove those left by processes that are gone. A live other pid is
+// left alone: it may be copying right now (pid reuse only delays the sweep to a
+// later launch). Our own pid's leftovers are not swept here either — this
+// process only ever has one migration per home in flight (radicleMigrations),
+// and its `finally` removes its own staging dir.
+async function sweepOrphanedRadicleStagingDirs(radicleDir) {
+  const parent = path.dirname(radicleDir);
+  const prefix = `${path.basename(radicleDir)}${RADICLE_STAGING_INFIX}`;
+  let names;
+  try {
+    names = await fs.promises.readdir(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const pid = Number.parseInt(name.slice(prefix.length), 10);
+    if (Number.isInteger(pid) && pid > 0 && isProcessAlive(pid)) continue;
+    try {
+      await fsOffload.removePath(path.join(parent, name), { recursive: true, force: true });
+    } catch (err) {
+      console.warn('[ProfilePaths] Failed to remove stale Radicle staging dir:', err.message);
+    }
+  }
+}
+
+// One-time carry-over of a pre-short-home profile's `radicle-data/` into the
+// catalog's short Radicle home (see getRadicleDataDir). The tree can be several
+// GB of seeded repositories, so it is copied off the main thread (fs-offload,
+// #513) into a staging sibling and renamed into place: anything that reads the
+// short home meanwhile sees it empty or complete, never half-copied. Skipped —
+// as the old synchronous copy was — when the source is empty or the
+// destination already has entries, including entries that appeared while we
+// were copying.
+async function migrateProfileRadicleData(profileRadicleDir, radicleDir) {
+  if (!(await hasEntriesAsync(profileRadicleDir)) || (await hasEntriesAsync(radicleDir))) {
     return;
   }
 
-  fs.mkdirSync(path.dirname(radicleDir), { recursive: true });
-  fs.cpSync(profileRadicleDir, radicleDir, {
-    recursive: true,
-    force: false,
-    errorOnExist: false,
-  });
+  await fs.promises.mkdir(path.dirname(radicleDir), { recursive: true });
+  await sweepOrphanedRadicleStagingDirs(radicleDir);
+  const stagingDir = `${radicleDir}${RADICLE_STAGING_INFIX}${process.pid}-${Date.now()}`;
+  try {
+    await fsOffload.copyPath(profileRadicleDir, stagingDir, {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+    });
+    // getRadicleDataDir may have created the destination as an empty dir in the
+    // meantime; only an *empty* one may be replaced.
+    try {
+      await fs.promises.rmdir(radicleDir);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return;
+        throw err;
+      }
+    }
+    await fs.promises.rename(stagingDir, radicleDir);
+  } finally {
+    await fsOffload.removePath(stagingDir, { recursive: true, force: true });
+  }
+}
+
+const radicleMigrations = new Map();
+// Homes whose migration has not settled yet. getRadicleDataDir must not
+// ensureDir() these: between the migration's rmdir of an empty destination and
+// its rename of the staging dir into place, a recreated destination would make
+// the rename fail on Windows (it cannot rename onto an existing directory).
+const radicleMigrationsInFlight = new Set();
+
+function startRadicleMigration(profileRadicleDir, radicleDir) {
+  let pending = radicleMigrations.get(radicleDir);
+  if (!pending) {
+    radicleMigrationsInFlight.add(radicleDir);
+    pending = migrateProfileRadicleData(profileRadicleDir, radicleDir)
+      .catch((err) => {
+        // Let a later call retry instead of caching the failure.
+        radicleMigrations.delete(radicleDir);
+        throw err;
+      })
+      .finally(() => {
+        radicleMigrationsInFlight.delete(radicleDir);
+      });
+    radicleMigrations.set(radicleDir, pending);
+  }
+  return pending;
 }
 
 function getCatalogRadicleDataDir(profile) {
@@ -136,7 +229,17 @@ function getRadicleDataDir() {
    * this Radicle exception.
    */
   if (catalogRadicleDir) {
-    copyProfileRadicleDataIfNeeded(profileRadicleDir, catalogRadicleDir);
+    // Never copy synchronously here: kick off (or join) the async migration and
+    // return the path. Everything that writes to or starts Radicle awaits
+    // prepareRadicleDataDir() first, so only read-only callers can observe the
+    // short home before the migration lands — and they see it empty, not torn.
+    startRadicleMigration(profileRadicleDir, catalogRadicleDir).catch((err) => {
+      console.warn('[ProfilePaths] Radicle data migration failed:', err.message);
+    });
+    // While the migration is in flight the home may not exist yet; read-only
+    // callers cope with that (missing file), and prepareRadicleDataDir creates
+    // it once the migration has settled.
+    if (radicleMigrationsInFlight.has(catalogRadicleDir)) return catalogRadicleDir;
     return ensureDir(catalogRadicleDir);
   }
 
@@ -148,6 +251,19 @@ function getRadicleDataDir() {
   }
 
   return ensureDir(profileRadicleDir);
+}
+
+/**
+ * Resolve the Radicle data dir, first finishing the one-time async migration of
+ * a profile-local `radicle-data/` into the catalog's short home if one is due.
+ * Await this before starting Radicle or writing its home.
+ * @returns {Promise<string>}
+ */
+async function prepareRadicleDataDir() {
+  const radicleDir = getRadicleDataDir();
+  const pending = radicleMigrations.get(radicleDir);
+  if (pending) await pending;
+  return ensureDir(radicleDir);
 }
 
 function getQuickUnlockCredentialPath() {
@@ -170,6 +286,7 @@ function createProfileTempDir(prefix) {
 }
 
 module.exports = {
+  RADICLE_STAGING_INFIX,
   createProfileTempDir,
   getAntDataDir,
   getBeeDataDir,
@@ -182,4 +299,5 @@ module.exports = {
   getQuickUnlockCredentialPath,
   getRadicleDataDir,
   getTorDataDir,
+  prepareRadicleDataDir,
 };

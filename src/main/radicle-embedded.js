@@ -10,7 +10,9 @@
  *   4. ../libradicle/target/{release,debug}/libradicle.node (dev sibling)
  *
  * Every addon export resolves to a JSON string; this module parses them
- * and throws on `{error}` payloads so callers deal in plain objects.
+ * and throws on `{error}` payloads so callers deal in plain objects. The
+ * `*Raw` reads are the exception: they hand back the addon's JSON text
+ * unparsed, for responses the main process only forwards (see `callRaw`).
  */
 
 const log = require('./logger');
@@ -108,6 +110,29 @@ function parseResult(raw) {
   return value;
 }
 
+// The addon reports a failure as a one-key `{"error": "..."}` object; no
+// read whose text `callRaw` passes through has an `error` field of its own.
+const ERROR_PAYLOAD_RE = /^\s*\{\s*"error"\s*:/;
+
+/**
+ * Like `call`, but resolves to the addon's JSON text instead of a parsed
+ * object. For responses the main process only passes on (blob, commit
+ * diff, tree, commit page served by `radapi:`/`rad:`): parsing a
+ * multi-megabyte file or diff and stringifying it again costs one long
+ * synchronous stall on main for nothing (#514). Error payloads are still
+ * parsed and thrown, exactly as `call` does.
+ */
+async function callRaw(name, ...args) {
+  const a = loadAddon();
+  if (!a) throw new Error('radicle addon not available');
+  const raw = await a[name](...args);
+  if (typeof raw !== 'string') {
+    throw new Error(`radicle addon returned no JSON text from ${name}`);
+  }
+  if (ERROR_PAYLOAD_RE.test(raw.slice(0, 64))) parseResult(raw);
+  return raw;
+}
+
 /**
  * Start the embedded node. Resolves to `{ did }`.
  * @param {string} home - Radicle home directory (keys, storage, node dbs)
@@ -170,6 +195,12 @@ const tree = (rid, treePath = '') => call('tree', rid, treePath);
 const treeAt = (rid, revision, treePath = '') => call('treeAt', rid, revision, treePath);
 const blob = (rid, blobPath) => call('blob', rid, blobPath);
 const blobAt = (rid, revision, blobPath) => call('blobAt', rid, revision, blobPath);
+const commitsRaw = (rid, parent, page = 0, perPage = 30) =>
+  callRaw('commits', rid, parent, page, perPage);
+const commitRaw = (rid, revision) => callRaw('commit', rid, revision);
+const treeAtRaw = (rid, revision, treePath = '') => callRaw('treeAt', rid, revision, treePath);
+const blobRaw = (rid, blobPath) => callRaw('blob', rid, blobPath);
+const blobAtRaw = (rid, revision, blobPath) => callRaw('blobAt', rid, revision, blobPath);
 const remotes = (rid) => call('remotes', rid);
 const repoStats = (rid, revision) => call('repoStats', rid, revision);
 const status = () => call('status');
@@ -225,16 +256,37 @@ async function readme(rid) {
   return readmeAt(rid);
 }
 
-async function readmeAt(rid, revision) {
+async function findReadme(rid, revision) {
   const { entries } = revision ? await treeAt(rid, revision, '') : await tree(rid, '');
   const names = new Set(entries.filter((e) => e.kind === 'blob').map((e) => e.name));
-  for (const candidate of README_CANDIDATES) {
-    if (names.has(candidate)) {
-      const result = revision ? await blobAt(rid, revision, candidate) : await blob(rid, candidate);
-      return { ...result, path: candidate };
-    }
+  return README_CANDIDATES.find((candidate) => names.has(candidate)) || null;
+}
+
+async function readmeAt(rid, revision) {
+  const candidate = await findReadme(rid, revision);
+  if (!candidate) return null;
+  const result = revision ? await blobAt(rid, revision, candidate) : await blob(rid, candidate);
+  return { ...result, path: candidate };
+}
+
+/**
+ * `readmeAt(rid, revision)` as JSON text: the blob text with `path` added
+ * by splicing it in before the closing brace, instead of parsing the
+ * readme (which can be megabytes) to add one field. A later duplicate key
+ * wins in JSON.parse, so this matches the `{ ...result, path }` spread.
+ */
+async function readmeAtRaw(rid, revision) {
+  const candidate = await findReadme(rid, revision);
+  if (!candidate) return null;
+  const raw = revision
+    ? await blobAtRaw(rid, revision, candidate)
+    : await blobRaw(rid, candidate);
+  const end = raw.lastIndexOf('}');
+  if (!/^\s*\{\s*"/.test(raw) || end === -1 || raw.slice(end + 1).trim() !== '') {
+    // Not the non-empty object a blob always is; take the slow, exact path.
+    return JSON.stringify({ ...parseResult(raw), path: candidate });
   }
-  return null;
+  return `${raw.slice(0, end)},"path":${JSON.stringify(candidate)}${raw.slice(end)}`;
 }
 
 module.exports = {
@@ -270,6 +322,11 @@ module.exports = {
   treeAt,
   blob,
   blobAt,
+  commitsRaw,
+  commitRaw,
+  treeAtRaw,
+  blobRaw,
+  blobAtRaw,
   remotes,
   repoStats,
   status,
@@ -277,4 +334,5 @@ module.exports = {
   buildRepoMeta,
   readme,
   readmeAt,
+  readmeAtRaw,
 };

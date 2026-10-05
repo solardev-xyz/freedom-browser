@@ -44,7 +44,7 @@ beforeEach(async () => {
     request: jest.fn().mockResolvedValue({ result: '0x12', source: 'myotis' }),
     broadcastRawTransaction: jest.fn().mockResolvedValue({ result: '0xhash', source: 'direct' }),
   };
-  log = { info: jest.fn(), warn: jest.fn() };
+  log = { info: jest.fn(), verbose: jest.fn(), warn: jest.fn() };
   bridge = await startAntChainBridge({ router, log });
 });
 afterEach(async () => {
@@ -62,7 +62,8 @@ test('routes exact Gnosis requests and unwraps result without promoting trust', 
   expect(
     (await post(bridge.url, rpc('eth_getLogs', [{ fromBlock: '0x1', toBlock: '0x2' }]))).body.result
   ).toEqual([]);
-  expect(log.info).toHaveBeenLastCalledWith('[Ant chain] eth_getLogs via direct');
+  expect(log.verbose).toHaveBeenLastCalledWith('[Ant chain] eth_getLogs via direct');
+  expect(log.info).not.toHaveBeenCalled();
 });
 
 test.each(
@@ -394,6 +395,54 @@ test.each([
 test("the xBZZ token is the wallet's Gnosis BZZ token", () => {
   const { CHAIN_METADATA } = require('../wallet/chains');
   expect(CHAIN_METADATA[100].contracts.bzzToken.toLowerCase()).toBe(XBZZ_TOKEN);
+});
+
+test.each([
+  // A range limit without a number bounds the span it was asked.
+  ['range limit without a number', -32602, 'block range is too wide', 2000, 1999],
+  ['named cap', -32005, 'query exceeds max block range 500', 2000, 500],
+  // Result-count caps depend on the filter, not on the endpoint's range
+  // (R1-M2): a sparse filter over the same span may answer.
+  ['result count', -32005, 'query returned more than 10000 results', 20000, null],
+  ['too many results', -32005, 'too many results', 20000, null],
+  ['response size', -32000, 'response size exceeded', 20000, null],
+  ['logs matched', -32005, 'logs matched by query exceeds limit of 10000', 20000, null],
+  // An upstream timeout is no range limit either (R1-M1).
+  ['upstream timeout', -32000, 'query timeout exceeded', 500, null],
+  ['span of one block', -32602, 'block range is too wide', 1, null],
+])('a %s reply over a known span', (_name, code, message, span, cap) => {
+  expect(logScanRangeCap(Object.assign(new Error(message), { code }), span)).toBe(cap);
+});
+
+test('says once why log scans fail when no RPC quorum is configured (R1-M3)', async () => {
+  const filter = [{ fromBlock: '0x1', toBlock: '0x2' }];
+  router.request.mockRejectedValue(new Error('No RPC quorum available for eth_getLogs'));
+  await post(bridge.url, rpc('eth_getLogs', filter));
+  // Endpoints down for now: no configuration warning.
+  expect(log.warn.mock.calls.flat().join('\n')).not.toContain('none is configured');
+  router.request.mockRejectedValue(
+    new Error(
+      'All chain sources failed for eth_getLogs (quorum: RPC quorum needs 2 endpoints; ' +
+        'excluded for this request: myotis, colibri, direct)'
+    )
+  );
+  const response = await post(bridge.url, rpc('eth_getLogs', filter));
+  expect(antShrinksLogScanOn(response.body.error.message)).toBe(false);
+  await post(bridge.url, rpc('eth_getLogs', filter));
+  router.request.mockRejectedValue(
+    new Error('No chain source left for eth_getLogs on chain 100: read order [direct]')
+  );
+  await post(bridge.url, rpc('eth_getLogs', filter));
+  const warned = log.warn.mock.calls.filter(([line]) => line.includes('none is configured'));
+  expect(warned).toHaveLength(1);
+  expect(warned[0][0]).toContain('postage batches or chequebook');
+  // Other methods failing the same way do not warn about log scans.
+  await bridge.close();
+  log.warn.mockClear();
+  bridge = await startAntChainBridge({ router, log });
+  router.request.mockRejectedValue(new Error('RPC quorum needs 2 endpoints'));
+  await post(bridge.url, rpc());
+  expect(log.warn.mock.calls.flat().join('\n')).not.toContain('none is configured');
 });
 
 test("Ant's shrink needles match v0.5.58 is_range_limit_error", () => {

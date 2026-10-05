@@ -1,0 +1,2 @@
+- Deleting a profile or resetting node identities no longer freezes the browser ([#513](https://github.com/solardev-xyz/freedom-browser/issues/513))
+  - Node data can run to several GB; it is now removed in a background thread

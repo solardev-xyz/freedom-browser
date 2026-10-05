@@ -605,6 +605,12 @@ jobs:
   # `error-page.spec.js` covers the error page's title and node-state copy
   # (#236, #445), and `internal-page-theme.spec.js` asserts the pages follow
   # Settings > Appearance rather than the OS scheme (#233).
+  #
+  # This is also the per-PR job with the real filter lists downloaded, so
+  # `adblock-first-engine.spec.js` runs here: the first page of a fresh
+  # profile, with no engine cache, held behind the first ad-block engine build
+  # (#524). Without the real lists that build takes milliseconds and the path
+  # was only ever exercised by the nightly's full harness run.
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -642,6 +648,7 @@ jobs:
           xvfb-run -a npm run test:e2e --
           test-e2e/settings.spec.js
           test-e2e/settings-adblock.spec.js
+          test-e2e/adblock-first-engine.spec.js
           test-e2e/myotis-recovery.spec.js
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
@@ -931,7 +938,9 @@ jobs:
   # is deployed on, and `publisher-identity-selector.spec.js` renders
   # unusable publisher identities as inert. `browsing-credit.spec.js` (#488)
   # drives the Nodes tab's Browsing Credit group through node states the
-  # pinned Ant cannot produce yet (paying, low, empty, switch on/off). The
+  # pinned Ant cannot produce yet (paying, low, empty, switch on/off).
+  # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
+  # offering a plan while Ant is still rediscovering the wallet's batches. The
   # anvil-backed Safe specs run in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
@@ -967,7 +976,8 @@ jobs:
             test-e2e/sidebar-in-flight-chrome.spec.js \
             test-e2e/safe-send-chain.spec.js \
             test-e2e/publisher-identity-selector.spec.js \
-            test-e2e/browsing-credit.spec.js
+            test-e2e/browsing-credit.spec.js \
+            test-e2e/publish-setup-rediscovery.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
