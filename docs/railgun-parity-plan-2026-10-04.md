@@ -15,8 +15,11 @@ original settlement semantics. Root checks pass 312 tests/seven suites and full
 lint. Test cleanup preserves dependency order, records all failures and has
 labelled observer/public drainage timeouts. Source inventories and pre-cleanup
 resource counters retain their explicit limits; external services remain synthetic.
-This is not generic Host or TypeScript compatibility. Current main a1438027 and
-its explicit node refresh remain current. Next is the reviewed
+This is not generic Host or TypeScript compatibility. Native evidence is pinned to
+`c45fc866`; the later [main 9f6fec8d synchronization](privacy-main-sync-9f6fec8d-2026-10-05.md)
+refreshes bundled nodes, passes 330 affected tests plus lint and checks IPFS async
+lifecycle under network denial. All 178 selected Railgun hashes remain unchanged;
+seven broad-freeze IPFS entries changed. Next is the reviewed
 [public-facade cold-credit plan](railgun-public-facade-cold-credit-plan-2026-10-05.md),
 followed by restricted host extraction and live private qualification. The
 following checkpoints retain their historical scope.
