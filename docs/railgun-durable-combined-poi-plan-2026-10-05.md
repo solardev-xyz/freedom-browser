@@ -2,9 +2,13 @@
 
 Read-only audit on 2026-10-05, repository HEAD `e82e40a66d283f338eecd4e48716f21547f1f477`. References below are workspace-relative and reflect the inspected working files, not an assertion that concurrent cold-submission work is committed. No repository changes, native execution, network calls or funded profiles were used.
 
-The [cold-submission milestone](railgun-cold-submission-2026-10-05.md) is now
-qualified. This remains the next-stage design, not a claim that its proposed
-producer, retained consumer or version-3 migration changes are enabled.
+The [cold-submission milestone](railgun-cold-submission-2026-10-05.md) is qualified.
+The [combined-proof implementation](railgun-combined-poi-integration-2026-10-05.md)
+now passes first-stage native qualification for the producer, retained consumers
+and version-3 preparation on both input creators. The design below remains the
+reference for the full connected objective: normal change ingestion, verified
+list acceptance, restart and second spend are still open. Partial withdrawals
+remain closed through the Kohaku facade.
 
 ## Recommendation
 

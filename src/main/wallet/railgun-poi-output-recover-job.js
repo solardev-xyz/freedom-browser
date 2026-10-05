@@ -8,6 +8,7 @@ const {
   normalizeRailgunPoiOutputRecoveryInput,
   normalizeRailgunRecoveredPoiOutput,
 } = require('./railgun-poi-output-recovery-data');
+const { getRailgunOwnPoiShape } = require('./railgun-own-poi-shape-data');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 let attempted = false;
 exports.run = async function run(text, { request, requestKey, signal, guardReport }) {
@@ -39,7 +40,14 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
     // Fresh path crypto is checked before the only credential request. Original
     // saved proof roots/index are deliberately absent and are not revalidated here.
     projection.verifyWitness(state, witness);
-    assert.equal(witness.row.commitments[0], ownEvidence.capsule.preparation.expected.commitment);
+    const outputShape = getRailgunOwnPoiShape(ownEvidence.capsule);
+    const expected = ownEvidence.capsule.preparation.expected;
+    assert.deepEqual(
+      witness.row.commitments,
+      outputShape.hasUnshield
+        ? [expected.changeCommitment, expected.unshieldCommitment]
+        : [expected.commitment]
+    );
     active();
     const bytes = await requestKey(
       JSON.stringify({
@@ -79,7 +87,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
             position
           ),
         ],
-        railgunTxidIfHasUnshield: '0x00',
+        railgunTxidIfHasUnshield: outputShape.hasUnshield ? '0x' + witness.railgunTxid : '0x00',
       });
     } finally {
       key.fill(0);

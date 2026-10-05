@@ -231,6 +231,7 @@
       "src/**/*",
       "package.json",
       "!**/*.test.js",
+      "!**/*.fixture.js",
       "!**/coverage/**"
     ],
     "asarUnpack": [

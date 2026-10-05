@@ -3,6 +3,7 @@
  * No writer exclusion, source/root acceptance or ongoing authority is returned.
  */
 const assert = require('assert/strict');
+const { getRailgunOwnPoiShape } = require('./railgun-own-poi-shape-data');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
@@ -169,14 +170,9 @@ async function captureRailgunOwnWitness(
         stage = 'capture:' + first.stage;
         throw Error('capture refused');
       }
-      // Partial submission/capture does not admit the retained POI lifecycle.
-      // Refuse before receipt, source, mirror or service-root acquisition.
-      assert.equal(first.capture.capsule.version, 1);
-      assert.ok(
-        ['railgun-private-transfer', 'railgun-token-unshield'].includes(
-          first.capture.capsule.selection.kind
-        )
-      );
+      // Shape comes from the genuine capture, not a caller mode or payload.
+      // Capsule normalization also binds private V = U + C for partial spends.
+      const ownShape = getRailgunOwnPoiShape(first.capture.capsule);
       const derived = first.derived;
       let chain,
         sourceObservation,
@@ -482,26 +478,33 @@ async function captureRailgunOwnWitness(
       assert.equal(row.blockNumber, projection.blockNumber);
       assert.equal(row.utxoTreeIn, intent.tree);
       assert.deepEqual(row.nullifiers, [intent.nullifier]);
-      assert.deepEqual(row.commitments, [intent.commitment]);
+      const partial = ownShape.kind === 'railgun-partial-unshield';
+      assert.equal(intent.operation, ownShape.kind);
+      assert.deepEqual(
+        row.commitments,
+        partial ? [intent.changeCommitment, intent.unshieldCommitment] : [intent.commitment]
+      );
       assert.equal(row.boundParamsHash, intent.boundParamsHash);
-      if (intent.operation === 'railgun-private-transfer') {
-        assert.equal(row.unshield, undefined);
-        assert.equal(row.utxoTreeOut, projection.railgun.transact.output.tree);
-        assert.equal(row.utxoBatchStartPositionOut, projection.railgun.transact.output.position);
+      if (ownShape.hasPrivateOutput) {
+        const output = projection.railgun.transact.output;
+        const change = partial ? output.change : output;
+        assert.equal(row.utxoTreeOut, change.tree);
+        assert.equal(row.utxoBatchStartPositionOut, change.position);
       } else {
-        assert.equal(intent.operation, 'railgun-token-unshield');
         assert.equal(row.utxoTreeOut, 99999);
         assert.equal(row.utxoBatchStartPositionOut, 99999);
+      }
+      if (ownShape.hasUnshield) {
         assert.deepEqual(row.unshield, {
           toAddress: intent.recipient,
-          value: intent.amount,
+          value: partial ? intent.unshieldAmount : intent.amount,
           tokenData: {
             tokenType: 0,
             tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
             tokenSubID: '0x' + '0'.repeat(64),
           },
         });
-      }
+      } else assert.equal(row.unshield, undefined);
       let observations;
       if (preflight) {
         stage = 'observations';

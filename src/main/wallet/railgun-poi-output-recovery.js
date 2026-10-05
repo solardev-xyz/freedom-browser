@@ -1,5 +1,5 @@
 /** Rebind retained POI output data after enrollment restart. Diagnostic only:
- * transfer releases one viewing credential per call, unshield releases none.
+ * transfer/partial releases one viewing credential per call, full unshield none.
  * No proof registry restoration, old-root acceptance or consent. The fixed
  * attempted route rebinds output after reopen without resolving or retrying POST.
  */
@@ -21,6 +21,10 @@ const {
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
+const {
+  getRailgunOwnPoiShape,
+  assertRailgunOwnPoiPayloadShape,
+} = require('./railgun-own-poi-shape-data');
 const { normalizeRailgunPoiSubmission } = require('./railgun-poi-submit-data');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
 const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
@@ -229,12 +233,8 @@ async function recover(options = {}, completed = false, submission, attempted = 
     timer = setTimeout(stop, Math.max(0, activeDeadline - performance.now()));
     timer.unref?.();
     stage = 'binding';
-    assert.equal(fresh.capture.capsule.version, 1);
-    assert.ok(
-      ['railgun-private-transfer', 'railgun-token-unshield'].includes(
-        fresh.capture.capsule.selection.kind
-      )
-    );
+    const outputShape = getRailgunOwnPoiShape(fresh.capture.capsule);
+    assertRailgunOwnPoiPayloadShape(payload, fresh.capture.capsule);
     assert.deepEqual(fresh.publicIdentity, publicIdentity);
     assert.equal(fresh.observations.archiveAnchorChecked, true);
     assert.ok(['Shield', 'Transact'].includes(fresh.creatorClassification.type));
@@ -284,12 +284,15 @@ async function recover(options = {}, completed = false, submission, attempted = 
       normalizedWitness.index <= payload.txidMerklerootIndex &&
         payload.txidMerklerootIndex <= normalizedWitness.checkpointIndex
     );
-    const transfer = ownEvidence.capsule.selection.kind === 'railgun-private-transfer';
-    assert.equal(matched.output.kind, transfer ? 'shielded' : 'unshield');
-    assert.equal(payload.blindedCommitmentsOut.length, transfer ? 1 : 0);
-    const marker = transfer ? '0x00' : '0x' + normalizedWitness.railgunTxid;
+    const { hasPrivateOutput, hasUnshield } = outputShape;
+    assert.equal(
+      matched.output.kind,
+      hasPrivateOutput ? (hasUnshield ? 'partial-unshield' : 'shielded') : 'unshield'
+    );
+    // Shape alone is not this join: bind the full own TXID after fresh witness validation.
+    const marker = hasUnshield ? '0x' + normalizedWitness.railgunTxid : '0x00';
     assert.equal(payload.railgunTxidIfHasUnshield, marker);
-    const input = transfer
+    const input = hasPrivateOutput
       ? normalizeRailgunPoiOutputRecoveryInput({
           archive,
           descriptor,
@@ -327,7 +330,7 @@ async function recover(options = {}, completed = false, submission, attempted = 
         await readCurrent();
         windowCurrent(CLEANUP_MS + MIN_JOB_MS);
         let output = { blindedCommitmentsOut: [], railgunTxidIfHasUnshield: marker };
-        if (transfer) {
+        if (hasPrivateOutput) {
           const jobController = new AbortController();
           const jobSignal = AbortSignal.any([lifetime, window.signal, jobController.signal]);
           const jobDeadline = Math.min(performance.now() + JOB_MS, recoveryDeadline - CLEANUP_MS);
@@ -488,8 +491,8 @@ async function recover(options = {}, completed = false, submission, attempted = 
         await attest();
         return {
           output,
-          viewingKeyReleases: Number(transfer),
-          viewingUtilityExitObserved: transfer,
+          viewingKeyReleases: Number(hasPrivateOutput),
+          viewingUtilityExitObserved: hasPrivateOutput,
         };
       }
     );

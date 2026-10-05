@@ -1,12 +1,15 @@
-/** Offline partial EOA submission and capture over genuinely scanned, disposable
+/** Offline actual partial EOA submission through durable combined POI over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
- * electron script SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact] [acknowledged|lost-response|bad-verifier]
+ * electron scripts/qualify-railgun-combined-poi-lifecycle.js SOURCE NEW_DIRECTORY ENGINE PROVER ARTIFACTS BYTECODES [Shield|Transact]
  */
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const assert = require('assert/strict');
+const sticky = require('./fixtures/railgun-native-assertions');
+const { assert } = sticky;
+const lifecycle = require('./fixtures/railgun-combined-poi-lifecycle');
+const audit = lifecycle.createAudit();
 const { createHash } = require('crypto');
 const { Interface, Transaction } = require('ethers');
 const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
@@ -30,12 +33,12 @@ async function bounded(work, ms = 30000) {
 }
 async function main() {
   const args = process.argv.slice(2);
-  assert.ok(args.length >= 6 && args.length <= 8);
+  assert.ok(args.length >= 6 && args.length <= 7);
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
-  const testCase = args[7] ?? 'acknowledged';
-  assert.ok(['acknowledged', 'lost-response', 'bad-verifier'].includes(testCase));
+  const testCase = 'acknowledged';
+  assert.equal(testCase, 'acknowledged');
   const transact = inputCreator === 'Transact';
   assert.ok(args.slice(0, 6).every((value) => path.isAbsolute(value)));
   assert.equal(fs.existsSync(directory), false);
@@ -75,13 +78,20 @@ async function main() {
         .readdirSync(path.join(__dirname, 'fixtures'))
         .filter((name) => name.endsWith('.js'))
         .map((name) => path.join(__dirname, 'fixtures', name)),
-      ...['wallet', 'networks', 'identity'].flatMap((name) => {
-        const base = path.join(__dirname, '../src/main', name);
-        return fs
-          .readdirSync(base)
-          .filter((name) => /\.(js|json)$/.test(name))
-          .map((name) => path.join(base, name));
-      }),
+      ...(() => {
+        const files = [];
+        const visit = (directory) => {
+          for (const name of fs.readdirSync(directory).sort()) {
+            const file = path.join(directory, name),
+              info = fs.lstatSync(file);
+            assert.equal(info.isSymbolicLink(), false);
+            if (info.isDirectory()) visit(file);
+            else if (/\.(js|json|mjs)$/.test(name)) files.push(file);
+          }
+        };
+        visit(path.join(__dirname, '../src/main'));
+        return files;
+      })(),
     ];
     return Object.fromEntries(
       files
@@ -105,10 +115,15 @@ async function main() {
     workerStarts++;
     const worker = start(options);
     workers.add(worker);
-    worker.closed.then((result) => {
-      workers.delete(worker);
-      workerResults.push({ readOnly, ...result });
-    });
+    sticky.observeClosed(
+      worker.closed,
+      (result) => {
+        assert.ok(Number.isInteger(result.exitCode));
+        workers.delete(worker);
+        workerResults.push({ readOnly, ...result });
+      },
+      'storage.closed'
+    );
     return worker;
   };
   sessionModule.startRailgunSessionWorker = trackWorker(originalSession, false);
@@ -124,6 +139,32 @@ async function main() {
     const job = path.basename(options.filename),
       launchPhase = phase,
       broker = options.broker;
+    audit.start(options);
+    if (
+      [
+        'railgun-combined-poi-row-job.js',
+        'railgun-own-poi-prove-job.js',
+        'railgun-poi-output-recover-job.js',
+        'railgun-poi-verify-job.js',
+      ].includes(job)
+    ) {
+      const subject = require('../src/main/networks/privacy-context').getPrivacyContext(
+        options.handle
+      ).subject;
+      assert.equal(subject.kind, 'private-account');
+      assert.equal(subject.protocol, 'railgun');
+      assert.equal(subject.deployment, 'sepolia');
+      assert.equal(subject.chainId, 11155111);
+      const expected = {
+        'railgun-combined-poi-row-job.js': ['engine', 'combined-poi-row-fixture', false],
+        'railgun-own-poi-prove-job.js': ['engine', 'poi-prove', true],
+        'railgun-poi-output-recover-job.js': ['engine', 'poi-output-recover', true],
+        'railgun-poi-verify-job.js': ['prover', 'poi-verify', false],
+      }[job];
+      assert.equal(subject.role, expected[0]);
+      assert.equal(subject.operation, expected[1]);
+      assert.equal(!!options.binaryKey, expected[2]);
+    }
     jobs[job] = (jobs[job] || 0) + 1;
     const task = originalStart({
       ...options,
@@ -135,7 +176,8 @@ async function main() {
                 const message = JSON.parse(wire);
                 if (message.method === 'key')
                   keys[message.purpose] = (keys[message.purpose] || 0) + 1;
-                const reply = await broker.dispatch(wire);
+                const reply = await broker.dispatch(audit.before(job, wire));
+                audit.admitted(job, message);
                 if (message.method === 'key') {
                   assert.ok(reply instanceof Uint8Array && reply.byteLength === 32);
                   loans.push(reply);
@@ -166,10 +208,15 @@ async function main() {
         : {}),
     });
     children.add(task);
-    task.closed.then((result) => {
-      children.delete(task);
-      childResults.push({ job, phase: launchPhase, ...result });
-    });
+    sticky.observeClosed(
+      task.closed,
+      (result) => {
+        audit.closed(job, result);
+        children.delete(task);
+        childResults.push({ job, phase: launchPhase, ...result });
+      },
+      'utility.closed'
+    );
     return task;
   };
   const services = require('./fixtures/railgun-partial-controller-services').install({
@@ -177,7 +224,10 @@ async function main() {
     artifactDirectory,
     source,
     anchor,
+    perHandlePoi: true,
   });
+  const storeObserver = require('./fixtures/railgun-combined-poi-store-observer').install();
+
   const transport = require('../src/main/networks/wallet-tor-transport');
   const originalTransport = transport.createWalletTorTransport;
   const { getPrivacyContext, createPrivacyScope } = require('../src/main/networks/privacy-context');
@@ -210,8 +260,12 @@ async function main() {
     receipt,
     transaction,
     reviewedEndpoint,
-    changeStartPosition;
-  let fixtureCurrent = true;
+    changeStartPosition,
+    creatorCheckpoint;
+  let fixtureCurrent = true,
+    postChain,
+    connected;
+  const roleMethods = {};
   const wrapperClients = new Set();
   const wrapperTransport = { creates: 0, closes: 0, entries: 0, transactionEntries: 0, pending: 0 };
   const closeWrapperClients = async () => {
@@ -323,14 +377,24 @@ async function main() {
     const client = originalTransport(...args);
     wrapperTransport.creates++;
     let closed = false,
+      innerClosed = false,
       pending = 0,
       resolveClosed;
     const drain = new Promise((resolve) => {
       resolveClosed = resolve;
     });
     const finish = () => {
-      if (closed && pending === 0) resolveClosed();
+      if (closed && innerClosed && pending === 0) resolveClosed();
     };
+    assert.ok(client.closed && typeof client.closed.then === 'function');
+    sticky.observeClosed(
+      client.closed,
+      () => {
+        innerClosed = true;
+        finish();
+      },
+      'inner-transport.closed'
+    );
     const wrapper = {
       ...client,
       closed: drain,
@@ -356,6 +420,16 @@ async function main() {
         };
         try {
           const { subject } = current();
+          const called = JSON.parse(options.body);
+          const roleKey = subject.kind + ':' + subject.role + ':' + (called.method ?? 'page');
+          roleMethods[roleKey] = (roleMethods[roleKey] || 0) + 1;
+          if (postChain) {
+            const handled = await postChain.route(subject, url, options);
+            if (handled !== undefined) {
+              current();
+              return handled;
+            }
+          }
           if (subject.role !== 'transaction-rpc') {
             const response = await client.request(handle, url, options);
             current();
@@ -449,6 +523,7 @@ async function main() {
             body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: wire.id, result })),
           };
         } catch (error) {
+          if (!controlled) sticky.record(error, 'combined.transport');
           if (!controlled) eoa.unexpectedFailures++;
           throw error;
         } finally {
@@ -477,6 +552,40 @@ async function main() {
     transportEntries: services.report().transportEntries,
     wrapperEntries: wrapperTransport.entries,
   });
+  // Transparent timing observers installed before consumers capture fixed
+  // exports. No source/currentness/result replacement or capability issuer.
+  const phaseTimings = [],
+    restoreTimings = [];
+  const copyTimings = () => phaseTimings.map((v) => ({ ...v }));
+  let sourceReturned;
+  const timeMethod = (module, name, sourceMethod) => {
+    const original = module[name];
+    assert.equal(typeof original, 'function');
+    module[name] = async (...args) => {
+      const start = performance.now();
+      if (!sourceMethod) sourceReturned = undefined;
+      const value = await original(...args);
+      const end = performance.now();
+      if (sourceMethod && value.status === 'captured') sourceReturned = end;
+      phaseTimings.push({
+        name: sourceMethod ? 'retained-source' : 'retained-preflight',
+        elapsedMs: Math.round(end - start),
+        status: value.status,
+        ...(!sourceMethod && sourceReturned !== undefined
+          ? { sourceReturnToPreflightCompletionMs: Math.round(end - sourceReturned) }
+          : {}),
+      });
+      return value;
+    };
+    restoreTimings.push(() => {
+      module[name] = original;
+    });
+  };
+  const sourceCapture = require('../src/main/wallet/railgun-poi-source-capture');
+  timeMethod(sourceCapture, 'captureRailgunPoiSourceForRetainedInput', true);
+  const witnessHost = require('../src/main/wallet/railgun-own-witness');
+  timeMethod(witnessHost, 'preflightRailgunRetainedPoiCompleted', false);
+  timeMethod(witnessHost, 'preflightRailgunRetainedPoiForSubmission', false);
   const vault = require('../src/main/identity/vault');
   const started = performance.now();
   const runs = [];
@@ -518,7 +627,8 @@ async function main() {
         create: true,
       });
       await txid.advance();
-      assert.deepEqual((await txid.inspect()).checkpoint.state, state);
+      creatorCheckpoint = (await txid.inspect()).checkpoint.state;
+      assert.deepEqual(creatorCheckpoint, state);
       await txid.close();
       txid = null;
       // Advance observes the latest index once, then acquires root acceptance
@@ -839,113 +949,182 @@ async function main() {
       ])
         assert.equal(active.capture[flag], false);
       assert.deepEqual(captureActivity(), noCaptureWork);
-      phase = 'missing-poi-authority';
-      const gatesBefore = captureActivity();
-      // Capture alone supplies neither genuine membership nor retained proof
-      // history. The combined-POI qualifier owns that separate lifecycle.
-      const missingMembership =
-        await require('../src/main/wallet/railgun-own-poi-proof').proveRailgunOwnPoi({
-          identity,
-          enrollment,
-          coordinator: publicAccount.coordinator,
-          archive,
-          proverArchive,
-          artifactDirectory,
-          membershipReceipt: undefined,
-          signal: enrollment.signal,
-        });
-      assert.deepEqual(missingMembership, { status: 'refused', stage: 'context' });
-      // Use the genuine capsule digest and existing-only opener without
-      // fabricating retained history or exercising partial admission.
-      const missingRetained =
-        await require('../src/main/wallet/railgun-poi-output-recovery').recoverRailgunPoiOutput({
-          identity,
-          enrollment,
-          coordinator: publicAccount.coordinator,
-          archive,
-          capsuleDigest: active.capture.capsuleDigest,
-          signal: enrollment.signal,
-        });
-      assert.deepEqual(missingRetained, { status: 'refused', stage: 'stored' });
-      const gatesAfter = captureActivity();
-      assert.deepEqual(gatesAfter.jobs, gatesBefore.jobs);
-      assert.deepEqual(gatesAfter.keys, gatesBefore.keys);
-      assert.deepEqual(gatesAfter.methods, gatesBefore.methods);
-      assert.deepEqual(gatesAfter.eoa, gatesBefore.eoa);
-      assert.equal(gatesAfter.transportEntries, gatesBefore.transportEntries);
-      assert.equal(gatesAfter.wrapperEntries, gatesBefore.wrapperEntries);
-      assert.equal(jobs['railgun-own-poi-prove-job.js'] || 0, 0);
-      assert.equal(jobs['railgun-poi-output-recover-job.js'] || 0, 0);
-      runs.push({
-        mode: 'missing-poi-authority',
-        partialMembershipAdmissionExercised: false,
-        zeroNewRpcOrCredentials: true,
-        keylessSelectorJobDelta: 0,
-        zeroNewProofOrOutputJobs: true,
-        proofMissingGenuineMembershipRefused: true,
-        proofInnerPartialGuardNativeExercised: false,
-        outputMissingRetainedHistoryRefused: true,
-        outputInnerPartialGuardNativeExercised: false,
-        noFabricatedMembershipOrRetainedRecord: true,
-      });
-      phase = 'archive';
-      const ready = (await journal.list())[0],
-        now = Date.now;
-      const archiveClockOffsetMs = 2 * 86400000,
-        archiveRealStart = now(),
-        patchStarted = performance.now();
-      let archiveClockPatchDurationMs;
+      phase = 'actual-partial-row';
+      const expected = active.capture.capsule.preparation.expected;
+      const [[actual]] = abi.decodeFunctionData('transact', signedTransaction.data);
+      assert.deepEqual(Array.from(actual.commitments), [
+        expected.changeCommitment,
+        expected.unshieldCommitment,
+      ]);
+      assert.deepEqual(Array.from(actual.nullifiers), [expected.nullifier]);
+      assert.equal(actual.unshieldPreimage.value.toString(), expected.unshieldAmount);
+      const row = {
+        version: 'V2',
+        // Own-operation matching uses the existing zero-slot indexer policy;
+        // the third ID limb is not the receipt's Transact log index.
+        graphID: hex(inclusion) + hex(0).slice(2) + hex(0).slice(2),
+        commitments: Array.from(actual.commitments),
+        nullifiers: Array.from(actual.nullifiers),
+        boundParamsHash: expected.boundParamsHash,
+        blockNumber: inclusion,
+        txid: signedTransaction.hash.toLowerCase().slice(2),
+        timestamp: inclusion,
+        utxoTreeIn: Number(actual.boundParams.treeNumber),
+        utxoTreeOut: 0,
+        utxoBatchStartPositionOut: changeStartPosition,
+        unshield: {
+          tokenData: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
+          toAddress: recipient,
+          value: actual.unshieldPreimage.value.toString(),
+        },
+      };
+      const parent = getPrivacyContext(enrollment.getContext('engine'));
+      const rowScope = createPrivacyScope({ profileId: parent.profileId, signal: parent.signal });
+      let rowTask, projected;
       try {
-        // This process-global fixture clock persists archivedAt two days ahead.
-        Date.now = () => now() + archiveClockOffsetMs;
-        await journal.archiveResolved(
-          [{ hash: ready.hash, revision: ready.revision }],
-          [{ blockNumber: finalized + 1, blockHash: header(finalized + 1).hash }]
-        );
+        rowTask = runtime.startRailgunProcess({
+          handle: rowScope.getContext({ ...parent.subject, operation: 'combined-poi-row-fixture' }),
+          filename: require.resolve('./fixtures/railgun-combined-poi-row-job'),
+          input: JSON.stringify({ archive, priorRows: source.txidRows ?? [], row }),
+          startupMs: 30000,
+          lifetimeMs: 60000,
+          broker: {
+            signal: rowScope.signal,
+            dispatch: async (text) => {
+              assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 65536);
+              assert.equal(projected, undefined);
+              const m = JSON.parse(text);
+              assert.deepEqual(Object.keys(m).sort(), ['id', 'method', 'value']);
+              assert.equal(m.id, 1);
+              assert.equal(m.method, 'result');
+              assert.deepEqual(Object.keys(m.value).sort(), [
+                'checkpoints',
+                'guards',
+                'rows',
+                'state',
+              ]);
+              projected = m.value;
+              assert.equal(projected.rows.length, transact ? 2 : 1);
+              assert.equal(projected.checkpoints.length, projected.rows.length);
+              assert.deepEqual(projected.checkpoints.at(-1), projected.state);
+              if (transact) assert.deepEqual(projected.checkpoints[0], creatorCheckpoint);
+              const { verificationHash, ...actualRow } = projected.rows.at(-1);
+              assert.match(verificationHash, /^0x[0-9a-f]{64}$/);
+              assert.deepEqual(actualRow, row);
+              return JSON.stringify({ id: 1, value: null });
+            },
+          },
+        });
+        await rowTask.ready;
+        assert.ok(projected);
       } finally {
-        Date.now = now;
-        archiveClockPatchDurationMs = performance.now() - patchStarted;
+        try {
+          rowTask?.close();
+        } finally {
+          await rowTask?.closed;
+          rowScope.close();
+        }
       }
-      const archiveRealEnd = now();
-      const archived = await capture();
-      assert.equal(archived.status, 'captured');
-      assert.equal(archived.capture.bindingDigest, active.capture.bindingDigest);
-      assert.equal(typeof archived.capture.record.archivedAt, 'number');
-      const archivedAt = archived.capture.record.archivedAt;
-      assert.ok(archivedAt >= archiveRealStart + archiveClockOffsetMs);
-      assert.ok(archivedAt <= archiveRealEnd + archiveClockOffsetMs);
+      sticky.assertEmpty();
+      const rowMatch = require('../src/main/wallet/railgun-own-txid').matchRailgunOwnTxid({
+        capsule: active.capture.capsule,
+        record: active.capture.record,
+        transaction,
+        receipt,
+        row: projected.rows.at(-1),
+      });
+      assert.equal(rowMatch.output.kind, 'partial-unshield');
+      postChain = require('./fixtures/railgun-combined-poi-chain').create({
+        source,
+        receipt,
+        rows: projected.rows,
+        state: projected.state,
+        checkpoints: projected.checkpoints,
+        finalized,
+        header,
+        accountIndex: enrollment.descriptor.accountIndex,
+      });
+      phase = 'ingest-actual-partial-events';
       assert.ok(
-        Math.abs(archivedAt - archiveRealEnd - archiveClockOffsetMs) <=
-          archiveRealEnd - archiveRealStart
+        inclusion >=
+          anchor.number + 1 + Math.floor((finalized - anchor.number - 1) / 100000) * 100000
       );
-      phase = 'cold-store-reopen';
-      await publicAccount.close();
-      publicAccount = null;
-      journalScope.close();
-      journalScope = null;
-      enrollment.close();
-      enrollment =
-        await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
-          { identity }
-        );
-      journal = openJournal();
-      const cold = await capture();
-      assert.equal(cold.status, 'captured');
-      assert.deepEqual(cold.capture, archived.capture);
-      assert.deepEqual(captureActivity(), gatesAfter);
+      for (let from = anchor.number + 1; from <= finalized; from += 100000)
+        await publicAccount.advance({
+          to: Math.min(from + 99999, finalized),
+          anchor: { number: finalized, hash: header(finalized).hash },
+        });
+      phase = 'ingest-actual-partial-txid';
+      txid = await require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        archive,
+        create: !transact,
+      });
+      await txid.advance();
+      const actualTxidState = (await txid.inspect()).checkpoint.state;
+      const differingFields = [
+        ...new Set([...Object.keys(actualTxidState), ...Object.keys(projected.state)]),
+      ].filter(
+        (key) => JSON.stringify(actualTxidState[key]) !== JSON.stringify(projected.state[key])
+      );
+      if (differingFields.length)
+        console.error(JSON.stringify({ diagnostic: 'txid-state-difference', differingFields }));
+      assert.deepEqual(actualTxidState, projected.state);
+      await txid.close();
+      txid = null;
+      const completed = await lifecycle.run({
+        archive,
+        proverArchive,
+        artifactDirectory,
+        identity,
+        enrollment,
+        publicAccount,
+        inputCreator,
+        selector: captureSelector,
+        capture: active.capture,
+        chain: postChain,
+        audit,
+        storeObserver,
+        timings: () => copyTimings(),
+        phase: (name) => {
+          phase = name;
+        },
+        journal: () => journal,
+        activity: () => ({
+          ...captureActivity(),
+          services: services.report(),
+          storageWorkers: {
+            starts: workerStarts,
+            exits: workerResults.length,
+            pending: workers.size,
+          },
+          roleMethods: { ...roleMethods },
+        }),
+        pendingChildren: () => children.size,
+        unwipedLoans: () => loans.filter((key) => key.some((v) => v !== 0)).length,
+        adopt: (nextEnrollment, nextPublic) => {
+          enrollment = nextEnrollment;
+          publicAccount = nextPublic;
+          journalScope?.close();
+          journalScope = null;
+          journal = openJournal();
+        },
+      });
+      connected = completed.report;
+      // Kept privately for the later genuine normal-scan + acceptance adapter.
+      // Never serialized into report.json or used to fabricate an owned note.
+      assert.equal(completed.continuation.ownEvidence.row.txid, row.txid);
+      assert.deepEqual(completed.continuation.events, postChain.continuation.logs);
       runs.push({
-        mode: 'strict-resolution-and-capture',
-        strictFiveLogs: true,
-        activeCaptured: true,
-        archivedStableBinding: true,
-        sameProcessColdStoreReopen: true,
-        noCaptureRpcKeyOrCrypto: true,
-        captureAuthorityGranted: false,
-        archivedAtForwardDatedByFixtureClockMs: archiveClockOffsetMs,
-        archivedAtAheadOfRealClockMs: archivedAt - archiveRealEnd,
-        processGlobalArchiveClockPatchDurationMs: archiveClockPatchDurationMs,
-        receiptChangePosition: changeStartPosition,
-        receiptChangePositionIndependentlyTreeVerified: false,
+        mode: 'actual-partial-source-and-mirror',
+        protocolLogs: 3,
+        totalReceiptLogs: 5,
+        actualSignedCalldata: true,
+        realPublicProjectionAndTxidMirror: true,
+        rows: projected.rows.length,
+        changeCreditedByWallet: false,
+        secondSpend: false,
       });
     }
     phase = 'private-history';
@@ -979,19 +1158,47 @@ async function main() {
     assert.equal(workers.size, 0);
     assert.equal(workerResults.length, workerStarts);
     assert.ok(workerResults.every((worker) => worker.exitCode === 0));
-    assert.ok(
-      childResults.every(
-        (child) => child.code === 'RAILGUN_PROCESS_CLOSED' && Number.isInteger(child.exitCode)
-      )
+    assert.ok(childResults.every((child) => Number.isInteger(child.exitCode)));
+    const expectedUtilityFailures = childResults
+      .filter((child) => child.code !== 'RAILGUN_PROCESS_CLOSED')
+      .map(({ phase, job, code, exitCode, escalated, peerDisconnected }) => ({
+        phase,
+        job,
+        code,
+        exitCode,
+        escalated,
+        peerDisconnected,
+      }));
+    assert.deepEqual(
+      expectedUtilityFailures,
+      ['combined-wrong-output', 'combined-attempted-wrong-output'].map((phase) => ({
+        phase,
+        job: 'railgun-poi-output-recover-job.js',
+        code: 'RAILGUN_SESSION_REVOKED',
+        exitCode: 15,
+        escalated: false,
+        peerDisconnected: false,
+      }))
     );
     await closeWrapperClients();
     await services.close();
     assert.equal(services.report().pendingRequests, 0);
     assert.equal(services.report().transportCreates, services.report().transportCloses);
     assert.equal(services.report().unexpectedTransportFailures, 0);
+    storeObserver.close();
+    assert.equal(storeObserver.report().unwiped, 0);
+    sticky.assertEmpty();
     assert.deepEqual(inventory(), sourceHashes);
     const report = {
-      schema: 'railgun-partial-submission-native-v1',
+      schema: 'railgun-combined-poi-native-v1',
+      connected,
+      combinedChain: postChain.report(),
+      roleMethods,
+      utilityAudit: audit.snapshot(),
+      storageKeyObservation: storeObserver.report(),
+      phaseTimings: copyTimings(),
+      fixtureAssertions: sticky.report(),
+      expectedUtilityFailures,
       sourceSha256: sha(sourceBytes),
       sourceHashes,
       inputCreator,
@@ -1020,11 +1227,20 @@ async function main() {
       realTorOrLiveSubmissionQualified: false,
       partialFacadeQualified: false,
       partialPoiLifecycleQualified: false,
+      combinedPoiRetainedFirstStageQualified: true,
+      legacyMixedV1V2MigrationNativeQualified: false,
+      hostOsEgressTraced: false,
+      hostTransportFactoryIntercepted: true,
+      utilityRuntimeGuardsExercised: true,
+      sourceAndMirrorActualFirstTransaction: true,
+      changeEligibilityEstablished: false,
+      actualServiceAcceptance: false,
       noChangeCreditingOrSecondSpendClaim: true,
       newProcessRestartQualified: false,
       unchangedOriginalCapsuleSignatureProofAndSigningHold: true,
       elapsedMs: Math.round(performance.now() - started),
     };
+    assert.ok(Buffer.byteLength(JSON.stringify(report)) <= 524288);
     fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', {
       flag: 'wx',
       mode: 0o600,
@@ -1055,6 +1271,8 @@ async function main() {
           await bounded(Promise.all([...workers].map((worker) => worker.closed)));
           await closeWrapperClients();
           await services.close();
+          storeObserver.close();
+          for (const restore of restoreTimings) restore();
           signers.getSigner = originalSigner;
           runtime.startRailgunProcess = originalStart;
           sessionModule.startRailgunSessionWorker = originalSession;
@@ -1080,8 +1298,22 @@ main().then(
     app.exit(0);
   },
   (error) => {
+    const line = String(error?.stack ?? '')
+      .split('\n')
+      .map((part) =>
+        part.match(
+          /(qualify-railgun-combined-poi-lifecycle|railgun-combined-poi-(?:chain|lifecycle|row-job|store-observer))\.js:(\d+):\d+/
+        )
+      )
+      .find(Boolean);
     console.error(
-      JSON.stringify({ phase, code: error.code, message: error.message, stack: error.stack })
+      JSON.stringify({
+        status: 'refused',
+        phase,
+        assertionFile: line ? line[1] : null,
+        assertionLine: line ? Number(line[2]) : null,
+        fixtureViolations: sticky.report().length,
+      })
     );
     releaseProfileLock(lock);
     app.exit(1);

@@ -2,6 +2,10 @@
  * queries, sender, receipt, registry restoration or current note eligibility.
  */
 const assert = require('assert/strict');
+const {
+  getRailgunOwnPoiShape,
+  assertRailgunOwnPoiPayloadShape,
+} = require('./railgun-own-poi-shape-data');
 const { createHash } = require('crypto');
 const path = require('path');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
@@ -324,16 +328,13 @@ async function validate(options, history, submission) {
       assert.equal(capture.capsuleDigest, capsuleDigest);
       assert.equal(capture.bindingDigest, entry.bindingDigest);
       assert.deepEqual(capture.selector, entry.selector);
-      // A widened standalone payload parser does not widen retained authority.
-      // Stage A's real output recovery binds the exact unshield TXID; history
-      // additionally compares its freshly derived value before mirror access.
-      assert.equal(capture.capsule.version, 1);
-      const kind = capture.capsule.selection.kind;
-      assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(kind));
-      const transfer = kind === 'railgun-private-transfer';
-      assert.equal(payload.blindedCommitmentsOut.length, transfer ? 1 : 0);
-      if (transfer) assert.equal(payload.railgunTxidIfHasUnshield, '0x00');
-      else assert.notEqual(payload.railgunTxidIfHasUnshield, '0x00');
+      // Shape/category comes from the authenticated capsule. Exact own T is
+      // separately joined below after genuine selector derivation.
+      assertRailgunOwnPoiPayloadShape(payload, capture.capsule);
+      const shape = getRailgunOwnPoiShape(capture.capsule);
+      assert.equal(output.viewingKeyReleases, Number(shape.hasPrivateOutput));
+      assert.equal(output.viewingUtilityExitObserved, shape.hasPrivateOutput);
+      return shape;
     };
     let first;
     if (history) {
@@ -351,7 +352,7 @@ async function validate(options, history, submission) {
         throw Error('refused');
       }
       first = snapshot(captured);
-      bind(first.capture);
+      const shape = bind(first.capture);
       if (submission) assertRailgunOwnPoiCapture(first.capture, submitted.capture);
       const derived = first.derived;
       assert.equal(derived.selectorDerived, true);
@@ -372,16 +373,14 @@ async function validate(options, history, submission) {
       for (const name of ['inputSha256', 'bindingDigest', 'railgunTxid'])
         assert.match(derived[name], /^[0-9a-f]{64}$/);
       const { extractRailgunTransactIntent } = require('./railgun-transact-intent');
-      const { transaction } = extractRailgunTransactIntent(first.capture.provedTransaction);
-      assert.equal(
-        derived.bindingDigest,
-        sha('freedom:railgun:own-selector-v1\0' + JSON.stringify(transaction))
+      const { transaction, expected } = extractRailgunTransactIntent(
+        first.capture.provedTransaction
       );
+      assert.equal(expected.kind, shape.kind);
+      assert.equal(derived.bindingDigest, sha(shape.selectorDomain + JSON.stringify(transaction)));
       assert.equal(
         payload.railgunTxidIfHasUnshield,
-        first.capture.capsule.selection.kind === 'railgun-token-unshield'
-          ? '0x' + derived.railgunTxid
-          : '0x00'
+        shape.hasUnshield ? '0x' + derived.railgunTxid : '0x00'
       );
       await readCurrent();
 

@@ -871,3 +871,41 @@ test('selected Shield transaction with more than three valid events survives ret
   expect(result.creator.preimage.npk).toBe(f.preimages[1].npk);
   expect(result).not.toHaveProperty('transaction');
 });
+
+describe('Shield creator for a partial own operation', () => {
+  function partialInput() {
+    const f = fixture();
+    f.options.capsule =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData().capsule;
+    return f;
+  }
+  test('matches net input V, not gross unshield U or change C, and never subtracts fee twice', async () => {
+    const f = partialInput();
+    const result = await collect(f.options);
+    expect(result.creator.preimage.value).toBe('1000');
+    expect(f.options.capsule.preparation).toMatchObject({
+      inputAmount: '1000',
+      unshieldAmount: '400',
+      changeAmount: '600',
+    });
+    expect(result.creator.ciphertext).toEqual(f.ciphers[1]);
+    expect(result.ownershipAuthenticated).toBe(false);
+    expect(result.creatorHashCompared).toBe(false);
+  });
+  test.each(['400', '600', '997'])(
+    'refuses creator value %s while completing the visit',
+    async (value) => {
+      const f = partialInput();
+      f.preimages[1].value = value;
+      f.encode();
+      f.logs.push({
+        ...f.logs[0],
+        topics: [hex(999)],
+        data: '0x',
+        logIndex: 6,
+      });
+      await expect(collect(f.options)).rejects.toThrow();
+      expect(f.visited()).toBe(2);
+    }
+  );
+});

@@ -21,18 +21,15 @@ function input(unshield = false) {
     archive: '/engine.asar',
     proverArchive: '/prover.asar',
     artifactDirectory: '/artifacts',
-    descriptor: { walletId: 'test-wallet' },
+    descriptor: {
+      walletId: require('../../../scripts/fixtures/railgun-own-txid-data').sample().capsule
+        .walletId,
+    },
     preparation: {
-      creator: { type: 'Shield', position: 0 },
+      creator: { type: 'Shield', position: 1 },
       ownEvidence: {
-        capsule: {
-          version: 1,
-          walletId: 'test-wallet',
-          selection: {
-            position: 0,
-            kind: unshield ? 'railgun-token-unshield' : 'railgun-private-transfer',
-          },
-        },
+        capsule: require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield)
+          .capsule,
         record: {},
         transaction: {},
         receipt: {},
@@ -72,7 +69,7 @@ test.each([false, true])(
     expect(Object.isFrozen(v.preparation.ownEvidence.capsule.selection)).toBe(true);
     source.descriptor.walletId = 'changed';
     source.preparation.witness.root = hex(10).slice(2);
-    expect(v.descriptor.walletId).toBe('test-wallet');
+    expect(v.descriptor.walletId).toBe(input().descriptor.walletId);
     expect(fields.txidMerkleroot).toBe(hex(8).slice(2));
     expect(fields.outputCount).toBe(unshield ? 0 : 1);
     const p = payload(unshield),

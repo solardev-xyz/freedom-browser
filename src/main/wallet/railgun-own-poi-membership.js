@@ -4,6 +4,7 @@
  * neither viewing-key release nor subsequent POI payload disclosure or spending.
  */
 const assert = require('assert/strict');
+const { getRailgunOwnPoiShape } = require('./railgun-own-poi-shape-data');
 const { createHash, randomUUID } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
@@ -530,17 +531,10 @@ async function open(options = {}, mode = 'shield') {
     assert.equal(preflight.creatorClassification.legacy, false);
     assert.ok(preflight.creatorClassification.blockNumber >= POI_LAUNCH_BLOCK);
     assert.equal(preflight.poiPreparation.creator.type, inputType);
-    // Combined proof inputs are standalone only until the genuine operation
-    // lifecycle supports partial spends. Refuse before either selector or keys.
-    for (const capsule of [
-      preflight.capture.capsule,
-      preflight.poiPreparation.ownEvidence.capsule,
-    ]) {
-      assert.equal(capsule.version, 1);
-      assert.ok(
-        ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
-      );
-    }
+    // Both copies originate in the genuine preflight; exact kind/version and
+    // capsule equality precede any selector key or owned-note disclosure.
+    getRailgunOwnPoiShape(preflight.capture.capsule);
+    getRailgunOwnPoiShape(preflight.poiPreparation.ownEvidence.capsule);
     assert.deepEqual(preflight.poiPreparation.ownEvidence.capsule, preflight.capture.capsule);
     if (!transact) stage = 'selector';
     let derived;

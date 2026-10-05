@@ -171,6 +171,7 @@ jest.mock('./railgun-own-poi-proof', () => ({
 const { createHash } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
+const { samplePartial } = require('../../../scripts/fixtures/railgun-partial-own-txid-data');
 const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
@@ -224,7 +225,8 @@ const run = (input = options) => {
 };
 const freshOptions = () => ({ ...options, signal: new AbortController().signal });
 function configure(unshield = false) {
-  const evidence = sample(unshield),
+  const partial = unshield === 'partial';
+  const evidence = partial ? samplePartial() : sample(unshield),
     capsule = evidence.capsule;
   const descriptor = {
     walletId: capsule.walletId,
@@ -266,7 +268,7 @@ function configure(unshield = false) {
     poiMerkleroots: [hex(20)],
     txidMerkleroot: hex(21),
     txidMerklerootIndex: 3,
-    blindedCommitmentsOut: unshield ? [] : [prefixed(22)],
+    blindedCommitmentsOut: unshield && !partial ? [] : [prefixed(22)],
     railgunTxidIfHasUnshield: unshield ? prefixed(9) : '0x00',
   });
   mock.entry = {
@@ -286,8 +288,8 @@ function configure(unshield = false) {
     revision: 1,
     payloadSha256: mock.entry.payloadSha256,
     outputMatched: true,
-    viewingKeyReleases: unshield ? 0 : 1,
-    viewingUtilityExitObserved: !unshield,
+    viewingKeyReleases: unshield && !partial ? 0 : 1,
+    viewingUtilityExitObserved: !unshield || partial,
     proofVerified: false,
     originalInputReconstructed: false,
     originalRootsAccepted: false,
@@ -1050,13 +1052,14 @@ function configureHistory(unshield = false) {
     value: '0',
     data: mock.capture.provedTransaction.input,
   };
-  const row = sample(unshield).row;
+  const partial = unshield === 'partial';
+  const row = (partial ? samplePartial() : sample(unshield)).row;
   const { transaction, expected } =
     require('./railgun-transact-intent').extractRailgunTransactIntent(
       mock.capture.provedTransaction
     );
   const bindingDigest = createHash('sha256')
-    .update('freedom:railgun:own-selector-v1\0')
+    .update(partial ? 'freedom:railgun:own-selector-v2\0' : 'freedom:railgun:own-selector-v1\0')
     .update(JSON.stringify(transaction))
     .digest('hex');
   mock.derived = {
@@ -1064,7 +1067,9 @@ function configureHistory(unshield = false) {
       archive: options.archive,
       facts: {
         nullifiers: [expected.nullifier],
-        commitments: [expected.commitment],
+        commitments: partial
+          ? [expected.changeCommitment, expected.unshieldCommitment]
+          : [expected.commitment],
         boundParamsHash: expected.boundParamsHash,
       },
       bindingDigest,
@@ -2294,3 +2299,105 @@ describe('fixed submission receipt handoff', () => {
     ).not.toHaveBeenCalled();
   });
 });
+
+describe('partial retained cold validation', () => {
+  test.each([false, true])(
+    'combined payload preserves one output check with history=%s',
+    async (history) => {
+      configureHistory('partial');
+      const result = await (history ? runHistory() : run());
+      expect(result).toMatchObject({
+        status: 'validated',
+        outputMatched: true,
+        viewingKeyReleases: 1,
+        viewingUtilityExitObserved: true,
+        proofVerified: true,
+        spendingEnabled: false,
+        disclosureEnabled: false,
+      });
+      expect(mock.output).toHaveBeenCalledTimes(1);
+      expect(mock.verify).toHaveBeenCalledTimes(1);
+      if (history) {
+        expect(mock.selector).toHaveBeenCalledTimes(1);
+        expect(mock.openTxid).toHaveBeenCalledTimes(1);
+        expect(mock.witnessRead).toHaveBeenCalledWith(mock.derived.railgunTxid);
+        expect(result.historicalRootMatchesLocalMirror).toBe(true);
+      }
+    }
+  );
+
+  test.each([
+    'different-leading-zero-txid',
+    'v1-selector-domain',
+    'capture-binding',
+    'wrong-capsule-version',
+    'transfer-marker',
+    'missing-change',
+  ])('partial %s refuses before later mirror/root admission', async (fault) => {
+    configureHistory('partial');
+    if (fault === 'different-leading-zero-txid') mock.derived.railgunTxid = hex(10);
+    if (fault === 'v1-selector-domain') {
+      const { transaction } = require('./railgun-transact-intent').extractRailgunTransactIntent(
+        mock.capture.provedTransaction
+      );
+      mock.derived.bindingDigest = createHash('sha256')
+        .update('freedom:railgun:own-selector-v1\0')
+        .update(JSON.stringify(transaction))
+        .digest('hex');
+    }
+    if (fault === 'capture-binding') mock.capture.bindingDigest = hex(1000);
+    if (fault === 'wrong-capsule-version') mock.capture.capsule.version = 1;
+    if (['transfer-marker', 'missing-change'].includes(fault)) {
+      mock.entry.payload = normalizeRailgunPoiPayload({
+        ...mock.entry.payload,
+        ...(fault === 'transfer-marker'
+          ? { railgunTxidIfHasUnshield: '0x00' }
+          : { blindedCommitmentsOut: [] }),
+      });
+      mock.entry.payloadSha256 = sha(mock.entry.payload);
+      mock.outputResult.payloadSha256 = mock.entry.payloadSha256;
+      mock.verified.payloadSha256 = mock.entry.payloadSha256;
+    }
+    expect(await runHistory()).toEqual({ status: 'refused', stage: 'selector' });
+    expect(mock.openTxid).not.toHaveBeenCalled();
+    expect(mock.witnessRead).not.toHaveBeenCalled();
+    expect(mock.output).toHaveBeenCalledTimes(1);
+    expect(mock.verify).toHaveBeenCalledTimes(1);
+  });
+
+  test('partial leading-zero own TXID remains exactly 32 bytes through historical join', async () => {
+    configureHistory('partial');
+    expect(mock.entry.payload.railgunTxidIfHasUnshield).toBe('0x' + hex(9));
+    expect(mock.entry.payload.railgunTxidIfHasUnshield.length).toBe(66);
+    expect((await runHistory()).status).toBe('validated');
+    expect(mock.witnessRead).toHaveBeenCalledWith(hex(9));
+  });
+});
+
+test.each(['no-viewing-check', 'missing-viewer-exit', 'different-transaction-kind'])(
+  'partial %s cannot reach historical mirror admission',
+  async (fault) => {
+    configureHistory('partial');
+    if (fault === 'no-viewing-check') mock.outputResult.viewingKeyReleases = 0;
+    if (fault === 'missing-viewer-exit') mock.outputResult.viewingUtilityExitObserved = false;
+    if (fault === 'different-transaction-kind') {
+      const transaction = sample(true).transaction;
+      mock.capture.provedTransaction = {
+        chainId: 11155111,
+        to: transaction.to,
+        value: '0',
+        data: transaction.input,
+      };
+      const extracted = require('./railgun-transact-intent').extractRailgunTransactIntent(
+        mock.capture.provedTransaction
+      );
+      mock.derived.bindingDigest = createHash('sha256')
+        .update('freedom:railgun:own-selector-v2\0')
+        .update(JSON.stringify(extracted.transaction))
+        .digest('hex');
+    }
+    expect(await runHistory()).toEqual({ status: 'refused', stage: 'selector' });
+    expect(mock.openTxid).not.toHaveBeenCalled();
+    expect(mock.witnessRead).not.toHaveBeenCalled();
+  }
+);

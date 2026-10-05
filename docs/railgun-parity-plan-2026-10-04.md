@@ -7,6 +7,16 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [durable combined-proof checkpoint](railgun-combined-poi-integration-2026-10-05.md)
+connects genuine partial capture to one combined proof, retained version-3 data,
+recovery, cold validation and one fixed proof POST. Shield and received-Transact
+native runs pass against identical source inventories, as do eight compatibility
+cases. Services remain simulated. The POST does not establish list acceptance;
+normal change ingestion, a second spend, new-process combined recovery, partial
+facade integration and live private qualification remain open. The frozen regression passes 15,731 tests across 517 suites (33 tests/five
+suites skipped), retaining the existing OpenLV exclusion and forced-exit limit. This is progress toward the full change lifecycle, not
+completion of it.
+
 The [submission-after-restart checkpoint](railgun-cold-submission-2026-10-05.md)
 qualifies the fixed cold host across fourteen three-process cases, with fresh
 final-phase eligibility, original proof/signature reuse, exact submitter binding
@@ -81,8 +91,9 @@ and exact application marker binding. The subsequent
 [protected internal controller](railgun-partial-controller-2026-10-05.md) qualifies
 a genuine Shield-input hold/sign/prove/verify and encrypted account reopen, with
 real POI/preflight hosts over simulated services. That controller checkpoint did not yet qualify submission or combined POI
-persistence. Submission is now qualified above; combined persistence remains
-open and the facade stays full-only.
+persistence. Submission and first-stage combined persistence are now qualified above;
+normal change ingestion, list acceptance and second spend remain open, and the
+facade stays full-only.
 
 ## Next technical work
 
@@ -104,9 +115,10 @@ open and the facade stays full-only.
    are implemented and qualified independently.
    Both Shield and received-input connected controller qualification now pass.
    Partial submission and authenticated capture now pass six controlled native
-   cases across both input creators. Completing it still requires live deployed
-   verifier checks, connected change recovery,
-   normal change ingestion and durable post-transaction POI.
+   cases across both input creators. First-stage durable combined post-transaction
+   POI now passes both connected native cases. Completing the full flow still
+   requires live deployed verifier checks, normal change ingestion, verified
+   list acceptance and a connected restart/second spend.
    Signed-but-unfinished proof resumption now has a production recovery host and
    six warm native cases plus twelve genuine fresh-process cases, including
    explicitly advanced trees. The fixed recovered-proof submission host now has fourteen three-process

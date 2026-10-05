@@ -152,7 +152,7 @@ beforeEach(() => {
     selector: { tree: 0, position: 1, noteHash: hex(2), nullifier: hex(3) },
     facts: {},
     submitter: 'owner',
-    capsule: { noteHash: hex(2), version: 1, selection: { kind: 'railgun-private-transfer' } },
+    capsule: require('../../../scripts/fixtures/railgun-own-txid-data').sample().capsule,
     capsuleDigest: 'b'.repeat(64),
     provedTransaction: {},
     intent: {},
@@ -350,7 +350,7 @@ test.each(['refused', 'archive-anchor', 'legacy', 'transact', 'capsule', 'public
     expect(createRailgunPoiSource).not.toHaveBeenCalled();
   }
 );
-test.each(['partial', 'version', 'kind'])(
+test.each(['version', 'kind'])(
   'matching %s capsules refuse before the Shield selector or query',
   async (fault) => {
     const original = copy(mockPreflight);
@@ -828,4 +828,71 @@ test('Shield derived scope converts a throwing retained parent predicate into re
   expect(authenticationError).toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
   expect(authenticationError.message).not.toContain('PRIVATE');
   expect(mockSource.signal.aborted).toBe(true);
+});
+
+describe('partial Shield membership stays live and genuine', () => {
+  function partial() {
+    const capsule =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData()
+        .capsule;
+    mockCapture.capsule = copy(capsule);
+    mockPreflight.capture = copy(mockCapture);
+    mockPreflight.poiPreparation.ownEvidence.capsule = copy(capsule);
+  }
+  test('publishes only the genuine shared receipt after selector, recaptures and verified list', async () => {
+    partial();
+    const result = await run();
+    expect(result.status).toBe('verified');
+    expect(mockDerive.mock.calls[0][0].capsule.version).toBe(2);
+    expect(mockCaptureRun).toHaveBeenCalledTimes(2);
+    expect(mockVerify).toHaveBeenCalledTimes(1);
+    expect(attest(result.receipt, mockEnrollment, mockCoordinator)).toBe(result.observation);
+    expect(() => attest({ ...result.receipt }, mockEnrollment, mockCoordinator)).toThrow();
+    expect(result.observation.disclosureEnabled).toBe(false);
+    mockExpired = true;
+    expect(() => attest(result.receipt, mockEnrollment, mockCoordinator)).toThrow();
+  });
+  test('partial close revokes the receipt but retains owner until real source barrier drains', async () => {
+    partial();
+    holdSource = true;
+    const result = await run();
+    expect(result.status).toBe('verified');
+    const exit = sourceExit;
+    result.close();
+    expect(() => attest(result.receipt, mockEnrollment, mockCoordinator)).toThrow();
+    let drained = false;
+    result.closed.then(() => {
+      drained = true;
+    });
+    try {
+      await ownerTurn();
+      expect(drained).toBe(false);
+      expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+      expect(mockPreflightRun).toHaveBeenCalledTimes(1);
+    } finally {
+      exit();
+    }
+    await result.closed;
+    holdSource = false;
+    renewSourceLifetime();
+    expect((await run()).status).toBe('verified');
+  });
+  test.each(['source', 'membership', 'cancel'])(
+    'partial %s expiry after verification cannot publish',
+    async (fault) => {
+      partial();
+      const verify = mockVerify.getMockImplementation();
+      mockVerify.mockImplementation(async (...args) => {
+        const result = await verify(...args);
+        if (fault === 'source') sourceController.abort();
+        if (fault === 'membership') mockExpired = true;
+        if (fault === 'cancel') caller.abort();
+        return result;
+      });
+      expect((await run()).status).toBe('refused');
+      expect(mockVerify).toHaveBeenCalledTimes(1);
+      expect(mockSource.close).toHaveBeenCalled();
+      expect(mockLease).toBeNull();
+    }
+  );
 });

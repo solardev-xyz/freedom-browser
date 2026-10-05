@@ -186,13 +186,13 @@ test.each([hex(0), hex(FIELD), hex(FIELD + 1n), '0x1', hex(1).slice(2), '0x' + '
     ).toThrow();
   }
 );
-test.each(['empty', 'two', 'marker', 'wide-zero', 'extra'])(
+test.each(['empty', 'two', 'short-marker', 'wide-zero', 'extra'])(
   'recovered output rejects %s',
   (kind) => {
     const v = { blindedCommitmentsOut: [hex(1)], railgunTxidIfHasUnshield: '0x00' };
     if (kind === 'empty') v.blindedCommitmentsOut = [];
     if (kind === 'two') v.blindedCommitmentsOut.push(hex(2));
-    if (kind === 'marker') v.railgunTxidIfHasUnshield = hex(3);
+    if (kind === 'short-marker') v.railgunTxidIfHasUnshield = '0x03';
     if (kind === 'wide-zero') v.railgunTxidIfHasUnshield = hex(0);
     if (kind === 'extra') v.npk = hex(4);
     expect(() => output(v)).toThrow();
@@ -268,3 +268,69 @@ test('Transact output input retains the exact 64KiB whole-message boundary', () 
   value.archive += 'x';
   expect(() => normalize(value)).toThrow();
 });
+
+function partialInput(type = 'Shield') {
+  const value = type === 'Shield' ? input() : transactInput();
+  const evidence =
+    require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial();
+  value.preparation.ownEvidence = evidence;
+  value.binding.capsuleDigest = digestRailgunPrivateCapsule(evidence.capsule);
+  value.preparation.witness.row = JSON.parse(JSON.stringify(evidence.row));
+  value.preparation.witness.rowSha256 = sha(JSON.stringify(evidence.row));
+  if (type === 'Transact') value.preparation.creator.hash = evidence.capsule.noteHash;
+  return value;
+}
+test.each(['Shield', 'Transact'])(
+  'partial %s data uses real v2/mixed receipt validators without saved output',
+  (type) => {
+    const v = partialInput(type);
+    const result = normalize(v);
+    expect(result).toEqual(v);
+    expect(result.preparation.ownEvidence.row.commitments).toEqual([
+      v.preparation.ownEvidence.capsule.preparation.expected.changeCommitment,
+      v.preparation.ownEvidence.capsule.preparation.expected.unshieldCommitment,
+    ]);
+    expect(result.descriptor.instanceId).not.toBe(
+      result.preparation.ownEvidence.capsule.selection.recipient
+    );
+    expect(Object.isFrozen(result.preparation.ownEvidence.capsule)).toBe(true);
+    expect(result).not.toHaveProperty('blindedCommitmentsOut');
+    expect(result.preparation).not.toHaveProperty('listProofs');
+  }
+);
+test.each([
+  'order',
+  'gross',
+  'recipient',
+  'position',
+  'capsule-version',
+  'witness-row',
+  'saved-change',
+])('partial %s substitution refuses without utility admission', (fault) => {
+  const v = partialInput();
+  const e = v.preparation.ownEvidence;
+  if (fault === 'order') e.row.commitments.reverse();
+  if (fault === 'gross') e.row.unshield.value = '401';
+  if (fault === 'recipient') e.row.unshield.toAddress = '0x' + '21'.repeat(20);
+  if (fault === 'position') e.row.utxoBatchStartPositionOut++;
+  if (fault === 'capsule-version') e.capsule.version = 1;
+  if (fault === 'witness-row') v.preparation.witness.row.commitments.reverse();
+  if (fault === 'saved-change') v.preparation.expectedBlindedChange = hex(9);
+  expect(() => normalize(v)).toThrow();
+});
+test.each([1n, FIELD - 1n])(
+  'recovered combined output preserves exact leading-zero/nonzero marker %s',
+  (marker) => {
+    const value = { blindedCommitmentsOut: [hex(2)], railgunTxidIfHasUnshield: hex(marker) };
+    expect(output(value)).toEqual(value);
+    expect(Object.isFrozen(output(value))).toBe(true);
+  }
+);
+test.each([hex(0), hex(FIELD), '0x01', 1, '0X' + '0'.repeat(63) + '1'])(
+  'recovered combined marker rejects %p',
+  (marker) => {
+    expect(() =>
+      output({ blindedCommitmentsOut: [hex(2)], railgunTxidIfHasUnshield: marker })
+    ).toThrow();
+  }
+);

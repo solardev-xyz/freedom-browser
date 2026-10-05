@@ -249,7 +249,10 @@ const run = (input = options) => {
 function configure(unshield = false) {
   // Real structural validators, not cryptographic proofs. Native qualification
   // separately supplies a real encrypted record, preflight and utility.
-  const ownEvidence = sample(unshield);
+  const ownEvidence =
+    unshield === 'partial'
+      ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial()
+      : sample(unshield);
   const capsule = ownEvidence.capsule;
   const state = { count: 5, root: hex(11), transcript: hex(12), breaks: [] };
   const witness = {
@@ -332,7 +335,7 @@ function configure(unshield = false) {
     poiMerkleroots: [hex(20)],
     txidMerkleroot: hex(21),
     txidMerklerootIndex: 3,
-    blindedCommitmentsOut: unshield ? [] : [prefixed(22)],
+    blindedCommitmentsOut: unshield === true ? [] : [prefixed(22)],
     railgunTxidIfHasUnshield: unshield ? prefixed(9) : '0x00',
   });
   mock.entry = {
@@ -365,7 +368,14 @@ const resultWire = (job) => ({
   value: {
     recoveryInputSha256: sha(job.input),
     payloadSha256: JSON.parse(job.input).binding.payloadSha256,
-    output: { blindedCommitmentsOut: [prefixed(22)], railgunTxidIfHasUnshield: '0x00' },
+    output: {
+      blindedCommitmentsOut: [prefixed(22)],
+      railgunTxidIfHasUnshield:
+        JSON.parse(job.input).preparation.ownEvidence.capsule.selection.kind ===
+        'railgun-partial-unshield'
+          ? '0x' + JSON.parse(job.input).preparation.witness.railgunTxid
+          : '0x00',
+    },
     engineSha256: require('./railgun-engine-manifest.json').sha256,
     sourceAuthenticated: false,
     proofVerified: false,
@@ -2216,7 +2226,10 @@ function makeTransactProofFixture(unshield = false, mixedCreator = false) {
   const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
   const hash = (v) =>
     require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
-  const evidence = require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
+  const evidence =
+    unshield === 'partial'
+      ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial()
+      : require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
   const descriptor = {
     walletId: evidence.capsule.walletId,
     instanceId: '0zk1' + 'q'.repeat(123),
@@ -2593,7 +2606,7 @@ test.each(['missing', 'pending'])(
 );
 
 test.each(['ordinary', 'completed', 'attempted'])(
-  '%s recovery refuses structural v2 preflight before final account or viewing work',
+  '%s recovery refuses partial capsule with legacy transfer payload before final account or viewing work',
   async (route) => {
     const {
       createRailgunPartialCapsuleData,
@@ -2652,3 +2665,136 @@ test.each(['missing', 'false', 'copied-legacy', 'coverage-hash'])(
     expect(JSON.stringify(mock.entry)).toBe(before);
   }
 );
+
+describe('partial retained output with mocked genuine owner/preflight boundaries', () => {
+  test.each(
+    ['Shield', 'Transact'].flatMap((type) =>
+      ['ordinary', 'completed', 'attempted', 'submission'].map((route) => [type, route])
+    )
+  )(
+    '%s %s keeps both outputs bound with one viewing loan and no durable mutation',
+    async (type, route) => {
+      if (type === 'Transact') configureTransactOutput('partial');
+      else configure('partial');
+      if (route === 'attempted') attemptRecord();
+      const before = JSON.stringify(mock.entry);
+      let result;
+      if (route === 'submission') {
+        const evidence = mock.fresh.poiPreparation.ownEvidence;
+        const handoff = {
+          entry: copy(mock.entry),
+          capture: copy(mock.capture),
+          observation: {
+            transaction: copy(evidence.transaction),
+            receipt: copy(evidence.receipt),
+            captureBindingDigest: mock.capture.bindingDigest,
+          },
+        };
+        const work = recoverRailgunPoiOutputForSubmission(
+          { ...options, sourceDestination: mock.destination },
+          handoff
+        );
+        operations.push(work);
+        result = await work;
+      } else
+        result = await (route === 'attempted'
+          ? runAttempted()
+          : route === 'completed'
+            ? runCompleted()
+            : run());
+      expect(result).toMatchObject({
+        status: 'matched',
+        viewingKeyReleases: 1,
+        viewingUtilityExitObserved: true,
+        outputMatched: true,
+        spendingEnabled: false,
+        disclosureEnabled: false,
+        proofVerified: false,
+        sourceAuthenticated: false,
+      });
+      if (route === 'attempted')
+        expect(result).toMatchObject({
+          recordState: 'attempted',
+          eligibilityEstablished: false,
+          attemptOutcomeKnown: false,
+          submissionAccepted: false,
+          retryEnabled: false,
+        });
+      expect(mock.credential).toHaveBeenCalledTimes(1);
+      expect(mock.tasks).toHaveLength(1);
+      expect(mock.events).toContain('job-exit');
+      expect(mock.copies.every((b) => b.every((v) => v === 0))).toBe(true);
+      expect(mock.task.options.input).not.toContain('"blindedCommitmentsOut"');
+      expect(mock.task.options.input).not.toContain('"payload"');
+      expect(mock.task.options.input).not.toContain('"listProofs"');
+      expect(mock.store.prepare).not.toHaveBeenCalled();
+      expect(mock.store.beginAttempt).not.toHaveBeenCalled();
+      expect(JSON.stringify(mock.entry)).toBe(before);
+    }
+  );
+  test.each(['wrong-T', 'zero-T', 'missing-change', 'extra-change'])(
+    'partial saved %s refuses before recovery/key despite canonical payload digest',
+    async (fault) => {
+      configure('partial');
+      changePayload((p) => {
+        if (fault === 'wrong-T') p.railgunTxidIfHasUnshield = prefixed(10);
+        if (fault === 'zero-T') p.railgunTxidIfHasUnshield = '0x00';
+        if (fault === 'missing-change') p.blindedCommitmentsOut = [];
+        if (fault === 'extra-change') p.blindedCommitmentsOut.push(prefixed(30));
+      });
+      const before = JSON.stringify(mock.entry);
+      expect((await run()).status).toBe('refused');
+      expect(mock.recoveryStart).not.toHaveBeenCalled();
+      expect(mock.credential).not.toHaveBeenCalled();
+      expect(mock.tasks).toHaveLength(0);
+      expect(JSON.stringify(mock.entry)).toBe(before);
+    }
+  );
+  test.each(
+    ['ordinary', 'attempted'].flatMap((route) =>
+      ['wrong-T', 'zero-T', 'wrong-change'].map((fault) => [route, fault])
+    )
+  )('partial %s worker %s fails exact host comparison after one loan', async (route, fault) => {
+    configure('partial');
+    if (route === 'attempted') attemptRecord();
+    mock.resultMutation = (message) => {
+      if (fault === 'wrong-T') message.value.output.railgunTxidIfHasUnshield = prefixed(10);
+      if (fault === 'zero-T') message.value.output.railgunTxidIfHasUnshield = '0x00';
+      if (fault === 'wrong-change') message.value.output.blindedCommitmentsOut = [prefixed(30)];
+    };
+    const before = JSON.stringify(mock.entry);
+    expect((await (route === 'attempted' ? runAttempted() : run())).status).toBe('refused');
+    expect(mock.credential).toHaveBeenCalledTimes(1);
+    expect(mock.task.options.broker.signal.aborted).toBe(true);
+    expect(mock.copies[0].every((v) => v === 0)).toBe(true);
+    expect(JSON.stringify(mock.entry)).toBe(before);
+  });
+  test.each(['ordinary', 'attempted'])(
+    'partial %s cancellation after output retains ownership until utility exit',
+    async (route) => {
+      configure('partial');
+      if (route === 'attempted') attemptRecord();
+      mock.deferExit = true;
+      const before = JSON.stringify(mock.entry);
+      const pending = route === 'attempted' ? runAttempted() : run();
+      await waitFor(() => mock.task?.close.mock.calls.length > 0);
+      mock.caller.abort();
+      let settled = false;
+      pending.then(() => {
+        settled = true;
+      });
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(mock.phase).toBe(true);
+      const next = { ...options, signal: new AbortController().signal };
+      expect((await (route === 'attempted' ? runAttempted(next) : run(next))).status).toBe(
+        'refused'
+      );
+      mock.task.exit();
+      expect((await pending).status).toBe('refused');
+      expect(mock.phase).toBe(false);
+      expect(mock.copies[0].every((v) => v === 0)).toBe(true);
+      expect(JSON.stringify(mock.entry)).toBe(before);
+    }
+  );
+});

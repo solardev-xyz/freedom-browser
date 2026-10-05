@@ -352,7 +352,7 @@ beforeEach(() => {
     selector: { tree: 0, position: 0, noteHash: hex(2), nullifier: hex(3) },
     facts: {},
     submitter: 'owner',
-    capsule: { walletId: 'wallet', version: 1, selection: { kind: 'railgun-private-transfer' } },
+    capsule: require('../../../scripts/fixtures/railgun-own-txid-data').sample().capsule,
     capsuleDigest: 'b'.repeat(64),
     provedTransaction: {},
     intent: {},
@@ -1414,7 +1414,10 @@ function makeTransactProofFixture(unshield = false, mixedCreator = false) {
   const h = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
   const hash = (v) =>
     require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex');
-  const evidence = require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
+  const evidence =
+    unshield === 'partial'
+      ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial()
+      : require('../../../scripts/fixtures/railgun-own-txid-data').sample(unshield);
   const descriptor = {
     walletId: evidence.capsule.walletId,
     instanceId: '0zk1' + 'q'.repeat(123),
@@ -1555,8 +1558,30 @@ test('Transact-tagged mocked receipt cannot enter the otherwise valid Shield bra
 describe('Transact host cross-binding with real normalization and mocked membership authority', () => {
   const actualData = jest.requireActual('./railgun-own-poi-proof-data');
   const mockedData = require('./railgun-own-poi-proof-data');
-  function install(unshield = false, mixedCreator = false) {
+  function install(unshield = false, mixedCreator = false, type = 'Transact') {
     const fixture = makeTransactProofFixture(unshield, mixedCreator);
+    if (type === 'Shield') {
+      const { capsule } = fixture.input.preparation.ownEvidence;
+      fixture.input.preparation.creator = {
+        type,
+        tree: capsule.selection.tree,
+        position: capsule.selection.position,
+        preimage: {
+          npk: hex(7),
+          token: {
+            tokenType: 0,
+            tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+            tokenSubID: hex(0),
+          },
+          value:
+            capsule.version === 2 ? capsule.preparation.inputAmount : capsule.preparation.amount,
+        },
+        ciphertext: {
+          encryptedBundle: [hex(8), hex(9), hex(10)],
+          shieldKey: hex(11),
+        },
+      };
+    }
     mockIdentity.descriptor = fixture.input.descriptor;
     mockEnrollment.descriptor = fixture.input.descriptor;
     mockCapture.capsule = copy(fixture.input.preparation.ownEvidence.capsule);
@@ -1565,7 +1590,7 @@ describe('Transact host cross-binding with real normalization and mocked members
       mockCapture.capsule
     );
     mockObserved = {
-      inputType: 'Transact',
+      inputType: type,
       capture: copy(mockCapture),
       poiPreparation: fixture.input.preparation,
       selector: fixture.selector,
@@ -1595,6 +1620,118 @@ describe('Transact host cross-binding with real normalization and mocked members
     );
     return fixture;
   }
+  test.each(['Shield', 'Transact'])(
+    'partial %s preparation reaches one viewing proof and a separate exited verifier',
+    async (type) => {
+      install('partial', false, type);
+      const result = await run();
+      expect(result.status).toBe('proved');
+      expect(mockCredential).toHaveBeenCalledTimes(1);
+      expect(mockVerifier).toHaveBeenCalledTimes(1);
+      expect(result.payload.railgunTxidIfHasUnshield).toBe(hex(20));
+      expect(result.payload.blindedCommitmentsOut).toHaveLength(1);
+      expect(mockEvents.indexOf('job-exit')).toBeLessThan(mockEvents.indexOf('keyless-verify'));
+      expect(mockCopies[0]).toEqual(Buffer.alloc(32));
+      const history = historyOf(result, mockEnrollment, mockCoordinator);
+      expect(history.capture.capsule.version).toBe(2);
+      expect(history.preparation.creator.type).toBe(type);
+      expect(history).not.toHaveProperty('creatorProvenance');
+      expect(result.disclosureEnabled).toBe(false);
+      expect((await run()).status).toBe('refused');
+      expect(mockCredential).toHaveBeenCalledTimes(1);
+    }
+  );
+  test.each(['zero-marker', 'foreign-marker', 'no-change', 'two-changes'])(
+    'partial proof result %s is refused despite correct input/payload hashes',
+    async (fault) => {
+      install('partial');
+      mockResultMutation = (message) => {
+        const payload = message.value.payload;
+        if (fault === 'zero-marker') payload.railgunTxidIfHasUnshield = '0x00';
+        if (fault === 'foreign-marker') payload.railgunTxidIfHasUnshield = hex(21);
+        if (fault === 'no-change') payload.blindedCommitmentsOut = [];
+        if (fault === 'two-changes') payload.blindedCommitmentsOut.push(hex(23));
+        message.value.payloadSha256 = sha(JSON.stringify(payload));
+      };
+      expect((await run()).status).toBe('refused');
+      expect(mockCredential).toHaveBeenCalledTimes(1);
+      expect(mockVerifier).not.toHaveBeenCalled();
+      expect(mockCopies[0]).toEqual(Buffer.alloc(32));
+    }
+  );
+  test('expired partial membership refuses before recovery/key; admitted history may later close', async () => {
+    install('partial');
+    mockMembershipCurrent = false;
+    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+    expect(mockCredential).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    mockMembershipCurrent = true;
+    mockRecoveryStart.mockImplementationOnce(async () => {
+      mockMembershipCurrent = false;
+    });
+    expect((await run()).status).toBe('proved');
+  });
+  test('partial coherent alternate preparation cannot replace authenticated capture before keys', async () => {
+    install('partial', false, 'Shield');
+    const original = copy(mockObserved);
+    mockObserved.poiPreparation.ownEvidence =
+      require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial({
+        unshieldAmount: '401',
+      });
+    mockObserved.poiPreparation.witness = {
+      ...mockObserved.poiPreparation.witness,
+      row: copy(mockObserved.poiPreparation.ownEvidence.row),
+      rowSha256: sha(JSON.stringify(mockObserved.poiPreparation.ownEvidence.row)),
+    };
+    expect(() =>
+      actualData.normalizeRailgunOwnPoiProofInput({
+        ...makeTransactProofFixture('partial').input,
+        preparation: mockObserved.poiPreparation,
+      })
+    ).not.toThrow();
+    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+    expect(mockCredential).not.toHaveBeenCalled();
+    mockObserved = original;
+    expect((await run()).status).toBe('proved');
+  });
+  test('partial borrowed credential survives child exit only for drain, never for another key copy', async () => {
+    install('partial');
+    const gate = deferred(),
+      entered = deferred();
+    const original = mockCredential.getMockImplementation();
+    mockCredential.mockImplementationOnce(async (use) => {
+      entered.resolve();
+      await gate.promise;
+      return original(use);
+    });
+    let settled = false;
+    const pending = run().then((value) => {
+      settled = true;
+      return value;
+    });
+    await entered.promise;
+    caller.abort();
+    await mockTask.closed;
+    try {
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(mockPhase).toBe('window');
+      expect(
+        await run({
+          ...options,
+          signal: new AbortController().signal,
+          membershipReceipt: receipt(),
+        })
+      ).toEqual({ status: 'refused', stage: 'context' });
+      expect(mockCopies).toHaveLength(0);
+    } finally {
+      gate.resolve();
+    }
+    expect((await pending).status).toBe('refused');
+    expect(mockPhase).toBeNull();
+    expect(mockVerifier).not.toHaveBeenCalled();
+    for (const bytes of mockBorrowed) expect(bytes).toEqual(Buffer.alloc(32));
+  });
   afterEach(() => {
     mockedData.normalizeRailgunOwnPoiProofInput.mockImplementation((v) => copy(v));
     mockedData.expectedRailgunOwnPoiFields.mockImplementation(() => copy(mockExpected));
@@ -1604,6 +1741,8 @@ describe('Transact host cross-binding with real normalization and mocked members
     [true, false],
     [false, true],
     [true, true],
+    ['partial', false],
+    ['partial', true],
   ])(
     'structural Transact second spend unshield=%s mixed creator=%s reaches both mocked proof stages',
     async (unshield, mixedCreator) => {

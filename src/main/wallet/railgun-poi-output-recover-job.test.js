@@ -378,3 +378,253 @@ test.each(['unknown', 'hash', 'position', 'memo', 'receiver', 'path', 'saved-out
     expect(request).not.toHaveBeenCalled();
   }
 );
+
+// Actual reconstruction and capsule/receipt/path validators; cryptographic engine
+// primitives/decryption are controlled toy seams, not native crypto evidence.
+let mockWallet, mockInputNote, mockOutputNote, mockAnnotation, mockDecryptQueue, mockSharedCopies;
+let mockNoteHash, mockUnshieldHash;
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/utils/keys-utils',
+  () => ({
+    getPublicViewingKey: async () => Buffer.from(hex(6).slice(2), 'hex'),
+    getSharedSymmetricKey: async () => {
+      const key = Buffer.alloc(32, 8);
+      mockSharedCopies.push(key);
+      return key;
+    },
+  }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/wallet/view-only-wallet',
+  () => ({
+    ViewOnlyWallet: class {
+      constructor() {
+        return mockWallet;
+      }
+      static generateID() {
+        return '1'.repeat(64);
+      }
+    },
+  }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/note/erc20/shield-note-erc20',
+  () => ({
+    ShieldNoteERC20: class {
+      constructor() {
+        return mockInputNote;
+      }
+      static decryptRandom() {
+        return '01'.repeat(16);
+      }
+    },
+  }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/note/transact-note',
+  () => ({
+    TransactNote: {
+      decrypt: async () => mockDecryptQueue.shift() || mockOutputNote,
+      getHash: (...args) => mockNoteHash(...args),
+      getNullifier: () => 2n,
+    },
+  }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/note/note-util',
+  () => ({
+    getTokenDataERC20: () => ({
+      tokenType: 0,
+      tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+      tokenSubID: '0x' + '0'.repeat(64),
+    }),
+    getTokenDataHash: () => 'a'.repeat(64),
+    getNoteHash: (...args) => mockUnshieldHash(...args),
+  }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/note/shield-note',
+  () => ({
+    ShieldNote: { getNotePublicKey: (_master, random) => (random === '01'.repeat(16) ? 3n : 11n) },
+  }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/note/memo',
+  () => ({
+    Memo: { decryptNoteAnnotationData: (...args) => mockAnnotation(...args) },
+  }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/models/formatted-types',
+  () => ({ OutputType: { Change: 2 } }),
+  { virtual: true }
+);
+jest.mock(
+  '/fixture-output-recover.asar/node_modules/@railgun-community/engine/dist/models/transaction-constants',
+  () => ({ MEMO_SENDER_RANDOM_NULL: '0'.repeat(30) }),
+  { virtual: true }
+);
+
+async function partialJob(type = 'Shield') {
+  const e = require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial();
+  const projection = require('./railgun-txid-projection').createRailgunTxidProjection({
+    hashPair: mockPair,
+    transactionHash: mockTransactionHash,
+    verificationHash: mockVerificationHash,
+    zeroNodes: mockZeros,
+  });
+  const values = new Map(),
+    read = async (key) => values.get(key) ?? null;
+  const appended = await projection.append(projection.empty(), [e.row], read);
+  for (const { key, value } of appended.writes) values.set(key, value);
+  const witness = await projection.witness(
+    appended.state,
+    mockTransactionHash(e.row).railgunTxid,
+    read
+  );
+  input.preparation.ownEvidence = e;
+  input.preparation.state = JSON.parse(JSON.stringify(appended.state));
+  input.preparation.witness = JSON.parse(JSON.stringify(witness));
+  input.binding.capsuleDigest = require('./railgun-private-capsule').digestRailgunPrivateCapsule(
+    e.capsule
+  );
+  input.descriptor.walletId = e.capsule.walletId;
+  input.descriptor.instanceId = '0zk1' + 'q'.repeat(123);
+  if (type === 'Transact')
+    input.preparation.creator = {
+      type,
+      tree: 0,
+      position: 1,
+      hash: e.capsule.noteHash,
+      ciphertext: {
+        ciphertext: [hex(7), hex(8), hex(9), hex(10)],
+        blindedSenderViewingKey: hex(11),
+        blindedReceiverViewingKey: hex(12),
+        annotationData: '0x',
+        memo: '0x',
+      },
+    };
+  mockWallet = {
+    masterPublicKey: 3n,
+    addressKeys: { masterPublicKey: 3n },
+    getAddress: () => input.descriptor.instanceId,
+    generateShareableViewingKey: () => 'public-fixture',
+    getNullifyingKey: () => 6n,
+  };
+  const tokenData = {
+    tokenType: 0,
+    tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+    tokenSubID: hex(0),
+  };
+  mockInputNote = {
+    notePublicKey: 3n,
+    random: '01'.repeat(16),
+    value: 1000n,
+    tokenHash: 'a'.repeat(64),
+    tokenData,
+    hash: 5n,
+  };
+  mockOutputNote = {
+    notePublicKey: 11n,
+    random: '02'.repeat(16),
+    value: 600n,
+    tokenHash: 'a'.repeat(64),
+    tokenData: { ...tokenData },
+    hash: 3n,
+  };
+  mockDecryptQueue = type === 'Transact' ? [mockInputNote] : [];
+  mockSharedCopies = [];
+  mockNoteHash = jest.fn((npk) => (npk === 3n ? 5n : 3n));
+  mockUnshieldHash = jest.fn(() => 4n);
+  mockAnnotation = jest.fn(() => ({ outputType: 2, senderRandom: '0'.repeat(30) }));
+  mockReconstruct = jest.fn(
+    jest.requireActual('./railgun-poi-reconstruct').reconstructRailgunPoiNotes
+  );
+  text = JSON.stringify(input);
+}
+test.each(['Shield', 'Transact'])(
+  'partial %s actual reconstruction derives C and own T after one key without saved proof/output input',
+  async (type) => {
+    await partialJob(type);
+    const before = JSON.stringify(input);
+    await run(text, context());
+    expect(requestKey).toHaveBeenCalledTimes(1);
+    expect(mockReconstruct).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(1);
+    const result = JSON.parse(request.mock.calls[0][0]).value;
+    expect(result.output).toEqual({
+      blindedCommitmentsOut: [
+        '0x' + mockHash(`${input.preparation.witness.row.commitments[0]}:11:65659`),
+      ],
+      railgunTxidIfHasUnshield: '0x' + input.preparation.witness.railgunTxid,
+    });
+    expect(mockBlinded).toHaveBeenCalledWith(
+      input.preparation.witness.row.commitments[0],
+      11n,
+      65659n
+    );
+    expect(mockUnshieldHash).toHaveBeenCalledWith(
+      input.preparation.ownEvidence.capsule.selection.recipient,
+      mockInputNote.tokenData,
+      400n
+    );
+    expect(mockAnnotation).toHaveBeenCalledTimes(1);
+    expect(text).not.toContain('blindedCommitmentsOut');
+    expect(JSON.stringify(input)).toBe(before);
+    expect(bytes.every((v) => v === 0)).toBe(true);
+    expect(mockSharedCopies.length).toBeGreaterThan(0);
+    expect(mockSharedCopies.every((v) => v.every((b) => b === 0))).toBe(true);
+  }
+);
+test.each([
+  'foreign-self-npk',
+  'wrong-C',
+  'token',
+  'annotation',
+  'sender-random',
+  'memo',
+  'unshield-hash',
+])(
+  'partial actual reconstruction rejects %s despite decrypt success and wipes the one key',
+  async (fault) => {
+    await partialJob();
+    // For foreign-self-npk the toy commitment function still returns the exact
+    // expected output hash. Only the wallet-derived self NPK comparison fails.
+    if (fault === 'foreign-self-npk') mockOutputNote.notePublicKey = 12n;
+    if (fault === 'wrong-C') mockOutputNote.value = 599n;
+    if (fault === 'token') mockOutputNote.tokenData.tokenAddress = '0x' + '11'.repeat(20);
+    if (fault === 'annotation')
+      mockAnnotation.mockReturnValue({ outputType: 0, senderRandom: '0'.repeat(30) });
+    if (fault === 'sender-random')
+      mockAnnotation.mockReturnValue({ outputType: 2, senderRandom: '1'.repeat(30) });
+    if (fault === 'memo') mockOutputNote.memoText = 'not-absent';
+    if (fault === 'unshield-hash') mockUnshieldHash.mockReturnValue(7n);
+    await expect(run(text, context())).rejects.toMatchObject(failure);
+    expect(requestKey).toHaveBeenCalledTimes(1);
+    expect(mockBlinded).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(bytes.every((v) => v === 0)).toBe(true);
+    expect(mockSharedCopies.every((v) => v.every((b) => b === 0))).toBe(true);
+  }
+);
+test.each(['order', 'wrong-row-U', 'wrong-T', 'bad-path'])(
+  'partial %s refuses before key admission',
+  async (fault) => {
+    await partialJob();
+    if (fault === 'order') input.preparation.ownEvidence.row.commitments.reverse();
+    if (fault === 'wrong-row-U') input.preparation.ownEvidence.row.unshield.value = '401';
+    if (fault === 'wrong-T') input.preparation.witness.railgunTxid = hex(91).slice(2);
+    if (fault === 'bad-path') input.preparation.witness.elements[0] = hex(91).slice(2);
+    text = JSON.stringify(input);
+    await expect(run(text, context())).rejects.toMatchObject(failure);
+    expect(requestKey).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  }
+);

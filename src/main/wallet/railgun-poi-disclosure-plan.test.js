@@ -150,6 +150,7 @@ jest.mock('./railgun-own-operation', () => ({
 const { createHash } = require('crypto');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
+const { samplePartial } = require('../../../scripts/fixtures/railgun-partial-own-txid-data');
 const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
@@ -219,7 +220,8 @@ const idle = () => {
   phase.release();
 };
 function configure(unshield = false) {
-  const evidence = sample(unshield),
+  const partial = unshield === 'partial';
+  const evidence = partial ? samplePartial() : sample(unshield),
     capsule = evidence.capsule;
   const descriptor = {
     walletId: capsule.walletId,
@@ -261,7 +263,7 @@ function configure(unshield = false) {
     poiMerkleroots: [hex(20)],
     txidMerkleroot: hex(21),
     txidMerklerootIndex: 3,
-    blindedCommitmentsOut: unshield ? [] : [prefixed(22)],
+    blindedCommitmentsOut: unshield && !partial ? [] : [prefixed(22)],
     railgunTxidIfHasUnshield: unshield ? prefixed(9) : '0x00',
   });
   mock.entry = {
@@ -453,6 +455,7 @@ test.each([false, true])(
     expect(Reflect.ownKeys(result.plan)).toEqual([]);
     expect(Object.isFrozen(result.plan)).toBe(true);
     expect(result.summary).toEqual(summaryFor(unshield));
+    expect(JSON.stringify(result.summary)).toBe(JSON.stringify(summaryFor(unshield)));
     assertFrozen(result.summary);
     expect(Buffer.byteLength(JSON.stringify(result.summary))).toBeLessThanOrEqual(4096);
     expect(result.signal).toBeInstanceOf(AbortSignal);
@@ -1447,3 +1450,49 @@ test.each(['output-first', 'plan-first'])(
     expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
   }
 );
+
+describe('partial unshield disclosure', () => {
+  test('derives both disclosures and explicit change-to-public-unshield linkage from genuine plan capture', async () => {
+    configure('partial');
+    const result = await run();
+    expect(result.status).toBe('prepared');
+    expect(result.summary).toMatchObject({
+      version: 1,
+      operation: 'partial-unshield',
+      outputCount: 1,
+      unshieldIdCategory: 'railgun-txid',
+      consentGranted: false,
+      transportAuthorized: false,
+    });
+    expect(result.summary.disclosureCategories).toEqual([
+      ...summaryFor().disclosureCategories,
+      'unshield-railgun-txid',
+    ]);
+    expect(result.summary.disclosureExplanation).toBe(
+      'Submitting this proof links your blinded change output to the public unshield transaction, including its recipient address and amount, at the POI aggregator.'
+    );
+    expect(Object.isFrozen(result.summary)).toBe(true);
+    expect(JSON.stringify(result.summary)).not.toContain(mock.capture.submitter);
+    expect(JSON.stringify(result.summary)).not.toContain(
+      mock.entry.payload.railgunTxidIfHasUnshield
+    );
+    expect((await recheck(result)).status).toBe('current');
+  });
+  test.each(['marker', 'count', 'version'])(
+    'partial %s mismatch refuses without granting a plan',
+    async (fault) => {
+      configure('partial');
+      if (fault === 'version') mock.capture.capsule.version = 1;
+      else {
+        mock.entry.payload = normalizeRailgunPoiPayload({
+          ...mock.entry.payload,
+          ...(fault === 'marker'
+            ? { railgunTxidIfHasUnshield: '0x00' }
+            : { blindedCommitmentsOut: [] }),
+        });
+        mock.entry.payloadSha256 = sha(mock.entry.payload);
+      }
+      refused(await run());
+    }
+  );
+});

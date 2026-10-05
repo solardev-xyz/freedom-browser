@@ -199,6 +199,7 @@ const {
   observePreparedRailgunOwnReceipt,
 } = require('./railgun-own-receipt');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
+const { samplePartial } = require('../../../scripts/fixtures/railgun-partial-own-txid-data');
 const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
@@ -258,7 +259,8 @@ const idle = () => {
   phase.release();
 };
 function configure(unshield = false) {
-  const evidence = sample(unshield),
+  const partial = unshield === 'partial';
+  const evidence = partial ? samplePartial() : sample(unshield),
     capsule = evidence.capsule;
   const descriptor = {
     walletId: capsule.walletId,
@@ -307,7 +309,7 @@ function configure(unshield = false) {
     poiMerkleroots: [hex(20)],
     txidMerkleroot: hex(21),
     txidMerklerootIndex: 3,
-    blindedCommitmentsOut: unshield ? [] : [prefixed(22)],
+    blindedCommitmentsOut: unshield && !partial ? [] : [prefixed(22)],
     railgunTxidIfHasUnshield: unshield ? prefixed(9) : '0x00',
   });
   mock.entry = {
@@ -1450,3 +1452,102 @@ test.each(['before-attempt', 'pending-post', 'transport-closed'])(
     }
   }
 );
+
+describe('partial retained fixed sender', () => {
+  test('one version1 combined envelope follows both explicit linkage reviews and one validation', async () => {
+    configure('partial');
+    const plan = await freshPlan();
+    const payload = copy(mock.entry.payload);
+    const result = await send(plan);
+    expect(result).toMatchObject({
+      status: 'recovery-required',
+      stage: 'response',
+      response: { classification: 'rpc-result', acceptanceVerified: false, spendingEnabled: false },
+    });
+    expect(mock.review).toHaveBeenCalledTimes(2);
+    const [validation, submission] = mock.review.mock.calls.map(([request]) => request);
+    for (const request of [validation, submission]) {
+      expect(request).toMatchObject({
+        version: 1,
+        operation: 'partial-unshield',
+        outputCount: 1,
+        unshieldIdCategory: 'railgun-txid',
+      });
+      expect(request.disclosureExplanation).toBe(
+        'Submitting this proof links your blinded change output to the public unshield transaction, including its recipient address and amount, at the POI aggregator.'
+      );
+    }
+    expect(
+      validation.disclosureCategories.filter((value) => value === 'local-viewing-key-output-check')
+    ).toHaveLength(1);
+    expect(submission.disclosureCategories).toEqual(
+      expect.arrayContaining(['blinded-output-commitment', 'unshield-railgun-txid'])
+    );
+    expect(mock.validate).toHaveBeenCalledTimes(1);
+    expect(mock.makeRoot).toHaveBeenCalledTimes(2);
+    expect(mock.store.beginAttempt).toHaveBeenCalledTimes(1);
+    expect(mock.post).toHaveBeenCalledTimes(1);
+    expect(mock.entry.attempt.submission).toEqual(
+      prepareRailgunPoiSubmission({ payload, requestId: mock.entry.attempt.attemptedAt })
+    );
+    expect(mock.entry.attempt.submission.version).toBe(1);
+    expect(mock.post.mock.calls[0][2].body).toBe(mock.entry.attempt.submission.body);
+    expect(mock.events.indexOf('persisted')).toBeLessThan(mock.events.indexOf('post'));
+    const attempted = copy(mock.entry);
+    expect((await send(plan)).status).toBe('refused');
+    expect(mock.entry).toEqual(attempted);
+    expect(mock.post).toHaveBeenCalledTimes(1);
+    await plan.closed;
+  });
+  test.each([1, 2])(
+    'declining partial disclosure review%i admits no attempted write or POST',
+    async (review) => {
+      configure('partial');
+      const plan = await freshPlan();
+      const entry = copy(mock.entry);
+      mock.review.mockImplementation(async () => mock.review.mock.calls.length !== review);
+      expect((await send(plan)).status).toBe('refused');
+      expect(mock.store.beginAttempt).not.toHaveBeenCalled();
+      expect(mock.post).not.toHaveBeenCalled();
+      expect(mock.entry).toEqual(entry);
+      if (review === 1) {
+        expect(mock.validate).not.toHaveBeenCalled();
+        expect(mock.network.request).not.toHaveBeenCalled();
+      }
+      await plan.closed;
+    }
+  );
+  test.each(['bindingDigest', 'facts'])(
+    'partial %s capture drift after review refuses before retained validation or roots',
+    async (field) => {
+      configure('partial');
+      const plan = await freshPlan();
+      mock.review.mockImplementationOnce(async () => {
+        if (field === 'bindingDigest') mock.capture.bindingDigest = hex(999);
+        else mock.capture.facts = { ...mock.capture.facts, amount: 'DIFFERENT' };
+        return true;
+      });
+      expect((await send(plan)).status).toBe('refused');
+      expect(mock.validate).not.toHaveBeenCalled();
+      expect(mock.makeRoot).not.toHaveBeenCalled();
+      expect(mock.store.beginAttempt).not.toHaveBeenCalled();
+      expect(mock.post).not.toHaveBeenCalled();
+      await plan.closed;
+    }
+  );
+});
+
+test('partial lost reply preserves the single attempted envelope and never retries', async () => {
+  configure('partial');
+  const plan = await freshPlan();
+  mock.post.mockRejectedValue(Error('synthetic lost reply'));
+  expect((await send(plan)).status).toBe('recovery-required');
+  expect(mock.entry.state).toBe('attempted');
+  expect(mock.store.beginAttempt).toHaveBeenCalledTimes(1);
+  expect(mock.post).toHaveBeenCalledTimes(1);
+  const saved = copy(mock.entry);
+  expect((await send(plan)).status).toBe('refused');
+  expect(mock.entry).toEqual(saved);
+  expect(mock.post).toHaveBeenCalledTimes(1);
+  await plan.closed;
+});

@@ -3,6 +3,7 @@
  */
 const assert = require('assert/strict');
 const path = require('path');
+const { getRailgunOwnPoiShape } = require('./railgun-own-poi-shape-data');
 const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
 const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
@@ -75,27 +76,40 @@ function normalizeRailgunPoiOutputRecoveryInput(value) {
   } else {
     normalizeRailgunPoiShieldInput(ownEvidence.capsule, creator);
   }
-  assert.equal(ownEvidence.capsule.selection.kind, 'railgun-private-transfer');
+  const outputShape = getRailgunOwnPoiShape(ownEvidence.capsule);
+  assert.equal(outputShape.hasPrivateOutput, true);
   assert.equal(input.descriptor.walletId, ownEvidence.capsule.walletId);
-  assert.equal(ownEvidence.capsule.selection.recipient, input.descriptor.instanceId);
+  if (!outputShape.hasUnshield)
+    assert.equal(ownEvidence.capsule.selection.recipient, input.descriptor.instanceId);
   assert.equal(digestRailgunPrivateCapsule(ownEvidence.capsule), input.binding.capsuleDigest);
   const matched = matchRailgunOwnTxid(ownEvidence);
   const normalizedWitness = normalizeRailgunTxidWitness(witness, state);
   assert.deepEqual(witness.row, normalizedWitness.row);
   assert.deepEqual(normalizedWitness.row, matched.row);
-  assert.equal(matched.output.kind, 'shielded');
+  assert.equal(matched.output.kind, outputShape.hasUnshield ? 'partial-unshield' : 'shielded');
   assert.equal(Math.floor(normalizedWitness.index / 65536), 0);
   assert.equal(normalizedWitness.row.nullifiers.length, 1);
-  assert.equal(normalizedWitness.row.commitments.length, 1);
+  const expected = ownEvidence.capsule.preparation.expected;
+  assert.deepEqual(
+    normalizedWitness.row.commitments,
+    outputShape.hasUnshield
+      ? [expected.changeCommitment, expected.unshieldCommitment]
+      : [expected.commitment]
+  );
   return freeze(input);
 }
 function normalizeRailgunRecoveredPoiOutput(value) {
   shape(value, ['blindedCommitmentsOut', 'railgunTxidIfHasUnshield']);
-  assert.equal(value.railgunTxidIfHasUnshield, '0x00');
+  const marker = value.railgunTxidIfHasUnshield;
+  if (marker !== '0x00') {
+    assert.equal(typeof marker, 'string');
+    assert.match(marker, /^0x[0-9a-f]{64}$/);
+    assert.ok(BigInt(marker) > 0n && BigInt(marker) < FIELD);
+  }
   assert.ok(Array.isArray(value.blindedCommitmentsOut) && value.blindedCommitmentsOut.length === 1);
   const output = value.blindedCommitmentsOut[0];
   assert.match(output, /^0x[0-9a-f]{64}$/);
   assert.ok(BigInt(output) > 0n && BigInt(output) < FIELD);
-  return freeze({ blindedCommitmentsOut: [output], railgunTxidIfHasUnshield: '0x00' });
+  return freeze({ blindedCommitmentsOut: [output], railgunTxidIfHasUnshield: marker });
 }
 module.exports = { normalizeRailgunPoiOutputRecoveryInput, normalizeRailgunRecoveredPoiOutput };

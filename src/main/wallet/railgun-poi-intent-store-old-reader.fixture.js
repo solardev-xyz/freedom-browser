@@ -1,6 +1,5 @@
-/** Encrypted account-owned POI history. V1 is prepared-only; V2 records
- * conservative attempts; V3 also admits combined output/unshield payloads.
- * No document version grants sender or restored disclosure authority.
+/** Encrypted account-owned POI history. V1 is prepared-only; V2 also records
+ * one conservative attempt, with no sender or restored disclosure authority.
  * Data rename and manifest-floor advancement are separate writes: if the latter
  * fails, ordinary reopen preserves the attempt and repairs the floor, but an old
  * ciphertext restored while the floor still lags may replay prepared state.
@@ -13,7 +12,6 @@ const { randomBytes, createHash } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-storage');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
-const { assertRailgunOwnPoiPayloadShape } = require('./railgun-own-poi-shape-data');
 const {
   prepareRailgunPoiSubmission,
   normalizeRailgunPoiSubmission,
@@ -109,10 +107,9 @@ async function createRailgunPoiIntentStore({
     getPrivacyContext(handle);
     enrollment.getContext('storage');
   };
-  function record(value, version) {
-    assert.ok([1, 2, 3].includes(version));
+  function record(value, version = 2) {
     const attempted = value?.state === 'attempted';
-    assert.ok(value?.state === 'prepared' || ([2, 3].includes(version) && attempted));
+    assert.ok(value?.state === 'prepared' || (version === 2 && attempted));
     shape(value, [
       'capsuleDigest',
       'bindingDigest',
@@ -143,13 +140,11 @@ async function createRailgunPoiIntentStore({
       );
     }
     const payload = normalizeRailgunPoiPayload(value.payload);
-    // V3 is the whole-document older-reader refusal boundary. Payload shape
-    // is structural data only; genuine proof/recovery bindings remain required.
-    if (version !== 3)
-      assert.equal(
-        BigInt(payload.railgunTxidIfHasUnshield) === 0n,
-        payload.blindedCommitmentsOut.length === 1
-      );
+    // Current documents deliberately exclude combined proofs until migration.
+    assert.equal(
+      BigInt(payload.railgunTxidIfHasUnshield) === 0n,
+      payload.blindedCommitmentsOut.length === 1
+    );
     assert.equal(value.payloadSha256, hash(JSON.stringify(payload)));
     let attempt;
     if (attempted) {
@@ -196,7 +191,7 @@ async function createRailgunPoiIntentStore({
     assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 800 * 1024);
     const value = JSON.parse(text);
     shape(value, ['version', 'binding', 'walletId', 'lease', 'sequence', 'entries']);
-    assert.ok([1, 2, 3].includes(value.version));
+    assert.ok(value.version === 1 || value.version === 2);
     assert.equal(value.binding, binding);
     assert.equal(value.walletId, walletId);
     assert.ok(digest(value.lease) && integer(value.sequence));
@@ -335,7 +330,7 @@ async function createRailgunPoiIntentStore({
         } catch {
           throw fail('RAILGUN_POI_INTENT_STORE_CONFLICT');
         }
-        const same = record({ ...input, revision: old.revision }, current.version);
+        const same = record({ ...input, revision: old.revision });
         if (JSON.stringify(old) === JSON.stringify(same)) return old;
         if (old.revision === MAX_REVISIONS) throw fail('RAILGUN_POI_INTENT_STORE_CAPACITY');
       } else if (current.entries.some((v) => v.selector.nullifier === input.selector.nullifier))
@@ -347,14 +342,9 @@ async function createRailgunPoiIntentStore({
           MAX_SEQUENCE
       )
         throw fail('RAILGUN_POI_INTENT_STORE_CAPACITY');
-      const combined =
-        input.payload.blindedCommitmentsOut.length === 1 &&
-        BigInt(input.payload.railgunTxidIfHasUnshield) !== 0n;
-      const version = combined ? 3 : current.version;
-      const entry = record({ ...input, revision: (old?.revision || 0) + 1 }, version);
+      const entry = record({ ...input, revision: (old?.revision || 0) + 1 });
       const next = {
         ...current,
-        version,
         sequence: current.sequence + 1,
         entries: old
           ? current.entries.map((v) => (v === old ? entry : v))
@@ -384,8 +374,17 @@ async function createRailgunPoiIntentStore({
       // validation derives it again from fresh authenticated source evidence;
       // records themselves do not persist a caller-controlled discriminator.
       assert.ok(['Shield', 'Transact'].includes(history.preparation.creator.type));
+      assert.equal(history.capture.capsule.version, 1);
+      assert.ok(
+        ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+          history.capture.capsule.selection.kind
+        )
+      );
       const payload = bindRailgunOwnPoiPayload(history.payload, history.expected);
-      assertRailgunOwnPoiPayloadShape(payload, history.capture.capsule);
+      assert.equal(
+        BigInt(payload.railgunTxidIfHasUnshield) === 0n,
+        payload.blindedCommitmentsOut.length === 1
+      );
       assert.equal(hash(JSON.stringify(payload)), history.payloadSha256);
       const currentProof = () => {
         active();
@@ -537,18 +536,14 @@ async function createRailgunPoiIntentStore({
               payload: baseline.payload,
               requestId: attemptedAt,
             });
-            const version = current.version === 1 ? 2 : current.version;
-            const entry = record(
-              {
-                ...baseline,
-                state: 'attempted',
-                attempt: { attemptedAt, submission },
-              },
-              version
-            );
+            const entry = record({
+              ...baseline,
+              state: 'attempted',
+              attempt: { attemptedAt, submission },
+            });
             const next = {
               ...current,
-              version,
+              version: 2,
               sequence: current.sequence + 1,
               entries: current.entries.map((v) => (v === old ? entry : v)),
             };

@@ -173,7 +173,10 @@ const gate = () => {
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 let scope, caller, identityOwner, options;
 function configure(unshield = false) {
-  const evidence = sample(unshield),
+  const evidence =
+      unshield === 'partial'
+        ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial()
+        : sample(unshield),
     capsule = evidence.capsule;
   const descriptor = {
     walletId: capsule.walletId,
@@ -504,7 +507,7 @@ async function assertAllBusy() {
   for (const invoke of Object.values(modes({ ...options, signal: new AbortController().signal })))
     expect((await invoke()).status).toBe('refused');
 }
-test.each([false, true])(
+test.each([false, true, 'partial'])(
   'genuine registry typed membership, unshield=%s, retains historical root only',
   async (unshield) => {
     configure(unshield);
@@ -549,7 +552,7 @@ test.each([false, true])(
     expect(() => attest(op.receipt, { ...mock.enrollment }, mock.coordinator)).toThrow();
   }
 );
-test.each(['partial', 'version', 'kind'])(
+test.each(['version', 'kind'])(
   'matching %s capsules refuse before the Transact selector, keys or roots',
   async (fault) => {
     const original = copy(mock.historical);
@@ -559,15 +562,6 @@ test.each(['partial', 'version', 'kind'])(
     // Keep the original input note: the standalone selector must accept this
     // coherent partial capsule so a lower mismatch cannot mask this host guard.
     capsule.noteHash = original.capture.capsule.noteHash;
-    if (fault === 'partial')
-      expect(() =>
-        require('./railgun-poi-transact-selector-data').prepareRailgunPoiTransactSelectorInput({
-          archive: options.archive,
-          descriptor: mock.enrollment.descriptor,
-          capsule,
-          creator: original.poiPreparation.creator,
-        })
-      ).not.toThrow();
     if (fault === 'version') capsule.selection.kind = 'railgun-token-unshield';
     if (fault === 'kind') capsule.version = 1;
     mock.historical.capture.capsule = copy(capsule);
@@ -939,5 +933,28 @@ test.each(['missing', 'rejected'])(
     expect(settled).toBe(false);
     await assertAllBusy();
     expect(mock.verify).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['root', 'list', 'verifier', 'generation'])(
+  'partial Transact %s revocation retains live acquisition/publication gates',
+  async (fault) => {
+    configure('partial');
+    mock.historical.poiPreparation.state = copy(mock.historical.state);
+    mock.historical.poiPreparation.witness = {};
+    if (fault === 'root') mock.rootCurrent = false;
+    const verify = mock.verify.getMockImplementation();
+    if (fault !== 'root')
+      mock.verify.mockImplementation(async (options) => {
+        const value = await verify(options);
+        if (fault === 'list') clock = mock.listStarted + 60000;
+        if (fault === 'verifier') value.observation.membershipVerified = false;
+        if (fault === 'generation') mock.publicIdentity.generationId = '9'.repeat(64);
+        return value;
+      });
+    expect((await run()).status).toBe('refused');
+    if (fault === 'root') expect(mock.sourceFactory).not.toHaveBeenCalled();
+    else expect(mock.verify).toHaveBeenCalledTimes(1);
+    expect(mock.keyCopies[0]).toEqual(Buffer.alloc(32));
   }
 );

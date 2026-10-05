@@ -4,6 +4,7 @@
  * observed exit. No query, submission, renderer or production caller is added.
  */
 const assert = require('assert/strict');
+const { getRailgunOwnPoiShape } = require('./railgun-own-poi-shape-data');
 const { createHash } = require('crypto');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { assertRailgunIdentity, withRailgunViewingCredential } = require('./railgun-identity');
@@ -97,14 +98,11 @@ async function proveRailgunOwnPoi(options = {}) {
       coordinator,
       1000
     );
-    // Standalone combined-proof data may accept partial capsules, but this
-    // genuine membership/operation lifecycle still admits only legacy spends.
-    for (const capsule of [observed.capture.capsule, observed.poiPreparation.ownEvidence.capsule]) {
-      assert.equal(capsule.version, 1);
-      assert.ok(
-        ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
-      );
-    }
+    // The live M assertion above authenticates this preparation. Normalize
+    // both exact kind/version pairs and join them before any credential work.
+    getRailgunOwnPoiShape(observed.capture.capsule);
+    getRailgunOwnPoiShape(observed.poiPreparation.ownEvidence.capsule);
+    assert.deepEqual(observed.poiPreparation.ownEvidence.capsule, observed.capture.capsule);
     assert.ok(!consumed.has(membershipReceipt));
     assert.equal(observed.membership.membershipVerified, true);
     assert.equal('0x' + observed.membership.proofs[0].leaf, observed.selector.blindedCommitment);

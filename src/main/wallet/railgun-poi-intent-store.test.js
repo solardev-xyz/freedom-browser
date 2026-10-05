@@ -2,6 +2,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createHash } = require('crypto');
+const {
+  createRailgunPartialCapsuleData,
+  createRailgunLegacyCapsuleData,
+} = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+const transferCapsule = createRailgunLegacyCapsuleData('railgun-private-transfer').capsule;
+const partialCapsule = createRailgunPartialCapsuleData().capsule;
 let mock;
 // Only authority boundaries are substituted. The context, payload binder,
 // strict capture comparator, encryption and atomic file writes are real.
@@ -153,9 +159,9 @@ function issue(n = 1, revision = 1, change = () => {}) {
       facts: { kind: 'railgun-private-transfer', amount: '1000' },
       submitter: '0x' + '12'.repeat(20),
       capsule: {
-        version: 1,
+        ...copy(transferCapsule),
         walletId: options.walletId,
-        selection: { position: n, kind: 'railgun-private-transfer' },
+        selection: { ...transferCapsule.selection, position: n },
       },
       provedTransaction: { data: '0x1234' },
       intent: { digest: hex(40) },
@@ -642,7 +648,7 @@ const corruptions = [
   [
     'version',
     (v) => {
-      v.version = 3;
+      v.version = 4;
     },
   ],
   [
@@ -2338,4 +2344,530 @@ describe('legacy documents exclude combined proofs until an explicit migration',
       expect((await prepare(store)).status).toBe('prepared');
     }
   );
+});
+
+// Candidate-only migration tests. The existing registry/recovery seams above
+// remain mocked; ciphertext, strict binding, CAS and file/floor transitions run.
+function combined(n = 2, revision = 1, change = () => {}) {
+  return issue(n, revision, (history) => {
+    history.capture.capsule = {
+      ...copy(partialCapsule),
+      walletId: options.walletId,
+      selection: { ...partialCapsule.selection, position: n },
+    };
+    history.capture.facts.kind = 'railgun-partial-unshield';
+    history.payload = normalizeRailgunPoiPayload({
+      ...history.payload,
+      railgunTxidIfHasUnshield: '0x' + hex(9),
+    });
+    history.expected = { ...history.payload, outputCount: 1 };
+    history.payloadSha256 = sha(history.payload);
+    change(history);
+  });
+}
+const directoryBytes = () =>
+  Object.fromEntries(
+    fs
+      .readdirSync(options.directory)
+      .sort()
+      .map((name) => [name, fs.readFileSync(path.join(options.directory, name)).toString('hex')])
+  );
+const previousReader =
+  require('./railgun-poi-intent-store-old-reader.fixture').createRailgunPoiIntentStore;
+
+describe('v3 combined POI migration', () => {
+  test.each(['empty', 'prepared', 'attempted'])(
+    '%s legacy document migrates in exactly one ordinary prepare transition',
+    async (state) => {
+      const store = await open();
+      if (state !== 'empty') expect((await prepare(store)).status).toBe('prepared');
+      if (state === 'attempted') expect((await begin(store)).status).toBe('attempted');
+      const before = await readDocument();
+      const entries = JSON.stringify(before.entries);
+      const floorCalls = options.advanceFloor.mock.calls.length;
+      const rename = jest.spyOn(fs, 'renameSync');
+      const candidate = combined();
+      expect((await prepare(store, candidate)).status).toBe('prepared');
+      expect(rename).toHaveBeenCalledTimes(1);
+      rename.mockRestore();
+      expect(options.advanceFloor).toHaveBeenCalledTimes(floorCalls + 1);
+      const after = await readDocument();
+      expect(after.version).toBe(3);
+      expect(after.sequence).toBe(before.sequence + 1);
+      expect(after.lease).toBe(before.lease);
+      expect(JSON.stringify(after.entries.slice(0, before.entries.length))).toBe(entries);
+      expect(minimum).toBe(after.sequence);
+      const snapshot = directoryBytes();
+      const write = jest.spyOn(fs, 'writeFileSync');
+      expect((await prepare(store, candidate)).status).toBe('prepared');
+      expect(write).not.toHaveBeenCalled();
+      write.mockRestore();
+      expect(directoryBytes()).toEqual(snapshot);
+      expect(options.advanceFloor).toHaveBeenCalledTimes(floorCalls + 1);
+      expect((await readDocument()).sequence).toBe(after.sequence);
+      store.close();
+      await store.closed;
+      const cold = await open(false);
+      expect((await readDocument()).version).toBe(3);
+      expect(JSON.stringify((await readDocument()).entries)).toBe(JSON.stringify(after.entries));
+      expect(await cold.get(hex(2))).toEqual(after.entries.at(-1));
+    }
+  );
+
+  test.each(['legacy', 'combined'])(
+    'attempting %s entry in mixed v3 never downgrades or changes other canonical records',
+    async (kind) => {
+      const store = await open();
+      const partial = combined();
+      expect((await prepare(store)).status).toBe('prepared');
+      expect((await prepare(store, partial)).status).toBe('prepared');
+      const selected = kind === 'legacy' ? sample : partial;
+      const other = kind === 'legacy' ? partial : sample;
+      const priorOther = JSON.stringify(await store.get(other.history.capture.capsuleDigest));
+      const prepared = await store.get(selected.history.capture.capsuleDigest);
+      const before = await readDocument();
+      const floorCalls = options.advanceFloor.mock.calls.length;
+      const rename = jest.spyOn(fs, 'renameSync');
+      jest.spyOn(Date, 'now').mockReturnValue(1700000000000);
+      expect((await begin(store, selected)).status).toBe('attempted');
+      expect(rename).toHaveBeenCalledTimes(1);
+      rename.mockRestore();
+      const saved = await store.get(selected.history.capture.capsuleDigest);
+      assertAttempted(saved, prepared);
+      const after = await readDocument();
+      expect(after.version).toBe(3);
+      expect(after.sequence).toBe(before.sequence + 1);
+      expect(options.advanceFloor).toHaveBeenCalledTimes(floorCalls + 1);
+      expect(JSON.stringify(await store.get(other.history.capture.capsuleDigest))).toBe(priorOther);
+      const bytes = directoryBytes();
+      expect((await begin(store, selected)).status).toBe('refused');
+      expect((await prepare(store, selected)).status).toBe('refused');
+      expect(directoryBytes()).toEqual(bytes);
+      store.close();
+      await store.closed;
+      const cold = await open(false);
+      expect(JSON.stringify(await cold.get(selected.history.capture.capsuleDigest))).toBe(
+        JSON.stringify(saved)
+      );
+      expect((await readDocument()).version).toBe(3);
+    }
+  );
+
+  test('new legacy prepare and idempotent legacy prepare preserve v3 and the combined entry', async () => {
+    const store = await open();
+    const partial = combined();
+    await prepare(store, partial);
+    const saved = JSON.stringify(await store.get(hex(2)));
+    expect((await prepare(store)).status).toBe('prepared');
+    expect((await readDocument()).version).toBe(3);
+    const bytes = directoryBytes();
+    expect((await prepare(store)).status).toBe('prepared');
+    expect(directoryBytes()).toEqual(bytes);
+    expect(JSON.stringify(await store.get(hex(2)))).toBe(saved);
+  });
+
+  test.each(['prepared', 'attempted'])(
+    'pinned previous reader refuses entire mixed %s v3 store without writes',
+    async (state) => {
+      const source = fs.readFileSync(
+        path.join(__dirname, 'railgun-poi-intent-store-old-reader.fixture.js')
+      );
+      expect(createHash('sha256').update(source).digest('hex')).toBe(
+        '618bdff954dae9bf31836c8d1ab9b5100d7409b9f7f8e68844afdff4b577fb89'
+      );
+      const store = await open();
+      const partial = combined();
+      await prepare(store);
+      if (state === 'attempted') await begin(store);
+      await prepare(store, partial);
+      const entries = JSON.stringify((await readDocument()).entries);
+      store.close();
+      await store.closed;
+      const bytes = directoryBytes(),
+        floor = minimum;
+      const write = jest.spyOn(fs, 'writeFileSync'),
+        rename = jest.spyOn(fs, 'renameSync');
+      options.advanceFloor.mockClear();
+      await expect(previousReader({ ...options, create: false })).rejects.toMatchObject(REFUSED);
+      expect(write).not.toHaveBeenCalled();
+      expect(rename).not.toHaveBeenCalled();
+      write.mockRestore();
+      rename.mockRestore();
+      expect(directoryBytes()).toEqual(bytes);
+      expect(minimum).toBe(floor);
+      expect(options.advanceFloor).not.toHaveBeenCalled();
+      const cold = await open(false);
+      expect(JSON.stringify((await readDocument()).entries)).toBe(entries);
+      expect((await cold.list()).length).toBe(2);
+    }
+  );
+
+  test.each(['prepared', 'attempted'])(
+    'legacy %s canonical bytes remain readable by exact previous implementation',
+    async (state) => {
+      const store = await open();
+      await prepare(store);
+      if (state === 'attempted') await begin(store);
+      const saved = JSON.stringify(await store.get(hex(1)));
+      const version = (await readDocument()).version;
+      store.close();
+      await store.closed;
+      const legacy = await previousReader({ ...options, create: false });
+      stores.push(legacy);
+      expect(JSON.stringify(await legacy.get(hex(1)))).toBe(saved);
+      expect((await readDocument()).version).toBe(version);
+      legacy.close();
+      await legacy.closed;
+      const cold = await open(false);
+      expect(JSON.stringify(await cold.get(hex(1)))).toBe(saved);
+    }
+  );
+
+  test.each(['copy', 'wrong-payload-marker', 'wrong-capture', 'wrong-enrollment'])(
+    'combined %s proof/history refuses before encrypted migration',
+    async (fault) => {
+      const store = await open();
+      const issued = combined(2, 1, (history) => {
+        if (fault === 'wrong-payload-marker') {
+          history.payload = {
+            ...history.payload,
+            railgunTxidIfHasUnshield: '0x' + hex(10),
+          };
+          history.payloadSha256 = sha(history.payload);
+        }
+      });
+      if (fault === 'wrong-enrollment') issued.entry.enrollment = {};
+      if (fault === 'wrong-capture')
+        mock.changeInitial = (capture) => {
+          capture.bindingDigest = hex(999);
+        };
+      const bytes = directoryBytes(),
+        floor = minimum;
+      const result = await prepare(
+        store,
+        issued,
+        fault === 'copy' ? { proof: { ...issued.proof } } : {}
+      );
+      expect(result.status).toBe('refused');
+      expect(directoryBytes()).toEqual(bytes);
+      expect(minimum).toBe(floor);
+      expect((await readDocument()).version).toBe(1);
+    }
+  );
+
+  test.each(['legacy-first', 'partial-first'])(
+    'same-nullifier %s conflicts across operation shapes',
+    async (order) => {
+      const store = await open();
+      const partial = combined(2, 1, (h) => {
+        h.capture.selector.nullifier = sample.history.capture.selector.nullifier;
+      });
+      const first = order === 'legacy-first' ? sample : partial;
+      const second = order === 'legacy-first' ? partial : sample;
+      expect((await prepare(store, first)).status).toBe('prepared');
+      const bytes = directoryBytes();
+      expect((await prepare(store, second)).status).toBe('refused');
+      expect(directoryBytes()).toEqual(bytes);
+    }
+  );
+
+  test('actual mixed 32-record reserves support all attempts without reclaiming capacity', async () => {
+    const store = await open();
+    const issued = [];
+    for (let i = 1; i <= 32; i++) {
+      const value = i % 2 ? issue(i) : combined(i);
+      issued.push(value);
+      expect((await prepare(store, value)).status).toBe('prepared');
+    }
+    expect(await store.inspect()).toEqual({
+      records: 32,
+      sequence: 32,
+      capacity: 32,
+      reservedTransitions: 96,
+      freeTransitions: 0,
+    });
+    expect((await prepare(store, combined(33))).status).toBe('refused');
+    for (const value of issued) expect((await begin(store, value)).status).toBe('attempted');
+    expect(await store.inspect()).toEqual({
+      records: 32,
+      sequence: 64,
+      capacity: 32,
+      reservedTransitions: 64,
+      freeTransitions: 0,
+    });
+    expect((await readDocument()).version).toBe(3);
+    expect((await prepare(store, issue(33))).status).toBe('refused');
+  });
+
+  test('v3 revision four remains idempotent; fifth proof cannot spend reserved capacity', async () => {
+    const store = await open();
+    for (let revision = 1; revision <= 4; revision++)
+      expect((await prepare(store, combined(2, revision))).status).toBe('prepared');
+    const bytes = directoryBytes();
+    expect((await prepare(store, combined(2, 4))).status).toBe('prepared');
+    expect((await prepare(store, combined(2, 5))).status).toBe('refused');
+    expect(directoryBytes()).toEqual(bytes);
+    expect((await begin(store, combined(2, 4), { expectedRevision: 4 })).status).toBe('attempted');
+    expect(await store.inspect()).toMatchObject({
+      sequence: 5,
+      reservedTransitions: 2,
+      freeTransitions: 121,
+    });
+  });
+
+  test.each(['before-rename', 'after-rename', 'floor', 'readback'])(
+    'combined migration %s interruption preserves existing durable semantics',
+    async (fault) => {
+      let armed = false;
+      const store = await open(true, {
+        advanceFloor: async (value) => {
+          if (armed && fault === 'floor' && value === 2) throw Error('fixture floor');
+          minimum = value;
+        },
+      });
+      await prepare(store);
+      const old = await store.get(hex(1)),
+        target = filename(),
+        partial = combined();
+      const rename = fs.renameSync.bind(fs),
+        read = fs.readFileSync.bind(fs);
+      let renamed = false;
+      const renamer = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (armed && to === target && fault === 'before-rename') throw Error('fixture before');
+        rename(from, to);
+        if (armed && to === target) {
+          renamed = true;
+          if (fault === 'after-rename') throw Error('fixture after');
+        }
+      });
+      const reader = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...args) => {
+        if (armed && renamed && file === target && fault === 'readback')
+          throw Error('fixture readback');
+        return read(file, ...args);
+      });
+      armed = true;
+      let result;
+      try {
+        result = await prepare(store, partial);
+      } finally {
+        armed = false;
+        renamer.mockRestore();
+        reader.mockRestore();
+      }
+      expect(result.status).toBe('refused');
+      await store.closed;
+      const cold = await open(false);
+      expect(await cold.get(hex(1))).toEqual(old);
+      expect((await readDocument()).version).toBe(fault === 'before-rename' ? 1 : 3);
+      expect(await cold.get(hex(2))).toEqual(
+        fault === 'before-rename' ? null : expect.objectContaining({ state: 'prepared' })
+      );
+      expect(minimum).toBe(fault === 'before-rename' ? 1 : 2);
+    }
+  );
+});
+
+test('maximum combined payloads fit actual 32-entry attempted reserves without byte-cap increases', async () => {
+  const field = (
+    21888242871839275222246405745257275088548364400416034343698204186575808495617n - 1n
+  )
+    .toString(16)
+    .padStart(64, '0');
+  const point = (
+    21888242871839275222246405745257275088696311157297823662689037894645226208583n - 1n
+  ).toString();
+  const store = await open(),
+    issued = [];
+  for (let n = 1; n <= 32; n++) {
+    const value = combined(n, 1, (history) => {
+      history.payload = normalizeRailgunPoiPayload({
+        ...history.payload,
+        proof: {
+          pi_a: [point, point],
+          pi_b: [
+            [point, point],
+            [point, point],
+          ],
+          pi_c: [point, point],
+        },
+        poiMerkleroots: [field],
+        txidMerkleroot: field,
+        txidMerklerootIndex: 7999,
+        blindedCommitmentsOut: ['0x' + field],
+        railgunTxidIfHasUnshield: '0x' + field,
+      });
+      history.payloadSha256 = sha(history.payload);
+      history.expected = { ...history.payload, outputCount: 1 };
+    });
+    issued.push(value);
+    expect((await prepare(store, value)).status).toBe('prepared');
+  }
+  jest.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER);
+  for (const value of issued) expect((await begin(store, value)).status).toBe('attempted');
+  const document = await readDocument();
+  expect(document.version).toBe(3);
+  expect(Buffer.byteLength(JSON.stringify(document))).toBeLessThanOrEqual(800 * 1024);
+  for (const entry of document.entries) {
+    expect(Buffer.byteLength(JSON.stringify(entry))).toBeLessThanOrEqual(16 * 1024);
+    expect(entry.attempt.submission.requestId).toBe(Number.MAX_SAFE_INTEGER);
+    expect(entry.attempt.submission.payload.railgunTxidIfHasUnshield).toBe('0x' + field);
+  }
+  expect(await store.inspect()).toMatchObject({
+    sequence: 64,
+    reservedTransitions: 64,
+    freeTransitions: 0,
+  });
+  store.close();
+  await store.closed;
+  const cold = await open(false);
+  expect(JSON.stringify((await readDocument()).entries)).toBe(JSON.stringify(document.entries));
+  expect((await cold.list()).length).toBe(32);
+});
+
+test.each(['before-rename', 'after-rename', 'floor', 'readback'])(
+  'v3 combined attempt %s interruption retains immutable durable envelope',
+  async (fault) => {
+    let armed = false;
+    const store = await open(true, {
+      advanceFloor: async (value) => {
+        if (armed && fault === 'floor' && value === 2) throw Error('fixture floor');
+        minimum = value;
+      },
+    });
+    const partial = combined();
+    await prepare(store, partial);
+    const prepared = await store.get(hex(2)),
+      target = filename();
+    const rename = fs.renameSync.bind(fs),
+      read = fs.readFileSync.bind(fs);
+    let renamed = false;
+    const renamer = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (armed && to === target && fault === 'before-rename') throw Error('fixture before');
+      rename(from, to);
+      if (armed && to === target) {
+        renamed = true;
+        if (fault === 'after-rename') throw Error('fixture after');
+      }
+    });
+    const reader = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...args) => {
+      if (armed && renamed && file === target && fault === 'readback')
+        throw Error('fixture readback');
+      return read(file, ...args);
+    });
+    armed = true;
+    let result;
+    try {
+      result = await begin(store, partial);
+    } finally {
+      armed = false;
+      renamer.mockRestore();
+      reader.mockRestore();
+    }
+    expect(result.status).toBe('recovery-required');
+    await store.closed;
+    const cold = await open(false),
+      saved = await cold.get(hex(2));
+    expect((await readDocument()).version).toBe(3);
+    if (fault === 'before-rename') {
+      expect(saved).toEqual(prepared);
+      expect(minimum).toBe(1);
+    } else {
+      assertAttempted(saved, prepared);
+      expect(minimum).toBe(2);
+      expect((await begin(cold, partial)).status).toBe('refused');
+    }
+  }
+);
+
+test.each(['before-floor-repair', 'after-floor-repair'])(
+  'v3 ciphertext rollback %s exposes only the existing scalar-floor protection',
+  async (point) => {
+    let armed = false;
+    const store = await open(true, {
+      advanceFloor: async (value) => {
+        if (armed && value === 2) throw Error('fixture floor');
+        minimum = value;
+      },
+    });
+    const partial = combined();
+    await prepare(store, partial);
+    const preparedBytes = fs.readFileSync(filename()),
+      prepared = await store.get(hex(2));
+    armed = true;
+    expect((await begin(store, partial)).status).toBe('recovery-required');
+    await store.closed;
+    if (point === 'after-floor-repair') {
+      const repaired = await open(false);
+      expect((await repaired.get(hex(2))).state).toBe('attempted');
+      expect(minimum).toBe(2);
+      repaired.close();
+      await repaired.closed;
+    }
+    fs.writeFileSync(filename(), preparedBytes);
+    if (point === 'after-floor-repair') await expect(open(false)).rejects.toMatchObject(REFUSED);
+    else {
+      expect(minimum).toBe(1);
+      const replayed = await open(false);
+      expect(await replayed.get(hex(2))).toEqual(prepared);
+    }
+  }
+);
+
+test('previous reader cannot mutate real encrypted floor or authenticated profile inventory on v3 refusal', async () => {
+  const profile = { id: 'public-poi-v3-unit-profile', userDataDir: options.directory };
+  options.directory = path.join(profile.userDataDir, 'wallet-railgun-accounts');
+  fs.mkdirSync(options.directory);
+  const profileId = sha([profile.id, profile.userDataDir]);
+  Object.assign(options, account(profileId));
+  const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
+  options.profileGuard = createPrivacyProfileGuard({
+    handle: options.handle,
+    profile,
+    seed: Buffer.alloc(64, 19),
+  });
+  const floorHandle = options.scope.getContext({
+    ...require('../networks/privacy-context').getPrivacyContext(options.handle).subject,
+    operation: 'public-unit-poi-floor',
+  });
+  const floorStore = createPrivacyStorage({ ...options, handle: floorHandle });
+  options.readFloor = jest.fn(async () => {
+    const value = await floorStore.get('floor-v1');
+    return value === null ? null : JSON.parse(value).sequence;
+  });
+  options.advanceFloor = jest.fn(async (sequence) => {
+    await floorStore.update('floor-v1', (text) => {
+      if (text !== null) expect(sequence).toBeGreaterThanOrEqual(JSON.parse(text).sequence);
+      return JSON.stringify({ sequence });
+    });
+  });
+  sample = issue();
+  const partial = combined();
+  const store = await open();
+  await prepare(store);
+  await begin(store);
+  await prepare(store, partial);
+  const canonicalEntries = JSON.stringify((await readDocument()).entries);
+  store.close();
+  await store.closed;
+  const files = directoryBytes();
+  const marker = path.join(profile.userDataDir, 'wallet-privacy-inventory.json');
+  const markerBytes = fs.readFileSync(marker);
+  expect(JSON.parse(markerBytes).state.files.length).toBe(2);
+  expect(await options.readFloor()).toBe(3);
+  options.advanceFloor.mockClear();
+  const writes = jest.spyOn(fs, 'writeFileSync'),
+    renames = jest.spyOn(fs, 'renameSync');
+  await expect(previousReader({ ...options, create: false })).rejects.toMatchObject(REFUSED);
+  expect(writes).not.toHaveBeenCalled();
+  expect(renames).not.toHaveBeenCalled();
+  writes.mockRestore();
+  renames.mockRestore();
+  expect(options.advanceFloor).not.toHaveBeenCalled();
+  expect(directoryBytes()).toEqual(files);
+  expect(fs.readFileSync(marker)).toEqual(markerBytes);
+  expect(await options.readFloor()).toBe(3);
+  const cold = await open(false);
+  expect((await cold.list()).length).toBe(2);
+  expect(JSON.stringify((await readDocument()).entries)).toBe(canonicalEntries);
+  expect(fs.readFileSync(marker)).toEqual(markerBytes);
 });

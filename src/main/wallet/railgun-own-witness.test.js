@@ -104,7 +104,10 @@ const pair = (a, b) => hash(a + b),
 for (let n = 0; n < 16; n++) zeros.push(pair(zeros[n], zeros[n]));
 let scope, caller, options, first, latest, txid, state, witness, events, fixture;
 async function setup(unshield = false, mutateRow = () => {}) {
-  fixture = sample(unshield);
+  fixture =
+    unshield === 'partial'
+      ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial()
+      : sample(unshield);
   mutateRow(fixture.row);
   const projection = createRailgunTxidProjection({
     hashPair: pair,
@@ -2687,12 +2690,13 @@ test.each([
   ['retained-completed', poiRetained, true, false],
   ['retained-submission', poiRetainedSubmission, true, true],
 ])(
-  '%s refuses a captured partial before receipt/source/TXID/root work',
+  '%s refuses a downgraded partial before receipt/source/TXID/root work',
   async (_name, run, destination, submission) => {
     const partial =
       require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial({
         recipient: '0x' + '34'.repeat(20),
       });
+    partial.capsule.version = 1;
     first.capture = {
       ...first.capture,
       capsule: partial.capsule,
@@ -2759,3 +2763,94 @@ test.each(['partial-v1', 'legacy-v2', 'unknown-kind'])(
     expect(mockRootCreate).not.toHaveBeenCalled();
   }
 );
+
+// Real structural capsules/journal projections and locally built TXID paths;
+// source, root acceptance and exited utility verification remain mocked.
+describe('partial own-POI producer row binding', () => {
+  test.each(['Shield', 'Transact'])(
+    '%s partial producer retains both commitments and U while C has ordinary coordinates',
+    async (type) => {
+      if (type === 'Transact') await setupTransact('partial');
+      else await setup('partial');
+      const result = await (type === 'Transact' ? transactInput : poiPreflight)(options);
+      expect(result.status).toBe('captured');
+      expect(result.capture.capsule.version).toBe(2);
+      expect(result.poiPreparation.ownEvidence.row.commitments).toEqual([
+        fixture.capsule.preparation.expected.changeCommitment,
+        fixture.capsule.preparation.expected.unshieldCommitment,
+      ]);
+      expect(result.witness.row.unshield.value).toBe('400');
+      expect(result.witness.row.utxoTreeOut).toBe(1);
+      expect(result.witness.row.utxoBatchStartPositionOut).toBe(123);
+      expect(mockVerify).toHaveBeenCalledTimes(1);
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(events.indexOf('txid-drained')).toBeLessThan(events.indexOf('verify-exited'));
+      if (type === 'Transact') {
+        expect(mockVerifyCreator).toHaveBeenCalledTimes(1);
+        expect(result.creatorProvenance.noteWitness.witness.index).toBeLessThan(
+          result.witness.index
+        );
+      }
+      expect(result.spendingEnabled).toBe(false);
+      expect(result.poiVerified).toBe(false);
+    }
+  );
+  test.each([
+    'order',
+    'input-as-unshield',
+    'change-as-unshield',
+    'recipient',
+    'token',
+    'foreign-tree',
+    'foreign-position',
+  ])('partial independently normalized path with %s refuses the final row join', async (fault) => {
+    await setup('partial', (row) => {
+      if (fault === 'order') row.commitments.reverse();
+      if (fault === 'input-as-unshield') row.unshield.value = '1000';
+      if (fault === 'change-as-unshield') row.unshield.value = '600';
+      if (fault === 'recipient') row.unshield.toAddress = '0x' + '56'.repeat(20);
+      if (fault === 'token') row.unshield.tokenData.tokenAddress = '0x' + '56'.repeat(20);
+      if (fault === 'foreign-tree') row.utxoTreeOut = 2;
+      if (fault === 'foreign-position') row.utxoBatchStartPositionOut = 124;
+    });
+    // The coherent current mirror/path is admissible independently. The
+    // mismatch is specifically against the authenticated own projection.
+    expect(() =>
+      require('./railgun-txid-note-witness').normalizeRailgunTxidWitness(witness, state)
+    ).not.toThrow();
+    expect(await poiPreflight(options)).toEqual({
+      status: 'refused',
+      stage: 'row',
+    });
+    expect(mockVerify).toHaveBeenCalledTimes(1);
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+  });
+  test.each(['input', 'change', 'unshield'])(
+    'partial private %s amount inconsistency refuses before receipt or utility',
+    async (field) => {
+      await setup('partial');
+      const preparation = first.capture.capsule.preparation;
+      preparation[field + 'Amount'] = String(BigInt(preparation[field + 'Amount']) + 1n);
+      latest.capture = copy(first.capture);
+      expect(await poiPreflight(options)).toEqual({
+        status: 'refused',
+        stage: 'capture',
+      });
+      expect(mockObserve).not.toHaveBeenCalled();
+      expect(mockOpen).not.toHaveBeenCalled();
+      expect(mockVerify).not.toHaveBeenCalled();
+    }
+  );
+  test('partial unshield verifier refusal cannot reach root or final recapture', async () => {
+    await setup('partial');
+    mockVerify.mockRejectedValueOnce(Error('wrong final unshield preimage'));
+    expect(await poiPreflight(options)).toEqual({
+      status: 'refused',
+      stage: 'txid-verify',
+    });
+    expect(mockRootCreate).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
+    const phase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+    phase.release();
+  });
+});

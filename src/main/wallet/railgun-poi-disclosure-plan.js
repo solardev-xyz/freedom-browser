@@ -5,6 +5,10 @@
  * Existing encrypted-store opens retain normal lease/floor/key housekeeping.
  */
 const assert = require('assert/strict');
+const {
+  getRailgunOwnPoiShape,
+  assertRailgunOwnPoiPayloadShape,
+} = require('./railgun-own-poi-shape-data');
 const { createHash, randomUUID } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
@@ -207,17 +211,15 @@ function claimRailgunAttemptedPoiOutput(input) {
   }
 }
 function operationKind(capture, payload) {
-  const kind = capture.capsule.selection.kind;
-  assert.ok(kind === 'railgun-private-transfer' || kind === 'railgun-token-unshield');
-  const transfer = kind === 'railgun-private-transfer';
-  assert.equal(payload.blindedCommitmentsOut.length, transfer ? 1 : 0);
-  assert.equal(payload.railgunTxidIfHasUnshield === '0x00', transfer);
-  return transfer ? 'transfer' : 'unshield';
+  assertRailgunOwnPoiPayloadShape(payload, capture.capsule);
+  const { kind } = getRailgunOwnPoiShape(capture.capsule);
+  if (kind === 'railgun-private-transfer') return 'transfer';
+  return kind === 'railgun-partial-unshield' ? 'partial-unshield' : 'unshield';
 }
 function summaryFor(state) {
   const payload = state.entry.payload;
   const operation = operationKind(state.capture, payload);
-  const transfer = operation === 'transfer';
+  const shape = getRailgunOwnPoiShape(state.capture.capsule);
   const summary = freeze({
     version: 1,
     protocol: 'railgun',
@@ -229,7 +231,13 @@ function summaryFor(state) {
     listKey: REQUIRED_LIST,
     operation,
     outputCount: payload.blindedCommitmentsOut.length,
-    unshieldIdCategory: transfer ? 'absent' : 'railgun-txid',
+    unshieldIdCategory: shape.hasUnshield ? 'railgun-txid' : 'absent',
+    ...(operation === 'partial-unshield'
+      ? {
+          disclosureExplanation:
+            'Submitting this proof links your blinded change output to the public unshield transaction, including its recipient address and amount, at the POI aggregator.',
+        }
+      : {}),
     requestInventory: [
       { method: 'ppoi_validate_poi_merkleroots', count: 1 },
       { method: 'ppoi_validate_txid_merkleroot', count: 1 },
@@ -243,7 +251,8 @@ function summaryFor(state) {
       'poi-list-root',
       'txid-root-and-index',
       'snark-proof-and-public-inputs',
-      transfer ? 'blinded-output-commitment' : 'unshield-railgun-txid',
+      ...(shape.hasPrivateOutput ? ['blinded-output-commitment'] : []),
+      ...(shape.hasUnshield ? ['unshield-railgun-txid'] : []),
     ],
     uncertaintyCategories: [
       'service-acceptance-unqualified',
@@ -655,6 +664,9 @@ async function submitRailgunRetainedPoi(input) {
         operation: base.operation,
         outputCount: base.outputCount,
         unshieldIdCategory: base.unshieldIdCategory,
+        ...(base.disclosureExplanation
+          ? { disclosureExplanation: base.disclosureExplanation }
+          : {}),
         destinations: submitting
           ? [{ role: 'poi-service', origin: new URL(POI_URL).origin }]
           : [
@@ -688,7 +700,7 @@ async function submitRailgunRetainedPoi(input) {
               'network-session-linkability',
               'transaction-linkability',
               'query-timing',
-              ...(base.operation === 'transfer' ? ['local-viewing-key-output-check'] : []),
+              ...(base.operation !== 'unshield' ? ['local-viewing-key-output-check'] : []),
             ],
         uncertaintyCategories: base.uncertaintyCategories,
         requestIdAllocation: base.requestIdAllocation,
