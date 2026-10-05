@@ -17,8 +17,11 @@ OpenLV cases separately; focused wallet/fixture checks pass 9,741 with force-exi
 Selected report maps and the 11,522-file outer freeze retain their distinct
 scope. Origin matching remains dormant supplied-data diagnostics with every
 authority flag false. Next: an existing-only journal reader and restricted
-host diagnostics, then portable-host and live-private qualification. The earlier
-checkpoints below retain their original sources and runtime versions.
+host diagnostics, then portable-host and live-private qualification. The subsequent
+[main e98e2dd5 synchronization](privacy-main-sync-e98e2dd5-2026-10-05.md) installs
+Electron 44.5.1 and refreshes the nodes, passing 332 affected tests, lint and seven
+Electron harness cases. The fifteen native reports keep their prior runtime
+scope. Earlier checkpoints below also retain their original sources and versions.
 
 The [public-facade cold-credit checkpoint](railgun-public-facade-cold-credit-2026-10-05.md)
 passes acknowledged and lost-response deposit, receipt-resolution/normal-scan and

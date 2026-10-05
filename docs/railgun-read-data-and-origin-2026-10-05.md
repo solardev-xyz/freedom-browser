@@ -137,3 +137,13 @@ public recovery uses the genuine journal and scanner against simulated chain
 responses. The dormant origin matcher is not activated by these runs. No live
 private spend, service acceptance, network anonymity, portable Kohaku Host,
 funded-profile migration or production activation follows from this milestone.
+
+## Subsequent main synchronization
+
+[Main e98e2dd5 is merged and installed](privacy-main-sync-e98e2dd5-2026-10-05.md)
+as `69f5b02d`, including Electron 44.5.1 and the locked dependency refresh.
+All pinned nodes were explicitly refreshed or version-checked. The merge passes
+332 affected tests, lint, seven fake-service Electron scenarios and local native
+addon checks. Only package/lock entries change in this campaign's source freeze;
+the Electron executable and Framework also change. The fifteen reports above
+retain their original Electron 44.4.5 scope and do not qualify the updated runtime.
