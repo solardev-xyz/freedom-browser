@@ -219,6 +219,7 @@ async function scanOnce(params = [{}]) {
       signal: controller.signal,
       background: true,
       ...LOG_SCAN_ROUTER_OPTIONS,
+      budgetMs: BRIDGE_DEADLINE_MS,
     })
     .then(
       (answer) => {
@@ -667,11 +668,13 @@ const transfer = (block, index) => ({
   topics: [TRANSFER_TOPIC, topicOf(WALLET), topicOf(RECIPIENT)],
   data: `0x${(34_078_720_000_000_000n * BigInt(index + 1)).toString(16).padStart(64, '0')}`,
   blockNumber: `0x${block.toString(16)}`,
+  blockHash: `0x${block.toString(16).padStart(64, 'b')}`,
   transactionHash: `0x${(index + 1).toString(16).padStart(64, '0')}`,
   logIndex: `0x${index.toString(16)}`,
 });
 const asItem = (log) => ({
   block_number: parseInt(log.blockNumber, 16),
+  block_hash: log.blockHash,
   transaction_hash: log.transactionHash,
   log_index: parseInt(log.logIndex, 16),
   from: { hash: '0x2B7c998aE67905de2335d438E003dC5459b352E0' },
@@ -711,8 +714,9 @@ const blockscoutIndex =
     endless = false,
     down = false,
     catchingUp = false,
+    hangPages = false,
   } = {}) =>
-  (url) => {
+  (url, signal) => {
     if (down) return Promise.reject(new TypeError('fetch failed'));
     if (url.pathname.endsWith('/main-page/indexing-status')) {
       return json({ finished_indexing: !catchingUp, finished_indexing_blocks: !catchingUp });
@@ -721,10 +725,17 @@ const blockscoutIndex =
     expect(url.pathname).toBe(`/api/v2/addresses/${WALLET}/token-transfers`);
     expect(url.searchParams.get('token')).toBe(XBZZ_TOKEN);
     expect(url.searchParams.get('filter')).toBe('from');
+    if (hangPages) return behave('hang', signal);
     if (endless) return json({ items: [], next_page_params: { block_number: 1, index: 0 } });
     return json({ items, next_page_params: null });
   };
 const indexCalls = (got) => got.fetches.filter((entry) => entry.startsWith('index@')).length;
+// RPC behaviours answering the transfers with one log re-encoded: the value,
+// the recipient and the range check still match, but not what Ant decodes.
+const servesAltered = (alter) => (span, params) => ({
+  kind: 'result',
+  result: inRange(TRANSFERS, params).map((log, i) => (i === 0 ? alter(log) : log)),
+});
 
 describe('Blockscout check (#484)', () => {
   test('the full history is one answer, verified by an RPC and Blockscout', async () => {
@@ -736,14 +747,16 @@ describe('Blockscout check (#484)', () => {
     expect(got).toMatchObject({ result: TRANSFERS, source: 'quorum', at: 0 });
     // Indexing status and height, then the transfers.
     expect(indexCalls(got)).toBe(3);
-    // A second scan knows b's and c's caps and goes straight to the check.
+    // A second scan knows b's and c's caps and goes straight to the check:
+    // the height, then the transfers and a's full answer in parallel, then
+    // the tail above the height from the quorum.
     const again = await scanOnce(scanOver(FULL_HISTORY));
     expect(again).toMatchObject({ result: TRANSFERS, at: 0 });
     expect(again.fetches.map((entry) => entry.split('@')[0])).toEqual([
       'index',
       'index',
-      'a',
       'index',
+      'a',
       'a',
       'b',
       'c',
@@ -787,6 +800,118 @@ describe('Blockscout check (#484)', () => {
     const got = await scanOnce(scanOver(FULL_HISTORY));
     expect(got.result).toBeUndefined();
     expect(got).toMatchObject({ shrinks: true, at: 0 });
+  });
+
+  test.each([
+    [
+      'a value word preceded by a zero word (Ant decodes value 0)',
+      (log) => ({ ...log, data: `0x${'0'.repeat(64)}${log.data.slice(2)}` }),
+    ],
+    ['a decimal value', (log) => ({ ...log, data: BigInt(log.data).toString() })],
+    [
+      'a recipient topic with dirty upper bytes',
+      (log) => ({
+        ...log,
+        topics: [log.topics[0], log.topics[1], `0x${'f'.repeat(24)}${log.topics[2].slice(26)}`],
+      }),
+    ],
+    ['a removed (reorged-out) log', (log) => ({ ...log, removed: true })],
+    [
+      'a block hash Blockscout does not have',
+      (log) => ({ ...log, blockHash: `0x${'c'.repeat(64)}` }),
+    ],
+    ['no block hash', (log) => ({ ...log, blockHash: undefined })],
+  ])('an RPC log carrying %s is a disagreement', async (_name, alter) => {
+    useEndpoints(
+      { a: servesAltered(alter), b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      { indexer: blockscoutIndex() }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got.result).toBeUndefined();
+    expect(got).toMatchObject({ shrinks: true, at: 0 });
+  });
+
+  test('without an RPC able to serve the span, Blockscout is not asked at all', async () => {
+    // Every endpoint has a 10,000-block cap. The first scan learns them (the
+    // last one while trying it for the full answer); after that no endpoint
+    // could give the full answer to check, so Blockscout never sees the
+    // wallet.
+    useEndpoints(
+      {
+        a: serves(TRANSFERS, 10_000),
+        b: serves(TRANSFERS, 10_000),
+        c: serves(TRANSFERS, 10_000),
+      },
+      { indexer: blockscoutIndex() }
+    );
+    await scanOnce(scanOver(FULL_HISTORY));
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got).toMatchObject({ shrinks: true, at: 0 });
+    expect(indexCalls(got)).toBe(0);
+  });
+
+  test("once the full-range RPC fails, Blockscout's transfer pages are abandoned", async () => {
+    let pageSignal = null;
+    const index = blockscoutIndex();
+    useEndpoints(
+      { a: 'down', b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      {
+        indexer: (url, signal) => {
+          if (url.pathname.endsWith('/token-transfers')) {
+            pageSignal = signal;
+            return behave('hang', signal);
+          }
+          return index(url, signal);
+        },
+      }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got).toMatchObject({ shrinks: true, at: 0 });
+    expect(pageSignal?.aborted).toBe(true);
+  });
+
+  test('a failed Blockscout is not asked again for five minutes', async () => {
+    useEndpoints(
+      { a: serves(TRANSFERS), b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      { indexer: blockscoutIndex({ down: true }) }
+    );
+    const first = await scanOnce(scanOver(FULL_HISTORY));
+    expect(first).toMatchObject({ shrinks: true });
+    expect(indexCalls(first)).toBeGreaterThan(0);
+    const again = await scanOnce(scanOver(FULL_HISTORY));
+    expect(again).toMatchObject({ shrinks: true, at: 0 });
+    expect(indexCalls(again)).toBe(0);
+    // Once the cooldown is over, a recovered Blockscout answers again.
+    jest.setSystemTime(Date.now() + 5 * 60_000 + 1);
+    useEndpoints(
+      { a: serves(TRANSFERS), b: PUBLICNODE_T(TRANSFERS), c: serves(TRANSFERS, 10_000) },
+      { indexer: blockscoutIndex() }
+    );
+    const recovered = await scanOnce(scanOver(FULL_HISTORY));
+    expect(recovered).toMatchObject({ result: TRANSFERS });
+  });
+
+  test("a hung Blockscout still gets Ant its range refusal inside the bridge's deadline", async () => {
+    // Two quorum rounds wait out their 30 s, then the transfer pages hang:
+    // without a budget the check would outlast the bridge's 120 s and Ant
+    // would get a timeout instead of the refusal naming the span to use.
+    useEndpoints(
+      {
+        a: serves(TRANSFERS),
+        b: (span, params) => (span > 10_000 ? 'hang' : serves(TRANSFERS)(span, params)),
+        c: (span, params) => (span > 10_000 ? 'hang' : serves(TRANSFERS)(span, params)),
+        d: serves(TRANSFERS, 10_000),
+        e: serves(TRANSFERS, 10_000),
+      },
+      { indexer: blockscoutIndex({ hangPages: true }) }
+    );
+    const got = await scanOnce(scanOver(FULL_HISTORY));
+    expect(got.result).toBeUndefined();
+    // The router's own answer, at the check's 75 s cap after the 30 s round,
+    // not the bridge's deadline reply.
+    expect(got.message).not.toBe(BRIDGE_DEADLINE_REPLY.message);
+    expect(got.shrinks).toBe(true);
+    expect(got.at).toBe(30_000 + 75_000);
   });
 
   test('more than 100 pages are not read', async () => {

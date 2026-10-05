@@ -249,10 +249,13 @@ function normalizeRpcUrls(rpcUrls = []) {
   return { urls };
 }
 
-// rpc and prover coverage URLs are both fetched by the main process (the RPC
-// pool and the Colibri prover client), so both get the same https-or-loopback
-// SSRF validation. Other roles carry no network-fetched URL to guard.
-const URL_VALIDATED_ROLES = new Set(['rpc', 'prover']);
+// rpc, prover and indexer coverage URLs are all fetched by the main process
+// (the RPC pool, the Colibri prover client, the Blockscout index check, which
+// also sends it the node wallet's address), so all three get the same
+// https-or-loopback SSRF validation. The index check re-applies it to every
+// redirect hop (blockscout-index.js). Other roles carry no network-fetched URL
+// to guard.
+const URL_VALIDATED_ROLES = new Set(['rpc', 'prover', 'indexer']);
 
 function validateEndpointSourceForPersist(source) {
   if (!URL_VALIDATED_ROLES.has(source?.role)) return null;
@@ -733,4 +736,5 @@ module.exports = {
   addCustomChain,
   removeCustomChain,
   invalidate,
+  validateRpcUrl,
 };

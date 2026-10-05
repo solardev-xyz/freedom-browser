@@ -70,14 +70,22 @@ full-range answer against Blockscout's index of the same transfers (the
 `indexer` endpoint source, `gnosisscan.io/api/v2`, which runs its own nodes;
 `blockscout-index.js`) instead of refusing: same block, transaction, log
 index, sender, recipient and value for every transfer, nothing extra on
-either side. The check stops 64 blocks below Blockscout's indexed height; the
+either side, with block hash too. The RPC's logs are compared in the exact
+encoding Ant decodes (a single 32-byte value word, zero-padded address
+topics, `removed` not set), not as a normalised value. The check stops 64 blocks below Blockscout's indexed height; the
 blocks above go through the quorum (refused when wider than a quorum can
 serve). It is only used while Blockscout reports its block indexing finished
 (`/main-page/indexing-status`): while it is still catching up on history, an
 old transfer could be missing although its newest block is current. It reads at most 100 pages of 50
-transfers, each within 15 s and all within 60 s. Any disagreement, failure or
-timeout falls back to the refusal above, so Ant narrows its window. Blockscout
-sees the node wallet's address for this.
+transfers, each within 15 s and all within 60 s, and the whole check
+(height, full-range answer, pages and tail) gets at most 75 s and never runs
+past 5 s before the bridge's own 120 s deadline, so Ant gets the refusal, not
+a timeout. Any disagreement, failure or timeout falls back to the refusal
+above, so Ant narrows its window. A Blockscout that failed is not asked again
+for 5 minutes. Blockscout sees the node wallet's address for this, but only
+while an RPC could serve the span: with none able to, it is not asked, and
+its transfer pages are abandoned as soon as the RPC answer fails. Its URL
+gets the same https-or-loopback check as RPC URLs, on every redirect hop.
 
 ### Which error Ant sees: one ranking rule
 

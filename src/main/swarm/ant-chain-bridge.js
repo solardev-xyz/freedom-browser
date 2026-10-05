@@ -385,7 +385,11 @@ async function startAntChainBridge({
               signal: controller.signal,
               // Ant's polling must not queue ahead of wallet/app reads.
               background: true,
-              ...(method === 'eth_getLogs' ? LOG_SCAN_ROUTER_OPTIONS : {}),
+              ...(method === 'eth_getLogs'
+                ? // The router fits its Blockscout check inside this bridge's
+                  // own deadline, so Ant gets its range refusal, not a timeout.
+                  { ...LOG_SCAN_ROUTER_OPTIONS, budgetMs: timeoutMs }
+                : {}),
             });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');

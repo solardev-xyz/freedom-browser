@@ -152,6 +152,8 @@ test('Ant reads are background work, and only the RPC quorum answers its log sca
     rankError: rankLogScanError,
     rangeCapOf: logScanRangeCap,
     indexQueryOf: logScanIndexQuery,
+    // The bridge's own deadline, which the router's index check fits inside.
+    budgetMs: 120000,
   });
   // Other reads are not ranked: Ant does not adapt them to the error.
   await post(bridge.url, rpc('eth_blockNumber', []));

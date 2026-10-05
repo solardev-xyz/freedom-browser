@@ -3,6 +3,7 @@ const {
   tokenTransfersFrom,
   IndexUnavailableError,
   MAX_PAGES,
+  MAX_REDIRECTS,
 } = require('./blockscout-index');
 
 const BASE = 'https://gnosisscan.io/api/v2';
@@ -125,5 +126,62 @@ describe('tokenTransfersFrom', () => {
     await expect(
       tokenTransfersFrom(BASE, { from: FROM, token: TOKEN, signal: controller.signal })
     ).rejects.toBeInstanceOf(IndexUnavailableError);
+  });
+});
+
+describe('redirects', () => {
+  const redirect = (location, status = 301) =>
+    Promise.resolve({
+      ok: false,
+      status,
+      headers: { get: (name) => (name.toLowerCase() === 'location' ? location : null) },
+      body: null,
+    });
+  const page = { items: [{ block_number: 1 }], next_page_params: null };
+
+  test('are followed to another https host, without fetch following them itself', async () => {
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => redirect('https://gnosisscan.io/api/v2/elsewhere'))
+      .mockImplementationOnce(() => reply(page));
+    await expect(tokenTransfersFrom(BASE, { from: FROM, token: TOKEN })).resolves.toEqual(
+      page.items
+    );
+    expect(global.fetch.mock.calls[1][0]).toBe('https://gnosisscan.io/api/v2/elsewhere');
+    expect(global.fetch.mock.calls.every(([, init]) => init.redirect === 'manual')).toBe(true);
+  });
+
+  test.each([
+    ['plaintext http', 'http://gnosisscan.io/api/v2/x'],
+    ['a LAN host, by the caller-supplied check', 'https://192.168.1.50/api/v2/x'],
+  ])('to %s are refused before the wallet address is sent there', async (_name, location) => {
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => redirect(location))
+      .mockImplementation(() => reply(page));
+    const validateUrl = (url) =>
+      new URL(url).protocol !== 'https:' || new URL(url).hostname.startsWith('192.168.')
+        ? 'refused'
+        : null;
+    await expect(
+      tokenTransfersFrom(BASE, { from: FROM, token: TOKEN, validateUrl })
+    ).rejects.toThrow('Blockscout URL refused');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('without a caller check, only https is fetched', async () => {
+    global.fetch = jest.fn(() => reply(page));
+    await expect(
+      tokenTransfersFrom('http://gnosisscan.io/api/v2', { from: FROM, token: TOKEN })
+    ).rejects.toBeInstanceOf(IndexUnavailableError);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test(`stop after ${MAX_REDIRECTS} hops`, async () => {
+    global.fetch = jest.fn(() => redirect('https://gnosisscan.io/api/v2/loop'));
+    await expect(tokenTransfersFrom(BASE, { from: FROM, token: TOKEN })).rejects.toThrow(
+      'redirected too often'
+    );
+    expect(global.fetch).toHaveBeenCalledTimes(MAX_REDIRECTS + 1);
   });
 });

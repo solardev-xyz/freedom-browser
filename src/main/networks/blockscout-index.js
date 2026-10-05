@@ -4,11 +4,15 @@
  * The router uses it as a second, independent source for a range-capped log
  * scan that no quorum of RPC endpoints can serve: an RPC's full-range
  * eth_getLogs answer is checked against Blockscout's own index of the same
- * transfers (see verifyWithIndexer in chain-data-router.js). Blockscout runs
+ * transfers (see answerFromIndex in chain-data-router.js). Blockscout runs
  * its own nodes and indexer, so agreement means two providers agree.
  *
  * Gnosis Chain's instance answers at gnosisscan.io (gnosis.blockscout.com
- * redirects there since 2026-10); redirects are followed.
+ * redirects there since 2026-10). Redirects are followed by hand, at most
+ * MAX_REDIRECTS hops, and every hop's URL must pass the caller's `validateUrl`
+ * (the router passes the registry's https-or-loopback check, the one every
+ * main-process-fetched endpoint URL gets), so a redirect cannot turn the
+ * request into a plaintext or LAN fetch carrying the wallet address.
  */
 
 // A wallet with more transfers than this (50 per page) is not checked: the
@@ -16,6 +20,16 @@
 const MAX_PAGES = 100;
 const PAGE_TIMEOUT_MS = 15_000;
 const TOTAL_TIMEOUT_MS = 60_000;
+const MAX_REDIRECTS = 3;
+
+// Without a validator from the caller, only https URLs are fetched.
+function httpsOnly(url) {
+  try {
+    return new URL(url).protocol === 'https:' ? null : 'Blockscout URL must use https://';
+  } catch {
+    return 'Blockscout URL must be a valid URL';
+  }
+}
 
 class IndexUnavailableError extends Error {
   constructor(message) {
@@ -24,15 +38,32 @@ class IndexUnavailableError extends Error {
   }
 }
 
-async function getJson(url, signal) {
+async function getJson(url, signal, validateUrl = httpsOnly) {
+  const timeout = AbortSignal.any([signal, AbortSignal.timeout(PAGE_TIMEOUT_MS)]);
+  let target = url;
   let response;
-  try {
-    response = await fetch(url, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(PAGE_TIMEOUT_MS)]),
-    });
-  } catch (err) {
-    throw new IndexUnavailableError(`Blockscout request failed: ${err.name || err.message}`);
+  for (let hop = 0; ; hop += 1) {
+    const invalid = validateUrl(target);
+    if (invalid) throw new IndexUnavailableError(`Blockscout URL refused: ${invalid}`);
+    try {
+      response = await fetch(target, {
+        headers: { accept: 'application/json' },
+        redirect: 'manual',
+        signal: timeout,
+      });
+    } catch (err) {
+      throw new IndexUnavailableError(`Blockscout request failed: ${err.name || err.message}`);
+    }
+    const location =
+      response.status >= 300 && response.status < 400 && response.headers?.get?.('location');
+    if (!location) break;
+    response.body?.cancel?.().catch(() => {});
+    if (hop >= MAX_REDIRECTS) throw new IndexUnavailableError('Blockscout redirected too often');
+    try {
+      target = new URL(location, target).href;
+    } catch {
+      throw new IndexUnavailableError('Blockscout redirected to an invalid URL');
+    }
   }
   if (!response.ok) {
     response.body?.cancel?.().catch(() => {});
@@ -52,11 +83,11 @@ async function getJson(url, signal) {
  * transfer may be missing although the newest block is current, so the index
  * cannot vouch for a range and IndexUnavailableError is thrown.
  */
-async function indexedHeight(baseUrl, { signal } = {}) {
+async function indexedHeight(baseUrl, { signal, validateUrl } = {}) {
   const live = signal || new AbortController().signal;
   const [status, blocks] = await Promise.all([
-    getJson(`${baseUrl}/main-page/indexing-status`, live),
-    getJson(`${baseUrl}/main-page/blocks`, live),
+    getJson(`${baseUrl}/main-page/indexing-status`, live, validateUrl),
+    getJson(`${baseUrl}/main-page/blocks`, live, validateUrl),
   ]);
   if (status?.finished_indexing_blocks !== true) {
     throw new IndexUnavailableError('Blockscout has not finished indexing blocks');
@@ -74,14 +105,14 @@ async function indexedHeight(baseUrl, { signal } = {}) {
  * whole read takes longer than TOTAL_TIMEOUT_MS, or the wallet has more than
  * MAX_PAGES pages.
  */
-async function tokenTransfersFrom(baseUrl, { from, token, signal } = {}) {
+async function tokenTransfersFrom(baseUrl, { from, token, signal, validateUrl } = {}) {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(TOTAL_TIMEOUT_MS)].filter(Boolean));
   const base = `${baseUrl}/addresses/${from}/token-transfers`;
   const items = [];
   let next = null;
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const query = new URLSearchParams({ type: 'ERC-20', filter: 'from', token, ...(next || {}) });
-    const body = await getJson(`${base}?${query}`, deadline);
+    const body = await getJson(`${base}?${query}`, deadline, validateUrl);
     if (!Array.isArray(body?.items)) {
       throw new IndexUnavailableError('Blockscout answered no transfer list');
     }
@@ -97,6 +128,7 @@ module.exports = {
   tokenTransfersFrom,
   IndexUnavailableError,
   MAX_PAGES,
+  MAX_REDIRECTS,
   PAGE_TIMEOUT_MS,
   TOTAL_TIMEOUT_MS,
 };

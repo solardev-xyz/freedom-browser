@@ -312,6 +312,7 @@ function clearAdaptiveRoutingForTest() {
   colibriInFlight.clear();
   colibriInFlightByRoute.clear();
   logRangeState.clear();
+  indexFailureUntil.clear();
 }
 
 function blockNumberOf(value) {
@@ -404,15 +405,42 @@ function noteLogRangeFailure(chainId, url, span, error, { capOf, rank }, now) {
 // indexer's height (a reorg margin, as Ant's own rescan tail); the blocks
 // above go through the quorum.
 const INDEX_REORG_MARGIN = 64;
+// The whole check (height, full-range RPC answer and transfer pages, the tail
+// above the height) gets at most this long, and never more than the caller's
+// own budget (request's `budgetMs`, the bridge's deadline) leaves after the quorum
+// rounds, less INDEX_REPLY_MARGIN_MS: the refusal it falls back to has to
+// reach the caller before the caller's own timer turns it into a timeout.
+const INDEX_CHECK_MAX_MS = 75_000;
+const INDEX_REPLY_MARGIN_MS = 5_000;
+// Less time than this left: the check is not started.
+const INDEX_CHECK_MIN_MS = 10_000;
+// An indexer that failed (down, still catching up, a page failing, too many
+// pages) is not asked again for this long; each scan would otherwise wait for
+// it again before getting the same refusal.
+const INDEX_FAILURE_COOLDOWN_MS = 5 * 60_000;
+const indexFailureUntil = new Map();
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const blockHex = (number) => `0x${number.toString(16)}`;
 const addressTopic = (address) => `0x${address.toLowerCase().replace(/^0x/, '').padStart(64, '0')}`;
+// The exact encodings Ant ABI-decodes: a 32-byte hash, a left-zero-padded
+// address topic, and a `data` of exactly one 32-byte word (the value).
+const HASH_32 = /^0x[0-9a-f]{64}$/;
+const ADDRESS_TOPIC_32 = /^0x0{24}([0-9a-f]{40})$/;
+const VALUE_WORD = /^0x[0-9a-f]{64}$/;
+
+// The RPC endpoints that could answer `span` blocks whole right now.
+function fullRangeCandidates(chainId, span) {
+  const now = Date.now();
+  return registry
+    .getEndpoints(chainId, 'rpc')
+    .filter((url) => servableLogSpan(chainId, url, now) >= span);
+}
 
 // The first endpoint able to serve the whole span answers it alone; the
 // indexer is what verifies it. Endpoints that fail are learned from as in a
 // quorum round.
 async function fullRangeLogs(chainId, params, span, logRange, timeoutMs, signal) {
-  for (const url of registry.getEndpoints(chainId, 'rpc')) {
+  for (const url of fullRangeCandidates(chainId, span)) {
     if (servableLogSpan(chainId, url, Date.now()) < span) continue;
     try {
       const logs = await requestRpcUrl(url, 'eth_getLogs', params, timeoutMs, { signal });
@@ -428,38 +456,48 @@ async function fullRangeLogs(chainId, params, span, logRange, timeoutMs, signal)
 }
 
 // Whether an RPC's Transfer logs and the indexer's transfers are the same
-// set: same block, transaction, log index, sender, recipient and value for
-// every one, nothing extra on either side.
+// set: same block (number and hash), transaction, log index, sender, recipient
+// and value for every one, nothing extra on either side. The RPC's logs are
+// what Ant decodes, so they are checked in the exact encoding Ant reads (one
+// 32-byte value word, zero-padded address topics, not removed), not as a
+// normalised value another encoding could also produce.
 function sameTransfers(logs, items, { token, from, fromBlock, throughBlock }) {
   const fromTopic = addressTopic(from);
+  const lower = (value) => (typeof value === 'string' ? value.toLowerCase() : '');
   const rpcKeys = [];
   for (const entry of logs) {
     const block = blockNumberOf(entry?.blockNumber);
+    const logIndex = blockNumberOf(entry?.logIndex);
+    const topics = Array.isArray(entry?.topics) ? entry.topics.map(lower) : [];
+    const recipient = ADDRESS_TOPIC_32.exec(topics[2] || '');
+    const data = lower(entry?.data);
+    const blockHash = lower(entry?.blockHash);
+    const transactionHash = lower(entry?.transactionHash);
     if (
-      String(entry?.address).toLowerCase() !== token ||
-      !Array.isArray(entry.topics) ||
-      entry.topics.length !== 3 ||
-      String(entry.topics[0]).toLowerCase() !== TRANSFER_TOPIC ||
-      String(entry.topics[1]).toLowerCase() !== fromTopic ||
+      lower(entry?.address) !== token ||
+      topics.length !== 3 ||
+      topics[0] !== TRANSFER_TOPIC ||
+      topics[1] !== fromTopic ||
+      !recipient ||
+      !VALUE_WORD.test(data) ||
+      !HASH_32.test(blockHash) ||
+      !HASH_32.test(transactionHash) ||
+      entry.removed === true ||
       block === null ||
+      logIndex === null ||
       block < fromBlock ||
       block > throughBlock
     ) {
       return false;
     }
-    let value;
-    try {
-      value = BigInt(entry.data).toString();
-    } catch {
-      return false;
-    }
     rpcKeys.push(
       [
         block,
-        String(entry.transactionHash).toLowerCase(),
-        blockNumberOf(entry.logIndex),
-        `0x${String(entry.topics[2]).slice(-40).toLowerCase()}`,
-        value,
+        blockHash,
+        transactionHash,
+        logIndex,
+        `0x${recipient[1]}`,
+        BigInt(data).toString(),
       ].join('|')
     );
   }
@@ -476,6 +514,7 @@ function sameTransfers(logs, items, { token, from, fromBlock, throughBlock }) {
       String(item.from?.hash).toLowerCase() === from
         ? [
             item.block_number,
+            String(item.block_hash).toLowerCase(),
             String(item.transaction_hash).toLowerCase(),
             item.log_index,
             String(item.to?.hash).toLowerCase(),
@@ -495,9 +534,12 @@ function sameTransfers(logs, items, { token, from, fromBlock, throughBlock }) {
 // the caller's indexQueryOf recognises (Ant's xBZZ `Transfer(from)` scan).
 // The blocks above the indexer's height, less a reorg margin, go through the
 // quorum. Returns null when anything is missing, slow or disagrees: the
-// caller then refuses the span as before.
+// caller then refuses the span as before. Blockscout's transfer list (which
+// names the wallet) is only read while an RPC could answer the span, and is
+// abandoned as soon as none did.
 async function answerFromIndex(chainId, method, params, options) {
   const { logRange, includeTrust = false, quorumTimeoutMs = null, signal } = options;
+  const { deadlineAt = null } = logRange;
   let query;
   try {
     query = logRange.indexQueryOf(params);
@@ -506,27 +548,58 @@ async function answerFromIndex(chainId, method, params, options) {
   }
   const [indexer] = registry.getEndpoints(chainId, 'indexer');
   if (!query || !indexer) return null;
+  // The registry's check for every main-process-fetched endpoint URL; a
+  // hand-edited config is not trusted to have passed it on save.
+  const validateUrl =
+    typeof registry.validateRpcUrl === 'function' ? registry.validateRpcUrl : undefined;
+  if (validateUrl?.(indexer)) return null;
+  const cooldownKey = `${chainId}|${indexer}`;
+  if ((indexFailureUntil.get(cooldownKey) || 0) > Date.now()) return null;
   const token = String(query.token).toLowerCase();
   const from = String(query.from).toLowerCase();
   const fromBlock = blockNumberOf(params[0].fromBlock);
   const toBlock = blockNumberOf(params[0].toBlock);
+  // No endpoint could answer even the widest span the check would ask for.
+  if (fullRangeCandidates(chainId, toBlock - fromBlock + 1 - INDEX_REORG_MARGIN).length === 0) {
+    return null;
+  }
+  const budgetMs = Math.min(
+    INDEX_CHECK_MAX_MS,
+    Number.isFinite(deadlineAt) ? deadlineAt - Date.now() - INDEX_REPLY_MARGIN_MS : Infinity
+  );
+  if (budgetMs < INDEX_CHECK_MIN_MS) return null;
+  const budget = new AbortController();
+  const budgetTimer = setTimeout(
+    () => budget.abort(new Error(`index check exceeded ${budgetMs} ms`)),
+    budgetMs
+  );
+  const checkSignal = AbortSignal.any([budget.signal, signal].filter(Boolean));
   const network = registry.getNetwork(chainId) || {};
   const configuredTimeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
   const timeoutMs = Number.isFinite(quorumTimeoutMs)
     ? Math.max(configuredTimeoutMs, quorumTimeoutMs)
     : configuredTimeoutMs;
+  const paging = new AbortController();
+  const pagingSignal = AbortSignal.any([checkSignal, paging.signal]);
+  let pages;
   try {
-    const height = await blockscout.indexedHeight(indexer, { signal });
+    const height = await blockscout.indexedHeight(indexer, { signal: checkSignal, validateUrl });
     const throughBlock = Math.min(toBlock, height - INDEX_REORG_MARGIN);
     if (throughBlock < fromBlock) return null;
     const span = throughBlock - fromBlock + 1;
+    if (fullRangeCandidates(chainId, span).length === 0) return null;
     const head = [{ ...params[0], toBlock: blockHex(throughBlock) }];
-    const [rpc, items] = await Promise.all([
-      fullRangeLogs(chainId, head, span, logRange, timeoutMs, signal),
-      blockscout.tokenTransfersFrom(indexer, { from, token, signal }),
-    ]);
+    pages = blockscout
+      .tokenTransfersFrom(indexer, { from, token, signal: pagingSignal, validateUrl })
+      .then(
+        (items) => ({ items }),
+        (error) => ({ error })
+      );
+    const rpc = await fullRangeLogs(chainId, head, span, logRange, timeoutMs, checkSignal);
     if (!rpc) return null;
-    if (!sameTransfers(rpc.logs, items, { token, from, fromBlock, throughBlock })) {
+    const read = await pages;
+    if (read.error) throw read.error;
+    if (!sameTransfers(rpc.logs, read.items, { token, from, fromBlock, throughBlock })) {
       log.warn?.(
         `[chain-data] ${chainId} eth_getLogs over ${span} blocks: ${endpointHost(rpc.url)} ` +
           `(${rpc.logs.length} logs) and Blockscout disagree; not answering it`
@@ -538,6 +611,7 @@ async function answerFromIndex(chainId, method, params, options) {
       const tailParams = [{ ...params[0], fromBlock: blockHex(throughBlock + 1) }];
       tail = await requestQuorum(chainId, method, tailParams, {
         ...options,
+        signal: checkSignal,
         includeTrust: false,
         logRange: { ...logRange, span: toBlock - throughBlock, indexQueryOf: null },
       });
@@ -562,8 +636,21 @@ async function answerFromIndex(chainId, method, params, options) {
     };
   } catch (err) {
     signal?.throwIfAborted();
+    // Only the indexer's own failures cool it down: not the check's budget
+    // running out, nor the pages abandoned because no RPC answered.
+    if (
+      err instanceof blockscout.IndexUnavailableError &&
+      !checkSignal.aborted &&
+      !paging.signal.aborted
+    ) {
+      indexFailureUntil.set(cooldownKey, Date.now() + INDEX_FAILURE_COOLDOWN_MS);
+    }
     log.verbose(`[chain-data] ${chainId} eth_getLogs index check failed: ${safeErrorMessage(err)}`);
     return null;
+  } finally {
+    clearTimeout(budgetTimer);
+    // Stop reading Blockscout's pages on every way out that did not need them.
+    paging.abort();
   }
 }
 
@@ -1499,8 +1586,13 @@ async function request(
     // Optional params -> { token, from } for a log scan an indexer can verify
     // (an ERC-20 Transfer(from) filter), or null (see answerFromIndex).
     indexQueryOf = null,
+    // Optional ms the caller waits for this request in all (the Ant bridge's
+    // own deadline). The index check is cut short so its fallback refusal
+    // still arrives inside it (see answerFromIndex).
+    budgetMs = null,
   } = {}
 ) {
+  const deadlineAt = Number.isFinite(budgetMs) && budgetMs > 0 ? Date.now() + budgetMs : null;
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
@@ -1531,6 +1623,7 @@ async function request(
           capOf: rangeCapOf,
           rank: rankError,
           indexQueryOf: typeof indexQueryOf === 'function' ? indexQueryOf : null,
+          deadlineAt,
         };
   // Only a page-driven read (an app supplies its routing context) trades
   // verification for interactive latency. Wallet-internal reads have no user

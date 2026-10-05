@@ -398,6 +398,21 @@ describe('mutation layer', () => {
     expect(registry.getEndpointSourceList().find((src) => src.id === 'bad-prover')).toBeUndefined();
   });
 
+  test.each([
+    ['http://192.168.1.50'],
+    ['https://10.0.0.5/api/v2'],
+    ['http://blockscout.example/api/v2'],
+  ])('upsertEndpointSource rejects unsafe indexer URL %s', (url) => {
+    // The indexer URL is fetched by the main process (the Blockscout check)
+    // and is sent the node wallet's address, so it gets the same validation.
+    const result = registry.upsertEndpointSource('bad-indexer', {
+      role: 'indexer', keyed: false, coverage: { '100': url },
+    });
+
+    expect(result.success).toBe(false);
+    expect(registry.getEndpointSourceList().find((src) => src.id === 'bad-indexer')).toBeUndefined();
+  });
+
   test('upsertEndpointSource accepts an https prover URL', () => {
     const result = registry.upsertEndpointSource('good-prover', {
       role: 'prover', keyed: false, coverage: { '1': 'https://prover.example/v1' },
