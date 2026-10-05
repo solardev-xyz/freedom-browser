@@ -60,6 +60,7 @@ const {
   openRailgunCompletedAccountWallet,
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
+  readRailgunCompletedAccountPrivateInput,
   restoreRailgunAccountWallet,
   recoverRailgunAccountPrivateProof,
   prepareRailgunAccountPrivateIntent,
@@ -1955,4 +1956,331 @@ test('late source failure during proof recovery retains genuine outcome despite 
   expect(error.message).not.toContain('source detail');
   expect(mockRunner.recoverReadOnly).toHaveBeenCalledTimes(1);
   await account.close();
+});
+
+// Real account registry/phase and capsule/owned-record normalizers; the completed
+// worker/store/identity issuers above are controlled seams, not native evidence.
+function completedInputFixture(kind = 'railgun-private-transfer', creator = 'Shield') {
+  const f = proofRecoveryFixture(kind, creator);
+  Object.assign(f.owned.ownedPoi[0], {
+    npk: '0x' + '0'.repeat(63) + '7',
+    blindedCommitment: '0x' + '0'.repeat(63) + '8',
+    blockNumber: 5944700,
+  });
+  f.owned.read.readiness = {
+    to: { number: 5944740, hash: '0x' + 'a'.repeat(64) },
+  };
+  return f;
+}
+function completedInputWork() {
+  return [
+    mockRunner.run,
+    mockRunner.restoreReadOnly,
+    mockRunner.recoverReadOnly,
+    options.coordinator.withPublicSnapshot,
+    options.coordinator.withCompletedPublicSnapshot,
+    mockCompletedStore,
+    mockOpenStore,
+    mockJournal.readState,
+    mockJournal.revalidate,
+    mockJournal.prepare,
+    mockJournal.complete,
+    mockCoverage.read,
+    mockCoverage.write,
+    mockSession.inspectWalletState,
+    mockRead,
+  ].map((mock) => mock?.mock.calls.length ?? 0);
+}
+for (const kind of [
+  'railgun-private-transfer',
+  'railgun-token-unshield',
+  'railgun-partial-unshield',
+]) {
+  test.each(['Shield', 'Transact'])(
+    `completed input ${kind}/%s is synchronous bounded data at an advanced root`,
+    async (creator) => {
+      const input = completedOptions(),
+        f = completedInputFixture(kind, creator);
+      const account = await openRailgunCompletedAccountWallet(input);
+      const keys = jest.spyOn(mockEnrollment, 'withGenerationKeys');
+      const before = completedInputWork();
+      try {
+        const value = readRailgunCompletedAccountPrivateInput(account, options, f.capsule);
+        expect(value).not.toBeInstanceOf(Promise);
+        expect(value).toEqual({
+          binding: {
+            checkpointHash: f.owned.checkpointHash,
+            id: '0:1',
+            type: creator,
+            txid: f.owned.ownedPoi[0].txid,
+            noteHash: f.capsule.noteHash,
+            nullifier: f.capsule.preparation.expected.nullifier,
+            amount:
+              kind === 'railgun-partial-unshield'
+                ? f.capsule.preparation.inputAmount
+                : f.capsule.preparation.amount,
+          },
+          ownedRecord: f.owned.ownedPoi[0],
+          publicThrough: f.owned.read.readiness.to,
+          generationId: account.generationId,
+        });
+        expect(Object.keys(value).sort()).toEqual([
+          'binding',
+          'generationId',
+          'ownedRecord',
+          'publicThrough',
+        ]);
+        for (const part of [value, value.binding, value.ownedRecord, value.publicThrough])
+          expect(Object.isFrozen(part)).toBe(true);
+        expect(value.ownedRecord).not.toBe(f.owned.ownedPoi[0]);
+        expect(value.publicThrough).not.toBe(f.owned.read.readiness.to);
+        expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThan(2048);
+        expect(f.owned.trees[0].root).not.toBe(f.capsule.preparation.expected.merkleRoot);
+        expect(completedInputWork()).toEqual(before);
+        expect(keys).not.toHaveBeenCalled();
+        expect(() => assertRailgunAccountPrivateWindow(value, account, options)).toThrow();
+        expect(account.signal.aborted).toBe(false);
+      } finally {
+        await account.close();
+      }
+    }
+  );
+}
+
+test.each(['copy', 'empty', 'identity', 'enrollment', 'coordinator'])(
+  'completed input refuses %s registry substitution without later work',
+  async (kind) => {
+    const input = completedOptions(),
+      f = completedInputFixture();
+    const account = await openRailgunCompletedAccountWallet(input);
+    const before = completedInputWork();
+    try {
+      expect(() =>
+        readRailgunCompletedAccountPrivateInput(
+          kind === 'copy' ? { ...account } : kind === 'empty' ? {} : account,
+          ['copy', 'empty'].includes(kind) ? options : { ...options, [kind]: {} },
+          f.capsule
+        )
+      ).toThrow(expect.objectContaining({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' }));
+      expect(completedInputWork()).toEqual(before);
+      expect(readRailgunCompletedAccountPrivateInput(account, options, f.capsule).binding.id).toBe(
+        '0:1'
+      );
+    } finally {
+      await account.close();
+    }
+  }
+);
+
+test('completed input refuses an ordinary genuine account before reading its owned data', async () => {
+  const f = completedInputFixture();
+  const account = await openRailgunAccountWallet(options);
+  const before = mockRunner.readOwned.mock.calls.length;
+  try {
+    expect(() => readRailgunCompletedAccountPrivateInput(account, options, f.capsule)).toThrow();
+    expect(mockRunner.readOwned).toHaveBeenCalledTimes(before);
+    expect(account.signal.aborted).toBe(false);
+  } finally {
+    await account.close();
+  }
+});
+
+test.each([
+  'spent',
+  'note-hash',
+  'record-hash',
+  'nullifier',
+  'amount',
+  'asset',
+  'type',
+  'txid',
+  'duplicate-note',
+  'duplicate-record',
+  'position',
+  'instance',
+  'blinded-commitment',
+  'record-extra',
+  'future-creator',
+  'through-hash',
+  'checkpoint',
+])('completed input rejects current %s mismatch without utility or query', async (kind) => {
+  const input = completedOptions(),
+    f = completedInputFixture('railgun-partial-unshield', 'Transact');
+  const account = await openRailgunCompletedAccountWallet(input);
+  const before = completedInputWork();
+  const note = f.owned.read.received[0],
+    record = f.owned.ownedPoi[0];
+  if (kind === 'spent') note.spentTxid = '0x' + 'b'.repeat(64);
+  if (kind === 'note-hash') note.hash = '0x' + '1'.repeat(64);
+  if (kind === 'record-hash') record.hash = '0x' + '1'.repeat(64);
+  if (kind === 'nullifier') record.nullifier = '0x' + '1'.repeat(64);
+  if (kind === 'amount') note.amount = 999n;
+  if (kind === 'asset') note.asset.contract = '0x' + '1'.repeat(40);
+  if (kind === 'type') record.type = 'Unknown';
+  if (kind === 'txid') record.txid = '0x' + '1'.repeat(64);
+  if (kind === 'duplicate-note') f.owned.read.received.push({ ...note });
+  if (kind === 'duplicate-record') f.owned.ownedPoi.push({ ...record });
+  if (kind === 'position') f.owned.trees[0].length = 1;
+  if (kind === 'instance') f.owned.read.instanceId = 'foreign';
+  if (kind === 'blinded-commitment') record.blindedCommitment = '0x' + 'f'.repeat(64);
+  if (kind === 'record-extra') record.secret = 'must not escape';
+  if (kind === 'future-creator') record.blockNumber = 5944741;
+  if (kind === 'through-hash') f.owned.read.readiness.to.hash = 'unknown';
+  if (kind === 'checkpoint') f.owned.checkpointHash = 'unknown';
+  try {
+    expect(() => readRailgunCompletedAccountPrivateInput(account, options, f.capsule)).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' })
+    );
+    expect(completedInputWork()).toEqual(before);
+    expect(account.signal.aborted).toBe(false);
+  } finally {
+    await account.close();
+  }
+});
+
+test.each([
+  'version',
+  'kind',
+  'wallet',
+  'selection',
+  'extra',
+  'getter',
+  'nested-getter',
+  'array-prototype',
+  'proxy',
+  'toJSON',
+  'oversize',
+  'cycle',
+])('completed input rejects malformed %s capsule without executing caller code', async (kind) => {
+  const input = completedOptions(),
+    f = completedInputFixture('railgun-partial-unshield');
+  const account = await openRailgunCompletedAccountWallet(input);
+  const before = completedInputWork();
+  let capsule = JSON.parse(JSON.stringify(f.capsule));
+  const hook = jest.fn(() => f.capsule);
+  const mapHook = jest.fn();
+  if (kind === 'version') capsule.version = 1;
+  if (kind === 'kind') capsule.selection.kind = 'unknown';
+  if (kind === 'wallet') capsule.walletId = 'f'.repeat(64);
+  if (kind === 'selection') capsule.selection.position = 2;
+  if (kind === 'extra') capsule.receipt = {};
+  if (kind === 'getter') Object.defineProperty(capsule, 'preparation', { get: hook });
+  if (kind === 'nested-getter') Object.defineProperty(capsule.selection, 'kind', { get: hook });
+  if (kind === 'array-prototype')
+    Object.setPrototypeOf(
+      capsule.pathElements,
+      Object.assign(Object.create(Array.prototype), { toJSON: hook, map: mapHook })
+    );
+  if (kind === 'proxy') capsule = new Proxy(capsule, { ownKeys: hook, get: hook });
+  if (kind === 'toJSON') capsule.toJSON = hook;
+  if (kind === 'oversize') capsule.noteHash = 'a'.repeat(32769);
+  if (kind === 'cycle') capsule.extra = capsule;
+  try {
+    expect(() => readRailgunCompletedAccountPrivateInput(account, options, capsule)).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' })
+    );
+    expect(hook).not.toHaveBeenCalled();
+    expect(mapHook).not.toHaveBeenCalled();
+    expect(completedInputWork()).toEqual(before);
+    expect(readRailgunCompletedAccountPrivateInput(account, options, f.capsule).binding.type).toBe(
+      'Shield'
+    );
+  } finally {
+    await account.close();
+  }
+});
+
+test.each(['closed', 'caller', 'generation', 'public-generation', 'destination', 'scan-receipt'])(
+  'completed input refuses %s lifetime drift without restoring state',
+  async (kind) => {
+    const caller = new AbortController();
+    const input = { ...completedOptions(), signal: caller.signal },
+      f = completedInputFixture();
+    const account = await openRailgunCompletedAccountWallet(input);
+    const before = completedInputWork();
+    if (kind === 'closed') await account.close();
+    if (kind === 'caller') caller.abort();
+    if (kind === 'generation') generation = { ...generation, id: 'f'.repeat(64) };
+    if (kind === 'public-generation')
+      mockAssertPublic.mockReturnValue({
+        generationId: 'f'.repeat(64),
+        sourceId: 'b'.repeat(64),
+        publicId: 'c'.repeat(64),
+      });
+    if (kind === 'destination')
+      mockAssertDestination.mockImplementation(() => {
+        throw Error('revoked');
+      });
+    // The real runner performs this journal/source receipt assertion on readOwned.
+    if (kind === 'scan-receipt')
+      mockRunner.readOwned.mockImplementation(() => {
+        throw Error('stale receipt');
+      });
+    try {
+      expect(() => readRailgunCompletedAccountPrivateInput(account, options, f.capsule)).toThrow();
+      expect(completedInputWork()).toEqual(before);
+    } finally {
+      await account.close();
+    }
+  }
+);
+
+test('completed input data stays detached after fixture mutations and account closure', async () => {
+  const input = completedOptions(),
+    f = completedInputFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  const value = readRailgunCompletedAccountPrivateInput(account, options, f.capsule);
+  const snapshot = JSON.stringify(value);
+  f.owned.ownedPoi[0].blindedCommitment = '0x' + '1'.repeat(64);
+  f.owned.read.readiness.to.number++;
+  f.capsule.pathElements[0] = '0x' + '1'.repeat(64);
+  await account.close();
+  expect(JSON.stringify(value)).toBe(snapshot);
+  expect(() => readRailgunCompletedAccountPrivateInput(account, options, f.capsule)).toThrow();
+  expect(() => assertRailgunAccountPrivateWindow(value, account, options)).toThrow();
+});
+
+test('completed input lazily refuses its expired account before a timer callback fires', async () => {
+  let now = 100;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const input = completedOptions(),
+    f = completedInputFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  const before = completedInputWork();
+  try {
+    now += 180000;
+    expect(account.signal.aborted).toBe(false);
+    expect(() => readRailgunCompletedAccountPrivateInput(account, options, f.capsule)).toThrow();
+    expect(completedInputWork()).toEqual(before);
+  } finally {
+    await account.close();
+  }
+});
+
+test('completed input cannot read through an in-flight restore, then works after its real promise drains', async () => {
+  const input = completedOptions(),
+    f = completedInputFixture();
+  const account = await openRailgunCompletedAccountWallet(input);
+  const gate = completedDeferred();
+  mockRunner.restoreReadOnly.mockImplementationOnce(async () => {
+    await gate.promise;
+    return { receipt: {}, coverage: {}, readOnly: { readOnly: true, writeAttempts: 0 } };
+  });
+  const restoring = restoreRailgunAccountWallet(account, options);
+  await completedUntil(() => mockRunner.restoreReadOnly.mock.calls.length === 2);
+  const before = completedInputWork();
+  try {
+    expect(() => readRailgunCompletedAccountPrivateInput(account, options, f.capsule)).toThrow();
+    expect(completedInputWork()).toEqual(before);
+  } finally {
+    gate.resolve();
+    await restoring;
+  }
+  try {
+    expect(readRailgunCompletedAccountPrivateInput(account, options, f.capsule).binding.id).toBe(
+      '0:1'
+    );
+  } finally {
+    await account.close();
+  }
 });

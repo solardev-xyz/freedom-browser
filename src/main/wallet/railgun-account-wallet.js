@@ -8,6 +8,7 @@ const privateCreators = new WeakMap();
 const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
+const { types } = require('util');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const {
   assertRailgunIdentity,
@@ -47,6 +48,45 @@ const fail = () =>
 const check = (v) => {
   if (!v) throw fail();
 };
+// The fixed data accessor must not execute caller getters or toJSON hooks.
+// Normalization below detaches the validated capsule synchronously.
+function completedInputCapsule(input) {
+  let nodes = 0,
+    bytes = 0;
+  const inspect = (value, depth = 0) => {
+    check(++nodes <= 4096 && depth <= 16);
+    if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) {
+      if (typeof value === 'string') check((bytes += Buffer.byteLength(value)) <= 32768);
+      return;
+    }
+    check(value && typeof value === 'object' && !types.isProxy(value));
+    const array = Array.isArray(value);
+    check(
+      array
+        ? Object.getPrototypeOf(value) === Array.prototype
+        : [Object.prototype, null].includes(Object.getPrototypeOf(value))
+    );
+    const keys = Reflect.ownKeys(value);
+    if (array) {
+      check(value.length <= 1024);
+      require('assert/strict').deepEqual(
+        keys,
+        [...Array(value.length).keys()].map(String).concat('length')
+      );
+    }
+    for (const key of keys) {
+      if (array && key === 'length') continue;
+      check(typeof key === 'string');
+      check((bytes += Buffer.byteLength(key)) <= 32768);
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      check(Object.hasOwn(descriptor, 'value') && descriptor.enumerable);
+      inspect(descriptor.value, depth + 1);
+    }
+  };
+  inspect(input);
+  check(Buffer.byteLength(JSON.stringify(input)) <= 32768);
+  return require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(input);
+}
 function bindRecoveryInput(capsule, owned, descriptor) {
   check(
     capsule.walletId === descriptor.walletId && owned.read.instanceId === descriptor.instanceId
@@ -797,6 +837,28 @@ async function openAccount(
       coordinator,
       current,
       restoreCurrent,
+      readCompletedPrivateInput(input) {
+        check(completedOnly);
+        const capsule = completedInputCapsule(input);
+        const observed = current();
+        const binding = bindRecoveryInput(capsule, observed, descriptor);
+        const selected = observed.ownedPoi.find((record) => record.id === binding.id);
+        const note = observed.read.received.find((record) => record.id === binding.id);
+        const through = observed.read.readiness.to;
+        check(Number.isSafeInteger(through.number) && through.number >= 0);
+        check(typeof through.hash === 'string' && /^0x[0-9a-f]{64}$/.test(through.hash));
+        const publicThrough = Object.freeze({ number: through.number, hash: through.hash });
+        const [ownedRecord] =
+          require('./railgun-owned-poi-records').normalizeRailgunOwnedPoiRecords(
+            [selected],
+            { received: [note] },
+            { to: publicThrough }
+          );
+        check(/^[0-9a-f]{64}$/.test(binding.checkpointHash));
+        check(/^[0-9a-f]{64}$/.test(generation.id));
+        current();
+        return Object.freeze({ binding, ownedRecord, publicThrough, generationId: generation.id });
+      },
       recoverPrivateProof(recovery) {
         check(completedOnly && recovery !== undefined);
         return restoreCurrent(undefined, undefined, recovery);
@@ -828,6 +890,15 @@ function owned(account, { identity, enrollment, coordinator }) {
 }
 function readRailgunAccountOwnedNotes(account, owners) {
   return owned(account, owners).current();
+}
+/** Detached selected-input data from a genuine completed wallet. No receipt,
+ * private window, signing, POI freshness or submission authority is issued. */
+function readRailgunCompletedAccountPrivateInput(account, owners, capsule) {
+  try {
+    return owned(account, owners).readCompletedPrivateInput(capsule);
+  } catch {
+    throw fail();
+  }
 }
 function restoreRailgunAccountWallet(account, owners) {
   return owned(account, owners).restoreCurrent();
@@ -898,6 +969,7 @@ module.exports = {
   openRailgunCompletedAccountWallet,
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
+  readRailgunCompletedAccountPrivateInput,
   restoreRailgunAccountWallet,
   recoverRailgunAccountPrivateProof,
   reserveRailgunAccountWalletHandoff,

@@ -353,3 +353,419 @@ test('corruption or another key fails closed, and operation-specific contexts ca
     })
   ).toThrow(expect.objectContaining({ code: 'PRIVATE_JOURNAL_SCOPE' }));
 });
+
+// Authenticated encrypted structural histories; no resolution permit or network
+// authority is invented. Every seeded history must pass the real journal decoder.
+const word = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+const railgunKinds = [
+  'railgun-private-transfer',
+  'railgun-token-unshield',
+  'railgun-partial-unshield',
+];
+function railgunIntent(kind, { tree = 0, nullifier = word(10) } = {}) {
+  const {
+    createRailgunPartialCapsuleData,
+    createRailgunLegacyCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const f =
+    kind === 'railgun-partial-unshield'
+      ? createRailgunPartialCapsuleData()
+      : createRailgunLegacyCapsuleData(kind);
+  f.inner.boundParams.treeNumber = tree;
+  f.inner.nullifiers = [nullifier];
+  return require('./railgun-transact-intent').railgunTransactJournalIntent({
+    ...f.capsule.preparation.transaction,
+    from: subject.principal,
+    data: f.encode(),
+  });
+}
+function railgunHistory(kind, archived, reverted = false) {
+  const record =
+    kind === 'railgun-partial-unshield'
+      ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial({
+          archived,
+        }).record
+      : require('../../../scripts/fixtures/railgun-own-txid-data').sample(
+          kind === 'railgun-token-unshield',
+          archived
+        ).record;
+  if (reverted) {
+    if (archived) record.status = 'reverted';
+    else record.observation.status = 'reverted';
+    const outcome = archived ? record.railgun : record.resolution.railgun;
+    outcome.outcome = 'reverted';
+    outcome.transact = null;
+  }
+  return record;
+}
+async function seedSubmissionHistory(record, archived, version = 4) {
+  const state = { records: archived ? [] : [record], archive: archived ? [record] : [] };
+  const storage = require('./privacy-storage').createPrivacyStorage({ handle, directory, key });
+  await storage.set(
+    'submissions-v1',
+    JSON.stringify({
+      version,
+      records: state.records,
+      ...(version === 1 ? {} : { archive: state.archive }),
+    })
+  );
+  expect(await journal.readSnapshot()).toEqual(state);
+  const file = require('./privacy-storage').getPrivacyStoragePath(handle, directory);
+  return { file, bytes: fs.readFileSync(file) };
+}
+describe.each(railgunKinds)('permanent Railgun attempt exclusion for %s', (kind) => {
+  test.each(['attempted', 'submitted', 'pending', 'reorged'])(
+    'active %s blocks a different hash and higher nonce before generic unresolved refusal',
+    async (state) => {
+      const intent = railgunIntent(kind);
+      await journal.begin(word(101), 1, intent);
+      if (state === 'submitted') await journal.markSubmitted(word(101));
+      if (state === 'pending' || state === 'reorged')
+        await journal.observe(
+          word(101),
+          {
+            status: state,
+            trust: 'unverified',
+            observedAt: 1,
+            confirmations: 0,
+            blockNumber: null,
+            blockHash: null,
+          },
+          0
+        );
+      const file = require('./privacy-storage').getPrivacyStoragePath(handle, directory);
+      const bytes = fs.readFileSync(file);
+      await expect(
+        journal.begin(word(102), 2, { ...intent, digest: word(103) })
+      ).rejects.toMatchObject({
+        code: 'PRIVATE_RAILGUN_NULLIFIER_RESERVED',
+        message: 'Selected input has a recorded transaction attempt',
+      });
+      expect(fs.readFileSync(file)).toEqual(bytes);
+      expect(await journal.list()).toHaveLength(1);
+    }
+  );
+  test.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    'resolved archived=%s reverted=%s never authorizes reuse, including after reopen',
+    async (archived, reverted) => {
+      const record = railgunHistory(kind, archived, reverted);
+      const { file, bytes } = await seedSubmissionHistory(record, archived);
+      await expect(journal.assertCanSubmit()).resolves.toBeUndefined();
+      scope.close();
+      ({ scope, handle } = open());
+      journal = createSubmissionJournal({ handle, directory, key });
+      const candidate = railgunIntent(kind, record.intent);
+      let failure;
+      try {
+        await journal.begin(word(102), record.nonce + 1, candidate);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        code: 'PRIVATE_RAILGUN_NULLIFIER_RESERVED',
+        message: 'Selected input has a recorded transaction attempt',
+      });
+      expect(failure.transactionHash).toBeUndefined();
+      expect(failure.submissionStatus).toBeUndefined();
+      expect(failure.message).not.toContain(record.intent.nullifier);
+      expect(fs.readFileSync(file)).toEqual(bytes);
+      expect(await journal.readSnapshot()).toEqual({
+        records: archived ? [] : [record],
+        archive: archived ? [record] : [],
+      });
+    }
+  );
+  test.each([false, true])(
+    'distinct nullifier is admissible with resolved archived=%s history',
+    async (archived) => {
+      const record = railgunHistory(kind, archived, true);
+      await seedSubmissionHistory(record, archived);
+      const intent = railgunIntent(kind, { tree: record.intent.tree, nullifier: word(991) });
+      await journal.begin(word(102), record.nonce + 1, intent);
+      expect((await journal.list()).at(-1).intent).toEqual(intent);
+    }
+  );
+});
+test.each(railgunKinds)(
+  'different operation %s cannot bypass the same tree/nullifier reservation',
+  async (kind) => {
+    const record = railgunHistory('railgun-partial-unshield', true, true);
+    await seedSubmissionHistory(record, true);
+    const intent = railgunIntent(kind, record.intent);
+    expect(intent).not.toEqual(record.intent);
+    await expect(journal.begin(word(102), 4, intent)).rejects.toMatchObject({
+      code: 'PRIVATE_RAILGUN_NULLIFIER_RESERVED',
+    });
+  }
+);
+test('same nullifier bytes in a different input tree are a distinct protocol identity', async () => {
+  const record = railgunHistory('railgun-private-transfer', true, true);
+  await seedSubmissionHistory(record, true);
+  const intent = railgunIntent('railgun-private-transfer', {
+    tree: record.intent.tree + 1,
+    nullifier: record.intent.nullifier,
+  });
+  await journal.begin(word(102), 4, intent);
+  expect((await journal.list())[0].intent).toEqual(intent);
+});
+test.each([false, true])(
+  'concurrent adapters atomically reserve one same-input attempt, reversed=%s',
+  async (reverse) => {
+    const other = createSubmissionJournal({ handle: open().handle, directory, key });
+    const intents = [
+      railgunIntent('railgun-private-transfer'),
+      railgunIntent('railgun-partial-unshield'),
+    ];
+    const calls = [
+      () => journal.begin(word(110), 1, intents[0]),
+      () => other.begin(word(111), 2, intents[1]),
+    ];
+    if (reverse) calls.reverse();
+    const result = await Promise.allSettled(calls.map((call) => call()));
+    expect(result.map((value) => value.status)).toEqual(['fulfilled', 'rejected']);
+    expect(result[1].reason.code).toBe('PRIVATE_RAILGUN_NULLIFIER_RESERVED');
+    const records = await journal.list();
+    expect(records).toHaveLength(1);
+    expect(records[0].intent).toEqual(intents[reverse ? 1 : 0]);
+    expect(await other.list()).toEqual(records);
+  }
+);
+test('same hash keeps its existing refusal precedence and distinct pending input keeps account serialization', async () => {
+  const intent = railgunIntent('railgun-private-transfer');
+  await journal.begin(word(110), 1, intent);
+  await expect(journal.begin(word(110), 2, intent)).rejects.toMatchObject({
+    code: 'PRIVATE_BROADCAST_ALREADY_ATTEMPTED',
+    transactionHash: word(110),
+  });
+  await expect(
+    journal.begin(word(111), 2, railgunIntent('railgun-private-transfer', { nullifier: word(991) }))
+  ).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+});
+test.each([1, 2, 3, 4])(
+  'legacy document v%s resolved Railgun input refuses without schema rewrite',
+  async (version) => {
+    const record = railgunHistory('railgun-private-transfer', false, true);
+    const { file, bytes } = await seedSubmissionHistory(record, false, version);
+    await expect(
+      journal.begin(word(111), 4, railgunIntent('railgun-partial-unshield', record.intent))
+    ).rejects.toMatchObject({ code: 'PRIVATE_RAILGUN_NULLIFIER_RESERVED' });
+    expect(fs.readFileSync(file)).toEqual(bytes);
+  }
+);
+test.each(['tree', 'nullifier', 'target', 'chainId'])(
+  'invalid or caller-expanded %s identity refuses before storage mutation',
+  async (field) => {
+    const intent = railgunIntent('railgun-private-transfer');
+    const invalid = {
+      ...intent,
+      [field]: field === 'tree' ? -1 : field === 'nullifier' ? '0xBAD' : 'other',
+    };
+    await expect(journal.begin(word(101), 1, invalid)).rejects.toMatchObject({
+      code: 'PRIVATE_JOURNAL_INVALID',
+    });
+    expect(fs.readdirSync(directory)).toEqual([]);
+  }
+);
+
+test.each([false, true])(
+  'atomic guard follows a concurrent archive transition, archive-first=%s',
+  async (archiveFirst) => {
+    const record = railgunHistory('railgun-partial-unshield', false, true);
+    await seedSubmissionHistory(record, false);
+    const calls = [
+      () =>
+        journal.archiveResolved(
+          [{ hash: record.hash, revision: record.revision }],
+          [{ blockNumber: 301, blockHash: word(202) }]
+        ),
+      () => journal.begin(word(102), 4, railgunIntent('railgun-private-transfer', record.intent)),
+    ];
+    if (!archiveFirst) calls.reverse();
+    const results = await Promise.allSettled(calls.map((call) => call()));
+    const refusal = results.find((value) => value.status === 'rejected');
+    expect(results.filter((value) => value.status === 'fulfilled')).toHaveLength(1);
+    expect(refusal.reason.code).toBe('PRIVATE_RAILGUN_NULLIFIER_RESERVED');
+    expect(await journal.list()).toEqual([]);
+    expect((await journal.listArchive())[0].intent).toEqual(record.intent);
+  }
+);
+function genericResolved(intent, archived, ordinary) {
+  const common = {
+    hash: word(100),
+    nonce: 3,
+    ...(intent ? { intent } : {}),
+    ...(ordinary ? { route: 'ordinary', ordinary } : {}),
+  };
+  return archived
+    ? {
+        ...common,
+        status: 'reverted',
+        blockNumber: 291,
+        blockHash: word(200),
+        archivedAt: 0,
+        finalized: { blockNumber: 301, blockHash: word(202) },
+      }
+    : {
+        ...common,
+        state: 'submitted',
+        attemptedAt: 0,
+        revision: 2,
+        observation: {
+          status: 'reverted',
+          trust: 'unverified',
+          observedAt: 1,
+          confirmations: 4,
+          blockNumber: 291,
+          blockHash: word(200),
+        },
+        resolution: { minimumConfirmations: 3, reviewedAt: 0, blockHash: word(200) },
+      };
+}
+test.each([false, true])(
+  'PPv2 commitment exclusion remains unchanged, archived=%s',
+  async (archived) => {
+    const intent = {
+      kind: 'ppv2-native-ragequit',
+      digest: word(501),
+      pool: '0x' + '22'.repeat(20),
+      commitment: word(10),
+    };
+    const record = genericResolved(intent, archived);
+    const { file, bytes } = await seedSubmissionHistory(record, archived);
+    await expect(
+      journal.begin(word(102), 4, { ...intent, digest: word(502) })
+    ).rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
+    expect(fs.readFileSync(file)).toEqual(bytes);
+    // Same bytes in another protocol are not the same spent-input namespace.
+    const railgun = railgunIntent('railgun-private-transfer', { nullifier: intent.commitment });
+    await journal.begin(word(102), 4, railgun);
+    expect((await journal.list()).at(-1).intent).toEqual(railgun);
+  }
+);
+test.each(['ppv2', 'ordinary', 'unclassified', 'shield'])(
+  'resolved Railgun history does not reserve unrelated %s submissions',
+  async (kind) => {
+    const old = railgunHistory('railgun-private-transfer', false, true);
+    await seedSubmissionHistory(old, false);
+    let intent, ordinary;
+    if (kind === 'ppv2')
+      intent = {
+        kind: 'ppv2-native-ragequit',
+        digest: word(501),
+        pool: '0x' + '22'.repeat(20),
+        commitment: old.intent.nullifier,
+      };
+    if (kind === 'ordinary')
+      ordinary = {
+        to: '0x' + '56'.repeat(20),
+        selector: null,
+        type: 2,
+        senderCode: '0x',
+        trust: 'unverified-rpc',
+      };
+    if (kind === 'shield')
+      intent = {
+        kind: 'railgun-native-shield',
+        digest: word(501),
+        npk: old.intent.nullifier,
+        token: require('./railgun-shield-pins.json').wrappedNative,
+        amount: '1000',
+        noteValue: '998',
+      };
+    await journal.begin(word(102), 4, intent, ordinary);
+    const saved = (await journal.list()).at(-1);
+    expect(saved.intent).toEqual(intent);
+    expect(saved.ordinary).toEqual(ordinary);
+    expect(saved.route).toBe(kind === 'ordinary' ? 'ordinary' : undefined);
+  }
+);
+test.each([false, true])(
+  'resolved Shield history with matching NPK bytes is not a Railgun transact reservation, archived=%s',
+  async (archived) => {
+    const candidate = railgunIntent('railgun-private-transfer');
+    const intent = {
+      kind: 'railgun-native-shield',
+      digest: word(501),
+      npk: candidate.nullifier,
+      token: require('./railgun-shield-pins.json').wrappedNative,
+      amount: '1000',
+      noteValue: '998',
+    };
+    const record = genericResolved(intent, archived);
+    const railgun = {
+      outcome: 'reverted',
+      finalizedBlockNumber: 300,
+      finalizedBlockHash: word(201),
+      shield: null,
+    };
+    if (archived) record.railgun = railgun;
+    else record.resolution.railgun = railgun;
+    await seedSubmissionHistory(record, archived);
+    await journal.begin(word(102), 4, candidate);
+    expect((await journal.list()).at(-1).intent).toEqual(candidate);
+  }
+);
+test('ordinary resolved history keeps its normal admission and nonce behavior', async () => {
+  const ordinary = {
+    to: '0x' + '56'.repeat(20),
+    selector: null,
+    type: 2,
+    senderCode: '0x',
+    trust: 'unverified-rpc',
+  };
+  await seedSubmissionHistory(genericResolved(undefined, true, ordinary), true);
+  await expect(journal.begin(word(102), 3, undefined, ordinary)).rejects.toMatchObject({
+    code: 'PRIVATE_NONCE_REUSE_REFUSED',
+  });
+  await journal.begin(word(102), 4, undefined, ordinary);
+  expect((await journal.list())[0]).toMatchObject({ route: 'ordinary', ordinary });
+});
+test('guard is account-local and unsupported chains cannot create this journal', async () => {
+  const intent = railgunIntent('railgun-private-transfer');
+  await journal.begin(word(101), 1, intent);
+  const another = createSubmissionJournal({
+    handle: open('fixture', { ...subject, principal: '0x' + '22'.repeat(20) }).handle,
+    directory,
+    key,
+  });
+  await another.begin(word(102), 1, intent);
+  expect(await another.list()).toHaveLength(1);
+  expect(await journal.list()).toHaveLength(1);
+  expect(() =>
+    createSubmissionJournal({
+      handle: open('fixture', { ...subject, chainId: 1 }).handle,
+      directory,
+      key,
+    })
+  ).toThrow(expect.objectContaining({ code: 'PRIVATE_JOURNAL_SCOPE' }));
+});
+test('possibly committed Railgun write remains reserved after inventory failure and reopen', async () => {
+  const guarded = createSubmissionJournal({
+    handle,
+    directory,
+    key,
+    profileGuard: {
+      assert() {},
+      remember() {
+        throw Error('inventory failure');
+      },
+    },
+  });
+  const intent = railgunIntent('railgun-partial-unshield');
+  await expect(guarded.begin(word(101), 1, intent)).rejects.toMatchObject({
+    code: 'PRIVATE_BROADCAST_UNCERTAIN',
+    transactionHash: word(101),
+  });
+  scope.close();
+  ({ scope, handle } = open());
+  journal = createSubmissionJournal({ handle, directory, key });
+  await expect(journal.begin(word(102), 2, intent)).rejects.toMatchObject({
+    code: 'PRIVATE_RAILGUN_NULLIFIER_RESERVED',
+  });
+  expect((await journal.list())[0].hash).toBe(word(101));
+});

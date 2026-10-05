@@ -312,6 +312,24 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
               'Selected note has a recorded exit attempt'
             );
           }
+          // This journal is Sepolia-only and validated Railgun transact intents
+          // target the pinned proxy. Its spent-input namespace is tree/nullifier,
+          // independent of operation, proof, outputs, nonce or transaction hash.
+          // Resolution (including revert) and archival never authorize replay.
+          if (
+            metadata.intent?.kind === 'railgun-transact' &&
+            [...records, ...archive].some(
+              (record) =>
+                record.intent?.kind === 'railgun-transact' &&
+                record.intent.tree === metadata.intent.tree &&
+                record.intent.nullifier === metadata.intent.nullifier
+            )
+          ) {
+            throw privacyError(
+              'PRIVATE_RAILGUN_NULLIFIER_RESERVED',
+              'Selected input has a recorded transaction attempt'
+            );
+          }
           // Conservatively serialize all sends for this account. Unverified RPC
           // receipts alone cannot clear the gate; an explicit review must.
           if (unresolved(records))
