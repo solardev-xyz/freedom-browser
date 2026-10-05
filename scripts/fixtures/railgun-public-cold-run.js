@@ -221,7 +221,119 @@ async function setup({ state, archive, chain, transport, observer, mode }) {
     },
   };
 }
-async function resume({ state, archive, chain, transport, phase, previous }) {
+// Local diagnostic measurements start after genuine wallet/public opening work.
+async function diagnoseOrigin({
+  account,
+  state,
+  chain,
+  previous,
+  observer,
+  transport,
+  captured,
+  archive,
+  profileDirectory,
+}) {
+  const { checkpointHash } = require('../../src/main/wallet/railgun-wallet-coverage');
+  const { diagnoseRailgunShieldOrigin } = require('../../src/main/wallet/railgun-shield-origin');
+  const initial = owned(account, state),
+    checkpoint = captured.checkpoint,
+    view = account.view;
+  assert.equal(checkpointHash(checkpoint), initial.checkpointHash);
+  assert.notEqual(checkpointHash(checkpoint), checkpointHash(previous.baseline.checkpoint));
+  assert.deepEqual(checkpoint.state.trees, initial.trees);
+  const before = {
+    transport: transport.snapshot(),
+    resources: observer.snapshot(),
+    profile: handoff.profileFiles(profileDirectory),
+    wallet: walletFiles(state, archive),
+    owned: data.digest(initial),
+    signs: state.signs,
+    addresses: state.addresses,
+  };
+  const input = {
+    account,
+    owners: state.owners,
+    noteId: `${chain.expected.tree}:${chain.expected.position}`,
+    signal: state.signal.signal,
+    transaction: chain.transaction,
+    receipt: chain.receipt,
+    checkpoint,
+  };
+  const result = (status) => ({
+    status,
+    trust: 'supplied-data',
+    ownershipAuthenticated: false,
+    canonicalityVerified: false,
+    spendingEnabled: false,
+    poiBypassEnabled: false,
+    localJournalAuthenticated: status === 'matched',
+    localAccountSnapshotSourceAuthenticated: status === 'matched',
+  });
+  let calls = 0,
+    matches = 0,
+    refusals = 0;
+  const check = async (options, status) => {
+    calls++;
+    const value = await diagnoseRailgunShieldOrigin(options);
+    assert.equal(Object.isFrozen(value), true);
+    assert.deepEqual(value, result(status));
+    if (status === 'matched') matches++;
+    else refusals++;
+    return value;
+  };
+  await check(input, 'matched');
+  await check({ ...input, checkpoint: previous.baseline.checkpoint }, 'refused');
+  const copiedAccount = Object.freeze({ ...account });
+  assert.notEqual(copiedAccount, account);
+  assert.deepEqual(Object.keys(copiedAccount).sort(), ['close', 'generationId', 'signal', 'view']);
+  assert.deepEqual(Object.keys(copiedAccount).sort(), Object.keys(account).sort());
+  for (const key of Object.keys(copiedAccount)) assert.equal(copiedAccount[key], account[key]);
+  await check({ ...input, account: copiedAccount }, 'refused');
+  const transaction = structuredClone(chain.transaction);
+  transaction.from = '0x' + (BigInt(chain.transaction.from) ^ 1n).toString(16).padStart(40, '0');
+  await check({ ...input, transaction }, 'refused');
+  const cancelled = new AbortController();
+  cancelled.abort();
+  await check({ ...input, signal: cancelled.signal }, 'refused');
+  const matched = await check(input, 'matched');
+  assert.equal(calls, 6);
+  assert.equal(matches, 2);
+  assert.equal(refusals, 4);
+  assert.equal(account.view, view);
+  assert.equal(data.digest(owned(account, state)), before.owned);
+  assert.deepEqual(transport.snapshot(), before.transport);
+  assert.deepEqual(observer.snapshot(), before.resources);
+  assert.deepEqual(handoff.profileFiles(profileDirectory), before.profile);
+  assert.deepEqual(walletFiles(state, archive), before.wallet);
+  assert.equal(state.signs, before.signs);
+  assert.equal(state.addresses, before.addresses);
+  assert.equal(state.signal.signal.aborted, false);
+  return {
+    result: matched,
+    calls,
+    matches,
+    refusals,
+    currentCheckpointCaptured: true,
+    staleCheckpointRefused: true,
+    copiedAccountRefused: true,
+    changedSenderRefused: true,
+    preAbortedRefused: true,
+    noAddedRpcJobsWorkersOrRailgunKeys: true,
+    measuredEncryptedProfileBytesUnchanged: true,
+    diagnosticWalletFilesUnchanged: true,
+    borrowedOwnersRemainUsable: true,
+  };
+}
+async function resume({
+  state,
+  archive,
+  chain,
+  transport,
+  observer,
+  phase,
+  previous,
+  profileDirectory,
+}) {
   assert.equal(state.owner, previous.owner);
   const before = walletFiles(state, archive);
   const recovery =
@@ -283,7 +395,11 @@ async function resume({ state, archive, chain, transport, phase, previous }) {
   );
   if (phase === 'resolve')
     await state.publicAccount.advance({ to: chain.baselineTo + 1, anchor: anchor(chain) });
+  const checkpointSequence = observer.walletCheckpoint().sequence;
   const account = await openWallet(state, archive, phase === 'resolve' ? 'advance' : 'completed');
+  const captured = observer.walletCheckpoint();
+  assert.equal(captured.sequence, checkpointSequence + 1);
+  assert.equal(captured.settled, true);
   const traffic = transport.snapshot();
   const creditSha256 = await readCredit(account, state, chain, previous.baseline);
   assert.equal(await readCredit(account, state, chain, previous.baseline), creditSha256);
@@ -296,7 +412,19 @@ async function resume({ state, archive, chain, transport, phase, previous }) {
       'Completed restore is byte-preserving for wallet generation'
     );
   }
+  const originDiagnostic = await diagnoseOrigin({
+    account,
+    state,
+    chain,
+    previous,
+    observer,
+    transport,
+    captured,
+    archive,
+    profileDirectory,
+  });
   return {
+    originDiagnostic,
     baseline: previous.baseline,
     record: previous.record,
     creditSha256,

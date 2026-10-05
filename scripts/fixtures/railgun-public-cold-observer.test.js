@@ -1,13 +1,14 @@
 /** Observer contracts with explicit worker doubles; no native execution claim. */
 const W = '../../src/main/wallet/';
 function deferred() {
-  let resolve;
-  const promise = new Promise((r) => {
+  let resolve, reject;
+  const promise = new Promise((r, j) => {
     resolve = r;
+    reject = j;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
-function setup() {
+function setup(walletImplementation = async () => ({})) {
   jest.resetModules();
   const pending = [],
     start = jest.fn(() => {
@@ -31,10 +32,21 @@ function setup() {
   jest.doMock(W + 'railgun-session-worker', () => session);
   jest.doMock(W + 'railgun-process', () => runtime);
   jest.doMock(W + 'railgun-identity', () => identity);
+  const run = jest.fn(walletImplementation),
+    wallet = { runRailgunWalletSnapshot: run };
+  jest.doMock(W + 'railgun-wallet-run', () => wallet);
   const meter = require('./railgun-public-cold-observer').install();
   // Supply an observed, subsequently wiped loan for the existing close guard.
   identity.withRailgunViewingCredential({}, () => {});
-  return { meter, session, start, pending, sticky: require('./railgun-native-assertions') };
+  return {
+    meter,
+    session,
+    start,
+    pending,
+    wallet,
+    run,
+    sticky: require('./railgun-native-assertions'),
+  };
 }
 function options(kind, create = false) {
   return {
@@ -46,7 +58,12 @@ function options(kind, create = false) {
   };
 }
 afterEach(() => {
-  for (const name of ['railgun-session-worker', 'railgun-process', 'railgun-identity'])
+  for (const name of [
+    'railgun-session-worker',
+    'railgun-process',
+    'railgun-identity',
+    'railgun-wallet-run',
+  ])
     jest.dontMock(W + name);
 });
 test('observer counts actual initializer and reopen calls separately and retains every exit barrier', async () => {
@@ -119,4 +136,80 @@ test('nonzero actual worker exit remains sticky independently of category accoun
   s.pending[0].resolve({ exitCode: 1 });
   await expect(s.meter.close()).rejects.toThrow();
   expect(() => s.sticky.assertEmpty()).toThrow();
+});
+
+test('current checkpoint observation forwards exact options/promise and settles only with original work', async () => {
+  const work = deferred(),
+    s = setup(() => work.promise);
+  const value = {
+    snapshot: { checkpoint: { to: { number: 7 }, state: { trees: [] } } },
+    grant: {},
+  };
+  const before = s.meter.snapshot();
+  expect(s.meter.walletCheckpoint()).toEqual({ sequence: 0, settled: false, checkpoint: null });
+  const result = s.wallet.runRailgunWalletSnapshot(value);
+  expect(result).toBe(work.promise);
+  expect(s.run).toHaveBeenCalledTimes(1);
+  expect(s.run.mock.calls[0][0]).toBe(value);
+  value.snapshot.checkpoint.to.number = 99;
+  expect(s.meter.walletCheckpoint()).toEqual({
+    sequence: 1,
+    settled: false,
+    checkpoint: { to: { number: 7 }, state: { trees: [] } },
+  });
+  const detached = s.meter.walletCheckpoint();
+  detached.checkpoint.to.number = 100;
+  const output = {};
+  work.resolve(output);
+  expect(await result).toBe(output);
+  expect(s.meter.walletCheckpoint().settled).toBe(true);
+  expect(s.meter.walletCheckpoint().checkpoint.to.number).toBe(7);
+  expect(s.meter.snapshot()).toEqual(before);
+  await s.meter.close();
+  expect(s.wallet.runRailgunWalletSnapshot).toBe(s.run);
+});
+test.each(['sync', 'async'])(
+  'failed %s runner cannot publish a successful checkpoint or replace its error',
+  async (kind) => {
+    const error = Error('original runner failure');
+    const s = setup(() => {
+      if (kind === 'sync') throw error;
+      return Promise.reject(error);
+    });
+    const value = { snapshot: { checkpoint: { current: true } } };
+    if (kind === 'sync') {
+      let caught;
+      try {
+        s.wallet.runRailgunWalletSnapshot(value);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBe(error);
+    } else await expect(s.wallet.runRailgunWalletSnapshot(value)).rejects.toBe(error);
+    expect(s.meter.walletCheckpoint()).toEqual({
+      sequence: 1,
+      settled: false,
+      checkpoint: { current: true },
+    });
+    await s.meter.close();
+  }
+);
+test('older successful call cannot bless the newest pending or rejected checkpoint', async () => {
+  const first = deferred(),
+    second = deferred();
+  const s = setup(jest.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise));
+  const p1 = s.wallet.runRailgunWalletSnapshot({ snapshot: { checkpoint: { index: 1 } } });
+  const p2 = s.wallet.runRailgunWalletSnapshot({ snapshot: { checkpoint: { index: 2 } } });
+  first.resolve({});
+  await p1;
+  expect(s.meter.walletCheckpoint()).toEqual({
+    sequence: 2,
+    settled: false,
+    checkpoint: { index: 2 },
+  });
+  const failure = Error('second');
+  second.reject(failure);
+  await expect(p2).rejects.toBe(failure);
+  expect(s.meter.walletCheckpoint().settled).toBe(false);
+  await s.meter.close();
 });

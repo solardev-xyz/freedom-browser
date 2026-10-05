@@ -105,6 +105,7 @@ async function main() {
         observer,
         mode,
         previous,
+        profileDirectory: path.join(directory, 'profile'),
       }),
       'phase',
       480000
@@ -206,7 +207,7 @@ async function main() {
     record: result.record,
   });
   handoff.write(path.join(directory, phase + '-report.json'), {
-    schema: 'railgun-public-cold-credit-report-v1',
+    schema: 'railgun-public-cold-credit-origin-report-v1',
     phase,
     mode,
     pid: process.pid,
@@ -223,6 +224,7 @@ async function main() {
     },
     expected: wanted,
     checks: result.checks,
+    originDiagnostic: result.originDiagnostic ?? null,
     limits: {
       syntheticChain: true,
       publicVector: true,
@@ -235,6 +237,10 @@ async function main() {
       privateOperation: false,
       ordinaryWalletCredit: phase !== 'setup',
       wholeBrowserProfileByteIdentity: false,
+      diagnosticLocalJournalAuthenticationOnly: phase !== 'setup',
+      diagnosticStorageKeyDerivation: phase !== 'setup',
+      diagnosticOwnershipOrChainAuthority: false,
+      diagnosticPoiBypass: false,
     },
   });
 }

@@ -6,6 +6,14 @@ function setup(phase) {
   jest.resetModules();
   const trace = [],
     events = {};
+  let sequence = 0;
+  const checkpoint = { state: { trees: [] }, hash: 'current' };
+  const resources = {};
+  const observer = {
+    walletCheckpoint: jest.fn(() => ({ sequence, settled: sequence > 0, checkpoint })),
+    snapshot: jest.fn(() => structuredClone(resources)),
+  };
+  const profileFiles = jest.fn(() => ({ vault: 'same', journal: 'same' }));
   let visible = true,
     corrupt = false,
     resolved = false;
@@ -46,6 +54,9 @@ function setup(phase) {
     closed: Promise.resolve(),
   };
   const account = {
+    close: jest.fn(),
+    signal: new AbortController().signal,
+    generationId: 'genuine-test-generation',
     view: {
       instanceId: async () => 'id',
       balance: async () => [{ amount: 10n, tag: 'unverified' }],
@@ -53,7 +64,27 @@ function setup(phase) {
       status: async () => ({ poi: 'unverified', spendableGranted: false }),
     },
   };
-  const current = { read: { received: [] }, ownedPoi: [], trees: [] };
+  const current = { read: { received: [] }, ownedPoi: [], trees: [], checkpointHash: 'current' };
+  const diagnose = jest.fn(async (value) => {
+    const matched =
+      value.account === account &&
+      value.owners === state.owners &&
+      value.checkpoint === checkpoint &&
+      value.transaction.from === chain.transaction.from &&
+      !value.signal.aborted;
+    return Object.freeze({
+      status: matched ? 'matched' : 'refused',
+      trust: 'supplied-data',
+      ownershipAuthenticated: false,
+      canonicalityVerified: false,
+      spendingEnabled: false,
+      poiBypassEnabled: false,
+      localJournalAuthenticated: matched,
+      localAccountSnapshotSourceAuthenticated: matched,
+    });
+  });
+  jest.doMock(W + 'railgun-shield-origin', () => ({ diagnoseRailgunShieldOrigin: diagnose }));
+  jest.doMock(W + 'railgun-wallet-coverage', () => ({ checkpointHash: (c) => c.hash }));
   jest.doMock(W + 'railgun-shield-recovery', () => ({ openRailgunShieldRecovery: () => recovery }));
   jest.doMock('./railgun-public-cold-session', () => ({ preview: () => ({}) }));
   jest.doMock('./railgun-public-cold-data', () => ({
@@ -64,6 +95,7 @@ function setup(phase) {
   }));
   jest.doMock('./railgun-public-cold-handoff', () => ({
     recordBinding: (r) => ({ hash: r.hash, nonce: r.nonce }),
+    profileFiles,
   }));
   jest.doMock(W + 'railgun-account-public', () => ({
     getRailgunAccountPublicDestination: () => ({}),
@@ -71,11 +103,13 @@ function setup(phase) {
   const wallet = {
     getRailgunAccountWalletPolicy: () => 'policy',
     openRailgunAccountWallet: jest.fn(async (options) => {
+      sequence++;
       trace.push('wallet.' + options.mode);
       genuine.equal(resolved, true);
       return account;
     }),
     openRailgunCompletedAccountWallet: jest.fn(async () => {
+      sequence++;
       trace.push('completed');
       return account;
     }),
@@ -112,29 +146,51 @@ function setup(phase) {
       corrupt = v;
     },
     activeRecoveryGroups: () => 0,
-    snapshot: () => events,
+    snapshot: () => JSON.parse(JSON.stringify(events)),
   };
   const previous = {
     owner: 'owner',
     mode: 'acknowledged',
     record: { hash: record.hash, nonce: 0 },
-    baseline: {},
+    baseline: { checkpoint: { hash: 'baseline' } },
     creditSha256: 'credit',
   };
   const chain = {
     baselineTo: 3,
     latest: 100,
     headers: Array.from({ length: 101 }, () => ({ hash: 'h' })),
-    expected: { npk: 'npk', noteValue: '10', position: 7 },
+    expected: { npk: 'npk', noteValue: '10', tree: 0, position: 7 },
+    transaction: { from: '0x' + '11'.repeat(20) },
+    receipt: { status: '0x1' },
   };
   const run = require('./railgun-public-cold-run');
-  return { run, state, transport, previous, chain, trace, wallet, recovery };
+  return {
+    run,
+    state,
+    transport,
+    previous,
+    chain,
+    trace,
+    wallet,
+    recovery,
+    observer,
+    checkpoint,
+    current,
+    diagnose,
+    profileFiles,
+    resources,
+    events,
+    account,
+    profileDirectory: 'profile',
+  };
 }
 afterEach(() => {
   for (const name of [
     'railgun-shield-recovery',
     'railgun-account-public',
     'railgun-account-wallet',
+    'railgun-wallet-coverage',
+    'railgun-shield-origin',
   ])
     jest.dontMock(W + name);
   for (const name of ['session', 'data', 'handoff']) jest.dontMock('./railgun-public-cold-' + name);
@@ -314,3 +370,122 @@ test('setup passes the directly returned opaque public operation, never an inven
   ])
     jest.dontMock(W + name);
 });
+
+test.each(['resolve', 'restore'])(
+  'origin diagnostic %s joins current checkpoint and exactly exercises healthy/refusal/reuse sequence',
+  async (phase) => {
+    const s = setup(phase);
+    const out = await s.run.resume({ ...s, phase, archive: 'archive' });
+    expect(s.diagnose).toHaveBeenCalledTimes(6);
+    const calls = s.diagnose.mock.calls.map(([v]) => v);
+    expect(calls[0]).toEqual({
+      account: s.account,
+      owners: s.state.owners,
+      noteId: '0:7',
+      signal: s.state.signal.signal,
+      transaction: s.chain.transaction,
+      receipt: s.chain.receipt,
+      checkpoint: s.checkpoint,
+    });
+    expect(calls[0].owners).toBe(s.state.owners);
+    expect(calls[1].checkpoint).toBe(s.previous.baseline.checkpoint);
+    expect(calls[2].account).not.toBe(s.account);
+    expect(Object.isFrozen(calls[2].account)).toBe(true);
+    expect(Object.keys(calls[2].account).sort()).toEqual([
+      'close',
+      'generationId',
+      'signal',
+      'view',
+    ]);
+    for (const key of Object.keys(s.account)) expect(calls[2].account[key]).toBe(s.account[key]);
+    expect(s.account.close).not.toHaveBeenCalled();
+    expect(calls[3].transaction.from).not.toBe(s.chain.transaction.from);
+    expect(calls[3].transaction).not.toBe(s.chain.transaction);
+    expect(calls[4].signal.aborted).toBe(true);
+    expect(calls[5]).toBe(calls[0]);
+    expect(s.observer.walletCheckpoint).toHaveBeenCalledTimes(2);
+    expect(s.profileFiles).toHaveBeenNthCalledWith(1, 'profile');
+    expect(s.profileFiles).toHaveBeenNthCalledWith(2, 'profile');
+    expect(out.originDiagnostic).toEqual({
+      result: {
+        status: 'matched',
+        trust: 'supplied-data',
+        ownershipAuthenticated: false,
+        canonicalityVerified: false,
+        spendingEnabled: false,
+        poiBypassEnabled: false,
+        localJournalAuthenticated: true,
+        localAccountSnapshotSourceAuthenticated: true,
+      },
+      calls: 6,
+      matches: 2,
+      refusals: 4,
+      currentCheckpointCaptured: true,
+      staleCheckpointRefused: true,
+      copiedAccountRefused: true,
+      changedSenderRefused: true,
+      preAbortedRefused: true,
+      noAddedRpcJobsWorkersOrRailgunKeys: true,
+      measuredEncryptedProfileBytesUnchanged: true,
+      diagnosticWalletFilesUnchanged: true,
+      borrowedOwnersRemainUsable: true,
+    });
+  }
+);
+test.each(['missing-call', 'failed-call', 'baseline', 'wrong-current', 'wrong-trees'])(
+  'origin measurement rejects %s checkpoint observation before diagnostic work',
+  async (mode) => {
+    const s = setup('restore');
+    if (mode === 'missing-call')
+      s.observer.walletCheckpoint.mockReturnValue({
+        sequence: 0,
+        settled: true,
+        checkpoint: s.checkpoint,
+      });
+    if (mode === 'failed-call')
+      s.observer.walletCheckpoint
+        .mockImplementationOnce(() => ({ sequence: 0 }))
+        .mockImplementationOnce(() => ({ sequence: 1, settled: false, checkpoint: s.checkpoint }));
+    if (mode === 'baseline') {
+      s.checkpoint.hash = 'baseline';
+      s.current.checkpointHash = 'baseline';
+    }
+    if (mode === 'wrong-current') s.checkpoint.hash = 'foreign';
+    if (mode === 'wrong-trees') s.checkpoint.state.trees = [{ length: 1 }];
+    await expect(s.run.resume({ ...s, phase: 'restore', archive: 'archive' })).rejects.toThrow();
+    expect(s.diagnose).not.toHaveBeenCalled();
+  }
+);
+test.each([
+  'rpc',
+  'resource',
+  'profile',
+  'view',
+  'sign',
+  'address',
+  'abort',
+  'authority',
+  'extra-result-key',
+  'refusal-bypassed',
+])(
+  'origin assertion detects %s drift instead of reporting successful no-work diagnostic',
+  async (mode) => {
+    const s = setup('restore'),
+      original = s.diagnose.getMockImplementation();
+    s.diagnose.mockImplementation(async (options) => {
+      let result = await original(options);
+      if (mode === 'rpc') s.events.extra = 1;
+      if (mode === 'resource') s.resources.extra = 1;
+      if (mode === 'profile') s.profileFiles.mockReturnValue({ vault: 'changed', journal: 'same' });
+      if (mode === 'view') s.account.view = { ...s.account.view };
+      if (mode === 'sign') s.state.signs = 1;
+      if (mode === 'address') s.state.addresses = 1;
+      if (mode === 'abort') s.state.signal.abort();
+      if (mode === 'authority') result = Object.freeze({ ...result, spendingEnabled: true });
+      if (mode === 'extra-result-key') result = Object.freeze({ ...result, secret: 'not allowed' });
+      if (mode === 'refusal-bypassed') result = Object.freeze({ ...result, status: 'matched' });
+      return result;
+    });
+    await expect(s.run.resume({ ...s, phase: 'restore', archive: 'archive' })).rejects.toThrow();
+  }
+);

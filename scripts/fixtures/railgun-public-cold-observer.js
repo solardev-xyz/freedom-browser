@@ -10,6 +10,7 @@ function install() {
     'railgun-wallet-run',
     'railgun-account-wallet',
     'railgun-shield-receive',
+    'railgun-shield-origin',
   ])
     assert.equal(!!require.cache[require.resolve('../../src/main/wallet/' + name)], false);
   const session = require('../../src/main/wallet/railgun-session-worker');
@@ -152,6 +153,33 @@ function install() {
       loans.push(credential.viewingKey);
       return use(credential);
     });
+  // Observe the already admitted wallet invocation; no new snapshot/query is made.
+  const walletRun = require('../../src/main/wallet/railgun-wallet-run'),
+    originalWalletRun = walletRun.runRailgunWalletSnapshot;
+  let checkpointSequence = 0,
+    checkpointObservation = null;
+  saved.push(() => {
+    walletRun.runRailgunWalletSnapshot = originalWalletRun;
+  });
+  walletRun.runRailgunWalletSnapshot = (options) => {
+    assert.equal(active, true);
+    const observation = {
+      sequence: ++checkpointSequence,
+      settled: false,
+      checkpoint: structuredClone(options.snapshot.checkpoint),
+    };
+    checkpointObservation = observation;
+    const work = originalWalletRun(options);
+    Promise.resolve(work).then(
+      () => {
+        observation.settled = true;
+      },
+      () => {
+        // Failed calls cannot provide a successful current checkpoint hint.
+      }
+    );
+    return work;
+  };
   // Error observers are attached immediately, even when a host masks refusal.
   const snapshot = () => ({
     jobs: { ...jobs },
@@ -163,6 +191,12 @@ function install() {
   });
   return {
     snapshot,
+    walletCheckpoint() {
+      assert.equal(active, true);
+      return checkpointObservation
+        ? structuredClone(checkpointObservation)
+        : { sequence: 0, settled: false, checkpoint: null };
+    },
     async close() {
       active = false;
       for (const restore of saved.reverse()) restore();
