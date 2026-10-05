@@ -16,8 +16,10 @@ Root checks pass 684 tests/13 suites plus lint. Exact maps observe 36 utility an
 mutated source ciphertext applies the public leaf but yields no owned credit;
 its exact assertion failure is expected negative evidence, not healthy cleanup.
 The broad 5,545-report/5,795-outer source inventories are not execution coverage.
-External services remain synthetic, and no funded profile was used. After merging
-newer main and refreshing bundled nodes, next are the reviewed read-data extraction, restricted own-origin diagnostic prerequisite and
+External services remain synthetic, and no funded profile was used. Native evidence
+is committed as `7baac5e5`. The later [main b0fa12ac synchronization](privacy-main-sync-b0fa12ac-2026-10-05.md)
+refreshes installed nodes and passes 381 affected unit tests, lint and seven fake-node
+UI cases; the earlier native reports retain their source scope. Next are the reviewed read-data extraction, restricted own-origin diagnostic prerequisite and
 live private qualification. The following checkpoints retain their source scope.
 
 The [pinned runtime contract checkpoint](railgun-kohaku-contract-2026-10-05.md)

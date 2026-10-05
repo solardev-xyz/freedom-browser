@@ -1,0 +1,519 @@
+{
+  "schema": "privacy-main-sync-readonly-audit-v1",
+  "date": "2026-10-05",
+  "coldNativeQualificationCommit": "7baac5e567d8a518a59c28ee4fb95e659deb400d",
+  "main": "b0fa12ac554695bdfac2978dc5b5c6e24a88808b",
+  "merge": "ae62f4fc1b81a1975037b9e93bc5584ac74d00c4",
+  "mergeParentsVerified": true,
+  "mergedPaths": [
+    {
+      "status": "M",
+      "path": "LICENSE_AUDIT.md",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "changelog.d/fixed--510-publish-rediscovery.md",
+      "equalsMain": true
+    },
+    {
+      "status": "D",
+      "path": "changelog.d/security--ant-0.5.58.md",
+      "equalsMain": true
+    },
+    {
+      "status": "A",
+      "path": "changelog.d/security--ant-0.5.59.md",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "docs/agent-playbooks/bundled-binaries.md",
+      "equalsMain": false
+    },
+    {
+      "status": "M",
+      "path": "docs/ant-chain-bridge.md",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "licenses-audit.json",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "scripts/fetch-ant.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "scripts/fetch-ant.test.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/main/ant-manager.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/main/ant-manager.test.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/main/swarm/ant-chain-bridge.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/main/swarm/ant-chain-bridge.test.js",
+      "equalsMain": true
+    },
+    {
+      "status": "D",
+      "path": "src/main/swarm/ant-rediscovery.js",
+      "equalsMain": true
+    },
+    {
+      "status": "D",
+      "path": "src/main/swarm/ant-rediscovery.test.js",
+      "equalsMain": true
+    },
+    {
+      "status": "A",
+      "path": "src/main/swarm/ant-wallet-scan.js",
+      "equalsMain": true
+    },
+    {
+      "status": "A",
+      "path": "src/main/swarm/ant-wallet-scan.test.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/main/swarm/publish-setup-service.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/main/swarm/publish-setup-service.test.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/renderer/index.html",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/renderer/lib/wallet/publish-setup.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/renderer/lib/wallet/swarm-readiness.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "src/renderer/lib/wallet/swarm-readiness.test.js",
+      "equalsMain": true
+    },
+    {
+      "status": "M",
+      "path": "test-e2e/publish-setup-rediscovery.spec.js",
+      "equalsMain": true
+    }
+  ],
+  "mainExactPathCount": 23,
+  "mainException": {
+    "path": "docs/agent-playbooks/bundled-binaries.md",
+    "onlyDifference": "Retained feature-branch main-sync guidance section; removing this section produces exact main bytes."
+  },
+  "coldSourceFreezeSha256": "d1f29026b06eeb2c4dab9a1ac07f94112186610a09caf1e8d032087bc8b867c8",
+  "coldFrozenPathCount": 5795,
+  "coldFrozenPathDrift": {
+    "scripts/fetch-ant.js": {
+      "qualified": "43ad536a0e8708737be29ed1d495af7ecf31ceb4c890c6f4f5596d8b0a52fcad",
+      "merged": "f9fb53f46a8adc2a350cdcc3a021c6345f4a00ff0dfaab0fea2b3f74dfaa05aa"
+    },
+    "scripts/fetch-ant.test.js": {
+      "qualified": "c89045e16f43ea519f6e872930f504609da356ae479802c125a62275fb7b0dcc",
+      "merged": "13269557501c686b33cafd719449050e7f91d7a7ca0abe502815a26699749b41"
+    },
+    "src/main/ant-manager.js": {
+      "qualified": "9f5271f7bc8d1612d67815cecf64d37d48dad5d9a05d0ada01a0a4b8178a21cf",
+      "merged": "35cd0f904a0fbe309160492bf058459125f38e2c4905b7cc9734c664e06a84ff"
+    },
+    "src/main/ant-manager.test.js": {
+      "qualified": "058fc5db8866cb7705400e948eb7732c2e1462d53d5ee204ed23a906614dc63a",
+      "merged": "78e2ce69a38bf66b6c55bae31e2ffe60b0378a57047ab83d1ac40619e8f73637"
+    },
+    "src/main/swarm/ant-chain-bridge.js": {
+      "qualified": "fcccef7ec34a4e05a2647c35fe14209355bb459950f60a4418c55a34a42b18c7",
+      "merged": "181663b507666b7a2036bc5f54f87d4c6a4c688bc6fe435ab63fb948dd1ada53"
+    },
+    "src/main/swarm/ant-chain-bridge.test.js": {
+      "qualified": "a5bdb0dae72b19f9f6902710141596271256bcd1659f641c122fd273c4256fda",
+      "merged": "d558564fdca58d05febcfb274edaf1ec938125d470078951a76a7e904a982f47"
+    },
+    "src/main/swarm/ant-rediscovery.js": {
+      "qualified": "aa0a6dfe5582001591dab8439410dbb5025f2a53e6f8e010e41a08080943eb05",
+      "merged": null
+    },
+    "src/main/swarm/ant-rediscovery.test.js": {
+      "qualified": "3b8700a9df9fd6fa381d28dc5ea7677e270233dd3b42f18fdcfde89e04ee2d00",
+      "merged": null
+    },
+    "src/main/swarm/publish-setup-service.js": {
+      "qualified": "1fe51d2460c6213efa601f060e3204f794e14fa9ea3fb73267397fd5f4932eb4",
+      "merged": "7f239661e45a1898e181c6230e5fc57490a0c481c2b9ea2a4374a828b2e2598e"
+    },
+    "src/main/swarm/publish-setup-service.test.js": {
+      "qualified": "da21d1e870bc0ce77f6e1c0f2e7121e9610fee699b4f0c8c00b734ed73e9cb44",
+      "merged": "7d3b14411f110a859711210f13819f9e53c3275eaa6e3cdc932ca9b91d84ddf5"
+    },
+    "src/renderer/index.html": {
+      "qualified": "ff1a1dfaf67604977c0741c02f0dec1ecf26dce8ba5042ec28720df06ff1cc7e",
+      "merged": "87d8f28294f635d008ccc83e382f7e1108b83787d729f95972d7b1fd9c33a10e"
+    },
+    "src/renderer/lib/wallet/publish-setup.js": {
+      "qualified": "bb22bdfcffc050cc4d16b5659989894a9491334a3b4bd83225b231a33ff084c8",
+      "merged": "484bd603c7130563277da719e21f409f9e73e74f792b4c59be7d8e54c134e212"
+    },
+    "src/renderer/lib/wallet/swarm-readiness.js": {
+      "qualified": "c53eae2147431f0bf7070d211e8409d3e8fa52b52270aad57c5c67d706d3b96d",
+      "merged": "a5b25572feb03e9d87466d684e6c097592aa98d413c306014f346c9a796a1e87"
+    },
+    "src/renderer/lib/wallet/swarm-readiness.test.js": {
+      "qualified": "c8b8b2c897b51fc3cf3b4f08f853379c61495dea786a25b0392535946ea83f2f",
+      "merged": "15ba62d52ea9a9750ebba2677ef8cfd07afc3abefd335cd0880b0008c3e25799"
+    }
+  },
+  "coldFrozenUnchangedCount": 5781,
+  "addedMainPathsOutsideOldFreeze": {
+    "changelog.d/security--ant-0.5.59.md": "4b1e968055bf03d6a49a89ca4499942b62dc911afdb733676ded744dd9215845",
+    "src/main/swarm/ant-wallet-scan.js": "ddec7a85cc90ef4e60f6ef8d32d35281a362e209061b8222a600e94dff1c9645",
+    "src/main/swarm/ant-wallet-scan.test.js": "5c94eaad229483b664222971c3e41cb984eef3e2283d6eaf628c8804313e8ce0"
+  },
+  "unchangedWalletPathCount": 454,
+  "unchangedColdFixtureAndEntrypointCount": 15,
+  "nativeEvidenceRemainsPinnedToColdCommit": true,
+  "pinInputSha256": {
+    "package.json": "f4cbb3f9c86ea96bd6889741e3286b7130a9b6cfe7950daae4c6aa9ea2029dc8",
+    "package-lock.json": "2fefb4c5be3baeec56fbd2c60136e06640f307644bbb88e297c5cd2339a28993",
+    "scripts/fetch-ant.js": "f9fb53f46a8adc2a350cdcc3a021c6345f4a00ff0dfaab0fea2b3f74dfaa05aa",
+    "scripts/fetch-freedom-ipfs-native.js": "18f76a7cbf17359625ec00e89a6644654021ae57ba7e9bc9fe9c41cf01e49657",
+    "scripts/fetch-radicle-addon.js": "044ece13bd75603ac6488c55e67d0b5e336ea279c6097558530cbb80c2d0770b",
+    "src/shared/radicle-addon-version.js": "fcf8150d4686ac239bdae9e976361d6ffad5031861e74d794e432dd948b9be6c",
+    "scripts/fetch-myotis.js": "49e6a71936c8ba705726c25c72958e8f97494fc9cf20310e8bce27c9b32f6f22",
+    "scripts/fetch-arti.js": "82cf8ed18c5bc04bb082936f3e0c2a5d2ff2a4304efa7e7b5a0f47350e8e58cc",
+    "scripts/build-myotis-supervisor.js": "8b9f3ea69367cb63396ca34f4bf66e3333022307f4310aaae096258c79c28030",
+    "scripts/fetch-adblock-lists.js": "f10127658120793f777ec25c1601a9e7e79f4967257d1fa439aa2c7d01838d4b",
+    "scripts/myotis-release.json": "ec364555320c1ada3f18bb63bdf2c844d09fea0748c0d215726500806c7d9c09"
+  },
+  "changedPinInputs": {
+    "scripts/fetch-ant.js": {
+      "before": "43ad536a0e8708737be29ed1d495af7ecf31ceb4c890c6f4f5596d8b0a52fcad",
+      "after": "f9fb53f46a8adc2a350cdcc3a021c6345f4a00ff0dfaab0fea2b3f74dfaa05aa"
+    }
+  },
+  "packageAndLockUnchanged": true,
+  "npmCiRequired": false,
+  "adblockRequirementsUnchanged": true,
+  "downloads": {
+    "ant": "0.5.59; five native archives verified/downloaded, six installed target paths including win-arm64 copy of win-x64",
+    "ipfs": "0.4.5; host packaged and development addon",
+    "radicle": "0.7.1; host addon",
+    "myotis": "0.1.12; five pinned targets, ABI 32, supervisor rebuilt"
+  },
+  "installedFiles": {
+    "ant-bin/mac-arm64/antd": {
+      "bytes": 14507120,
+      "sha256": "32dde463f09cf832607ed6b815b34ffe7d10414bcf571197ab6b841b212bd3ec"
+    },
+    "native/freedom-ipfs-node/prebuilds/mac-arm64/freedom_ipfs_native.node": {
+      "bytes": 35554504,
+      "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897"
+    },
+    "native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node": {
+      "bytes": 35554504,
+      "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897"
+    },
+    "radicle-bin/mac-arm64/libradicle.node": {
+      "bytes": 13006512,
+      "sha256": "807ef2c0679ee3cedebf9ef2f9f4c012f921b2f43bdcba52d3715a35e6d4d210"
+    },
+    "myotis-bin/mac-arm64/myotis-supervisor": {
+      "bytes": 34768,
+      "sha256": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203"
+    },
+    "arti-bin/mac-arm64/arti": {
+      "bytes": 22463904,
+      "sha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34"
+    },
+    "myotis-bin/mac-arm64/myotis-node.node": {
+      "bytes": 9859088,
+      "sha256": "19f1866ce23230ebad65262b79bf2dd0792f5b98684fdfdd9a0e6c5d0295d9cc"
+    },
+    "myotis-bin/mac-x64/myotis-node.node": {
+      "bytes": 11427568,
+      "sha256": "0e064d2511bdd9e78483c65de13efe44ed10affd35e8fca1561896a836f3f1b0"
+    },
+    "myotis-bin/linux-x64/myotis-node.node": {
+      "bytes": 13942520,
+      "sha256": "e80c561ca623d52e736d6d1f8c48da33c4975dd15143a1e4191bd81815f7dd16"
+    },
+    "myotis-bin/linux-arm64/myotis-node.node": {
+      "bytes": 12805736,
+      "sha256": "95d6aff682d005e403e346390bebf71d5df2b89a9198c2433d5365ca804a53d6"
+    },
+    "myotis-bin/win-x64/myotis-node.node": {
+      "bytes": 9835520,
+      "sha256": "70ce52f8aa0d3abbb9c4bf01d3da0a88fa495952823ba57be61bffa541d6fff1"
+    },
+    "ant-bin/mac-x64/antd": {
+      "bytes": 16455680,
+      "sha256": "728f543f006e72be0ad564c1fc5cf5347e4587858d19f4051432cf6346ad96ed"
+    },
+    "ant-bin/linux-x64/antd": {
+      "bytes": 19819416,
+      "sha256": "7e4b451a64354979719d9013a12e6c11f58bb27e38616f708b7d52d5185778c1"
+    },
+    "ant-bin/linux-arm64/antd": {
+      "bytes": 17512208,
+      "sha256": "7882cc1a144a62c816d10456207b8782dd4394bc119c1609053781fa308993c8"
+    },
+    "ant-bin/win-x64/antd.exe": {
+      "bytes": 15841792,
+      "sha256": "6071903576183d85c5c91eb4e05b402c1fa4dd73c7403d6a987ff1a1c66df3c1"
+    },
+    "ant-bin/win-arm64/antd.exe": {
+      "bytes": 15841792,
+      "sha256": "6071903576183d85c5c91eb4e05b402c1fa4dd73c7403d6a987ff1a1c66df3c1"
+    }
+  },
+  "myotisInstalledAllFiveMatchDirectPins": true,
+  "antChecksumManifestSha256": "5cd5a3e3bc2f1e70eabff53ee9460a1cadd75cdf530c98a2d91349220d0fc8a3",
+  "myotisReleaseManifestPinSha256": "72611062473cd1fd300205a406e92071de5fc52684c617130f72f6a21741891f",
+  "myotisManifestEvidence": {
+    "currentManifest": "Downloader verifies fetched bytes in memory; no current manifest file is persisted. All five installed addons independently match direct pins.",
+    "unusedOldLocalManifest": {
+      "path": "myotis-bin/myotis-node.SHA256SUMS",
+      "sha256": "458743f281a7886e953a32ccef599bc253781e278c12cfe05a5addc23aa2569a",
+      "usedForCurrentVerification": false
+    }
+  },
+  "unchangedPriorNonAntInstalledFiles": 10,
+  "versionsArtifact": {
+    "file": "privacy-main-b0fa12ac-versions-oct5.json",
+    "sha256": "b3f0961b7c08d42a2dfaae9904dae22c668652d8e411b918af1595cdbbe5e633",
+    "results": {
+      "Ant": {
+        "command": ["./ant-bin/mac-arm64/antd", "--version"],
+        "exitCode": 0,
+        "stdout": "antd 0.5.59\n",
+        "stderr": ""
+      },
+      "Arti": {
+        "command": ["./arti-bin/mac-arm64/arti", "--version"],
+        "exitCode": 0,
+        "stdout": "Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: static-sqlite\n",
+        "stderr": ""
+      }
+    }
+  },
+  "logs": {
+    "ant": {
+      "file": "privacy-main-b0fa12ac-ant-oct5.log",
+      "sha256": "c57b432e937e3a6600211214cdcaa7935de03fb47879a1122ae2b2acf8a69009",
+      "bytes": 2311,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "binaries": {
+      "file": "privacy-main-b0fa12ac-binaries-oct5.log",
+      "sha256": "6fd167b0d7d1263ed5cfe93953236d35a8b6663f9e8a3e80aad6b2eecf5b1b86",
+      "bytes": 145,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "e2e": {
+      "file": "privacy-main-b0fa12ac-e2e-oct5.log",
+      "sha256": "bdd7e7cd2909666a6dd52d1affcb3b8bc8dfd5b3f8f20c715bd89ec56b12dc4c",
+      "bytes": 1669,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "ipfs": {
+      "file": "privacy-main-b0fa12ac-ipfs-oct5.log",
+      "sha256": "c2ccc9b07baf71489836ee1f499568e5247163eab986f6093e4f7fc6337fda81",
+      "bytes": 582,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "ipfs-smoke-deny-network": {
+      "file": "privacy-main-b0fa12ac-ipfs-smoke-deny-network-oct5.log",
+      "sha256": "a859a31ee93de3cd011c92bff69c4edfaa714998f2c6b36f0ef34ef0bab8c09c",
+      "bytes": 1258,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "lint": {
+      "file": "privacy-main-b0fa12ac-lint-oct5.log",
+      "sha256": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f",
+      "bytes": 46,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "myotis-constructor": {
+      "file": "privacy-main-b0fa12ac-myotis-constructor-oct5.log",
+      "sha256": "cec47976a36db974202e5525def2cd2dd6d5b4442daed4c69c93f4941a23122d",
+      "bytes": 83,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "myotis": {
+      "file": "privacy-main-b0fa12ac-myotis-oct5.log",
+      "sha256": "7a8d32e64cd86ecdec3a68ca39da218f4d0ef3873145c0d7e604e36183572661",
+      "bytes": 396,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "myotis-supervisor": {
+      "file": "privacy-main-b0fa12ac-myotis-supervisor-oct5.log",
+      "sha256": "9e92838d110dcd4a96ebbf8e716d6caeb815a40a045a90cedb437fc67b5ccb1a",
+      "bytes": 190,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "radicle-load": {
+      "file": "privacy-main-b0fa12ac-radicle-load-oct5.log",
+      "sha256": "aeb4ac21b39c501a267426de044fd429b5e727f3a53e12360668f1775a797d02",
+      "bytes": 86,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "radicle": {
+      "file": "privacy-main-b0fa12ac-radicle-oct5.log",
+      "sha256": "17efb0b671a5ae45e89a99371c35e78eb9ab73427bc10e5c4cd6179e2231ff5c",
+      "bytes": 265,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    },
+    "tests": {
+      "file": "privacy-main-b0fa12ac-tests-oct5.log",
+      "sha256": "2b9f6cab26b897a61a7a183499f682e0e803a56e97bf4c71c6a258578bc9a594",
+      "bytes": 1705,
+      "exitCode": 0,
+      "drained": true,
+      "exitAttribution": "Root observed original handle terminal exit and drainage; this audit independently read and hashed the log."
+    }
+  },
+  "validation": {
+    "targetedUnitTests": 381,
+    "targetedUnitSuites": 11,
+    "targetedUnitSeconds": 3.034,
+    "lintExitCode": 0,
+    "checkBinariesScope": "Host mac-arm64 presence/provenance checks; not all-target execution",
+    "radicleLoadExports": 30,
+    "radicleNodeStarted": false,
+    "myotisConstructorAbi": 32,
+    "myotisConstructorNetwork": false,
+    "artiRecompiled": false,
+    "playwrightTests": 7,
+    "playwrightSeconds": 16.5,
+    "playwrightScope": "Real publish setup service and UI driven by local fake Ant, not a live Ant node or release build",
+    "screenshotsCaptured": 14,
+    "screenshotsPerTheme": 7,
+    "rootVisuallyInspected": {
+      "count": 4,
+      "states": ["retrying-stalled", "card-scanning"],
+      "themes": ["dark", "light"],
+      "attribution": "Root reported viewing the four representative screenshots; this audit verifies all 14 file hashes only."
+    }
+  },
+  "screenshotSha256": {
+    "dark-card-scanning.png": "7d8a2b1f3837ebc48df7ac3eb4ad6abdbcfea9971261be4c2b89b1cd4544e557",
+    "dark-fallback.png": "6064bc4757559eab145885ad3241f2f4872ea1ae226dca292fa604ce06e2e87c",
+    "dark-found.png": "fd83a3be442767c324c135f32d1755dbae9086d0c38c3ca33ed254be670b9106",
+    "dark-new-wallet.png": "337072f6747739e694a2255ad7592c3d88708a1edf0da33bb0351a2e74e3fe40",
+    "dark-retrying-stalled.png": "08c8d1943dcb840dc010492c7fbc4d83a89f11885737ed0bfe7fff0bb9822329",
+    "dark-retrying.png": "8dd6788b1cfeb8339e5fbccf63da57d0744645f6b1de3ca89b526691be11a9f8",
+    "dark-scanning.png": "8f6df3f55be779f1d6dffaffdb97f5846bb4bfadf096a0b41f165ae0d7544d91",
+    "light-card-scanning.png": "868fcaa79650aa624824f85233b844e57906ccbe9d07614ecdfc37e05318afbe",
+    "light-fallback.png": "4a906eede07fcf8efa256e2d8c4c7b3603b910f86c7e21ae9a2066a0a291f329",
+    "light-found.png": "738ecea12a2a65203fdf551b41268097708261d2fffc42105e6a70211b9159ef",
+    "light-new-wallet.png": "fb14de7ca68d07007cca6d30f7a8b534b12abe30c197bd4a18bae79f7d41b870",
+    "light-retrying-stalled.png": "6c647e4e95d9b7e2d5235b2e4b3ab919128c081991f0b018687810366be0d2db",
+    "light-retrying.png": "c138dfbe9013fe8b2196861fb865fa19f42e58edc5a79fa210d1e82b2d47a912",
+    "light-scanning.png": "503f01097b3ba5c5c956dda14a06218d87ef197d470dcbc981f84ec295fa46ac"
+  },
+  "ipfsSmoke": {
+    "runnerSha256": "089b4f8d983e0c5063b1659b1d2f1b534a07d905e974b7d5dab32a75ebbd9032",
+    "runnerOrigin": "Reused retained-data scratch smoke runner from prior main sync",
+    "addonVersion": "0.4.5",
+    "buildInfo": {
+      "features": {
+        "loopback_gateway": true,
+        "native_event_mux": true,
+        "native_gateway": true,
+        "native_gateway_stats": true,
+        "progress_snapshot": true
+      },
+      "git_commit": null,
+      "git_describe": null,
+      "mobile_ffi_abi_version": 1,
+      "name": "freedom-ipfs",
+      "release_tag": "v0.4.5",
+      "target": {
+        "arch": "aarch64",
+        "family": "unix",
+        "os": "macos"
+      },
+      "version": "0.4.5"
+    },
+    "livePage": null,
+    "issue102Fanout": null,
+    "sandboxProfile": "(version 1)(allow default)(deny network*)",
+    "sandboxInvocationAttribution": "Root recorded exact sandbox-exec invocation; independently verified output and retained runner, no new launch.",
+    "lifecycleExitCode": 0,
+    "dataRetained": true,
+    "inodeRepairThisRun": false,
+    "sameInstalledBytesAsPriorQualifiedHostAddon": true
+  },
+  "limits": {
+    "readOnlyAudit": true,
+    "noNewDownloadsLoadsTestsOrNativeLaunchesByAuditor": true,
+    "noFundedProfileAccess": true,
+    "noNewFullRegressionClaim": true,
+    "noReleaseQualification": true,
+    "noRealAntUiQualification": true,
+    "noLiveNetworkRetrievalFromSmoke": true
+  },
+  "unchangedPublishedColdEvidenceSha256": {
+    "docs/qualification/railgun-public-cold-corrupted-source-control-2026-10-05.json": "6b40dc5bf3f9944a061b26dc3a23161851f2bffba31d446284de7d5c82e8dddc",
+    "docs/qualification/railgun-public-facade-cold-credit-acknowledged-resolve-2026-10-05.json": "f481ad6526551b76ce07ddadcc12887b05f916f60edb4b2d1002a4ea4fc599ac",
+    "docs/qualification/railgun-public-facade-cold-credit-acknowledged-restore-2026-10-05.json": "a7983b50914c815801e95757b47db2d8ca0247af1ccc750b010d2657fda9d7a1",
+    "docs/qualification/railgun-public-facade-cold-credit-acknowledged-setup-2026-10-05.json": "79b2f26d5aabbc8083b0532be77ecfcad7e620d55c6b90c10edab7f463346000",
+    "docs/qualification/railgun-public-facade-cold-credit-audit-2026-10-05.json": "f58493a32386bfd09610aada1c44c555c75a3569feb69549ae2c69dfec84b80f",
+    "docs/qualification/railgun-public-facade-cold-credit-index-2026-10-05.md": "8fe6f1f10400ac6a43ab721ef3e1b2b4fad8c4e351a6ad483cc20bf969096694",
+    "docs/qualification/railgun-public-facade-cold-credit-lost-response-resolve-2026-10-05.json": "5ea9983b4d5ca75301aeafbea379433481bfb248676931a96c7c13091b85a91b",
+    "docs/qualification/railgun-public-facade-cold-credit-lost-response-restore-2026-10-05.json": "9ff366dc2200d39181d172f5438f2a0632d5b71fdf57ff15ae4c9a047a3bd892",
+    "docs/qualification/railgun-public-facade-cold-credit-lost-response-setup-2026-10-05.json": "a0a127ef8666ee75879fd5d3c1aceee6ded1818e6678b3b57811e4d6f2f870ab",
+    "docs/qualification/railgun-public-facade-cold-credit-source-inventory-2026-10-05.json": "45bf9671e29e220bc7cbdceeaefd1e01a1635e40da05578b442fbb231dac0e6c"
+  }
+}

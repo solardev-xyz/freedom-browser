@@ -6,7 +6,10 @@ submission responses. The first process signs and sends once; the next resolves
 the retained submission and credits its note through the ordinary scanner; the
 third opens the completed wallet read-only and still sees exactly one credit.
 All six Electron processes exited zero, with their original launcher handles
-observed and drained. Services and chain history are synthetic public-vector
+observed and drained. Native evidence is committed as `7baac5e5`; the later
+[main b0fa12ac synchronization](privacy-main-sync-b0fa12ac-2026-10-05.md)
+refreshes installed nodes and has its own affected checks. These native reports
+retain their original sources. Services and chain history are synthetic public-vector
 fixtures. This does not qualify a live public-facade deposit or a private spend.
 
 ## What the connected test establishes
