@@ -2,7 +2,8 @@
  * Actual facade, staging, controllers, stores, provers and vault signers; archived
  * RPC/public-service replies and account-POI/private-preflight trust are synthetic.
  */
-const assert = require('assert/strict');
+const nativeAssertions = require('./railgun-native-assertions');
+const { assert } = nativeAssertions;
 const fs = require('fs');
 const { createHash } = require('crypto');
 const { Transaction } = require('ethers');
@@ -10,6 +11,9 @@ const {
   createPrivacyScope,
   getPrivacyContext,
 } = require('../../src/main/networks/privacy-context');
+const contracts = require('./railgun-kohaku-contract-conformance');
+const contractOracle = require('./railgun-kohaku-contract-oracle');
+const { installSettlementObserver } = require('./railgun-kohaku-contract-observer');
 const pins = require('../../src/main/wallet/railgun-shield-pins.json');
 let installed = false;
 const gate = () => {
@@ -143,6 +147,11 @@ exports.install = function install(mode) {
   }
   return {
     inputType,
+    measureActivity: () => ({
+      counters: { ...counters },
+      attempts: { ...attempts },
+      methods: { ...methods },
+    }),
     configureArchive(factory) {
       assert.equal(archiveFactory, undefined);
       archiveFactory = factory;
@@ -157,6 +166,7 @@ exports.install = function install(mode) {
       row,
       observeKeys,
       readKeyCounts,
+      measureResources,
     }) {
       const started = performance.now();
       const wallet = require('../../src/main/wallet/railgun-account-wallet');
@@ -195,6 +205,8 @@ exports.install = function install(mode) {
         page: 0,
         root: 0,
       };
+      const contractReads = [];
+      let settlements;
       let account = initialAccount,
         plugin,
         seedTask,
@@ -215,6 +227,7 @@ exports.install = function install(mode) {
         attempts: { ...attempts },
         keys: readKeyCounts(),
       });
+      const measureReads = () => ({ ...snapshot(), resources: measureResources() });
       const reservations = await enrollment.openReservations();
       const capsules = await enrollment.openPrivateCapsules();
       const initialReservations = await reservations.inspect();
@@ -525,11 +538,21 @@ exports.install = function install(mode) {
           },
         };
         const facade = require('../../src/main/wallet/railgun-kohaku-plugin');
+        settlements = installSettlementObserver('private');
         const {
           createRailgunKohakuBroadcaster,
         } = require('../../src/main/wallet/railgun-kohaku-broadcaster');
         plugin = facade.createRailgunKohakuPlugin(pluginOptions);
         plugins.push(plugin);
+        contractReads.push(
+          await contracts.qualifyOperationInstance({
+            instance: plugin,
+            account,
+            owners,
+            mode: 'private',
+            measure: measureReads,
+          })
+        );
         const broadcast = createRailgunKohakuBroadcaster(plugin).broadcast;
         const prepare = () =>
           kind === 'railgun-private-transfer'
@@ -582,6 +605,7 @@ exports.install = function install(mode) {
           heldReview.release.resolve();
         }
         const operation = await pending;
+        contractOracle.assertOpaqueOperationShape(operation, 'private');
         assert.deepEqual(operation, { __type: 'privateOperation' });
         assert.equal(plugin.status().state, 'prepared');
         assert.equal(counts.spendingKeys, 1);
@@ -627,7 +651,8 @@ exports.install = function install(mode) {
           transactionReview = { started: gate(), release: gate() };
           reviewGates.push(transactionReview);
         }
-        const broadcasting = broadcast(operation);
+        const forwarded = settlements.begin(plugin, operation, () => broadcast(operation));
+        const broadcasting = forwarded.promise;
         if (cancelTransactionReview) {
           await Promise.race([
             transactionReview.started.promise,
@@ -706,6 +731,7 @@ exports.install = function install(mode) {
           } finally {
             reopened.close();
           }
+          await forwarded.assert({ outcome: 'refused' });
           const noRetry = snapshot();
           await assert.rejects(broadcast(operation));
           assert.deepEqual(snapshot(), noRetry);
@@ -714,6 +740,7 @@ exports.install = function install(mode) {
           return {
             mode,
             variant: 'transaction-review-cancel',
+            contract: { reads: contractReads, forwarding: settlements.report() },
             inputType,
             kind,
             elapsedMs: Math.round(performance.now() - started),
@@ -758,6 +785,10 @@ exports.install = function install(mode) {
           };
         }
         const result = await broadcasting;
+        await forwarded.assert({
+          outcome: uncertain ? 'uncertain' : 'acknowledged',
+          hash: sentHash,
+        });
         await plugin.closed;
         assert.equal(preparingAccount.signal.aborted, true);
         assert.deepEqual(privateBytes(), privateBefore);
@@ -890,19 +921,23 @@ exports.install = function install(mode) {
           archive,
           mode: 'active',
         });
-        const last = facade.createRailgunKohakuPlugin({
-          account: lastAccount,
-          owners,
-          signal: enrollment.signal,
-        });
-        plugins.push(last);
-        assert.equal(await last.instanceId(), identity.descriptor.instanceId);
-        last.close();
-        await last.closed;
+        try {
+          contractReads.push(
+            await contracts.qualifyReadInstance({
+              account: lastAccount,
+              owners,
+              signal: enrollment.signal,
+              measure: measureReads,
+            })
+          );
+        } finally {
+          await lastAccount.close();
+        }
         assert.ok(serviceInstances.every((service) => service.signal.aborted));
         assert.ok(preflightSources.every((source) => source.signal.aborted));
         return {
           mode,
+          contract: { reads: contractReads, forwarding: settlements.report() },
           inputType,
           kind,
           elapsedMs: Math.round(performance.now() - started),
@@ -942,23 +977,44 @@ exports.install = function install(mode) {
           liveSubmissions: 0,
         };
       } finally {
-        for (const review of reviewGates) review.release.resolve();
-        signalController.abort();
-        for (const instance of plugins) instance.close();
-        await Promise.all(plugins.map((instance) => instance.closed));
-        seedTask?.close();
-        await seedTask?.closed;
-        await txid?.close();
-        for (const source of preflightSources) source.close();
-        for (const service of serviceInstances) service.close();
-        await preparingAccount?.close();
-        await account?.close();
-        observeKeys(null);
+        const cleanup = async (label, run) => {
+          try {
+            await run();
+          } catch (error) {
+            nativeAssertions.record(error, 'kohaku-private.' + label);
+          }
+        };
+        for (const [index, review] of reviewGates.entries())
+          await cleanup('review.' + index, () => review.release.resolve());
+        await cleanup('abort', () => signalController.abort());
+        for (const [index, instance] of plugins.entries())
+          await cleanup('plugin.' + index + '.close', () => instance.close());
+        await Promise.all(
+          plugins.map((instance, index) =>
+            cleanup('plugin.' + index + '.closed', () => instance.closed)
+          )
+        );
+        await cleanup('seed.close', () => seedTask?.close());
+        await cleanup('seed.closed', () => seedTask?.closed);
+        await cleanup('txid.close', () => txid?.close());
+        for (const [index, source] of preflightSources.entries())
+          await cleanup('preflight.' + index, () => source.close());
+        for (const [index, service] of serviceInstances.entries())
+          await cleanup('service.' + index, () => service.close());
+        await cleanup('preparingAccount.close', () => preparingAccount?.close());
+        await cleanup('account.close', () => account?.close());
+        await cleanup('keys.restore', () => observeKeys(null));
         sendObserver = undefined;
-        Object.assign(poi, saved.poi);
-        Object.assign(preflight, saved.preflight);
-        services.createRailgunPublicServices = saved.service;
-        signerModule.getSigner = saved.signer;
+        await cleanup('poi.restore', () => Object.assign(poi, saved.poi));
+        await cleanup('preflight.restore', () => Object.assign(preflight, saved.preflight));
+        await cleanup('services.restore', () => {
+          services.createRailgunPublicServices = saved.service;
+        });
+        await cleanup('signer.restore', () => {
+          signerModule.getSigner = saved.signer;
+        });
+        await cleanup('settlements.close', () => settlements?.close());
+        nativeAssertions.assertEmpty();
       }
     },
   };

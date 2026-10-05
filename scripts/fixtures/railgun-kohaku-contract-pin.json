@@ -1,0 +1,65 @@
+{
+  "schema": "railgun-kohaku-contract-pin-v1",
+  "revision": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "files": {
+    "packages/plugins/src/base.ts": "1ac1b93c617eb8347e74263566071ebba2bcc7caca5166f11dce0a293e766803",
+    "packages/plugins/src/shared.ts": "c51d5160c0d63235c04ecc4b9ad2f6adbe3841fd01dcb0ebb154bdecf8bbc86f",
+    "packages/plugins/src/host/index.ts": "4a3578ceb42ae5138726e36de6bf2a9e7511ff73a8d592e6b494106be51a9814",
+    "packages/plugins/src/broadcaster/base.ts": "6d973ce3b0ea458aaf1613c7106d9fb8104eb2c18baa5fe9ea405fe1d6f940cf"
+  },
+  "instance": {
+    "required": ["instanceId", "balance"],
+    "optional": ["notes"],
+    "featureMethods": [
+      "prepareShield",
+      "prepareShieldMulti",
+      "prepareTransfer",
+      "prepareTransferMulti",
+      "prepareUnshield",
+      "prepareUnshieldMulti"
+    ]
+  },
+  "assetKinds": ["native", "erc20", "erc721"],
+  "operations": {
+    "private": "privateOperation",
+    "public": "publicOperation"
+  },
+  "freedomModes": {
+    "read": [],
+    "private": ["prepareTransfer", "prepareUnshield"],
+    "public": ["prepareShield"]
+  },
+  "scope": {
+    "typescriptChecked": false,
+    "genericHostCompatible": false,
+    "multiOperationSupported": false,
+    "tailCallsSupported": false,
+    "automaticCoinSelection": false
+  },
+  "freedomSpecialization": {
+    "read": {
+      "instanceId": "Promise<RailgunAddress>",
+      "balance": "Promise<Array<{asset,amount:bigint,tag:unverified}>>",
+      "notes": "Promise<Array<owned-note-data>>",
+      "status": "diagnostic-only; async view / synchronous facade extra"
+    },
+    "private": {
+      "amount": "ERC20 pinned WETH plus explicit noteId, bigint amount",
+      "prepareTransfer": "entire one selected note to same private account",
+      "prepareUnshield": "0<U<=V; recipient enrolled EOA; U<V yields private change",
+      "token": "frozen privateOperation tag only; actual authority remains registry identity",
+      "acknowledged": "fulfilled original transaction response",
+      "uncertain": "fulfilled original {transactionHash,submissionStatus:unknown,...}",
+      "refusal": "rejected RAILGUN_KOHAKU_REFUSED or original refused/recovery-required value"
+    },
+    "public": {
+      "amount": "native ETH Shield only",
+      "token": "frozen publicOperation tag only; actual authority remains registry identity",
+      "submitter": "Freedom extra separate submit(operation), not private Broadcaster",
+      "acknowledged": "fulfilled original transaction response",
+      "uncertain": "original rejected PRIVATE_BROADCAST_UNCERTAIN error with transactionHash/submissionStatus",
+      "refusal": "rejected sanitized RAILGUN_KOHAKU_REFUSED or original journal refusal"
+    },
+    "lifecycle": "close revokes, closed waits logical owner/work drainage; no physical socket claim"
+  }
+}

@@ -7,6 +7,20 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [pinned runtime contract checkpoint](railgun-kohaku-contract-2026-10-05.md)
+passes eight real adapter cases and ordinary-wallet compatibility: nine fresh
+exit-zero native processes, 924 checked reads and eight exact forwarding checks.
+Private/public acknowledged, uncertain and held-review outcomes retain their
+original settlement semantics. Root checks pass 312 tests/seven suites and full
+lint. Test cleanup preserves dependency order, records all failures and has
+labelled observer/public drainage timeouts. Source inventories and pre-cleanup
+resource counters retain their explicit limits; external services remain synthetic.
+This is not generic Host or TypeScript compatibility. Current main a1438027 and
+its explicit node refresh remain current. Next is the reviewed
+[public-facade cold-credit plan](railgun-public-facade-cold-credit-plan-2026-10-05.md),
+followed by restricted host extraction and live private qualification. The
+following checkpoints retain their historical scope.
+
 The [interrupted-proof and sequential Kohaku checkpoint](railgun-second-proof-recovery-and-kohaku-2026-10-05.md)
 passes four four-process original-signature recovery cases, two sequential real
 adapter cases and seven compatibility processes: 25 native processes on 928
@@ -20,8 +34,8 @@ Native evidence is pinned to `b4e85dbb`; the subsequent
 [main a1438027 synchronization](privacy-main-sync-a1438027-2026-10-05.md) refreshes
 bundled nodes and passes 709 affected tests/20 suites with four skips plus lint.
 It does not relabel the original native campaign.
-Next are pinned Kohaku contract checks/extraction preparation, public-facade cold
-resolution/ingestion, and external-service/live-private qualification. The historical
+At that checkpoint, next were pinned Kohaku contract checks/extraction preparation,
+public-facade cold resolution/ingestion, and external-service/live-private qualification. The historical
 checkpoints below retain their recorded sources and then-open work.
 
 The [second cold-submission checkpoint](railgun-second-cold-submission-2026-10-05.md)
@@ -185,8 +199,10 @@ Later checkpoints above supersede those restrictions within their stated scope.
    or RPC admission, and retain reviewed destination restrictions. Acknowledged,
    lost-response and held-review cancellation cases pass with genuine hosts,
    preflight, vault signer and journals, but synthetic RPC. The private broadcaster
-   refuses Shield. Live public-facade qualification and cold resolution/note
-   ingestion through this facade remain distinct from these tests.
+   refuses Shield. The reviewed [cold-credit plan](railgun-public-facade-cold-credit-plan-2026-10-05.md)
+   connects a real adapter deposit to separate-process receipt resolution, normal
+   scan credit and another completed restore. That composition and live
+   public-facade qualification remain distinct from these tests.
 2. **Finish the remaining partial-withdrawal composition boundaries.**
    The actual Kohaku adapter now supports partial withdrawal with immutable
    input/withdrawal/change review. Genuine change scanning, disposable-list
@@ -195,9 +211,11 @@ Later checkpoints above supersede those restrictions within their stated scope.
    Original-signature recovery after the second signature commits but before
    its proof is made, and
    a fresh second Kohaku instance spending scanned change now pass separate
-   controlled native campaigns. Next are pinned contract/conformance checks and
-   a restricted host contract to make portable extraction reviewable. The current
-   facade remains Freedom-owned; a generic Kohaku Host is not yet qualified.
+   controlled native campaigns. Pinned runtime contract checks now pass for
+   private/public/read instances and their original settlement forwarding. Next
+   is a restricted host contract to make portable extraction reviewable. The
+   current facade remains Freedom-owned; generic Kohaku Host and TypeScript
+   compatibility are not yet qualified.
    Real deployed verifier checks, service list acceptance and private broadcasts
    remain separate live qualification. Earlier warm and advanced-root recovery
    evidence retains its own source inventory. The

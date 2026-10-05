@@ -1,8 +1,9 @@
 /** Durable wallet checkpoint and interrupted recovery over synthetic public history. */
 const { app } = require('electron');
+const nativeAssertions = require('./fixtures/railgun-native-assertions');
 const fs = require('fs'),
   path = require('path'),
-  assert = require('assert/strict'),
+  assert = nativeAssertions.assert,
   { createHash } = require('crypto');
 const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
 const { getPrivacyStoragePath } = require('../src/main/wallet/privacy-storage');
@@ -127,6 +128,11 @@ async function main() {
   const privateOperationJobs = [];
   let spendingReplyObserver = null,
     productionPrivateOperation = null;
+  const contractResources = kohaku
+    ? require('./fixtures/railgun-kohaku-contract-observer').installResourceMeter()
+    : null;
+  const readContracts = [];
+  let restoreContractRuntime;
   const walletRestores = [],
     applications = [];
   if (composition) {
@@ -253,6 +259,13 @@ async function main() {
       });
       return task;
     };
+    if (contractResources) {
+      const observed = runtime.startRailgunProcess;
+      restoreContractRuntime = () => {
+        assert.equal(runtime.startRailgunProcess, observed);
+        runtime.startRailgunProcess = originalStart;
+      };
+    }
   }
   if (composition) {
     const publicModule = require('../src/main/wallet/railgun-public-run'),
@@ -508,16 +521,38 @@ async function main() {
     walletDirectory = generation?.directory ?? catalog.activeFor(policy).directory;
   }
   async function close() {
-    await publicAccount?.close();
-    if (!enrollment) catalog?.close();
-    coordinator?.close();
-    source?.close();
-    ledger?.close();
-    session?.close();
-    scope?.close();
-    await Promise.all([ledger?.closed, session?.closed]);
+    const cleanup = async (label, run) => {
+      try {
+        await run();
+      } catch (error) {
+        nativeAssertions.record(error, 'wallet-journal.' + label);
+      }
+    };
+    // Preserve dependent-before-dependency order on healthy barriers. Rejection
+    // is sticky but must not prevent stopping the remaining owned resources.
+    await cleanup('publicAccount.close', () => publicAccount?.close());
+    if (!enrollment) await cleanup('catalog.close', () => catalog?.close());
+    await cleanup('coordinator.close', () => coordinator?.close());
+    await cleanup('source.close', () => source?.close());
+    await cleanup('ledger.close', () => ledger?.close());
+    await cleanup('session.close', () => session?.close());
+    // Scope revocation is the final stop, before barriers that may need it.
+    await cleanup('scope.close', () => scope?.close());
+    await Promise.all([
+      cleanup('ledger.closed', () => ledger?.closed),
+      cleanup('session.closed', () => session?.closed),
+    ]);
   }
   const sources = [
+    'src/shared/endpoint-sources.json',
+    'scripts/fixtures/railgun-native-assertions.js',
+    'scripts/fixtures/railgun-kohaku-contract-pin.json',
+    'scripts/fixtures/railgun-kohaku-contract-oracle.js',
+    'scripts/fixtures/railgun-kohaku-contract-oracle.test.js',
+    'scripts/fixtures/railgun-kohaku-contract-conformance.js',
+    'scripts/fixtures/railgun-kohaku-contract-conformance.test.js',
+    'scripts/fixtures/railgun-kohaku-contract-observer.js',
+    'scripts/fixtures/railgun-kohaku-contract-observer.test.js',
     'src/main/wallet/railgun-account-public.js',
     'src/main/wallet/railgun-public-catalog.js',
     'src/main/wallet/railgun-store-owners.js',
@@ -864,6 +899,24 @@ async function main() {
               mode,
             });
           try {
+            if (kohaku)
+              readContracts.push(
+                await require('./fixtures/railgun-kohaku-contract-conformance').qualifyOwnedView({
+                  instance: opened.view,
+                  account: opened,
+                  owners: { identity: accountIdentity, enrollment, coordinator },
+                  measure: () =>
+                    structuredClone({
+                      requests,
+                      transport: kohaku.measureActivity(),
+                      applications: applications.length,
+                      walletRestores: walletRestores.length,
+                      privateViewingKeys,
+                      privateReceiveKeys,
+                      resources: contractResources.snapshot(),
+                    }),
+                })
+              );
             const balances = await opened.view.balance(),
               notes = await opened.view.notes(),
               status = await opened.view.status();
@@ -1954,6 +2007,7 @@ async function main() {
             spendingReplyObserver = observer;
           },
           readKeyCounts: () => ({ privateViewingKeys, privateReceiveKeys }),
+          measureResources: () => contractResources.snapshot(),
         });
       } finally {
         await account.close();
@@ -2051,6 +2105,23 @@ async function main() {
       walletSession.close();
       await walletSession.closed;
     }
+    if (kohaku) {
+      assert.deepEqual(
+        readContracts.map((entry) => entry.calls),
+        [11, 11, 11, 11, 13, 13, 13, 13]
+      );
+      assert.ok(contractResources.snapshot().utilityStarts > 0);
+      assert.ok(contractResources.snapshot().workerStarts > 0);
+      require('./fixtures/railgun-kohaku-contract-conformance').assertInstanceReadVector(
+        kohakuQualification.contract.reads,
+        {
+          lane: publicShield ? 'public' : 'private',
+          heldReview: process.env.FREEDOM_RAILGUN_KOHAKU_CANCEL_TRANSACTION_REVIEW === '1',
+        }
+      );
+      assert.equal(kohakuQualification.contract.forwarding.checkedCalls, 1);
+    }
+    nativeAssertions.assertEmpty();
     assert.deepEqual(hashes(), sourceSha256);
     assert.doesNotMatch(JSON.stringify(runs), /"(?:ownedPoi|npk|nullifier|blindedCommitment)"\s*:/);
     fs.writeFileSync(
@@ -2068,7 +2139,13 @@ async function main() {
           enrolledPublicComposition: !!enrollment,
           privateOperationJobs,
           productionPrivateOperation,
-          ...(kohaku ? { kohakuQualification } : {}),
+          ...(kohaku
+            ? {
+                kohakuQualification,
+                readContracts,
+                contractResourceActivity: contractResources.snapshot(),
+              }
+            : {}),
           ...(publicShield ? { sourceInventoryIsExecutionCoverage: false } : {}),
           cancelledViewingProcess,
           cancelledViewingMessages: accountIdentity ? cancelledViewingMessages : null,
@@ -2104,14 +2181,24 @@ async function main() {
       { flag: 'wx', mode: 0o600 }
     );
   } finally {
-    walletJournal?.close();
-    walletSession?.close();
-    if (walletSession) await walletSession.closed;
-    await close();
-    enrollment?.close();
-    accountIdentity?.close();
-    vault?.lockVault();
-    kohaku?.close();
+    const cleanup = async (label, run) => {
+      try {
+        await run();
+      } catch (error) {
+        nativeAssertions.record(error, 'wallet-journal.' + label);
+      }
+    };
+    await cleanup('walletJournal.close', () => walletJournal?.close());
+    await cleanup('walletSession.close', () => walletSession?.close());
+    await cleanup('walletSession.closed', () => walletSession?.closed);
+    await cleanup('publicOwners.close', close);
+    await cleanup('enrollment.close', () => enrollment?.close());
+    await cleanup('identity.close', () => accountIdentity?.close());
+    await cleanup('vault.lock', () => vault?.lockVault());
+    await cleanup('kohaku.close', () => kohaku?.close());
+    await cleanup('runtime.restore', () => restoreContractRuntime?.());
+    await cleanup('meter.close', () => contractResources?.close());
+    nativeAssertions.assertEmpty();
   }
 }
 main().then(

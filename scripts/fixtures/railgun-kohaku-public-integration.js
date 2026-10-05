@@ -2,7 +2,8 @@
  * The facade, Shield hosts/preflight, constraints, vault signer and journal are
  * genuine. RPC replies (including balances) are synthetic; no Tor/live evidence.
  */
-const assert = require('assert/strict');
+const nativeAssertions = require('./railgun-native-assertions');
+const { assert } = nativeAssertions;
 const fs = require('fs');
 const path = require('path');
 const { Transaction } = require('ethers');
@@ -10,6 +11,9 @@ const {
   createPrivacyScope,
   getPrivacyContext,
 } = require('../../src/main/networks/privacy-context');
+const contracts = require('./railgun-kohaku-contract-conformance');
+const contractOracle = require('./railgun-kohaku-contract-oracle');
+const { installSettlementObserver } = require('./railgun-kohaku-contract-observer');
 const pins = require('../../src/main/wallet/railgun-shield-pins.json');
 const { createOfflineShieldDeployment } = require('./railgun-shield-offline-deployment');
 let installed = false;
@@ -221,6 +225,11 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
   };
   return Object.freeze({
     inputType: 'Shield',
+    measureActivity: () => ({
+      counters: { ...counters },
+      attempts: { ...attempts },
+      transactionMethods: { ...transactionMethods },
+    }),
     configureArchive(factory) {
       assert.equal(archiveFactory, undefined);
       assert.equal(typeof factory, 'function');
@@ -234,6 +243,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
       outputDirectory,
       observeKeys,
       readKeyCounts,
+      measureResources,
     }) {
       activeFixture();
       const started = performance.now();
@@ -296,6 +306,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         gates = [],
         tasks = [],
         borrowed = [];
+      let contractRead;
       let mainAccount,
         plugin,
         expectedIntent,
@@ -317,6 +328,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         counts: { ...counts },
         keys: readKeyCounts(),
       });
+      const measureReads = () => ({ ...snapshot(), resources: measureResources() });
       const refused = (promise) =>
         assert.rejects(bounded(promise, 'refused capability', 15000), {
           code: 'RAILGUN_KOHAKU_REFUSED',
@@ -409,6 +421,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         throw Error('Private spending key forbidden in public Shield fixture');
       });
       const facade = require('../../src/main/wallet/railgun-kohaku-plugin');
+      const settlements = installSettlementObserver('public');
       const {
         createRailgunKohakuPublicSubmitter,
       } = require('../../src/main/wallet/railgun-kohaku-public-submitter');
@@ -605,6 +618,13 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
             return true;
           },
         });
+        contractRead = await contracts.qualifyOperationInstance({
+          instance: plugin,
+          account: mainAccount,
+          owners,
+          mode: 'public',
+          measure: measureReads,
+        });
         const submitter = createRailgunKohakuPublicSubmitter(plugin);
         assert.throws(() => createRailgunKohakuBroadcaster(plugin), {
           code: 'RAILGUN_KOHAKU_REFUSED',
@@ -618,6 +638,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
           plugin.prepareShield(amount, identity.descriptor.instanceId),
           'genuine public preparation'
         );
+        contractOracle.assertOpaqueOperationShape(token, 'public');
         assert.deepEqual(token, { __type: 'publicOperation' });
         assert.equal(Object.isFrozen(token), true);
         assert.equal(counters.archivedRequests, archivedBeforePublicOperation);
@@ -647,7 +668,8 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
           assert.equal(JSON.stringify(records).includes(raw), false);
           journalBeforeSend = true;
         };
-        const submitting = submitter.submit(token).then(
+        const forwarded = settlements.begin(plugin, token, () => submitter.submit(token));
+        const submitting = forwarded.promise.then(
           (result) => ({ result }),
           (error) => ({ error })
         );
@@ -710,6 +732,15 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
             });
           });
         }
+        await forwarded.assert({
+          outcome:
+            mode === 'review-cancelled'
+              ? 'refused'
+              : mode === 'lost-response'
+                ? 'uncertain'
+                : 'acknowledged',
+          ...(mode === 'review-cancelled' ? {} : { hash: sentHash }),
+        });
         const beforeReplay = snapshot();
         await refused(submitter.submit(token));
         assert.deepEqual(snapshot(), beforeReplay);
@@ -736,6 +767,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         assert.ok(borrowed.every((key) => key.every((byte) => byte === 0)));
         return {
           mode,
+          contract: { reads: [contractRead], forwarding: settlements.report() },
           inputType: 'Shield',
           elapsedMs: Math.round(performance.now() - started),
           productionFacadeAndPublicSubmitter: true,
@@ -782,23 +814,51 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
           liveSubmissions: 0,
         };
       } finally {
-        for (const held of gates) held.release.resolve();
-        signalController.abort();
-        for (const instance of plugins) instance.close();
-        try {
-          await bounded(
-            Promise.all(plugins.map((instance) => instance.closed)),
+        const cleanup = async (label, run) => {
+          try {
+            await run();
+          } catch (error) {
+            nativeAssertions.record(error, 'kohaku-public.' + label);
+          }
+        };
+        for (const [index, held] of gates.entries())
+          await cleanup('review.' + index, () => held.release.resolve());
+        await cleanup('abort', () => signalController.abort());
+        for (const [index, instance] of plugins.entries())
+          await cleanup('plugin.' + index + '.close', () => instance.close());
+        await cleanup('final facade cleanup', () =>
+          bounded(
+            Promise.all(
+              plugins.map((instance, index) =>
+                cleanup('plugin.' + index + '.closed', () => instance.closed)
+              )
+            ),
             'final facade cleanup'
+          )
+        );
+        for (const [index, account] of accounts.entries())
+          await cleanup('account.' + index, () =>
+            bounded(account.close(), 'final account cleanup')
           );
-          for (const account of accounts) await bounded(account.close(), 'final account cleanup');
-          await bounded(Promise.all(tasks), 'final utility cleanup');
-        } finally {
-          observeKeys(null);
-          sendObserver = undefined;
+        await cleanup('final utility cleanup', () =>
+          bounded(
+            Promise.all(tasks.map((task, index) => cleanup('utility.' + index, () => task))),
+            'final utility cleanup'
+          )
+        );
+        await cleanup('keys.restore', () => observeKeys(null));
+        sendObserver = undefined;
+        await cleanup('signer.restore', () => {
           signerModule.getSigner = genuineSigner;
+        });
+        await cleanup('viewing.restore', () => {
           identities.withRailgunViewingCredential = originalViewing;
+        });
+        await cleanup('process.restore', () => {
           processHost.startRailgunProcess = originalStart;
-        }
+        });
+        await cleanup('settlements.close', () => settlements.close());
+        nativeAssertions.assertEmpty();
       }
     },
   });
