@@ -7,6 +7,19 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [public-facade cold-credit checkpoint](railgun-public-facade-cold-credit-2026-10-05.md)
+passes acknowledged and lost-response deposit, receipt-resolution/normal-scan and
+completed-only restore in six fresh processes. Each sequence signs and sends once,
+credits exactly one net-WETH note and preserves it through the third process.
+Root checks pass 684 tests/13 suites plus lint. Exact maps observe 36 utility and
+26 storage-worker closures, with the documented logical-drain limits. A separately
+mutated source ciphertext applies the public leaf but yields no owned credit;
+its exact assertion failure is expected negative evidence, not healthy cleanup.
+The broad 5,545-report/5,795-outer source inventories are not execution coverage.
+External services remain synthetic, and no funded profile was used. After merging
+newer main and refreshing bundled nodes, next are the reviewed read-data extraction, restricted own-origin diagnostic prerequisite and
+live private qualification. The following checkpoints retain their source scope.
+
 The [pinned runtime contract checkpoint](railgun-kohaku-contract-2026-10-05.md)
 passes eight real adapter cases and ordinary-wallet compatibility: nine fresh
 exit-zero native processes, 924 checked reads and eight exact forwarding checks.
@@ -204,8 +217,9 @@ Later checkpoints above supersede those restrictions within their stated scope.
    preflight, vault signer and journals, but synthetic RPC. The private broadcaster
    refuses Shield. The reviewed [cold-credit plan](railgun-public-facade-cold-credit-plan-2026-10-05.md)
    connects a real adapter deposit to separate-process receipt resolution, normal
-   scan credit and another completed restore. That composition and live
-   public-facade qualification remain distinct from these tests.
+   scan credit and another completed restore. This controlled composition now passes
+   both response outcomes in the [cold-credit checkpoint](railgun-public-facade-cold-credit-2026-10-05.md).
+   Live public-facade qualification remains separate.
 2. **Finish the remaining partial-withdrawal composition boundaries.**
    The actual Kohaku adapter now supports partial withdrawal with immutable
    input/withdrawal/change review. Genuine change scanning, disposable-list
