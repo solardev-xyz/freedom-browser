@@ -186,17 +186,20 @@ export function describePublishCta(state, credit = null) {
       return cta('Manage Storage', 'New storage is reaching the network', 'storage');
     case 'needs-storage':
       return cta('Set Up Publishing', 'Buy storage to publish on Swarm');
-    case 'checking':
-      // Ant is still looking for storage this wallet bought before (#510).
-      // That can take minutes, so the card opens setup, where the message
-      // (and, after a failed scan, Restart Node) lives.
-      if (state.readiness.rediscovery === 'failed') {
-        return cta('Publishing Setup', 'Restart the node before buying storage');
+    case 'checking': {
+      // Ant is still looking for storage this wallet bought before (#510,
+      // /health.walletScan). That can take minutes, so the card opens setup,
+      // where the full message lives, and shows the progress Ant reports.
+      const { rediscovery, progress } = state.readiness;
+      const done = Number.isInteger(progress) ? ` ${progress}%` : '';
+      if (rediscovery === 'retrying') {
+        return cta('Publishing Setup', `Looking for your existing storage…${done} (retrying)`);
       }
-      if (state.readiness.rediscovery === 'running') {
-        return cta('Publishing Setup', 'Checking for storage this wallet already owns…');
+      if (rediscovery === 'running') {
+        return cta('Publishing Setup', `Looking for your existing storage…${done}`);
       }
       return cta('Checking Node Status…', '', 'setup', true);
+    }
     case 'chain-syncing':
       return cta('Publishing Setup', 'Connecting to Gnosis Chain…');
     case 'connecting':

@@ -26,7 +26,6 @@ const {
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
 const { antApiGet } = require('./swarm/ant-api-chrome');
-const { createRediscoveryTracker } = require('./swarm/ant-rediscovery');
 const { loadSettings } = require('./settings-store');
 
 // States
@@ -41,15 +40,14 @@ const STATUS = {
 let currentState = STATUS.STOPPED;
 let lastError = null;
 let antProcess = null;
+// When the current antProcess was spawned (ms), for getSpawnedAt.
+let antSpawnedAt = null;
 let healthCheckInterval = null;
 let pendingStart = false;
 let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
 const statusListeners = new Set();
-// The bundled node's background batch rediscovery, read from its log
-// (ant-rediscovery.js, #510). Null for a node Freedom did not spawn.
-const rediscovery = createRediscoveryTracker();
 
 function closeChainBridge(bridge = chainBridge) {
   if (chainBridge === bridge) chainBridge = null;
@@ -354,15 +352,13 @@ function onStatusChange(listener) {
 }
 
 /**
- * `{ run, state: 'running' | 'finished', failed }` for the bundled node
- * Freedom spawned, or null (reused, external, disabled or stopped node).
+ * When the bundled node Freedom is running was spawned (ms since epoch), or
+ * null for a reused, external, disabled or stopped node. Publish setup
+ * measures its fallback rediscovery hold from this (#510), not from when it
+ * first happened to look.
  */
-function getRediscoveryState() {
-  return rediscovery.get();
-}
-
-function onRediscoveryChange(listener) {
-  return rediscovery.onChange(listener);
+function getSpawnedAt() {
+  return antProcess && currentMode === MODE.BUNDLED ? antSpawnedAt : null;
 }
 
 /**
@@ -536,7 +532,6 @@ async function startExternalAnt(config) {
   noteAntApiUrl(currentApiUrl);
   currentApiPort = getPortFromUrl(apiUrl);
   currentMode = MODE.EXTERNAL;
-  rediscovery.end();
 
   updateService('ant', {
     api: currentApiUrl,
@@ -554,7 +549,6 @@ function startDisabledAnt() {
   currentApiPort = null;
   currentApiUrl = null;
   currentMode = MODE.DISABLED;
-  rediscovery.end();
   updateService('ant', {
     api: null,
     gateway: null,
@@ -611,7 +605,6 @@ async function startAnt() {
     currentApiUrl = `http://127.0.0.1:${currentApiPort}`;
     noteAntApiUrl(currentApiUrl);
     currentMode = MODE.REUSED;
-    rediscovery.end();
 
     updateService('ant', {
       api: currentApiUrl,
@@ -779,21 +772,18 @@ async function startAnt() {
 
   try {
     antProcess = spawn(binPath, args);
+    antSpawnedAt = Date.now();
     const child = antProcess;
-    const run = rediscovery.begin();
 
     bridge.pipeLog(child.stdout, (line) => {
       log.info(`[Ant stdout]: ${line}`);
-      rediscovery.noteLine(run, line);
     });
     bridge.pipeLog(child.stderr, (line) => {
       log.error(`[Ant stderr]: ${line}`);
-      rediscovery.noteLine(run, line);
     });
 
     antProcess.on('close', (code) => {
       void closeChainBridge(bridge);
-      rediscovery.end(run);
       if (antProcess !== child) return;
       log.info(`[Ant] Process exited with code ${code}`);
       antProcess = null;
@@ -827,7 +817,6 @@ async function startAnt() {
 
     antProcess.on('error', (err) => {
       void closeChainBridge(bridge);
-      rediscovery.end(run);
       if (antProcess !== child) return;
       log.error('[Ant] Failed to start process:', err);
       updateState(STATUS.ERROR, err.message);
@@ -1062,8 +1051,7 @@ module.exports = {
   getActivePort,
   getStatus,
   onStatusChange,
-  getRediscoveryState,
-  onRediscoveryChange,
+  getSpawnedAt,
   getAntDataPath,
   setUseInjectedIdentity,
   hasInjectedKeys,

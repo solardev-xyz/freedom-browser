@@ -475,12 +475,16 @@ describe('ant-manager', () => {
     expect(ctx.spawnedProcesses).toHaveLength(1);
     expect(ctx.spawnedProcesses[0].binary).toBe(ctx.antBinPath);
     expect(ctx.mod.getStatus()).toEqual({ status: 'running', error: null });
+    // Publish setup's fallback rediscovery hold runs from the spawn (#510).
+    expect(ctx.mod.getSpawnedAt()).toEqual(expect.any(Number));
+    expect(ctx.mod.getSpawnedAt()).toBeLessThanOrEqual(Date.now());
 
     const stopPromise = ctx.mod.stopAnt();
     await jest.advanceTimersByTimeAsync(0);
     await flushMicrotasks();
     await stopPromise;
     expect(jest.getTimerCount()).toBe(0);
+    expect(ctx.mod.getSpawnedAt()).toBeNull();
   });
 
   test('reuses an existing daemon and clears the health-check interval on stop', async () => {
@@ -513,6 +517,8 @@ describe('ant-manager', () => {
       gateway: 'http://127.0.0.1:1633',
       mode: 'reused',
     });
+    // Not spawned by Freedom: its start time is unknown.
+    expect(ctx.mod.getSpawnedAt()).toBeNull();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node: localhost:1633');
     expect(setIntervalSpy).toHaveBeenCalled();
     expect(window.webContents.send).toHaveBeenCalledWith(IPC.ANT_STATUS_UPDATE, {

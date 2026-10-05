@@ -413,7 +413,7 @@ test('says once why log scans fail when no RPC quorum is configured (R1-M3)', as
   expect(log.warn.mock.calls.flat().join('\n')).not.toContain('none is configured');
 });
 
-test("Ant's shrink needles match v0.5.58 is_range_limit_error", () => {
+test("Ant's shrink needles match v0.5.59 is_range_limit_error", () => {
   expect(antShrinksLogScanOn('Query Timeout')).toBe(true);
   expect(antShrinksLogScanOn('Log response size exceeded')).toBe(true);
   expect(antShrinksLogScanOn('the method eth_getLogs does not exist/is not available')).toBe(false);

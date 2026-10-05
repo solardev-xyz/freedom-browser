@@ -86,23 +86,50 @@ change. **Top Up Credit** passes the chosen amount as
 that the Nodes tab's switch stops saying "Not supported by this node version",
 flips without the node restarting, and that the deposit screen offers amounts.
 
-Publish setup also reads the bundled node's **log**, for one thing the API
-does not report (#510). Since v0.5.58, `/health.chainReady` no longer waits for
-the background batch rediscovery, so until antd logs `background batch
-rediscovery finished` an empty `GET /stamps` can just mean "not found yet" — on
-the first start of a wallet with history that was 15–25 min behind a
-range-capped RPC. `src/main/swarm/ant-rediscovery.js` watches the node's
-stdout/stderr for that line and for `postage batch rediscovery scan failed`
-(both copied from `crates/antd/src/main.rs` at v0.5.58), and the publish setup
-service holds its "Checking…" state instead of offering a plan until the
-first one arrives — unless the node wallet has never sent a transaction (its
-`eth_getTransactionCount` is 0, so there is nothing to rediscover), and for at
-most `REDISCOVERY_MAX_WAIT_MS` (30 min) after Freedom spawned the node. Reused and external nodes are not
-held: Freedom does not see their output. On every pin bump, grep the new
-release's `crates/antd/src/main.rs` for both strings; if either changed, update
-`ant-rediscovery.js`. The proper replacement is the `/health.walletScan` field
-planned upstream (#493) — once a pinned release has it, read that instead and
-delete the log matching (as of 2026-10-05, v0.5.58 has no such field).
+Publish setup also reads **`/health.walletScan`** (Ant v0.5.59+,
+freedom-hq/ant#142), for #510/#484. Since v0.5.58, `/health.chainReady` no
+longer waits for the background batch rediscovery, so until it finishes an empty
+`GET /stamps` can just mean "not found yet". `walletScan` reports that scan:
+`pending`, `scanning` (with `from`/`scannedThrough`/`head`), `retrying` (with a
+URL-redacted `error`; antd retries on its own), then `done`, or `confirming`
+(freedom-hq/ant#143: part of the history came from an unverified source and is
+being confirmed; what it found is already registered). The publish setup
+service (`src/main/swarm/ant-wallet-scan.js` parses it) shows "Looking for your
+existing storage…" with the percentage instead of offering a plan until `done`
+or `confirming`, with no time limit while the scan moves and no Restart
+offered, since a restart starts the scan over. A scan that has read no block
+for `SCAN_STALL_MAX_MS` (30 min) of `retrying` (antd flips to `scanning` for
+each attempt, so only an advancing `scannedThrough` resets the clock) is
+released: the plans show, with a warning that the check did not finish and to
+check the Gnosis RPC (a set short of a quorum fails every `eth_getLogs`). The probe reads `/health` before `/stamps`, so the list it
+releases with already has what the scan found. A node wallet whose
+`eth_getTransactionCount` is 0 is never held: rediscovery only finds batches the
+wallet paid for itself, and a brand-new wallet would otherwise wait for a scan of
+the whole chain. That scan took about 70 minutes through the chain bridge's
+range-capped quorum (about 7.8k blocks/s, measured 2026-10-05 on a fresh dev
+profile). The field is absent when the node runs no background rediscovery: no
+logs RPC, or no write RPC, in which case antd rediscovers before `chainReady`.
+The bundled node always gets both. The only node that rediscovers in the
+background _without_ reporting it is antd v0.5.58 (or an antd whose
+`/health.version` can't be parsed, or a `walletScan.state` this release doesn't
+know). For those, a fallback holds for at most `REDISCOVERY_MAX_WAIT_MS`
+(30 min) after the node was spawned (`ant-manager.getSpawnedAt()`, not when
+the lazily-built service first looked), for the bundled node only: an external
+or reused node's start time is unknown, and holding it would re-arm the 30
+minutes on every Freedom launch for a scan that may have finished long ago.
+Bee is not held. The log matching that #522 used is gone: v0.5.59 logs
+`postage batch rediscovery scan failed` on every retry, so it no longer means
+"gave up". On a pin bump, check `crates/ant-chain/src/discover.rs`'s
+`WalletScanState` for new states. A state Freedom doesn't know falls back to the
+bounded hold instead of being treated as finished.
+
+Freedom does **not** pass ant#143's `--gnosis-unverified-logs-rpc-url`. Its
+chain bridge answers `eth_getLogs` from an RPC quorum only (#493), and serving
+Ant an explicitly unverified full-range source, or adding Blockscout as a
+second independent full-history source for the verified route, is tracked in
+[#529](https://github.com/solardev-xyz/freedom-browser/issues/529). Until then,
+a first scan behind range-capped endpoints reads window by window and shows
+its progress.
 
 Ports matter when you are judging evidence:
 

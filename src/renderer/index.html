@@ -3281,6 +3281,15 @@
 
                 <!-- Pick a plan -->
                 <div class="hidden" id="publish-setup-plans">
+                  <!-- Ant could not finish looking for storage the wallet owns -->
+                  <div class="swarm-connect-note hidden" id="publish-setup-plans-warning">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="12" y1="8" x2="12" y2="12" />
+                      <line x1="12" y1="16" x2="12.01" y2="16" />
+                    </svg>
+                    <span id="publish-setup-plans-warning-text"></span>
+                  </div>
                   <p class="publish-setup-intro">
                     Pick a storage plan. You pay once, in xDAI: your Swarm node swaps it, buys the
                     storage and sets up its network payments.
