@@ -2519,7 +2519,11 @@ class FreedomAgentService {
       run.assistantMessagePending = false;
       run.assistantText += normalized.text;
     } else if (normalized.type === 'tool_started') {
+      normalized.textOffset = run.assistantText.length;
+      normalized.timelineOrder = run.activity.length + run.guidance.length;
       run.activity.push({
+        textOffset: normalized.textOffset,
+        timelineOrder: normalized.timelineOrder,
         toolCallId: normalized.toolCallId,
         operation: normalized.operation,
         status: 'running',
@@ -2866,6 +2870,8 @@ class FreedomAgentService {
       pageId: tabId,
     });
     const activityItem = {
+      textOffset: run.assistantText.length,
+      timelineOrder: run.activity.length + run.guidance.length,
       toolCallId,
       operation: OPERATIONS.WALLET_ACTION,
       status: 'running',
@@ -2878,6 +2884,8 @@ class FreedomAgentService {
     run.activity.push(activityItem);
     this.#emit(run, {
       type: 'tool_started',
+      textOffset: activityItem.textOffset,
+      timelineOrder: activityItem.timelineOrder,
       toolCallId,
       operation: OPERATIONS.WALLET_ACTION,
       ...progress,
@@ -3260,6 +3268,8 @@ class FreedomAgentService {
   #createGuidance(run, text, status) {
     const guidance = {
       guidanceId: this.guidanceIdFactory(),
+      textOffset: run.assistantText.length,
+      timelineOrder: run.activity.length + run.guidance.length,
       text,
       status,
       createdAt: this.now(),

@@ -168,6 +168,9 @@ function createAgentElements() {
     'agent-attach-folder',
     'agent-open-project',
     'agent-attachment-contexts',
+    'agent-scope-help',
+    'agent-scope-help-text',
+    'agent-float-title',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
   elements['agent-toggle-btn'] = createElement('button');
@@ -498,6 +501,70 @@ async function loadAgentUi(options = {}) {
 }
 
 describe('Agent UI', () => {
+  function messages(ctx) {
+    return ctx.elements['agent-transcript'].children.flatMap(turn => turn.children.flatMap(row => {
+      if (row.classList.contains('agent-helper-list')) return row.children.map(card => card.querySelector('.agent-helper-title').textContent);
+      const text = row.querySelector('.agent-output') || row.querySelector('.agent-user-message');
+      return text?.textContent ? [text.textContent] : [];
+    }));
+  }
+
+  test('keeps helper starts and user guidance before the final response without moving updated cards', async () => {
+    const ctx = await loadAgentUi();
+    const emit = event => ctx.emit({ runId: 'run_test', ...event });
+    emit({ type: 'run_started', userText: 'Research' });
+    emit({ type: 'assistant_text_delta', text: 'Starting.' });
+    emit({ type: 'tool_started', toolCallId: 'first', operation: 'delegate_task' });
+    const helper = { type: 'tool_finished', toolCallId: 'first', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'First helper', state: 'running' } };
+    emit(helper);
+    emit({ type: 'guidance_queued', guidance: { guidanceId: 'guide', text: 'Focus on dates.', status: 'queued' } });
+    emit({ type: 'assistant_text_delta', text: 'Checking.' });
+    emit({ type: 'tool_started', toolCallId: 'second', operation: 'delegate_task' });
+    emit({ type: 'tool_finished', toolCallId: 'second', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Second helper', state: 'completed', report: 'Findings' } });
+    emit({ ...helper, subagent: { ...helper.subagent, state: 'completed', report: 'Done' } });
+    emit({ type: 'assistant_text_delta', text: 'Final ' });
+    emit({ type: 'assistant_text_delta', text: 'answer.' });
+    emit({ type: 'run_finished', status: 'completed' });
+    expect(messages(ctx)).toEqual(['Research', 'Starting.', 'First helper', 'Focus on dates.', 'Checking.', 'Second helper', 'Final answer.']);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-activity').open).toBe(false);
+  });
+
+  test.each([true, false])('restores chronological messages with timeline metadata present=%s', async hasOffsets => {
+    const position = (textOffset, timelineOrder) => hasOffsets ? { textOffset, timelineOrder } : {};
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn().mockResolvedValue({ ok: true, state: {
+        status: 'ready', conversationId: 'conversation_saved', transcript: [{
+          runId: 'run_saved', userText: 'Research', assistantText: 'Starting.Final answer.', status: 'completed',
+          activity: [{ toolCallId: 'first', operation: 'delegate_task', status: 'succeeded', ...position(9, 0),
+            subagent: { title: 'First helper', state: 'completed', report: 'Done' } }],
+          guidance: [{ guidanceId: 'guide', text: 'Focus on dates.', status: 'applied', ...position(9, 1) }],
+        }],
+      } }),
+    } });
+    expect(messages(ctx)).toEqual(hasOffsets
+      ? ['Research', 'Starting.', 'First helper', 'Focus on dates.', 'Final answer.']
+      : ['Research', 'First helper', 'Focus on dates.', 'Starting.Final answer.']);
+  });
+
+  test('incoming text and status follow the bottom but preserve a reader scroll position', async () => {
+    const ctx = await loadAgentUi();
+    const scroller = createElement('div', { classes: ['agent-workspace-scroll'] });
+    ctx.elements['agent-workspace-body'].appendChild(scroller);
+    scroller.scrollHeight = 2000;
+    scroller.clientHeight = 500;
+    scroller.scrollTop = 100;
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'New output' });
+    ctx.emit({ type: 'run_thinking', runId: 'run_test' });
+    expect(scroller.scrollTop).toBe(100);
+    scroller.scrollTop = 1490;
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: ' continues' });
+    expect(scroller.scrollTop).toBe(2000);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-output').textContent).toBe('New output continues');
+  });
+
   test('renders separate parallel reports and neutral completion/stopping without a recovery warning', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
@@ -654,6 +721,95 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
     expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Set up Agent');
     expect(ctx.elements['agent-run'].disabled).toBe(true);
+  });
+
+  test('floats over the page: centred before a task, a right column once one runs, inert while closed', async () => {
+    let toggleAgent;
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        onToggleAgent: jest.fn((callback) => {
+          toggleAgent = callback;
+          return jest.fn();
+        }),
+      },
+    });
+    const panel = ctx.elements['agent-sidebar'];
+    expect(panel.classList.contains('agent-floating')).toBe(true);
+    expect(panel.inert).toBe(true);
+
+    // Cmd/Ctrl+K arriving through the View menu while the page has focus.
+    toggleAgent();
+    expect(panel.classList.contains('collapsed')).toBe(false);
+    expect(panel.inert).toBe(false);
+    expect(panel.dataset.presentation).toBe('launcher');
+
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Read this page' });
+    expect(panel.dataset.presentation).toBe('column');
+    expect(ctx.document.body.classList.contains('agent-floating-column')).toBe(true);
+
+    // Escape only puts the surface away; the run keeps going.
+    ctx.document.handlers.keydown({ key: 'Escape', target: ctx.document.body, preventDefault: jest.fn() });
+    expect(panel.classList.contains('collapsed')).toBe(true);
+    expect(panel.inert).toBe(true);
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+
+    // Reopening an existing conversation goes straight to the right column.
+    toggleAgent();
+    expect(panel.classList.contains('collapsed')).toBe(false);
+    expect(panel.dataset.presentation).toBe('column');
+  });
+
+  test('keeps the scope explanation as help that follows the conversation and never lingers', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [{ conversationId: 'conversation_saved', title: 'Saved', status: 'ready', turnCount: 1 }],
+        }),
+        openAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_saved',
+            title: 'Saved',
+            rendererTabId: 1,
+            transcript: [{ runId: 'run_saved', userText: 'Read it', assistantText: 'Done.', status: 'completed', activity: [] }],
+            taskTabs: [],
+          },
+        }),
+      },
+    });
+    const help = ctx.elements['agent-scope-help'];
+    const note = ctx.elements['agent-scope-help-text'];
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    expect(help.hidden).toBe(false);
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+
+    help.dispatch('click');
+    expect(note.hidden).toBe(false);
+    expect(help.getAttribute('aria-expanded')).toBe('true');
+    // Escape closes the note first and leaves the surface open.
+    ctx.document.handlers.keydown({ key: 'Escape', target: ctx.document.body, preventDefault: jest.fn() });
+    expect(note.hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+
+    // An open note never follows Agent into provider settings.
+    help.dispatch('click');
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    expect(note.hidden).toBe(true);
+    expect(help.getAttribute('aria-expanded')).toBe('false');
+
+    // New chat clears it; a reopened conversation shows its own shared-page state.
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(help.hidden).toBe(true);
+    expect(note.textContent).toBe('');
+    ctx.elements['agent-session-list'].children[0].children[0].dispatch('click');
+    await flush();
+    expect(help.hidden).toBe(false);
+    expect(note.textContent).toContain('page you shared');
   });
 
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
@@ -3112,9 +3268,12 @@ describe('Agent UI', () => {
     await flush();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
 
-    expect(ctx.elements['agent-run-message'].textContent).toContain(
+    // In the floating column the scope explanation is help, not a status line.
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    expect(ctx.elements['agent-scope-help-text'].textContent).toContain(
       'page you shared and any tabs it opens'
     );
+    expect(ctx.elements['agent-scope-help'].hidden).toBe(false);
     expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
     expect(ctx.elements['agent-run'].disabled).toBe(false);
     ctx.elements['agent-run'].dispatch('click');
@@ -3939,7 +4098,7 @@ describe('Agent UI', () => {
       label: 'Published website to Swarm',
       publication,
     });
-    const card = ctx.elements['agent-transcript'].children[0].children[4].children[0];
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
     expect(card.dataset.publicationId).toBe(publication.publicationId);
     card.children[1].children[0].dispatch('click');
     await flush();
@@ -4208,7 +4367,7 @@ describe('Agent UI', () => {
       publication,
     });
 
-    const card = ctx.elements['agent-transcript'].children[0].children[4].children[0];
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-artifact-list').children[0];
     expect(card.children[0].children[0].textContent).toBe('Text');
     expect(card.textContent).not.toContain('.txt');
   });

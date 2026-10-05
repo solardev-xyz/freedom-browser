@@ -3,6 +3,7 @@ import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
 import { isPrivateWindow } from './private-mode.js';
 import { homeUrl } from './page-urls.js';
+import { matchesShortcut } from './shortcuts.js';
 import { close as closeWalletSidebar, isVisible as isWalletSidebarVisible } from './sidebar.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
 
@@ -127,6 +128,18 @@ let workspaceInspector = null;
 let composerResizeObserver = null;
 let workspaceInspectionConversationId = null;
 let agentFirstMode = false;
+let focusBeforeOpen = null;
+let launcherSnapshot = null;
+// Optional floating-presentation nodes, looked up after the required set:
+// a missing one only loses decoration, never Agent itself.
+let panelInner = null;
+let panelHeader = null;
+let floatTitle = null;
+let runHeader = null;
+let runHeaderHome = null;
+let scopeHelpButton = null;
+let scopeHelpText = null;
+let scopeNotice = '';
 let sessionSidebarOpen = true;
 let sessionContextMenu = null;
 let workspaceSidebarOpen = true;
@@ -654,8 +667,10 @@ async function selectApprovalMode(nextMode) {
 
 function setAgentView(nextView) {
   setModeMenuOpen(false);
+  setScopeHelpOpen(false);
   if (nextView !== 'workspace' && agentFirstMode) setAgentFirstMode(false);
   agentView = nextView;
+  if (elements.panel.dataset) elements.panel.dataset.agentView = nextView;
   elements.loadingView.hidden = nextView !== 'loading';
   elements.setupView.hidden = nextView !== 'setup';
   elements.mcpPanel.hidden = nextView !== 'services';
@@ -675,6 +690,7 @@ function setAgentView(nextView) {
     : 'Give Agent a task';
   elements.agentFirstToggle.hidden = nextView !== 'workspace';
   closeComposerPopovers();
+  syncFloatingPresentation();
 }
 
 function titleFromPrompt(prompt) {
@@ -688,6 +704,36 @@ function titleFromPrompt(prompt) {
 function setConversationTitle(nextTitle) {
   conversationTitle = titleFromPrompt(nextTitle);
   elements.agentFirstTitle.textContent = conversationTitle;
+  if (floatTitle) {
+    floatTitle.textContent = conversationTitle;
+    floatTitle.title = conversationTitle;
+  }
+}
+
+// Why Agent may or may not use the current page is reference, not news: in
+// the floating column it lives behind the header's help button instead of
+// occupying the status line, which stays free for live runtime messages.
+function setScopeNotice(text = '') {
+  scopeNotice = text;
+  if (scopeHelpText) scopeHelpText.textContent = text;
+  if (scopeHelpButton) scopeHelpButton.hidden = !text;
+  if (!text) setScopeHelpOpen(false);
+}
+
+// The explanation follows the conversation's own shared-page state, so a
+// reopened conversation and a new chat never show a previous chat's note.
+function scopeNoticeForConversation() {
+  if (!currentConversationId && !currentRunId) return '';
+  return conversationRendererTabId
+    ? 'Agent can use the page you shared and any tabs it opens.'
+    : 'Agent can use only the tabs it opens for this conversation.';
+}
+
+function setScopeHelpOpen(open) {
+  if (!scopeHelpButton || !scopeHelpText) return;
+  const next = open === true && Boolean(scopeNotice);
+  scopeHelpText.hidden = !next;
+  scopeHelpButton.setAttribute('aria-expanded', String(next));
 }
 
 function setModeMenuOpen(open, restoreFocus = false) {
@@ -1173,6 +1219,7 @@ async function refreshWorkspaceProjection() {
 
 function setAgentFirstMode(nextMode) {
   setModeMenuOpen(false);
+  setScopeHelpOpen(false);
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   if (agentFirstMode) {
     setWorkspaceNavigationProjection(elements.workspaceAddressHost);
@@ -1183,6 +1230,7 @@ function setAgentFirstMode(nextMode) {
   elements.modeAgent.setAttribute('aria-checked', String(agentFirstMode));
   elements.modeBrowser.setAttribute('aria-checked', String(!agentFirstMode));
   document.body.classList.toggle('agent-first-mode', agentFirstMode);
+  syncFloatingPresentation();
   document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
   document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
   elements.taskPages.hidden = !agentFirstMode;
@@ -1236,7 +1284,10 @@ function observeComposerHeight() {
   composerResizeObserver?.disconnect();
   const update = () => {
     const height = elements.composerWrap.getBoundingClientRect().height;
-    if (height > 0) elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
+    if (height > 0) {
+      elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
+    }
+    captureLauncherSnapshot();
   };
   update();
   if (typeof ResizeObserver === 'function') {
@@ -1354,11 +1405,209 @@ function showProviderSetup() {
 }
 
 function setPanelOpen(nextOpen) {
-  if (!nextOpen) setModeMenuOpen(false);
+  if (!nextOpen) {
+    setModeMenuOpen(false);
+    setScopeHelpOpen(false);
+  }
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
   elements.toggle.setAttribute('aria-expanded', String(panelOpen));
+  syncFloatingPresentation();
   pageActions?.render();
+}
+
+// In browser mode Agent floats over the page instead of docking beside it, so
+// the page keeps its width. Before a task exists it is a centred composer;
+// once one does (or a saved conversation is reopened) it is a column of
+// floating cards on the right. Agent-first mode keeps its own full layout.
+function floatingPresentationFor() {
+  return agentView === 'workspace' &&
+    !currentConversationId &&
+    currentRunStatus === 'idle' &&
+    !pendingApproval &&
+    elements.transcript.hidden
+    ? 'launcher'
+    : 'column';
+}
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+function syncFloatingPresentation() {
+  if (!elements?.panel) return;
+  const floating = !agentFirstMode;
+  const next = floatingPresentationFor();
+  const previous = elements.panel.dataset?.presentation;
+  const moving =
+    floating && panelOpen && Boolean(previous) && previous !== next && !prefersReducedMotion();
+  // Leaving the launcher, the DOM may already hold the first turn, so the
+  // geometry comes from the last settled launcher layout.
+  const before = moving
+    ? previous === 'launcher' && launcherSnapshot
+      ? launcherSnapshot
+      : { composer: elements.composer.getBoundingClientRect?.() }
+    : null;
+  elements.panel.classList.toggle('agent-floating', floating);
+  if (elements.panel.dataset) elements.panel.dataset.presentation = next;
+  // A closed floating surface must not take clicks or focus from the page.
+  elements.panel.inert = floating && !panelOpen;
+  document.body.classList.toggle('agent-floating-open', floating && panelOpen);
+  document.body.classList.toggle(
+    'agent-floating-column',
+    floating && panelOpen && next === 'column'
+  );
+  placeRunHeader(floating && next === 'column' && agentView === 'workspace');
+  if (moving) animateFloatingPresentation(previous, next, before);
+  captureLauncherSnapshot();
+}
+
+// The floating column folds the run status and New chat into its compact
+// header; everywhere else (launcher, settings screens, Agent-first) they go
+// back to the head of the conversation, so there is only ever one of each.
+function placeRunHeader(inHeader) {
+  if (!runHeader || !runHeaderHome || !panelHeader) return;
+  const actions = panelHeader.querySelector?.('.agent-sidebar-header-actions') || null;
+  if (inHeader) {
+    if (runHeader.parentNode !== panelHeader) panelHeader.insertBefore(runHeader, actions);
+  } else if (runHeader.parentNode !== runHeaderHome) {
+    runHeaderHome.insertBefore(runHeader, runHeaderHome.firstChild);
+  }
+}
+
+function captureLauncherSnapshot() {
+  if (agentFirstMode || !panelOpen || elements.panel.dataset?.presentation !== 'launcher') {
+    if (!panelOpen || agentFirstMode) launcherSnapshot = null;
+    return;
+  }
+  launcherSnapshot = {
+    composer: elements.composer.getBoundingClientRect?.(),
+    launcher: panelInner?.getBoundingClientRect?.(),
+    greeting: elements.emptyState.hidden ? null : elements.emptyState.getBoundingClientRect?.(),
+  };
+}
+
+const FLOAT_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
+
+// Glass cards cannot fade with opacity without losing their blur (see
+// agent-floating.css), so they arrive by materialising: blur, tint, border
+// and shadow interpolate from nothing to their resting values.
+function glassHiddenKeyframe(extra = {}) {
+  const hiddenFilter =
+    window.getComputedStyle?.(elements.panel)?.getPropertyValue?.('--agent-glass-filter-hidden')?.trim() ||
+    'blur(0px)';
+  return {
+    backgroundColor: 'transparent',
+    backdropFilter: hiddenFilter,
+    borderColor: 'transparent',
+    boxShadow: 'none',
+    ...extra,
+  };
+}
+
+function materialise(element, transform, delay = 0, fadeContents = true) {
+  if (typeof element?.animate !== 'function') return;
+  const timing = { duration: 380, delay, easing: FLOAT_EASE, fill: 'backwards' };
+  element.animate([{ offset: 0, ...glassHiddenKeyframe({ transform }) }], timing);
+  if (!fadeContents) return;
+  for (const child of element.children || []) fadeIn(child, delay + 80);
+}
+
+// Only for content that is not itself glass (opacity would disable a blur).
+function fadeIn(element, delay = 0) {
+  element?.animate?.([{ offset: 0, opacity: 0 }], {
+    duration: 260,
+    delay,
+    easing: 'ease-out',
+    fill: 'backwards',
+  });
+}
+
+// The composer is the one element both presentations share, so it travels
+// between them (first-last-invert-play) while the rest materialises around
+// it. Draft, focus and attachments stay put because the node never moves.
+function animateFloatingPresentation(previous, next, before) {
+  const composer = elements.composer;
+  const after = composer.getBoundingClientRect?.();
+  if (before?.composer?.width && after?.width && typeof composer.animate === 'function') {
+    composer.animate(
+      [
+        {
+          transform: `translate(${before.composer.left - after.left}px, ${
+            before.composer.top - after.top
+          }px)`,
+          width: `${before.composer.width}px`,
+        },
+        { transform: 'translate(0, 0)', width: `${after.width}px` },
+      ],
+      { duration: 480, easing: FLOAT_EASE }
+    );
+  }
+  if (previous === 'launcher' && before?.launcher?.width) {
+    dissolveLauncherGhost(before.launcher, before.greeting);
+  }
+  if (next === 'column') {
+    materialise(elements.composerWrap, 'none', 0, false);
+    fadeIn(panelHeader, 160);
+  } else {
+    materialise(panelInner, 'translateY(10px) scale(0.985)', 40);
+  }
+}
+
+// The centred card dissolves where it stood while its composer flies to the
+// column. The ghost is decorative: no ids, no focusable content, no pointer.
+function dissolveLauncherGhost(rect, greetingRect) {
+  if (typeof document.createElement !== 'function' || !document.body?.appendChild) return;
+  const ghost = document.createElement('div');
+  ghost.className = 'agent-floating-ghost';
+  ghost.setAttribute('aria-hidden', 'true');
+  Object.assign(ghost.style, {
+    left: `${rect.left}px`,
+    top: `${rect.top}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+  });
+  let greeting = null;
+  if (greetingRect?.width && typeof elements.emptyState.cloneNode === 'function') {
+    greeting = elements.emptyState.cloneNode(true);
+    greeting.removeAttribute?.('id');
+    greeting.hidden = false;
+    greeting.classList?.add('agent-floating-ghost-greeting');
+    Object.assign(greeting.style, {
+      left: `${greetingRect.left - rect.left}px`,
+      top: `${greetingRect.top - rect.top}px`,
+      width: `${greetingRect.width}px`,
+    });
+    ghost.appendChild(greeting);
+  }
+  document.body.appendChild(ghost);
+  const timing = { duration: 320, easing: 'cubic-bezier(0.4, 0, 1, 1)', fill: 'forwards' };
+  greeting?.animate?.([{ opacity: 1 }, { opacity: 0 }], { ...timing, duration: 180 });
+  const dissolve = ghost.animate?.(
+    [{ transform: 'scale(1)' }, glassHiddenKeyframe({ transform: 'scale(0.97)' })],
+    timing
+  );
+  if (dissolve) dissolve.onfinish = () => ghost.remove();
+  else ghost.remove();
+}
+
+// Cmd/Ctrl+K and the menu item: open Agent, or bring the keyboard back to an
+// open composer from the page, and only close it when it already has focus.
+function summonPanel() {
+  if (!panelOpen) {
+    openPanel();
+    return;
+  }
+  if (agentFirstMode) {
+    focusComposer();
+    return;
+  }
+  if (!elements.panel.contains(document.activeElement) && focusComposer()) return;
+  closePanel();
 }
 
 function focusComposer(options = {}) {
@@ -1383,8 +1632,16 @@ function focusComposer(options = {}) {
 }
 
 function closePanel() {
+  const hadFocus = elements.panel.contains(document.activeElement);
   if (agentFirstMode) setAgentFirstMode(false);
   if (panelOpen) setPanelOpen(false);
+  // Hand the keyboard back to whatever summoned Agent (the page, the toolbar
+  // button) rather than leaving it on a surface that is now inert.
+  const previous = focusBeforeOpen;
+  focusBeforeOpen = null;
+  if (hadFocus && previous?.isConnected && !elements.panel.contains(previous)) {
+    previous.focus?.({ preventScroll: true });
+  }
 }
 
 function openPanel() {
@@ -1392,6 +1649,9 @@ function openPanel() {
   if (isWalletSidebarVisible()) {
     closeWalletSidebar();
     if (isWalletSidebarVisible()) return;
+  }
+  if (!panelOpen && !elements.panel.contains(document.activeElement)) {
+    focusBeforeOpen = document.activeElement || null;
   }
   setPanelOpen(true);
   showPrimaryView();
@@ -2126,6 +2386,7 @@ function setRunState(status, label) {
   renderPageInterlock();
   renderPageContext();
   renderSessionSidebar();
+  syncFloatingPresentation();
 }
 
 function updateSendAvailability() {
@@ -2163,6 +2424,8 @@ function resetConversationUi() {
   elements.emptyState.hidden = false;
   clearApproval();
   setMessage(elements.runMessage);
+  setScopeNotice();
+  syncFloatingPresentation();
 }
 
 function createTurnView(turn) {
@@ -2245,16 +2508,9 @@ function createTurnView(turn) {
   artifactList.className = 'agent-artifact-list';
   artifactList.hidden = true;
 
-  const helperList = document.createElement('div');
-  helperList.className = 'agent-helper-list';
-  helperList.hidden = true;
-
-  const guidanceList = document.createElement('div');
-  guidanceList.className = 'agent-guidance-list';
-
   const activity = document.createElement('details');
   activity.className = 'agent-turn-activity';
-  activity.open = true;
+  activity.open = false;
   activity.hidden = true;
   const activitySummary = document.createElement('summary');
   activitySummary.textContent = 'Working…';
@@ -2280,20 +2536,22 @@ function createTurnView(turn) {
   liveStatus.appendChild(liveStatusLabel);
 
   section.appendChild(userRow);
-  section.appendChild(guidanceList);
   section.appendChild(assistantRow);
   section.appendChild(outcome);
   section.appendChild(artifactList);
-  section.appendChild(helperList);
   section.appendChild(activity);
   section.appendChild(liveStatus);
   elements.transcript.appendChild(section);
   elements.transcript.hidden = false;
   elements.emptyState.hidden = true;
+  syncFloatingPresentation();
 
   const view = {
     section,
     output,
+    assistantRow,
+    outputSegments: [{ output, text: turn.assistantText || '' }],
+    assistantSegmentClosed: false,
     outcome,
     outcomeIcon,
     outcomeHeadline,
@@ -2304,14 +2562,12 @@ function createTurnView(turn) {
     outcomeActions,
     outcomeRetry,
     artifactList,
-    helperList,
     helperCards: new Map(),
     activity,
     activitySummary,
     toolList,
     liveStatus,
     liveStatusLabel,
-    guidanceList,
     userText: turn.userText || '',
     assistantText: turn.assistantText || '',
     actionCount: 0,
@@ -2320,8 +2576,40 @@ function createTurnView(turn) {
   for (const guidance of Array.isArray(turn.guidance) ? turn.guidance : []) {
     createGuidanceView(turn.runId, guidance);
   }
-  section.scrollIntoView?.({ block: 'end' });
   return view;
+}
+
+// A message stays where it was spoken. Tool starts and user guidance close
+// the current segment; the next assistant text gets a new bubble after them.
+function closeAssistantSegment(view) {
+  if (view.assistantSegmentClosed) return;
+  view.assistantSegmentClosed = true;
+  const segment = view.outputSegments.at(-1);
+  if (segment.text) renderAgentMarkdown(segment.output, segment.text);
+}
+
+function appendAssistantText(view, text) {
+  if (!text) return;
+  if (view.assistantSegmentClosed) {
+    if (view.outputSegments.at(-1).text) {
+      view.output.removeAttribute('id');
+      view.assistantRow = document.createElement('div');
+      view.assistantRow.className = 'agent-message-row assistant';
+      view.output = document.createElement('div');
+      view.output.id = 'agent-output';
+      view.output.className = 'agent-output';
+      view.assistantRow.appendChild(view.output);
+      view.outputSegments.push({ output: view.output, text: '' });
+    }
+    view.section.insertBefore(view.assistantRow, view.outcome);
+    view.assistantSegmentClosed = false;
+  }
+  view.assistantText += text;
+  const segment = view.outputSegments.at(-1);
+  segment.text += text;
+  // Keep the streaming text node rather than replacing an ever-growing answer.
+  if (view.output.lastChild?.nodeType === 3) view.output.lastChild.appendData(text);
+  else view.output.insertAdjacentText('beforeend', text);
 }
 
 function setLiveStatus(runId, label, { active = true } = {}) {
@@ -2336,7 +2624,6 @@ function setLiveStatus(runId, label, { active = true } = {}) {
   view.liveStatus.hidden = false;
   view.liveStatus.classList.toggle('active', active);
   view.liveStatus.classList.toggle('waiting', !active);
-  view.section.scrollIntoView?.({ block: 'end' });
 }
 
 function clearLiveStatus(runId) {
@@ -2379,11 +2666,14 @@ function createGuidanceView(runId, guidance) {
   content.appendChild(message);
   content.appendChild(status);
   row.appendChild(content);
-  view.guidanceList.appendChild(row);
+  closeAssistantSegment(view);
+  const group = document.createElement('div');
+  group.className = 'agent-guidance-list';
+  group.appendChild(row);
+  view.section.insertBefore(group, view.outcome);
   const record = { row, status };
   guidanceViews.set(key, record);
   updateGuidanceView(runId, guidance.guidanceId, guidance.status);
-  row.scrollIntoView?.({ block: 'end' });
   return record;
 }
 
@@ -2453,19 +2743,36 @@ function restoreTranscript(transcript = []) {
   resetConversationUi();
   for (const turn of transcript) {
     if (!turn || typeof turn.runId !== 'string') continue;
-    const view = createTurnView(turn);
-    for (const item of Array.isArray(turn.activity) ? turn.activity : []) {
-      addToolRow({ ...item, runId: turn.runId });
-      if (item.status !== 'running') finishToolRow({ ...item, runId: turn.runId });
+    const view = createTurnView({ ...turn, assistantText: '', guidance: [] });
+    const text = turn.assistantText || '';
+    const entries = [
+      ...(Array.isArray(turn.activity) ? turn.activity : []).map(item => ({ kind: 'tool', item })),
+      ...(Array.isArray(turn.guidance) ? turn.guidance : []).map(item => ({ kind: 'guidance', item })),
+    ].map(entry => ({ ...entry, offset: Number.isSafeInteger(entry.item.textOffset)
+      ? Math.max(0, Math.min(text.length, entry.item.textOffset)) : 0 }));
+    // Older history has no offsets: retain its work before the final answer.
+    entries.sort((a, b) => a.offset - b.offset ||
+      (a.item.timelineOrder || 0) - (b.item.timelineOrder || 0));
+    let cursor = 0;
+    for (const { kind, item, offset } of entries) {
+      appendAssistantText(view, text.slice(cursor, offset));
+      cursor = offset;
+      if (kind === 'guidance') createGuidanceView(turn.runId, item);
+      else {
+        addToolRow({ ...item, runId: turn.runId });
+        if (item.status !== 'running') finishToolRow({ ...item, runId: turn.runId });
+      }
     }
+    appendAssistantText(view, text.slice(cursor));
     if (
       turn.status &&
       !['starting', 'running', 'pausing', 'paused', 'resuming'].includes(turn.status)
     ) {
       finishTurnView(turn.runId, turn);
     }
-    if (view.assistantText && turn.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
   }
+  const scroller = elements.workspaceBody?.querySelector('.agent-workspace-scroll');
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
 }
 
 function clearApproval() {
@@ -3383,6 +3690,7 @@ function addToolRow(event) {
   if (!view || typeof event.toolCallId !== 'string') return;
   const row = document.createElement('li');
   row.className = 'agent-tool-item';
+  row.dataset.state = 'running';
   const state = document.createElement('span');
   state.className = 'agent-tool-state';
   state.textContent = '•';
@@ -3396,9 +3704,17 @@ function addToolRow(event) {
   row.appendChild(approval);
   view.toolList.appendChild(row);
   view.activity.hidden = false;
-  view.activity.open = true;
+  view.activity.dataset.state = 'working';
   view.actionCount += 1;
-  toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state, label, approval });
+  closeAssistantSegment(view);
+  let helperList = null;
+  if (event.operation === 'delegate_task') {
+    helperList = document.createElement('div');
+    helperList.className = 'agent-helper-list';
+    helperList.hidden = true;
+    view.section.insertBefore(helperList, view.outcome);
+  }
+  toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state, label, approval, helperList });
   renderToolPage(toolRows.get(`${event.runId}:${event.toolCallId}`), event);
   updateToolApproval(event.runId, event.toolCallId, event.approval);
 }
@@ -3416,6 +3732,7 @@ function updateToolApproval(runId, toolCallId, decision) {
   };
   record.approval.textContent = labels[decision] || '';
   record.approval.hidden = !labels[decision];
+  record.row.dataset.approval = labels[decision] ? decision : '';
 }
 
 function attachmentDisplayKey(event) {
@@ -3462,6 +3779,7 @@ function finishToolRow(event) {
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
+  record.row.dataset.state = userCancelled ? 'cancelled' : event.status === 'failed' ? 'failed' : 'succeeded';
   record.row.title = '';
   if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);
@@ -3473,7 +3791,7 @@ function finishToolRow(event) {
     const view = turnView(event.runId);
     record.row.hidden = true;
     view.activity.hidden = [...view.toolList.children].every(row => row.hidden);
-    view.helperList.hidden = false;
+    record.helperList.hidden = false;
     for (const receipt of receipts) {
       const key = receipt.taskId || `${event.toolCallId}:${receipts.indexOf(receipt)}`;
       let card = view.helperCards.get(key);
@@ -3518,7 +3836,7 @@ function finishToolRow(event) {
         summary.appendChild(copy); summary.appendChild(stop); summary.appendChild(chevron);
         details.appendChild(summary);
         view.helperCards.set(key, card);
-        view.helperList.appendChild(details);
+        record.helperList.appendChild(details);
       }
       const { details, summary } = card;
       card.state = receipt.state;
@@ -3575,6 +3893,7 @@ function finishToolRow(event) {
     }
     if (receipts.some(receipt => receipt.state === 'running')) {
       record.state.textContent = '•';
+      record.row.dataset.state = 'running';
       record.row.classList.remove('failed');
     }
     if (receipts.every(receipt => ['completed', 'cancelled'].includes(receipt.state)) &&
@@ -3582,6 +3901,7 @@ function finishToolRow(event) {
       record.state.textContent = '•';
       record.row.classList.remove('failed');
       record.row.classList.add('cancelled');
+      record.row.dataset.state = 'cancelled';
     }
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
@@ -3677,6 +3997,7 @@ function finishTurnView(runId, event = {}) {
   const view = turnView(runId);
   if (!view) return;
   clearLiveStatus(runId);
+  view.activity.dataset.state = [...view.toolList.children].some(row => row.classList.contains('failed')) ? 'failed' : 'done';
   const actionCount = Number.isSafeInteger(event.actionCount)
     ? event.actionCount
     : view.actionCount;
@@ -3689,7 +4010,11 @@ function finishTurnView(runId, event = {}) {
     view.activity.hidden = true;
   }
   renderTurnOutcome(view, event.outcome, event.error);
-  if (event.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
+  if (event.status === 'completed') {
+    for (const segment of view.outputSegments) {
+      if (!segment.output.classList.contains('rendered-markdown')) renderAgentMarkdown(segment.output, segment.text);
+    }
+  }
 }
 
 function applyReadyConversationState(state) {
@@ -3713,6 +4038,7 @@ function applyReadyConversationState(state) {
   restoreTranscript(transcript);
   setAgentControlledTab(null);
   setRunState('idle', 'Ready');
+  setScopeNotice(scopeNoticeForConversation());
   renderTaskPages();
   renderSessionSidebar();
   renderPageContext();
@@ -3880,6 +4206,18 @@ function applyConversationCleared() {
 }
 
 function handleAgentEvent(event) {
+  const scroller = elements.workspaceBody?.querySelector('.agent-workspace-scroll');
+  const follow = scroller && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 48;
+  try {
+    applyAgentEvent(event);
+  } finally {
+    // Incoming tokens and helper updates must not fight someone reading above.
+    // Only scroll this container, never the page or its overflow ancestors.
+    if (follow) scroller.scrollTop = scroller.scrollHeight;
+  }
+}
+
+function applyAgentEvent(event) {
   if (event?.type === 'conversation_cleared') {
     if (!currentConversationId || event.conversationId === currentConversationId) {
       applyConversationCleared();
@@ -3949,12 +4287,12 @@ function handleAgentEvent(event) {
     setRunState('running', 'Running');
     setLiveStatus(event.runId, 'Thinking…');
     elements.emptyState.hidden = true;
-    setMessage(
-      elements.runMessage,
-      conversationRendererTabId
-        ? 'Agent can use the page you shared and any tabs it opens.'
-        : 'Agent can use only the tabs it opens for this conversation.'
-    );
+    const scope =
+      scopeNoticeForConversation() ||
+      'Agent can use only the tabs it opens for this conversation.';
+    setScopeNotice(scope);
+    // Agent-first mode has no floating header, so it keeps the inline notice.
+    setMessage(elements.runMessage, agentFirstMode ? scope : '');
     void refreshSessionHistory();
     return;
   }
@@ -4004,10 +4342,8 @@ function handleAgentEvent(event) {
   } else if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
     const view = turnView(event.runId);
     if (!view) return;
-    view.assistantText += event.text;
-    view.output.textContent = view.assistantText;
+    appendAssistantText(view, event.text);
     setLiveStatus(event.runId, 'Responding…');
-    view.section.scrollIntoView?.({ block: 'end' });
     elements.emptyState.hidden = true;
   } else if (event.type === 'workspace_checkpoint_started') {
     setLiveStatus(event.runId, 'Saving workspace version…');
@@ -4174,6 +4510,7 @@ async function startRun(options = {}) {
   if (!explicitPrompt) elements.prompt.value = '';
   if (!currentConversationId) conversationRendererTabId = rendererTabId;
   if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
+  captureLauncherSnapshot();
   setRunState('starting', 'Starting');
   setMessage(elements.runMessage);
   try {
@@ -4642,6 +4979,16 @@ export function initAgentUi(options = {}) {
     attachmentContexts: byId('agent-attachment-contexts'),
   };
   if (Object.values(elements).some((element) => !element)) return;
+  panelInner = elements.panel.querySelector?.('.agent-sidebar-inner') || null;
+  panelHeader = elements.panel.querySelector?.('.agent-sidebar-header') || null;
+  runHeader = elements.panel.querySelector?.('.agent-run-header') || null;
+  runHeaderHome = runHeader?.parentNode || null;
+  floatTitle = byId('agent-float-title');
+  scopeHelpButton = byId('agent-scope-help');
+  scopeHelpText = byId('agent-scope-help-text');
+  scopeHelpButton?.addEventListener?.('click', () =>
+    setScopeHelpOpen(scopeHelpText?.hidden !== false)
+  );
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
   isTabAgentOwned =
@@ -4709,6 +5056,10 @@ export function initAgentUi(options = {}) {
     });
   }
 
+  syncFloatingPresentation();
+  panelInner?.addEventListener?.('transitionend', (event) => {
+    if (event.target === panelInner) captureLauncherSnapshot();
+  });
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
@@ -4939,6 +5290,12 @@ export function initAgentUi(options = {}) {
       closeSessionContextMenu(true);
       return;
     }
+    if (scopeHelpText && !scopeHelpText.hidden) {
+      event.preventDefault();
+      setScopeHelpOpen(false);
+      scopeHelpButton?.focus?.();
+      return;
+    }
     const openOptions = [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]
       .map((host) => host.querySelector('.agent-workspace-options')).find((options) => options?.open);
     if (openOptions) {
@@ -4961,7 +5318,13 @@ export function initAgentUi(options = {}) {
       elements.processCompactPopover.hidden = true;
       elements.processCompactToggle.setAttribute('aria-expanded', 'false');
       elements.processCompactToggle.focus();
-    } else if (!popoverWasOpen && currentRunStatus === 'running' && currentRunId &&
+    } else if (!popoverWasOpen && !agentFirstMode && panelOpen && !pendingApproval &&
+      (elements.panel.contains(event.target) || event.target === document.body)) {
+      // The floating surface only goes away: a running task keeps running and
+      // the draft stays in the composer for the next Cmd/Ctrl+K.
+      event.preventDefault();
+      closePanel();
+    } else if (!popoverWasOpen && agentFirstMode && currentRunStatus === 'running' && currentRunId &&
       elements.panel.contains(event.target) && !event.target?.closest?.('input, textarea, [contenteditable], #agent-approval')) {
       event.preventDefault();
       void stopRun();
@@ -4969,6 +5332,14 @@ export function initAgentUi(options = {}) {
       setAgentFirstMode(false);
     }
   });
+  // Cmd/Ctrl+K while the chrome has focus; with the page focused the same
+  // chord arrives through the View menu accelerator instead (main → agent:toggle).
+  window.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || !matchesShortcut(event, 'view.toggleAgent')) return;
+    event.preventDefault();
+    summonPanel();
+  });
+  window.electronAPI?.onToggleAgent?.(() => summonPanel());
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {
     elements.toggle.disabled = inFlight;

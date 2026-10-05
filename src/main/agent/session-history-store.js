@@ -86,6 +86,8 @@ function normalizeActivity(activity) {
         : [];
       return {
         toolCallId: optionalString(item.toolCallId, 160) || '',
+        ...(Number.isSafeInteger(item.textOffset) && item.textOffset >= 0 && { textOffset: item.textOffset }),
+        ...(Number.isSafeInteger(item.timelineOrder) && item.timelineOrder >= 0 && { timelineOrder: item.timelineOrder }),
         operation: optionalString(item.operation, 120) || '',
         status: ['running', 'succeeded', 'failed'].includes(item.status) ? item.status : 'failed',
         ...(label && { label }),
@@ -124,6 +126,8 @@ function normalizeGuidance(guidance) {
     .slice(0, 1_000)
     .map((item) => ({
       guidanceId: optionalString(item.guidanceId, 160) || '',
+      ...(Number.isSafeInteger(item.textOffset) && item.textOffset >= 0 && { textOffset: item.textOffset }),
+      ...(Number.isSafeInteger(item.timelineOrder) && item.timelineOrder >= 0 && { timelineOrder: item.timelineOrder }),
       text: optionalString(item.text, 32_000) || '',
       status: GUIDANCE_STATUSES.has(item.status) ? item.status : 'cancelled',
       createdAt: Number.isFinite(item.createdAt) ? item.createdAt : 0,

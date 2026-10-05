@@ -439,6 +439,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('focus:address-bar', handler);
     return () => ipcRenderer.removeListener('focus:address-bar', handler);
   },
+  onToggleAgent: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('agent:toggle', handler);
+    return () => ipcRenderer.removeListener('agent:toggle', handler);
+  },
   onCloseMenus: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('menus:close', handler);

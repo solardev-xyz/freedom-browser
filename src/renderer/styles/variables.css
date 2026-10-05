@@ -24,6 +24,29 @@
   --agent-caution: #d6a85f;
   --agent-on-accent: #ffffff;
   --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
+  /* Floating Agent glass: small translucent surfaces over the live page,
+     blurred through backdrop-filter. The backdrop filter and the tint are
+     chosen together so --text keeps at least 4.5:1 over a white page; the
+     blur averages a busy page down first. `-hidden` is the same filter list
+     at rest, so the two interpolate when a card appears or leaves. */
+  --agent-glass-filter: blur(28px) saturate(1.5) brightness(0.68);
+  --agent-glass-filter-hidden: blur(0px) saturate(1) brightness(1);
+  --agent-glass: rgba(30, 31, 34, 0.64);
+  --agent-glass-raised: rgba(36, 37, 41, 0.78);
+  --agent-glass-field: rgba(255, 255, 255, 0.06);
+  --agent-glass-border: rgba(255, 255, 255, 0.13);
+  --agent-glass-highlight: rgba(255, 255, 255, 0.06);
+  --agent-glass-user: rgba(138, 180, 248, 0.16);
+  --agent-glass-muted: #c7c7c7;
+  --agent-glass-shadow: 0 24px 64px rgba(0, 0, 0, 0.42), 0 2px 10px rgba(0, 0, 0, 0.22);
+  --agent-glass-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.3), 0 1px 4px rgba(0, 0, 0, 0.18);
+  /* Chat bubbles in the floating column: near-opaque fills straight over
+     the page, never a backdrop-filter (bubbles move as the conversation
+     scrolls). Below about 97% a busy page ghosts through the text. */
+  --agent-bubble-agent: rgba(40, 41, 46, 0.97);
+  --agent-bubble-user: rgba(48, 70, 108, 0.97);
+  --agent-bubble-border: rgba(255, 255, 255, 0.08);
+  --agent-bubble-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
   /* "This is safe" green — HTTPS globe, address-bar trust shield's
      verified state, autocomplete row verified badge, wallet review
      verified checkmark. One token, all surfaces. */
@@ -60,4 +83,21 @@
   --agent-caution: #946000;
   --agent-on-accent: #ffffff;
   --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
+  /* contrast() lifts a black page before the white tint, so text and the
+     darker muted grey below keep 4.5:1 on light glass over dark pages. */
+  --agent-glass-filter: blur(28px) saturate(1.4) contrast(0.62) brightness(1.24);
+  --agent-glass-filter-hidden: blur(0px) saturate(1) contrast(1) brightness(1);
+  --agent-glass: rgba(250, 250, 251, 0.72);
+  --agent-glass-raised: rgba(255, 255, 255, 0.84);
+  --agent-glass-field: rgba(255, 255, 255, 0.62);
+  --agent-glass-border: rgba(15, 23, 42, 0.1);
+  --agent-glass-highlight: rgba(255, 255, 255, 0.72);
+  --agent-glass-user: rgba(26, 115, 232, 0.1);
+  --agent-glass-muted: #4d5156;
+  --agent-glass-shadow: 0 24px 64px rgba(15, 23, 42, 0.2), 0 2px 10px rgba(15, 23, 42, 0.08);
+  --agent-glass-shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.13), 0 1px 4px rgba(15, 23, 42, 0.06);
+  --agent-bubble-agent: rgba(255, 255, 255, 0.97);
+  --agent-bubble-user: rgba(222, 234, 252, 0.97);
+  --agent-bubble-border: rgba(15, 23, 42, 0.07);
+  --agent-bubble-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
