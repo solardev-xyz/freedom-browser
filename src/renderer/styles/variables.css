@@ -40,13 +40,16 @@
   --agent-glass-muted: #c7c7c7;
   --agent-glass-shadow: 0 24px 64px rgba(0, 0, 0, 0.42), 0 2px 10px rgba(0, 0, 0, 0.22);
   --agent-glass-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.3), 0 1px 4px rgba(0, 0, 0, 0.18);
-  /* Chat bubbles in the floating column: near-opaque fills straight over
-     the page, never a backdrop-filter (bubbles move as the conversation
-     scrolls). Below about 97% a busy page ghosts through the text. */
+  /* Scrolling bubbles stay nearly opaque for readable text. Their glass
+     finish comes from a painted sheen and inset edge, never live blur. */
   --agent-bubble-agent: rgba(40, 41, 46, 0.97);
   --agent-bubble-user: rgba(48, 70, 108, 0.97);
   --agent-bubble-border: rgba(255, 255, 255, 0.08);
   --agent-bubble-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --agent-message-surface: rgba(38, 40, 45, 0.95);
+  --agent-message-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.015) 40%, transparent 75%);
+  --agent-message-border: rgba(255, 255, 255, 0.12);
+  --agent-message-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 3px 8px rgba(0, 0, 0, 0.16);
   /* "This is safe" green — HTTPS globe, address-bar trust shield's
      verified state, autocomplete row verified badge, wallet review
      verified checkmark. One token, all surfaces. */
@@ -100,4 +103,8 @@
   --agent-bubble-user: rgba(222, 234, 252, 0.97);
   --agent-bubble-border: rgba(15, 23, 42, 0.07);
   --agent-bubble-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --agent-message-surface: rgba(250, 251, 253, 0.95);
+  --agent-message-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.1) 40%, transparent 75%);
+  --agent-message-border: rgba(15, 23, 42, 0.09);
+  --agent-message-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 3px 8px rgba(15, 23, 42, 0.09);
 }

@@ -448,6 +448,22 @@
   border-radius: 18px 18px 18px 6px;
 }
 
+/* Painted glass keeps the scrolling surface inexpensive: no backdrop blur,
+   filters, extra layers or animated highlights on the moving messages. */
+.agent-floating[data-presentation='column'] .agent-output:not(:empty),
+.agent-floating[data-presentation='column'] .agent-subagent-report {
+  background-color: var(--agent-message-surface);
+  background-image: var(--agent-message-sheen);
+  border-color: var(--agent-message-border);
+  box-shadow: var(--agent-message-shadow);
+}
+
+.agent-floating[data-presentation='column'] .agent-user-message {
+  background-image: var(--agent-message-sheen);
+  border-color: var(--agent-message-border);
+  box-shadow: var(--agent-message-shadow);
+}
+
 .agent-floating[data-presentation='column'] .agent-output.rendered-markdown pre,
 .agent-floating[data-presentation='column'] .agent-output.rendered-markdown table {
   max-width: 100%;
