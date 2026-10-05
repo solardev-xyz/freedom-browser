@@ -1496,6 +1496,9 @@
       </section>
       <aside id="agent-sidebar" class="agent-sidebar collapsed" aria-label="Freedom Agent">
         <div class="agent-sidebar-inner">
+          <!-- Floating column only: one stationary glass layer behind the header
+               and the scrolling conversation (agent-floating.css). -->
+          <div class="agent-float-surface" aria-hidden="true"></div>
           <div class="agent-sidebar-header">
             <div class="agent-sidebar-title-row">
               <button
@@ -1535,8 +1538,33 @@
                 <h2 id="agent-sidebar-title">Agent</h2>
                 <p id="agent-sidebar-subtitle">Give Agent a task</p>
               </div>
+              <span id="agent-float-title" class="agent-float-title">New task</span>
             </div>
             <div class="agent-sidebar-header-actions">
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-scope-help"
+                aria-label="What Agent can use in this conversation"
+                aria-expanded="false"
+                aria-controls="agent-scope-help-text"
+                title="What Agent can use"
+                hidden
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 11v5" />
+                  <path d="M12 8h.01" />
+                </svg>
+              </button>
               <button
                 type="button"
                 class="agent-icon-btn"
@@ -1585,6 +1613,8 @@
               </button>
             </div>
           </div>
+
+          <p id="agent-scope-help-text" class="agent-scope-help" role="note" hidden></p>
 
           <div id="agent-loading-view" class="agent-view agent-loading-view">
             <p>Loading Agent…</p>

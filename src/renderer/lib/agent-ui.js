@@ -130,9 +130,17 @@ let workspaceInspectionConversationId = null;
 let agentFirstMode = false;
 let focusBeforeOpen = null;
 let launcherSnapshot = null;
-// Optional presentation nodes: animation targets only, never required.
+// Optional floating-presentation nodes, looked up after the required set:
+// a missing one only loses decoration, never Agent itself.
 let panelInner = null;
 let panelHeader = null;
+let panelSurface = null;
+let floatTitle = null;
+let runHeader = null;
+let runHeaderHome = null;
+let scopeHelpButton = null;
+let scopeHelpText = null;
+let scopeNotice = '';
 let sessionSidebarOpen = true;
 let sessionContextMenu = null;
 let workspaceSidebarOpen = true;
@@ -660,8 +668,10 @@ async function selectApprovalMode(nextMode) {
 
 function setAgentView(nextView) {
   setModeMenuOpen(false);
+  setScopeHelpOpen(false);
   if (nextView !== 'workspace' && agentFirstMode) setAgentFirstMode(false);
   agentView = nextView;
+  if (elements.panel.dataset) elements.panel.dataset.agentView = nextView;
   elements.loadingView.hidden = nextView !== 'loading';
   elements.setupView.hidden = nextView !== 'setup';
   elements.mcpPanel.hidden = nextView !== 'services';
@@ -695,6 +705,36 @@ function titleFromPrompt(prompt) {
 function setConversationTitle(nextTitle) {
   conversationTitle = titleFromPrompt(nextTitle);
   elements.agentFirstTitle.textContent = conversationTitle;
+  if (floatTitle) {
+    floatTitle.textContent = conversationTitle;
+    floatTitle.title = conversationTitle;
+  }
+}
+
+// Why Agent may or may not use the current page is reference, not news: in
+// the floating column it lives behind the header's help button instead of
+// occupying the status line, which stays free for live runtime messages.
+function setScopeNotice(text = '') {
+  scopeNotice = text;
+  if (scopeHelpText) scopeHelpText.textContent = text;
+  if (scopeHelpButton) scopeHelpButton.hidden = !text;
+  if (!text) setScopeHelpOpen(false);
+}
+
+// The explanation follows the conversation's own shared-page state, so a
+// reopened conversation and a new chat never show a previous chat's note.
+function scopeNoticeForConversation() {
+  if (!currentConversationId && !currentRunId) return '';
+  return conversationRendererTabId
+    ? 'Agent can use the page you shared and any tabs it opens.'
+    : 'Agent can use only the tabs it opens for this conversation.';
+}
+
+function setScopeHelpOpen(open) {
+  if (!scopeHelpButton || !scopeHelpText) return;
+  const next = open === true && Boolean(scopeNotice);
+  scopeHelpText.hidden = !next;
+  scopeHelpButton.setAttribute('aria-expanded', String(next));
 }
 
 function setModeMenuOpen(open, restoreFocus = false) {
@@ -1180,6 +1220,7 @@ async function refreshWorkspaceProjection() {
 
 function setAgentFirstMode(nextMode) {
   setModeMenuOpen(false);
+  setScopeHelpOpen(false);
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   if (agentFirstMode) {
     setWorkspaceNavigationProjection(elements.workspaceAddressHost);
@@ -1244,7 +1285,10 @@ function observeComposerHeight() {
   composerResizeObserver?.disconnect();
   const update = () => {
     const height = elements.composerWrap.getBoundingClientRect().height;
-    if (height > 0) elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
+    if (height > 0) {
+      elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
+      elements.panel.style?.setProperty?.('--agent-float-composer-height', `${height}px`);
+    }
     captureLauncherSnapshot();
   };
   update();
@@ -1363,7 +1407,10 @@ function showProviderSetup() {
 }
 
 function setPanelOpen(nextOpen) {
-  if (!nextOpen) setModeMenuOpen(false);
+  if (!nextOpen) {
+    setModeMenuOpen(false);
+    setScopeHelpOpen(false);
+  }
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
   elements.toggle.setAttribute('aria-expanded', String(panelOpen));
@@ -1416,8 +1463,22 @@ function syncFloatingPresentation() {
     'agent-floating-column',
     floating && panelOpen && next === 'column'
   );
+  placeRunHeader(floating && next === 'column' && agentView === 'workspace');
   if (moving) animateFloatingPresentation(previous, next, before);
   captureLauncherSnapshot();
+}
+
+// The floating column folds the run status and New chat into its compact
+// header; everywhere else (launcher, settings screens, Agent-first) they go
+// back to the head of the conversation, so there is only ever one of each.
+function placeRunHeader(inHeader) {
+  if (!runHeader || !runHeaderHome || !panelHeader) return;
+  const actions = panelHeader.querySelector?.('.agent-sidebar-header-actions') || null;
+  if (inHeader) {
+    if (runHeader.parentNode !== panelHeader) panelHeader.insertBefore(runHeader, actions);
+  } else if (runHeader.parentNode !== runHeaderHome) {
+    runHeaderHome.insertBefore(runHeader, runHeaderHome.firstChild);
+  }
 }
 
 function captureLauncherSnapshot() {
@@ -1450,13 +1511,22 @@ function glassHiddenKeyframe(extra = {}) {
   };
 }
 
-function materialise(element, transform, delay = 0) {
+function materialise(element, transform, delay = 0, fadeContents = true) {
   if (typeof element?.animate !== 'function') return;
   const timing = { duration: 380, delay, easing: FLOAT_EASE, fill: 'backwards' };
   element.animate([{ offset: 0, ...glassHiddenKeyframe({ transform }) }], timing);
-  for (const child of element.children || []) {
-    child.animate?.([{ offset: 0, opacity: 0 }], { ...timing, duration: 260, delay: delay + 80 });
-  }
+  if (!fadeContents) return;
+  for (const child of element.children || []) fadeIn(child, delay + 80);
+}
+
+// Only for content that is not itself glass (opacity would disable a blur).
+function fadeIn(element, delay = 0) {
+  element?.animate?.([{ offset: 0, opacity: 0 }], {
+    duration: 260,
+    delay,
+    easing: 'ease-out',
+    fill: 'backwards',
+  });
 }
 
 // The composer is the one element both presentations share, so it travels
@@ -1482,8 +1552,13 @@ function animateFloatingPresentation(previous, next, before) {
   if (previous === 'launcher' && before?.launcher?.width) {
     dissolveLauncherGhost(before.launcher, before.greeting);
   }
-  if (next === 'column') materialise(panelHeader, 'translateY(-8px)', 140);
-  else materialise(panelInner, 'translateY(10px) scale(0.985)', 40);
+  if (next === 'column') {
+    materialise(panelSurface, 'translateY(-8px)', 120, false);
+    materialise(elements.composerWrap, 'none', 0, false);
+    fadeIn(panelHeader, 160);
+  } else {
+    materialise(panelInner, 'translateY(10px) scale(0.985)', 40);
+  }
 }
 
 // The centred card dissolves where it stood while its composer flies to the
@@ -2352,6 +2427,7 @@ function resetConversationUi() {
   elements.emptyState.hidden = false;
   clearApproval();
   setMessage(elements.runMessage);
+  setScopeNotice();
   syncFloatingPresentation();
 }
 
@@ -3904,6 +3980,7 @@ function applyReadyConversationState(state) {
   restoreTranscript(transcript);
   setAgentControlledTab(null);
   setRunState('idle', 'Ready');
+  setScopeNotice(scopeNoticeForConversation());
   renderTaskPages();
   renderSessionSidebar();
   renderPageContext();
@@ -4140,12 +4217,12 @@ function handleAgentEvent(event) {
     setRunState('running', 'Running');
     setLiveStatus(event.runId, 'Thinking…');
     elements.emptyState.hidden = true;
-    setMessage(
-      elements.runMessage,
-      conversationRendererTabId
-        ? 'Agent can use the page you shared and any tabs it opens.'
-        : 'Agent can use only the tabs it opens for this conversation.'
-    );
+    const scope =
+      scopeNoticeForConversation() ||
+      'Agent can use only the tabs it opens for this conversation.';
+    setScopeNotice(scope);
+    // Agent-first mode has no floating header, so it keeps the inline notice.
+    setMessage(elements.runMessage, agentFirstMode ? scope : '');
     void refreshSessionHistory();
     return;
   }
@@ -4836,6 +4913,15 @@ export function initAgentUi(options = {}) {
   if (Object.values(elements).some((element) => !element)) return;
   panelInner = elements.panel.querySelector?.('.agent-sidebar-inner') || null;
   panelHeader = elements.panel.querySelector?.('.agent-sidebar-header') || null;
+  panelSurface = elements.panel.querySelector?.('.agent-float-surface') || null;
+  runHeader = elements.panel.querySelector?.('.agent-run-header') || null;
+  runHeaderHome = runHeader?.parentNode || null;
+  floatTitle = byId('agent-float-title');
+  scopeHelpButton = byId('agent-scope-help');
+  scopeHelpText = byId('agent-scope-help-text');
+  scopeHelpButton?.addEventListener?.('click', () =>
+    setScopeHelpOpen(scopeHelpText?.hidden !== false)
+  );
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
   isTabAgentOwned =
@@ -5135,6 +5221,12 @@ export function initAgentUi(options = {}) {
     if (sessionContextMenu) {
       event.preventDefault();
       closeSessionContextMenu(true);
+      return;
+    }
+    if (scopeHelpText && !scopeHelpText.hidden) {
+      event.preventDefault();
+      setScopeHelpOpen(false);
+      scopeHelpButton?.focus?.();
       return;
     }
     const openOptions = [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]

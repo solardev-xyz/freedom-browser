@@ -168,6 +168,9 @@ function createAgentElements() {
     'agent-attach-folder',
     'agent-open-project',
     'agent-attachment-contexts',
+    'agent-scope-help',
+    'agent-scope-help-text',
+    'agent-float-title',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
   elements['agent-toggle-btn'] = createElement('button');
@@ -690,6 +693,59 @@ describe('Agent UI', () => {
     toggleAgent();
     expect(panel.classList.contains('collapsed')).toBe(false);
     expect(panel.dataset.presentation).toBe('column');
+  });
+
+  test('keeps the scope explanation as help that follows the conversation and never lingers', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [{ conversationId: 'conversation_saved', title: 'Saved', status: 'ready', turnCount: 1 }],
+        }),
+        openAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_saved',
+            title: 'Saved',
+            rendererTabId: 1,
+            transcript: [{ runId: 'run_saved', userText: 'Read it', assistantText: 'Done.', status: 'completed', activity: [] }],
+            taskTabs: [],
+          },
+        }),
+      },
+    });
+    const help = ctx.elements['agent-scope-help'];
+    const note = ctx.elements['agent-scope-help-text'];
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    expect(help.hidden).toBe(false);
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+
+    help.dispatch('click');
+    expect(note.hidden).toBe(false);
+    expect(help.getAttribute('aria-expanded')).toBe('true');
+    // Escape closes the note first and leaves the surface open.
+    ctx.document.handlers.keydown({ key: 'Escape', target: ctx.document.body, preventDefault: jest.fn() });
+    expect(note.hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+
+    // An open note never follows Agent into provider settings.
+    help.dispatch('click');
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    expect(note.hidden).toBe(true);
+    expect(help.getAttribute('aria-expanded')).toBe('false');
+
+    // New chat clears it; a reopened conversation shows its own shared-page state.
+    ctx.emit({ type: 'run_finished', conversationId: 'conversation_test', runId: 'run_test', status: 'completed' });
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+    expect(help.hidden).toBe(true);
+    expect(note.textContent).toBe('');
+    ctx.elements['agent-session-list'].children[0].children[0].dispatch('click');
+    await flush();
+    expect(help.hidden).toBe(false);
+    expect(note.textContent).toContain('page you shared');
   });
 
   test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
@@ -3148,9 +3204,12 @@ describe('Agent UI', () => {
     await flush();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
 
-    expect(ctx.elements['agent-run-message'].textContent).toContain(
+    // In the floating column the scope explanation is help, not a status line.
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    expect(ctx.elements['agent-scope-help-text'].textContent).toContain(
       'page you shared and any tabs it opens'
     );
+    expect(ctx.elements['agent-scope-help'].hidden).toBe(false);
     expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
     expect(ctx.elements['agent-run'].disabled).toBe(false);
     ctx.elements['agent-run'].dispatch('click');
