@@ -1,8 +1,9 @@
 /** @type {import('jest').Config} */
 module.exports = {
-  // Ignored local build inputs can contain complete upstream workspaces.
-  // They are not Freedom modules, tests or snapshot baselines.
-  modulePathIgnorePatterns: ['<rootDir>/tmp/'],
+  // Ignored local build inputs can contain complete upstream workspaces, and
+  // agent worktrees are complete nested checkouts of this repository. Neither
+  // holds Freedom modules, tests or snapshot baselines for this checkout.
+  modulePathIgnorePatterns: ['<rootDir>/tmp/', '<rootDir>/.claude/worktrees/'],
   testMatch: ['**/*.test.js'],
   // Playwright specs (`test-e2e/**/*.spec.js`) must never be loaded by jest,
   // but plain `*.test.js` unit coverage for e2e helper modules is welcome —
@@ -14,6 +15,7 @@ module.exports = {
     '/ant-bin/',
     '/ipfs-bin/',
     '/test-e2e/.*\\.spec\\.js$',
+    '<rootDir>/.claude/worktrees/',
   ],
   collectCoverageFrom: ['src/**/*.js', '!src/**/*.test.js', '!src/renderer/vendor/**'],
   // Coverage thresholds are intentionally below typical "healthy" targets.
