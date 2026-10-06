@@ -16,6 +16,7 @@ const RECORD = 'railgun-private-reservations-v1',
   FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const owners = new Set(),
   instances = new WeakMap();
+const relayMutations = new WeakMap();
 const fail = (code = 'RAILGUN_RESERVATIONS_REFUSED') =>
   Object.assign(new Error('Railgun private input requires recovery'), { code });
 const check = (v) => {
@@ -87,7 +88,7 @@ async function createRailgunPrivateReservations({
   authorizeSigning,
   enrollment,
 }) {
-  // The optional v4 mode is internal and inactive until enrollment wires it.
+  // Fenced enrollment uses v4; legacy callers retain their fixed v1/v2 mode.
   // Authenticate the fixed issuer before deriving a path or creating a scope.
   const cooperative = enrollment !== undefined;
   function assertEnrollment() {
@@ -135,7 +136,8 @@ async function createRailgunPrivateReservations({
   });
   const lease = randomBytes(32).toString('hex'),
     receipts = new WeakMap(),
-    receiptOrigins = new WeakMap();
+    receiptOrigins = new WeakMap(),
+    relayReceiptStores = new WeakMap();
   let storage,
     current,
     closed = false,
@@ -637,7 +639,236 @@ async function createRailgunPrivateReservations({
       busy = false;
     }
   }
+  // Fixed v4 custody composition, not signing/POI authority. Both stores are
+  // genuine factories bound to this exact enrollment. No caller-supplied writer,
+  // custody Boolean, permit validator or generic codec proposal is accepted.
+  function relayOwner(store) {
+    active();
+    check(cooperative && !recovery);
+    require('./railgun-relay-recovery-store').assertRailgunRelayRecoveryStoreOwner(
+      store,
+      enrollment
+    );
+  }
+  async function relayCall(store, use) {
+    relayOwner(store);
+    const { value } = await original(use);
+    relayOwner(store);
+    return value;
+  }
+  async function relayExclusive(store, use) {
+    relayOwner(store);
+    check(!busy);
+    busy = true;
+    const progress = { writeStarted: false, harmless: false };
+    try {
+      await attest();
+      const value = await use(progress);
+      relayOwner(store);
+      await attest();
+      relayOwner(store);
+      return value;
+    } catch (error) {
+      if (progress.writeStarted || !progress.harmless) close();
+      throw error;
+    } finally {
+      busy = false;
+    }
+  }
+  const relayData = () => require('./railgun-relay-recovery-data');
+  function relayEntry(id) {
+    check(digest(id));
+    const entry = current.entries.find((entry) => entry.id === id);
+    check(entry && entry.origin === 'relay-local-v4');
+    return entry;
+  }
+  function relayHeldFacts(row) {
+    return {
+      tree: row.draft.selection.tree,
+      position: row.draft.selection.position,
+      nullifier: row.draft.intent.expected.nullifier,
+      noteHash: row.draft.noteHash,
+      kind: 'railgun-relay-self-transfer',
+      checkpointHash: row.checkpointHash,
+      draftDigest: require('./railgun-relay-capsule').normalizeRailgunRelayDraftCapsule(row.draft)
+        .digest,
+      expectedHash: row.draft.intent.expectedHash,
+    };
+  }
+  async function relayPair(store, entry) {
+    const record = await relayCall(store, () => store.lookup(entry.id));
+    if (record === null) {
+      // A ledger-first interrupted hold cannot have admitted signing: there is
+      // no signing marker. Absence is authenticated, never inferred from error.
+      check(['held', 'cancelled-unsigned'].includes(entry.state) && entry.signing === null);
+      return Object.freeze({
+        record: null,
+        interruptedStep: entry.state === 'held' ? 'append-held' : null,
+        authorityGranted: false,
+      });
+    }
+    return relayData().matchRailgunRelayLocalReservation(JSON.stringify(record), entry);
+  }
+  function relayReceipt(store, entry, pair) {
+    const receipt = Object.freeze({});
+    receipts.set(receipt, entry);
+    relayReceiptStores.set(receipt, store);
+    return Object.freeze({ receipt, entry, ...pair });
+  }
+  async function relayCheckedReceipt(store, receipt) {
+    const entry = receipts.get(receipt);
+    check(entry && entry.origin === 'relay-local-v4' && relayReceiptStores.get(receipt) === store);
+    const actual = relayEntry(entry.id);
+    check(JSON.stringify(actual) === JSON.stringify(entry));
+    return { entry: actual, pair: await relayPair(store, actual) };
+  }
+  async function relayWrite(action, progress) {
+    if (progress) progress.writeStarted = true;
+    await storage.update(RECORD, (text) => {
+      active();
+      check(JSON.stringify(decode(text)) === JSON.stringify(current));
+      current = codec.decode(codec.apply(text, action));
+      return JSON.stringify(current);
+    });
+    active();
+    await persistFloor();
+    active();
+    await attest();
+    return relayEntry(action.id);
+  }
+  async function relayMutation(store, method, input) {
+    relayOwner(store);
+    check(busy);
+    const token = Object.freeze({});
+    const assertCurrent = () => {
+      relayOwner(store);
+      check(busy && relayMutations.has(token));
+    };
+    relayMutations.set(token, { store, method, input, assertCurrent, used: false });
+    try {
+      return await relayCall(store, () => store[method](token, input));
+    } finally {
+      relayMutations.delete(token);
+    }
+  }
+  async function reserveRelay(store, text) {
+    return relayExclusive(store, async (progress) => {
+      const row = relayData().decodeRailgunRelayLocalRecord(text);
+      check(row.state === 'held' && row.binding === binding && row.walletId === walletId);
+      const action = { type: 'reserve-relay', id: row.id, facts: relayHeldFacts(row) };
+      // Both capacity proposals are checked before the first ledger write. The
+      // fixed recovery method checks again at its own original commit point.
+      try {
+        codec.apply(JSON.stringify(current), action);
+      } catch (error) {
+        progress.harmless = [
+          'RAILGUN_PRIVATE_INPUT_RESERVED',
+          'RAILGUN_RESERVATIONS_CAPACITY',
+        ].includes(error.code);
+        throw error;
+      }
+      try {
+        await relayCall(store, () => store.assertHeldAvailable(text));
+      } catch (error) {
+        progress.harmless =
+          require('./railgun-relay-recovery-store').isRailgunRelayRecoveryUnavailable(error, store);
+        throw error;
+      }
+      const entry = await relayWrite(action, progress);
+      await relayMutation(store, 'appendHeld', text);
+      const pair = await relayPair(store, entry);
+      check(pair.record && pair.interruptedStep === null && pair.record.state === 'held');
+      return relayReceipt(store, entry, pair);
+    });
+  }
+  async function listRelay(store) {
+    return relayExclusive(store, async () => {
+      // Authenticate the paired document/floor even when only ledger selectors
+      // are requested. Orphan holds remain discoverable, without action receipts.
+      await relayCall(store, () => store.inspect());
+      return Object.freeze(
+        current.entries
+          .filter((entry) => entry.origin === 'relay-local-v4')
+          .map(({ id, state }) => Object.freeze({ id, state }))
+      );
+    });
+  }
+  async function readRelay(store, id) {
+    return relayExclusive(store, async () => {
+      const entry = relayEntry(id);
+      return relayReceipt(store, entry, await relayPair(store, entry));
+    });
+  }
+  async function markRelaySigning(store, receipt) {
+    return relayExclusive(store, async () => {
+      const { entry, pair } = await relayCheckedReceipt(store, receipt);
+      check(
+        entry.state === 'held' &&
+          pair.record &&
+          pair.record.state === 'held' &&
+          pair.interruptedStep === null
+      );
+      const next = await relayWrite({
+        type: 'mark-relay-signing',
+        id: entry.id,
+        signing: {
+          gatesDigest: pair.record.authorizationDigest,
+          recordDigest: pair.recordDigest,
+        },
+      });
+      await relayMutation(store, 'markSigning', entry.id);
+      const joined = await relayPair(store, next);
+      check(joined.record.state === 'signing-local' && joined.interruptedStep === null);
+      return relayReceipt(store, next, joined);
+    });
+  }
+  async function discardRelayLocal(store, receipt) {
+    return relayExclusive(store, async () => {
+      let { entry, pair } = await relayCheckedReceipt(store, receipt);
+      if (['cancelled-unsigned', 'discarded-signed'].includes(entry.state))
+        return relayReceipt(store, entry, pair);
+      if (pair.record === null) {
+        check(entry.state === 'held' && entry.signing === null);
+        // Only the authenticated never-signing orphan has no tombstone to write.
+        entry = await relayWrite({ type: 'cancel-relay-unsigned', id: entry.id });
+        return relayReceipt(
+          store,
+          entry,
+          Object.freeze({ record: null, interruptedStep: null, authorityGranted: false })
+        );
+      }
+      if (pair.interruptedStep === 'mark-recovery-signing') {
+        await relayMutation(store, 'markSigning', entry.id);
+        pair = await relayPair(store, entry);
+        check(pair.record.state === 'signing-local' && pair.interruptedStep === null);
+      }
+      if (!['cancelled-unsigned', 'discarded-signed'].includes(pair.record.state)) {
+        await relayMutation(store, 'discardLocal', entry.id);
+        pair = await relayPair(store, entry);
+      }
+      const signed = entry.state === 'signing-local';
+      check(pair.record.state === (signed ? 'discarded-signed' : 'cancelled-unsigned'));
+      check(pair.interruptedStep === (signed ? 'release-signed' : 'release-unsigned'));
+      // Read the genuine authenticated tombstone before releasing the conflict.
+      entry = await relayWrite({
+        type: signed ? 'discard-relay-local' : 'cancel-relay-unsigned',
+        id: entry.id,
+      });
+      const joined = await relayPair(store, entry);
+      check(joined.interruptedStep === null);
+      return relayReceipt(store, entry, joined);
+    });
+  }
   const instance = Object.freeze({
+    ...(cooperative
+      ? {
+          reserveRelay: (store, text) => admitted(() => reserveRelay(store, text)),
+          listRelay: (store) => admitted(() => listRelay(store)),
+          readRelay: (store, id) => admitted(() => readRelay(store, id)),
+          markRelaySigning: (store, receipt) => admitted(() => markRelaySigning(store, receipt)),
+          discardRelayLocal: (store, receipt) => admitted(() => discardRelayLocal(store, receipt)),
+        }
+      : {}),
     reserve: (input) => admitted(() => reserve(input)),
     assertAvailable: (input) => admitted(() => assertAvailable(input)),
     assertReceipt: (receipt) => admitted(() => assertReceipt(receipt)),
@@ -668,6 +899,21 @@ async function createRailgunPrivateReservations({
   return instance;
 }
 module.exports = {
+  // The issuer is module-private. This fixed consumer cannot mint a capability;
+  // a raw recovery-store caller has no token to present or callback to inject.
+  consumeRailgunRelayReservationMutation: (token, store, method, input) => {
+    const entry = relayMutations.get(token);
+    check(
+      entry &&
+        !entry.used &&
+        entry.store === store &&
+        entry.method === method &&
+        entry.input === input
+    );
+    entry.assertCurrent();
+    entry.used = true;
+    return entry.assertCurrent;
+  },
   createRailgunPrivateReservations,
   isRailgunPrivateReservations: (v) => instances.has(v),
   assertRailgunPrivateReservationsOwner: (value, { handle, binding, walletId, directory }) => {

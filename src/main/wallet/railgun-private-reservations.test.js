@@ -698,7 +698,10 @@ test('cooperative private operations write v4, typed floors and preserve old pri
   expect((await s.assertReceipt(signed)).state).toBe('signing');
   expect(calls.map((v) => v.sequence)).toEqual([0, 1, 2]);
   expect(floor).toEqual(typedFloor(2));
-  expect(Object.keys(s)).not.toContain('reserveRelay');
+  expect(Object.keys(s)).toEqual(
+    expect.arrayContaining(['reserveRelay', 'readRelay', 'markRelaySigning', 'discardRelayLocal'])
+  );
+  await expect(s.readRelay({}, 'f'.repeat(64))).rejects.toThrow();
   s.close();
   await expect(open(false)).rejects.toThrow();
   const cold = await open(false, extra);

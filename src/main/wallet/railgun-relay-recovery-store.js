@@ -1,5 +1,5 @@
-/** Internal local-custody data writer, deliberately not wired to an account.
- * A future fixed owner must join the shared ledger, review, original-work and
+/** Internal local-custody data writer opened by fixed fenced enrollment.
+ * The connected controller must still join review, original-work and
  * proof gates. These methods issue no signing/discard/export permits and do not
  * establish cryptographic validity. Scope revocation never closes enrollment's
  * borrowed process-lifetime fence. No storage/floor pair is claimed atomic.
@@ -20,9 +20,11 @@ const {
 } = require('./railgun-relay-recovery-data');
 const RECORD = 'railgun-relay-local-recovery-v4';
 const owners = new Set();
-const refused = () =>
+const instances = new WeakMap();
+const unavailable = new WeakMap();
+const refused = (code = 'RAILGUN_RELAY_RECOVERY_STORE_REFUSED') =>
   Object.assign(new Error('Railgun local relay recovery store refused'), {
-    code: 'RAILGUN_RELAY_RECOVERY_STORE_REFUSED',
+    code,
   });
 const check = (value) => {
   if (!value) throw refused();
@@ -221,9 +223,14 @@ async function createRailgunRelayRecoveryStore(options) {
     await attest();
     active();
     opening = false;
+    const prewriteRefusal = (code) => {
+      const error = Object.freeze(refused(code));
+      unavailable.set(error, instance);
+      return error;
+    };
     async function exclusive(use) {
       active();
-      check(!busy);
+      if (busy) throw prewriteRefusal('RAILGUN_RELAY_RECOVERY_STORE_BUSY');
       busy = true;
       try {
         const value = await attest();
@@ -231,7 +238,8 @@ async function createRailgunRelayRecoveryStore(options) {
         const result = await use(value);
         active();
         return result;
-      } catch {
+      } catch (error) {
+        if (unavailable.get(error) === instance) throw error;
         close();
         throw refused();
       } finally {
@@ -239,22 +247,27 @@ async function createRailgunRelayRecoveryStore(options) {
         release();
       }
     }
-    async function persist(value, entries) {
+    async function persist(value, entries, assertMutation = active) {
       const next = { ...value, sequence: value.sequence + 1, entries };
       const text = encode(next),
         previous = current;
       active();
+      assertMutation();
       await storage.update(RECORD, (stored) => {
         active();
+        assertMutation();
         check(stored === previous && decode(stored).lease === lease);
         return text;
       });
       active();
+      assertMutation();
       current = text;
       await advance(next.sequence);
       active();
+      assertMutation();
       await attest();
       active();
+      assertMutation();
     }
     const select = (value, id) => {
       check(digest(id));
@@ -262,7 +275,7 @@ async function createRailgunRelayRecoveryStore(options) {
       check(row);
       return row;
     };
-    async function change(id, transform) {
+    async function change(id, transform, assertMutation = active) {
       return exclusive(async (value) => {
         const old = select(value, id),
           next = decodeRailgunRelayLocalRecord(JSON.stringify(transform(old)));
@@ -275,16 +288,37 @@ async function createRailgunRelayRecoveryStore(options) {
         if (old.proved !== null) check(JSON.stringify(old.proved) === JSON.stringify(next.proved));
         await persist(
           value,
-          value.entries.map((entry) => (entry === old ? next : entry))
+          value.entries.map((entry) => (entry === old ? next : entry)),
+          assertMutation
         );
         active();
         return next;
       });
     }
+    const availableHeld = (value, text) => {
+      const row = decodeRailgunRelayLocalRecord(text);
+      check(row.state === 'held' && row.binding === binding && row.walletId === walletId);
+      if (value.entries.length >= limits.records)
+        throw prewriteRefusal('RAILGUN_RELAY_RECOVERY_CAPACITY');
+      check(!value.entries.some((entry) => entry.id === row.id));
+      // Decode the complete proposed document, including every retained row's
+      // maximum future transitions and encoded completion capacity, before write.
+      encode({ ...value, sequence: value.sequence + 1, entries: [...value.entries, row] });
+      return row;
+    };
     const instance = Object.freeze({
       signal: scope.signal,
       close,
       read: (id) => exclusive(async (value) => select(value, id)),
+      lookup: (id) =>
+        exclusive(async (value) => {
+          check(digest(id));
+          return value.entries.find((entry) => entry.id === id) ?? null;
+        }),
+      assertHeldAvailable: (text) =>
+        exclusive(async (value) => {
+          availableHeld(value, text);
+        }),
       inspect: () =>
         exclusive(async (value) =>
           freeze({
@@ -294,25 +328,42 @@ async function createRailgunRelayRecoveryStore(options) {
             states: value.entries.map(({ id, state }) => ({ id, state })),
           })
         ),
-      async appendHeld(text) {
+      async appendHeld(token, text) {
+        const assertMutation =
+          require('./railgun-private-reservations').consumeRailgunRelayReservationMutation(
+            token,
+            instance,
+            'appendHeld',
+            text
+          );
+        assertMutation();
         active();
         const row = decodeRailgunRelayLocalRecord(text);
         check(row.state === 'held' && row.binding === binding && row.walletId === walletId);
         return exclusive(async (value) => {
-          check(
-            value.entries.length < limits.records &&
-              !value.entries.some((entry) => entry.id === row.id)
-          );
-          await persist(value, [...value.entries, row]);
+          availableHeld(value, text);
+          await persist(value, [...value.entries, row], assertMutation);
           active();
           return row;
         });
       },
-      markSigning: (id) =>
-        change(id, (old) => {
-          check(old.state === 'held');
-          return { ...old, state: 'signing-local' };
-        }),
+      markSigning: (token, id) => {
+        const assertMutation =
+          require('./railgun-private-reservations').consumeRailgunRelayReservationMutation(
+            token,
+            instance,
+            'markSigning',
+            id
+          );
+        return change(
+          id,
+          (old) => {
+            check(old.state === 'held');
+            return { ...old, state: 'signing-local' };
+          },
+          assertMutation
+        );
+      },
       async saveSignature(id, input) {
         active();
         let signature;
@@ -348,16 +399,29 @@ async function createRailgunRelayRecoveryStore(options) {
           return { ...old, state: 'ready-local', proved };
         });
       },
-      discardLocal: (id) =>
-        change(id, (old) => {
-          check(['held', 'signing-local', 'signed', 'ready-local'].includes(old.state));
-          return {
-            ...old,
-            state: old.state === 'held' ? 'cancelled-unsigned' : 'discarded-signed',
-          };
-        }),
+      discardLocal: (token, id) => {
+        const assertMutation =
+          require('./railgun-private-reservations').consumeRailgunRelayReservationMutation(
+            token,
+            instance,
+            'discardLocal',
+            id
+          );
+        return change(
+          id,
+          (old) => {
+            check(['held', 'signing-local', 'signed', 'ready-local'].includes(old.state));
+            return {
+              ...old,
+              state: old.state === 'held' ? 'cancelled-unsigned' : 'discarded-signed',
+            };
+          },
+          assertMutation
+        );
+      },
     });
     active();
+    instances.set(instance, { enrollment, active });
     return instance;
   } catch {
     close();
@@ -367,4 +431,12 @@ async function createRailgunRelayRecoveryStore(options) {
     release();
   }
 }
-module.exports = { createRailgunRelayRecoveryStore };
+module.exports = {
+  createRailgunRelayRecoveryStore,
+  isRailgunRelayRecoveryUnavailable: (error, store) => unavailable.get(error) === store,
+  assertRailgunRelayRecoveryStoreOwner: (store, enrollment) => {
+    const entry = instances.get(store);
+    check(entry && entry.enrollment === enrollment);
+    entry.active();
+  },
+};
