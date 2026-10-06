@@ -33,7 +33,8 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     process.versions.electron && process.type === 'browser',
     'Explicit Electron browser entry required'
   );
-  assert.equal(env.FREEDOM_RAILGUN_RELAY_POSITIVE, 'synthetic-list');
+  // The fixture's select admits only its fixed synthetic-list scenarios.
+  assert.equal(typeof env.FREEDOM_RAILGUN_RELAY_POSITIVE, 'string');
   const isolation = assertIsolation();
   const runner = require('./fixtures/railgun-relay-positive-native');
   const config = runner.select(env.FREEDOM_RAILGUN_RELAY_POSITIVE, argv, env);

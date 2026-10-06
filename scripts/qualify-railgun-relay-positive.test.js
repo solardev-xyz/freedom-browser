@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
+const assert = require('assert/strict');
 const api = require('./qualify-railgun-relay-positive');
 const original = fs.readFileSync(path.join(__dirname, '../src/main/wallet/railgun-poi-records.js'));
 test('pure copy transformation changes exactly one reviewed literal, never the real source', () => {
@@ -88,4 +89,34 @@ test('Electron entry fallback activates only its exact filename', async () => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
   expect(runner.execute).toHaveBeenCalledTimes(1);
   expect(app.exit).toHaveBeenCalledWith(0);
+});
+test('missing opt-in refuses before isolation checks or runner import', async () => {
+  const source = fs.readFileSync(__filename.replace('.test.js', '.js'), 'utf8');
+  const filename = path.resolve('/fixture/scripts/qualify-railgun-relay-positive.js');
+  const app = { exit: jest.fn() },
+    imports = [];
+  const req = (name) => {
+    imports.push(name);
+    if (name === 'electron') return { app };
+    if (name === 'original-fs') return { readFileSync: () => assert.fail('isolation read') };
+    return require(name);
+  };
+  req.main = {};
+  vm.runInNewContext(source, {
+    require: req,
+    module: { exports: {} },
+    __dirname: path.dirname(filename),
+    __filename: filename,
+    Buffer,
+    process: {
+      argv: ['electron', filename],
+      versions: { electron: 'test' },
+      type: 'browser',
+      env: {},
+    },
+    console: { error: () => {} },
+  });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(app.exit).toHaveBeenCalledWith(1);
+  expect(imports).not.toContain('./fixtures/railgun-relay-positive-native');
 });

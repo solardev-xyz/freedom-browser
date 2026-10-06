@@ -12,7 +12,8 @@ const SOURCE_SHA = 'bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc
 const OFFSET = 5944700;
 const THROUGH = OFFSET + 30;
 const ANCHOR = OFFSET + 100;
-const SCENARIOS = ['synthetic-list'];
+const SIGNED_STOP = 'synthetic-list-signed-stop';
+const SCENARIOS = ['synthetic-list', SIGNED_STOP];
 const TEST_LIST = '43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c';
 const AUDIT_CASES = ['unmodified', 'signature', 'transaction-proof', 'pre-poi-proof'];
 const hex = (v) => '0x' + v.toString(16).padStart(64, '0');
@@ -52,7 +53,7 @@ function ranges() {
   return values;
 }
 function installServices(logs, expectedNote, scenario, protocol) {
-  assert.equal(scenario, 'synthetic-list');
+  assert.ok(SCENARIOS.includes(scenario));
   // Install only registry/transport leaves before the genuine RPC module captures them.
   assert.equal(!!require.cache[require.resolve(network + 'private-rpc')], false);
   for (const name of [
@@ -301,7 +302,7 @@ function installServices(logs, expectedNote, scenario, protocol) {
     },
   };
 }
-function installJobs(onDraft = () => {}, onSigningReply = () => {}) {
+function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expectedRoles()) {
   for (const name of [
     'railgun-identity',
     'railgun-public-run',
@@ -345,7 +346,7 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}) {
       assert.ok(role);
       assert.equal(options.filename, require.resolve(wallet + path.basename(options.filename)));
     }
-    assert.ok(expectedRoles()[rows.length] === role, 'Unexpected original utility order: ' + role);
+    assert.ok(roles[rows.length] === role, 'Unexpected original utility order: ' + role);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);
     const row = {
       role,
@@ -476,7 +477,7 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}) {
       await Promise.all([...pending]);
       assert.deepEqual(
         rows.map((r) => r.role),
-        expectedRoles()
+        roles
       );
       for (const row of rows) {
         assert.equal(row.closedObserved, true);
@@ -524,7 +525,9 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}) {
     },
   };
 }
-function expectedRoles() {
+// A signed stop ends after the held dual verifier; it runs no audit utility.
+function expectedRoles(scenario = 'synthetic-list') {
+  assert.ok(SCENARIOS.includes(scenario));
   return [
     'spending-public',
     'viewing-identity',
@@ -543,7 +546,7 @@ function expectedRoles() {
     'signature-C',
     'proof-A',
     'dual-proof-C',
-    ...AUDIT_CASES.map((value) => 'audit-' + value),
+    ...(scenario === SIGNED_STOP ? [] : AUDIT_CASES.map((value) => 'audit-' + value)),
   ];
 }
 function createProtocol(artifactDirectory) {
@@ -694,12 +697,9 @@ function installCustody() {
       assert.equal(rows.at(-1).reservationState, 'signing-local');
       assert.equal(rows.at(-1).interruptedStep, null);
     },
-    finish() {
+    finish(states = ['held', 'signing-local', 'signed', 'ready-local']) {
       assert.equal(issuance, 1);
-      assert.deepEqual(
-        [...new Set(rows.map((v) => v.state))],
-        ['held', 'signing-local', 'signed', 'ready-local']
-      );
+      assert.deepEqual([...new Set(rows.map((v) => v.state))], states);
       native.assertEmpty();
     },
     restore() {
@@ -852,7 +852,7 @@ async function runFixtureJob(kind, input, validate, sender, timeoutMs) {
   assert.ok(performance.now() - started < timeoutMs);
   return value;
 }
-function assertOperationRpc(requests) {
+function assertOperationRpc(requests, scenario = 'synthetic-list') {
   const headers = {},
     protocol = {};
   for (const row of requests) {
@@ -865,14 +865,17 @@ function assertOperationRpc(requests) {
       headers[row.params[0]] = (headers[row.params[0]] ?? 0) + 1;
     }
   }
-  assert.deepEqual(
-    headers,
-    Object.fromEntries(
-      ['finalized', ...[ANCHOR, 5900000, THROUGH, 5899999].map((v) => '0x' + v.toString(16))].map(
-        (key) => [key, 4]
-      )
-    )
-  );
+  const keys = [
+    'finalized',
+    ...[ANCHOR, 5900000, THROUGH, 5899999].map((v) => '0x' + v.toString(16)),
+  ];
+  assert.deepEqual(Object.keys(headers).sort(), [...keys].sort());
+  // A signed stop refuses before canonical refresh. Its header reads are an
+  // observed, uniform count bounded by the completed run, not a derivation.
+  const reads = scenario === SIGNED_STOP ? headers.finalized : 4;
+  assert.ok(Number.isSafeInteger(reads) && reads >= 1 && reads <= 4);
+  assert.deepEqual(headers, Object.fromEntries(keys.map((key) => [key, reads])));
+  // Preflight completes before signing, so its protocol requests are unchanged.
   assert.deepEqual(protocol, {
     eth_chainId: 2,
     eth_getBlockByNumber: 3,
@@ -880,7 +883,8 @@ function assertOperationRpc(requests) {
     eth_getStorageAt: 2,
     eth_call: 8,
   });
-  assert.equal(requests.length, 39);
+  assert.equal(requests.length, 19 + 5 * reads);
+  if (scenario !== SIGNED_STOP) assert.equal(requests.length, 39);
   return { headers, protocol };
 }
 function assertAudit(value, auditCase, recordText, pair) {
@@ -1004,6 +1008,150 @@ function assertReadyLocal(result, jobs, custody) {
   assert.equal(diagnostic.result.status, 'ready-local', JSON.stringify(diagnostic));
 }
 
+// Signed stop: production returns its genuine dual verifier result only after
+// observing that utility's exit. Hold that result, probe a second admission,
+// then abort the caller's own request signal before production continues. No
+// verifier, signer or store behavior is replaced.
+function installSignedStop(control, jobs, secondAdmission) {
+  const module = require(wallet + 'railgun-relay-proof'),
+    original = module.verifyRailgunRelayProof;
+  const observation = {
+    held: 0,
+    utilityExitObserved: null,
+    exitCode: null,
+    secondAdmission: null,
+    requestAbortedWhileHeld: false,
+  };
+  const held = async function (...args) {
+    const verified = await Reflect.apply(original, this, args);
+    try {
+      assert.equal(++observation.held, 1);
+      assert.equal(jobs.rows.at(-1).role, 'dual-proof-C');
+      observation.utilityExitObserved = verified.observation.utilityExitObserved;
+      observation.exitCode = verified.process.exitCode;
+      observation.secondAdmission = { ...(await secondAdmission()) };
+    } catch (error) {
+      native.record(error, 'relay-signed-stop.hold');
+    }
+    control.abort();
+    observation.requestAbortedWhileHeld = control.signal.aborted;
+    return verified;
+  };
+  module.verifyRailgunRelayProof = held;
+  return {
+    observation,
+    restore() {
+      assert.equal(module.verifyRailgunRelayProof, held);
+      module.verifyRailgunRelayProof = original;
+    },
+  };
+}
+async function finishSignedStop({
+  result,
+  hold,
+  helper,
+  margins,
+  operationStart,
+  services,
+  rpcBefore,
+  reservations,
+  recovery,
+  before,
+  jobs,
+  custody,
+  account,
+}) {
+  assert.deepEqual(Object.keys(result).sort(), [
+    'operationId',
+    'signatureSaved',
+    'signingAttempted',
+    'stage',
+    'status',
+  ]);
+  assert.equal(result.status, 'recovery-required');
+  assert.equal(result.stage, 'proof');
+  assert.equal(result.signingAttempted, true);
+  assert.equal(result.signatureSaved, true);
+  assert.match(result.operationId, /^[0-9a-f]{64}$/);
+  assert.ok(performance.now() - operationStart < 180000);
+  assert.deepEqual(hold.observation, {
+    held: 1,
+    utilityExitObserved: true,
+    exitCode: 15,
+    secondAdmission: { status: 'refused', stage: 'admission' },
+    requestAbortedWhileHeld: true,
+  });
+  services.assertClosed();
+  const operationRequests = services.requests.slice(rpcBefore);
+  const rpc = assertOperationRpc(operationRequests, SIGNED_STOP);
+  const stopped = await reservations.readRelay(recovery, result.operationId);
+  assert.equal(stopped.record.state, 'signed');
+  assert.equal(stopped.entry.state, 'signing-local');
+  assert.equal(stopped.interruptedStep, null);
+  assert.equal(stopped.record.proved, null);
+  assert.ok(stopped.record.signature && typeof stopped.record.signature === 'object');
+  assert.deepEqual(stopped.record.history.note, helper.note);
+  assert.deepEqual(stopped.record.history.proof, helper.proof);
+  assert.deepEqual(stopped.record.history.event, helper.event);
+  const after = {
+    private: await reservations.inspect(),
+    relay: await reservations.listRelay(recovery),
+    recovery: await recovery.inspect(),
+  };
+  // The original hold and signature survive the refusal; nothing is released.
+  assert.deepEqual(after.private, before.private);
+  assert.deepEqual(after.relay, [{ id: result.operationId, state: 'signing-local' }]);
+  assert.equal(after.recovery.records, 1);
+  assert.equal(after.recovery.sequence - before.recovery.sequence, 3);
+  assert.deepEqual(after.recovery.states, [{ id: result.operationId, state: 'signed' }]);
+  custody.finish(['held', 'signing-local', 'signed']);
+  assert.equal(jobs.rows.length, expectedRoles(SIGNED_STOP).length);
+  assert.equal(
+    jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0),
+    9
+  );
+  const recordText = JSON.stringify(stopped.record);
+  await account.close();
+  return {
+    schema: 'railgun-relay-signed-stop-native-v1',
+    scenario: SIGNED_STOP,
+    result,
+    selectedInputType: 'Shield',
+    inputAmount: '2000',
+    feeAmount: '100',
+    selfAmount: '1900',
+    syntheticList: TEST_LIST,
+    productionServiceAuthority: false,
+    liveServiceContact: false,
+    relaySendPermitted: false,
+    quoteListEqualityIsFixturePolicy: true,
+    exactReviewCallbacks: 1,
+    disclosureCallbacks: 1,
+    quoteMargins: [
+      ...margins,
+      { stage: 'credential-reply-observed', remainingMs: custody.credentialMargin() },
+    ],
+    membershipControls: helper.controls,
+    selectedServiceMethods: [...services.poiMethods],
+    syntheticOperationRpc: rpc,
+    syntheticOperationRequests: operationRequests.length,
+    operationHeaderReadsObserved: true,
+    recoverySequenceDelta: 3,
+    heldVerifier: hold.observation,
+    custodyOrdering: custody.rows,
+    recordDigest: stopped.recordDigest,
+    publicFixtureRecordSha256: sha(recordText),
+    publicFixtureEntrySha256: sha(JSON.stringify(stopped.entry)),
+    signatureSha256: sha(JSON.stringify(stopped.record.signature)),
+    proofProduced: true,
+    proofsIndependentlyVerified: true,
+    proofPersisted: false,
+    signatureIndependentlyVerified: true,
+    transportAttempted: false,
+    coldRestartQualified: false,
+    actualProductionListQualified: false,
+  };
+}
 async function qualify({
   account,
   owners,
@@ -1015,7 +1163,7 @@ async function qualify({
   jobs,
   custody,
 }) {
-  assert.equal(scenario, 'synthetic-list');
+  assert.ok(SCENARIOS.includes(scenario));
   const api = require(wallet + 'railgun-account-wallet');
   const baseline = api.readRailgunAccountOwnedNotes(account, owners);
   const candidates = baseline.read.received.filter(
@@ -1111,45 +1259,82 @@ async function qualify({
   const rpcBefore = services.requests.length;
   let reviewed = 0,
     disclosed = 0;
-  const result = await require(
-    wallet + 'railgun-relay-operation'
-  ).proveRailgunAccountRelayOperation({
-    account,
-    owners,
-    archive,
-    proverArchive,
-    artifactDirectory,
-    request: {
-      noteId: selected.id,
-      quote: helper.quote,
-      gas: helper.gas,
-      maxFee: '100',
-      signal: new AbortController().signal,
-    },
-    review(summary) {
-      reviewed++;
-      assert.equal(summary.selection.noteId, selected.id);
-      assert.deepEqual(summary.amounts, { input: '2000', fee: '100', self: '1900', cap: '100' });
-      assert.deepEqual(summary.quote.requiredPOIListKeys, [TEST_LIST]);
-      assert.equal(summary.quote.quoteSha256, quote.quoteSha256);
-      assert.equal(summary.quote.signedBytesSha256, quote.signedBytesSha256);
-      assert.equal(summary.quote.expiresAt, createdAt + 240000);
-      margin('review', 90000);
-      return true;
-    },
-    reviewDisclosure(summary) {
-      disclosed++;
-      assert.equal(summary.listKey, TEST_LIST);
-      assert.equal(summary.input.id, selected.id);
-      assert.equal(summary.input.type, 'Shield');
-      assert.equal(summary.input.blindedCommitment, owned.blindedCommitment);
-      services.selected({ blindedCommitment: owned.blindedCommitment, type: 'Shield' });
-      margin('disclosure', 90000);
-      return true;
-    },
+  const control = new AbortController();
+  const operation = require(wallet + 'railgun-relay-operation');
+  const request = () => ({
+    noteId: selected.id,
+    quote: helper.quote,
+    gas: helper.gas,
+    maxFee: '100',
+    signal: control.signal,
   });
+  const hold =
+    scenario === SIGNED_STOP
+      ? installSignedStop(control, jobs, () =>
+          operation.proveRailgunAccountRelayOperation({
+            account,
+            owners,
+            archive,
+            proverArchive,
+            artifactDirectory,
+            request: { ...request(), signal: new AbortController().signal },
+            review: () => assert.fail('Second admission reached review'),
+            reviewDisclosure: () => assert.fail('Second admission reached disclosure'),
+          })
+        )
+      : null;
+  let result;
+  try {
+    result = await operation.proveRailgunAccountRelayOperation({
+      account,
+      owners,
+      archive,
+      proverArchive,
+      artifactDirectory,
+      request: request(),
+      review(summary) {
+        reviewed++;
+        assert.equal(summary.selection.noteId, selected.id);
+        assert.deepEqual(summary.amounts, { input: '2000', fee: '100', self: '1900', cap: '100' });
+        assert.deepEqual(summary.quote.requiredPOIListKeys, [TEST_LIST]);
+        assert.equal(summary.quote.quoteSha256, quote.quoteSha256);
+        assert.equal(summary.quote.signedBytesSha256, quote.signedBytesSha256);
+        assert.equal(summary.quote.expiresAt, createdAt + 240000);
+        margin('review', 90000);
+        return true;
+      },
+      reviewDisclosure(summary) {
+        disclosed++;
+        assert.equal(summary.listKey, TEST_LIST);
+        assert.equal(summary.input.id, selected.id);
+        assert.equal(summary.input.type, 'Shield');
+        assert.equal(summary.input.blindedCommitment, owned.blindedCommitment);
+        services.selected({ blindedCommitment: owned.blindedCommitment, type: 'Shield' });
+        margin('disclosure', 90000);
+        return true;
+      },
+    });
+  } finally {
+    hold?.restore();
+  }
   assert.equal(reviewed, 1);
   assert.equal(disclosed, 1);
+  if (scenario === SIGNED_STOP)
+    return finishSignedStop({
+      result,
+      hold,
+      helper,
+      margins,
+      operationStart,
+      services,
+      rpcBefore,
+      reservations,
+      recovery,
+      before,
+      jobs,
+      custody,
+      account,
+    });
   assertReadyLocal(result, jobs, custody);
   assert.match(result.operationId, /^[0-9a-f]{64}$/);
   assert.ok(performance.now() - operationStart < 180000);
@@ -1478,7 +1663,7 @@ async function execute(config) {
     selected = Object.freeze({ ...v });
   };
   const custody = installCustody();
-  const jobs = installJobs(protocol.draft, () => custody.issued());
+  const jobs = installJobs(protocol.draft, () => custody.issued(), expectedRoles(config.scenario));
   custody.jobs(jobs);
   const vault = require('../../src/main/identity/vault');
   const started = performance.now();
@@ -1555,7 +1740,10 @@ async function execute(config) {
       custody,
     });
     await jobs.finish();
-    assert.equal(services.requests.length, 1322);
+    assert.equal(
+      services.requests.length,
+      config.scenario === SIGNED_STOP ? 1283 + report.syntheticOperationRequests : 1322
+    );
     assert.equal(services.requests.filter((v) => v.method === 'eth_chainId').length, 3);
     current();
   } catch (error) {
@@ -1638,6 +1826,7 @@ async function execute(config) {
   );
 }
 module.exports = {
+  SIGNED_STOP,
   assertReadyLocal,
   collectMainModuleCache,
   inspectMainModuleCache,
@@ -1648,6 +1837,8 @@ module.exports = {
   assertOperationRpc,
   createProtocol,
   installCustody,
+  installSignedStop,
+  finishSignedStop,
   runFixtureJob,
   assertAudit,
   installServices,

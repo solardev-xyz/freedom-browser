@@ -1272,11 +1272,203 @@ test('diagnostics never project IDs, record/key/error content or unknown free te
 });
 test('qualifier invokes failure diagnostics before any ready custody read or audit launch', () => {
   const at = source.indexOf('  assertReadyLocal(result, jobs, custody);');
-  expect(at).toBeGreaterThan(source.indexOf(').proveRailgunAccountRelayOperation({'));
+  const call = source.indexOf('result = await operation.proveRailgunAccountRelayOperation({');
+  expect(call).toBeGreaterThan(0);
+  expect(at).toBeGreaterThan(call);
   expect(at).toBeLessThan(source.indexOf('  const ready = await reservations.readRelay'));
   const body = source.slice(
     source.indexOf('function assertReadyLocal'),
-    source.indexOf('async function qualify')
+    source.indexOf('function installSignedStop')
   );
+  expect(body.length).toBeGreaterThan(0);
   expect(body).not.toMatch(/require\(|await |readRelay|inspect\(|console\.|writeFile/);
 });
+test('signed stop admits its own opt-in and ends roles at the held dual verifier', () => {
+  const f = load();
+  expect(f.select(f.SIGNED_STOP, args, {}).scenario).toBe('synthetic-list-signed-stop');
+  expect(() => f.select('synthetic-list-signed', args, {})).toThrow();
+  const roles = f.expectedRoles(f.SIGNED_STOP);
+  expect(roles).toEqual(f.expectedRoles().slice(0, -4));
+  expect(roles).toHaveLength(75);
+  expect(roles.at(-1)).toBe('dual-proof-C');
+  expect(() => f.expectedRoles('other')).toThrow();
+});
+test('signed stop RPC keeps exact preflight and only uniform observed header reads', () => {
+  const f = load(),
+    all = rpcRows(),
+    headers = all.slice(0, 20),
+    protocol = all.slice(20);
+  for (const reads of [1, 2, 3, 4]) {
+    const rows = [...headers.slice(0, 5 * reads), ...protocol];
+    expect(f.assertOperationRpc(rows, f.SIGNED_STOP).headers.finalized).toBe(reads);
+    if (reads !== 4) expect(() => f.assertOperationRpc(rows)).toThrow();
+  }
+  expect(() => f.assertOperationRpc(protocol, f.SIGNED_STOP)).toThrow();
+  expect(() =>
+    f.assertOperationRpc([...headers.slice(0, 6), ...protocol], f.SIGNED_STOP)
+  ).toThrow();
+  expect(() =>
+    f.assertOperationRpc([...headers.slice(0, 10), ...protocol.slice(1)], f.SIGNED_STOP)
+  ).toThrow();
+});
+function signedHold(secondAdmission) {
+  const verified = {
+    observation: { utilityExitObserved: true },
+    process: { exitCode: 15 },
+  };
+  const original = jest.fn(async () => verified),
+    proof = { verifyRailgunRelayProof: original };
+  const f = load({ [w + 'railgun-relay-proof']: proof });
+  const control = new AbortController(),
+    jobs = { rows: [{ role: 'dual-proof-C' }] };
+  const hold = f.installSignedStop(control, jobs, secondAdmission);
+  return { f, verified, original, proof, control, hold };
+}
+test('signed stop holds the genuine verifier result, probes admission, then aborts once', async () => {
+  let abortedDuringProbe = null;
+  const x = signedHold(async () => {
+    abortedDuringProbe = x.control.signal.aborted;
+    return { status: 'refused', stage: 'admission' };
+  });
+  expect(x.proof.verifyRailgunRelayProof).not.toBe(x.original);
+  await expect(x.proof.verifyRailgunRelayProof({ input: 1 })).resolves.toBe(x.verified);
+  expect(x.original).toHaveBeenCalledWith({ input: 1 });
+  expect(abortedDuringProbe).toBe(false);
+  expect(x.control.signal.aborted).toBe(true);
+  expect(x.hold.observation).toEqual({
+    held: 1,
+    utilityExitObserved: true,
+    exitCode: 15,
+    secondAdmission: { status: 'refused', stage: 'admission' },
+    requestAbortedWhileHeld: true,
+  });
+  expect(x.f.errors).toEqual([]);
+  await x.proof.verifyRailgunRelayProof({});
+  expect(x.f.errors).toHaveLength(1);
+  x.hold.restore();
+  expect(x.proof.verifyRailgunRelayProof).toBe(x.original);
+});
+test('signed stop probe failure is sticky but still aborts; verifier refusal is unchanged', async () => {
+  const x = signedHold(async () => {
+    throw new Error('admitted');
+  });
+  await x.proof.verifyRailgunRelayProof({});
+  expect(x.control.signal.aborted).toBe(true);
+  expect(x.f.errors).toHaveLength(1);
+  const y = signedHold(async () => ({}));
+  y.original.mockRejectedValueOnce(new Error('refused'));
+  await expect(y.proof.verifyRailgunRelayProof({})).rejects.toThrow('refused');
+  expect(y.control.signal.aborted).toBe(false);
+  expect(y.hold.observation.held).toBe(0);
+});
+function stopped(mutation) {
+  const id = 'cd'.repeat(32);
+  const helper = { note: { n: 1 }, proof: { p: 1 }, event: { e: 1 }, controls: { c: true } };
+  let record = {
+    state: 'signed',
+    proved: null,
+    signature: { r: '1' },
+    history: { note: helper.note, proof: helper.proof, event: helper.event },
+  };
+  if (mutation === 'ready') record = { ...record, state: 'ready-local', proved: {} };
+  if (mutation === 'proved') record = { ...record, proved: {} };
+  const recoveryState = {
+    records: 1,
+    sequence: mutation === 'sequence' ? 4 : 3,
+    states: [{ id, state: mutation === 'ready' ? 'ready-local' : 'signed' }],
+  };
+  const reservations = {
+    inspect: async () => ({ private: mutation === 'released' ? 1 : 0 }),
+    listRelay: async () => (mutation === 'released' ? [] : [{ id, state: 'signing-local' }]),
+    readRelay: async () => ({
+      record,
+      entry: { id, state: 'signing-local' },
+      interruptedStep: null,
+      recordDigest: 'ef'.repeat(32),
+    }),
+  };
+  const custody = {
+    rows: [{ state: 'held' }],
+    finish: jest.fn(),
+    credentialMargin: () => 100000,
+  };
+  const f = load();
+  const headers = rpcRows().slice(0, 10),
+    protocol = rpcRows().slice(20);
+  const services = {
+    requests: [{ method: 'bootstrap' }, ...headers, ...protocol],
+    poiMethods: ['m'],
+    assertClosed: jest.fn(),
+  };
+  const roles = f.expectedRoles(f.SIGNED_STOP);
+  const jobs = { rows: roles.map((_, i) => ({ keyReplies: i < 9 ? 1 : 0 })) };
+  const observation = {
+    held: 1,
+    utilityExitObserved: true,
+    exitCode: 15,
+    secondAdmission:
+      mutation === 'admitted'
+        ? { status: 'ready-local', operationId: id }
+        : { status: 'refused', stage: 'admission' },
+    requestAbortedWhileHeld: true,
+  };
+  const account = { close: jest.fn(async () => {}) };
+  return {
+    f,
+    custody,
+    account,
+    run: () =>
+      f.finishSignedStop({
+        result:
+          mutation === 'unsaved'
+            ? {
+                status: 'recovery-required',
+                stage: 'signature-storage',
+                operationId: id,
+                signingAttempted: true,
+                signatureSaved: false,
+              }
+            : {
+                status: 'recovery-required',
+                stage: 'proof',
+                operationId: id,
+                signingAttempted: true,
+                signatureSaved: true,
+              },
+        hold: { observation },
+        helper,
+        margins: [],
+        operationStart: performance.now(),
+        services,
+        rpcBefore: 1,
+        reservations,
+        recovery: { inspect: async () => recoveryState },
+        before: { private: { private: 0 }, relay: [], recovery: { records: 0, sequence: 0 } },
+        jobs,
+        custody,
+        account,
+      }),
+  };
+}
+test('signed stop report binds the retained signed record and unreleased hold', async () => {
+  const x = stopped();
+  const report = await x.run();
+  expect(report).toMatchObject({
+    schema: 'railgun-relay-signed-stop-native-v1',
+    scenario: 'synthetic-list-signed-stop',
+    recoverySequenceDelta: 3,
+    syntheticOperationRequests: 29,
+    proofPersisted: false,
+    coldRestartQualified: false,
+  });
+  expect(report.syntheticOperationRpc.headers.finalized).toBe(2);
+  expect(report.signatureSha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(x.custody.finish).toHaveBeenCalledWith(['held', 'signing-local', 'signed']);
+  expect(x.account.close).toHaveBeenCalledTimes(1);
+});
+test.each(['ready', 'proved', 'sequence', 'released', 'admitted', 'unsaved'])(
+  'signed stop refuses %s outcome',
+  async (mutation) => {
+    await expect(stopped(mutation).run()).rejects.toThrow();
+  }
+);
