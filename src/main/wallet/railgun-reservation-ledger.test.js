@@ -554,3 +554,45 @@ test('noncanonical shape, duplicate IDs/active input, malformed JSON and byte ex
   ])
     expect(() => decode(text)).toThrow('Railgun reservation proposal refused');
 });
+
+test('private availability predicts the same conflict and future budget as reserve without a proposal', () => {
+  const selected = { tree: 0, nullifier: field(600) };
+  expect(codec.assertPrivateAvailable(codec.create(LEASE), selected)).toBeUndefined();
+  const occupied = codec.apply(codec.create(LEASE), {
+    type: 'reserve-relay',
+    id: hex(1),
+    facts: relayFacts(600),
+  });
+  expect(() => codec.assertPrivateAvailable(occupied, selected)).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_PRIVATE_INPUT_RESERVED' })
+  );
+  let text = codec.create(LEASE);
+  for (let i = 1; i <= 341; i++)
+    text = codec.apply(text, { type: 'reserve-relay', id: hex(i), facts: relayFacts(i) });
+  expect(() => codec.assertPrivateAvailable(text, selected)).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_RESERVATIONS_CAPACITY' })
+  );
+  expect(() =>
+    codec.apply(text, { type: 'reserve-private', id: hex(600), facts: privateFacts(600) })
+  ).toThrow(expect.objectContaining({ code: 'RAILGUN_RESERVATIONS_CAPACITY' }));
+});
+
+test('availability refuses proxy/getter/extra identity without executing caller code', () => {
+  const effect = jest.fn();
+  const text = codec.create(LEASE),
+    selected = { tree: 0, nullifier: field(1) };
+  expect(() =>
+    codec.assertPrivateAvailable(text, new Proxy(selected, { get: effect, ownKeys: effect }))
+  ).toThrow();
+  expect(() => codec.assertPrivateAvailable(text, { ...selected, extra: 1 })).toThrow();
+  expect(() =>
+    codec.assertPrivateAvailable(text, {
+      get tree() {
+        effect();
+        return 0;
+      },
+      nullifier: field(1),
+    })
+  ).toThrow();
+  expect(effect).not.toHaveBeenCalled();
+});

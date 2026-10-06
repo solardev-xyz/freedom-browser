@@ -1,3 +1,9 @@
+let mockFencedOwners = new WeakSet();
+jest.mock('./railgun-account-enrollment', () => ({
+  assertRailgunFencedAccountEnrollment: (owner) => {
+    if (!mockFencedOwners.has(owner)) throw Error('fenced enrollment refused');
+  },
+}));
 const fs = require('fs'),
   os = require('os'),
   path = require('path');
@@ -19,6 +25,7 @@ const input = (n = 1, tree = 0) => ({
   poiDigest: '4'.repeat(64),
 });
 beforeEach(() => {
+  mockFencedOwners = new WeakSet();
   floor = null;
   stores = [];
   scope = createPrivacyScope({
@@ -68,6 +75,7 @@ test('durable holds bind exact facts and return only genuine live receipts', asy
   expect(isRailgunPrivateReservations(s)).toBe(true);
   expect(isRailgunPrivateReservations({ ...s })).toBe(false);
   expect((await s.assertReceipt(receipt)).facts).toEqual(input());
+  expect(await s.assertReceipt(receipt)).toBe(await s.assertReceipt(receipt));
   expect(Object.isFrozen((await s.assertReceipt(receipt)).facts)).toBe(true);
   await expect(s.assertReceipt({ ...receipt })).rejects.toThrow();
   expect(await s.inspect()).toEqual({ held: 1, signing: 0, abandoned: 0, legacy: 0 });
@@ -566,4 +574,560 @@ test('partial reservation does not admit unknown kind or malformed facts', async
   ])
     await expect(s.reserve(value)).rejects.toThrow();
   expect(await s.inspect()).toEqual({ held: 0, signing: 0, abandoned: 0, legacy: 0 });
+});
+
+// Issuer seam for the inactive cooperative store mode. These tests use genuine
+// privacy contexts and encrypted storage, not native enrollment/SQLite custody.
+function cooperativeOptions() {
+  const owner = Object.freeze({
+    directory: options.directory,
+    binding: options.binding,
+    descriptor: Object.freeze({ walletId: options.walletId }),
+    getContext: (role, operation) => {
+      if (role !== 'storage' || operation !== 'railgun-private-reservations-v1:' + options.walletId)
+        throw Error('context');
+      return options.handle;
+    },
+  });
+  mockFencedOwners.add(owner);
+  return { enrollment: owner };
+}
+const typedFloor = (sequence) => ({
+  version: 4,
+  binding: options.binding,
+  walletId: options.walletId,
+  sequence,
+});
+const selectedInput = (n = 1) => {
+  const { tree, position, nullifier, noteHash } = input(n);
+  return { tree, position, nullifier, noteHash };
+};
+const relayInput = (n = 1) => {
+  const { tree, position, nullifier, noteHash, checkpointHash } = input(n);
+  return {
+    tree,
+    position,
+    nullifier,
+    noteHash,
+    checkpointHash,
+    kind: 'railgun-relay-self-transfer',
+    draftDigest: 'a'.repeat(64),
+    expectedHash: '0x' + '1'.repeat(64),
+  };
+};
+async function writeDocument(document) {
+  await createPrivacyStorage(options).update('railgun-private-reservations-v1', () =>
+    JSON.stringify(document)
+  );
+}
+async function readDocument() {
+  return JSON.parse(await createPrivacyStorage(options).get('railgun-private-reservations-v1'));
+}
+async function mixedDocument(extra = cooperativeOptions()) {
+  const codec = require('./railgun-reservation-ledger').createRailgunReservationLedgerCodec({
+    enrollment: extra.enrollment,
+    binding: options.binding,
+    walletId: options.walletId,
+  });
+  let text = codec.create('7'.repeat(64));
+  text = codec.apply(text, { type: 'reserve-private', id: '1'.repeat(64), facts: input(1) });
+  text = codec.apply(text, {
+    type: 'mark-private-signing',
+    id: '1'.repeat(64),
+    signing: signing(),
+  });
+  text = codec.apply(text, { type: 'reserve-relay', id: '2'.repeat(64), facts: relayInput(2) });
+  text = codec.apply(text, {
+    type: 'mark-relay-signing',
+    id: '2'.repeat(64),
+    signing: { gatesDigest: '8'.repeat(64), recordDigest: '9'.repeat(64) },
+  });
+  text = codec.apply(text, { type: 'reserve-relay', id: '3'.repeat(64), facts: relayInput(3) });
+  const document = JSON.parse(text);
+  await writeDocument(document);
+  floor = typedFloor(document.sequence);
+  return { extra, document, codec };
+}
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+test('cooperative factory authenticates exact issuer and context before paths or storage', async () => {
+  const extra = cooperativeOptions();
+  const realpath = jest.spyOn(fs, 'realpathSync');
+  for (const patch of [
+    { enrollment: { ...extra.enrollment } },
+    { binding: 'a'.repeat(64) },
+    { walletId: 'b'.repeat(64) },
+    { directory: options.directory + '-other' },
+    {
+      handle: scope.getContext({
+        ...require('../networks/privacy-context').getPrivacyContext(options.handle).subject,
+        principal: 'railgun:1',
+      }),
+    },
+  ]) {
+    await expect(open(true, { ...extra, ...patch })).rejects.toThrow();
+  }
+  expect(realpath).not.toHaveBeenCalled();
+  expect(fs.readdirSync(options.directory)).toEqual([]);
+});
+
+test('cooperative private operations write v4, typed floors and preserve old private receipt shape', async () => {
+  const extra = cooperativeOptions(),
+    calls = [];
+  const s = await open(true, {
+    ...extra,
+    advanceFloor: async (value) => {
+      const document = await readDocument();
+      expect(document.version).toBe(4);
+      expect(document.sequence).toBe(value.sequence);
+      calls.push(value);
+      floor = value;
+    },
+  });
+  expect(floor).toEqual(typedFloor(0));
+  const receipt = await s.reserve(input());
+  expect(Object.keys(await s.assertReceipt(receipt))).toEqual(['id', 'facts', 'state', 'signing']);
+  expect((await readDocument()).entries[0].origin).toBe('private');
+  const signed = await s.markSigning(receipt, signing());
+  expect((await s.assertReceipt(signed)).state).toBe('signing');
+  expect(calls.map((v) => v.sequence)).toEqual([0, 1, 2]);
+  expect(floor).toEqual(typedFloor(2));
+  expect(Object.keys(s)).not.toContain('reserveRelay');
+  s.close();
+  await expect(open(false)).rejects.toThrow();
+  const cold = await open(false, extra);
+  expect(await cold.inspect()).toEqual({ held: 0, signing: 1, abandoned: 0, legacy: 0 });
+});
+
+test.each([1, 2, 3])(
+  'cooperative opening upgrades version %i and its numeric floor before receipts',
+  async (version) => {
+    const extra = cooperativeOptions();
+    const entry = {
+      id: '1'.repeat(64),
+      facts: version === 3 ? relayInput() : input(),
+      ...(version === 1 ? {} : { state: version === 3 ? 'abandoned' : 'held', signing: null }),
+    };
+    const sequence = version === 3 ? 2 : 1;
+    await writeDocument({
+      version,
+      binding: options.binding,
+      walletId: options.walletId,
+      lease: '7'.repeat(64),
+      sequence,
+      entries: [entry],
+    });
+    floor = sequence;
+    const s = await open(false, extra);
+    const document = await readDocument();
+    expect(document.version).toBe(4);
+    expect(floor).toEqual(typedFloor(sequence));
+    expect(document.entries[0].origin).toBe(version === 3 ? 'relay-v3-never-signed' : 'private');
+    expect(document.entries[0].state).toBe(
+      version === 1 ? 'legacy' : version === 3 ? 'cancelled-unsigned' : 'held'
+    );
+    if (version === 3) await s.assertAvailable(selectedInput());
+  }
+);
+
+test('v4 document with numeric floor completes only historical/private migration', async () => {
+  const extra = cooperativeOptions();
+  const s = await open(true, extra);
+  await s.reserve(input());
+  s.close();
+  floor = 0;
+  (await open(false, extra)).close();
+  expect(floor).toEqual(typedFloor(1));
+  const { document } = await mixedDocument(extra);
+  floor = document.sequence;
+  const before = fs.readFileSync(filename());
+  await expect(open(false, extra)).rejects.toThrow();
+  expect(fs.readFileSync(filename())).toEqual(before);
+});
+
+test('typed floor repairs a postrename lag but ahead floor or typed-floor old document refuses before writes', async () => {
+  const { extra, document } = await mixedDocument();
+  floor = typedFloor(document.sequence - 1);
+  (await open(false, extra)).close();
+  expect(floor).toEqual(typedFloor(document.sequence));
+  floor = typedFloor(document.sequence + 1);
+  let before = fs.readFileSync(filename());
+  await expect(open(false, extra)).rejects.toThrow();
+  expect(fs.readFileSync(filename())).toEqual(before);
+  await writeDocument({
+    version: 2,
+    binding: options.binding,
+    walletId: options.walletId,
+    lease: '7'.repeat(64),
+    sequence: 0,
+    entries: [],
+  });
+  floor = typedFloor(0);
+  before = fs.readFileSync(filename());
+  await expect(open(false, extra)).rejects.toThrow();
+  expect(fs.readFileSync(filename())).toEqual(before);
+});
+
+test('cooperative existing missing floor and new document with existing floor both refuse', async () => {
+  const extra = cooperativeOptions();
+  floor = typedFloor(0);
+  await expect(open(true, extra)).rejects.toThrow();
+  expect(fs.readdirSync(options.directory)).toEqual([]);
+  floor = null;
+  (await open(true, extra)).close();
+  floor = null;
+  const before = fs.readFileSync(filename());
+  await expect(open(false, extra)).rejects.toThrow();
+  expect(fs.readFileSync(filename())).toEqual(before);
+});
+
+test.each(['lower', 'higher', 'wrong-wallet', 'wrong-binding', 'extra', 'getter', 'proxy'])(
+  'ordinary cooperative attest refuses %s floor without invoking accessors',
+  async (kind) => {
+    const s = await open(true, cooperativeOptions());
+    await s.reserve(input());
+    const getter = jest.fn();
+    floor = typedFloor(1);
+    if (kind === 'lower') floor.sequence = 0;
+    if (kind === 'higher') floor.sequence = 2;
+    if (kind === 'wrong-wallet') floor.walletId = 'a'.repeat(64);
+    if (kind === 'wrong-binding') floor.binding = 'b'.repeat(64);
+    if (kind === 'extra') floor.extra = true;
+    if (kind === 'getter')
+      Object.defineProperty(floor, 'sequence', { enumerable: true, get: getter });
+    if (kind === 'proxy')
+      floor = new Proxy(floor, {
+        // The trusted async producer's Promise resolution checks .then itself.
+        get: (target, key) => (key === 'then' ? undefined : getter()),
+        ownKeys: getter,
+        getPrototypeOf: getter,
+      });
+    await expect(s.inspect()).rejects.toThrow();
+    expect(getter).not.toHaveBeenCalled();
+    expect(s.signal.aborted).toBe(true);
+  }
+);
+
+test('mixed origins conflict together but only private rows enter receipts/recovery/counts', async () => {
+  const { extra, document } = await mixedDocument();
+  const s = await open(false, extra);
+  expect(await s.inspect()).toEqual({ held: 0, signing: 1, abandoned: 0, legacy: 0 });
+  await expect(s.reserve(input(2))).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+  });
+  await expect(s.assertAvailable(selectedInput(3))).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+  });
+  await expect(s.abandonRecovered(selectedInput(3))).rejects.toMatchObject({
+    code: 'RAILGUN_RESERVATION_NOT_RECOVERABLE',
+  });
+  await s.withSigningRecovery(async (records) => {
+    expect(records).toHaveLength(1);
+    expect(records[0].entry.facts).toEqual(input());
+    expect(records[0].entry).not.toHaveProperty('origin');
+    expect((await s.assertReceipt(records[0].receipt)).state).toBe('signing');
+  });
+  const receipt = await s.reserve(input(4));
+  await s.abandon(receipt);
+  const next = await readDocument();
+  expect(next.entries.slice(0, 3)).toEqual(document.entries);
+  expect(next.sequence).toBe(document.sequence + 2);
+});
+
+test('cooperative availability budgets future transitions even with fewer than 512 rows', async () => {
+  const extra = cooperativeOptions();
+  const entries = Array.from({ length: 341 }, (_, i) => ({
+    id: (i + 1).toString(16).padStart(64, '0'),
+    origin: 'relay-local-v4',
+    facts: relayInput(i + 1),
+    state: 'held',
+    signing: null,
+  }));
+  await writeDocument({
+    version: 4,
+    binding: options.binding,
+    walletId: options.walletId,
+    lease: '7'.repeat(64),
+    sequence: 341,
+    entries,
+  });
+  floor = typedFloor(341);
+  const s = await open(false, extra);
+  await expect(s.assertAvailable(selectedInput(400))).rejects.toMatchObject({
+    code: 'RAILGUN_RESERVATIONS_CAPACITY',
+  });
+  await expect(s.reserve(input(400))).rejects.toMatchObject({
+    code: 'RAILGUN_RESERVATIONS_CAPACITY',
+  });
+  expect(s.signal.aborted).toBe(false);
+});
+
+test('close retains same-path writer ownership until an admitted floor read settles', async () => {
+  let gate;
+  const entered = deferred();
+  const s = await open(true, {
+    readFloor: async () => {
+      if (gate) {
+        entered.resolve();
+        await gate.promise;
+      }
+      return floor;
+    },
+  });
+  gate = deferred();
+  const pending = s.inspect();
+  const refused = expect(pending).rejects.toThrow();
+  await entered.promise;
+  s.close();
+  await expect(open(false)).rejects.toThrow();
+  gate.resolve();
+  await refused;
+  expect(await (await open(false)).inspect()).toEqual({
+    held: 0,
+    signing: 0,
+    abandoned: 0,
+    legacy: 0,
+  });
+});
+
+test('close during opening retains same-path ownership until original floor callback settles', async () => {
+  const gate = deferred(),
+    entered = deferred();
+  const pending = open(true, {
+    readFloor: async () => {
+      entered.resolve();
+      await gate.promise;
+      return floor;
+    },
+  });
+  const refused = expect(pending).rejects.toThrow();
+  await entered.promise;
+  const subject = require('../networks/privacy-context').getPrivacyContext(options.handle).subject;
+  scope.close();
+  scope = createPrivacyScope({
+    profileId: 'reservation-test',
+    signal: new AbortController().signal,
+  });
+  options.handle = scope.getContext(subject);
+  await expect(open()).rejects.toThrow();
+  gate.resolve();
+  await refused;
+  await open();
+});
+
+test('recovery keeps phase and writer while unawaited nested admitted work drains', async () => {
+  let hold = false;
+  const gate = deferred(),
+    entered = deferred(),
+    release = jest.fn();
+  const s = await open(true, {
+    claimRecovery: () => ({ assertCurrent() {}, release }),
+    readFloor: async () => {
+      if (hold) {
+        entered.resolve();
+        await gate.promise;
+      }
+      return floor;
+    },
+  });
+  let nested;
+  const pending = s.withSigningRecovery(async () => {
+    hold = true;
+    nested = s.inspect().catch((error) => error);
+    await entered.promise;
+  });
+  await expect(pending).rejects.toThrow();
+  expect(release).not.toHaveBeenCalled();
+  await expect(open(false)).rejects.toThrow();
+  gate.resolve();
+  expect(await nested).toBeInstanceOf(Error);
+  expect(release).toHaveBeenCalledTimes(1);
+  await open(false);
+});
+
+test.each(['thenable', 'constructor'])(
+  'unobservable %s recovery callback permanently retains phase and path',
+  async (kind) => {
+    const release = jest.fn(),
+      then = jest.fn();
+    const s = await open(true, { claimRecovery: () => ({ assertCurrent() {}, release }) });
+    let result;
+    if (kind === 'thenable') result = { then };
+    else {
+      result = Promise.resolve();
+      Object.defineProperty(result, 'constructor', {
+        get() {
+          throw Error('unobservable');
+        },
+      });
+    }
+    await expect(s.withSigningRecovery(() => result)).rejects.toMatchObject({
+      code: 'RAILGUN_RESERVATIONS_DRAIN_UNOBSERVED',
+    });
+    expect(then).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    await expect(open(false)).rejects.toThrow();
+  }
+);
+
+test.each([
+  'reserve',
+  'assertAvailable',
+  'assertReceipt',
+  'markSigning',
+  'abandon',
+  'abandonRecovered',
+  'withSigningRecovery',
+])(
+  'close during admitted %s preserves writer until original floor read settles',
+  async (method) => {
+    let held = false;
+    const gate = deferred(),
+      entered = deferred(),
+      release = jest.fn();
+    const s = await open(true, {
+      readFloor: async () => {
+        if (held) {
+          entered.resolve();
+          await gate.promise;
+        }
+        return floor;
+      },
+      claimRecovery: () => ({ assertCurrent() {}, release }),
+    });
+    const receipt = await s.reserve(input());
+    held = true;
+    const pending =
+      method === 'reserve'
+        ? s.reserve(input(2))
+        : method === 'assertAvailable'
+          ? s.assertAvailable(selectedInput(2))
+          : method === 'assertReceipt'
+            ? s.assertReceipt(receipt)
+            : method === 'markSigning'
+              ? s.markSigning(receipt, signing())
+              : method === 'abandon'
+                ? s.abandon(receipt)
+                : method === 'abandonRecovered'
+                  ? s.abandonRecovered(selectedInput())
+                  : s.withSigningRecovery(async () => {});
+    const refused = expect(pending).rejects.toThrow();
+    await entered.promise;
+    s.close();
+    expect(release).not.toHaveBeenCalled();
+    await expect(open(false)).rejects.toThrow();
+    gate.resolve();
+    await refused;
+    if (['abandonRecovered', 'withSigningRecovery'].includes(method))
+      expect(release).toHaveBeenCalledTimes(1);
+    await open(false);
+  }
+);
+
+test('post-write pending floor completion retains exclusion after close until original settlement', async () => {
+  let held = false;
+  const gate = deferred(),
+    entered = deferred();
+  const s = await open(true, {
+    advanceFloor: async (value) => {
+      if (held) {
+        entered.resolve();
+        await gate.promise;
+      }
+      floor = value;
+    },
+  });
+  held = true;
+  const pending = s.reserve(input()),
+    refused = expect(pending).rejects.toThrow();
+  await entered.promise;
+  expect((await readDocument()).sequence).toBe(1);
+  s.close();
+  await expect(open(false)).rejects.toThrow();
+  gate.resolve();
+  await refused;
+  expect((await (await open(false)).inspect()).held).toBe(1);
+});
+
+test('unobservable floor during recovery retains the account phase and writer even after local rejection', async () => {
+  let broken = false;
+  const release = jest.fn();
+  const s = await open(true, {
+    readFloor: () => {
+      const value = Promise.resolve(floor);
+      if (broken)
+        Object.defineProperty(value, 'constructor', {
+          get() {
+            throw Error('unknown');
+          },
+        });
+      return value;
+    },
+    claimRecovery: () => ({ assertCurrent() {}, release }),
+  });
+  await s.reserve(input());
+  broken = true;
+  await expect(s.abandonRecovered(selectedInput())).rejects.toMatchObject({
+    code: 'RAILGUN_RESERVATIONS_DRAIN_UNOBSERVED',
+  });
+  expect(release).not.toHaveBeenCalled();
+  await expect(open(false)).rejects.toThrow();
+});
+
+test('ordinary synchronous legacy floor, advance and recovery return values remain supported', async () => {
+  const s = await open(true, {
+    readFloor: () => floor,
+    advanceFloor: (value) => {
+      floor = value;
+    },
+  });
+  const receipt = await s.reserve(input());
+  expect((await s.assertReceipt(receipt)).state).toBe('held');
+  expect(await s.withSigningRecovery(() => ({ done: true }))).toEqual({ done: true });
+  await s.abandon(receipt);
+  expect(floor).toBe(2);
+});
+
+test.each(['own-getter', 'inherited-getter', 'inherited-then', 'proxy-prototype'])(
+  'synchronous %s completion refuses without invoking accessors and retains owner',
+  async (kind) => {
+    const effect = jest.fn(),
+      release = jest.fn();
+    const s = await open(true, { claimRecovery: () => ({ assertCurrent() {}, release }) });
+    let result;
+    if (kind === 'own-getter') result = Object.defineProperty({}, 'then', { get: effect });
+    if (kind === 'inherited-getter')
+      result = Object.create(Object.defineProperty({}, 'then', { get: effect }));
+    if (kind === 'inherited-then') result = Object.create({ then: effect });
+    if (kind === 'proxy-prototype')
+      result = Object.create(
+        new Proxy({}, { get: effect, getOwnPropertyDescriptor: effect, getPrototypeOf: effect })
+      );
+    await expect(s.withSigningRecovery(() => result)).rejects.toMatchObject({
+      code: 'RAILGUN_RESERVATIONS_DRAIN_UNOBSERVED',
+    });
+    expect(effect).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    await expect(open(false)).rejects.toThrow();
+  }
+);
+
+test('synchronous callback exception is settled, closes recovery and releases phase and writer', async () => {
+  const release = jest.fn(),
+    error = Error('completed failure');
+  const s = await open(true, { claimRecovery: () => ({ assertCurrent() {}, release }) });
+  await expect(
+    s.withSigningRecovery(() => {
+      throw error;
+    })
+  ).rejects.toBe(error);
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(s.signal.aborted).toBe(true);
+  await open(false);
 });

@@ -214,8 +214,31 @@ function createRailgunReservationLedgerCodec(options) {
     decode(text);
     return text;
   }
+  function assertPrivateAvailable(text, facts) {
+    const value = decode(text);
+    check(value.version === 4);
+    // Only selected input identity is needed; no operation proposal is created.
+    exact(facts, ['tree', 'nullifier']);
+    check(integer(facts.tree, 65535) && field(facts.nullifier));
+    check(
+      !value.entries.some(
+        (entry) =>
+          !terminal(entry) &&
+          entry.facts.tree === facts.tree &&
+          entry.facts.nullifier === facts.nullifier
+      ),
+      'RAILGUN_PRIVATE_INPUT_RESERVED'
+    );
+    check(
+      value.entries.length < MAX_ENTRIES &&
+        value.sequence + 2 + value.entries.reduce((sum, entry) => sum + costs(entry)[1], 0) <=
+          MAX_SEQUENCE,
+      'RAILGUN_RESERVATIONS_CAPACITY'
+    );
+  }
   const methods = {
     decode,
+    assertPrivateAvailable,
     create(lease) {
       check(digest(lease));
       return encode({ version: 4, binding, walletId, lease, sequence: 0, entries: [] });

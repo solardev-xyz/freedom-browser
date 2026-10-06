@@ -5,6 +5,9 @@
 const fs = require('fs'),
   path = require('path');
 const { randomBytes } = require('crypto');
+const { types } = require('util');
+const nativeThen = Promise.prototype.then;
+const { createRailgunReservationLedgerCodec } = require('./railgun-reservation-ledger');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-storage');
 const RECORD = 'railgun-private-reservations-v1',
@@ -82,7 +85,25 @@ async function createRailgunPrivateReservations({
   advanceFloor,
   claimRecovery,
   authorizeSigning,
+  enrollment,
 }) {
+  // The optional v4 mode is internal and inactive until enrollment wires it.
+  // Authenticate the fixed issuer before deriving a path or creating a scope.
+  const cooperative = enrollment !== undefined;
+  function assertEnrollment() {
+    if (!cooperative) return;
+    require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
+    check(
+      enrollment.directory === directory &&
+        enrollment.binding === binding &&
+        enrollment.descriptor.walletId === walletId &&
+        enrollment.getContext('storage', RECORD + ':' + walletId) === handle
+    );
+  }
+  assertEnrollment();
+  const codec = cooperative
+    ? createRailgunReservationLedgerCodec({ enrollment, binding, walletId })
+    : null;
   const context = getPrivacyContext(handle),
     subject = context.subject;
   check(digest(binding) && digest(walletId) && typeof create === 'boolean');
@@ -118,19 +139,98 @@ async function createRailgunPrivateReservations({
   let storage,
     current,
     closed = false,
-    busy = false;
+    busy = false,
+    pending = 1, // Opening owns the path before its first external await.
+    unknown = false,
+    recovery = null;
+  function finish() {
+    if (closed && !pending && !unknown) owners.delete(filename);
+  }
+  function retain() {
+    unknown = true;
+    close();
+    return fail('RAILGUN_RESERVATIONS_DRAIN_UNOBSERVED');
+  }
+  function settle(group) {
+    pending--;
+    if (group) {
+      group.pending--;
+      if (group.done && !group.pending && !unknown) group.phase.release();
+    }
+    finish();
+  }
+  // Observe original work with the intrinsic Promise operation, never a caller's
+  // then property. Failed observation permanently retains the writer and phase.
+  function observe(result, group = null) {
+    if (!types.isPromise(result) || types.isProxy(result)) throw retain();
+    try {
+      nativeThen.call(
+        result,
+        () => settle(group),
+        () => settle(group)
+      );
+    } catch {
+      throw retain();
+    }
+    return result;
+  }
+  async function admitted(use) {
+    active();
+    const group = recovery;
+    pending++;
+    if (group) group.pending++;
+    try {
+      return observe(use(), group);
+    } catch (error) {
+      if (!unknown) settle(group);
+      throw error;
+    }
+  }
+  // A synchronous ordinary result is already complete. Inspect descriptor chains
+  // without invoking accessors; thenables/unknown chains cannot prove completion.
+  function completed(value) {
+    let at = value;
+    for (let depth = 0; at !== null && ['object', 'function'].includes(typeof at); depth++) {
+      if (depth === 16 || types.isProxy(at)) throw retain();
+      const descriptor = Object.getOwnPropertyDescriptor(at, 'then');
+      if (descriptor) {
+        if (!Object.hasOwn(descriptor, 'value') || typeof descriptor.value === 'function')
+          throw retain();
+        return;
+      }
+      at = Object.getPrototypeOf(at);
+    }
+  }
+  // Observe actual native promises through the intrinsic operation. The envelope
+  // prevents forwarding a floor value through a second thenable assimilation.
+  function original(use) {
+    const result = use();
+    if (!types.isPromise(result) || types.isProxy(result)) {
+      completed(result);
+      return Promise.resolve({ value: result });
+    }
+    return new Promise((resolve, reject) => {
+      try {
+        nativeThen.call(result, (value) => resolve({ value }), reject);
+      } catch {
+        reject(retain());
+      }
+    });
+  }
   function active() {
     check(!closed);
     getPrivacyContext(handle);
+    assertEnrollment();
   }
   function close() {
     if (closed) return;
     closed = true;
-    owners.delete(filename);
     scope.close();
+    finish();
   }
   scope.signal.addEventListener('abort', close, { once: true });
   function decode(text) {
+    if (cooperative) return codec.decode(text);
     check(typeof text === 'string' && Buffer.byteLength(text) <= 512 * 1024);
     const v = JSON.parse(text);
     check(exact(v, ['version', 'binding', 'walletId', 'lease', 'sequence', 'entries']));
@@ -169,19 +269,60 @@ async function createRailgunPrivateReservations({
     check(v.sequence === v.entries.length + transitions);
     return { ...v, version: 2 };
   }
-  async function floor() {
-    const value = await readFloor();
-    active();
-    check(value === null || integer(value, MAX_SEQUENCE));
-    return value;
+  function typedFloor(sequence) {
+    return { version: 4, binding, walletId, sequence };
   }
+  function isTypedFloor(value) {
+    if (!value || typeof value !== 'object' || types.isProxy(value)) return false;
+    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const keys = ['version', 'binding', 'walletId', 'sequence'];
+    if (Reflect.ownKeys(value).length !== keys.length) return false;
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value'))
+        return false;
+    }
+    return (
+      value.version === 4 &&
+      value.binding === binding &&
+      value.walletId === walletId &&
+      integer(value.sequence, MAX_SEQUENCE)
+    );
+  }
+  async function floor() {
+    const { value } = await original(readFloor);
+    active();
+    check(value === null || integer(value, MAX_SEQUENCE) || (cooperative && isTypedFloor(value)));
+    return cooperative && isTypedFloor(value) ? Object.freeze(typedFloor(value.sequence)) : value;
+  }
+  async function persistFloor() {
+    await original(() =>
+      advanceFloor(cooperative ? typedFloor(current.sequence) : current.sequence)
+    );
+  }
+  const isPrivate = (entry) => Boolean(entry) && (!cooperative || entry.origin === 'private');
+  const privateEntry = (entry) =>
+    !cooperative
+      ? entry
+      : Object.freeze({
+          id: entry.id,
+          facts: entry.facts,
+          state: entry.state,
+          signing: entry.signing,
+        });
+  const terminal = (entry) =>
+    ['abandoned', 'cancelled-unsigned', 'discarded-signed'].includes(entry.state);
   async function attest() {
     active();
     const value = decode(await storage.get(RECORD));
     active();
     check(value.lease === lease && JSON.stringify(value) === JSON.stringify(current));
     const minimum = await floor();
-    check(minimum !== null && value.sequence >= minimum);
+    check(
+      cooperative
+        ? isTypedFloor(minimum) && minimum.sequence === value.sequence
+        : minimum !== null && value.sequence >= minimum
+    );
     return value;
   }
   try {
@@ -199,17 +340,35 @@ async function createRailgunPrivateReservations({
         text === null
           ? { version: 2, binding, walletId, lease, sequence: 0, entries: [] }
           : decode(text);
-      check(minimum === null || value.sequence >= minimum);
-      current = { ...value, lease };
+      if (cooperative) {
+        check(text === null ? minimum === null : minimum !== null);
+        if (isTypedFloor(minimum)) {
+          check(value.version === 4 && value.sequence >= minimum.sequence);
+        } else if (minimum !== null) {
+          check(integer(minimum, MAX_SEQUENCE) && value.sequence >= minimum);
+          check(
+            value.version !== 4 ||
+              value.entries.every((entry) =>
+                ['private', 'relay-v3-never-signed'].includes(entry.origin)
+              )
+          );
+        }
+        current = codec.decode(text === null ? codec.create(lease) : codec.upgrade(text, lease));
+      } else {
+        check(minimum === null || value.sequence >= minimum);
+        current = { ...value, lease };
+      }
       return JSON.stringify(current);
     });
     active();
-    await advanceFloor(current.sequence);
+    await persistFloor();
     active();
     await attest();
   } catch (error) {
     close();
     throw error;
+  } finally {
+    settle(null);
   }
   async function reserve(input) {
     active();
@@ -221,14 +380,17 @@ async function createRailgunPrivateReservations({
       if (
         current.entries.some(
           (e) =>
-            e.state !== 'abandoned' &&
-            e.facts.tree === value.tree &&
-            e.facts.nullifier === value.nullifier
+            !terminal(e) && e.facts.tree === value.tree && e.facts.nullifier === value.nullifier
         )
       )
         throw fail('RAILGUN_PRIVATE_INPUT_RESERVED');
-      if (current.entries.length === MAX_ENTRIES) throw fail('RAILGUN_RESERVATIONS_CAPACITY');
-      const entry = Object.freeze({
+      if (cooperative)
+        codec.assertPrivateAvailable(JSON.stringify(current), {
+          tree: value.tree,
+          nullifier: value.nullifier,
+        });
+      else if (current.entries.length === MAX_ENTRIES) throw fail('RAILGUN_RESERVATIONS_CAPACITY');
+      let entry = Object.freeze({
         id: randomBytes(32).toString('hex'),
         facts: value,
         state: 'held',
@@ -238,11 +400,14 @@ async function createRailgunPrivateReservations({
         active();
         const old = decode(text);
         check(JSON.stringify(old) === JSON.stringify(current));
-        current = { ...old, sequence: old.sequence + 1, entries: [...old.entries, entry] };
+        current = cooperative
+          ? codec.decode(codec.apply(text, { type: 'reserve-private', id: entry.id, facts: value }))
+          : { ...old, sequence: old.sequence + 1, entries: [...old.entries, entry] };
+        entry = current.entries[current.entries.length - 1];
         return JSON.stringify(current);
       });
       active();
-      await advanceFloor(current.sequence);
+      await persistFloor();
       active();
       await attest();
       const receipt = Object.freeze({});
@@ -260,7 +425,7 @@ async function createRailgunPrivateReservations({
     active();
     check(!busy);
     const entry = receipts.get(receipt);
-    check(entry);
+    check(entry && isPrivate(entry));
     receiptOrigins.get(receipt)?.assertCurrent();
     busy = true;
     try {
@@ -268,7 +433,7 @@ async function createRailgunPrivateReservations({
       if (!value.entries.some((e) => JSON.stringify(e) === JSON.stringify(entry)))
         throw fail('RAILGUN_RESERVATION_RECEIPT_STALE');
       receiptOrigins.get(receipt)?.assertCurrent();
-      return entry;
+      return privateEntry(entry);
     } catch (error) {
       if (error.code !== 'RAILGUN_RESERVATION_RECEIPT_STALE') close();
       throw error;
@@ -279,24 +444,33 @@ async function createRailgunPrivateReservations({
   // The complete state comparison is the CAS. Persist first, advance the floor,
   // then authenticate exact read-back before exposing a new state receipt.
   async function transition(entry, state, signing, assertCurrent = active) {
-    check(entry.state === 'held' && ['signing', 'abandoned'].includes(state));
-    const next = Object.freeze({ ...entry, state, signing });
+    check(isPrivate(entry) && entry.state === 'held' && ['signing', 'abandoned'].includes(state));
+    let next = Object.freeze({ ...entry, state, signing });
     await storage.update(RECORD, (text) => {
       active();
       assertCurrent();
       const old = decode(text);
       check(JSON.stringify(old) === JSON.stringify(current));
       check(old.entries.some((e) => JSON.stringify(e) === JSON.stringify(entry)));
-      current = {
-        ...old,
-        sequence: old.sequence + 1,
-        entries: old.entries.map((e) => (e.id === entry.id ? next : e)),
-      };
+      current = cooperative
+        ? codec.decode(
+            codec.apply(text, {
+              type: state === 'signing' ? 'mark-private-signing' : 'abandon-private',
+              id: entry.id,
+              ...(state === 'signing' ? { signing } : {}),
+            })
+          )
+        : {
+            ...old,
+            sequence: old.sequence + 1,
+            entries: old.entries.map((e) => (e.id === entry.id ? next : e)),
+          };
+      next = current.entries.find((e) => e.id === entry.id);
       return JSON.stringify(current);
     });
     active();
     assertCurrent();
-    await advanceFloor(current.sequence);
+    await persistFloor();
     active();
     await attest();
     assertCurrent();
@@ -310,7 +484,7 @@ async function createRailgunPrivateReservations({
     active();
     check(!busy);
     const entry = receipts.get(receipt);
-    check(entry && entry.state === 'held');
+    check(entry && isPrivate(entry) && entry.state === 'held');
     busy = true;
     try {
       const value = await attest();
@@ -341,7 +515,9 @@ async function createRailgunPrivateReservations({
       const value = await attest();
       const entry = value.entries.find(
         (e) =>
-          e.state === 'held' && Object.keys(wanted).every((key) => e.facts[key] === wanted[key])
+          isPrivate(e) &&
+          e.state === 'held' &&
+          Object.keys(wanted).every((key) => e.facts[key] === wanted[key])
       );
       if (!entry) throw fail('RAILGUN_RESERVATION_NOT_RECOVERABLE');
       await transition(entry, 'abandoned', null, () => phase.assertCurrent());
@@ -350,7 +526,7 @@ async function createRailgunPrivateReservations({
       throw error;
     } finally {
       busy = false;
-      phase.release();
+      if (!unknown) phase.release();
     }
   }
   // Trusted controller callback: expected external refusals return values, all
@@ -362,6 +538,7 @@ async function createRailgunPrivateReservations({
     check(!busy && typeof use === 'function');
     check(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 175000);
     const phase = claimRecovery(),
+      group = { phase, pending: 0, done: false },
       controller = new AbortController(),
       issued = [];
     const signal = AbortSignal.any([scope.signal, controller.signal]);
@@ -379,20 +556,22 @@ async function createRailgunPrivateReservations({
       const value = await attest();
       assertCurrent();
       const records = value.entries
-        .filter((e) => e.state === 'signing')
+        .filter((e) => isPrivate(e) && e.state === 'signing')
         .map((entry) => {
           const receipt = Object.freeze({});
           receipts.set(receipt, entry);
           issued.push(receipt);
           receiptOrigins.set(receipt, { kind: 'recovery', assertCurrent });
-          return Object.freeze({ receipt, entry });
+          return Object.freeze({ receipt, entry: privateEntry(entry) });
         });
       busy = false;
-      const result = await use(Object.freeze(records), context);
+      recovery = group;
+      const { value: result } = await original(() => use(Object.freeze(records), context));
       check(!busy);
       assertCurrent();
       await attest();
       assertCurrent();
+      completed(result);
       return result;
     } catch (error) {
       close();
@@ -405,7 +584,9 @@ async function createRailgunPrivateReservations({
         receiptOrigins.delete(receipt);
       }
       busy = false;
-      phase.release();
+      recovery = null;
+      group.done = true;
+      if (!group.pending && !unknown) phase.release();
     }
   }
   // Local read only: do this before disclosing an operation to POI/RPC.
@@ -420,13 +601,18 @@ async function createRailgunPrivateReservations({
       if (
         value.entries.some(
           (e) =>
-            e.state !== 'abandoned' &&
+            !terminal(e) &&
             e.facts.tree === selected.tree &&
             e.facts.nullifier === selected.nullifier
         )
       )
         throw fail('RAILGUN_PRIVATE_INPUT_RESERVED');
-      if (value.entries.length === MAX_ENTRIES) throw fail('RAILGUN_RESERVATIONS_CAPACITY');
+      if (cooperative)
+        codec.assertPrivateAvailable(JSON.stringify(value), {
+          tree: selected.tree,
+          nullifier: selected.nullifier,
+        });
+      else if (value.entries.length === MAX_ENTRIES) throw fail('RAILGUN_RESERVATIONS_CAPACITY');
     } catch (error) {
       if (!['RAILGUN_PRIVATE_INPUT_RESERVED', 'RAILGUN_RESERVATIONS_CAPACITY'].includes(error.code))
         close();
@@ -442,7 +628,7 @@ async function createRailgunPrivateReservations({
     try {
       const value = await attest();
       const counts = { held: 0, signing: 0, abandoned: 0, legacy: 0 };
-      for (const entry of value.entries) counts[entry.state]++;
+      for (const entry of value.entries) if (isPrivate(entry)) counts[entry.state]++;
       return Object.freeze(counts);
     } catch (error) {
       close();
@@ -452,21 +638,23 @@ async function createRailgunPrivateReservations({
     }
   }
   const instance = Object.freeze({
-    reserve,
-    assertAvailable,
-    assertReceipt,
-    markSigning: (receipt, evidence, permit) =>
-      changeHeld(receipt, 'signing', signingFacts(evidence), permit),
-    abandon: (receipt) => changeHeld(receipt, 'abandoned'),
-    abandonRecovered,
-    withSigningRecovery,
+    reserve: (input) => admitted(() => reserve(input)),
+    assertAvailable: (input) => admitted(() => assertAvailable(input)),
+    assertReceipt: (receipt) => admitted(() => assertReceipt(receipt)),
+    markSigning: (receipt, evidence, permit) => {
+      const checked = signingFacts(evidence);
+      return admitted(() => changeHeld(receipt, 'signing', checked, permit));
+    },
+    abandon: (receipt) => admitted(() => changeHeld(receipt, 'abandoned')),
+    abandonRecovered: (input) => admitted(() => abandonRecovered(input)),
+    withSigningRecovery: (use, options) => admitted(() => withSigningRecovery(use, options)),
     assertReceiptContext: (receipt, kind) => {
       active();
       const origin = receiptOrigins.get(receipt);
-      check(origin && origin.kind === kind && receipts.has(receipt));
+      check(origin && origin.kind === kind && isPrivate(receipts.get(receipt)));
       origin.assertCurrent();
     },
-    inspect,
+    inspect: () => admitted(() => inspect()),
     close,
     signal: scope.signal,
   });
