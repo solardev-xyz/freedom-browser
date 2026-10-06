@@ -1,0 +1,40 @@
+{
+  "kind": "Derived archive index",
+  "sourceCommit": "41472ed47c104d5be1fef830203971a8c62f9b29",
+  "qualification": "Fixed public-vector proof-to-wire composition with recorded native and engineering-review evidence",
+  "artifacts": {
+    "report.json": {
+      "kind": "Exact original public output",
+      "bytes": 79715,
+      "sha256": "d9cf78c5f112d9322767c4f703618b80e30bd759bc65ea9648fae927b83422e1"
+    },
+    "public-case.json": {
+      "kind": "Exact original public output",
+      "bytes": 5285,
+      "sha256": "3b415653aa2a797af98c41f7f56bb60b3dd877cca6bd0f47904633876aad3b38"
+    },
+    "signed-quote.json": {
+      "kind": "Exact original public output",
+      "bytes": 1205,
+      "sha256": "48293cc1fa869217dc9138417ca116e9351386d6c03c5c0ab3bb6dfca9412a85"
+    },
+    "PROVENANCE.json": {
+      "kind": "Derived publication artifact",
+      "bytes": 23255,
+      "sha256": "7319770216ad501f966ec17578e6b935cc26d251cda1731a35b8b5789e9eeefe"
+    },
+    "AUDIT.md": {
+      "kind": "Derived publication artifact",
+      "bytes": 4269,
+      "sha256": "108c5c3d4c05a4392f4cf4c9b8d2d0732c76512cc817ea820bb9fe05c78a0380"
+    },
+    "OVERVIEW.md": {
+      "kind": "Derived publication artifact",
+      "bytes": 3933,
+      "sha256": "b062eea74d2c252c6ea8d470ff586d8c0e1d7dc13acacf4eafe6d217a8318eb3"
+    }
+  },
+  "originalObservationSha256": "54c390fcb2c3c939ee4fed8aacf9f70ecaec5e5208e8badd8b50b4a4fba92e9d",
+  "originalSourceFreezeSha256": "09edbc7f99fec0ae7483c7d6cfb32741bc7be394b58c661d15db7e795dfc274b",
+  "reverificationScope": "Public proofs/calldata and signed quote bytes are retained. No standalone re-verifier is supplied in this archive; cryptographic replay requires separately reviewed pinned code/artifacts. The ephemeral wire transcript and historical freshness cannot be reconstructed from this archive."
+}

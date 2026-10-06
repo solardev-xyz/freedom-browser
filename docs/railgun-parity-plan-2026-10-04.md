@@ -7,6 +7,10 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [public proof-to-wire composition](qualification/railgun-relay-proof-wire-2026-10-06/OVERVIEW.md) now passes one native four-utility run at `41472ed4`: synthetic quote admission precedes proving, actual fee/pre-transaction POI data travels through selected upstream COMMON encryption, and a separate verifier checks reconstructed decrypted input. Exact public proof/calldata and quote bytes are retained. Root checks pass 276 tests in eight suites and strict lint; no full regression or live relay qualification follows. The standalone public cryptographic reverifier remains pending.
+
+The [handoff model](railgun-relay-handoff-model-2026-10-06.md) at `49cf9e5e` separately passes 30 unit tests and eleven detached distinguishing mutants. Its fake ports model a single uncertain attempt and original-promise drainage. Genuine fee/operation authority, an authenticated durable attempt journal, confined transport and specifically authorized live qualification remain to be implemented or qualified.
+
 A separate [mathematical key-admission candidate](railgun-relay-key-admission-2026-10-06.md)
 passes 17 offline checks, including a genuine key outside the earlier fixture
 registry, torsion/mixed-torsion refusals, separate signature R/S checks and actual
@@ -57,9 +61,9 @@ audit. External services remain synthetic. This qualifies callback cancellation
 after verifier exit, not live-child cancellation or physical transport drainage.
 The standalone trusted-host package does not export this recovery authority.
 
-Next is actual fee/proof-to-wire composition, followed by production key and fee
-admission,
-pre-transaction POI authority, durable uncertainty and confined transport. The existing
+Next are production key and fee admission, pre-transaction POI authority,
+durable uncertainty and confined transport. The local composition above supplies
+the earlier missing proof-to-wire prerequisite. The existing
 broadcaster still delegates to EOA self-broadcast. Specifically authorized
 live private/service qualification, return-to-origin spending policy, generic
 Host support, platform/release work and product UX remain separate gates.

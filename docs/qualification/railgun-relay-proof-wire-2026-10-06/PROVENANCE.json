@@ -1,0 +1,366 @@
+{
+  "kind": "Derived public provenance; original records remain identified by hashes, not represented as byte-exact copies here.",
+  "sourceCommit": "41472ed47c104d5be1fef830203971a8c62f9b29",
+  "originalRecords": {
+    "railgun-proof-to-wire-native-root-observation-final-oct6-a.json": {
+      "originalName": "railgun-proof-to-wire-native-root-observation-final-oct6-a.json",
+      "bytes": 4927,
+      "sha256": "54c390fcb2c3c939ee4fed8aacf9f70ecaec5e5208e8badd8b50b4a4fba92e9d"
+    },
+    "railgun-proof-to-wire-native-root-observation-oct6-a.json": {
+      "originalName": "railgun-proof-to-wire-native-root-observation-oct6-a.json",
+      "bytes": 4258,
+      "sha256": "84fc0819056a9a52d6a0b09455a4c49d95c09bd258c807c414eefeaca4ce8951"
+    },
+    "railgun-proof-to-wire-native-root-freeze-oct6-a.json": {
+      "originalName": "railgun-proof-to-wire-native-root-freeze-oct6-a.json",
+      "bytes": 1797005,
+      "sha256": "09edbc7f99fec0ae7483c7d6cfb32741bc7be394b58c661d15db7e795dfc274b"
+    },
+    "railgun-proof-to-wire-native-request-oct6-a.json": {
+      "originalName": "railgun-proof-to-wire-native-request-oct6-a.json",
+      "bytes": 7474,
+      "sha256": "d2639cc7dafe16361b2a4f109e632644146b87ae9bb4406503dbe5b63497263f"
+    },
+    "railgun-proof-to-wire-root-checks-oct6.json": {
+      "originalName": "railgun-proof-to-wire-root-checks-oct6.json",
+      "bytes": 2448,
+      "sha256": "4faa73f36a2b7530e12a1fff7a3db7877dc2ed0fb10ca99868cfced728b03d66"
+    },
+    "RESULT.json": {
+      "originalName": "RESULT.json",
+      "bytes": 875,
+      "sha256": "dd11a31604b6bb79d3ca1a094cc5eb4b57f4fa9a0780edb24c275f0453607bc8"
+    },
+    "POST-CHECK.json": {
+      "originalName": "POST-CHECK.json",
+      "bytes": 24,
+      "sha256": "1ae748d5796cc995906ddf0fba5e5626f9c1c6ac79cec8fb465106e92254a77b"
+    },
+    "process-000.json": {
+      "originalName": "process-000.json",
+      "bytes": 188,
+      "sha256": "a4d2bfac79217761ec6b77d6ae7ac97cd2a4c1be72946544f868daea36b2efe5"
+    },
+    "process-001.json": {
+      "originalName": "process-001.json",
+      "bytes": 185,
+      "sha256": "47079c68908a3e1e362d97d5ef38a381a53b6e8d516c34cd2be7ef7b0cd70b99"
+    },
+    "child.log": {
+      "originalName": "child.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "processAttribution": {
+    "prepare": {
+      "originalSession": 98360,
+      "exitCode": 0,
+      "naturalExit": true
+    },
+    "driver": {
+      "originalSession": 43240,
+      "initialChunk": "c1a660",
+      "completionChunk": "f8c80b",
+      "exitCode": 0,
+      "naturalExit": true,
+      "externalSignalSent": false
+    },
+    "originalChild": {
+      "state": "finished",
+      "pid": 68056,
+      "exitObserved": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "interrupted": false,
+      "terminateRequested": false,
+      "killRequested": false
+    },
+    "utilityClosures": [
+      {
+        "role": "quote",
+        "code": "RAILGUN_PROCESS_CLOSED",
+        "peakRssBytes": 151109632,
+        "exitCode": 15,
+        "escalated": false,
+        "peerDisconnected": false
+      },
+      {
+        "role": "producer",
+        "code": "RAILGUN_PROCESS_CLOSED",
+        "peakRssBytes": 486014976,
+        "exitCode": 15,
+        "escalated": false,
+        "peerDisconnected": false
+      },
+      {
+        "role": "wire",
+        "code": "RAILGUN_PROCESS_CLOSED",
+        "peakRssBytes": 159186944,
+        "exitCode": 15,
+        "escalated": false,
+        "peerDisconnected": false
+      },
+      {
+        "role": "verifier",
+        "code": "RAILGUN_PROCESS_CLOSED",
+        "peakRssBytes": 239304704,
+        "exitCode": 15,
+        "escalated": false,
+        "peerDisconnected": false
+      }
+    ],
+    "beforeAfterUnchanged": true,
+    "emptyChildLog": true,
+    "physicalDrainQualified": false
+  },
+  "engineeringReview": {
+    "status": "cleared",
+    "reviewer": "Independent Codex engineering review",
+    "scope": "All eleven observation hashes, request/freeze/runner/runtime metadata/artifacts and 532 selected sources; exact four utility closure/guard outcomes and retained layout/data hashes",
+    "processObservation": "Root alone observed original driver and child; reviewer did not rerun crypto or independently rehash runtime binaries",
+    "externalSecurityAudit": false
+  },
+  "sourceInventory": {
+    "selectedCount": 532,
+    "selectedMap": "report.json#sourceSha256",
+    "outerCounts": {
+      "sources": 11598,
+      "symlinks": 15,
+      "runtimeInputs": 10,
+      "artifacts": 25,
+      "additionalInputs": 70
+    },
+    "outerFreezeOriginalSha256": "09edbc7f99fec0ae7483c7d6cfb32741bc7be394b58c661d15db7e795dfc274b",
+    "outerSourceMapPublished": false,
+    "selectedIsExecutionCoverage": false
+  },
+  "inputProvenance": {
+    "kind": "Path-label-normalized digest maps copied from the original native freeze; payloads are not copied or rehashed by publication.",
+    "runtime": {
+      "external/railgun-vault-weth-source-oct3-d.json": "bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc1e41",
+      "external/railgun-public-contract-bytecodes-oct4.json": "a1f3a1c51c6272eca7940313bf3b8d6b8229527db3aaf3334acc76d8314c0427",
+      "repo/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a",
+      "repo/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab",
+      "repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83",
+      "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base.ts": "1ac1b93c617eb8347e74263566071ebba2bcc7caca5166f11dce0a293e766803",
+      "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/shared.ts": "c51d5160c0d63235c04ecc4b9ad2f6adbe3841fd01dcb0ebb154bdecf8bbc86f",
+      "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/host/index.ts": "4a3578ceb42ae5138726e36de6bf2a9e7511ff73a8d592e6b494106be51a9814",
+      "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/broadcaster/base.ts": "6d973ce3b0ea458aaf1613c7106d9fb8104eb2c18baa5fe9ea405fe1d6f940cf",
+      "repo/node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+    },
+    "artifacts": {
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x01.vkey": "b1295384591b05481ad16d579a64d0d4a4e014e251e90f1027d2bdf2dcc1a8f7",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x01.wasm": "37a1528543305c64805e3c607940341abf61ba8516f73cfeb625cd09e5bda7a6",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x01.zkey": "27443e834f807f0d4ce8a0c2a0e028d1d540cba9c3e4d64b864b367e797215f4",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x02.vkey": "9369fa6ad3d7a1becf4b10cf4bd6a7eb83725cfb5cf75a08b191c5bc2cd479f4",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x02.wasm": "6ce87ddb4e33cff9564338a8b1f58047b22809e5d198f243c777d1aa4eaaa1e3",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x02.zkey": "8ef8e7abcfb5e60fb593d4d961657465f498435a0835adef05acc09534d7557b",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x03.vkey": "649561f264ee8dc6cfbf78a989d2978d848f6a5c730bb1817659edfa54266130",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x03.wasm": "72e55865fccca077f443bae9f1e6762a156ea478a137efc1324fb79153050276",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/01x03.zkey": "477aeca6a8ed3706f572bce0e99a7054e700a4e3c2ee4499d7013a4d7770e0d0",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/02x02.vkey": "27ac4fc50fde0ca2dc62046f5f38715b6094676bcdbe4e2987875aba65cac620",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/02x02.wasm": "8595023762a3067b70960be81e1a983c1630c9900d4caef3d608b9d849568829",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/02x02.zkey": "47c279ec3fcc8bdcc7a2fb80078e38ba8ca3a7bbaa608967c3c3af82f1d454e5",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/02x03.vkey": "2c9162607a77773b5d030012bf0d87eecf27201ad8f2f0a319a7c1661df2fb71",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/02x03.wasm": "20ab2f0987f94b6e959fcf11c9d37415c98848acd6a900a0ca75768db3938afa",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/02x03.zkey": "75611fffbc675993e55964404136df2a4e59821b40103ebe7afafc6c76863d11",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/POI_3x3.vkey": "2f4dcbf58d383204e09240863a6f6eff249071849e5161801ebfe83691037b23",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/POI_3x3.wasm": "831aad53c05d19f9854ed27429610da724fbdf9e1e7023aa7a90666f50b0da78",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/POI_3x3.zkey": "667984c51df2122956107c11c3c606e4e4688f70fb25515b9388cbd5140e48b3",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/download-relayed.cjs": "97cc353738c592c00640d78bc275ef00d4055c79f2fd73d771b898fb80d0cda1",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/download.cjs": "ba88c967bb59e2e64c0d9cb49b87807add8bc1541c44bde703fdc937cd58c5ba",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/downloads-relayed.json": "8d2e4f093f29a20750a0ad975b056b5a06d2431290794f7395d5ad94a71abda6",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/downloads.json": "3a9ba0ddf8bee56675131c5ecdace7221c4a06a63d40eae83029cacce590ce94",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/prove-poi.cjs": "76a5ab5aef6fddfe2ab57caef0472698b18ef648265f750005fddd6cd02a3399",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/verification.json": "15cc5e9ee00f297ce4d85c921624533dff7b9f9c91274179ee5655d6a155a5db",
+      "repo/tmp/privacy-research-oct2/railgun-artifacts/verify.cjs": "5180d01f4e723a134df6b67902d477582ae9abfce4215a83999de8412526e2ec"
+    },
+    "additional": {
+      "node-v24.18.1/bin/node": "f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5",
+      "repo/node_modules/@babel/parser/lib/index.js": "a6993b23a0d162cc93e49f72ef927c947c2026cd146cfe9c02cd695a4258411d",
+      "repo/node_modules/@babel/parser/package.json": "aacf65a9c1533d54fde416a8c64b7ad76d802ab608290fbe42bea7fd27f1669a",
+      "repo/node_modules/@esbuild/darwin-arm64/README.md": "ee16cb15a2211accccb38f378786bfe48bc5dcfae5db554352424cd710470efa",
+      "repo/node_modules/@esbuild/darwin-arm64/bin/esbuild": "10b6243df618d374bb2d5c9cfbe7052e1405f6aa4e53a6164f11a91b9f2e1384",
+      "repo/node_modules/@esbuild/darwin-arm64/package.json": "4e652c9e4410daf03da852a664940153601fac397233cdcf276b4b1a312454b9",
+      "repo/node_modules/esbuild/LICENSE.md": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "repo/node_modules/esbuild/README.md": "6d481cd60ec3c679e5e395f547ab4221147f35642894f6b95a8df38fd25c87bd",
+      "repo/node_modules/esbuild/bin/esbuild": "10b6243df618d374bb2d5c9cfbe7052e1405f6aa4e53a6164f11a91b9f2e1384",
+      "repo/node_modules/esbuild/install.js": "612294e278914443bdcf81cb17f54afec34dbdd2ebd999a6ee187912320cc315",
+      "repo/node_modules/esbuild/lib/main.d.ts": "e078310f23f0ccfa28a6ac81b5fad81f27150e921f92ab6e648caab42e2d9a14",
+      "repo/node_modules/esbuild/lib/main.js": "61ec0ba144ff93f4bf0e96ad6fab6f430ede0aa13e27ace8063ed63ba416b3cd",
+      "repo/node_modules/esbuild/package.json": "9d0bc453f4e791553c4cc2298ba023b409241fd9801e494741666eb0f6051490",
+      "repo/tmp/privacy-research-oct1/railgun-engine/src/abi/V2.1/RailgunSmartWallet.json": "f328a92ae5674b0181380f74db05dd0da7d4c223e26fb67c4a0caadd4fe218e8",
+      "repo/tmp/privacy-research-oct1/railgun-engine/src/note/transact-note.ts": "06945b37f35f0ebc0ebffaa57ec3ed0ec6cfdfe28eb573f3061ec0668c2c7cdf",
+      "repo/tmp/privacy-research-oct1/railgun-engine/src/utils/bytes.ts": "5b0f2f2d8f3237f59c88cd55c83468ad93bde5ad6d059fb3534125be4f0d91ef",
+      "repo/tmp/privacy-research-oct1/railgun-shared-models/src/models/response-types.ts": "e35c5c5ef3458b1464b6305f33090b9496e073585e5c135e7fad5b11d38ac12f",
+      "repo/tmp/privacy-research-oct1/railgun-shared-models/src/utils/gas.ts": "15421d934fd32f9a3a77f447293ce54fe770fc899748647db204c208b43dff4a",
+      "repo/tmp/privacy-research-oct1/railgun-wallet/src/services/transactions/tx-gas-broadcaster-fee-estimator.ts": "79246fe0347f82b92524d6249c432fc92ffdbbbdf45854cf9dae842e4ee6b8a5",
+      "runner/WIRE-INPUTS.json": "9089a6d8fba0f07e11eef72906f4f80e3a83e5104f916906e80c3934bf9e607b",
+      "source-candidate/BASES.json": "6285f5135c4738f300a800798fe932b16b21c4f784d7e1a634adcc712a9f6c08",
+      "source-candidate/CHECKS.json": "a6c40b50216d430a807d7bac23bc2e1ebbe228c68456d19f976810b87954d4d8",
+      "source-candidate/CONTROLS-final.json": "04366b4aad84f9db0759357424588a775a1d3298afeee5a6a9e07f37b72a7efc",
+      "source-candidate/DESIGN-AMENDMENT.md": "ab424c30c105b6ab9d247aac4407e44c2a10ac03845787841ea4416dca32ece2",
+      "source-candidate/HASHES.json": "2b87d1f2c3763ac14019524642780092f553a5da3b98744b345643e7605d8eb8",
+      "source-candidate/PRIOR-FREEZE.json": "0c76cc87e19b910030a16145197f776664d1024db8f3a25b1879caf21590405f",
+      "source-candidate/REPORT-VALIDATION.md": "75ad7455f58cc6dbc683d7ab54204f61d0f8750ff8bdda9f05f901946449a4eb",
+      "source-candidate/REVIEW.md": "5becafc34f77b2803eea5018666f8d4f7eafcf4442ba1e1fd8dc726d2eb95078",
+      "source-candidate/SOURCE-BASIS.json": "fd8f42d24d9f602cee840dbde2c2adf918bb86560bfcbc7264865b3fbb04a7f8",
+      "source-candidate/build-gas.cjs": "3538e0d27d06810e32c79814bd64e6699ef680c370bcae1a682c4c23c0132a39",
+      "source-candidate/candidate.patch": "735d65e514ab272f5a1620302ed98078e72e21207a78ac204b1cf2f5552a461a",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-composition.js": "691d8a02df6dc1ec713f50d6b0aa0fafba8c1736d4532bd5b447bd1f2664ecbb",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-composition.test.js": "3e210b0e8fb1286528a38b2aefadcbdef4ef3ac798ee02336d3c766e035051e6",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-crypto.js": "655e3f180dfed4170810233014a76bdeb97b455531225cc395aac7f31a9c3ea4",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-crypto.test.js": "0ec2eec2e8c8e88383f6783541783eaed82250753080e01cdae127374b153991",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-job.js": "3b6c8e9848f998c18a38d82f12f5bd3d9933ab6f27d3377588feabf802cff7db",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-producer-job.js": "9a1f3d91178c37e425c55035316871e6c8be1c59ed392b7fdc7dfebf918ada13",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-run.js": "a6816faf70c155e3f31544a670cf5693ec7394387b99877e781a5b61fc5e7565",
+      "source-candidate/candidate/scripts/fixtures/railgun-relay-wire-run.test.js": "2aad043270a398f3cf638cb64d9d29af34fbc4238ea4e1a348d60a86b330ce29",
+      "source-candidate/candidate/scripts/qualify-railgun-relay-proof.js": "2daba18a62278747e05e7eb2db20c51fe701f06660dae27233d34bc563d52797",
+      "source-candidate/check-default.cjs": "355a410b24553c87dd28b41adc55afcb620c637f63ddbb801d7dd84b1b11fa0c",
+      "source-candidate/controls-final/checksum-join-removed/test.log": "87cf788615a32ba46d0cdbd81f425091f8b1b00873cac0390c759bcb26ce70b8",
+      "source-candidate/controls-final/checksum-join-removed/tree/scripts/fixtures/railgun-relay-wire-crypto.js": "dbf81e6a322073474d0271304468ecb755948d694ebfb986339ea6b758b41585",
+      "source-candidate/controls-final/closed-observation-bypassed/test.log": "5787710cbcdb5a2139e4d8384f11ebad83c134266cc18763aaeb146cd8569562",
+      "source-candidate/controls-final/closed-observation-bypassed/tree/scripts/fixtures/railgun-relay-wire-run.js": "8b1c73e6ee8c29435fe6b6f6837effe1dcbdf9d5cc4b7dd6da22731cfd70efb3",
+      "source-candidate/controls-final/original-result-substitution/test.log": "ac0f559697ee3c5f9b31ac1a76be3d6fb0f090ef651d1f77cc14aff90daf5b17",
+      "source-candidate/controls-final/original-result-substitution/tree/scripts/fixtures/railgun-relay-wire-crypto.js": "9b678ae5e0835a29e8ece0571e1afc391ee6ee8ece01d9b446a43ed8bca005b0",
+      "source-candidate/controls-final/original-verifier-input/test.log": "2ebb4ce12e2ba67e74ac00fb50f8bd5f2231b430c4fdccc41f0da60f8bf51a42",
+      "source-candidate/controls-final/original-verifier-input/tree/scripts/fixtures/railgun-relay-wire-run.js": "62bae5d44cb0fff4fa214792ac30fe09a7adbb1db006dd8c4b8100d9b69d3e19",
+      "source-candidate/default-ast-final.log": "15c7528d1015a57b29a2580c559181987ef28bb541468d97fdb9823dee424a66",
+      "source-candidate/format-final.log": "17aa973d3f004560237d9a95171210b0671deff23d61628eecf7322ff5938f20",
+      "source-candidate/gas-basis/ABI-WIDTH-DERIVATION.json": "3433286dece739fe46532eafae4a0a6e08a1af005cd472ed585ebf6cfae6f9b3",
+      "source-candidate/gas-basis/FREEZE.json": "273e28a0b6672b7902a58c4629355f6223434ff5a68e18b401534e7a82fc265f",
+      "source-candidate/gas-basis/INPUTS.json": "8cca4aa277b418423fc84ae7a4f0808521f926b02b346f567de5eef3631c8776",
+      "source-candidate/gas-basis/LINT.json": "d36cfbb97b8edfefbf0fb9370f97fae735345297dd2b187208f91bbd0337f989",
+      "source-candidate/gas-basis/SPEC.md": "44422a4fccfc1dcd72fc17f58c9811534df076aeb83239c93bc7c711ec0297bb",
+      "source-candidate/gas-basis/extract-gas.mjs": "ead05b3356cc21a0bdd7ac4dec2207642be2ce15a1860d31c8c0b38dd86c24bd",
+      "source-candidate/gas-basis/lint.mjs": "0f98cd71ac5f532b0a7b639b952dd9a5fd91089ad1b2ab015973b1053bb0c922",
+      "source-candidate/gas-build.log": "e7a57dc6652db7e42a7f42418cfc44bc1befe7f76fbec632f7631b95cfa98e45",
+      "source-candidate/gas-extracted/BUILD.json": "742f2168617c643720841c8b0084d821aecbfffa14c881ca909e3d6d3b8db2c1",
+      "source-candidate/gas-extracted/SELECTIONS.json": "ac5871d4bdc1a146d08582a4e130afdb822e0f819055d7fae9f2e57ffa004ea4",
+      "source-candidate/gas-extracted/selected-gas.cjs": "ef5341080f287067f4c3e1ef76e0ba1a3a257a4c7a650e720f16104c1feac74f",
+      "source-candidate/gas-extracted/selected-gas.ts": "c83f333652a5c61835f4ac17e2a4a2cb669f3fe55369c2f19e3646cc047a00a0",
+      "source-candidate/inventory.cjs": "4b0d9b91fea6879d0a789dd5e872143bb3f8c19a4cf2298f47c3ee6e0cebca9e",
+      "source-candidate/lint-final.log": "70be715d8628432cbdbd618d756c397769e3155725002cdd27f48c4990f34cd7",
+      "source-candidate/run-controls-final.py": "d780921b0a8215a18cf35a44029409ab92151c51bd4e0bc824261ef0752ea653",
+      "source-candidate/tests-final.log": "63cbd63ee227cfe98e7fdb79840f713c72d37b73111833534be68b5e6bc4b514",
+      "upstream-build/build.json": "2bf6fa947e89bcaeef4ff94ffdc22cac8acbc3ed66a8055cf464f02d60ee8d97",
+      "upstream-build/selected-upstream.ts": "9d0eead2440c2858c673fe6e4db20439913438996156ce71d00291e13c0383cb",
+      "upstream-build/upstream.cjs": "1045d0c1358d44db4bffe57849de7dee22f3d8738bcc972f9d77fdf66359b5fb"
+    },
+    "pathLabelRecipe": "Repository prefix becomes repo/; reviewed candidate, upstream build, runner and Node roots become named relative labels; two external JSON inputs retain basenames. Values are unchanged SHA256 strings."
+  },
+  "buildChecks": {
+    "upstreamManifestSha256": "2bf6fa947e89bcaeef4ff94ffdc22cac8acbc3ed66a8055cf464f02d60ee8d97",
+    "gasBundleSha256": "ef5341080f287067f4c3e1ef76e0ba1a3a257a4c7a650e720f16104c1feac74f",
+    "sourceOnlyCheck": {
+      "exitCode": 0,
+      "stdoutSha256": "dd835c562c154fbd56e3c89262b02fb44ed7c8991705d78f0d6e6c21e8be7a82",
+      "generatedCryptoExecuted": false
+    },
+    "runnerFiles": {
+      "driver.py": "009393ed2e4a42b54a246b881e3c57aac9369f38df43cd7554bbb7ae928019fe",
+      "process_owner.py": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b",
+      "report_validation.py": "2104adad271d541426d4edd872e0e697d235ac8bc0616020e9d2e4f8c3bb8172",
+      "extra_inputs.py": "d8dcc77c6f62049f94bd73b2f7c871af8d23498c6732dc559e916a746d4828c6",
+      "REPORT-ENVIRONMENT.json": "59a3324de5121f74db4a1922625c1e7347f5cdcbed6f4014db6abb5007eca47c",
+      "ENVIRONMENT-BASIS.json": "effa0f6069468692148f6849aa49d4e58fb73a044deec2f42813cd5917424b48",
+      "CANDIDATE.json": "bd8cb86529f2b7d383d5865ebe00c16302d082490a2cbfe2c02409326d8518b8"
+    }
+  },
+  "rootChecks": {
+    "tests": {
+      "exitCode": 0,
+      "originalObservation": true,
+      "logKind": "root-recorded-original-tool-observation",
+      "naturalExit": true,
+      "forceExit": false,
+      "tests": 276,
+      "suites": 8,
+      "seconds": 1.519,
+      "originalObservationRecord": {
+        "originalName": "railgun-proof-to-wire-root-tests-observation-oct6.json",
+        "bytes": 268,
+        "sha256": "4c8c7f0db914377ba42e95f393b7a32f20e6bb18639f0b314776ef62e3527758"
+      }
+    },
+    "lint": {
+      "exitCode": 0,
+      "originalObservation": true,
+      "logKind": "root-recorded-original-tool-observation",
+      "warnings": 0,
+      "originalObservationRecord": {
+        "originalName": "railgun-proof-to-wire-root-lint-observation-oct6.json",
+        "bytes": 234,
+        "sha256": "64cef3b1293498455d0c57d0e704a128cbc96b6c7a046597b9ceaae11a2c7701"
+      }
+    },
+    "format": {
+      "exitCode": 0,
+      "originalObservation": true,
+      "logKind": "root-recorded-original-tool-observation",
+      "files": 9,
+      "originalObservationRecord": {
+        "originalName": "railgun-proof-to-wire-root-format-observation-oct6.json",
+        "bytes": 177,
+        "sha256": "1a671d6289b6369c2a1c56472a87b54fae127eb84e25c488c965d9629234b3fe"
+      }
+    }
+  },
+  "checks": {
+    "composition": {
+      "originalQuoteRetained": true,
+      "sourceFeeEqualsProofFee": true,
+      "independentRecipientMatched": true,
+      "decryptedCalldataMatched": true,
+      "decryptedPrePoiMapMatched": true,
+      "decryptedInputReconstructed": true,
+      "upstreamAndNativeDecryptionMatched": true,
+      "quoteCurrentAfterEncryption": true,
+      "serviceAcceptanceQualified": false,
+      "authorityGranted": false
+    },
+    "proofs": {
+      "minGasPrice": 1,
+      "transactionVerified": true,
+      "prePoiVerified": true,
+      "feeAndSelfCommitmentsMatched": true,
+      "sameTransactionPrePoiRootMatched": true,
+      "syntheticListRootMatched": true,
+      "productionPolicyRefused": true,
+      "productionPayloadRefused": true,
+      "changedSignalsRefused": 13,
+      "authorityGranted": false,
+      "serviceAcceptanceQualified": false
+    },
+    "fourGuardReports": {
+      "hooks": 91,
+      "canaries": 91,
+      "attempts": 0
+    }
+  },
+  "retention": {
+    "exactPublicFiles": [
+      "report.json",
+      "public-case.json",
+      "signed-quote.json"
+    ],
+    "witnessesRetained": false,
+    "privateOrSharedKeysRetained": false,
+    "ephemeralEncryptionTranscriptRetained": false,
+    "historicalQuoteOnly": true
+  },
+  "limits": {
+    "fixedPublicVector": true,
+    "syntheticQuoteAndUnsignedList": true,
+    "serviceAcceptance": false,
+    "enrolledAuthority": false,
+    "liveDisclosure": false,
+    "productionActivation": false,
+    "physicalDrain": false,
+    "aggregatePriorReportsRefreshed": false,
+    "publicationCryptoRerun": false,
+    "publicationRuntimePayloadRehash": false
+  }
+}
