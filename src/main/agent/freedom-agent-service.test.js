@@ -113,6 +113,36 @@ function createHistoryStore(overrides = {}) {
   };
 }
 
+test('privacy belongs to the conversation across main, helper and classifier requests', async () => {
+  const parent = createFakeSession();
+  const child = createFakeSession();
+  const historyStore = createHistoryStore({ updatePrivacy: jest.fn() });
+  const { service, dependencies } = createService(parent, {
+    historyStore, createSubagentSession: jest.fn(async () => ({ session: child.session })),
+  });
+  const modelRuntime = { streamSimple: (_model, _context, options) => options.fetch('https://provider.test/infer') };
+  const model = { id: 'model_test', provider: 'test' };
+  const events = [];
+  service.subscribe(event => events.push(event));
+  try {
+    await service.start(startOptions({ modelRuntime, model }));
+    const options = dependencies.createSession.mock.calls[0][0];
+    const fetch = jest.fn(async () => ({ ok: true }));
+    await options.modelRuntime.streamSimple(model, {}, { fetch });
+    await dependencies.createControllerScope.mock.calls[0][0].classifyEffect({});
+    await dependencies.effectClassifier.classify.mock.calls[0][1].modelRuntime.streamSimple(model, {}, { fetch });
+    const tool = options.customTools.find(item => item.name === 'delegate_task');
+    await tool.execute('privacy_helper', { title: 'Review', task: 'Review this task', background: true });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await dependencies.createSubagentSession.mock.calls[0][0].modelRuntime.streamSimple(model, {}, { fetch });
+    expect(service.getState().privacy.routes.map(route => [route.role, route.requests])).toEqual([
+      ['agent', 1], ['permission', 1], ['helper', 1],
+    ]);
+    expect(historyStore.updatePrivacy).toHaveBeenLastCalledWith({ conversationId: 'conversation_test', privacy: service.getState().privacy });
+    expect(events.filter(event => event.type === 'conversation_privacy_changed').at(-1).conversationId).toBe('conversation_test');
+  } finally { await service.dispose(); }
+});
+
 describe('delegated task ownership', () => {
   const flushHelpers = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
   async function backgroundService() {

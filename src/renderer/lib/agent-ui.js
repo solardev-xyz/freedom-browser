@@ -1,3 +1,4 @@
+import { createAgentPrivacy } from './agent-privacy.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
@@ -6,6 +7,8 @@ import { homeUrl } from './page-urls.js';
 import { matchesShortcut } from './shortcuts.js';
 import { close as closeWalletSidebar, isVisible as isWalletSidebarVisible } from './sidebar.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
+
+let sessionPrivacy;
 
 const PROVIDER_NAMES = Object.freeze({
   anthropic: 'Anthropic',
@@ -745,6 +748,7 @@ async function selectApprovalMode(nextMode) {
 }
 
 function setAgentView(nextView) {
+  sessionPrivacy?.close();
   setModeMenuOpen(false);
   setScopeHelpOpen(false);
   if (nextView !== 'workspace' && agentFirstMode) setAgentFirstMode(false);
@@ -1484,6 +1488,7 @@ function showProviderSetup() {
 }
 
 function setPanelOpen(nextOpen) {
+  if (!nextOpen) sessionPrivacy?.close();
   if (!nextOpen) {
     setModeMenuOpen(false);
     setScopeHelpOpen(false);
@@ -2504,6 +2509,7 @@ function updateSendAvailability() {
 }
 
 function resetConversationUi() {
+  sessionPrivacy?.update(null);
   attachmentSelectionGeneration += 1;
   resetComposerDrop();
   toolRows.clear();
@@ -4133,6 +4139,7 @@ function applyReadyConversationState(state) {
   conversationResources = Array.isArray(state.resources) ? state.resources : [];
   setConversationTitle(state.title || transcript[0]?.userText || 'Current task');
   restoreTranscript(transcript);
+  sessionPrivacy?.update(state.privacy || { version: 1, earlierUnknown: true, routes: [] });
   setAgentControlledTab(null);
   setRunState('idle', 'Ready');
   setScopeNotice(scopeNoticeForConversation());
@@ -4315,6 +4322,10 @@ function handleAgentEvent(event) {
 }
 
 function applyAgentEvent(event) {
+  if (event?.type === 'conversation_privacy_changed') {
+    if (event.conversationId === currentConversationId) sessionPrivacy?.update(event.privacy);
+    return;
+  }
   if (event?.type === 'conversation_cleared') {
     if (!currentConversationId || event.conversationId === currentConversationId) {
       applyConversationCleared();
@@ -5081,6 +5092,7 @@ export function initAgentUi(options = {}) {
   panelHeader = elements.panel.querySelector?.('.agent-sidebar-header') || null;
   runHeader = elements.panel.querySelector?.('.agent-run-header') || null;
   runHeaderHome = runHeader?.parentNode || null;
+  sessionPrivacy = createAgentPrivacy(byId('agent-session-privacy'), byId('agent-session-privacy-panel'));
   floatTitle = byId('agent-float-title');
   scopeHelpButton = byId('agent-scope-help');
   scopeHelpText = byId('agent-scope-help-text');
@@ -5389,6 +5401,7 @@ export function initAgentUi(options = {}) {
       closeSessionContextMenu(true);
       return;
     }
+    if (sessionPrivacy?.escape()) { event.preventDefault(); event.stopPropagation(); return; }
     if (scopeHelpText && !scopeHelpText.hidden) {
       event.preventDefault();
       setScopeHelpOpen(false);

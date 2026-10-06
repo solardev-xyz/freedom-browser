@@ -1538,6 +1538,13 @@
               <span id="agent-float-title" class="agent-float-title">New task</span>
             </div>
             <div class="agent-sidebar-header-actions">
+              <button type="button" class="agent-icon-btn" id="agent-session-privacy"
+                aria-label="Conversation privacy" aria-expanded="false" aria-controls="agent-session-privacy-panel" hidden>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z" />
+                  <path d="M12 8v5m0 3h.01" />
+                </svg>
+              </button>
               <button
                 type="button"
                 class="agent-icon-btn"
@@ -5581,5 +5588,6 @@
     <script src="./vendor/marked.min.js"></script>
     <script src="./vendor/purify.min.js"></script>
     <script type="module" src="./index.js"></script>
+    <section id="agent-session-privacy-panel" class="agent-privacy-panel chrome-popover" popover="manual" role="region" aria-label="Conversation privacy details" tabindex="-1" hidden></section>
   </body>
 </html>

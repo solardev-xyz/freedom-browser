@@ -564,6 +564,17 @@ test('real SQLite stores complete reports once, migrates legacy text, and reads 
       store.createSession({ conversationId: id, title: id, approvalMode: 'every_interaction' });
       store.startTurn({ conversationId: id, runId: `run_${id}`, userText: 'Review', approvalMode: 'every_interaction', startedAt: 100 });
     }
+    expect(store.getSession('one').privacy.earlierUnknown).toBe(true);
+    store.updatePrivacy({ conversationId: 'one', privacy: { version: 1, earlierUnknown: false,
+      routes: [{ providerId: 'near-ai', modelId: 'qwen', origin: 'https://cloud-api.near.ai', role: 'helper', requests: 3,
+        hardware: { status: 'advisory', checkedAt: 123, reports: [{ status: 'advisory', tcb: 'OutOfDate', advisories: ['INTEL-SA-01192'] }] },
+        apiKey: 'must not persist' }] } });
+    store.close();
+    store = new AgentSessionHistoryStore({ userDataDir: dir, Database: SqliteAdapter });
+    expect(store.getSession('one').privacy.routes[0].requests).toBe(3);
+    expect(store.getSession('one').privacy.routes[0].hardware.status).toBe('advisory');
+    expect(JSON.stringify(store.getSession('one').privacy)).not.toContain('must not persist');
+    expect(store.listSessions().every(session => !session.privacy)).toBe(true);
     const text = '😀important finding\n'.repeat(3000) + 'Final recommendation';
     const value = { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: text, toolScripts: 2 };
     const receipt = store.saveHelperReport('one', 'run_one', value);
@@ -594,6 +605,7 @@ test('real SQLite stores complete reports once, migrates legacy text, and reads 
     // Simulate legacy history before the schema upgrade.
     const legacy = { ...value, report: 'legacy text', reportTruncated: true };
     store.getDb().prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ?').run(JSON.stringify([{ operation: 'delegate_task', subagent: legacy }]), 'run_two');
+    store.getDb().exec('ALTER TABLE agent_sessions DROP COLUMN privacy_json');
     store.getDb().pragma('user_version = 4'); store.close();
     store = new AgentSessionHistoryStore({ userDataDir: dir, Database: SqliteAdapter });
     expect(store.getSession('one').transcript[0].activity[0].subagent.toolScripts).toBe(2);

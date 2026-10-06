@@ -1,14 +1,33 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-02
+Last updated: 2026-10-06
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-10-04
+## Current working status — 2026-10-06
+
+### Session privacy verification — experimental, 2026-10-06
+
+The user selected a new work package on `experiment/agent-privacy-verification`:
+a per-conversation privacy shield that distinguishes provider claims from checks
+Freedom actually performs. See the [implementation plan and live findings](../docs/agent-session-privacy.md).
+Implemented: the approved `@phala/dcap-qvl@0.6.5` verifier checks CPU evidence
+in a bounded worker; the header shield shows its results, actual request-attempt
+roles/destinations and bounded persistent history. Main, helper and permission
+requests are covered by the instrumentation. Real API probes and synthetic Pi
+requests found model-specific Intel TCB advisories, which remain visible rather
+than earning an unqualified green shield.
+
+Still open: GPU evidence, approved software/configuration and image provenance,
+inference-connection and response binding, verified-only enforcement, and
+Agent-compatible E2EE. Current hardware checks are independent historical endpoint
+checks, not proof of inference privacy; the UI states that explicitly. Linux/Windows
+and packaged-worker qualification also remain open. Numeric trust scores and
+blanket "private" claims are not the baseline.
 
 ### Pi 1.0.2 qualification and PR refresh — 2026-10-04
 

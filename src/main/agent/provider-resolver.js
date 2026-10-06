@@ -1,5 +1,7 @@
 'use strict';
 
+const { checkProviderAttestation } = require('./privacy-attestation');
+
 const path = require('path');
 const { loadPiSdk } = require('./pi-sdk');
 const { loginChatGPT } = require('./chatgpt-login');
@@ -480,6 +482,13 @@ class AgentProviderResolver {
     if (selection.kind === 'hosted' && !Object.hasOwn(HOSTED_PROVIDERS, selection.providerId)) {
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Hosted provider is not supported');
     }
+    // Older catalogs do not carry attestation capabilities. Refresh that public
+    // metadata once, without guessing capabilities from an e2ee/tee model name.
+    if (CUSTOM_PROVIDERS.has(selection.providerId) && typeof this.catalog.refresh === 'function' &&
+        this.catalog.get(selection.providerId).models.find(entry => entry.id === selection.modelId)?.attestation === undefined) {
+      try { await this.catalog.refresh(selection.providerId, selection.apiKey); }
+      catch { /* Existing catalog policy still applies; missing evidence stays unknown. */ }
+    }
     const runtime = await this.#createRuntime(selection.providerId);
     if (selection.kind === 'hosted') {
       await runtime.setRuntimeApiKey(selection.providerId, selection.apiKey);
@@ -529,6 +538,19 @@ class AgentProviderResolver {
     }
     this.#assertModelPolicy(selection.providerId, selection.modelId);
     this.#enforceRequestPolicy(runtime, selection.providerId);
+    runtime.privacyDescriptor = requestModel => {
+      const entry = this.catalog.get(selection.providerId).models.find(item => item.id === requestModel.id);
+      return { providerId: selection.providerId, claim: entry?.privacy || 'unknown',
+        attestation: requestModel.provider === model.provider &&
+          (entry?.attestation === true || (entry?.attestation === undefined && entry?.privacy === 'tee')) };
+    };
+    runtime.checkPrivacyAttestation = (requestModel, signal) => {
+      if (!runtime.privacyDescriptor(requestModel).attestation) return Promise.resolve({ status: 'unsupported' });
+      const current = this.store.getSelection(selection.providerId);
+      if (!current?.apiKey) return Promise.resolve({ status: 'unavailable' });
+      return checkProviderAttestation({ providerId: selection.providerId, modelId: requestModel.id,
+        apiKey: current.apiKey, signal, fetchImpl: this.fetch });
+    };
     return {
       model,
       modelRuntime: runtime,

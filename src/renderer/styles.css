@@ -15,6 +15,7 @@
 @import './styles/sidebar.css';
 @import './styles/agent.css';
 @import './styles/agent-floating.css';
+@import './styles/agent-privacy.css';
 @import './styles/link-status.css';
 @import './styles/permissions.css';
 @import './styles/find-bar.css';

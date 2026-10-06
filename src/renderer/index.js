@@ -1,3 +1,4 @@
+import { closeAgentPrivacy } from './lib/agent-privacy.js';
 // Renderer process entry point
 import {
   updateRegistry,
@@ -218,6 +219,7 @@ const onAnyMenuOpening = () => {
   closePermissionPopover();
   closePopupBlockedPopover();
   closeGithubBridgePanel();
+  closeAgentPrivacy();
 };
 setOnMenuOpening(onAnyMenuOpening);
 setOnTabContextMenuOpening(onAnyMenuOpening);
@@ -779,6 +781,7 @@ const closeAllOverlays = () => {
   closePermissionPopover();
   closePopupBlockedPopover();
   closeGithubBridgePanel();
+  closeAgentPrivacy();
 };
 
 // Listen for close menus from main process (e.g., system menu clicked)

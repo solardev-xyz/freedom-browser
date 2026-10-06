@@ -50,7 +50,7 @@ const PROVIDER_DEFINITIONS = Object.freeze({
     catalogUrl: 'https://api.venice.ai/api/v1/models?type=text',
     catalogKey: true,
     privacy:
-      'Privacy varies by model. Private and TEE labels are reported by Venice, not independently verified by Freedom. Provider search, scraping and added system prompts are disabled.',
+      'Privacy varies by model. Labels are provider claims; conversation privacy details show independent CPU checks and their limits. End-to-end encryption is not enabled. Provider search, scraping and added system prompts are disabled.',
     policies: [
       ['standard', 'All supported models'],
       ['private', 'Private or TEE models only'],
@@ -63,7 +63,7 @@ const PROVIDER_DEFINITIONS = Object.freeze({
     baseUrl: 'https://cloud-api.near.ai/v1',
     catalogUrl: 'https://cloud-api.near.ai/v1/model/list?limit=2000',
     privacy:
-      'NEAR lists both TEE-hosted and external models. TEE labels are provider claims; Freedom does not independently verify attestation or enable end-to-end encryption.',
+      'NEAR lists both TEE-hosted and external models. TEE labels are provider claims; conversation privacy details show independent CPU checks and their limits. End-to-end encryption is not enabled.',
     policies: [
       ['standard', 'All supported models'],
       ['tee', 'TEE models only'],
@@ -196,6 +196,7 @@ function normalizeModels(providerId, body, knownModels = []) {
             ? capabilities.supportsFunctionCalling
             : null,
         privacy,
+        attestation: capabilities.supportsTeeAttestation === true,
         // E2EE requires a distinct, verified client protocol. Never downgrade it to plaintext.
         available: spec.offline !== true && privacy !== 'e2ee',
         inputPrice: price(spec.pricing?.input?.usd),
@@ -223,6 +224,7 @@ function normalizeModels(providerId, body, knownModels = []) {
           metadata.attestationSupported === true
             ? 'tee'
             : 'external',
+        attestation: metadata.providerType === 'vllm' && metadata.attestationSupported === true,
         available: metadata.isReady !== false,
         inputPrice: decimalPrice(item.inputCostPerToken),
         outputPrice: decimalPrice(item.outputCostPerToken),
@@ -324,6 +326,7 @@ class ProviderCatalog {
             maxTokens: m.maxTokens,
             available: m.available && m.privacy !== 'e2ee',
             privacy: m.privacy,
+            ...(typeof m.attestation === 'boolean' && { attestation: m.attestation }),
             tools: typeof m.tools === 'boolean' ? m.tools : null,
             reasoning: m.reasoning === true,
             jsonSchema: m.jsonSchema === true,

@@ -13,6 +13,7 @@ test('custom providers stream tool calls and apply privacy to stream and complet
       const path = require('path');
       const { AgentProviderStore } = require('./src/main/agent/provider-store');
       const { AgentProviderResolver } = require('./src/main/agent/provider-resolver');
+      const { SessionPrivacy, withSessionPrivacy } = require('./src/main/agent/session-privacy');
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-provider-runtime-'));
       const store = new AgentProviderStore({ dataDir, safeStorage: {
         isEncryptionAvailable: () => true,
@@ -21,7 +22,7 @@ test('custom providers stream tool calls and apply privacy to stream and complet
       const { structuredClassifierRuntime, classifierSchema } = require('./src/main/agent/classifier-response');
       const schema = classifierSchema('kind', ['ordinary', 'consequential', 'uncertain'], ['uncertainties']);
       const descriptor = { id: 'test', name: 'Test', tools: true, available: true, jsonSchema: true,
-        privacy: 'tee', contextWindow: 32000, maxTokens: 4096 };
+        privacy: 'tee', attestation: false, contextWindow: 32000, maxTokens: 4096 };
       const catalog = { get: (id) => ['venice', 'near-ai', 'openrouter'].includes(id)
         ? { updatedAt: Date.now(), models: [descriptor] } : { models: [] } };
       const resolver = new AgentProviderResolver({ store, dataDir, catalog });
@@ -42,7 +43,8 @@ test('custom providers stream tool calls and apply privacy to stream and complet
         store.saveHosted({ providerId, modelId: 'test', apiKey: 'test-key' });
         store.savePreferences(providerId, { privacyPolicy: providerId === 'openrouter' ? 'zdr' : providerId === 'meta' ? 'standard' : 'tee' });
         const resolved = await resolver.resolveModel();
-        const runtime = resolved.modelRuntime;
+        const ledger = new SessionPrivacy();
+        const runtime = withSessionPrivacy(resolved.modelRuntime, ledger, 'agent');
         assert(runtime.getModels('xai').length > 0);
         let lastMessage;
         for (const method of ['stream', 'streamSimple', 'complete', 'completeSimple']) {
@@ -73,6 +75,10 @@ test('custom providers stream tool calls and apply privacy to stream and complet
             assert.equal(sent.body.venice_parameters.include_venice_system_prompt, false);
           }
         }
+        assert.equal(ledger.snapshot().routes.length, 1);
+        assert.equal(ledger.snapshot().routes[0].requests, 4);
+        assert.equal(ledger.snapshot().routes[0].providerId, providerId);
+        assert.equal(ledger.snapshot().routes[0].hardware, null);
         const continued = await runtime.completeSimple(resolved.model, {
           ...context, messages: [...context.messages, lastMessage, {
             role: 'toolResult', toolCallId: 'call_test', toolName: 'inspect',

@@ -1,5 +1,7 @@
 'use strict';
 
+const { SessionPrivacy, withSessionPrivacy, normalizePrivacy } = require('./session-privacy');
+
 const { createMcpTools } = require('./pi-mcp-tools');
 
 const crypto = require('crypto');
@@ -1115,6 +1117,7 @@ class FreedomAgentService {
           : [],
         ...(workspace && { workspace }),
         transcript,
+        privacy: conversation.privacy?.snapshot() || normalizePrivacy(null),
       };
     }
     return {
@@ -1130,6 +1133,7 @@ class FreedomAgentService {
         : [],
       ...(workspace && { workspace }),
       transcript,
+      privacy: conversation.privacy?.snapshot() || normalizePrivacy(null),
       ...(this.activeRun.pendingApproval && {
         pendingApproval: this.activeRun.pendingApproval.publicRequest,
       }),
@@ -1326,6 +1330,7 @@ class FreedomAgentService {
       })),
       activeRun: null,
       restored: true,
+      privacy: new SessionPrivacy(stored.privacy || null),
       providerId: stored.providerId || '',
       providerLabel:
         PROVIDER_LABELS[stored.providerId] || stored.providerId || 'the selected model provider',
@@ -1598,6 +1603,19 @@ class FreedomAgentService {
     };
     this.activeRun = run;
     let conversation = existingConversation;
+    const privacy = existingConversation?.privacy || new SessionPrivacy();
+    privacy.changed = summary => {
+      if (!this.conversations.has(run.conversationId) || this.disposed) return;
+      if (typeof this.historyStore?.updatePrivacy === 'function') {
+        this.#persistHistory('updatePrivacy', { conversationId: run.conversationId, privacy: summary });
+      }
+      this.#broadcast({ type: 'conversation_privacy_changed', conversationId: run.conversationId, privacy: summary });
+    };
+    const privacySignal = () => this.activeRun?.conversationId === run.conversationId
+      ? this.activeRun.workspaceAbortController.signal : AbortSignal.abort();
+    const agentRuntime = needsRuntime ? withSessionPrivacy(options.modelRuntime, privacy, 'agent', privacySignal) : null;
+    const permissionRuntime = needsRuntime ? withSessionPrivacy(options.modelRuntime, privacy, 'permission', privacySignal) : null;
+    const helperRuntime = needsRuntime ? withSessionPrivacy(options.modelRuntime, privacy, 'helper', privacySignal) : null;
     if (conversation) conversation.activeRun = run;
 
     try {
@@ -1638,7 +1656,7 @@ class FreedomAgentService {
             classifyEffect: (input) =>
               this.effectClassifier.classify(input, {
                 model: options.model,
-                modelRuntime: options.modelRuntime,
+                modelRuntime: permissionRuntime,
                 signal: this.activeRun?.workspaceAbortController.signal,
               }),
             classifyInteraction: (input, execution = {}) => {
@@ -1651,7 +1669,7 @@ class FreedomAgentService {
                 },
                 {
                   model: options.model,
-                  modelRuntime: options.modelRuntime,
+                  modelRuntime: permissionRuntime,
                   signal: execution.signal || activeRun?.workspaceAbortController.signal,
                 }
               );
@@ -1732,7 +1750,7 @@ class FreedomAgentService {
               requestApproval: (request) => {
                 const active = activeConversationRun();
                 return active ? this.#requestApproval(active, request, {
-                  model: options.model, modelRuntime: options.modelRuntime,
+                  model: options.model, modelRuntime: permissionRuntime,
                 }) : 'declined';
               },
               getRunSignal: () => activeConversationRun()?.workspaceAbortController.signal,
@@ -1749,7 +1767,7 @@ class FreedomAgentService {
             })
           : [];
         const delegationTool = createSubagentTool({
-          sdk, model: options.model, modelRuntime: options.modelRuntime,
+          sdk, model: options.model, modelRuntime: helperRuntime,
           thinkingLevel: options.thinkingLevel, createSession: this.createSubagentSession,
           getOwner: () => {
             const active = activeConversationRun();
@@ -1841,7 +1859,7 @@ class FreedomAgentService {
             return (event) => this.#diagnostic(owner, 'model_transport', event);
           },
           model: options.model,
-          modelRuntime: options.modelRuntime,
+          modelRuntime: agentRuntime,
           thinkingLevel: options.thinkingLevel,
           customTools,
           enableBuiltInSkills: true,
@@ -1885,6 +1903,7 @@ class FreedomAgentService {
             turns: [],
             activeRun: run,
             restored: false,
+            privacy,
             providerId: run.providerId,
             providerLabel: run.providerLabel,
             modelId: run.modelId,
