@@ -1,0 +1,45 @@
+import {createRailgunKohakuSnapshotPlugin, createRailgunKohakuPrivateAdapter, createRailgunKohakuPrivateAdapterBroadcaster} from '@freedom/restricted-railgun-node-prototype';
+import type {RestrictedPrivateHost, SnapshotHost, PrivateAdapter, SnapshotReadPlugin, PrivateAdapterBroadcaster, PrivateInput, PrivateOperation, PrivateUnshieldOptions, PrivateSubmissionOutcome, ReadAmount, ReadNote} from '@freedom/restricted-railgun-node-prototype';
+declare const host: RestrictedPrivateHost;
+declare const snapshotHost: SnapshotHost;
+declare const signal: AbortSignal;
+const adapter: PrivateAdapter = createRailgunKohakuPrivateAdapter({host, signal});
+const snapshot: SnapshotReadPlugin = createRailgunKohakuSnapshotPlugin({host: snapshotHost, signal});
+const broadcaster: PrivateAdapterBroadcaster = createRailgunKohakuPrivateAdapterBroadcaster(adapter);
+const value: PrivateInput = {asset: {__type: 'erc20', contract: '0x01'}, amount: 1n, noteId: '0:0'};
+async function consume() {
+  const id: string = await adapter.instanceId();
+  const snapshotId: string = await snapshot.instanceId();
+  const balance: ReadAmount[] = await adapter.balance(undefined);
+  balance.push({asset: {__type: 'native'}, amount: 1n, tag: 'unverified'});
+  const snapshotBalance: ReadAmount[] = await snapshot.balance(undefined);
+  snapshotBalance.push(...balance);
+  const notes: ReadNote[] = await adapter.notes(undefined, true);
+  notes.push(...notes);
+  const snapshotNotes: ReadNote[] = await snapshot.notes(undefined, false);
+  snapshotNotes.push(...notes);
+  const transfer: PrivateOperation = await adapter.prepareTransfer(value, id);
+  const copied: PrivateOperation = {...transfer};
+  const unshield: PrivateOperation = await adapter.prepareUnshield(value, '0x02', {});
+  const explicitlyUndefined: PrivateUnshieldOptions = {tailCalls: undefined};
+  const outcome: PrivateSubmissionOutcome = await broadcaster.broadcast(unshield);
+  if ('hash' in outcome) {
+    const hash: `0x${string}` = outcome.hash;
+    const from: `0x${string}` = outcome.from;
+    const to: `0x${string}` = outcome.to;
+    const chain: 11155111 = outcome.chainId;
+    const zero: '0' = outcome.value;
+    const source: 'direct' = outcome.broadcastSource;
+    const nonce: number = outcome.nonce;
+    const explorer: string | null = outcome.explorerUrl;
+    return {hash,from,to,chain,zero,source,nonce,explorer,copied,snapshotId,explicitlyUndefined};
+  }
+  if ('transactionHash' in outcome) {
+    const status: 'unknown' = outcome.submissionStatus;
+    return {status,hash:outcome.transactionHash};
+  }
+  const status: 'recovery-required' = outcome.status;
+  const stage: Extract<PrivateSubmissionOutcome, {status:'recovery-required'}>['stage'] = outcome.stage;
+  return {status,stage};
+}
+export {adapter,snapshot,broadcaster,consume};

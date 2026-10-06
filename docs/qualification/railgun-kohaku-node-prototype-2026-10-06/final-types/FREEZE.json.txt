@@ -1,0 +1,437 @@
+{
+  "schema": 1,
+  "artifactInventorySha256": "c4c389e832d1460b3e1980c08baf0107c13082d6902b0603bbfa551f0956b661",
+  "files": {
+    "CASE-SPEC.json": {
+      "bytes": 141,
+      "sha256": "36268b2019f9ae7be6a32affbf53a2fde622056bd6c4282bc080dead3fd5eef1"
+    },
+    "OBSERVATIONS.json": {
+      "bytes": 309,
+      "sha256": "3572fcf8e11bde665a1fae35cc24c38aa5caa3a37b782bee581ec3bfb2a3a674"
+    },
+    "PORTABLE-REPORT.json": {
+      "bytes": 11126,
+      "sha256": "62ac9d30b7a89d0d7fb71078e02e40dca534a71605119e077fa62841f5314cf1"
+    },
+    "PREPARE-REPORT.json": {
+      "bytes": 4865,
+      "sha256": "fcd2f15f4de10d76f74cf2e7845917fda0fe8da1c57a673a583d02344a535550"
+    },
+    "README.md": {
+      "bytes": 2419,
+      "sha256": "fa9520683208bb86d3a42a8c24c2440a6958d9304587899e6a5566340d306803"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/BUILD-RECIPE.cjs": {
+      "bytes": 13931,
+      "sha256": "67914f0abd52f8291f36158791b756634bca98d68f81c8efa987b4697d834412"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/LICENSE-INVENTORY.json": {
+      "bytes": 1306,
+      "sha256": "4bc6ac3501d62eba13db2cb489e4290d4603e9e09fd37219c8dc2b8b48113ad9"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/REPRODUCE.md": {
+      "bytes": 2334,
+      "sha256": "287fa658061b4ed8469944edb987151c894bba0fb3e20239b9581fcae99d32bf"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/TYPE-SOURCE-BASIS.json": {
+      "bytes": 1295,
+      "sha256": "ed428812c0df6d719fa0c502f7cc5420ddb000600af9dd0ec00012fa10cd0a00"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/build-tool-licenses/@babel__parser/LICENSE": {
+      "bytes": 1086,
+      "sha256": "2e97627cb278aa7556fb9e8817368302301a595b6c7582512b8d74c57b773652"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/build-tool-licenses/esbuild/LICENSE.md": {
+      "bytes": 1069,
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/index.cjs": {
+      "bytes": 43,
+      "sha256": "01567effeeb6d654f4afc388147d58afaeaa9151e36e328157233f944b3a6dc9"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts": {
+      "bytes": 4777,
+      "sha256": "a40a45e1ba0cc5d1eb6d12b81203a9b175011cf6987d78a6791daec1a475428c"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/index.d.mts": {
+      "bytes": 608,
+      "sha256": "f1ab1733928832362add1f1217814c591367f8f798dd2a2ce9293d0555fb6edc"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/index.mjs": {
+      "bytes": 335,
+      "sha256": "22530fc9b41839a37b0e2758a9a8b3efffc133d912e12b9457e7ff3ee00c4317"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/licenses/freedom/LICENSE": {
+      "bytes": 16725,
+      "sha256": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers/LICENSE.md": {
+      "bytes": 1075,
+      "sha256": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers__node_modules__@noble__curves/LICENSE": {
+      "bytes": 1109,
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers__node_modules__@noble__hashes/LICENSE": {
+      "bytes": 1109,
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/package.json": {
+      "bytes": 452,
+      "sha256": "f23cf0596d880b8c2812fcd2f072e05c0f837734262068c168d164383883c540"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/provenance/historical-type-lane-prepare.py": {
+      "bytes": 10065,
+      "sha256": "d31802c0201c4fbafa28a28fb3af9adbd24c0a206e14b60343673ff3841d2b91"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/provenance/historical-type-lane-source-basis.json": {
+      "bytes": 4634,
+      "sha256": "f2d277b7a5c196d3a2f18dcb5b8f4a8079b38cad086e1c791e89739d92160276"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/provenance/runtime-phase-build-report.json": {
+      "bytes": 18661,
+      "sha256": "20db900d020a67d51269494a0c97505064aa581aad092421ce80c7656352bcf1"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/runtime.cjs": {
+      "bytes": 52477,
+      "sha256": "61add3033264bb4f2e1a1a402bc861a7cff1f173f8de1df1ea909e1b0fe85f39"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/COMBINE.py": {
+      "bytes": 9941,
+      "sha256": "6cf0dae7ca68b59491bcd551e1167441c636b772095375301cf9c67186216c10"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/SOURCE-BASIS.json": {
+      "bytes": 2133,
+      "sha256": "c2c9506a94d6d5c9ce6f4061954286dd066fb7c2395f98c3dd0324e8afba0a58"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/ethers-address-only.mjs": {
+      "bytes": 45,
+      "sha256": "d795533a474cf27587bd00b0cc0a21fc9115f477488a8280210d87c3080512fb"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/restricted-entry.cjs": {
+      "bytes": 482,
+      "sha256": "59d9828b55490403bacb2f6b378133c519f26110e62bcd0e45798f9e79a1d8e4"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/scripts/fixtures/railgun-kohaku-private-contract.d.ts": {
+      "bytes": 3685,
+      "sha256": "ef7f1c9e1b2a8811eb1b5c774e41d53625419deca896e8a03ff8f24f94d4f4f9"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts": {
+      "bytes": 2296,
+      "sha256": "e8d17a0c103be64ff2d9e44e6ce0324437cbd73e544da4e784a603b566492792"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-private-adapter.js": {
+      "bytes": 15585,
+      "sha256": "5ea1e991fbf1d5db8e7eea100c3da15914db85bcd6b18df0dd6111a07052d03f"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-read-data.js": {
+      "bytes": 3038,
+      "sha256": "21522a816a905382b206acfab0cbfd5a767aefcfbccc82c051d18b952e4d409b"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-read-dispatch.js": {
+      "bytes": 738,
+      "sha256": "ed930d0517b759f442a6c19a9d250f0203fce5fc229fd9c6a750051fa41bd705"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-snapshot-plugin.js": {
+      "bytes": 8667,
+      "sha256": "24d3d695c99f8860ce0cdc222f31d0ddc52ad049dec71e7c7d961edd9adb6d0b"
+    },
+    "consumer-cjs/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-shield-pins.json": {
+      "bytes": 723,
+      "sha256": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75"
+    },
+    "consumer-cjs/package.json": {
+      "bytes": 83,
+      "sha256": "66a5b676b5d3518f154a025bb2b3edebc871917335f9b9e34750909be0141d4c"
+    },
+    "consumer-cjs/positive.cts": {
+      "bytes": 2814,
+      "sha256": "31a88dcfa7ef75fb7b9be9951ccab2f9ae50b8b92317ac745476926976f85d41"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/BUILD-RECIPE.cjs": {
+      "bytes": 13931,
+      "sha256": "67914f0abd52f8291f36158791b756634bca98d68f81c8efa987b4697d834412"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/LICENSE-INVENTORY.json": {
+      "bytes": 1306,
+      "sha256": "4bc6ac3501d62eba13db2cb489e4290d4603e9e09fd37219c8dc2b8b48113ad9"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/REPRODUCE.md": {
+      "bytes": 2334,
+      "sha256": "287fa658061b4ed8469944edb987151c894bba0fb3e20239b9581fcae99d32bf"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/TYPE-SOURCE-BASIS.json": {
+      "bytes": 1295,
+      "sha256": "ed428812c0df6d719fa0c502f7cc5420ddb000600af9dd0ec00012fa10cd0a00"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/build-tool-licenses/@babel__parser/LICENSE": {
+      "bytes": 1086,
+      "sha256": "2e97627cb278aa7556fb9e8817368302301a595b6c7582512b8d74c57b773652"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/build-tool-licenses/esbuild/LICENSE.md": {
+      "bytes": 1069,
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/index.cjs": {
+      "bytes": 43,
+      "sha256": "01567effeeb6d654f4afc388147d58afaeaa9151e36e328157233f944b3a6dc9"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts": {
+      "bytes": 4777,
+      "sha256": "a40a45e1ba0cc5d1eb6d12b81203a9b175011cf6987d78a6791daec1a475428c"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/index.d.mts": {
+      "bytes": 608,
+      "sha256": "f1ab1733928832362add1f1217814c591367f8f798dd2a2ce9293d0555fb6edc"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/index.mjs": {
+      "bytes": 335,
+      "sha256": "22530fc9b41839a37b0e2758a9a8b3efffc133d912e12b9457e7ff3ee00c4317"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/licenses/freedom/LICENSE": {
+      "bytes": 16725,
+      "sha256": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers/LICENSE.md": {
+      "bytes": 1075,
+      "sha256": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers__node_modules__@noble__curves/LICENSE": {
+      "bytes": 1109,
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers__node_modules__@noble__hashes/LICENSE": {
+      "bytes": 1109,
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/package.json": {
+      "bytes": 452,
+      "sha256": "f23cf0596d880b8c2812fcd2f072e05c0f837734262068c168d164383883c540"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/provenance/historical-type-lane-prepare.py": {
+      "bytes": 10065,
+      "sha256": "d31802c0201c4fbafa28a28fb3af9adbd24c0a206e14b60343673ff3841d2b91"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/provenance/historical-type-lane-source-basis.json": {
+      "bytes": 4634,
+      "sha256": "f2d277b7a5c196d3a2f18dcb5b8f4a8079b38cad086e1c791e89739d92160276"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/provenance/runtime-phase-build-report.json": {
+      "bytes": 18661,
+      "sha256": "20db900d020a67d51269494a0c97505064aa581aad092421ce80c7656352bcf1"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/runtime.cjs": {
+      "bytes": 52477,
+      "sha256": "61add3033264bb4f2e1a1a402bc861a7cff1f173f8de1df1ea909e1b0fe85f39"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/COMBINE.py": {
+      "bytes": 9941,
+      "sha256": "6cf0dae7ca68b59491bcd551e1167441c636b772095375301cf9c67186216c10"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/SOURCE-BASIS.json": {
+      "bytes": 2133,
+      "sha256": "c2c9506a94d6d5c9ce6f4061954286dd066fb7c2395f98c3dd0324e8afba0a58"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/ethers-address-only.mjs": {
+      "bytes": 45,
+      "sha256": "d795533a474cf27587bd00b0cc0a21fc9115f477488a8280210d87c3080512fb"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/restricted-entry.cjs": {
+      "bytes": 482,
+      "sha256": "59d9828b55490403bacb2f6b378133c519f26110e62bcd0e45798f9e79a1d8e4"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/scripts/fixtures/railgun-kohaku-private-contract.d.ts": {
+      "bytes": 3685,
+      "sha256": "ef7f1c9e1b2a8811eb1b5c774e41d53625419deca896e8a03ff8f24f94d4f4f9"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts": {
+      "bytes": 2296,
+      "sha256": "e8d17a0c103be64ff2d9e44e6ce0324437cbd73e544da4e784a603b566492792"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-private-adapter.js": {
+      "bytes": 15585,
+      "sha256": "5ea1e991fbf1d5db8e7eea100c3da15914db85bcd6b18df0dd6111a07052d03f"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-read-data.js": {
+      "bytes": 3038,
+      "sha256": "21522a816a905382b206acfab0cbfd5a767aefcfbccc82c051d18b952e4d409b"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-read-dispatch.js": {
+      "bytes": 738,
+      "sha256": "ed930d0517b759f442a6c19a9d250f0203fce5fc229fd9c6a750051fa41bd705"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-snapshot-plugin.js": {
+      "bytes": 8667,
+      "sha256": "24d3d695c99f8860ce0cdc222f31d0ddc52ad049dec71e7c7d961edd9adb6d0b"
+    },
+    "consumer-esm/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-shield-pins.json": {
+      "bytes": 723,
+      "sha256": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75"
+    },
+    "consumer-esm/package.json": {
+      "bytes": 81,
+      "sha256": "65bb097fe65ee2eeb0d41766716d9d0121d0dcb74c8b6bdd489a8940b25dcab8"
+    },
+    "consumer-esm/positive.mts": {
+      "bytes": 2791,
+      "sha256": "8962a10624d05dadb30a4da659112eecd0170261c9cfccf478d3cb77cb999901"
+    },
+    "consumer-mixed/mixed.mts": {
+      "bytes": 1134,
+      "sha256": "e5053e4a6e3f564f0a4f9de99c3bf80c79fbbce6c5c465a8576a3edb883f702d"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/BUILD-RECIPE.cjs": {
+      "bytes": 13931,
+      "sha256": "67914f0abd52f8291f36158791b756634bca98d68f81c8efa987b4697d834412"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/LICENSE-INVENTORY.json": {
+      "bytes": 1306,
+      "sha256": "4bc6ac3501d62eba13db2cb489e4290d4603e9e09fd37219c8dc2b8b48113ad9"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/REPRODUCE.md": {
+      "bytes": 2334,
+      "sha256": "287fa658061b4ed8469944edb987151c894bba0fb3e20239b9581fcae99d32bf"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/TYPE-SOURCE-BASIS.json": {
+      "bytes": 1295,
+      "sha256": "ed428812c0df6d719fa0c502f7cc5420ddb000600af9dd0ec00012fa10cd0a00"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/build-tool-licenses/@babel__parser/LICENSE": {
+      "bytes": 1086,
+      "sha256": "2e97627cb278aa7556fb9e8817368302301a595b6c7582512b8d74c57b773652"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/build-tool-licenses/esbuild/LICENSE.md": {
+      "bytes": 1069,
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/index.cjs": {
+      "bytes": 43,
+      "sha256": "01567effeeb6d654f4afc388147d58afaeaa9151e36e328157233f944b3a6dc9"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts": {
+      "bytes": 4777,
+      "sha256": "a40a45e1ba0cc5d1eb6d12b81203a9b175011cf6987d78a6791daec1a475428c"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/index.d.mts": {
+      "bytes": 608,
+      "sha256": "f1ab1733928832362add1f1217814c591367f8f798dd2a2ce9293d0555fb6edc"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/index.mjs": {
+      "bytes": 335,
+      "sha256": "22530fc9b41839a37b0e2758a9a8b3efffc133d912e12b9457e7ff3ee00c4317"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/licenses/freedom/LICENSE": {
+      "bytes": 16725,
+      "sha256": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers/LICENSE.md": {
+      "bytes": 1075,
+      "sha256": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers__node_modules__@noble__curves/LICENSE": {
+      "bytes": 1109,
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/licenses/node_modules__ethers__node_modules__@noble__hashes/LICENSE": {
+      "bytes": 1109,
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/package.json": {
+      "bytes": 452,
+      "sha256": "f23cf0596d880b8c2812fcd2f072e05c0f837734262068c168d164383883c540"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/provenance/historical-type-lane-prepare.py": {
+      "bytes": 10065,
+      "sha256": "d31802c0201c4fbafa28a28fb3af9adbd24c0a206e14b60343673ff3841d2b91"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/provenance/historical-type-lane-source-basis.json": {
+      "bytes": 4634,
+      "sha256": "f2d277b7a5c196d3a2f18dcb5b8f4a8079b38cad086e1c791e89739d92160276"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/provenance/runtime-phase-build-report.json": {
+      "bytes": 18661,
+      "sha256": "20db900d020a67d51269494a0c97505064aa581aad092421ce80c7656352bcf1"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/runtime.cjs": {
+      "bytes": 52477,
+      "sha256": "61add3033264bb4f2e1a1a402bc861a7cff1f173f8de1df1ea909e1b0fe85f39"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/COMBINE.py": {
+      "bytes": 9941,
+      "sha256": "6cf0dae7ca68b59491bcd551e1167441c636b772095375301cf9c67186216c10"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/SOURCE-BASIS.json": {
+      "bytes": 2133,
+      "sha256": "c2c9506a94d6d5c9ce6f4061954286dd066fb7c2395f98c3dd0324e8afba0a58"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/ethers-address-only.mjs": {
+      "bytes": 45,
+      "sha256": "d795533a474cf27587bd00b0cc0a21fc9115f477488a8280210d87c3080512fb"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/restricted-entry.cjs": {
+      "bytes": 482,
+      "sha256": "59d9828b55490403bacb2f6b378133c519f26110e62bcd0e45798f9e79a1d8e4"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/scripts/fixtures/railgun-kohaku-private-contract.d.ts": {
+      "bytes": 3685,
+      "sha256": "ef7f1c9e1b2a8811eb1b5c774e41d53625419deca896e8a03ff8f24f94d4f4f9"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts": {
+      "bytes": 2296,
+      "sha256": "e8d17a0c103be64ff2d9e44e6ce0324437cbd73e544da4e784a603b566492792"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-private-adapter.js": {
+      "bytes": 15585,
+      "sha256": "5ea1e991fbf1d5db8e7eea100c3da15914db85bcd6b18df0dd6111a07052d03f"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-read-data.js": {
+      "bytes": 3038,
+      "sha256": "21522a816a905382b206acfab0cbfd5a767aefcfbccc82c051d18b952e4d409b"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-read-dispatch.js": {
+      "bytes": 738,
+      "sha256": "ed930d0517b759f442a6c19a9d250f0203fce5fc229fd9c6a750051fa41bd705"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-kohaku-snapshot-plugin.js": {
+      "bytes": 8667,
+      "sha256": "24d3d695c99f8860ce0cdc222f31d0ddc52ad049dec71e7c7d961edd9adb6d0b"
+    },
+    "consumer-mixed/node_modules/@freedom/restricted-railgun-node-prototype/source/src/main/wallet/railgun-shield-pins.json": {
+      "bytes": 723,
+      "sha256": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75"
+    },
+    "consumer-mixed/package.json": {
+      "bytes": 83,
+      "sha256": "60bc524c8a0b654371a5dfc73fdeefc978a0a029a7ece4bc41c5944b9dfa518d"
+    },
+    "portable-details/consumer-cjs--positive.cts.json": {
+      "bytes": 30480,
+      "sha256": "7bce83df6bc148efd9768e7f27a05108c941d849a39432caac67b311836a21ec"
+    },
+    "portable-details/consumer-esm--positive.mts.json": {
+      "bytes": 32337,
+      "sha256": "29eafe36fb2c12c353282620c9a74ae8bc1eb3236ca4d6c30b4f27e5bbb41dde"
+    },
+    "portable-details/consumer-mixed--mixed.mts.json": {
+      "bytes": 34575,
+      "sha256": "ced6511202f1a2ce6c7f6e6b848fdda53caabdbbb6dcbfc5a325cede6c89c213"
+    },
+    "portable.log": {
+      "bytes": 139,
+      "sha256": "f19d09177f25ccec023556a8fc72b26556690f176e2cba51fef1988f19d8383b"
+    },
+    "prepare.py": {
+      "bytes": 2668,
+      "sha256": "ab449ae873dde036f8689aa5c358d4573f4458490dc08f718a5f5c5e12169255"
+    },
+    "qualify-portable.cjs": {
+      "bytes": 6183,
+      "sha256": "23bc363eb5a7e57e038efb23e94110a0d3fcae54f4cdfc30efef8536abc99795"
+    }
+  },
+  "sourceGraphExecuted": false,
+  "repositoryEdited": false,
+  "declarationsUnchangedFromHistoricalTypeLane": true
+}

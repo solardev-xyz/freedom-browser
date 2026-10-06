@@ -1,0 +1,511 @@
+{
+  "sourceFreezeSha256": "f94a7405ae28cbe63bac0ddaed53659ffb8475e780bd2727258ae30a76b21451",
+  "compilerVersion": "6.0.3",
+  "compilerSha256": "569177652966bd528c319171c7dd22860dbf72bde116cbc4f644f1d02bb12e39",
+  "positivePassed": true,
+  "negativeCases": 23,
+  "negativeCasesDistinguished": 23,
+  "categoryCounts": {
+    "upstream-binding": {
+      "cases": 6,
+      "distinguished": 6
+    },
+    "freedom-declaration": {
+      "cases": 17,
+      "distinguished": 17
+    }
+  },
+  "rootHead": "d7f78ba63c0ec1ec1d0c7c2e56bbc78b50167471",
+  "declarationGitStatus": "scratch-frozen; not imported into repository",
+  "candidateDeclarationSha256": "ef7f1c9e1b2a8811eb1b5c774e41d53625419deca896e8a03ff8f24f94d4f4f9",
+  "candidateImportsResolvedFrom": "repo/scripts/fixtures/railgun-kohaku-private-contract.d.ts",
+  "upstreamHead": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "upstreamCommit": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "upstreamBlobChecks": [
+    {
+      "path": "packages/provider/src/tx.ts",
+      "sha256": "704d93886d2a51168a65571f464ab14d317c67d4be1390b07c59bccca3257a91",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/provider/src/provider.ts",
+      "sha256": "77854bdb724102e9b211520e5546f3ea757ad95f9987a1f5af7cda19ee11245f",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/provider/src/index.ts",
+      "sha256": "aab6b628727d95647c2e3ad37c77363344dbc66508e2e0989693f84c67df0ed6",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/host/memory-storage.ts",
+      "sha256": "44545fb28c53fa5b71b97131fec60ef5d02ea41676ce7e672c47046dc6edc85a",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/host/mnemonic-keystore.ts",
+      "sha256": "874418962f94c72b1bdb18d4be3d5b79e6daeb2fce6b7d47a2ed615c102423b8",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/host/index.ts",
+      "sha256": "4a3578ceb42ae5138726e36de6bf2a9e7511ff73a8d592e6b494106be51a9814",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/shared.ts",
+      "sha256": "c51d5160c0d63235c04ecc4b9ad2f6adbe3841fd01dcb0ebb154bdecf8bbc86f",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/base.ts",
+      "sha256": "1ac1b93c617eb8347e74263566071ebba2bcc7caca5166f11dce0a293e766803",
+      "gitBlobBytesMatch": true
+    },
+    {
+      "path": "packages/plugins/src/broadcaster/base.ts",
+      "sha256": "6d973ce3b0ea458aaf1613c7106d9fb8104eb2c18baa5fe9ea405fe1d6f940cf",
+      "gitBlobBytesMatch": true
+    }
+  ],
+  "aliasResolutions": [
+    {
+      "from": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base.ts",
+      "name": "~/host",
+      "to": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/host/index.ts"
+    },
+    {
+      "from": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base.ts",
+      "name": "~/shared",
+      "to": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/shared.ts"
+    },
+    {
+      "from": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/broadcaster/base.ts",
+      "name": "~/shared",
+      "to": "repo/tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/shared.ts"
+    }
+  ],
+  "aliasOriginControls": {
+    "pluginAccepted": true,
+    "providerRejected": true,
+    "siblingPrefixRejected": true
+  },
+  "unexpected": [],
+  "results": [
+    {
+      "input": "positive.ts",
+      "category": "positive",
+      "matched": true,
+      "diagnostics": [],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "absent-prepareShield.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2551,
+          "file": "harness/cases/absent-prepareShield.ts",
+          "line": 3,
+          "character": 9,
+          "message": "Property 'prepareShield' does not exist on type 'PrivateAdapter'. Did you mean 'prepareUnshield'?"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "absent-prepareShieldMulti.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2551,
+          "file": "harness/cases/absent-prepareShieldMulti.ts",
+          "line": 3,
+          "character": 9,
+          "message": "Property 'prepareShieldMulti' does not exist on type 'PrivateAdapter'. Did you mean 'prepareUnshield'?"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "absent-prepareTransferMulti.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2551,
+          "file": "harness/cases/absent-prepareTransferMulti.ts",
+          "line": 3,
+          "character": 9,
+          "message": "Property 'prepareTransferMulti' does not exist on type 'PrivateAdapter'. Did you mean 'prepareTransfer'?"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "absent-prepareUnshieldMulti.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2551,
+          "file": "harness/cases/absent-prepareUnshieldMulti.ts",
+          "line": 3,
+          "character": 9,
+          "message": "Property 'prepareUnshieldMulti' does not exist on type 'PrivateAdapter'. Did you mean 'prepareUnshield'?"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "upstream-absent-shield.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2551,
+          "file": "harness/cases/upstream-absent-shield.ts",
+          "line": 3,
+          "character": 8,
+          "message": "Property 'prepareShield' does not exist on type 'PinnedPrivateTarget'. Did you mean 'prepareUnshield'?"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "number-amount.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/number-amount.ts",
+          "line": 2,
+          "character": 82,
+          "message": "Type 'number' is not assignable to type 'bigint'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "missing-note-id.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2741,
+          "file": "harness/cases/missing-note-id.ts",
+          "line": 2,
+          "character": 7,
+          "message": "Property 'noteId' is missing in type '{ asset: { __type: \"erc20\"; contract: \"0x01\"; }; amount: bigint; }' but required in type 'PrivateInput'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "wrong-asset.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/wrong-asset.ts",
+          "line": 2,
+          "character": 37,
+          "message": "Type '\"native\"' is not assignable to type '\"erc20\"'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "wrong-recipient.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2345,
+          "file": "harness/cases/wrong-recipient.ts",
+          "line": 4,
+          "character": 32,
+          "message": "Argument of type 'number' is not assignable to parameter of type 'string'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "adapter-tail-calls.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/adapter-tail-calls.ts",
+          "line": 4,
+          "character": 41,
+          "message": "Type '() => Promise<never[]>' is not assignable to type 'undefined'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "forged-operation.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2741,
+          "file": "harness/cases/forged-operation.ts",
+          "line": 2,
+          "character": 7,
+          "message": "Property '[privateOperation]' is missing in type '{ __type: \"privateOperation\"; }' but required in type 'PrivateOperation'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "copied-wrong-type.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/copied-wrong-type.ts",
+          "line": 3,
+          "character": 40,
+          "message": "Type '\"publicOperation\"' is not assignable to type '\"privateOperation\"'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "public-operation-broadcast.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/public-operation-broadcast.ts",
+          "line": 3,
+          "character": 24,
+          "message": "Type '\"publicOperation\"' is not assignable to type '\"privateOperation\"'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "wrong-result-discriminant.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/wrong-result-discriminant.ts",
+          "line": 2,
+          "character": 66,
+          "message": "Type '\"submitted\"' is not assignable to type '\"unknown\"'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "incomplete-acknowledgement.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/incomplete-acknowledgement.ts",
+          "line": 2,
+          "character": 7,
+          "message": "Type '{ hash: \"0x01\"; }' is not assignable to type 'PrivateSubmissionOutcome'.\n  Type '{ hash: \"0x01\"; }' is missing the following properties from type '{ hash: `0x${string}`; nonce: number; from: `0x${string}`; to: `0x${string}`; value: \"0\"; chainId: 11155111; broadcastSource: \"direct\"; explorerUrl: string | null; }': nonce, from, to, value, and 3 more."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "missing-recovery-stage.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/missing-recovery-stage.ts",
+          "line": 2,
+          "character": 7,
+          "message": "Type '{ status: \"recovery-required\"; }' is not assignable to type 'PrivateSubmissionOutcome'.\n  Property 'stage' is missing in type '{ status: \"recovery-required\"; }' but required in type '{ status: \"recovery-required\"; stage: \"proof\" | \"completion\" | \"recovery\" | \"preflight\" | \"eoa\" | \"submission\" | \"kohaku\" | \"review-draining\" | \"adapter-contract\"; }'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "wrong-recovery-stage.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/wrong-recovery-stage.ts",
+          "line": 2,
+          "character": 70,
+          "message": "Type '\"success\"' is not assignable to type '\"proof\" | \"completion\" | \"recovery\" | \"preflight\" | \"eoa\" | \"submission\" | \"kohaku\" | \"review-draining\" | \"adapter-contract\"'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "narrowed-outcome-field.ts",
+      "category": "freedom-declaration",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2339,
+          "file": "harness/cases/narrowed-outcome-field.ts",
+          "line": 3,
+          "character": 34,
+          "message": "Property 'hash' does not exist on type '{ status: \"recovery-required\"; stage: \"proof\" | \"completion\" | \"recovery\" | \"preflight\" | \"eoa\" | \"submission\" | \"kohaku\" | \"review-draining\" | \"adapter-contract\"; }'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "default-void-broadcaster.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/default-void-broadcaster.ts",
+          "line": 4,
+          "character": 7,
+          "message": "Type 'PrivateAdapterBroadcaster' is not assignable to type 'Broadcaster<PrivateOperation>'.\n  The types returned by 'broadcast(...)' are incompatible between these types.\n    Type 'Promise<PrivateSubmissionOutcome>' is not assignable to type 'Promise<void>'.\n      Type 'PrivateSubmissionOutcome' is not assignable to type 'void'.\n        Type '{ hash: `0x${string}`; nonce: number; from: `0x${string}`; to: `0x${string}`; value: \"0\"; chainId: 11155111; broadcastSource: \"direct\"; explorerUrl: string | null; }' is not assignable to type 'void'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "readonly-balance.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/readonly-balance.ts",
+          "line": 4,
+          "character": 66,
+          "message": "Type 'Promise<readonly ReadAmount[]>' is not assignable to type 'Promise<ReadAmount[]>'.\n  The type 'readonly ReadAmount[]' is 'readonly' and cannot be assigned to the mutable type 'ReadAmount[]'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "not-generic-host.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2739,
+          "file": "harness/cases/not-generic-host.ts",
+          "line": 4,
+          "character": 7,
+          "message": "Type 'RestrictedPrivateHost' is missing the following properties from type 'Host': network, storage, keystore, provider"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "not-generic-factory.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "harness/cases/not-generic-factory.ts",
+          "line": 3,
+          "character": 7,
+          "message": "Type '(options: { host: RestrictedPrivateHost; signal: AbortSignal; }) => PrivateAdapter' is not assignable to type 'CreatePluginFn<PrivateAdapter, { signal: AbortSignal; }>'.\n  Types of parameters 'options' and 'host' are incompatible.\n    Type 'Host' is missing the following properties from type '{ host: RestrictedPrivateHost; signal: AbortSignal; }': host, signal"
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    },
+    {
+      "input": "upstream-number-amount.ts",
+      "category": "upstream-binding",
+      "matched": true,
+      "diagnostics": [
+        {
+          "code": 2344,
+          "file": "harness/cases/upstream-number-amount.ts",
+          "line": 7,
+          "character": 45,
+          "message": "Type 'InvalidCapabilities' does not satisfy the constraint 'Partial<PICapabilities>'.\n  Types of property 'assetAmounts' are incompatible.\n    Type 'Omit<{ input: PrivateInput; internal: PrivateInput; output: PrivateInput; read: ReadAmount; }, \"internal\"> & { internal: InvalidInput; }' is not assignable to type 'AssetAmounts<AssetAmount, AssetAmount, AssetAmount, AssetAmount> | undefined'.\n      Type 'Omit<{ input: PrivateInput; internal: PrivateInput; output: PrivateInput; read: ReadAmount; }, \"internal\"> & { internal: InvalidInput; }' is not assignable to type 'AssetAmounts<AssetAmount, AssetAmount, AssetAmount, AssetAmount>'.\n        The types of 'internal.amount' are incompatible between these types.\n          Type 'number' is not assignable to type 'bigint'."
+        }
+      ],
+      "writes": 0,
+      "sourceFiles": 222
+    }
+  ],
+  "packages": [
+    {
+      "name": "ox",
+      "version": "0.14.45",
+      "manifest": "repo/node_modules/ox/package.json",
+      "sha256": "bcc5006eb5200a83bb57dc91ed8b99f5eb372ac262ad07061ae0deb4a274ffa7"
+    },
+    {
+      "name": "@scure/bip32",
+      "version": "1.4.0",
+      "manifest": "repo/node_modules/@scure/bip32/package.json",
+      "sha256": "94ef521ad8dc07dcdc7528f0dc382151214cd535ff646107fb4729037595b8a5"
+    },
+    {
+      "name": "@scure/bip39",
+      "version": "2.4.0",
+      "manifest": "repo/node_modules/@scure/bip39/package.json",
+      "sha256": "60cf3d46b7ff6396a60266e5818210ded8f00ce7c029b48230f178481f7206f5"
+    }
+  ],
+  "dependencyQualification": {
+    "upstreamProviderOxRange": "^0.12.0",
+    "usedOxVersion": "0.14.45",
+    "upstreamLockfileBuild": false
+  },
+  "scope": {
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "checkJs": false,
+    "declarationConsumerAssignabilityOnly": true,
+    "runtimeImplementationTypechecked": false,
+    "genericUpstreamHostSupported": false,
+    "sourceGraphExecuted": false,
+    "repositoryEdited": false,
+    "network": false,
+    "installation": false,
+    "requiresIndependentHarnessReview": true
+  }
+}

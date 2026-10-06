@@ -1,0 +1,2 @@
+import type { PrivateSubmissionOutcome } from 'freedom-private-contract';
+const result: PrivateSubmissionOutcome = {status:'recovery-required',stage:'success'};

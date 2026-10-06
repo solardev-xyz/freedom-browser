@@ -1,0 +1,4 @@
+import type { PrivateAdapter, PrivateInput } from '@freedom/restricted-railgun-node-prototype';
+declare const adapter: PrivateAdapter;
+declare const value: PrivateInput;
+adapter.prepareUnshield(value, '0x01', {tailCalls:async()=>[]});

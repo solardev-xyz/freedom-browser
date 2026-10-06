@@ -1,0 +1,20 @@
+AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
++ actual - expected
+
+  {
++   broadcastSource: 'direct',
++   chainId: 11155111,
++   explorerUrl: null,
++   from: '0x8Ba1f109551bD432803012645Ac136ddd64DBA72',
++   hash: '0x1111111111111111111111111111111111111111111111111111111111111111',
++   nonce: 0,
++   to: '0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea',
++   value: '0'
+-   submissionStatus: 'unknown',
+-   transactionHash: '0x1111111111111111111111111111111111111111111111111111111111111111'
+  }
+
+    at <RUNTIME_PHASE2>/control-checksum/matrix.cjs:83:20
+    at async test (<RUNTIME_PHASE2>/control-checksum/matrix.cjs:43:7)
+    at async runMatrix (<RUNTIME_PHASE2>/control-checksum/matrix.cjs:73:9)
+    at async main (<RUNTIME_PHASE2>/control-checksum/consumer.cjs:158:18)

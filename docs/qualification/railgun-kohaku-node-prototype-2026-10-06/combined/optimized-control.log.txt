@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "<COMBINED>/combine.py", line 11, in <module>
+    raise RuntimeError('Optimized Python is unsupported')
+RuntimeError: Optimized Python is unsupported

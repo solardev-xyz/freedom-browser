@@ -1,0 +1,7 @@
+const snapshot = require('./src/main/wallet/railgun-kohaku-snapshot-plugin.js');
+const privateAdapter = require('./src/main/wallet/railgun-kohaku-private-adapter.js');
+module.exports = Object.freeze({
+  createRailgunKohakuSnapshotPlugin: snapshot.createRailgunKohakuSnapshotPlugin,
+  createRailgunKohakuPrivateAdapter: privateAdapter.createRailgunKohakuPrivateAdapter,
+  createRailgunKohakuPrivateAdapterBroadcaster: privateAdapter.createRailgunKohakuPrivateAdapterBroadcaster,
+});

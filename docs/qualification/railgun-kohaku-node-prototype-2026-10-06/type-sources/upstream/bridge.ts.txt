@@ -1,0 +1,7 @@
+import type { PluginInstance } from 'kohaku-plugin-base';
+import type { PrivateCapabilities, ReadAmount, ReadNote, SnapshotExtras } from '@freedom/restricted-railgun-node-prototype';
+export type PinnedPrivateTarget = PluginInstance<string, PrivateCapabilities>;
+export type PinnedReadTarget = PluginInstance<string, {features:{};note:ReadNote;assetAmounts:{input:ReadAmount;internal:ReadAmount;output:ReadAmount;read:ReadAmount};extras:SnapshotExtras}>;
+import type {Broadcaster} from 'kohaku-broadcaster-base';
+import type {PrivateOperation, PrivateSubmissionOutcome} from '@freedom/restricted-railgun-node-prototype';
+export type PinnedBroadcasterTarget = Broadcaster<PrivateOperation, PrivateSubmissionOutcome>;

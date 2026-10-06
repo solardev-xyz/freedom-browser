@@ -1,0 +1,11 @@
+{
+  "originalSessionId": 9187,
+  "observedExitCode": 0,
+  "drained": true,
+  "positiveCases": 3,
+  "negativeCasesRepeated": 0,
+  "compilerWrites": 0,
+  "runtimeExecuted": false,
+  "finalArtifactBeforeAfterVerified": true,
+  "reportSha256": "62ac9d30b7a89d0d7fb71078e02e40dca534a71605119e077fa62841f5314cf1"
+}

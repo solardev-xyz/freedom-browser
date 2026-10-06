@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "phaseOneFreezeSha256": "2979abceea16c00e63edfa798c15b865e6376a5e6c6cfb8d2ad54a9108a88979",
+  "phaseOneBuildReportSha256": "29e7bca5c396b661c0f076f344b23b7e25f9d503911b3b4a7f34701aeecbbc09",
+  "phaseOneArtifactInventory": {
+    "BUILD-RECIPE.cjs": "67914f0abd52f8291f36158791b756634bca98d68f81c8efa987b4697d834412",
+    "LICENSE-INVENTORY.json": "4bc6ac3501d62eba13db2cb489e4290d4603e9e09fd37219c8dc2b8b48113ad9",
+    "build-tool-licenses/@babel__parser/LICENSE": "2e97627cb278aa7556fb9e8817368302301a595b6c7582512b8d74c57b773652",
+    "build-tool-licenses/esbuild/LICENSE.md": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+    "index.cjs": "01567effeeb6d654f4afc388147d58afaeaa9151e36e328157233f944b3a6dc9",
+    "index.mjs": "22530fc9b41839a37b0e2758a9a8b3efffc133d912e12b9457e7ff3ee00c4317",
+    "licenses/freedom/LICENSE": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae",
+    "licenses/node_modules__ethers/LICENSE.md": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612",
+    "licenses/node_modules__ethers__node_modules__@noble__curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+    "licenses/node_modules__ethers__node_modules__@noble__hashes/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+    "package.json": "c24e5a10f9d0d5230ae49ba9515cdb0f037109c9d4676179fdce243bbb79e3ca",
+    "runtime.cjs": "9573d084b83fd8b2f4d7253a77826c6cf943d0b27bbeee49e25ec5d0c97287cd",
+    "source/SOURCE-BASIS.json": "e4139693e8ee036f0fba4bd8582efc3184ccb5ed137d5dad8c3ff1c8a803b487",
+    "source/ethers-address-only.mjs": "d795533a474cf27587bd00b0cc0a21fc9115f477488a8280210d87c3080512fb",
+    "source/restricted-entry.cjs": "59d9828b55490403bacb2f6b378133c519f26110e62bcd0e45798f9e79a1d8e4",
+    "source/src/main/wallet/railgun-kohaku-private-adapter.js": "ebd52efd5f31ad00718f771877ecb2c4b31509e081fa1836296736682ae18799",
+    "source/src/main/wallet/railgun-kohaku-read-data.js": "21522a816a905382b206acfab0cbfd5a767aefcfbccc82c051d18b952e4d409b",
+    "source/src/main/wallet/railgun-kohaku-read-dispatch.js": "ed930d0517b759f442a6c19a9d250f0203fce5fc229fd9c6a750051fa41bd705",
+    "source/src/main/wallet/railgun-kohaku-snapshot-plugin.js": "24d3d695c99f8860ce0cdc222f31d0ddc52ad049dec71e7c7d961edd9adb6d0b",
+    "source/src/main/wallet/railgun-shield-pins.json": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75"
+  },
+  "sourceInputs": {
+    "scripts/fixtures/railgun-kohaku-private-contract.d.ts": "ef7f1c9e1b2a8811eb1b5c774e41d53625419deca896e8a03ff8f24f94d4f4f9",
+    "scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts": "e8d17a0c103be64ff2d9e44e6ce0324437cbd73e544da4e784a603b566492792"
+  },
+  "recipeSha256": "d31802c0201c4fbafa28a28fb3af9adbd24c0a206e14b60343673ff3841d2b91",
+  "steps": [
+    "Exact copies of reviewed phase-one artifact; only package.json changes among original files.",
+    "Snapshot contract: retain ReadAsset through factory declaration; omit research preamble, repo-local upstream import and PinnedReadTarget alias.",
+    "Private contract: retain PrivateInput onward; omit preamble/imports/re-exports, remove PinnedPrivateTarget alias, replace upstream generic Broadcaster alias with equivalent restricted own broadcast signature.",
+    "Concatenate shared snapshot types then private types once in index.d.cts; retain sole privateOperation unique symbol.",
+    "Generate explicit index.d.mts value/type forwarding from canonical declaration exports via ./index.cjs.",
+    "Add per-condition types before default runtime export; top-level types matches CJS main."
+  ],
+  "valueExports": [
+    "createRailgunKohakuSnapshotPlugin",
+    "createRailgunKohakuPrivateAdapter",
+    "createRailgunKohakuPrivateAdapterBroadcaster"
+  ],
+  "typeExports": [
+    "ReadAsset",
+    "SnapshotAsset",
+    "SnapshotNote",
+    "ReadNote",
+    "ReadAmount",
+    "SnapshotHost",
+    "SnapshotExtras",
+    "SnapshotReadPlugin",
+    "PrivateInput",
+    "PrivateOperation",
+    "PrivateUnshieldOptions",
+    "PrivateSubmissionOutcome",
+    "PrivateHostHandle",
+    "RestrictedPrivateHost",
+    "PrivateAdapterExtras",
+    "PrivateAdapter",
+    "PrivateCapabilities",
+    "PrivateAdapterBroadcaster"
+  ],
+  "runtimeFilesUnchanged": {
+    "index.cjs": "01567effeeb6d654f4afc388147d58afaeaa9151e36e328157233f944b3a6dc9",
+    "index.mjs": "22530fc9b41839a37b0e2758a9a8b3efffc133d912e12b9457e7ff3ee00c4317",
+    "runtime.cjs": "9573d084b83fd8b2f4d7253a77826c6cf943d0b27bbeee49e25ec5d0c97287cd"
+  },
+  "qualifiedRuntimeBehavior": false,
+  "pendingRuntimeAddressNarrowing": true
+}

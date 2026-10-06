@@ -1,0 +1,4 @@
+import type { PrivateOperation, PrivateAdapterBroadcaster } from '@freedom/restricted-railgun-node-prototype';
+import type { Broadcaster } from 'kohaku-broadcaster-base';
+declare const specialized: PrivateAdapterBroadcaster;
+const defaultResult: Broadcaster<PrivateOperation> = specialized;

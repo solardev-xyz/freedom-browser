@@ -1,0 +1,88 @@
+{
+  "schema": "railgun-restricted-node-phase2-command-observations-v1",
+  "qualification": [
+    {
+      "mode": "cjs",
+      "chunk_id": "995f1a",
+      "wall_time_seconds": 0.000002875,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "esm",
+      "chunk_id": "482447",
+      "wall_time_seconds": 0.000003042,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "mixed",
+      "chunk_id": "101752",
+      "wall_time_seconds": 6.67e-7,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "trap-network",
+      "chunk_id": "46226e",
+      "wall_time_seconds": 1.25e-7,
+      "exit_code": 1,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "trap-process",
+      "chunk_id": "522914",
+      "wall_time_seconds": 7.91e-7,
+      "exit_code": 1,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "trap-root",
+      "chunk_id": "ffa21d",
+      "wall_time_seconds": 0.000001166,
+      "exit_code": 1,
+      "original_token_count": 0,
+      "output": ""
+    }
+  ],
+  "mutationControls": [
+    {
+      "mode": "checksum",
+      "chunk_id": "04e940",
+      "wall_time_seconds": 0.000003875,
+      "exit_code": 1,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "token",
+      "chunk_id": "c3df69",
+      "wall_time_seconds": 8.75e-7,
+      "exit_code": 1,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "settlement-box",
+      "chunk_id": "0f3f58",
+      "wall_time_seconds": 0.000001584,
+      "exit_code": 1,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "mode": "early-close",
+      "chunk_id": "b9cd8c",
+      "wall_time_seconds": 0.000001334,
+      "exit_code": 1,
+      "original_token_count": 0,
+      "output": ""
+    }
+  ],
+  "attribution": "Direct exec_command results observed by subagent; natural command completion, no forceExit; controls intentionally exit 1."
+}

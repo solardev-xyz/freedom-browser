@@ -1,0 +1,33 @@
+{
+  "portable": {
+    "originalSessionId": 58342,
+    "observedExitCode": 0,
+    "drained": true
+  },
+  "upstreamInitial": {
+    "originalSessionId": 6331,
+    "observedExitCode": 1,
+    "drained": true
+  },
+  "upstreamFinal": {
+    "originalSessionId": 84937,
+    "observedExitCode": 0,
+    "drained": true
+  },
+  "controlProbe": {
+    "originalSessionId": 77218,
+    "observedExitCode": 0,
+    "drained": true
+  },
+  "controlVerification": {
+    "observedExitCode": 0,
+    "compilerRerun": false
+  },
+  "lint": {
+    "observedExitCode": 0,
+    "warnings": 0
+  },
+  "runtimeExecuted": false,
+  "repositoryEdited": false,
+  "packagePublished": false
+}

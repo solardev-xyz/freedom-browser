@@ -1,0 +1,51 @@
+{
+  "schema": "restricted-node-final-combined-consumer-v1",
+  "mode": "mixed",
+  "exports": [
+    "createRailgunKohakuPrivateAdapter",
+    "createRailgunKohakuPrivateAdapterBroadcaster",
+    "createRailgunKohakuSnapshotPlugin"
+  ],
+  "independentHost": true,
+  "hostAuthorityQualified": false,
+  "snapshotReads": 4,
+  "addressCases": 10,
+  "detachedMutationIsolation": true,
+  "privateOperations": [
+    {
+      "kind": "transfer",
+      "reads": 3,
+      "preparation": 1,
+      "broadcast": 1,
+      "close": 1,
+      "authority": false
+    },
+    {
+      "kind": "unshield",
+      "reads": 3,
+      "preparation": 1,
+      "broadcast": 1,
+      "close": 1,
+      "authority": false
+    },
+    {
+      "kind": "partial",
+      "reads": 3,
+      "preparation": 1,
+      "broadcast": 1,
+      "close": 1,
+      "authority": false
+    }
+  ],
+  "sharedCjsEsmIdentity": true,
+  "stickyForbiddenWork": [],
+  "loadedArtifactModules": [
+    "index.cjs",
+    "runtime.cjs"
+  ],
+  "genuineFreedomHostIncluded": false,
+  "nativeCryptoQualified": false,
+  "osEgressQualified": false,
+  "node": "v24.18.1",
+  "pid": 50757
+}

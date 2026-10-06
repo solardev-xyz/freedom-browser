@@ -7,6 +7,36 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [restricted private adapter and fixed Freedom host](railgun-kohaku-private-adapter-2026-10-06.md)
+now pass five fresh native cases at `f84da57a`: acknowledged self-transfer, full
+withdrawal with a lost response, partial withdrawal, cancellation during held
+final review and denied preparation. All original children and the driver exit 0.
+The source passes 664 focused tests in 19 suites with natural exit, strict lint
+and changed-file formatting. Actual local crypto/controllers use synthetic
+services; live private spending and physical transport drainage remain unqualified.
+The separate strict declaration campaign passes one positive and 23 negatives
+against actual pinned Kohaku sources. Earlier failed fixture campaigns stay excluded.
+
+A [standalone restricted Node prototype](railgun-kohaku-node-prototype-2026-10-06.md)
+now packages the snapshot/private adapters without Freedom hosts, account authority,
+engine, prover, storage or RPC clients. Two identical final 30-file assemblies pass
+fresh CJS/ESM/mixed runtime and type consumers. Expanded runtime checks cover 100
+case executions and seven distinguishing controls; portable declarations pass
+3 positives/34 negatives and a separate actual-upstream bridge passes 1/6.
+This is an unpublished trusted-host prototype, not generic Host support or a release.
+Its exact runtime/type evidence and normalized audit copies retain separate scopes.
+
+Next autonomous technical slices are a reusable public Shield host/adapter for the
+existing native ETH deposit lane; genuine destination-constraint composition with
+loopback SOCKS/TLS; and a separate recovery companion around existing original-
+signature recovery. Public submission errors must retain their own contract,
+separate from private fulfilled uncertainty. Recovery never reconstructs an
+operation token from a hold ID or authorizes automatic retry. Broader assets,
+recipients, live disclosures/spending, release packaging and UI/product decisions
+retain their existing gates.
+
+## Earlier checkpoints
+
 The [prepared-operation dispatch checkpoint](railgun-kohaku-operation-dispatch-2026-10-06.md)
 passes three targeted native cases at `fd5ac778`: acknowledged private unshield,
 public lost response, and private cancellation during held final review. Original
@@ -22,8 +52,6 @@ the existing controllers. Its outcomes must match private submissions, whose
 acknowledged result omits the ordinary wallet's journal status fields. It remains
 separate from generic upstream Host support, live private/service qualification,
 relayed broadcast, package/browser qualification and UI/product work.
-
-## Earlier checkpoints
 
 The [restricted snapshot qualification](railgun-kohaku-snapshot-qualification-2026-10-06.md)
 now passes one genuine-account native case at `20560d86`: thirteen successful
@@ -436,10 +464,13 @@ completion, discard a signing hold or permit an automatic retry.
 
 Kohaku's generic Host object does not authenticate Freedom's enrollment,
 coordinator, account phases or proof receipts. Matching the selected instance and
-broadcaster shapes is not yet a portable `createPlugin(host, params)` package.
-Restricted read extraction now has its own host contract and native/type evidence.
-Transaction extraction still needs a bounded authority-preserving host contract. Native Shield uses
-a public-operation lane and must not be passed to the private broadcaster.
+broadcaster shapes does not establish a generic `createPlugin(host, params)` package.
+Restricted snapshot and private-operation adapters now have separate host contracts,
+fixed Freedom bridges and native/type evidence. The standalone Node prototype
+packages their trusted-host interfaces without exporting genuine Freedom authority.
+Public Shield extraction is next: it uses a distinct public-operation lane and
+must not be passed to the private broadcaster. A recovery companion must retain
+fresh authorization and durable ownership rather than recreate in-memory tokens.
 
 ## Live permission and shared product gates
 

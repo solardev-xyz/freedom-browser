@@ -1,0 +1,27 @@
+{
+  "artifactFiles": {
+    "BUILD-RECIPE.cjs": "67914f0abd52f8291f36158791b756634bca98d68f81c8efa987b4697d834412",
+    "runtime.cjs": "61add3033264bb4f2e1a1a402bc861a7cff1f173f8de1df1ea909e1b0fe85f39",
+    "LICENSE-INVENTORY.json": "4bc6ac3501d62eba13db2cb489e4290d4603e9e09fd37219c8dc2b8b48113ad9",
+    "package.json": "c24e5a10f9d0d5230ae49ba9515cdb0f037109c9d4676179fdce243bbb79e3ca",
+    "index.cjs": "01567effeeb6d654f4afc388147d58afaeaa9151e36e328157233f944b3a6dc9",
+    "index.mjs": "22530fc9b41839a37b0e2758a9a8b3efffc133d912e12b9457e7ff3ee00c4317",
+    "source/restricted-entry.cjs": "59d9828b55490403bacb2f6b378133c519f26110e62bcd0e45798f9e79a1d8e4",
+    "source/ethers-address-only.mjs": "d795533a474cf27587bd00b0cc0a21fc9115f477488a8280210d87c3080512fb",
+    "source/SOURCE-BASIS.json": "c2c9506a94d6d5c9ce6f4061954286dd066fb7c2395f98c3dd0324e8afba0a58",
+    "build-tool-licenses/@babel__parser/LICENSE": "2e97627cb278aa7556fb9e8817368302301a595b6c7582512b8d74c57b773652",
+    "build-tool-licenses/esbuild/LICENSE.md": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+    "source/src/main/wallet/railgun-kohaku-snapshot-plugin.js": "24d3d695c99f8860ce0cdc222f31d0ddc52ad049dec71e7c7d961edd9adb6d0b",
+    "source/src/main/wallet/railgun-kohaku-read-dispatch.js": "ed930d0517b759f442a6c19a9d250f0203fce5fc229fd9c6a750051fa41bd705",
+    "source/src/main/wallet/railgun-shield-pins.json": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75",
+    "source/src/main/wallet/railgun-kohaku-read-data.js": "21522a816a905382b206acfab0cbfd5a767aefcfbccc82c051d18b952e4d409b",
+    "source/src/main/wallet/railgun-kohaku-private-adapter.js": "5ea1e991fbf1d5db8e7eea100c3da15914db85bcd6b18df0dd6111a07052d03f",
+    "licenses/node_modules__ethers__node_modules__@noble__curves/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+    "licenses/node_modules__ethers/LICENSE.md": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612",
+    "licenses/freedom/LICENSE": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae",
+    "licenses/node_modules__ethers__node_modules__@noble__hashes/LICENSE": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+  },
+  "identicalFiles": 20,
+  "reportSha256": "20db900d020a67d51269494a0c97505064aa581aad092421ce80c7656352bcf1",
+  "metafileEqual": true
+}

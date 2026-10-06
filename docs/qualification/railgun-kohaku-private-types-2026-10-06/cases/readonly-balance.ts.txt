@@ -1,0 +1,4 @@
+import type { PrivateAdapter, PinnedPrivateTarget, ReadAmount } from 'freedom-private-contract';
+declare const adapter: PrivateAdapter;
+declare const amounts: readonly ReadAmount[];
+const target: PinnedPrivateTarget = {...adapter,balance:async()=>amounts};

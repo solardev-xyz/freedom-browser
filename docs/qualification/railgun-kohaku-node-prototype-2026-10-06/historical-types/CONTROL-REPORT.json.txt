@@ -1,0 +1,122 @@
+{
+  "probeSha256": "29c8046957cf26a1b8d596b159964ec65ebf13358605b292b210252d1b4e66d0",
+  "verifierSha256": "cb8a2f7de3ac5fd14c7bb02995f1c3b3aa5cc87b50a35235d5b08e54cf5c5c04",
+  "controls": [
+    {
+      "name": "missing-cjs-declaration",
+      "distinguished": true,
+      "diagnostics": [
+        {
+          "code": 7016,
+          "file": "positive.cts",
+          "line": 1,
+          "character": 22,
+          "message": "Could not find a declaration file for module '@freedom/restricted-railgun-node-prototype'. '<HISTORICAL_TYPES>/controls/missing-cjs-declaration/node_modules/@freedom/restricted-railgun-node-prototype/index.cjs' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/freedom__restricted-railgun-node-prototype` if it exists or add a new declaration (.d.ts) file containing `declare module '@freedom/restricted-railgun-node-prototype';`"
+        },
+        {
+          "code": 7016,
+          "file": "positive.cts",
+          "line": 3,
+          "character": 223,
+          "message": "Could not find a declaration file for module '@freedom/restricted-railgun-node-prototype'. '<HISTORICAL_TYPES>/controls/missing-cjs-declaration/node_modules/@freedom/restricted-railgun-node-prototype/index.cjs' implicitly has an 'any' type.\n  Try `npm i --save-dev @types/freedom__restricted-railgun-node-prototype` if it exists or add a new declaration (.d.ts) file containing `declare module '@freedom/restricted-railgun-node-prototype';`"
+        }
+      ],
+      "declarationGraph": [],
+      "reason": "exact intended diagnostic codes/positions and message fragment",
+      "afterReadHashesUnchanged": true
+    },
+    {
+      "name": "missing-esm-declaration",
+      "distinguished": true,
+      "diagnostics": [
+        {
+          "code": 7016,
+          "file": "positive.mts",
+          "line": 1,
+          "character": 130,
+          "message": "Could not find a declaration file for module '@freedom/restricted-railgun-node-prototype'. '<HISTORICAL_TYPES>/controls/missing-esm-declaration/node_modules/@freedom/restricted-railgun-node-prototype/index.mjs' implicitly has an 'any' type.\n  There are types at '<HISTORICAL_TYPES>/controls/missing-esm-declaration/node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts', but this result could not be resolved when respecting package.json \"exports\". The '@freedom/restricted-railgun-node-prototype' library may need to update its package.json or typings."
+        },
+        {
+          "code": 7016,
+          "file": "positive.mts",
+          "line": 2,
+          "character": 223,
+          "message": "Could not find a declaration file for module '@freedom/restricted-railgun-node-prototype'. '<HISTORICAL_TYPES>/controls/missing-esm-declaration/node_modules/@freedom/restricted-railgun-node-prototype/index.mjs' implicitly has an 'any' type.\n  There are types at '<HISTORICAL_TYPES>/controls/missing-esm-declaration/node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts', but this result could not be resolved when respecting package.json \"exports\". The '@freedom/restricted-railgun-node-prototype' library may need to update its package.json or typings."
+        }
+      ],
+      "declarationGraph": [],
+      "reason": "exact intended diagnostic codes/positions and message fragment",
+      "afterReadHashesUnchanged": true
+    },
+    {
+      "name": "misrouted-esm-types",
+      "distinguished": true,
+      "diagnostics": [],
+      "declarationGraph": [
+        "node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts"
+      ],
+      "reason": "required ESM entry declaration absent from loaded graph despite successful typecheck",
+      "afterReadHashesUnchanged": true
+    },
+    {
+      "name": "duplicate-brands",
+      "distinguished": true,
+      "diagnostics": [
+        {
+          "code": 2741,
+          "file": "mixed.mts",
+          "line": 10,
+          "character": 9,
+          "message": "Property '[privateOperation]' is missing in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateOperation' but required in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateOperation'."
+        },
+        {
+          "code": 2741,
+          "file": "mixed.mts",
+          "line": 12,
+          "character": 9,
+          "message": "Property '[privateOperation]' is missing in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateOperation' but required in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateOperation'."
+        },
+        {
+          "code": 2345,
+          "file": "mixed.mts",
+          "line": 13,
+          "character": 99,
+          "message": "Argument of type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateAdapter' is not assignable to parameter of type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateAdapter'.\n  Type 'PrivateAdapter' is not assignable to type '{ instanceId(): Promise<string>; balance(assets?: ReadAsset[] | undefined): Promise<ReadAmount[]>; notes(assets?: ReadAsset[] | undefined, includeSpent?: boolean | undefined): Promise<...>; prepareTransfer(value: PrivateInput, to: string): Promise<...>; prepareUnshield(value: PrivateInput, to: `0x${string}`, options...'.\n    The types returned by 'prepareTransfer(...)' are incompatible between these types.\n      Type 'Promise<import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateOperation>' is not assignable to type 'Promise<import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateOperation>'.\n        Property '[privateOperation]' is missing in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateOperation' but required in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateOperation'."
+        },
+        {
+          "code": 2345,
+          "file": "mixed.mts",
+          "line": 14,
+          "character": 107,
+          "message": "Argument of type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateAdapter' is not assignable to parameter of type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateAdapter'.\n  Type 'PrivateAdapter' is not assignable to type '{ instanceId(): Promise<string>; balance(assets?: ReadAsset[] | undefined): Promise<ReadAmount[]>; notes(assets?: ReadAsset[] | undefined, includeSpent?: boolean | undefined): Promise<...>; prepareTransfer(value: PrivateInput, to: string): Promise<...>; prepareUnshield(value: PrivateInput, to: `0x${string}`, options...'.\n    The types returned by 'prepareTransfer(...)' are incompatible between these types.\n      Type 'Promise<import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateOperation>' is not assignable to type 'Promise<import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateOperation>'.\n        Property '[privateOperation]' is missing in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\", { with: { \"resolution-mode\": \"import\" } }).PrivateOperation' but required in type 'import(\"<HISTORICAL_TYPES>/controls/duplicate-brands/node_modules/@freedom/restricted-railgun-node-prototype/index\").PrivateOperation'."
+        }
+      ],
+      "declarationGraph": [
+        "node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts",
+        "node_modules/@freedom/restricted-railgun-node-prototype/index.d.mts"
+      ],
+      "reason": "exact intended diagnostic codes/positions and message fragment",
+      "afterReadHashesUnchanged": true
+    },
+    {
+      "name": "void-broadcast-outcome",
+      "distinguished": true,
+      "diagnostics": [
+        {
+          "code": 2322,
+          "file": "positive.mts",
+          "line": 25,
+          "character": 9,
+          "message": "Type 'void' is not assignable to type 'PrivateSubmissionOutcome'."
+        }
+      ],
+      "declarationGraph": [
+        "node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts",
+        "node_modules/@freedom/restricted-railgun-node-prototype/index.d.mts"
+      ],
+      "reason": "exact intended diagnostic codes/positions and message fragment",
+      "afterReadHashesUnchanged": true
+    }
+  ],
+  "compilerRerun": false
+}

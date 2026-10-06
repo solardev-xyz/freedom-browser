@@ -1,0 +1,225 @@
+/** Artifact-only quick consumers with independent trusted in-memory hosts. */
+const assert = require('assert/strict');
+const fs = require('fs');
+const path = require('path');
+const Module = require('module');
+const pkg = '@freedom/restricted-railgun-node-prototype';
+const root = path.join(__dirname, 'node_modules/@freedom/restricted-railgun-node-prototype');
+const hostFixture = require('./independent-host.cjs');
+const mode = process.argv[2];
+assert.ok(['cjs', 'esm', 'mixed', 'trap-network', 'trap-process', 'trap-root'].includes(mode));
+const violations = [];
+function trip(label) {
+  violations.push(label);
+  throw Error('Trapped ' + label);
+}
+const baselineModules = new Set(Object.keys(require.cache));
+const originalLoad = Module._load;
+const forbidden = new Set([
+  'http',
+  'https',
+  'http2',
+  'net',
+  'tls',
+  'dgram',
+  'dns',
+  'child_process',
+  'worker_threads',
+  'electron',
+]);
+for (const [name, methods] of [
+  ['http', ['request', 'get', 'createServer']],
+  ['https', ['request', 'get', 'createServer']],
+  ['http2', ['connect', 'createServer', 'createSecureServer']],
+  ['net', ['connect', 'createConnection', 'createServer']],
+  ['tls', ['connect', 'createServer']],
+  ['dgram', ['createSocket']],
+  ['dns', ['lookup', 'resolve']],
+  ['child_process', ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']],
+  ['worker_threads', ['Worker']],
+]) {
+  const builtin = require(name);
+  for (const method of methods) builtin[method] = () => trip(name + '.' + method);
+}
+process.dlopen = () => trip('process.dlopen');
+globalThis.fetch = () => trip('global.fetch');
+globalThis.WebSocket = function () {
+  trip('global.WebSocket');
+};
+Module.syncBuiltinESMExports();
+Module._load = function (request, parent, isMain) {
+  if (forbidden.has(request.replace(/^node:/, ''))) trip('module:' + request);
+  if (!Module.isBuiltin(request)) {
+    const resolved = Module._resolveFilename(request, parent, isMain);
+    if (resolved !== __filename && !resolved.startsWith(root + path.sep))
+      trip('outside-artifact-module');
+  }
+  return Reflect.apply(originalLoad, this, [request, parent, isMain]);
+};
+function clean() {
+  assert.deepEqual(violations, [], 'Sticky forbidden work');
+}
+async function main() {
+  if (mode === 'trap-network') {
+    try {
+      await fetch('https://must-not-be-requested.invalid');
+    } catch {
+      /* Deliberately swallowed: the sticky trap must still fail the test. */
+    }
+    clean();
+  }
+  if (mode === 'trap-process') {
+    try {
+      require('child_process').spawn('must-not-run');
+    } catch {
+      /* Deliberately swallowed: the sticky trap must still fail the test. */
+    }
+    clean();
+  }
+  if (mode === 'trap-root') {
+    try {
+      require('<REPOSITORY>/src/main/wallet/railgun-kohaku-private-adapter');
+    } catch {
+      /* Deliberately swallowed: the sticky trap must still fail the test. */
+    }
+    clean();
+  }
+  const common = mode !== 'esm' ? require(pkg) : null;
+  const esm = mode !== 'cjs' ? await import(pkg) : null;
+  const api = common || esm;
+  const expected = [
+    'createRailgunKohakuPrivateAdapter',
+    'createRailgunKohakuPrivateAdapterBroadcaster',
+    'createRailgunKohakuSnapshotPlugin',
+  ];
+  assert.deepEqual(Object.keys(api).sort(), expected);
+  if (mode === 'mixed') for (const name of expected) assert.equal(common[name], esm[name]);
+  clean();
+  const f = hostFixture.independentPrivateHost();
+  const source = { instanceId: hostFixture.INSTANCE, received: f.values };
+  const lifetime = new AbortController();
+  const snapshot = api.createRailgunKohakuSnapshotPlugin({
+    host: {
+      signal: lifetime.signal,
+      capture() {
+        return {
+          snapshot: source,
+          assertCurrent() {
+            assert.equal(lifetime.signal.aborted, false);
+          },
+        };
+      },
+    },
+    signal: new AbortController().signal,
+  });
+  assert.equal(await snapshot.instanceId(), hostFixture.INSTANCE);
+  assert.equal((await snapshot.balance())[0].amount, 2000n);
+  const notes = await snapshot.notes();
+  notes[0].amount = 7n;
+  assert.equal((await snapshot.notes())[0].amount, 2000n);
+  snapshot.close();
+  await snapshot.closed;
+  await assert.rejects(snapshot.notes());
+  clean();
+  const results = [];
+  for (const kind of ['transfer', 'unshield', 'partial']) {
+    results.push(
+      await hostFixture.checkPrivateConformance(
+        api.createRailgunKohakuPrivateAdapter,
+        api.createRailgunKohakuPrivateAdapterBroadcaster,
+        kind
+      )
+    );
+    clean();
+  }
+  let sharedMaps = null;
+  if (mode === 'mixed') {
+    const f = hostFixture.independentPrivateHost();
+    const adapter = common.createRailgunKohakuPrivateAdapter({
+      host: f.host,
+      signal: new AbortController().signal,
+    });
+    assert.throws(() =>
+      esm.createRailgunKohakuPrivateAdapter({ host: f.host, signal: new AbortController().signal })
+    );
+    const token = await adapter.prepareTransfer(f.input, hostFixture.INSTANCE);
+    const broadcaster = esm.createRailgunKohakuPrivateAdapterBroadcaster(adapter);
+    await assert.rejects(broadcaster.broadcast({ ...token }));
+    assert.equal(await broadcaster.broadcast(token), f.acknowledged);
+    await adapter.closed;
+    await assert.rejects(broadcaster.broadcast(token));
+    assert.equal(f.calls.filter((v) => v.method === 'broadcast').length, 1);
+    sharedMaps = true;
+    clean();
+  }
+  let addressCases = 0;
+  for (const field of ['from', 'to']) {
+    for (const [address, accepted] of [
+      ['0x8ba1f109551bd432803012645ac136ddd64dba72', true],
+      ['0x8ba1f109551bD432803012645Ac136ddd64DBA72', true],
+      ['XE65GB6LDNXYOFTX0NSV3FUWKOWIXAMJK36', false],
+      ['8ba1f109551bd432803012645ac136ddd64dba72', false],
+      ['0x8Ba1f109551bD432803012645Ac136ddd64DBA72', false],
+    ]) {
+      const f = hostFixture.independentPrivateHost();
+      f.acknowledged[field] = address;
+      const adapter = api.createRailgunKohakuPrivateAdapter({
+        host: f.host,
+        signal: new AbortController().signal,
+      });
+      try {
+        const token = await adapter.prepareTransfer(f.input, hostFixture.INSTANCE);
+        const broadcaster = api.createRailgunKohakuPrivateAdapterBroadcaster(adapter);
+        const result = await broadcaster.broadcast(token);
+        if (accepted) {
+          assert.equal(result, f.acknowledged);
+          assert.equal(result[field], address);
+        } else
+          assert.deepEqual(result, {
+            transactionHash: hostFixture.HASH,
+            submissionStatus: 'unknown',
+          });
+        await adapter.closed;
+        await assert.rejects(broadcaster.broadcast(token));
+        assert.equal(f.calls.filter((c) => c.method === 'broadcast').length, 1);
+        addressCases++;
+      } finally {
+        adapter.close();
+        await adapter.closed;
+      }
+    }
+  }
+  const loaded = Object.keys(require.cache).filter((file) => !baselineModules.has(file));
+  assert.ok(loaded.length > 0);
+  assert.ok(loaded.every((file) => file.startsWith(root + path.sep)));
+  clean();
+  const report = {
+    schema: 'restricted-node-final-combined-consumer-v1',
+    mode,
+    exports: expected,
+    independentHost: true,
+    hostAuthorityQualified: false,
+    snapshotReads: 4,
+    addressCases,
+    detachedMutationIsolation: true,
+    privateOperations: results,
+    sharedCjsEsmIdentity: sharedMaps,
+    stickyForbiddenWork: violations,
+    loadedArtifactModules: loaded.map((file) => path.relative(root, file)).sort(),
+    genuineFreedomHostIncluded: false,
+    nativeCryptoQualified: false,
+    osEgressQualified: false,
+    node: process.version,
+    pid: process.pid,
+  };
+  fs.writeFileSync(path.join(__dirname, 'report.json'), JSON.stringify(report, null, 2) + '\n', {
+    flag: 'wx',
+  });
+  console.log(
+    JSON.stringify({ status: 'passed', mode, sharedMaps, forbiddenEntries: violations.length })
+  );
+}
+main().catch((error) => {
+  console.error(error.stack);
+  process.exitCode = 1;
+});

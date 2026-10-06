@@ -1,0 +1,16 @@
+{
+  "name": "@freedom/restricted-railgun-node-prototype",
+  "version": "0.0.0-private",
+  "private": true,
+  "license": "MPL-2.0",
+  "main": "./index.cjs",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.cjs"
+    }
+  },
+  "engines": {
+    "node": "24.18.1"
+  }
+}

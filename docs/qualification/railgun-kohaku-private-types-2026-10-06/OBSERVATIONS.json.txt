@@ -1,0 +1,18 @@
+{
+  "prepare": {
+    "sessionId": 93499,
+    "observedExitCode": 0,
+    "drained": true
+  },
+  "run": {
+    "sessionId": 76427,
+    "observedExitCode": 0,
+    "drained": true
+  },
+  "lint": {
+    "observedExitCode": 0,
+    "warnings": 0
+  },
+  "r1Preserved": "../railgun-kohaku-private-strict-conformance-r1-oct6",
+  "declarationUnchanged": true
+}

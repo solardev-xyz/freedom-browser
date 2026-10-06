@@ -1,0 +1,3 @@
+Error: Kohaku private adapter unavailable
+    at refusal (<RUNTIME_PHASE2>/control-settlement-box/node_modules/@freedom/restricted-railgun-node-prototype/runtime.cjs:1030:39)
+    at <RUNTIME_PHASE2>/control-settlement-box/node_modules/@freedom/restricted-railgun-node-prototype/runtime.cjs:1465:21

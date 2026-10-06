@@ -1,0 +1,54 @@
+[
+  {
+    "name": "checksum",
+    "changes": [
+      [
+        "getAddress2(hex(value.from, 40));",
+        "hex(value.from, 40);"
+      ]
+    ],
+    "mutatedRuntimeSha256": "953695338c0acd90eb21949b45caf8d0c9caa101059b71919f7800486d26ae7a",
+    "expectedExitCode": 1,
+    "qualificationArtifact": false
+  },
+  {
+    "name": "token",
+    "changes": [
+      [
+        "assert2.ok(activeToken && token === activeToken && tokens.has(token));",
+        "token = activeToken; assert2.ok(activeToken && tokens.has(token));"
+      ]
+    ],
+    "mutatedRuntimeSha256": "9bc4fba3d2b07e5c7d5ae506e9c3c12dcc361e11dba9276b1d0ec988365f360c",
+    "expectedExitCode": 1,
+    "qualificationArtifact": false
+  },
+  {
+    "name": "settlement-box",
+    "changes": [
+      [
+        "const pending = raw.then((box) => fulfilled(box.value), rejected);",
+        "const pending = raw.then((value) => fulfilled(value), rejected);"
+      ],
+      [
+        "observe(nativePromise(supplied), (value) => yes(Object.freeze({ value })), no);",
+        "observe(nativePromise(supplied), yes, no);"
+      ]
+    ],
+    "mutatedRuntimeSha256": "201c4defec286b254f5e05dbd433516826d88a79b25a7d643ebfa147f0ee94fe",
+    "expectedExitCode": 1,
+    "qualificationArtifact": false
+  },
+  {
+    "name": "early-close",
+    "changes": [
+      [
+        "if (!closing || tasks.size || !hostSettled || !closeCalled) return;",
+        "if (!closing || !closeCalled) return;"
+      ]
+    ],
+    "mutatedRuntimeSha256": "c7d78a8f6a2ff5eff088f9fc644aa3ebde6e0e71571cd55c33533e69694c605f",
+    "expectedExitCode": 1,
+    "qualificationArtifact": false
+  }
+]

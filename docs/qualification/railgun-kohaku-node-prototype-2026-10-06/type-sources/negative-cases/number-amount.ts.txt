@@ -1,0 +1,2 @@
+import type { PrivateInput } from '@freedom/restricted-railgun-node-prototype';
+const value: PrivateInput = {asset:{__type:'erc20',contract:'0x01'},noteId:'0:0',amount:1};

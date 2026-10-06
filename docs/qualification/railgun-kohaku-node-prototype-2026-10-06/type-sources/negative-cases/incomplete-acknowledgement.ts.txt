@@ -1,0 +1,2 @@
+import type { PrivateSubmissionOutcome } from '@freedom/restricted-railgun-node-prototype';
+const result: PrivateSubmissionOutcome = {hash:'0x01'};

@@ -1,0 +1,103 @@
+import pathlib,json,hashlib,shutil,re
+base=pathlib.Path(__file__).parent;root=pathlib.Path('<REPOSITORY>');phase=root # explicit input below
+phase=pathlib.Path('<RUNTIME_PHASE1>');source=phase/'build-f/artifact';dest=base/'artifact'
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+freeze=json.loads((phase/'FREEZE.json').read_text());inventory=json.loads((phase/'REPRODUCIBILITY-FINAL.json').read_text())['files']
+assert set(inventory)=={str(p.relative_to(source)) for p in source.rglob('*') if p.is_file()}
+for n,h in inventory.items(): assert sha(source/n)==h and freeze['files']['build-f/artifact/'+n]==h
+assert not dest.exists();shutil.copytree(source,dest)
+inputs={'scripts/fixtures/railgun-kohaku-private-contract.d.ts':'ef7f1c9e1b2a8811eb1b5c774e41d53625419deca896e8a03ff8f24f94d4f4f9','scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts':'e8d17a0c103be64ff2d9e44e6ce0324437cbd73e544da4e784a603b566492792'}
+for n,h in inputs.items():
+ assert sha(root/n)==h;p=dest/'source'/n;p.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(root/n,p)
+snap=(root/'scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts').read_text();snap=snap[snap.index('export type ReadAsset ='):snap.index('// The actual pinned target,')].rstrip()+'\n'
+private=(root/'scripts/fixtures/railgun-kohaku-private-contract.d.ts').read_text();private=private[private.index('export interface PrivateInput {'):]
+line='export type PinnedPrivateTarget = PluginInstance<string, PrivateCapabilities>;\n';assert private.count(line)==1;private=private.replace(line,'')
+line='export type PrivateAdapterBroadcaster = Broadcaster<PrivateOperation, PrivateSubmissionOutcome>;';assert private.count(line)==1;private=private.replace(line,'export type PrivateAdapterBroadcaster = {\n  broadcast(operation: PrivateOperation): Promise<PrivateSubmissionOutcome>;\n};')
+canonical='/** Freedom restricted trusted-host declarations, derived from pinned MPL-2.0 sources.\n * Host authority, native Promise and identity checks remain runtime contracts.\n * This file owns the only distribution PrivateOperation brand.\n */\n'+snap+'\n'+private
+assert not re.search(r'\bimport\b|\bPluginInstance\b|\bPinned\w*Target\b|Broadcaster<|declare\s+module',canonical)
+(dest/'index.d.cts').write_text(canonical)
+names=re.findall(r'export (?:type|interface) (\w+)',canonical);functions=re.findall(r'export declare function (\w+)',canonical);assert len(functions)==3 and len(names)==len(set(names))
+esm='/** Forward both entrypoints to one declaration identity. */\nexport {\n'+''.join('  '+n+',\n' for n in functions)+"} from './index.cjs';\nexport type {\n"+''.join('  '+n+',\n' for n in names)+"} from './index.cjs';\n"
+(dest/'index.d.mts').write_text(esm)
+manifest=json.loads((dest/'package.json').read_text());manifest['types']='./index.d.cts';manifest['exports']['.']={'import':{'types':'./index.d.mts','default':'./index.mjs'},'require':{'types':'./index.d.cts','default':'./index.cjs'}};(dest/'package.json').write_text(json.dumps(manifest,indent=2)+'\n')
+def write(p,x):p.write_text(json.dumps(x,indent=2)+'\n')
+transform={'schema':1,'phaseOneFreezeSha256':sha(phase/'FREEZE.json'),'phaseOneBuildReportSha256':sha(phase/'build-f/BUILD-REPORT.json'),'phaseOneArtifactInventory':inventory,'sourceInputs':inputs,'recipeSha256':sha(pathlib.Path(__file__)),'steps':['Exact copies of reviewed phase-one artifact; only package.json changes among original files.','Snapshot contract: retain ReadAsset through factory declaration; omit research preamble, repo-local upstream import and PinnedReadTarget alias.','Private contract: retain PrivateInput onward; omit preamble/imports/re-exports, remove PinnedPrivateTarget alias, replace upstream generic Broadcaster alias with equivalent restricted own broadcast signature.','Concatenate shared snapshot types then private types once in index.d.cts; retain sole privateOperation unique symbol.','Generate explicit index.d.mts value/type forwarding from canonical declaration exports via ./index.cjs.','Add per-condition types before default runtime export; top-level types matches CJS main.'],'valueExports':functions,'typeExports':names,'runtimeFilesUnchanged':{n:sha(dest/n) for n in ['index.cjs','index.mjs','runtime.cjs']},'qualifiedRuntimeBehavior':False,'pendingRuntimeAddressNarrowing':True}
+write(dest/'TYPE-SOURCE-BASIS.json',transform);shutil.copyfile(pathlib.Path(__file__),dest/'source/TYPE-RECIPE.py')
+for kind in ['cjs','esm','mixed']:
+ consumer=base/('consumer-'+kind);consumer.mkdir();shutil.copytree(dest,consumer/'node_modules/@freedom/restricted-railgun-node-prototype');write(consumer/'package.json',{'name':'private-type-consumer-'+kind,'private':True,'type':'module' if kind!='cjs' else 'commonjs'})
+body='''declare const host: RestrictedPrivateHost;
+declare const snapshotHost: SnapshotHost;
+declare const signal: AbortSignal;
+const adapter: PrivateAdapter = createRailgunKohakuPrivateAdapter({host, signal});
+const snapshot: SnapshotReadPlugin = createRailgunKohakuSnapshotPlugin({host: snapshotHost, signal});
+const broadcaster: PrivateAdapterBroadcaster = createRailgunKohakuPrivateAdapterBroadcaster(adapter);
+const value: PrivateInput = {asset: {__type: 'erc20', contract: '0x01'}, amount: 1n, noteId: '0:0'};
+async function consume() {
+  const id: string = await adapter.instanceId();
+  const snapshotId: string = await snapshot.instanceId();
+  const balance: ReadAmount[] = await adapter.balance(undefined);
+  balance.push({asset: {__type: 'native'}, amount: 1n, tag: 'unverified'});
+  const snapshotBalance: ReadAmount[] = await snapshot.balance(undefined);
+  snapshotBalance.push(...balance);
+  const notes: ReadNote[] = await adapter.notes(undefined, true);
+  notes.push(...notes);
+  const snapshotNotes: ReadNote[] = await snapshot.notes(undefined, false);
+  snapshotNotes.push(...notes);
+  const transfer: PrivateOperation = await adapter.prepareTransfer(value, id);
+  const copied: PrivateOperation = {...transfer};
+  const unshield: PrivateOperation = await adapter.prepareUnshield(value, '0x02', {});
+  const explicitlyUndefined: PrivateUnshieldOptions = {tailCalls: undefined};
+  const outcome: PrivateSubmissionOutcome = await broadcaster.broadcast(unshield);
+  if ('hash' in outcome) {
+    const hash: `0x${string}` = outcome.hash;
+    const from: `0x${string}` = outcome.from;
+    const to: `0x${string}` = outcome.to;
+    const chain: 11155111 = outcome.chainId;
+    const zero: '0' = outcome.value;
+    const source: 'direct' = outcome.broadcastSource;
+    const nonce: number = outcome.nonce;
+    const explorer: string | null = outcome.explorerUrl;
+    return {hash,from,to,chain,zero,source,nonce,explorer,copied,snapshotId,explicitlyUndefined};
+  }
+  if ('transactionHash' in outcome) {
+    const status: 'unknown' = outcome.submissionStatus;
+    return {status,hash:outcome.transactionHash};
+  }
+  const status: 'recovery-required' = outcome.status;
+  const stage: Extract<PrivateSubmissionOutcome, {status:'recovery-required'}>['stage'] = outcome.stage;
+  return {status,stage};
+}
+export {adapter,snapshot,broadcaster,consume};
+'''
+types=['RestrictedPrivateHost','SnapshotHost','PrivateAdapter','SnapshotReadPlugin','PrivateAdapterBroadcaster','PrivateInput','PrivateOperation','PrivateUnshieldOptions','PrivateSubmissionOutcome','ReadAmount','ReadNote']
+pkg='@freedom/restricted-railgun-node-prototype'
+for kind,ext in [('cjs','cts'),('esm','mts')]:
+ pre=("import api = require('"+pkg+"');\nconst {"+', '.join(functions)+"} = api;\n" if kind=='cjs' else "import {"+', '.join(functions)+"} from '"+pkg+"';\n")
+ pre+="import type {"+', '.join(types)+"} from '"+pkg+"';\n"
+ (base/('consumer-'+kind)/('positive.'+ext)).write_text(pre+body)
+ (base/('consumer-'+kind)/'cases').mkdir()
+spec=json.loads(pathlib.Path('<PRIVATE_DECLARATION_R2>/CASE-SPEC.json').read_text());out=[]
+for case in spec['negatives']:
+ if case['category']!='freedom-declaration':continue
+ text=(pathlib.Path('<PRIVATE_DECLARATION_R2>/cases')/case['file']).read_text().replace('freedom-private-contract',pkg)
+ for kind,ext in [('cjs','cts'),('esm','mts')]:
+  name=case['file'].replace('.ts','.'+ext);(base/('consumer-'+kind)/'cases'/name).write_text(text);out.append({**case,'file':'consumer-'+kind+'/cases/'+name,'category':'portable-negative'})
+mixed="import cjs = require('"+pkg+"');\nimport {createRailgunKohakuPrivateAdapter, createRailgunKohakuPrivateAdapterBroadcaster, type PrivateOperation, type PrivateSubmissionOutcome} from '"+pkg+"';\n"+'''declare const host: cjs.RestrictedPrivateHost;
+declare const signal: AbortSignal;
+declare const input: cjs.PrivateInput;
+const cjsAdapter = cjs.createRailgunKohakuPrivateAdapter({host,signal});
+const esmAdapter = createRailgunKohakuPrivateAdapter({host,signal});
+async function exchange() {
+  const fromCjs = await cjsAdapter.prepareTransfer(input, 'recipient');
+  const esmOperation: PrivateOperation = fromCjs;
+  const fromEsm = await esmAdapter.prepareTransfer(input, 'recipient');
+  const cjsOperation: cjs.PrivateOperation = fromEsm;
+  const esmOutcome: PrivateSubmissionOutcome = await createRailgunKohakuPrivateAdapterBroadcaster(cjsAdapter).broadcast(esmOperation);
+  const cjsOutcome: cjs.PrivateSubmissionOutcome = await cjs.createRailgunKohakuPrivateAdapterBroadcaster(esmAdapter).broadcast(cjsOperation);
+  return {esmOutcome,cjsOutcome};
+}
+export {exchange};
+''';(base/'consumer-mixed/mixed.mts').write_text(mixed)
+write(base/'CASE-SPEC.json',{'positives':['consumer-cjs/positive.cts','consumer-esm/positive.mts','consumer-mixed/mixed.mts'],'negatives':out})
+write(base/'PREPARE-REPORT.json',{'phaseOneFreezeSha256':sha(phase/'FREEZE.json'),'artifactFiles':{str(p.relative_to(dest)):sha(p) for p in sorted(dest.rglob('*')) if p.is_file()},'runtimeUnchanged':True,'negativeCases':len(out),'positiveCases':3})
+print('Prepared phase-one-based distribution declarations and 3 physical consumer packages; runtime unchanged.')

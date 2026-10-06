@@ -1,0 +1,60 @@
+import {
+  createRailgunKohakuPrivateAdapter,
+  createRailgunKohakuPrivateAdapterBroadcaster,
+  type RestrictedPrivateHost, type PrivateAdapter, type PrivateInput,
+  type PrivateOperation, type PrivateSubmissionOutcome, type PrivateCapabilities,
+  type PinnedPrivateTarget, type PrivateAdapterBroadcaster, type ReadAmount,
+} from 'freedom-private-contract';
+import type { PICapCfg, PICapabilities, PluginInstance } from 'kohaku-plugin-base';
+import type { Broadcaster } from 'kohaku-broadcaster-base';
+
+declare const host: RestrictedPrivateHost;
+declare const signal: AbortSignal;
+const adapter: PrivateAdapter = createRailgunKohakuPrivateAdapter({ host, signal });
+const capabilitiesValid: PICapCfg<PrivateCapabilities> extends PICapabilities ? true : false = true;
+const target: PluginInstance<string, PrivateCapabilities> = adapter;
+const declaredTarget: PinnedPrivateTarget = target;
+type OnlyPrivateFeatures<T> = Exclude<Extract<keyof T, `prepare${string}`>, 'prepareTransfer' | 'prepareUnshield'> extends never ? true : false;
+const noOtherAdapterFeatures: OnlyPrivateFeatures<PrivateAdapter> = true;
+const noOtherTargetFeatures: OnlyPrivateFeatures<PinnedPrivateTarget> = true;
+const broadcaster: Broadcaster<PrivateOperation, PrivateSubmissionOutcome> =
+  createRailgunKohakuPrivateAdapterBroadcaster(adapter);
+const specializedBroadcaster: PrivateAdapterBroadcaster = broadcaster;
+const factory: (options: {host: RestrictedPrivateHost; signal: AbortSignal}) => PrivateAdapter =
+  createRailgunKohakuPrivateAdapter;
+const value: PrivateInput = {
+  asset: {__type: 'erc20', contract: '0x01'}, amount: 1n, noteId: '0:0',
+};
+// Type examples only: hex length, positive amount, supported token, canonical
+// noteId, authority and object identity are not authenticated by these types.
+async function consume() {
+  const id: string = await adapter.instanceId();
+  const notes = await adapter.notes(undefined, true);
+  notes.push(...notes);
+  const amounts: ReadAmount[] = await target.balance(undefined);
+  amounts.push({asset: {__type: 'native'}, amount: 1n, tag: 'unverified'});
+  const transfer: PrivateOperation = await adapter.prepareTransfer(value, id);
+  const withdrawal: PrivateOperation = await adapter.prepareUnshield(value, '0x02', {});
+  // A typed structural copy compiles; the runtime must refuse its identity.
+  const copied: PrivateOperation = {...transfer};
+  // Upstream method typing admits tailCalls even when concrete adapter methods
+  // narrow it. This is a declaration-assignability limitation, not support.
+  const upstreamOnlyCall = target.prepareUnshield(value, '0x02', {tailCalls: async () => []});
+  const outcome: PrivateSubmissionOutcome = await broadcaster.broadcast(withdrawal);
+  if ('hash' in outcome) {
+    const chain: 11155111 = outcome.chainId;
+    const zero: '0' = outcome.value;
+    const source: 'direct' = outcome.broadcastSource;
+    const nonce: number = outcome.nonce;
+    const explorer: string | null = outcome.explorerUrl;
+    return {chain, zero, source, nonce, explorer, copied, upstreamOnlyCall};
+  }
+  if ('transactionHash' in outcome) {
+    const state: 'unknown' = outcome.submissionStatus;
+    return {state, hash: outcome.transactionHash};
+  }
+  const state: 'recovery-required' = outcome.status;
+  const stage: Extract<PrivateSubmissionOutcome, {status: 'recovery-required'}>['stage'] = outcome.stage;
+  return {state, stage};
+}
+export {adapter, target, declaredTarget, specializedBroadcaster, factory, consume, capabilitiesValid, noOtherAdapterFeatures, noOtherTargetFeatures};

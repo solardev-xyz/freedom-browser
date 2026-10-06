@@ -1,0 +1,5 @@
+{
+  "name": "private-type-consumer-cjs",
+  "private": true,
+  "type": "commonjs"
+}

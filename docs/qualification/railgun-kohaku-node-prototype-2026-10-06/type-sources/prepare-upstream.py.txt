@@ -1,0 +1,15 @@
+import pathlib,json,shutil
+b=pathlib.Path(__file__).parent;c=b/'consumer-upstream';c.mkdir();shutil.copytree(b/'artifact',c/'node_modules/@freedom/restricted-railgun-node-prototype');(c/'package.json').write_text('{"private":true,"type":"module"}\n')
+pkg='@freedom/restricted-railgun-node-prototype'
+(c/'bridge.ts').write_text("import type { PluginInstance } from 'kohaku-plugin-base';\nimport type { PrivateCapabilities, ReadAmount, ReadNote, SnapshotExtras } from '"+pkg+"';\nexport type PinnedPrivateTarget = PluginInstance<string, PrivateCapabilities>;\nexport type PinnedReadTarget = PluginInstance<string, {features:{};note:ReadNote;assetAmounts:{input:ReadAmount;internal:ReadAmount;output:ReadAmount;read:ReadAmount};extras:SnapshotExtras}>;\n")
+old=pathlib.Path('<PRIVATE_DECLARATION_R2>');s=(old/'cases/positive.ts').read_text().replace('freedom-private-contract',pkg).replace('type PinnedPrivateTarget, ','');s="import type {PinnedPrivateTarget, PinnedReadTarget} from './bridge';\n"+s
+s+="\nimport {createRailgunKohakuSnapshotPlugin, type SnapshotHost} from '"+pkg+"';\ndeclare const snapshotHost: SnapshotHost;\nconst snapshotTarget: PinnedReadTarget = createRailgunKohakuSnapshotPlugin({host:snapshotHost,signal});\nexport {snapshotTarget};\n";(c/'positive.ts').write_text(s)
+spec=json.loads((old/'CASE-SPEC.json').read_text());entries=[]
+for e in spec['negatives']:
+ if e['category']!='upstream-binding':continue
+ s=(old/'cases'/e['file']).read_text().replace('freedom-private-contract',pkg);new=dict(e)
+ if e['file']=='upstream-absent-shield.ts':s=s.replace(pkg,'./bridge')
+ if e['file']=='readonly-balance.ts':
+  s=s.replace('PinnedPrivateTarget, ','');s="import type {PinnedPrivateTarget} from './bridge';\n"+s;new['expectedLine']+=1;new['expectedPositions']=[{**p,'line':p['line']+1} for p in e['expectedPositions']]
+ (c/e['file']).write_text(s);entries.append(new)
+(b/'UPSTREAM-SPEC.json').write_text(json.dumps({'positive':'positive.ts','negatives':entries},indent=2)+'\n')

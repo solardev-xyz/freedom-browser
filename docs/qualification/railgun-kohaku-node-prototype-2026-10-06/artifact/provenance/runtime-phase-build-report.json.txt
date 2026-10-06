@@ -1,0 +1,508 @@
+{
+  "parsedInputs": 62,
+  "emittedInputs": [
+    {
+      "file": "src/main/wallet/railgun-kohaku-read-dispatch.js",
+      "bytesInOutput": 757
+    },
+    {
+      "file": "src/main/wallet/railgun-kohaku-read-data.js",
+      "bytesInOutput": 3030
+    },
+    {
+      "file": "src/main/wallet/railgun-kohaku-snapshot-plugin.js",
+      "bytesInOutput": 8699
+    },
+    {
+      "file": "src/main/wallet/railgun-shield-pins.json",
+      "bytesInOutput": 899
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/_version.js",
+      "bytesInOutput": 120
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/utils/properties.js",
+      "bytesInOutput": 918
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/utils/errors.js",
+      "bytesInOutput": 3221
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/utils/data.js",
+      "bytesInOutput": 1046
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/utils/index.js",
+      "bytesInOutput": 120
+    },
+    {
+      "file": "node_modules/ethers/node_modules/@noble/hashes/esm/_assert.js",
+      "bytesInOutput": 919
+    },
+    {
+      "file": "node_modules/ethers/node_modules/@noble/hashes/esm/_u64.js",
+      "bytesInOutput": 908
+    },
+    {
+      "file": "node_modules/ethers/node_modules/@noble/hashes/esm/utils.js",
+      "bytesInOutput": 1572
+    },
+    {
+      "file": "node_modules/ethers/node_modules/@noble/hashes/esm/sha3.js",
+      "bytesInOutput": 6654
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/crypto/keccak.js",
+      "bytesInOutput": 665
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/crypto/index.js",
+      "bytesInOutput": 105
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/address/address.js",
+      "bytesInOutput": 2824
+    },
+    {
+      "file": "node_modules/ethers/lib.esm/address/index.js",
+      "bytesInOutput": 109
+    },
+    {
+      "file": "restricted-bridge:ethers-address-only",
+      "bytesInOutput": 227
+    },
+    {
+      "file": "src/main/wallet/railgun-kohaku-private-adapter.js",
+      "bytesInOutput": 17043
+    },
+    {
+      "file": "restricted-entry.cjs",
+      "bytesInOutput": 433
+    }
+  ],
+  "externalImports": [
+    {
+      "path": "assert/strict",
+      "kind": "require-call",
+      "external": true
+    },
+    {
+      "path": "assert/strict",
+      "kind": "require-call",
+      "external": true
+    },
+    {
+      "path": "assert/strict",
+      "kind": "require-call",
+      "external": true
+    },
+    {
+      "path": "util",
+      "kind": "require-call",
+      "external": true
+    },
+    {
+      "path": "assert/strict",
+      "kind": "require-call",
+      "external": true
+    },
+    {
+      "path": "util",
+      "kind": "require-call",
+      "external": true
+    }
+  ],
+  "requireCalls": 6,
+  "commonJSWrapperNames": 1,
+  "outputBytes": 52477,
+  "buildTools": [
+    {
+      "name": "esbuild",
+      "version": "0.28.2",
+      "license": "LICENSE.md",
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "runtimeDependency": false
+    },
+    {
+      "name": "@babel/parser",
+      "version": "8.0.6",
+      "license": "LICENSE",
+      "sha256": "2e97627cb278aa7556fb9e8817368302301a595b6c7582512b8d74c57b773652",
+      "runtimeDependency": false
+    }
+  ],
+  "recipeSha256": "67914f0abd52f8291f36158791b756634bca98d68f81c8efa987b4697d834412",
+  "designBasisSha256": "c2c9506a94d6d5c9ce6f4061954286dd066fb7c2395f98c3dd0324e8afba0a58",
+  "bridgeResolutions": 1,
+  "inputInventory": {
+    "<node-executable>": {
+      "sha256": "f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5",
+      "bytes": 120957760
+    },
+    "LICENSE": {
+      "sha256": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae",
+      "bytes": 16725
+    },
+    "node_modules/@babel/parser/lib/index.js": {
+      "sha256": "a6993b23a0d162cc93e49f72ef927c947c2026cd146cfe9c02cd695a4258411d",
+      "bytes": 481329
+    },
+    "node_modules/@babel/parser/LICENSE": {
+      "sha256": "2e97627cb278aa7556fb9e8817368302301a595b6c7582512b8d74c57b773652",
+      "bytes": 1086
+    },
+    "node_modules/@babel/parser/package.json": {
+      "sha256": "aacf65a9c1533d54fde416a8c64b7ad76d802ab608290fbe42bea7fd27f1669a",
+      "bytes": 1518
+    },
+    "node_modules/@esbuild/darwin-arm64/bin/esbuild": {
+      "sha256": "10b6243df618d374bb2d5c9cfbe7052e1405f6aa4e53a6164f11a91b9f2e1384",
+      "bytes": 10590882
+    },
+    "node_modules/@esbuild/darwin-arm64/package.json": {
+      "sha256": "4e652c9e4410daf03da852a664940153601fac397233cdcf276b4b1a312454b9",
+      "bytes": 382
+    },
+    "node_modules/esbuild/lib/main.js": {
+      "sha256": "61ec0ba144ff93f4bf0e96ad6fab6f430ede0aa13e27ace8063ed63ba416b3cd",
+      "bytes": 97463
+    },
+    "node_modules/esbuild/LICENSE.md": {
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "bytes": 1069
+    },
+    "node_modules/esbuild/package.json": {
+      "sha256": "9d0bc453f4e791553c4cc2298ba023b409241fd9801e494741666eb0f6051490",
+      "bytes": 3980
+    },
+    "node_modules/ethers/lib.esm/_version.js": {
+      "sha256": "9f1010be12f1a336e30d98736d014bbc489ca99283ea35b6a53190f4b442e806",
+      "bytes": 180
+    },
+    "node_modules/ethers/lib.esm/address/address.js": {
+      "sha256": "7a98077a0803a7c95fb5f94c4bf9e1e6bf24757e0a0813d89f121851ca1cb5bd",
+      "bytes": 5856
+    },
+    "node_modules/ethers/lib.esm/address/checks.js": {
+      "sha256": "d7638bb0c5898dfd767cf0334321ea4652231ebf5b2df494a4b16c0ec99ae3e2",
+      "bytes": 3665
+    },
+    "node_modules/ethers/lib.esm/address/contract-address.js": {
+      "sha256": "b8b0a667a65843a134ca22819d906e154c5eaf24e2d7f132badd15a134988d40",
+      "bytes": 2575
+    },
+    "node_modules/ethers/lib.esm/address/index.js": {
+      "sha256": "9fc86d21b1924360ad50fd196fff1b6d0c23af5f0651fc5d13cbd4dab98f3b5e",
+      "bytes": 793
+    },
+    "node_modules/ethers/lib.esm/constants/addresses.js": {
+      "sha256": "83f56033efe31568796ffd09aae24370777ff5237fc4ef6ad2cf325060b14d1b",
+      "bytes": 222
+    },
+    "node_modules/ethers/lib.esm/constants/hashes.js": {
+      "sha256": "4751e9c2e65ee78cb8e5bc569d8746d20dc92c93647a7957d46c70742f84b7ea",
+      "bytes": 261
+    },
+    "node_modules/ethers/lib.esm/constants/index.js": {
+      "sha256": "e1bb0f3242683ccc9eefb81260e24863b7e929625ca9790e5f99b6e2492e602e",
+      "bytes": 376
+    },
+    "node_modules/ethers/lib.esm/constants/numbers.js": {
+      "sha256": "70e5abfd7b83a6484c59b2eb73cb1372f9aaa29bb68f53891ba836071b8f99c2",
+      "bytes": 1233
+    },
+    "node_modules/ethers/lib.esm/constants/strings.js": {
+      "sha256": "f14874782cf44e9171a59404bf01812fb77f91927aa9c08ec5f7d0df34099a3b",
+      "bytes": 432
+    },
+    "node_modules/ethers/lib.esm/crypto/crypto.js": {
+      "sha256": "9bda04c9ae161c70845bbf638f0c4337763252899cf1106bd808669aaa0b6f85",
+      "bytes": 108
+    },
+    "node_modules/ethers/lib.esm/crypto/hmac.js": {
+      "sha256": "25ae819f85ec77b008b9d64080d3e8335ea4f929eea78ed82ce13caae70b5690",
+      "bytes": 1366
+    },
+    "node_modules/ethers/lib.esm/crypto/index.js": {
+      "sha256": "0c3d5863e62cfd2a78f916a760dd8844a444507bc11a14a47e7369c70f200600",
+      "bytes": 1146
+    },
+    "node_modules/ethers/lib.esm/crypto/keccak.js": {
+      "sha256": "1cfaac25ce63f98e3e8433d5600fd20dc7272bb6aeba3ffa0fca8ee134b6b942",
+      "bytes": 1287
+    },
+    "node_modules/ethers/lib.esm/crypto/pbkdf2.js": {
+      "sha256": "1f347fcd2a4d200ded8edbbb67d8b7a3278e4442476f5b10123f04c8a62b918f",
+      "bytes": 1681
+    },
+    "node_modules/ethers/lib.esm/crypto/random.js": {
+      "sha256": "45799cc6f169ab89c3cfea83f1168e762205a03e556940f53e13579804b022dc",
+      "bytes": 1024
+    },
+    "node_modules/ethers/lib.esm/crypto/ripemd160.js": {
+      "sha256": "b924076297b89c0f97999c453cb58ec93047fd78986415a343b2717a0de5847b",
+      "bytes": 959
+    },
+    "node_modules/ethers/lib.esm/crypto/scrypt.js": {
+      "sha256": "c284dc987b53e2c1fb421905ff3f97970dccc697f1a9c42fe6abc886b12f62e8",
+      "bytes": 3882
+    },
+    "node_modules/ethers/lib.esm/crypto/sha2.js": {
+      "sha256": "714fad2ddcba6933a6660219cced4173e6fa0fd2ee6d13db40a9f26d2ef60d15",
+      "bytes": 1670
+    },
+    "node_modules/ethers/lib.esm/crypto/signature.js": {
+      "sha256": "59f40dfb2969c897d5c2985f824523231a7ad3f1891347b571416e3d55286598",
+      "bytes": 11314
+    },
+    "node_modules/ethers/lib.esm/crypto/signing-key.js": {
+      "sha256": "4da3d51e128b5a6483337a06b3ac726c7552fa504ebf285dba8680bad458905d",
+      "bytes": 6243
+    },
+    "node_modules/ethers/lib.esm/package.json": {
+      "sha256": "71a3a95826a9a4955ac66b62e7880e817658723e678114457e2e5d1aab27a3a0",
+      "bytes": 438
+    },
+    "node_modules/ethers/lib.esm/utils/base58.js": {
+      "sha256": "38fb0bf3962b8e24cbe8c9280a8de7972095c0da612ab32c0c70057e5ec5686d",
+      "bytes": 1932
+    },
+    "node_modules/ethers/lib.esm/utils/base64.js": {
+      "sha256": "ee069843b833a821f5f8a51bbc17c100cc8e8c89d44198fbe5aa62e465f331ce",
+      "bytes": 1466
+    },
+    "node_modules/ethers/lib.esm/utils/data.js": {
+      "sha256": "30a7f033963d91c9edb2b94586b5e022c3919075d0cb402bc184f3a2d7d9fafc",
+      "bytes": 5052
+    },
+    "node_modules/ethers/lib.esm/utils/errors.js": {
+      "sha256": "86b90fc247ae3a11abd50fa00f34a557eb11d94a4343dd92fd2833c1ddf5bd98",
+      "bytes": 7595
+    },
+    "node_modules/ethers/lib.esm/utils/events.js": {
+      "sha256": "c0d74c2f2224697ac730ad3aab98df620dd343ef297d7f522167cdab5f47c83b",
+      "bytes": 1129
+    },
+    "node_modules/ethers/lib.esm/utils/fetch.js": {
+      "sha256": "a161fd9671c87aeece477816e1888e27bf8f9b79bdc331f0a41f02ec340afb6f",
+      "bytes": 28676
+    },
+    "node_modules/ethers/lib.esm/utils/fixednumber.js": {
+      "sha256": "b2c6566a0ba02d1961d1ffbc55b0d23a9fb4374cb331c058993baeb7eed0ee35",
+      "bytes": 19466
+    },
+    "node_modules/ethers/lib.esm/utils/geturl.js": {
+      "sha256": "8d782107378084930c3f14ee5556c6dc81bc3a29dd64c059d86893724b0098b1",
+      "bytes": 4700
+    },
+    "node_modules/ethers/lib.esm/utils/index.js": {
+      "sha256": "87f9f65d29d5686dbae0d032fd7a3d19d0ed6062ba63641648c5dfc7bc56aa3e",
+      "bytes": 1361
+    },
+    "node_modules/ethers/lib.esm/utils/maths.js": {
+      "sha256": "ad3bcf8a31ac229e317848a97b5ab3cb976679747c78518a2754fefaaa48e2aa",
+      "bytes": 7688
+    },
+    "node_modules/ethers/lib.esm/utils/properties.js": {
+      "sha256": "8767551fbaf6563360089fd1061348ab1751006cbeec366dc7b2ab5013b1c879",
+      "bytes": 1603
+    },
+    "node_modules/ethers/lib.esm/utils/rlp-decode.js": {
+      "sha256": "3a981835374690162a61f0d72dc1080d066d75be6827de3d99481f78b4442f82",
+      "bytes": 3142
+    },
+    "node_modules/ethers/lib.esm/utils/rlp-encode.js": {
+      "sha256": "c6d92abf28f6589d2a814f57b64600125504d3527f1a0e43b1a09015fb86f033",
+      "bytes": 1431
+    },
+    "node_modules/ethers/lib.esm/utils/units.js": {
+      "sha256": "32fb2d99a3ce9ad249b75a0a4c09c8fdee7814eec9419d4d0c228114f726ec18",
+      "bytes": 2858
+    },
+    "node_modules/ethers/lib.esm/utils/utf8.js": {
+      "sha256": "d6cde7314bea1ea5f17756110b64dc60eafdc03d01a8c6261da53097873bd8a0",
+      "bytes": 7765
+    },
+    "node_modules/ethers/lib.esm/utils/uuid.js": {
+      "sha256": "0db82b8953b305fa4ec797e2fc2b8b1971d107f8d8eb218c99caa014b2cf6430",
+      "bytes": 894
+    },
+    "node_modules/ethers/LICENSE.md": {
+      "sha256": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612",
+      "bytes": 1075
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/_shortw_utils.js": {
+      "sha256": "320767dbeaae6c29d59a457fcbd3952a04133374b01d92efb5729b6451535b90",
+      "bytes": 663
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/abstract/curve.js": {
+      "sha256": "0f67d7a6780bee1bf53ca27107292795275f29e373f4810e7403c674e5399b10",
+      "bytes": 6945
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/abstract/hash-to-curve.js": {
+      "sha256": "e02fe9ff8304188d9e82073747a6f97b219a43a26039e28ba2f540ff256c56f6",
+      "bytes": 6824
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/abstract/modular.js": {
+      "sha256": "33b756ce7b13dba500aa3a6f2f1a2c32797199fff874e6b30219ace87a4199fd",
+      "bytes": 16981
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/abstract/utils.js": {
+      "sha256": "84c4708891bbf3421c0dd9e166596b9062cef8f8080b3f2c46f980295f9f46e0",
+      "bytes": 9660
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/abstract/weierstrass.js": {
+      "sha256": "67f8391371032c777aefc4aa2bf470d600387b4a19b579b9ea0c4c4aa74bace9",
+      "bytes": 45624
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/package.json": {
+      "sha256": "6b91de8cd0baca43d2c3a0a29ccf86cb582eaa8a20bdf61e1ead35b0c447a351",
+      "bytes": 47
+    },
+    "node_modules/ethers/node_modules/@noble/curves/esm/secp256k1.js": {
+      "sha256": "8567fd1232aeec0783f65b08f479922457da4affe7a95ea87ce22938105bf6ad",
+      "bytes": 11486
+    },
+    "node_modules/ethers/node_modules/@noble/curves/LICENSE": {
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+      "bytes": 1109
+    },
+    "node_modules/ethers/node_modules/@noble/curves/package.json": {
+      "sha256": "bf61194229da9a7fd331fcf44cc24f746b5cbaefe941a312215376584c269bd5",
+      "bytes": 4817
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/_assert.js": {
+      "sha256": "bd2a0bc5053296f825380b684bdd0d1ee1df149c179cdc53a4442a10838547d8",
+      "bytes": 1367
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/_sha2.js": {
+      "sha256": "f931b0c98e9415f0395a606fdc205b85e3a76d2594b43ea9e445765e8cbead60",
+      "bytes": 4360
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/_u64.js": {
+      "sha256": "25a28c13f59b354b981f44c647a35e69df7775fbae5e549d966f7b1d519ea22e",
+      "bytes": 2967
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/cryptoNode.js": {
+      "sha256": "854c4a1c089cbdbd5e5bee3d837d62fb665ddba374ac5c385b5ea32fa07cd621",
+      "bytes": 351
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/hmac.js": {
+      "sha256": "ffbf43710421711022d8f7eb3bafb44218213b80f089fdbce9a45234668fd70d",
+      "bytes": 2795
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/package.json": {
+      "sha256": "bd389eb8cfe61883bac2f31e1369498979fe1039c19d960088e863ef5d822b4d",
+      "bytes": 147
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/pbkdf2.js": {
+      "sha256": "a25ac3ab56ecd13bdb9e44ffd90a8dca232077dd25d8a8aa363daf024f4bb3db",
+      "bytes": 3547
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/ripemd160.js": {
+      "sha256": "0046014fc7ded5c22fb1c4c5ecce1f0276ca6a2ff559f1b5c80ab4c2b3fd4851",
+      "bytes": 4342
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/scrypt.js": {
+      "sha256": "1854736ae150446016532d6c422ee21d1c7996636ba6b12bcf4d0ead4d953b82",
+      "bytes": 9805
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/sha256.js": {
+      "sha256": "128cebb45b79080e430be04f2294f51137f46dcde542e28a32dcbf00ec7d5d3c",
+      "bytes": 5003
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/sha3.js": {
+      "sha256": "e4325043339b35faea049b15e96f4901f99eae31b7c66c81f6ae06ff703f3ff4",
+      "bytes": 7781
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/esm/utils.js": {
+      "sha256": "513e1b94a89bfae285d872da84d3f07a790f2873af0c2d21b5e37ebd0053f0cd",
+      "bytes": 6012
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/LICENSE": {
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec",
+      "bytes": 1109
+    },
+    "node_modules/ethers/node_modules/@noble/hashes/package.json": {
+      "sha256": "8d8203c66e91a9e6ee510facf378a2c7420b27139360132a257010c2e5f091bc",
+      "bytes": 4314
+    },
+    "node_modules/ethers/package.json": {
+      "sha256": "d644d7df228197962e4ca19824b06e8d50dce0b5ee2aced63dcfc2a11ec7b90f",
+      "bytes": 4945
+    },
+    "package-lock.json": {
+      "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb",
+      "bytes": 540811
+    },
+    "package.json": {
+      "sha256": "9b9537ece4c4f368b9b7ba9bd92754d41ba243a12d4e714e22fab521aadfcda1",
+      "bytes": 13969
+    },
+    "src/main/wallet/railgun-kohaku-private-adapter.js": {
+      "sha256": "5ea1e991fbf1d5db8e7eea100c3da15914db85bcd6b18df0dd6111a07052d03f",
+      "bytes": 15585
+    },
+    "src/main/wallet/railgun-kohaku-read-data.js": {
+      "sha256": "21522a816a905382b206acfab0cbfd5a767aefcfbccc82c051d18b952e4d409b",
+      "bytes": 3038
+    },
+    "src/main/wallet/railgun-kohaku-read-dispatch.js": {
+      "sha256": "ed930d0517b759f442a6c19a9d250f0203fce5fc229fd9c6a750051fa41bd705",
+      "bytes": 738
+    },
+    "src/main/wallet/railgun-kohaku-snapshot-plugin.js": {
+      "sha256": "24d3d695c99f8860ce0cdc222f31d0ddc52ad049dec71e7c7d961edd9adb6d0b",
+      "bytes": 8667
+    },
+    "src/main/wallet/railgun-shield-pins.json": {
+      "sha256": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75",
+      "bytes": 723
+    }
+  },
+  "tools": {
+    "node": "v24.18.1",
+    "nodeSha256": "f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5",
+    "esbuild": "0.28.2"
+  },
+  "licenses": [
+    {
+      "package": "freedom-browser",
+      "version": "0.8.7-dev",
+      "packageRoot": ".",
+      "declaredLicense": "MPL-2.0",
+      "emittedContributor": true,
+      "file": "licenses/freedom/LICENSE",
+      "sha256": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae"
+    },
+    {
+      "package": "@noble/curves",
+      "version": "1.2.0",
+      "packageRoot": "node_modules/ethers/node_modules/@noble/curves",
+      "declaredLicense": "MIT",
+      "emittedContributor": false,
+      "file": "licenses/node_modules__ethers__node_modules__@noble__curves/LICENSE",
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    {
+      "package": "@noble/hashes",
+      "version": "1.3.2",
+      "packageRoot": "node_modules/ethers/node_modules/@noble/hashes",
+      "declaredLicense": "MIT",
+      "emittedContributor": true,
+      "file": "licenses/node_modules__ethers__node_modules__@noble__hashes/LICENSE",
+      "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+    },
+    {
+      "package": "ethers",
+      "version": "6.17.0",
+      "packageRoot": "node_modules/ethers",
+      "declaredLicense": "MIT",
+      "emittedContributor": true,
+      "file": "licenses/node_modules__ethers/LICENSE.md",
+      "sha256": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612"
+    }
+  ]
+}

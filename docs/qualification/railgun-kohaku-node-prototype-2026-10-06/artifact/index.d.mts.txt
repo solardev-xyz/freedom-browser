@@ -1,0 +1,26 @@
+/** Forward both entrypoints to one declaration identity. */
+export {
+  createRailgunKohakuSnapshotPlugin,
+  createRailgunKohakuPrivateAdapter,
+  createRailgunKohakuPrivateAdapterBroadcaster,
+} from './index.cjs';
+export type {
+  ReadAsset,
+  SnapshotAsset,
+  SnapshotNote,
+  ReadNote,
+  ReadAmount,
+  SnapshotHost,
+  SnapshotExtras,
+  SnapshotReadPlugin,
+  PrivateInput,
+  PrivateOperation,
+  PrivateUnshieldOptions,
+  PrivateSubmissionOutcome,
+  PrivateHostHandle,
+  RestrictedPrivateHost,
+  PrivateAdapterExtras,
+  PrivateAdapter,
+  PrivateCapabilities,
+  PrivateAdapterBroadcaster,
+} from './index.cjs';

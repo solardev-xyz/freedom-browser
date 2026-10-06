@@ -1,0 +1,13 @@
+import pathlib,json,hashlib
+b=pathlib.Path(__file__).parent;r=json.loads((b/'CONTROL-PROBE.json').read_text());sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest();compiler=pathlib.Path('<TYPESCRIPT_INSTALLATION>')
+expected={'missing-cjs-declaration':[(7016,1,22),(7016,3,223)],'missing-esm-declaration':[(7016,1,130),(7016,2,223)],'misrouted-esm-types':[],'duplicate-brands':[(2741,10,9),(2741,12,9),(2345,13,99),(2345,14,107)],'void-broadcast-outcome':[(2322,25,9)]};results=[]
+for x in r['results']:
+ name=x['name'];assert [(d['code'],d['line'],d['character']) for d in x['diagnostics']]==expected[name]
+ assert all(d['file']==x['input'] for d in x['diagnostics']);assert x['writes']==0
+ fragments={'missing-cjs-declaration':'implicitly has an','missing-esm-declaration':'respecting package.json','duplicate-brands':'[privateOperation]','void-broadcast-outcome':"Type 'void' is not assignable"}
+ if name in fragments:assert any(fragments[name] in d['message']for d in x['diagnostics'])
+ if name=='misrouted-esm-types':assert x['declarations']==['node_modules/@freedom/restricted-railgun-node-prototype/index.d.cts']
+ for n,h in x['reads'].items():
+  p=compiler/n[len('compiler/'):]if n.startswith('compiler/')else b/'controls'/name/n[len('consumer/'):];assert sha(p)==h
+ results.append({'name':name,'distinguished':True,'diagnostics':x['diagnostics'],'declarationGraph':x['declarations'],'reason':'required ESM entry declaration absent from loaded graph despite successful typecheck' if name=='misrouted-esm-types' else 'exact intended diagnostic codes/positions and message fragment','afterReadHashesUnchanged':True})
+out={'probeSha256':sha(b/'CONTROL-PROBE.json'),'verifierSha256':sha(pathlib.Path(__file__)),'controls':results,'compilerRerun':False};(b/'CONTROL-REPORT.json').write_text(json.dumps(out,indent=2)+'\n');print(json.dumps({'controls':len(results),'reportSha256':sha(b/'CONTROL-REPORT.json')}))

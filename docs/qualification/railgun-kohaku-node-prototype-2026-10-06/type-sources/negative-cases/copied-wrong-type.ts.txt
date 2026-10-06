@@ -1,0 +1,3 @@
+import type { PrivateOperation } from '@freedom/restricted-railgun-node-prototype';
+declare const op: PrivateOperation;
+const wrong: PrivateOperation = {...op,__type:'publicOperation'};
