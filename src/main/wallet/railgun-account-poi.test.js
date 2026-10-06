@@ -2,6 +2,8 @@ let mockWallet, mockIdentity, mockEnrollment, mockCoordinator, mockSnapshot, moc
 let mockSource, mockSourceArgs, mockStaleSource, mockStaleMembership;
 let mockWindow, mockWindowData, mockBusy, mockWindowController;
 let mockSourceExit, mockHoldSource, mockSourceController, mockContextThrow;
+let mockRelayWindow, mockFenced;
+let mockDisclosure, mockDisclosureUsed, mockRetained;
 const mockScopes = [],
   mockFactory = jest.fn();
 jest.mock('../networks/privacy-context', () => {
@@ -48,6 +50,48 @@ jest.mock('./railgun-account-wallet', () => ({
       throw Error('window refused');
     return mockWindowData;
   },
+  assertRailgunAccountRelayWindow: (window, wallet, owners, margin = 0) => {
+    if (
+      window !== mockRelayWindow ||
+      wallet !== mockWallet ||
+      owners.identity !== mockIdentity ||
+      owners.enrollment !== mockEnrollment ||
+      owners.coordinator !== mockCoordinator ||
+      mockWindowData.signal.aborted ||
+      performance.now() + margin >= mockWindowData.deadline
+    )
+      throw Error('relay window refused');
+    return mockWindowData;
+  },
+  retainRailgunRelayWindowPoi: (window, wallet, owners, operation) => {
+    mockRetained.push(
+      require('./railgun-account-poi').getRailgunRelayPoiLifetime(operation, wallet, owners, window)
+    );
+  },
+}));
+jest.mock(
+  './railgun-relay-operation',
+  () => ({
+    consumeRailgunRelayDisclosurePermit: (permit, wallet, owners, window) => {
+      if (
+        permit !== mockDisclosure ||
+        mockDisclosureUsed ||
+        wallet !== mockWallet ||
+        owners.identity !== mockIdentity ||
+        owners.enrollment !== mockEnrollment ||
+        owners.coordinator !== mockCoordinator ||
+        window !== mockRelayWindow
+      )
+        throw Error('disclosure');
+      mockDisclosureUsed = true;
+    },
+  }),
+  { virtual: true }
+);
+jest.mock('./railgun-account-enrollment', () => ({
+  assertRailgunFencedAccountEnrollment: (value) => {
+    if (value !== mockEnrollment || !mockFenced || value.signal.aborted) throw Error('fence');
+  },
 }));
 jest.mock('./railgun-poi-source', () => ({
   createRailgunPoiSource: (options) => {
@@ -68,12 +112,20 @@ const {
   assertRailgunAccountPoi: attest,
   openRailgunPrivateWindowPoi: openWindow,
   assertRailgunPrivateWindowPoi: attestWindow,
+  openRailgunRelayWindowPoi: openRelay,
+  assertRailgunRelayWindowPoi: attestRelay,
+  readRailgunRelayWindowPoiHistory: historyRelay,
 } = require('./railgun-account-poi');
 let scope, controller, args;
 beforeEach(() => {
   jest.clearAllMocks();
   mockScopes.length = 0;
   mockContextThrow = false;
+  mockFenced = true;
+  mockRelayWindow = Object.freeze({});
+  mockDisclosure = Object.freeze({});
+  mockDisclosureUsed = false;
+  mockRetained = [];
   mockHoldSource = false;
   mockFactory.mockReset();
   mockFactory.mockImplementation(() => mockSource);
@@ -142,6 +194,7 @@ beforeEach(() => {
     observation: { ...mockObservation, membershipVerified: true },
   }));
   args = {
+    disclosure: mockDisclosure,
     wallet: mockWallet,
     identity: mockIdentity,
     enrollment: mockEnrollment,
@@ -154,6 +207,7 @@ beforeEach(() => {
   Object.assign(mockSnapshot.read.received[0], { tree: 0, position: 1 });
   mockSnapshot.ownedPoi[0].hash = '0x' + '3'.repeat(64);
   mockWindowData = Object.freeze({
+    draftDigest: 'c'.repeat(64),
     owned: mockSnapshot,
     selection: { tree: 0, position: 1 },
     signal: mockWindowController.signal,
@@ -639,3 +693,125 @@ test('throwing source close cannot skip scope revocation or its actual barrier',
   mockSourceExit();
   await operation.closed;
 });
+
+function relayHistoryFixture() {
+  const leaf = mockSnapshot.ownedPoi[0].blindedCommitment.slice(2);
+  Object.assign(mockObservation, {
+    listKey: require('./railgun-poi-records').REQUIRED_LIST,
+    proofs: [
+      {
+        leaf,
+        root: '2'.repeat(64),
+        indices: '0'.repeat(64),
+        elements: Array(16).fill('0'.repeat(64)),
+      },
+    ],
+    events: [
+      {
+        signedPOIEvent: {
+          index: 0,
+          blindedCommitment: '0x' + leaf,
+          type: 'Shield',
+          signature: 'a'.repeat(128),
+        },
+        validatedMerkleroot: '2'.repeat(64),
+      },
+    ],
+  });
+}
+test('relay selects only its genuine window input and retains exact normalized history', async () => {
+  relayHistoryFixture();
+  mockBusy = true;
+  const operation = openRelay({ ...args, window: mockRelayWindow, noteIds: ['0:999'] });
+  const { receipt } = await operation.acquire();
+  expect(attestRelay(operation, receipt, mockWallet, args, mockRelayWindow).input.id).toBe('0:1');
+  const history = historyRelay(operation, receipt, mockWallet, args, mockRelayWindow);
+  expect(history.data.draftDigest).toBe(mockWindowData.draftDigest);
+  expect(history.data.event).toEqual(mockObservation.events[0]);
+  expect(Object.isFrozen(history.data.proof.elements)).toBe(true);
+  expect(mockSourceArgs.notes).toEqual([
+    { blindedCommitment: mockSnapshot.ownedPoi[0].blindedCommitment, type: 'Shield' },
+  ]);
+  expect(mockRetained).toHaveLength(1);
+  expect(mockRetained[0].closed).toBe(operation.closed);
+  expect(mockRetained[0].close).toBe(operation.close);
+  expect(() => attestWindow(operation, receipt, mockWallet, args, mockRelayWindow)).toThrow();
+  expect(() => attest(operation, receipt, mockWallet, args)).toThrow();
+  operation.close();
+  await operation.closed;
+});
+
+test('relay source requires a single-use fixed controller disclosure permit before construction', () => {
+  expect(() => openRelay({ ...args, window: mockRelayWindow, disclosure: {} })).toThrow();
+  expect(mockFactory).not.toHaveBeenCalled();
+  const operation = openRelay({ ...args, window: mockRelayWindow });
+  expect(mockFactory).toHaveBeenCalledTimes(1);
+  operation.close();
+  expect(() => openRelay({ ...args, window: mockRelayWindow })).toThrow();
+  expect(mockFactory).toHaveBeenCalledTimes(1);
+});
+test.each(['factory', 'missing-barrier', 'rejected-barrier'])(
+  'relay source reports unknown %s closure without claiming drainage',
+  async (kind) => {
+    let reject;
+    if (kind === 'factory')
+      mockFactory.mockImplementation(() => {
+        throw Error('factory');
+      });
+    if (kind === 'missing-barrier') delete mockSource.closed;
+    if (kind === 'rejected-barrier')
+      mockSource.closed = new Promise((_resolve, no) => {
+        reject = no;
+      });
+    if (kind === 'rejected-barrier') {
+      const operation = openRelay({ ...args, window: mockRelayWindow });
+      reject(Error('unobserved source'));
+      await expect(operation.closed).rejects.toMatchObject({ code: 'RAILGUN_ACCOUNT_POI_REFUSED' });
+      expect(operation.signal.aborted).toBe(true);
+    } else {
+      expect(() => openRelay({ ...args, window: mockRelayWindow })).toThrow();
+      expect(mockRetained).toHaveLength(1);
+      await expect(mockRetained[0].closed).rejects.toMatchObject({
+        code: 'RAILGUN_ACCOUNT_POI_REFUSED',
+      });
+    }
+  }
+);
+test('relay history cannot reuse a private membership receipt', async () => {
+  relayHistoryFixture();
+  const operation = openWindow({ ...args, window: mockWindow });
+  const { receipt } = await operation.acquire();
+  expect(() => historyRelay(operation, receipt, mockWallet, args, mockWindow)).toThrow();
+  operation.close();
+});
+test.each(['fence', 'window', 'owner'])(
+  'relay POI refuses %s mismatch before source construction',
+  (fault) => {
+    if (fault === 'fence') mockFenced = false;
+    expect(() =>
+      openRelay({
+        ...args,
+        window: fault === 'window' ? {} : mockRelayWindow,
+        ...(fault === 'owner' ? { identity: {} } : {}),
+      })
+    ).toThrow();
+    expect(mockFactory).not.toHaveBeenCalled();
+  }
+);
+test.each(['expired', 'fence', 'source', 'membership', 'proof', 'event'])(
+  'relay retained history refuses %s instead of renewing authority',
+  async (fault) => {
+    relayHistoryFixture();
+    const operation = openRelay({ ...args, window: mockRelayWindow });
+    const { receipt } = await operation.acquire();
+    if (fault === 'expired') mockWindowController.abort();
+    if (fault === 'fence') mockFenced = false;
+    if (fault === 'source') mockStaleSource = true;
+    if (fault === 'membership') mockStaleMembership = true;
+    if (fault === 'proof') mockObservation.proofs[0].leaf = '3'.repeat(64);
+    if (fault === 'event') mockObservation.events[0].signedPOIEvent.index = 1;
+    expect(() => historyRelay(operation, receipt, mockWallet, args, mockRelayWindow)).toThrow();
+    operation.close();
+    await operation.closed;
+  }
+);

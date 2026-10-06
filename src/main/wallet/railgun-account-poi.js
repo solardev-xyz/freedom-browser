@@ -7,6 +7,8 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const {
   readRailgunAccountOwnedNotes,
   assertRailgunAccountPrivateWindow,
+  assertRailgunAccountRelayWindow,
+  retainRailgunRelayWindowPoi,
 } = require('./railgun-account-wallet');
 const { createRailgunPoiSource } = require('./railgun-poi-source');
 const {
@@ -33,6 +35,7 @@ function createOwnedPoi({
   current,
   window = null,
   windowData,
+  windowKind = 'private',
 }) {
   check(Array.isArray(noteIds) && noteIds.length >= 1 && noteIds.length <= 3);
   check(
@@ -82,11 +85,18 @@ function createOwnedPoi({
     busy = false,
     sourceDrained = false,
     resolveClosed,
+    rejectClosed,
+    sourceUnknown = false,
+    sourceBarrierObserved = false,
+    factoryInvoked = false,
     sequence = 0;
-  const drained = new Promise((resolve) => {
+  const drained = new Promise((resolve, reject) => {
     resolveClosed = resolve;
+    rejectClosed = reject;
   });
+  drained.catch(() => {});
   const finish = () => {
+    if (closed && !busy && sourceUnknown && windowKind === 'relay') rejectClosed(fail());
     if (closed && !busy && sourceDrained) resolveClosed();
   };
   const receipts = new WeakMap();
@@ -110,12 +120,28 @@ function createOwnedPoi({
     current(minimumRemainingMs);
     getPrivacyContext(handle);
   };
+  const operation = Object.freeze({
+    acquire,
+    assertResult,
+    close,
+    closed: drained,
+    signal: scope.signal,
+  });
+  operations.set(operation, {
+    wallet,
+    owners,
+    window,
+    windowKind: window ? windowKind : null,
+    lifetime: Object.freeze({ closed: drained, close }),
+  });
   try {
+    if (windowKind === 'relay') retainRailgunRelayWindowPoi(window, wallet, owners, operation);
     handle = scope.getContext({
       ...parent.subject,
       role: 'poi',
       operation: 'poi:' + operationId,
     });
+    factoryInvoked = true;
     source = createRailgunPoiSource({
       handle,
       notes: selected.map(({ record }) => ({
@@ -132,14 +158,19 @@ function createOwnedPoi({
       },
       () => {
         // A rejected barrier cannot stand in for physical closure.
+        sourceUnknown = true;
         close();
+        finish();
       }
     );
+    sourceBarrierObserved = true;
     scope.signal.addEventListener('abort', close, { once: true });
     source.signal.addEventListener('abort', close, { once: true });
     if (scope.signal.aborted || source.signal.aborted) close();
     active();
   } catch (error) {
+    if (!factoryInvoked) sourceDrained = true;
+    else if (!sourceBarrierObserved) sourceUnknown = true;
     close();
     throw error;
   }
@@ -250,14 +281,6 @@ function createOwnedPoi({
       assertRailgunPoiMembership(entry.membershipReceipt, handle, minimumRemainingMs);
     return entry.observation;
   }
-  const operation = Object.freeze({
-    acquire,
-    assertResult,
-    close,
-    closed: drained,
-    signal: scope.signal,
-  });
-  operations.set(operation, { wallet, owners, window });
   return operation;
 }
 function openRailgunAccountPoi(args) {
@@ -318,6 +341,54 @@ function openRailgunPrivateWindowPoi({
     noteIds: [note.id],
   });
 }
+// The connected controller must obtain explicit selected-input disclosure
+// approval before invoking this source. A reviewed relay window alone does not
+// authorize a query. Historical data returned below never extends freshness.
+function openRailgunRelayWindowPoi({
+  wallet,
+  identity,
+  enrollment,
+  coordinator,
+  archive,
+  window,
+  disclosure,
+}) {
+  const owners = { identity, enrollment, coordinator };
+  require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
+  const windowData = assertRailgunAccountRelayWindow(window, wallet, owners);
+  const baseline = windowData.owned;
+  const { tree, position } = windowData.selection;
+  const notes = baseline.read.received.filter((v) => v.tree === tree && v.position === position);
+  check(notes.length === 1);
+  // The fixed controller alone can issue this one-use permission, after its
+  // separately reviewed selected-input disclosure decision.
+  check(
+    require('./railgun-relay-operation').consumeRailgunRelayDisclosurePermit(
+      disclosure,
+      wallet,
+      owners,
+      window
+    ) === undefined
+  );
+  const current = (margin = 0) => {
+    require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
+    check(assertRailgunAccountRelayWindow(window, wallet, owners, margin) === windowData);
+    check(!windowData.signal.aborted);
+  };
+  return createOwnedPoi({
+    wallet,
+    identity,
+    enrollment,
+    coordinator,
+    archive,
+    window,
+    windowData,
+    baseline,
+    current,
+    noteIds: [notes[0].id],
+    windowKind: 'relay',
+  });
+}
 function assertRailgunPrivateWindowPoi(
   operation,
   receipt,
@@ -329,6 +400,7 @@ function assertRailgunPrivateWindowPoi(
   const entry = operations.get(operation);
   check(
     entry &&
+      entry.windowKind === 'private' &&
       entry.window === window &&
       window &&
       entry.wallet === wallet &&
@@ -337,6 +409,56 @@ function assertRailgunPrivateWindowPoi(
       entry.owners.coordinator === owners.coordinator
   );
   return operation.assertResult(receipt, minimumRemainingMs);
+}
+function assertRailgunRelayWindowPoi(
+  operation,
+  receipt,
+  wallet,
+  owners,
+  window,
+  minimumRemainingMs = 0
+) {
+  const entry = operations.get(operation);
+  check(
+    entry &&
+      entry.windowKind === 'relay' &&
+      entry.window === window &&
+      window &&
+      entry.wallet === wallet &&
+      entry.owners.identity === owners.identity &&
+      entry.owners.enrollment === owners.enrollment &&
+      entry.owners.coordinator === owners.coordinator
+  );
+  return operation.assertResult(receipt, minimumRemainingMs);
+}
+function getRailgunRelayPoiLifetime(operation, wallet, owners, window) {
+  const entry = operations.get(operation);
+  check(
+    entry &&
+      entry.windowKind === 'relay' &&
+      entry.window === window &&
+      window &&
+      entry.wallet === wallet &&
+      entry.owners.identity === owners.identity &&
+      entry.owners.enrollment === owners.enrollment &&
+      entry.owners.coordinator === owners.coordinator
+  );
+  return entry.lifetime;
+}
+function readRailgunRelayWindowPoiHistory(operation, receipt, wallet, owners, window) {
+  const value = assertRailgunRelayWindowPoi(operation, receipt, wallet, owners, window);
+  const data = assertRailgunAccountRelayWindow(window, wallet, owners);
+  check(value.proofs?.length === 1 && value.events?.length === 1);
+  const history = require('./railgun-relay-poi-history').normalizeRailgunRelayPoiHistory({
+    schema: 'railgun-relay-input-poi-history-v1',
+    draftDigest: data.draftDigest,
+    listKey: value.listKey,
+    note: { blindedCommitment: value.input.blindedCommitment, type: value.input.type },
+    proof: value.proofs[0],
+    event: value.events[0],
+  });
+  check(assertRailgunRelayWindowPoi(operation, receipt, wallet, owners, window) === value);
+  return history;
 }
 function assertRailgunAccountPoi(operation, receipt, wallet, owners) {
   const entry = operations.get(operation);
@@ -355,4 +477,8 @@ module.exports = {
   assertRailgunAccountPoi,
   openRailgunPrivateWindowPoi,
   assertRailgunPrivateWindowPoi,
+  openRailgunRelayWindowPoi,
+  assertRailgunRelayWindowPoi,
+  readRailgunRelayWindowPoiHistory,
+  getRailgunRelayPoiLifetime,
 };

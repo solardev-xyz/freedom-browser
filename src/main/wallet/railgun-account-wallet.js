@@ -1217,7 +1217,9 @@ async function openAccount(
             // Pre-key plumbing only. The fixed identity issuer is not connected:
             // no handler can switch off quote checks or acquire a credential.
             relayWindow = Object.freeze({});
-            const data = freeze({
+            const data = Object.freeze({
+              owned: after,
+              signal: relaySignal,
               started: start,
               deadline: end,
               checkpointHash: checkpoint,
@@ -1237,6 +1239,7 @@ async function openAccount(
               coordinator,
               assertCurrent: attest,
               data,
+              poi: new Set(),
             });
             const offer = freeze({
               preparation: draft,
@@ -1353,11 +1356,32 @@ async function openAccount(
           // The original snapshot callback, not its cancellation-race result,
           // is the account's settlement boundary.
           await Promise.allSettled([...callbacks]);
+          if (relayWindow) {
+            const sources = relayWindows.get(relayWindow).poi;
+            let failed = false;
+            for (const source of sources) {
+              try {
+                source.close();
+              } catch {
+                failed = true;
+              }
+            }
+            // These barriers come only from registered genuine account-POI
+            // operations. Revocation or handler completion is not drainage.
+            const drained = await Promise.allSettled([...sources].map((source) => source.closed));
+            if (failed || drained.some((value) => value.status !== 'fulfilled')) {
+              continuationDrainUnobserved = true;
+              unknown = true;
+            }
+          }
           if (!unknown) handoff.release();
         }
       })();
       try {
-        return await restoration;
+        const result = await restoration;
+        if (continuationDrainUnobserved)
+          throw Object.assign(fail(), { code: 'RAILGUN_RELAY_CONTINUATION_DRAIN_FAILED' });
+        return result;
       } catch {
         if (entered || unknown || lifetime.aborted) await close();
         throw fail();
@@ -1503,6 +1527,16 @@ function assertRailgunAccountRelayWindow(window, account, owners, minimumRemaini
   check(now >= entry.data.started && now + minimumRemainingMs < entry.data.deadline);
   return entry.data;
 }
+function retainRailgunRelayWindowPoi(window, account, owners, operation) {
+  assertRailgunAccountRelayWindow(window, account, owners);
+  const source = require('./railgun-account-poi').getRailgunRelayPoiLifetime(
+    operation,
+    account,
+    owners,
+    window
+  );
+  relayWindows.get(window).poi.add(source);
+}
 function prepareRailgunAccountPrivateIntent(account, owners, request) {
   check(request !== undefined);
   return owned(account, owners).restoreCurrent(request);
@@ -1569,6 +1603,7 @@ module.exports = {
   reviewRailgunAccountRelayIntent,
   operateRailgunAccountRelayIntent,
   assertRailgunAccountRelayWindow,
+  retainRailgunRelayWindowPoi,
   operateRailgunAccountPrivateIntent,
   assertRailgunAccountPrivateWindow,
   readRailgunAccountPrivateCreator,

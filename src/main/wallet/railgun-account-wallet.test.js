@@ -11,6 +11,10 @@ const mockAssertPublic = jest.fn();
 const mockDestination = Object.freeze({});
 const mockAssertDestination = jest.fn();
 const mockReadOnlyJournal = jest.fn();
+const mockRelayPoiLifetime = jest.fn();
+jest.mock('./railgun-account-poi', () => ({
+  getRailgunRelayPoiLifetime: (...args) => mockRelayPoiLifetime(...args),
+}));
 jest.mock('./railgun-account-public', () => ({
   getRailgunAccountPublicIdentity: (...args) => mockAssertPublic(...args),
   assertRailgunAccountPublicDestination: (...args) => mockAssertDestination(...args),
@@ -72,6 +76,9 @@ let scope, options, directory, generation, events, state;
 beforeEach(() => {
   mockCheckpointHash = (value) => JSON.stringify(value);
   jest.clearAllMocks();
+  mockRelayPoiLifetime.mockImplementation(() => {
+    throw Error('unregistered POI source');
+  });
   mockCompletedOutcome.mockImplementation(() => {
     throw Error('unknown outcome');
   });
@@ -3376,7 +3383,88 @@ test('a callback that invalidates time before returning its pending promise is s
 const {
   operateRailgunAccountRelayIntent: continueRelay,
   assertRailgunAccountRelayWindow: assertRelayWindow,
+  retainRailgunRelayWindowPoi: retainRelayPoi,
 } = require('./railgun-account-wallet');
+test.each(['normal', 'throwing-close', 'rejected-barrier'])(
+  'relay continuation retains the original POI drain after an early handler return: %s',
+  async (mode) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      operation = Object.freeze({});
+    let release,
+      reject,
+      done = false,
+      closed = false;
+    const original = new Promise((resolve, no) => {
+      release = resolve;
+      reject = no;
+    });
+    const stop = jest.fn(() => {
+      if (mode === 'throwing-close') throw Error('close failed');
+    });
+    // The source issuer is mocked here; account-poi tests exercise its genuine
+    // WeakMap registration and exact original lifetime projection separately.
+    mockRelayPoiLifetime.mockImplementation((value, wallet, owners, window) => {
+      expect(value).toBe(operation);
+      expect(wallet).toBe(account);
+      expect(owners).toBe(f.owners);
+      assertRelayWindow(window, account, owners);
+      return Object.freeze({ close: stop, closed: original });
+    });
+    const work = continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared: (_offer, { window }) => retainRelayPoi(window, account, f.owners, operation),
+    });
+    work.then(
+      () => {
+        done = true;
+      },
+      () => {
+        done = true;
+      }
+    );
+    await waitRelay(() => stop.mock.calls.length > 0);
+    const drain = account.close();
+    drain.then(
+      () => {
+        closed = true;
+      },
+      () => {
+        closed = true;
+      }
+    );
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+    expect(done).toBe(false);
+    expect(closed).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    if (mode === 'rejected-barrier') reject(Error('source exit unobserved'));
+    else release();
+    if (mode === 'normal') {
+      await work;
+      await drain;
+      claimRailgunAccountPhase(mockEnrollment, 'recovery').release();
+    } else {
+      await expect(work).rejects.toThrow();
+      await expect(drain).rejects.toMatchObject({
+        code: 'RAILGUN_RELAY_CONTINUATION_DRAIN_FAILED',
+      });
+      expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    }
+  }
+);
+test('relay window refuses an unregistered source before retaining caller work', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  await continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: (_offer, { window }) => {
+      expect(() =>
+        retainRelayPoi(window, account, f.owners, { closed: Promise.resolve() })
+      ).toThrow();
+    },
+  });
+  await account.close();
+});
 test.each(['sync', 'async'])(
   'pre-key continuation %s retains owner and never grants signing',
   async (mode) => {
@@ -3389,6 +3477,9 @@ test.each(['sync', 'async'])(
       const facts = assertRelayWindow(window, account, f.owners, 1);
       expect(facts.draftDigest).toBe(offer.preparation.digest);
       expect(facts.summaryDigest).toBe(offer.review.summaryDigest);
+      expect(facts.signal).toBe(signal);
+      expect(facts.owned.checkpointHash).toBe(facts.checkpointHash);
+      expect(facts.owned.read.received.some((note) => note.id === f.request.noteId)).toBe(true);
       expect(facts.signingEnabled).toBe(false);
       expect(facts.proofAuthority).toBe(false);
       expect(signal.aborted).toBe(false);
