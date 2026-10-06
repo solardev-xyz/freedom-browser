@@ -108,6 +108,7 @@ function inventory(publicAdapterMode, publicShield = true) {
     privateAdapterMode: false,
     snapshotProbe: null,
     localReviewProbe: null,
+    relayPreparationProbe: null,
     require: (name) => {
       expect([
         '../docs/qualification/railgun-shield-prerequisites-2026-10-04.json',
@@ -321,6 +322,7 @@ test('local review inventory adds exact 15 bounded paths only for the new select
       publicAdapterMode: false,
       snapshotProbe: null,
       localReviewProbe,
+      relayPreparationProbe: null,
     });
   const off = evaluate(null),
     on = evaluate({});
@@ -328,4 +330,75 @@ test('local review inventory adds exact 15 bounded paths only for the new select
   expect(on).toContain('scripts/fixtures/railgun-relay-quote-native-vectors.js');
   expect(on).toContain('src/main/wallet/railgun-relay-review.js');
   expect(off).not.toContain('src/main/wallet/railgun-relay-review.js');
+});
+
+function relayPreparationSelection(flag, extra = {}, inputs = {}) {
+  const context = {
+    assert,
+    process: {
+      env: {
+        ...(flag === undefined ? {} : { FREEDOM_RAILGUN_UNSIGNED_RELAY_PREPARATION: flag }),
+        ...extra,
+      },
+    },
+    composition: 'enrolled',
+    accountArchive: '/public/engine.asar',
+    proverArchive: undefined,
+    artifactDirectory: undefined,
+    ...inputs,
+  };
+  vm.runInNewContext(
+    section('  const relayPreparationFlag =', '  fs.mkdirSync(directory,'),
+    context
+  );
+}
+test('unsigned relay preparation is default-off and validates before output creation', () => {
+  expect(() => relayPreparationSelection()).not.toThrow();
+  expect(() => relayPreparationSelection('1')).not.toThrow();
+  const hook = source.indexOf(
+    "if (relayPreparationProbe && stage === 30 && attempt === 'restore')"
+  );
+  expect(hook).toBeGreaterThan(source.indexOf('const accountWindows = []'));
+  expect(hook).toBeLessThan(source.indexOf('runs.push({\n              ...(transactStaging'));
+});
+test.each(['', '0', 'true', '2'])('unsigned preparation rejects selector %j', (flag) => {
+  expect(() => relayPreparationSelection(flag)).toThrow();
+});
+test.each([
+  'FREEDOM_RAILGUN_LOCAL_RELAY_REVIEW',
+  'FREEDOM_RAILGUN_KOHAKU_SNAPSHOT',
+  'FREEDOM_RAILGUN_KOHAKU',
+  'FREEDOM_RAILGUN_PRIVATE_OPERATION',
+  'FREEDOM_RAILGUN_FUTURE_UNKNOWN',
+])('unsigned preparation rejects mixed %s', (name) => {
+  expect(() => relayPreparationSelection('1', { [name]: '1' })).toThrow();
+});
+test.each([
+  { composition: undefined },
+  { accountArchive: undefined },
+  { proverArchive: '/public/prover' },
+  { artifactDirectory: '/public/artifacts' },
+])('unsigned preparation rejects incompatible inputs %j', (inputs) => {
+  expect(() => relayPreparationSelection('1', {}, inputs)).toThrow();
+});
+test('unsigned preparation inventory adds only the bounded optional source set', () => {
+  const expression =
+    section('  const sources = [', '\n  ];').replace('  const sources = ', '') + '\n]';
+  const evaluate = (relayPreparationProbe) =>
+    vm.runInNewContext(expression, {
+      kohaku: null,
+      publicShield: false,
+      privateAdapterMode: false,
+      publicAdapterMode: false,
+      snapshotProbe: null,
+      localReviewProbe: null,
+      relayPreparationProbe,
+    });
+  const off = evaluate(null),
+    on = evaluate({});
+  expect(on.length - off.length).toBe(23);
+  expect(on).toContain('src/main/wallet/railgun-relay-reconstruct.js');
+  expect(on).toContain('scripts/fixtures/railgun-relay-preparation-native.js');
+  expect(off).not.toContain('scripts/fixtures/railgun-relay-preparation-native.js');
+  for (const filename of on) expect(fs.existsSync(path.join(__dirname, '..', filename))).toBe(true);
 });

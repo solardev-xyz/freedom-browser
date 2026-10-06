@@ -320,6 +320,7 @@ test('native key deltas follow actual job purposes and count requests before dis
     messages: 0,
     snapshotProbe: undefined,
     localReviewProbe: undefined,
+    relayPreparationProbe: undefined,
     stagingGuard: false,
     failReadOnlyRestore: false,
     privateViewingKeys: 0,

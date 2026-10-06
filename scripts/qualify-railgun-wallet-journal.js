@@ -24,6 +24,19 @@ async function main() {
   assert.ok(
     path.isAbsolute(sourceFilename) && path.isAbsolute(directory) && !fs.existsSync(directory)
   );
+  const relayPreparationFlag = process.env.FREEDOM_RAILGUN_UNSIGNED_RELAY_PREPARATION;
+  assert.ok(relayPreparationFlag === undefined || relayPreparationFlag === '1');
+  if (relayPreparationFlag) {
+    assert.equal(composition, 'enrolled');
+    assert.ok(accountArchive);
+    assert.equal(proverArchive, undefined);
+    assert.equal(artifactDirectory, undefined);
+    for (const name of Object.keys(process.env).filter(
+      (name) =>
+        name.startsWith('FREEDOM_RAILGUN_') && name !== 'FREEDOM_RAILGUN_UNSIGNED_RELAY_PREPARATION'
+    ))
+      assert.equal(process.env[name], undefined);
+  }
   const localReviewFlag = process.env.FREEDOM_RAILGUN_LOCAL_RELAY_REVIEW;
   assert.ok(localReviewFlag === undefined || localReviewFlag === '1');
   if (localReviewFlag) {
@@ -68,6 +81,10 @@ async function main() {
     ? require('./fixtures/railgun-relay-review-native').install()
     : null;
   let localRelayReviewQualification;
+  const relayPreparationProbe = relayPreparationFlag
+    ? require('./fixtures/railgun-relay-preparation-native').install()
+    : null;
+  let unsignedRelayPreparationQualification;
   const kohakuMode = process.env.FREEDOM_RAILGUN_KOHAKU;
   const privateAdapterMode = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER === '1';
   const privateAdapterDenied = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER_DENY === '1';
@@ -181,6 +198,7 @@ async function main() {
   transport.createWalletTorTransport = (...args) => {
     snapshotProbe?.count('transportFactories');
     localReviewProbe?.count('transportFactories');
+    relayPreparationProbe?.count('transportFactories');
     if (stagingGuard) {
       forbiddenStaging.transports++;
       throw Error('External transport forbidden during synthetic staging');
@@ -192,7 +210,10 @@ async function main() {
     productionPrivateOperation = null;
   const contractResources = kohaku
     ? require('./fixtures/railgun-kohaku-contract-observer').installResourceMeter()
-    : (snapshotProbe?.resources ?? localReviewProbe?.resources ?? null);
+    : (snapshotProbe?.resources ??
+      localReviewProbe?.resources ??
+      relayPreparationProbe?.resources ??
+      null);
   const readContracts = [];
   let restoreContractRuntime;
   const walletRestores = [],
@@ -242,9 +263,11 @@ async function main() {
             messages++;
             snapshotProbe?.count('brokerMessages');
             localReviewProbe?.count('brokerMessages');
+            relayPreparationProbe?.count('brokerMessages');
             const message = JSON.parse(wire);
             if (message.method === 'key') snapshotProbe?.count('railgunKeyRequests');
             if (message.method === 'key') localReviewProbe?.count('railgunKeyRequests');
+            if (message.method === 'key') relayPreparationProbe?.count('railgunKeyRequests');
             if (stagingGuard && message.method === 'key' && message.purpose === 'spending-sign') {
               forbiddenStaging.spendingKeys++;
               assert.ok(
@@ -268,6 +291,7 @@ async function main() {
             const reply = await original.dispatch(wire);
             if (message.method === 'key') snapshotProbe?.count('railgunKeyReplies');
             if (message.method === 'key') localReviewProbe?.count('railgunKeyReplies');
+            if (message.method === 'key') relayPreparationProbe?.count('railgunKeyReplies');
             if (
               message.method === 'key' &&
               message.purpose === 'spending-sign' &&
@@ -413,6 +437,7 @@ async function main() {
   const archivedRpc = (handle, _role, { signal }) => {
     snapshotProbe?.count('rpcFactories');
     localReviewProbe?.count('rpcFactories');
+    relayPreparationProbe?.count('rpcFactories');
     const lifetime = AbortSignal.any([getPrivacyContext(handle).signal, signal]);
     const active = () => {
       getPrivacyContext(handle);
@@ -426,6 +451,8 @@ async function main() {
       request: async (method, params, validate) => {
         snapshotProbe?.count('rpcRequests');
         localReviewProbe?.count('rpcRequests');
+        relayPreparationProbe?.count('rpcRequests');
+        relayPreparationProbe?.rpc(method, params);
         if (stagingGuard && !['eth_getLogs', 'eth_getBlockByNumber'].includes(method)) {
           forbiddenStaging.rpc++;
           throw Error('Private RPC forbidden during synthetic staging');
@@ -664,6 +691,33 @@ async function main() {
           'scripts/fixtures/railgun-kohaku-public-contract.d.ts',
           'scripts/fixtures/railgun-kohaku-public-conformance.js',
           'scripts/fixtures/railgun-kohaku-public-integration.test.js',
+          'scripts/qualify-railgun-wallet-journal.test.js',
+        ]
+      : []),
+    ...(relayPreparationProbe
+      ? [
+          'scripts/fixtures/railgun-relay-preparation-native.js',
+          'scripts/fixtures/railgun-relay-preparation-native.test.js',
+          'scripts/fixtures/railgun-public-cold-data.js',
+          'scripts/fixtures/railgun-relay-quote-native-vectors.js',
+          'scripts/fixtures/railgun-kohaku-snapshot-native.js',
+          'scripts/fixtures/railgun-kohaku-snapshot-native.test.js',
+          'scripts/fixtures/railgun-kohaku-contract-observer.js',
+          'scripts/fixtures/railgun-kohaku-contract-observer.test.js',
+          'scripts/fixtures/railgun-kohaku-contract-oracle.js',
+          'src/main/wallet/railgun-relay-quote-data.js',
+          'src/main/wallet/railgun-relay-quote-verify.js',
+          'src/main/wallet/railgun-relay-quote-job.js',
+          'src/main/wallet/railgun-relay-intent.js',
+          'src/main/wallet/railgun-relay-capsule.js',
+          'src/main/wallet/railgun-relay-wallet-data.js',
+          'src/main/wallet/railgun-relay-wallet-job.js',
+          'src/main/wallet/railgun-relay-witness.js',
+          'src/main/wallet/railgun-relay-reconstruct.js',
+          'src/main/wallet/railgun-relay-intent.test.js',
+          'src/main/wallet/railgun-relay-witness.test.js',
+          'src/main/wallet/railgun-relay-wallet-data.test.js',
+          'src/main/wallet/railgun-relay-wallet-job.test.js',
           'scripts/qualify-railgun-wallet-journal.test.js',
         ]
       : []),
@@ -1407,6 +1461,25 @@ async function main() {
               transactStaging[transactControllerKind ? 'guardedAttempts' : 'forbiddenAttempts'] = {
                 ...forbiddenStaging,
               };
+            }
+            if (relayPreparationProbe && stage === 30 && attempt === 'restore') {
+              assert.equal(unsignedRelayPreparationQualification, undefined);
+              unsignedRelayPreparationQualification =
+                await require('./fixtures/railgun-relay-preparation-native').qualify({
+                  account: opened,
+                  owners: { identity: accountIdentity, enrollment, coordinator },
+                  archive: accountArchive,
+                  signal: opened.signal,
+                  profile: path.join(directory, 'profile'),
+                  walletDirectory,
+                  measure: () =>
+                    relayPreparationProbe.measure({
+                      applications: applications.length,
+                      walletRestores: walletRestores.length,
+                    }),
+                  jobs: relayPreparationProbe.jobs,
+                  rpc: relayPreparationProbe.rpcSnapshot,
+                });
             }
             runs.push({
               ...(transactStaging ? { transactStaging } : {}),
@@ -2368,6 +2441,8 @@ async function main() {
     nativeAssertions.assertEmpty();
     if (snapshotProbe) assert.equal(snapshotAdapterQualification?.instances, 1);
     if (localReviewProbe) assert.equal(localRelayReviewQualification?.admittedQuoteJobs, 3);
+    if (relayPreparationProbe)
+      assert.equal(unsignedRelayPreparationQualification?.relayRestores, 2);
     assert.deepEqual(hashes(), sourceSha256);
     assert.doesNotMatch(JSON.stringify(runs), /"(?:ownedPoi|npk|nullifier|blindedCommitment)"\s*:/);
     fs.writeFileSync(
@@ -2378,6 +2453,7 @@ async function main() {
           sourceSha256,
           ...(snapshotProbe ? { snapshotAdapterQualification } : {}),
           ...(localReviewProbe ? { localRelayReviewQualification } : {}),
+          ...(relayPreparationProbe ? { unsignedRelayPreparationQualification } : {}),
           syntheticPublicHistory: true,
           liveAcquisition: false,
           publicViewingVector: true,
