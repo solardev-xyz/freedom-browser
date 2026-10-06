@@ -388,11 +388,15 @@ async function main() {
     } catch (err) {
       abortName = err && err.name;
     }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Polled, like the CCIP probe's socket-close checks, rather than read
+    // after a fixed 300 ms: the close reaches the server whenever Chromium's
+    // network service gets to it, and on a loaded machine that was later
+    // (1 failure in 20 parallel jest runs, #535).
+    const serverSawSocketClose = await waitFor(() => streamSocketClosed);
     results.abort = {
       firstChunk: Buffer.from(first.value).toString('utf8'),
       abortName,
-      serverSawSocketClose: streamSocketClosed,
+      serverSawSocketClose,
     };
   } catch (err) {
     results.abort = { error: String(err && err.message) };

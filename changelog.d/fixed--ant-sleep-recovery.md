@@ -1,0 +1,1 @@
+- Swarm content loads again within about half a minute after the computer wakes from sleep, instead of stalling for 15 minutes or more ([#501](https://github.com/solardev-xyz/freedom-browser/pull/501))

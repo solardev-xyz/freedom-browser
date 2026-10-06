@@ -43,6 +43,10 @@ const BZZ_HASH_RE = /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/;
 
 const activeProbes = new Map();
 
+// 5xx statuses that mean "not yet", kept in step with RETRYABLE_STATUSES
+// in bzz-protocol.js.
+const TRANSIENT_STATUSES = new Set([500, 502, 503, 504]);
+
 function pickDelay(attemptIndex, delays) {
   if (attemptIndex < delays.length) return delays[attemptIndex];
   return delays[delays.length - 1];
@@ -175,8 +179,10 @@ function startProbe(hash, opts = {}) {
           }
         } else if (response.status === 200) {
           return { ok: true };
-        } else if (response.status === 404 || response.status === 500) {
-          // Content not (yet) resolvable — keep polling.
+        } else if (response.status === 404 || TRANSIENT_STATUSES.has(response.status)) {
+          // Content not (yet) resolvable — keep polling. Ant answers 503
+          // when its peers can't serve the chunk yet (a cold node right
+          // after start); the bzz: handler retries the same 5xx set.
         } else {
           return { ok: false, reason: 'other', status: response.status };
         }

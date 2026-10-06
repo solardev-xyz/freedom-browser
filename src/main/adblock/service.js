@@ -35,6 +35,8 @@ const path = require('path');
 const crypto = require('crypto');
 const log = require('../logger');
 const { FiltersEngine, Request, Resources, ENGINE_VERSION } = require('@ghostery/adblocker');
+const engineBuildHost = require('./engine-build-host');
+const { stripTrustedScriptlets } = require('./engine-build');
 const ADBLOCKER_VERSION = require('@ghostery/adblocker/package.json').version;
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const { isGatewayTransportRequest } = require('../ipfs/gateway-transport');
@@ -95,6 +97,37 @@ let artifactsDirOverride = null;
 let installed = false;
 let cacheDir = null;
 let engine = null;
+// Set while a build runs in the worker with no engine loaded at all (a
+// no-cache first launch, e.g. after an update bumps ADBLOCKER_VERSION).
+// When the parse ran on the main thread, requests and scriptlet lookups
+// arriving meanwhile simply queued behind it and then met the fresh engine;
+// with the build in a worker they would run against no engine and go
+// unblocked. So they wait on this instead — bounded by FIRST_ENGINE_HOLD_MS,
+// after which they pass through as they would with adblock off. An engine
+// that is merely being *replaced* never sets it: the old one keeps serving.
+//
+// FIRST_ENGINE_HOLD_MS is a budget shared by every engine-less stretch, not
+// per build (#524): a later build that starts with still no engine (the
+// first one failed, timed out in the worker or found no lists, and a
+// settings change or list update queued another) only holds for what is left
+// of it, so pages are never held for one full timeout after another. Only
+// time actually spent holding counts — idle time between builds does not —
+// and an engine landing refills it, so a later engine-less rebuild (every
+// category unticked, then one re-ticked) holds again like the first one.
+let engineWait = null;
+const FIRST_ENGINE_HOLD_MS = 5000;
+let firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
+// What is left of the hold budget in ms; null means all of it (no hold has
+// spent any since the last engine landed, or ever).
+let holdBudgetLeftMs = null;
+// Consumers that waited on the current hold, for its release log line.
+let heldConsumers = 0;
+// E2E only (test-harness.js, #538): a promise the first parsed engine waits
+// on after its build finishes and before it is swapped in, so a spec can make
+// sure the first page's lookups reach the hold before the engine lands. The
+// build itself still runs from install, in parallel with window startup, as
+// it does for a user. One-shot; null outside that spec.
+let engineLandingGate = null;
 let lastArtifacts = null;
 // False until the first engine build has looked for lists on disk. Until
 // then `lastArtifacts === null` means "not checked yet", not "no lists", and
@@ -277,40 +310,21 @@ function trustedScriptletNames(resources) {
   return names;
 }
 
-// A `+js(...)` injection rule (not an `#@#` exception), capturing the
-// scriptlet name.
-const SCRIPTLET_RULE_RE = /^[^\n]*?#[$?]?#\+js\(\s*([^,)\s]+)[^\n]*$/gm;
-
-/**
- * Drop the rules of `text` that invoke a trust-requiring scriptlet. Anything
- * named `trusted-*` counts even if the resources file doesn't list it, so a
- * newer list can't slip one past an older resources file.
- */
-function stripTrustedScriptlets(text, trustedNames) {
-  if (!text.includes('+js(')) return text;
-  return text.replace(SCRIPTLET_RULE_RE, (line, name) =>
-    name.startsWith('trusted-') || trustedNames.has(name) ? '' : line
-  );
-}
-
-async function readEnabledListsText(settings, resolved, trustedNames = new Set()) {
-  const texts = [];
+// The enabled lists in build order, for engine-build.js: per category, the
+// file of the layer serving it, and whether it may keep `trusted-*`
+// scriptlet rules.
+function enabledListJobs(settings, resolved) {
+  const lists = [];
   for (const [category, settingKey] of CATEGORY_SETTINGS) {
     const entry = resolved.categories[category];
     if (!entry || settings[settingKey] !== true) continue;
-    try {
-      const text = await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8');
-      texts.push(
-        TRUSTED_SCRIPTLET_CATEGORIES.has(category)
-          ? text
-          : stripTrustedScriptlets(text, trustedNames)
-      );
-    } catch (err) {
-      // A bad list disables that category, never the whole feature.
-      log.warn(`[adblock] skipping unreadable list '${category}': ${err.message}`);
-    }
+    lists.push({
+      category,
+      path: path.join(entry.dir, entry.file),
+      trusted: TRUSTED_SCRIPTLET_CATEGORIES.has(category),
+    });
   }
-  return texts.length > 0 ? texts.join('\n') : null;
+  return lists;
 }
 
 // Identity of the exact bytes an engine build compiles in: per enabled
@@ -352,7 +366,7 @@ async function readEngineCache(cacheFile) {
   }
 }
 
-async function writeEngineCache(cacheFile, builtEngine) {
+async function writeEngineCache(cacheFile, bytes) {
   try {
     await fs.promises.mkdir(cacheDir, { recursive: true });
     // Prune caches from other engine/list/category combinations.
@@ -362,7 +376,7 @@ async function writeEngineCache(cacheFile, builtEngine) {
       }
     }
     const tmpFile = `${cacheFile}.tmp`;
-    await fs.promises.writeFile(tmpFile, builtEngine.serialize());
+    await fs.promises.writeFile(tmpFile, bytes);
     await fs.promises.rename(tmpFile, cacheFile);
   } catch (err) {
     log.warn(`[adblock] failed to write engine cache: ${err.message}`);
@@ -374,7 +388,10 @@ async function writeEngineCache(cacheFile, builtEngine) {
  * settings, then swap it in. Called at install, by settings-store when
  * an adblock setting changes, and after a list update lands (WP5 Swarm
  * channel). Prefers a serialized-engine cache (milliseconds) over
- * parsing raw list text (hundreds of milliseconds of main-thread CPU).
+ * parsing raw list text (hundreds of milliseconds of CPU), and does that
+ * parsing in a worker thread (engine-build-host.js, #512): the main thread
+ * only deserializes the result, as it does for a cache hit, and the previous
+ * engine keeps blocking until the new one is swapped in.
  *
  * Builds are serialized: settings changes fire refreshes without awaiting
  * each other, and if builds overlapped, a slower earlier build (say, with a
@@ -422,30 +439,120 @@ async function rebuildEngineOnce() {
     const cached = await readEngineCache(cacheFile);
     if (cached) {
       engine = cached;
+      holdBudgetLeftMs = null;
       log.info('[adblock] filter engine ready (cache)');
       return;
     }
   }
 
-  const text = await readEnabledListsText(settings, resolved, resources?.trustedNames);
-  if (text === null) {
-    engine = null;
-    return;
+  const lists = enabledListJobs(settings, resolved);
+  // Every category unticked is a supported configuration, not a build that
+  // might still produce an engine: there is nothing to wait for, so nothing
+  // is held (and no "hold ended with no engine" warning is logged for it).
+  const releaseHold = engine || lists.length === 0 ? null : holdUntilEngine();
+  const buildStartedAt = Date.now();
+  let bytes, warnings, inWorker, builtMs;
+  try {
+    ({ bytes, warnings, inWorker } = await engineBuildHost.buildEngine({
+      lists,
+      trustedNames: resources ? [...resources.trustedNames] : [],
+      resources: resources ? { text: resources.text, checksum: resources.checksum } : null,
+      config: ENGINE_CONFIG,
+    }));
+    builtMs = Date.now() - buildStartedAt;
+    for (const warning of warnings) log.warn(`[adblock] ${warning}`);
+    if (engineLandingGate && releaseHold) {
+      const gate = engineLandingGate;
+      engineLandingGate = null;
+      await gate;
+    }
+    engine = bytes ? FiltersEngine.deserialize(bytes) : null;
+  } finally {
+    // Released after `engine` is set, so held requests see the new engine.
+    releaseHold?.();
   }
-  const built = FiltersEngine.parse(text, ENGINE_CONFIG);
-  if (resources) built.updateResources(resources.text, resources.checksum);
-  engine = built;
+  if (!engine) return;
+  // An engine landed: a later engine-less stretch gets the full budget again.
+  holdBudgetLeftMs = null;
   log.info(
     `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
-      `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'})`
+      `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'}, ` +
+      `built in ${builtMs} ms${inWorker ? '' : ' on the main thread'})`
   );
-  if (cacheFile) await writeEngineCache(cacheFile, engine);
+  if (cacheFile) await writeEngineCache(cacheFile, bytes);
 }
 
 /**
- * Pure dispatcher handler — returns `{cancel}` / `{redirectURL}` or
- * `null` to pass through. Runs on the request hot path: no I/O, no
- * awaits.
+ * Start holding engine consumers (see `engineWait`) for at most what is left
+ * of the hold budget; returns the release, or null when the budget is spent
+ * and consumers must not wait at all.
+ */
+function holdUntilEngine() {
+  const startedAt = Date.now();
+  const budget = holdBudgetLeftMs ?? firstEngineHoldMs;
+  if (budget <= 0) {
+    log.info('[adblock] building the filter engine; hold budget spent, requests pass through');
+    return null;
+  }
+  let resolveWait;
+  const wait = new Promise((resolve) => (resolveWait = resolve));
+  heldConsumers = 0;
+  let released = false;
+  const release = (timedOut = false) => {
+    if (released) return;
+    released = true;
+    clearTimeout(timer);
+    if (engineWait === wait) engineWait = null;
+    const heldMs = Date.now() - startedAt;
+    // Only the time actually held is spent; the caller refills the budget
+    // once an engine lands.
+    holdBudgetLeftMs = timedOut ? 0 : Math.max(0, budget - heldMs);
+    // What #524 asked to see: how long the first page load was held and why
+    // it was let go — the engine landing, the build ending without one, or
+    // the budget running out.
+    const held = `${heldConsumers} request(s)/lookup(s) held`;
+    const after = `${heldMs} ms`;
+    if (timedOut) {
+      log.warn(
+        `[adblock] filter engine not ready after ${after}; ${held} released unfiltered, ` +
+          'and nothing waits again until an engine lands'
+      );
+    } else if (engine) {
+      log.info(`[adblock] first-engine hold released after ${after} (${held})`);
+    } else {
+      log.warn(
+        `[adblock] first-engine hold ended after ${after} with no engine built; ` +
+          `${held} released unfiltered`
+      );
+    }
+    resolveWait();
+  };
+  const timer = setTimeout(() => {
+    release(true);
+  }, budget);
+  timer.unref?.();
+  engineWait = wait;
+  return () => release(false);
+}
+
+/**
+ * A promise to wait on before answering from the engine, or null to answer
+ * now: only while the first engine is being built and blocking is enabled.
+ */
+function pendingFirstEngine() {
+  if (engine || !engineWait) return null;
+  if (loadSettings().adblockEnabled === false) return null;
+  heldConsumers += 1;
+  return engineWait;
+}
+
+/**
+ * Dispatcher handler — returns `{cancel}` / `{redirectURL}` or `null` to
+ * pass through. Runs on the request hot path: no I/O, and synchronous in
+ * every case but one — while the first engine is still being built with no
+ * cache to load (see `pendingFirstEngine`), it returns a *Promise* of that
+ * same result instead, so callers must accept either (the
+ * webrequest-dispatcher awaits it).
  */
 function adblockRequestForDispatch(details) {
   const { url, resourceType, webContentsId } = details;
@@ -461,7 +568,8 @@ function adblockRequestForDispatch(details) {
     return null;
   }
 
-  if (!engine || loadSettings().adblockEnabled === false) return null;
+  if (!engine && !engineWait) return null;
+  if (loadSettings().adblockEnabled === false) return null;
   if (!isInterceptableUrl(url)) return null;
   // The app's own dials — ENS CCIP-Read gateways, the external IPFS gateway —
   // share this session's webRequest chain (`ipfs/gateway-transport.js`), but
@@ -473,6 +581,12 @@ function adblockRequestForDispatch(details) {
   // engine so it skips its own URL parse.
   const hostname = hostnameFromUrl(url);
   if (!hostname || isLoopbackHost(hostname)) return null;
+
+  if (!engine) {
+    // First engine still building (see `engineWait`); the only async path.
+    const wait = pendingFirstEngine();
+    return wait ? wait.then(() => (engine ? adblockRequestForDispatch(details) : null)) : null;
+  }
 
   const sourceUrl = topLevelUrls.get(webContentsId) || details.referrer || '';
   const sourceHostname = hostnameFromUrl(sourceUrl) || '';
@@ -598,6 +712,7 @@ function getScriptlets({ url, sourceId } = {}) {
  */
 function installAdblockInterception(options = {}) {
   artifactsDirOverride = options.artifactsDir || null;
+  engineLandingGate = options.engineLandingGate || null;
   cacheDir = options.cacheDir !== undefined ? options.cacheDir : getDefaultCacheDir();
   installed = true;
   setAllowlistedHosts(getAllowlistedHosts());
@@ -651,19 +766,29 @@ function registerAdblockIpc() {
   ipcMain.handle(IPC.ADBLOCK_REMOVE_ALLOWLIST_HOST, (_event, host) => removeAllowlistedHost(host));
   // Requested per-frame by the webview preload; sender id scopes the
   // allowlist to the tab's top-level host.
-  ipcMain.handle(IPC.ADBLOCK_COSMETIC, (event, args) =>
-    getCosmeticFilters({ ...args, sourceId: event.sender?.id })
-  );
+  ipcMain.handle(IPC.ADBLOCK_COSMETIC, async (event, args) => {
+    await pendingFirstEngine();
+    return getCosmeticFilters({ ...args, sourceId: event.sender?.id });
+  });
   // Synchronous: the preload must have the scriptlets before the page's first
   // script runs. Sub-frames send it too; their sender is the tab's guest
   // webContents, so the allowlist still keys on the tab's top-level host.
+  // While the first engine builds, the reply is set once it lands (bounded by
+  // FIRST_ENGINE_HOLD_MS): a sync IPC reply may be set asynchronously, and the
+  // asking frame stays blocked until it is — as it was when the parse held
+  // the main thread — while the main thread itself stays free.
   ipcMain.on(IPC.ADBLOCK_SCRIPTLETS, (event, args) => {
-    try {
-      event.returnValue = getScriptlets({ url: args?.url, sourceId: event.sender?.id });
-    } catch (err) {
-      log.warn(`[adblock] scriptlet lookup failed: ${err.message}`);
-      event.returnValue = { script: '' };
-    }
+    const reply = () => {
+      try {
+        event.returnValue = getScriptlets({ url: args?.url, sourceId: event.sender?.id });
+      } catch (err) {
+        log.warn(`[adblock] scriptlet lookup failed: ${err.message}`);
+        event.returnValue = { script: '' };
+      }
+    };
+    const wait = pendingFirstEngine();
+    if (wait) wait.then(reply);
+    else reply();
   });
 }
 
@@ -690,6 +815,11 @@ function _resetAdblockForTests() {
   installed = false;
   cacheDir = null;
   engine = null;
+  engineWait = null;
+  firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
+  holdBudgetLeftMs = null;
+  heldConsumers = 0;
+  engineLandingGate = null;
   lastArtifacts = null;
   artifactsResolved = false;
   allowlistedHosts = [];
@@ -713,4 +843,10 @@ module.exports = {
   getEnabledCategories,
   getEnabledFeedCategories,
   _resetAdblockForTests,
+  _setFirstEngineHoldForTests: (ms) => {
+    firstEngineHoldMs = ms;
+  },
+  // The first-engine hold as it stands: whether one is open, and how many
+  // requests/lookups have waited on it so far (the E2E harness, #538).
+  _firstEngineHoldForTests: () => ({ holding: Boolean(engineWait), held: heldConsumers }),
 };

@@ -36,9 +36,24 @@ describe('history renders site strings as text (#432)', () => {
     ...overrides,
   });
 
+  // A stand-in for main's `history:page`: filter, then one page of it.
+  const pageOf = (entries, { query = '', offset = 0, limit = 200 } = {}) => {
+    const q = query.trim().toLowerCase();
+    const matched = q
+      ? entries.filter(
+          (e) => e.url.toLowerCase().includes(q) || (e.title || '').toLowerCase().includes(q)
+        )
+      : entries;
+    return {
+      entries: matched.slice(offset, offset + limit),
+      matched: matched.length,
+      total: entries.length,
+    };
+  };
+
   const run = (entries) => {
     const freedomAPI = {
-      getHistory: jest.fn().mockResolvedValue(entries),
+      getHistoryPage: jest.fn(async (options) => pageOf(entries, options)),
       removeHistory: jest.fn().mockResolvedValue(true),
       openInNewTab: jest.fn(),
       clearHistory: jest.fn(),
@@ -102,9 +117,142 @@ describe('history renders site strings as text (#432)', () => {
     const sort = page.elements['sort-select'];
     sort.value = 'title';
     await sort.fire('change');
+    await flush();
+    expect(page.freedomAPI.getHistoryPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sort: 'title', offset: 0 })
+    );
     expect(container.querySelectorAll('.date-group')).toHaveLength(0);
     expect(container.querySelectorAll('.history-item')).toHaveLength(2);
     expect(sinkHits(page)).toEqual([]);
+  });
+});
+
+describe('history loads a page at a time (#503)', () => {
+  const entries = Array.from({ length: 450 }, (_, i) => ({
+    id: i + 1,
+    url: `https://site${i}.test/`,
+    title: i === 300 ? 'Needle page' : `Page ${i}`,
+    protocol: 'https',
+    visit_count: 1,
+    timestamp: Date.now() - i * 1000,
+  }));
+
+  const run = (overrides = {}) => {
+    const freedomAPI = {
+      getHistoryPage: jest.fn(async ({ query = '', offset = 0, limit = 200 } = {}) => {
+        const q = query.trim().toLowerCase();
+        const matched = q ? entries.filter((e) => e.title.toLowerCase().includes(q)) : entries;
+        return {
+          entries: matched.slice(offset, offset + limit),
+          matched: matched.length,
+          total: entries.length,
+        };
+      }),
+      removeHistory: jest.fn().mockResolvedValue(true),
+      openInNewTab: jest.fn(),
+      clearHistory: jest.fn(),
+      ...overrides,
+    };
+    return runPageScript('history', {
+      ids: {
+        'history-container': 'div',
+        'search-input': 'input',
+        'clear-btn': 'button',
+        'sort-select': 'select',
+        stats: 'p',
+      },
+      freedomAPI,
+    }).then((page) => ({ ...page, freedomAPI }));
+  };
+
+  const items = (page) => page.elements['history-container'].querySelectorAll('.history-item');
+  const showMore = (page) =>
+    page.elements['history-container']
+      .querySelectorAll('button')
+      .find((b) => b.id === 'show-more-btn');
+
+  test('asks main for one page, never the whole table', async () => {
+    const page = await run();
+    expect(page.freedomAPI.getHistoryPage).toHaveBeenCalledTimes(1);
+    expect(page.freedomAPI.getHistoryPage).toHaveBeenCalledWith({
+      query: '',
+      sort: 'recent',
+      offset: 0,
+      limit: 200,
+    });
+    expect(items(page)).toHaveLength(200);
+    expect(page.elements.stats.textContent).toBe('450 pages');
+  });
+
+  test('"Show more" appends the next page until everything is shown', async () => {
+    const page = await run();
+    expect(showMore(page).textContent).toBe('Show more (250 remaining)');
+    await showMore(page).fire('click');
+    await flush();
+    expect(page.freedomAPI.getHistoryPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ offset: 200, limit: 200 })
+    );
+    expect(items(page)).toHaveLength(400);
+    expect(showMore(page).textContent).toBe('Show more (50 remaining)');
+    await showMore(page).fire('click');
+    await flush();
+    expect(items(page)).toHaveLength(450);
+    expect(showMore(page)).toBeUndefined();
+    // Rows stay unique and in the order main sent them.
+    const ids = items(page).map((item) => Number(item.dataset.id));
+    expect(ids).toEqual(entries.map((e) => e.id));
+  });
+
+  test('search is a query to main, and the counter shows matched of total', async () => {
+    const page = await run();
+    const input = page.elements['search-input'];
+    input.value = 'needle';
+    await input.fire('input');
+    // Debounced: the last queued timer runs the search.
+    page.timers.at(-1)();
+    await flush();
+    expect(page.freedomAPI.getHistoryPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: 'needle', offset: 0 })
+    );
+    expect(items(page)).toHaveLength(1);
+    expect(page.elements.stats.textContent).toBe('1 of 450 pages');
+    expect(showMore(page)).toBeUndefined();
+  });
+
+  test('a slower, older response never replaces a newer one', async () => {
+    let releaseFirst;
+    const page = await run();
+    const input = page.elements['search-input'];
+    page.freedomAPI.getHistoryPage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseFirst = () => resolve({ entries: entries.slice(0, 5), matched: 450, total: 450 });
+        })
+    );
+    input.value = 'page';
+    await input.fire('input');
+    page.timers.at(-1)();
+    input.value = 'needle';
+    await input.fire('input');
+    page.timers.at(-1)();
+    await flush();
+    expect(items(page)).toHaveLength(1);
+    releaseFirst();
+    await flush();
+    expect(items(page)).toHaveLength(1);
+    expect(items(page)[0].querySelector('.history-title').textContent).toBe('Needle page');
+  });
+
+  test('delete drops the row in place and moves the counter', async () => {
+    const page = await run();
+    const first = items(page)[0];
+    await first.querySelector('.delete-btn').fire('click');
+    await flush();
+    expect(page.freedomAPI.removeHistory).toHaveBeenCalledWith(1);
+    expect(page.freedomAPI.getHistoryPage).toHaveBeenCalledTimes(1);
+    expect(items(page)).toHaveLength(199);
+    expect(page.elements.stats.textContent).toBe('449 pages');
+    expect(showMore(page).textContent).toBe('Show more (250 remaining)');
   });
 });
 

@@ -17,6 +17,7 @@ const fs = require('fs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
+const { closeApp } = require('./close-app');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-2026!';
 const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
@@ -25,7 +26,7 @@ const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 
 // Builtin keyless Gnosis rpc sources to remove so nothing escapes to the
 // live chain (keyed sources resolve to nothing without API keys).
-const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-ankr', 'gno-publicnode', 'gno-drpc-public'];
+const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-publicnode', 'gno-drpc-public'];
 
 /**
  * anvil present + fork RPC reachable — mirrors the jest fork-test gate.
@@ -177,11 +178,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // window already gone
-    }
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 

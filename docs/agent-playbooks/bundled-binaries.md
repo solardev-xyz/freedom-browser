@@ -68,6 +68,71 @@ against the pins as described in `release-process.md` § Bundled binaries.
 sample** of that file (used by `npm run ant:init` / `npm run system-ant:start`),
 not the file the app runs from.
 
+The generated `config.yaml` always carries bee's `swap-enable` (#488), from the
+`antSwapEnable` setting the wallet sidebar's **Pay peers from the chequebook**
+switch writes. Releases from before Ant's switch
+([freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126), first released in
+v0.5.57) parse the key and ignore it. Releases with it say so themselves:
+`GET /node` carries a `settlement` object (`supported`, `swapSwitch`,
+`swapEnabled`, `paying`, `chequebook`), and its absence on a node that answers
+`/node` means "no switch" (`browsing-credit-service.js`; there is no
+`antd --help` probe). On those releases the switch flips the running node with
+`PUT /v0/settlement/swap` `{"swapEnabled": bool}` — no restart — and the setting
+is still written to `config.yaml`, because antd does not persist the runtime
+change. **Top Up Credit** passes the chosen amount as
+`POST /v0/settlement/deposit?amount=<PLUR>`; an older node would ignore
+`amount` and top up to its target, so the publish setup service checks `/node`'s
+`settlement` before sending one. On the pin bump to a release with #126, check
+that the Nodes tab's switch stops saying "Not supported by this node version",
+flips without the node restarting, and that the deposit screen offers amounts.
+
+Publish setup also reads **`/health.walletScan`** (Ant v0.5.59+,
+freedom-hq/ant#142), for #510/#484. Since v0.5.58, `/health.chainReady` no
+longer waits for the background batch rediscovery, so until it finishes an empty
+`GET /stamps` can just mean "not found yet". `walletScan` reports that scan:
+`pending`, `scanning` (with `from`/`scannedThrough`/`head`), `retrying` (with a
+URL-redacted `error`; antd retries on its own), then `done`, or `confirming`
+(freedom-hq/ant#143: part of the history came from an unverified source and is
+being confirmed; what it found is already registered). The publish setup
+service (`src/main/swarm/ant-wallet-scan.js` parses it) shows "Looking for your
+existing storage…" with the percentage instead of offering a plan until `done`
+or `confirming`, with no time limit while the scan moves and no Restart
+offered, since a restart starts the scan over. A scan that has read no block
+for `SCAN_STALL_MAX_MS` (30 min) of `retrying` (antd flips to `scanning` for
+each attempt, so only an advancing `scannedThrough` resets the clock) is
+released: the plans show, with a warning that the check did not finish and to
+check the Gnosis RPC (a set short of a quorum fails every `eth_getLogs`). The probe reads `/health` before `/stamps`, so the list it
+releases with already has what the scan found. A node wallet whose
+`eth_getTransactionCount` is 0 is never held: rediscovery only finds batches the
+wallet paid for itself, and a brand-new wallet would otherwise wait for a scan of
+the whole chain. That scan took about 70 minutes through the chain bridge's
+range-capped quorum (about 7.8k blocks/s, measured 2026-10-05 on a fresh dev
+profile). The field is absent when the node runs no background rediscovery: no
+logs RPC, or no write RPC, in which case antd rediscovers before `chainReady`.
+The bundled node always gets both. The only node that rediscovers in the
+background _without_ reporting it is antd v0.5.58 (or an antd whose
+`/health.version` can't be parsed, or a `walletScan.state` this release doesn't
+know). For those, a fallback holds for at most `REDISCOVERY_MAX_WAIT_MS`
+(30 min) after the node was spawned (`ant-manager.getSpawnedAt()`, not when
+the lazily-built service first looked), for the bundled node only: an external
+or reused node's start time is unknown, and holding it would re-arm the 30
+minutes on every Freedom launch for a scan that may have finished long ago.
+Bee is not held. The log matching that #522 used is gone: v0.5.59 logs
+`postage batch rediscovery scan failed` on every retry, so it no longer means
+"gave up". On a pin bump, check `crates/ant-chain/src/discover.rs`'s
+`WalletScanState` for new states. A state Freedom doesn't know falls back to the
+bounded hold instead of being treated as finished.
+
+Freedom does **not** pass ant#143's `--gnosis-unverified-logs-rpc-url`: every
+log Ant receives is one two independent providers agreed on (#493). For a
+first scan wider than the RPC quorum can verify, the chain bridge pairs
+Blockscout's log index with one full-history RPC
+([#529](https://github.com/solardev-xyz/freedom-browser/issues/529); see
+`docs/ant-chain-bridge.md`), so the scan reaches `done` in a few requests. When
+Blockscout is down or disagrees, the scan reads window by window as before and
+shows its progress. Serving Ant an explicitly unverified source remains a
+separate, open decision.
+
 Ports matter when you are judging evidence:
 
 - A Freedom-managed profile gets its own port — base **11633** in packaged
@@ -234,7 +299,11 @@ Same shape, different pin location:
   `sha256` entries to `prebuiltAssets` in
   `scripts/fetch-freedom-ipfs-native.js`, then `npm run ipfs:download` and
   `npm run check-binaries`. Prebuilts are Electron-ABI-specific, so an Electron
-  bump can require a new upstream release.
+  bump can require a new upstream release. Since v0.4.5 the node lifecycle
+  goes through the addon's Promise-returning `*Async` exports
+  (`src/main/ipfs/freedom-ipfs-native-node.js`), so an addon without them —
+  any release before v0.4.5 — fails the node's start rather than blocking the
+  main thread; `npm run ipfs:native:smoke` exercises a real start/stop.
 - **Radicle** — bump `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` **and** the `tag`/`digest` pair in
   `PINNED_SHA256SUMS` in `scripts/fetch-radicle-addon.js`, then

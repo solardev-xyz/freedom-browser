@@ -133,6 +133,112 @@ describe('bookmarks-store', () => {
     ).toEqual([{ label: 'Two', target: 'https://two.example' }]);
   });
 
+  // #503: bookmarks:get runs after every navigation (address-bar suggestions);
+  // it answers from memory instead of re-reading the file each time.
+  describe('in-memory cache', () => {
+    const seed = (bookmarks) =>
+      fs.writeFileSync(getUserBookmarksPath(userDataDir), JSON.stringify(bookmarks), 'utf-8');
+
+    test('reads the file once, not on every get', async () => {
+      const ipcMain = createIpcMainMock();
+      seed([{ label: 'One', target: 'https://one.example' }]);
+      const { mod } = loadBookmarksStore({ userDataDir, ipcMain });
+      mod.registerBookmarksIpc();
+      const readSpy = jest.spyOn(fs, 'readFileSync');
+      try {
+        for (let i = 0; i < 5; i++) {
+          await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([
+            { label: 'One', target: 'https://one.example' },
+          ]);
+        }
+        const bookmarkReads = readSpy.mock.calls.filter(([file]) =>
+          String(file).endsWith('user-bookmarks.json')
+        );
+        expect(bookmarkReads).toHaveLength(1);
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
+    test('every write updates what get returns', async () => {
+      const ipcMain = createIpcMainMock();
+      seed([{ label: 'One', target: 'https://one.example' }]);
+      const { mod } = loadBookmarksStore({ userDataDir, ipcMain });
+      mod.registerBookmarksIpc();
+      await ipcMain.invoke(IPC.BOOKMARKS_GET);
+
+      await ipcMain.invoke(IPC.BOOKMARKS_ADD, { label: 'Two', target: 'https://two.example' });
+      await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([
+        { label: 'One', target: 'https://one.example' },
+        { label: 'Two', target: 'https://two.example' },
+      ]);
+      await ipcMain.invoke(IPC.BOOKMARKS_UPDATE, {
+        originalTarget: 'https://one.example',
+        bookmark: { label: 'Uno', target: 'https://one.example' },
+      });
+      await ipcMain.invoke(IPC.BOOKMARKS_REORDER, ['https://two.example', 'https://one.example']);
+      await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([
+        { label: 'Two', target: 'https://two.example' },
+        { label: 'Uno', target: 'https://one.example' },
+      ]);
+      await ipcMain.invoke(IPC.BOOKMARKS_REMOVE, 'https://two.example');
+      await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([
+        { label: 'Uno', target: 'https://one.example' },
+      ]);
+      // And the file agrees with memory.
+      expect(JSON.parse(fs.readFileSync(getUserBookmarksPath(userDataDir), 'utf-8'))).toEqual([
+        { label: 'Uno', target: 'https://one.example' },
+      ]);
+    });
+
+    test('a refused update leaves the cached list untouched', async () => {
+      const ipcMain = createIpcMainMock();
+      seed([
+        { label: 'One', target: 'https://one.example' },
+        { label: 'Two', target: 'https://two.example' },
+      ]);
+      const { mod } = loadBookmarksStore({ userDataDir, ipcMain });
+      mod.registerBookmarksIpc();
+      const first = await ipcMain.invoke(IPC.BOOKMARKS_GET);
+      // The handler gets its own copy to modify: mutating it changes nothing.
+      first.pop();
+      await expect(
+        ipcMain.invoke(IPC.BOOKMARKS_UPDATE, {
+          originalTarget: 'https://one.example',
+          bookmark: { label: 'Clash', target: 'https://two.example' },
+        })
+      ).resolves.toBe(false);
+      await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([
+        { label: 'One', target: 'https://one.example' },
+        { label: 'Two', target: 'https://two.example' },
+      ]);
+    });
+
+    test('a failed write drops the cache so the next get reads the file', async () => {
+      const ipcMain = createIpcMainMock();
+      seed([{ label: 'One', target: 'https://one.example' }]);
+      const { mod } = loadBookmarksStore({ userDataDir, ipcMain });
+      mod.registerBookmarksIpc();
+      await ipcMain.invoke(IPC.BOOKMARKS_GET);
+
+      const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+      try {
+        await expect(
+          ipcMain.invoke(IPC.BOOKMARKS_ADD, { label: 'Two', target: 'https://two.example' })
+        ).resolves.toBe(false);
+      } finally {
+        writeSpy.mockRestore();
+      }
+      // What is on disk now is unknown to the store; it must look again.
+      seed([{ label: 'On disk', target: 'https://disk.example' }]);
+      await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([
+        { label: 'On disk', target: 'https://disk.example' },
+      ]);
+    });
+  });
+
   // #307: the bar reorders by drag, and the store is the order it renders.
   describe('reorder', () => {
     const seed = (userDataDir, bookmarks) =>

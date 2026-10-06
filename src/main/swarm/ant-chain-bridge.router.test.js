@@ -1,7 +1,8 @@
-// The real chain-data router behind the real Ant bridge. Only the registry,
-// Myotis, Colibri and fetch are stubbed. Pins that Ant's log scan still sees
-// the provider's range-limit wording when quorum already used every RPC
-// endpoint (no URL left for Direct) — R2-F1 on PR #419.
+// The real chain-data router behind the real Ant bridge, over loopback
+// sockets with real timers. Only the registry, Myotis, Colibri and fetch are
+// stubbed. Ant's log scans are answered by the RPC quorum alone (#484): the
+// provider's range-limit wording still reaches Ant (R2-F1 on PR #419), and no
+// single RPC's answer settles a scan.
 const http = require('node:http');
 
 const mockRegistry = {
@@ -57,7 +58,7 @@ beforeEach(async () => {
   mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
     role === 'prover' ? ['https://prover.example'] : RPCS
   );
-  bridge = await startAntChainBridge({ router, log: { info: jest.fn(), warn: jest.fn() } });
+  bridge = await startAntChainBridge({ router, log: { info: jest.fn(), verbose: jest.fn(), warn: jest.fn() } });
 });
 afterEach(async () => {
   await bridge.close();
@@ -76,80 +77,65 @@ test('forwards the range-limit error when quorum tried every RPC', async () => {
   expect(error.message).toContain('max block range');
 });
 
-test('gives RPCs quorum cut off at its timeout the longer log-scan budget', async () => {
-  global.fetch = jest.fn((_url, { signal }) => {
-    if (global.fetch.mock.calls.length <= 3) {
-      return new Promise((_resolve, reject) =>
-        signal.addEventListener('abort', () =>
-          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
-        )
-      );
-    }
-    // Slower than quorum's 500 ms budget, well inside the 60 s scan budget.
-    return new Promise((resolve) =>
-      setTimeout(() => resolve({ ok: true, json: async () => ({ result: [] }) }), 700)
-    );
-  });
+test('quorum members slower than the configured timeout still agree on a log scan', async () => {
+  // Slower than the network's 500 ms quorum timeout, well inside the scan's
+  // widened quorum budget.
+  global.fetch = jest.fn(
+    () =>
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ ok: true, json: async () => ({ result: [] }) }), 700)
+      )
+  );
   const response = await post(bridge.url, getLogs);
   expect(response.result).toEqual([]);
-  expect(global.fetch.mock.calls[3][0]).toBe(RPCS[0]);
+  expect(global.fetch.mock.calls.map(([url]) => url)).toEqual(RPCS);
 });
 
-// R3-F1 at 10x-scaled timings (quorum 500 ms, bridge deadline 1.2 s, Direct
-// 60 s budget): with the first three endpoints hanging, the healthy fourth is
-// reached right after quorum instead of after two long retries.
-test('reaches a healthy fourth RPC before the bridge deadline', async () => {
-  await bridge.close();
-  bridge = await startAntChainBridge({
-    router,
-    log: { info: jest.fn(), warn: jest.fn() },
-    timeoutMs: 1200,
-  });
-  const FOUR = [...RPCS, 'https://d.example'];
+test('a single answering RPC does not settle a log scan', async () => {
   mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
-    role === 'prover' ? ['https://prover.example'] : FOUR
+    role === 'prover' ? ['https://prover.example'] : [...RPCS, 'https://d.example']
   );
-  global.fetch = jest.fn((url, { signal }) => {
-    if (url === 'https://d.example') {
-      return Promise.resolve({ ok: true, json: async () => ({ result: ['ok'] }) });
-    }
-    return new Promise((_resolve, reject) =>
-      signal.addEventListener('abort', () =>
-        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
-      )
-    );
+  global.fetch = jest.fn(async (url) => {
+    if (url === 'https://a.example') return { ok: true, json: async () => ({ result: ['ok'] }) };
+    throw new TypeError('fetch failed');
   });
   const response = await post(bridge.url, getLogs);
-  expect(response.result).toEqual(['ok']);
-  expect(global.fetch.mock.calls[3][0]).toBe('https://d.example');
+  expect(response.result).toBeUndefined();
+  expect(response.error.message).not.toMatch(/range|limit|exceed|timeout/i);
 });
 
-// R5-F1: a JSON-RPC error Ant cannot act on (one endpoint lacks the method)
-// must not stop the widened retry of hung quorum members or reach Ant, which
-// would abort its log scan.
-test('retries hung RPCs past an endpoint-specific error Ant cannot act on', async () => {
-  let aCalls = 0;
-  global.fetch = jest.fn((url, { signal }) => {
+test('with two quorum members down, a fourth RPC joins the scan', async () => {
+  mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+    role === 'prover' ? ['https://prover.example'] : [...RPCS, 'https://d.example']
+  );
+  global.fetch = jest.fn(async (url) => {
+    if (url === 'https://a.example' || url === 'https://b.example') {
+      throw new TypeError('fetch failed');
+    }
+    return { ok: true, json: async () => ({ result: ['ok'] }) };
+  });
+  const range = [{ fromBlock: '0x1', toBlock: '0x2710' }];
+  const response = await post(bridge.url, { ...getLogs, params: range });
+  expect(response.result).toEqual(['ok']);
+  expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
+    ...RPCS,
+    'https://c.example',
+    'https://d.example',
+  ]);
+});
+
+test('an endpoint-specific error does not stop two agreeing answers', async () => {
+  global.fetch = jest.fn(async (url) => {
     if (url === 'https://c.example') {
-      return Promise.resolve({
+      return {
         ok: true,
         json: async () => ({
           error: { code: -32601, message: 'the method eth_getLogs does not exist' },
         }),
-      });
+      };
     }
-    if (url === 'https://a.example' && ++aCalls === 2) {
-      return new Promise((resolve) =>
-        setTimeout(() => resolve({ ok: true, json: async () => ({ result: [] }) }), 700)
-      );
-    }
-    return new Promise((_resolve, reject) =>
-      signal.addEventListener('abort', () =>
-        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
-      )
-    );
+    return { ok: true, json: async () => ({ result: [] }) };
   });
   const response = await post(bridge.url, getLogs);
   expect(response).toMatchObject({ result: [] });
-  expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([...RPCS, 'https://a.example']);
 });

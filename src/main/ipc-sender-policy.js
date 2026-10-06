@@ -93,6 +93,7 @@ const INTERNAL_CHANNELS = [
   'history:add',
   'history:clear',
   'history:get',
+  'history:page',
   'history:remove',
   'internal:get-theme',
   'internal:open-url-in-new-tab',
@@ -152,6 +153,9 @@ const SETTINGS_CHANNELS = [
   'shortcuts:reset',
   'shortcuts:set-override',
   'tor:checkBinary',
+  'update:check',
+  'update:get-state',
+  'update:restart-and-install',
 ];
 
 // freedomAPI methods wrapped in guardProfileManagerPage.

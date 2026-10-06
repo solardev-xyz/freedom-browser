@@ -12,11 +12,13 @@
  * wallet, and the node quotes, swaps xDAI for xBZZ, buys and registers the
  * batch, and funds its chequebook (see ant-storage-api.js). Freedom's part:
  *
- *   - Readiness, from `/health.chainReady`, `/node`, `/readiness` and usable
- *     `/stamps`, plus the settlement deposit and node wallet balances while a
- *     surface that shows them is on screen.
+ *   - Readiness, from `/health.chainReady`, `/health.walletScan`, `/node`,
+ *     `/readiness` and usable `/stamps`, plus the settlement deposit and
+ *     node wallet balances while a surface that shows them is on screen.
  *   - The armed operation: a buy, an extend or a deposit top-up the user
- *     chose. While it waits for funds it re-quotes every few seconds, and the
+ *     chose. A top-up refills the deposit to the node's target or, on Ant
+ *     releases with freedom-hq/ant#126, adds an amount the user picked.
+ *     While it waits for funds it re-quotes every few seconds, and the
  *     first quote with `sufficientFunds` fires the write route exactly once.
  *     It lives here rather than in a window, so closing the screen does not
  *     drop it.
@@ -32,6 +34,12 @@ const { ipcMain } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
+const {
+  parseWalletScan,
+  isWalletScanFinished,
+  walletScanPercent,
+  mayRediscoverUnreported,
+} = require('./ant-wallet-scan');
 const {
   isUsableStamp,
   isPendingStamp,
@@ -87,6 +95,34 @@ const FUNDING_TX_TIMEOUT_MS = 15 * 60_000;
 // screen suggests checking the Gnosis RPC or restarting the node.
 const CHAIN_INIT_SLOW_MS = 3 * 60_000;
 const MAX_EXTEND_DAYS = 3650;
+// Ant's background batch rediscovery (#510, ant-wallet-scan.js): while it
+// runs, an empty `/stamps` does not mean the wallet owns no storage. A node
+// that reports `/health.walletScan` (Ant v0.5.59+) is held until it says
+// `done` or `confirming`, however long a scan that moves takes (one that
+// stops moving is bounded by SCAN_STALL_MAX_MS). A node that may be
+// rediscovering without reporting it (Ant v0.5.58, or a `walletScan` state
+// this release does not know) is held for at most this long after the node
+// started, and only if Freedom spawned it: an external node's start time is
+// unknown here, and it may have finished long ago. Neither holds a wallet
+// that never sent a transaction, which owns nothing to rediscover. Before #484, the first scan of a wallet
+// with history took 15-25 minutes behind a range-capped RPC; past this the
+// fallback stops guessing rather than keep the user from buying for good.
+const REDISCOVERY_MAX_WAIT_MS = 30 * 60_000;
+// After this long the fallback's message says the first check can take a while.
+const REDISCOVERY_SLOW_MS = 2 * 60_000;
+// A reported scan that keeps failing (`retrying`, with no block read since)
+// for this long is not going to finish on its own: a Gnosis RPC set short of
+// a quorum, or a dead logs endpoint. antd's own retry backs off to 5
+// minutes, so this is several failed attempts. Past it the hold is released,
+// with a message saying the check did not finish, rather than keep the user
+// from storage plans for the whole session. The clock starts when Freedom
+// first sees the scan failing, not when antd started retrying: `/health`
+// carries no timestamp for that, and the service only probes while a
+// surface (publish setup, storage, the node card) is watching. A scan that failed
+// unwatched for hours therefore still holds for up to this long once a
+// surface opens; the bound is a ceiling on what Freedom has seen, not on
+// the scan's own age.
+const SCAN_STALL_MAX_MS = 30 * 60_000;
 
 const QUOTING_PHASES = new Set(['quoting', 'awaiting-funds']);
 // The surface name the chrome's setup screen watches under (publish-setup.js).
@@ -99,6 +135,20 @@ const REJECTED_BATCH_MESSAGE =
   'Your storage was bought, but the Swarm network did not accept it, so it cannot be used to publish. Restarting the node can help; otherwise pick a plan again.';
 
 const WEI_PER_CENT = 10n ** 16n;
+const PLUR_PER_BZZ = 10n ** 16n;
+// What a "Top Up Credit" amount may be (freedom-hq/ant#126's
+// `POST /v0/settlement/deposit?amount=`): from the node's own default deposit
+// (0.001 xBZZ) to 10 xBZZ (about 17 GB of fully paid download), so a typo
+// cannot swap the node's whole xDAI balance. The renderer offers the same
+// range (browsing-credit.js).
+const MIN_DEPOSIT_AMOUNT_PLUR = PLUR_PER_BZZ / 1000n;
+const MAX_DEPOSIT_AMOUNT_PLUR = 10n * PLUR_PER_BZZ;
+
+const WALLET_GREW_MESSAGE =
+  'Your node wallet now holds more xDAI than when you chose this top-up, and the node pays from it first. Choose the amount again to go ahead.';
+
+const OLD_NODE_DEPOSIT_AMOUNT_MESSAGE =
+  'This Swarm node can only top its deposit up to its default target. A newer Ant adds any amount.';
 
 function toBigInt(value) {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') {
@@ -194,11 +244,37 @@ function normalizeQuote(data, kind) {
 }
 
 /**
+ * The pay step's quote for an amount deposit, from the shortfall the node
+ * reported (parseXdaiShortfall) and the wallet the last deposit read saw.
+ */
+function amountQuote(op, shortWei) {
+  return {
+    depth: null,
+    days: null,
+    amountPerChunk: null,
+    walletAddress: op.walletAddress,
+    walletXdai: formatUnits(op.walletXdaiWei ?? 0n, 18),
+    xdaiToSendWei: shortWei.toString(),
+    send: roundUpToCent(shortWei),
+    price: null,
+    depositXbzz: formatUnits(op.params.amountPlur, 16),
+    sufficientFunds: false,
+  };
+}
+
+/**
  * Classify publish readiness from the node's status and the latest probe.
  * `reason` is the swarm provider's wire value (`window.swarm` apps see it in
  * `swarm_getCapabilities` and in 4900 errors), so it keeps its four values.
  */
-function classifyReadiness({ node, probe, runningSince = null, now = Date.now() }) {
+function classifyReadiness({
+  node,
+  probe,
+  runningSince = null,
+  rediscovery = null,
+  scanStalled = false,
+  now = Date.now(),
+}) {
   const registryMode = node?.registryMode || 'none';
   const external = registryMode === 'reused' || registryMode === 'external';
   const result = (key, reason, message, extra = {}) => ({
@@ -276,15 +352,49 @@ function classifyReadiness({ node, probe, runningSince = null, now = Date.now() 
       'Your new storage is reaching the Swarm network. Publishing works in a moment.'
     );
   }
+  if (probe.stamps.usable === 0 && rediscovery) {
+    // The node is still looking for batches this wallet bought before
+    // (rediscoveryHold): offering a plan now invites buying one it owns.
+    // Never `slow`: that offers a restart, which starts the scan over.
+    const progress = Number.isInteger(rediscovery.percent) ? rediscovery.percent : null;
+    const done = progress === null ? '' : ` ${progress}% checked.`;
+    if (rediscovery.state === 'retrying') {
+      return result(
+        'checking',
+        'node-not-ready',
+        `Looking for your existing storage…${done} Gnosis Chain did not answer, so the Swarm node is trying again. If this lasts, check the Gnosis RPC in Settings.`,
+        { rediscovery: 'retrying', progress }
+      );
+    }
+    if (rediscovery.state === 'unreported') {
+      return result(
+        'checking',
+        'node-not-ready',
+        rediscovery.slow
+          ? 'Still looking for your existing storage. This Swarm node does not report its progress, and the first check of a wallet on a device can take several minutes.'
+          : 'Looking for your existing storage…',
+        { rediscovery: 'running', progress: null }
+      );
+    }
+    return result(
+      'checking',
+      'node-not-ready',
+      `Looking for your existing storage…${done} Storage plans appear if this wallet has none.`,
+      { rediscovery: 'running', progress }
+    );
+  }
   if (probe.stamps.usable === 0) {
     return result(
       'needs-storage',
       'no-usable-stamps',
-      probe.stamps.full > 0
-        ? 'Your storage is full. Buy a storage plan to keep publishing.'
-        : probe.stamps.total > 0
-          ? 'None of your storage can be used anymore. Buy a storage plan to publish.'
-          : 'Publishing needs storage. Pick a storage plan to start.'
+      scanStalled
+        ? 'The Swarm node could not finish looking for storage this wallet already owns: Gnosis Chain keeps failing. Check the Gnosis RPC in Settings before buying, or you may pay for storage you already have.'
+        : probe.stamps.full > 0
+          ? 'Your storage is full. Buy a storage plan to keep publishing.'
+          : probe.stamps.total > 0
+            ? 'None of your storage can be used anymore. Buy a storage plan to publish.'
+            : 'Publishing needs storage. Pick a storage plan to start.',
+      scanStalled ? { scanStalled: true } : {}
     );
   }
   const count = probe.stamps.usable;
@@ -303,6 +413,26 @@ function actionLabel(kind) {
 
 function isShortOfXdai(res) {
   return res?.status === 400 && /(not enough|insufficient) xDAI/i.test(res.message || '');
+}
+
+/**
+ * The xDAI (wei) a refused write says the node wallet is short of: antd's
+ * `not enough xDAI: send 0.1201 more xDAI to your account, then try again`,
+ * rounded up to 4 places by the node. Null when the message has no figure.
+ */
+function parseXdaiShortfall(message) {
+  const match = /send (\d+)(?:\.(\d{1,18}))? more xDAI/i.exec(message || '');
+  if (!match) return null;
+  const wei = BigInt(match[1]) * 10n ** 18n + BigInt((match[2] || '').padEnd(18, '0') || '0');
+  return wei > 0n ? wei : null;
+}
+
+/** A deposit amount from the renderer: a PLUR integer string within range. */
+function parseDepositAmount(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d{0,30}$/.test(value)) return null;
+  const plur = BigInt(value);
+  if (plur < MIN_DEPOSIT_AMOUNT_PLUR || plur > MAX_DEPOSIT_AMOUNT_PLUR) return null;
+  return plur.toString();
 }
 
 function parseRequest(request) {
@@ -330,7 +460,22 @@ function parseRequest(request) {
     if (days === 0 && depth === null) return { error: 'Choose how long or how big to make it.' };
     return { kind, request: { kind, batchId, days, depth }, params: { batchId, days, depth } };
   }
-  if (kind === 'deposit') return { kind, request: { kind }, params: {} };
+  if (kind === 'deposit') {
+    if (request.amountPlur == null) return { kind, request: { kind }, params: {} };
+    const amountPlur = parseDepositAmount(request.amountPlur);
+    if (!amountPlur) return { error: 'Choose an amount between 0.001 and 10 xBZZ.' };
+    // The node wallet's xDAI the deposit screen showed when the user chose
+    // this: the most the node may swap before Freedom has a price for it.
+    const spend = request.walletXdaiWei == null ? '0' : request.walletXdaiWei;
+    if (typeof spend !== 'string' || !/^(0|[1-9]\d{0,40})$/.test(spend)) {
+      return { error: 'Invalid wallet balance.' };
+    }
+    return {
+      kind,
+      request: { kind, amountPlur, walletXdaiWei: spend },
+      params: { amountPlur, walletSpendCapWei: BigInt(spend) },
+    };
+  }
   return { error: 'Unknown operation.' };
 }
 
@@ -340,11 +485,19 @@ function createPublishSetupService({
   getRegistryMode,
   restartNode,
   getTransactionStatus,
+  // The node wallet's Gnosis Chain transaction count, or null if unknown.
+  getWalletTxCount = null,
+  // When the node Freedom spawned started (ms), or null: what the fallback
+  // hold is measured from, so a service constructed late does not stretch it.
+  getNodeStartedAt = null,
   publish = () => {},
   now = () => Date.now(),
 } = {}) {
   let node = readNode();
   let runningSince = node.status === 'running' ? now() : null;
+  // Bumped each time the node comes up: what was learned about one run of
+  // the node (maybe with another key) does not carry over to the next.
+  let nodeRun = node.status === 'running' ? 1 : 0;
   let probe = null;
   let account = null;
   let operation = null;
@@ -361,6 +514,27 @@ function createPublishSetupService({
   let accountInflight = null;
   let lastPublished = null;
   let disposed = false;
+  // Whether the node wallet has sent a transaction, per node run.
+  // Rediscovery only finds batches the node wallet paid for itself, so a
+  // wallet that never sent a transaction owns nothing for it to find, and
+  // need not wait for a scan of the whole chain (about 70 minutes for a new
+  // wallet through the chain bridge's range-capped quorum, measured
+  // 2026-10-05; #529 tracks a faster first scan).
+  let walletHistory = { run: null, hasHistory: null };
+  let historyInflight = null;
+  // Since when a reported scan has been failing without reading a block
+  // (SCAN_STALL_MAX_MS), per node run. `through` is the progress it stalled
+  // at: antd flips between `retrying` and `scanning` on each attempt, so only
+  // a block actually read counts as the scan moving again.
+  let scanStall = { run: null, since: null, through: null };
+  // The earliest `from` seen for the scan in progress, for its percentage:
+  // antd resets `from` to its resume point on every retry and restart, so
+  // the progress shown would drop to ~0% after a failure (see
+  // walletScanPercent). Kept across a node restart for the same wallet;
+  // cleared when the scan finishes or the wallet changes. An app restart
+  // loses it (antd reports only the resume point), so a scan resumed then
+  // shows progress from where it resumed.
+  let scanOrigin = null;
 
   function readNode() {
     const { status = 'stopped', error = null } = getNodeStatus?.() || {};
@@ -393,6 +567,7 @@ function createPublishSetupService({
       storage: acc.storage,
       walletAddress: acc.walletAddress,
       xdai: formatUnits(acc.xdaiWei, 18),
+      xdaiWei: toBigInt(acc.xdaiWei) === null ? null : toBigInt(acc.xdaiWei).toString(),
       bzz: formatUnits(acc.bzzPlur, 16),
       chequebook: cb
         ? {
@@ -406,8 +581,191 @@ function createPublishSetupService({
     };
   }
 
+  /**
+   * Why publish setup should not take an empty storage list at its word
+   * (#510), or null: `{ state, percent, slow }`.
+   *
+   * A node that reports `/health.walletScan` decides: held while it reads
+   * `pending`, `scanning` or `retrying`, with its progress, and released at
+   * `done` or `confirming`. The probe reads `/health` before `/stamps`, so a
+   * finished scan's batches are already in the list it releases with.
+   *
+   * The fallback, for a node that may rediscover without reporting it (see
+   * mayRediscoverUnreported, or a `walletScan` state not known here): held
+   * as `unreported` for at most REDISCOVERY_MAX_WAIT_MS after Freedom saw
+   * the node running.
+   *
+   * Either way, a wallet known to have sent no transactions is not held. A
+   * wallet whose history could not be read is: a wrong "checking" costs a
+   * wait, a wrong "pick a plan" can cost a duplicate purchase.
+   */
+  function rediscoveryHold() {
+    const kind = holdKind();
+    if (!kind || runningSince === null) return null;
+    if (walletHistory.run === nodeRun && walletHistory.hasHistory === false) return null;
+    if (kind === 'reported') {
+      if (isScanStalled()) return null;
+      const scan = probe.walletScan;
+      return {
+        state: scan.state,
+        percent: walletScanPercent(scan, scanOriginFrom()),
+        slow: false,
+      };
+    }
+    const startedAt = nodeStartedAt();
+    if (startedAt === null) return null;
+    const waited = now() - startedAt;
+    if (waited > REDISCOVERY_MAX_WAIT_MS) return null;
+    return { state: 'unreported', percent: null, slow: waited > REDISCOVERY_SLOW_MS };
+  }
+
+  // 'reported' while the node reports an unfinished scan, 'fallback' while
+  // it may be rediscovering without saying so, else null. The fallback is
+  // for the node Freedom spawned only: for an external one Freedom cannot
+  // tell a scan that just started from one that finished days ago, and
+  // guessing would hold the plans for the bound on every launch.
+  function holdKind() {
+    if (!probe || probe.unreachable) return null;
+    const scan = probe.walletScan;
+    if (scan && scan.state !== 'unknown') return isWalletScanFinished(scan) ? null : 'reported';
+    if (node.registryMode !== 'bundled') return null;
+    if (scan) return 'fallback';
+    return mayRediscoverUnreported(probe.version) ? 'fallback' : null;
+  }
+
+  // When the node started: the bundled node's spawn time where known, else
+  // when Freedom first saw it running.
+  function nodeStartedAt() {
+    const spawned = getNodeStartedAt?.();
+    if (Number.isFinite(spawned) && spawned <= now()) return spawned;
+    return runningSince;
+  }
+
+  function noteWalletScan(scan, at) {
+    if (
+      scanStall.run !== nodeRun ||
+      !scan ||
+      scan.state === 'unknown' ||
+      isWalletScanFinished(scan)
+    ) {
+      scanStall = { run: nodeRun, since: null, through: null };
+      if (!scan || scan.state !== 'retrying') return;
+    }
+    const through = scan.scannedThrough;
+    if (
+      scanStall.since !== null &&
+      through !== null &&
+      (scanStall.through === null || through > scanStall.through)
+    ) {
+      scanStall = { run: nodeRun, since: null, through: null };
+    }
+    if (scan.state === 'retrying' && scanStall.since === null) {
+      scanStall = { run: nodeRun, since: at, through };
+    }
+  }
+
+  function currentWallet() {
+    const address = account?.walletAddress;
+    return isAddress(address) ? address.toLowerCase() : null;
+  }
+
+  function noteScanOrigin(scan) {
+    if (!scan || scan.state === 'unknown' || isWalletScanFinished(scan)) {
+      scanOrigin = null;
+      return;
+    }
+    if (scan.from === null) return;
+    const wallet = currentWallet();
+    if (scanOrigin && scanOrigin.run !== nodeRun) {
+      // A restarted node: carry the origin over only once the wallet is
+      // known to be the same one (account is re-read after a restart).
+      if (!scanOrigin.wallet) scanOrigin = null;
+      else if (!wallet) return;
+      else if (wallet !== scanOrigin.wallet) scanOrigin = null;
+    }
+    if (scanOrigin && wallet && scanOrigin.wallet && wallet !== scanOrigin.wallet) {
+      scanOrigin = null;
+    }
+    scanOrigin = scanOrigin
+      ? {
+          run: nodeRun,
+          wallet: scanOrigin.wallet || wallet,
+          from: Math.min(scanOrigin.from, scan.from),
+        }
+      : { run: nodeRun, wallet, from: scan.from };
+  }
+
+  function scanOriginFrom() {
+    if (!scanOrigin) return null;
+    if (scanOrigin.run === nodeRun) return scanOrigin.from;
+    const wallet = currentWallet();
+    return wallet && wallet === scanOrigin.wallet ? scanOrigin.from : null;
+  }
+
+  function isScanStalled() {
+    return (
+      scanStall.run === nodeRun &&
+      scanStall.since !== null &&
+      now() - scanStall.since > SCAN_STALL_MAX_MS
+    );
+  }
+
+  async function readWalletHistory() {
+    if (!holdKind() || typeof getWalletTxCount !== 'function') return;
+    const run = nodeRun;
+    if (walletHistory.run === run && walletHistory.hasHistory !== null) return;
+    let address = account?.walletAddress;
+    if (!isAddress(address)) {
+      const res = await api.getAddresses({ timeoutMs: PROBE_TIMEOUT_MS });
+      address = res.ok && isAddress(res.data?.ethereum) ? res.data.ethereum : null;
+    }
+    if (!address) return;
+    let count = null;
+    try {
+      count = await getWalletTxCount(address.toLowerCase());
+    } catch (err) {
+      log.warn(`[PublishSetup] wallet history read failed: ${err.message}`);
+    }
+    // Kept under the run it was read for: a restart (maybe with a new key)
+    // while the read was in flight leaves it answering for that run only.
+    if (Number.isSafeInteger(count) && count >= 0) {
+      walletHistory = { run, hasHistory: count > 0 };
+      // Probes do not wait for this read (it is an RPC round-trip), so a
+      // wallet with no history lifts the hold here.
+      if (!disposed) emit();
+    }
+  }
+
+  function walletHistoryOnce() {
+    if (!historyInflight) {
+      historyInflight = readWalletHistory()
+        .catch((err) => log.warn(`[PublishSetup] wallet history check failed: ${err.message}`))
+        .finally(() => {
+          historyInflight = null;
+        });
+    }
+    return historyInflight;
+  }
+
+  // Every reader of readiness (the setup state, the swarm provider's
+  // pre-flight) classifies through here, so they agree on the hold.
+  function currentReadiness() {
+    return classifyReadiness({
+      node,
+      probe,
+      runningSince,
+      rediscovery: rediscoveryHold(),
+      // The stalled-scan warning is for a wallet that may own storage.
+      scanStalled:
+        holdKind() === 'reported' &&
+        isScanStalled() &&
+        !(walletHistory.run === nodeRun && walletHistory.hasHistory === false),
+      now: now(),
+    });
+  }
+
   function getState() {
-    const readiness = classifyReadiness({ node, probe, runningSince, now: now() });
+    const readiness = currentReadiness();
     const mode = node.registryMode;
     return {
       node: { ...node },
@@ -460,6 +818,8 @@ function createPublishSetupService({
       probe = {
         at,
         unreachable: true,
+        version: null,
+        walletScan: null,
         chainReady: null,
         nodeMode: null,
         peersReady: null,
@@ -470,10 +830,16 @@ function createPublishSetupService({
     // Bee and Ant releases before the flag omit it: treat a missing field as
     // ready rather than blocking a node that has no chain init to wait for.
     const chainReady = health.data?.chainReady !== false;
+    const version = typeof health.data?.version === 'string' ? health.data.version : null;
+    const walletScan = parseWalletScan(health.data?.walletScan);
+    noteWalletScan(walletScan, at);
+    noteScanOrigin(walletScan);
     if (!chainReady) {
       probe = {
         at,
         unreachable: false,
+        version,
+        walletScan,
         chainReady,
         nodeMode: null,
         peersReady: null,
@@ -491,6 +857,8 @@ function createPublishSetupService({
     probe = {
       at,
       unreachable: false,
+      version,
+      walletScan,
       chainReady,
       nodeMode: nodeRes.ok ? normalizeSwarmMode(nodeRes.data?.beeMode) : null,
       peersReady: readinessRes.status === 0 ? null : readinessRes.ok,
@@ -505,6 +873,13 @@ function createPublishSetupService({
           }
         : { known: false },
     };
+    const s = probe.stamps;
+    if (s.known && s.usable === 0 && s.pending === 0 && s.propagating === 0 && holdKind()) {
+      // Not awaited: readiness (and the swarm provider's pre-flight) must not
+      // wait on an RPC round-trip. Until it answers the hold applies, and the
+      // read emits when it lands.
+      void walletHistoryOnce();
+    }
   }
 
   function accountFromDeposit(data, at) {
@@ -618,8 +993,14 @@ function createPublishSetupService({
     await refresh();
   }
 
+  // While converging the watch polls every few seconds: chain init, and a
+  // reported rediscovery, so its progress moves and the plans (or the found
+  // storage) show soon after it finishes.
   function isConverging() {
-    return !probe || probe.unreachable || probe.chainReady === false || !probe.stamps?.known;
+    if (!probe || probe.unreachable || probe.chainReady === false || !probe.stamps?.known) {
+      return true;
+    }
+    return holdKind() === 'reported' && rediscoveryHold() !== null;
   }
 
   function scheduleWatch() {
@@ -662,7 +1043,10 @@ function createPublishSetupService({
   function handleNodeStatus() {
     const previous = node.status;
     node = readNode();
-    if (node.status === 'running' && previous !== 'running') runningSince = now();
+    if (node.status === 'running' && previous !== 'running') {
+      runningSince = now();
+      nodeRun += 1;
+    }
     if (node.status !== 'running') {
       runningSince = null;
       probe = null;
@@ -711,7 +1095,9 @@ function createPublishSetupService({
   }
 
   function writeOperation(op) {
-    if (op.kind === 'deposit') return api.topUpSettlementDeposit();
+    if (op.kind === 'deposit') {
+      return api.topUpSettlementDeposit({ amountPlur: op.params.amountPlur });
+    }
     if (op.kind === 'extend') {
       return api.extendStorage({
         batchId: op.params.batchId,
@@ -838,6 +1224,25 @@ function createPublishSetupService({
     }
 
     const label = actionLabel(current.kind);
+    // An amount deposit has no quote route of its own: the node prices it when
+    // asked to pay, and refuses before sending anything when its wallet is
+    // short. That refusal is the quote (see requoteAmountDeposit).
+    if (current.params.amountPlur && isShortOfXdai(res)) {
+      const short = parseXdaiShortfall(res.message);
+      if (short === null) {
+        failOperation(current, antStorageApi.describeAntError(res, label));
+        return;
+      }
+      current.executed = false;
+      current.xdaiNeededWei = (current.walletXdaiWei ?? 0n) + short;
+      current.quote = amountQuote(current, short);
+      current.phase = 'awaiting-funds';
+      current.notice = null;
+      emit();
+      scheduleQuote(current);
+      return;
+    }
+
     // 409 (another node transaction runs), 503 (chain init) and a funds race
     // leave nothing on chain: go back to quoting and try again.
     if (res.status === 409 || res.status === 503 || isShortOfXdai(res)) {
@@ -901,6 +1306,10 @@ function createPublishSetupService({
         );
         return;
       }
+      if (current.params.amountPlur) {
+        await requoteAmountDeposit(current, res.data);
+        return;
+      }
       if (res.data.needsTopUp !== true) {
         finishOperation(current, { deposit: true, alreadyFull: true });
         return;
@@ -920,6 +1329,68 @@ function createPublishSetupService({
       await execute(current);
       return;
     }
+    current.phase = 'awaiting-funds';
+    emit();
+    scheduleQuote(current);
+  }
+
+  /**
+   * A deposit of an amount the user picked (freedom-hq/ant#126). The deposit
+   * route prices only a top-up to the node's target, so this one is priced by
+   * asking the node to pay it: the first quote goes straight to the write,
+   * which either deposits (the wallet had the xDAI, as a target top-up with
+   * `sufficientFunds` does) or is refused before anything is sent, naming the
+   * xDAI the wallet lacks. That becomes the pay step's figure, and the write
+   * is tried again once the wallet holds that much more.
+   *
+   * The node swaps from its wallet before Freedom has any price, so that first
+   * write may spend only the xDAI the deposit screen showed the user as
+   * at stake (`walletSpendCapWei`, from the request). A wallet that has grown
+   * since fails the operation instead of spending xDAI nobody agreed to.
+   *
+   * An Ant release from before #126 ignores `?amount=` and would top up to its
+   * target instead, so the node must report `/node`'s `settlement` first.
+   */
+  async function requoteAmountDeposit(current, data) {
+    if (!current.amountChecked) {
+      const info = await api.getNode({ timeoutMs: PROBE_TIMEOUT_MS });
+      if (operation !== current || !QUOTING_PHASES.has(current.phase)) return;
+      if (!info.ok) {
+        current.notice = antStorageApi.describeAntError(info, 'Getting a price');
+        emit();
+        scheduleQuote(current);
+        return;
+      }
+      const settlement = info.data?.settlement;
+      if (!settlement || typeof settlement !== 'object') {
+        failOperation(current, OLD_NODE_DEPOSIT_AMOUNT_MESSAGE);
+        return;
+      }
+      current.amountChecked = true;
+    }
+    const wallet = toBigInt(data.walletXdaiWei);
+    if (!isAddress(data.walletAddress) || wallet === null || wallet < 0n) {
+      current.notice = 'The Swarm node returned a price Freedom could not read.';
+      emit();
+      scheduleQuote(current);
+      return;
+    }
+    current.walletAddress = data.walletAddress.toLowerCase();
+    current.walletXdaiWei = wallet;
+    if (current.xdaiNeededWei == null) {
+      if (wallet > current.params.walletSpendCapWei) {
+        failOperation(current, WALLET_GREW_MESSAGE);
+        return;
+      }
+      await execute(current);
+      return;
+    }
+    if (wallet >= current.xdaiNeededWei) {
+      await execute(current);
+      return;
+    }
+    current.quote = amountQuote(current, current.xdaiNeededWei - wallet);
+    current.notice = current.fundingTx?.status === 'failed' ? current.notice : null;
     current.phase = 'awaiting-funds';
     emit();
     scheduleQuote(current);
@@ -956,6 +1427,11 @@ function createPublishSetupService({
       result: null,
       fundingTx: null,
       executed: false,
+      // An amount deposit's pricing (requoteAmountDeposit).
+      amountChecked: false,
+      walletAddress: null,
+      walletXdaiWei: null,
+      xdaiNeededWei: null,
     };
     emit();
     void requote(operation);
@@ -1144,7 +1620,7 @@ function createPublishSetupService({
 
   async function getPublishReadiness() {
     await ensureFresh(READINESS_MAX_AGE_MS);
-    const readiness = classifyReadiness({ node, probe, runningSince, now: now() });
+    const readiness = currentReadiness();
     return { ok: readiness.ok, reason: readiness.reason, message: readiness.message };
   }
 
@@ -1208,11 +1684,21 @@ function getPublishSetupService() {
     service = createPublishSetupService({
       getNodeStatus: antManager.getStatus,
       getRegistryMode: () => getRegistry().ant?.mode,
+      getNodeStartedAt: antManager.getSpawnedAt,
       restartNode: async () => {
         await antManager.stopAnt();
         await antManager.startAnt();
       },
       getTransactionStatus,
+      getWalletTxCount: async (address) => {
+        const chainData = require('../networks/chain-data-router');
+        const { result } = await chainData.request(GNOSIS_CHAIN_ID, 'eth_getTransactionCount', [
+          address,
+          'latest',
+        ]);
+        const count = toBigInt(result);
+        return count === null || count < 0n ? null : Number(count);
+      },
       publish: broadcastState,
     });
     antManager.onStatusChange(() => service.handleNodeStatus());
@@ -1278,6 +1764,8 @@ module.exports = {
   roundUpToCent,
   formatUnits,
   normalizeSwarmMode,
+  parseXdaiShortfall,
+  parseDepositAmount,
   getPublishSetupService,
   getPublishReadiness,
   registerPublishSetupIpc,
@@ -1290,4 +1778,9 @@ module.exports = {
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
   CHAIN_INIT_SLOW_MS,
+  REDISCOVERY_MAX_WAIT_MS,
+  REDISCOVERY_SLOW_MS,
+  SCAN_STALL_MAX_MS,
+  MIN_DEPOSIT_AMOUNT_PLUR,
+  MAX_DEPOSIT_AMOUNT_PLUR,
 };

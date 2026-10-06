@@ -1,6 +1,4 @@
-const mockGetPath = jest.fn();
 jest.mock('electron', () => ({
-  app: { getPath: (...args) => mockGetPath(...args) },
   // CCIP gateways are dialled through Electron `net` (#359); the automatic-CCIP
   // tests below swap in a fake `request`.
   net: { request: () => ({}) },
@@ -13,40 +11,27 @@ jest.mock('../logger', () => ({
   warn: (...args) => mockLogWarn(...args),
 }));
 
-const mockMkdirSync = jest.fn();
-const mockReadFileSync = jest.fn();
-const mockWriteFileSync = jest.fn();
-const mockUnlinkSync = jest.fn();
-jest.mock('node:fs', () => ({
-  mkdirSync: (...args) => mockMkdirSync(...args),
-  readFileSync: (...args) => mockReadFileSync(...args),
-  writeFileSync: (...args) => mockWriteFileSync(...args),
-  unlinkSync: (...args) => mockUnlinkSync(...args),
-}));
-
+// Colibri runs in a worker thread (colibri-worker-host / colibri-worker); this
+// suite covers the main-process client lifecycle above it, so the host is
+// replaced by in-process fake clients. The worker side has its own suites.
 // Mock-prefixed names so Jest's "out-of-scope variable" guard permits them
 // in the factory (the factory runs before top-level `const` initializers).
-const mockColibriCtor = jest.fn();
-const mockRegisterStorage = jest.fn(() => Promise.resolve());
+const mockCreateClient = jest.fn();
+const mockEnsureWorker = jest.fn(() => Promise.resolve());
 const mockClientInstances = [];
-jest.mock('@corpus-core/colibri-stateless', () => {
-  class FakeColibri {
-    constructor(config) {
-      mockColibriCtor(config);
-      this.config = config;
-      this.destroy = jest.fn();
-      this.request = jest.fn().mockResolvedValue('0x2a');
-      mockClientInstances.push(this);
-    }
-    static register_storage(storage) { return mockRegisterStorage(storage); }
-  }
-  return {
-    __esModule: true,
-    default: FakeColibri,
-    Strategy: { VerifiedOnly: Symbol('VerifiedOnly') },
-  };
-});
-const { Strategy } = require('@corpus-core/colibri-stateless');
+jest.mock('./colibri-worker-host', () => ({
+  ensureWorker: (...args) => mockEnsureWorker(...args),
+  createClient: (config) => {
+    mockCreateClient(config);
+    const client = {
+      config,
+      destroy: jest.fn(),
+      request: jest.fn().mockResolvedValue('0x2a'),
+    };
+    mockClientInstances.push(client);
+    return client;
+  },
+}));
 
 const mockBrowserProvider = jest.fn().mockImplementation((client) => ({ kind: 'browser-provider', client }));
 jest.mock('ethers', () => ({
@@ -167,7 +152,6 @@ beforeEach(() => {
   clearColibriClientForTest();
   jest.clearAllMocks();
   mockClientInstances.length = 0;
-  mockGetPath.mockReturnValue('/tmp/freedom-test-userdata');
   mockLoadSettings.mockReturnValue({ ...DEFAULTS });
   mockUniversalResolverCall.mockResolvedValue({
     resolvedData: '0xdeadbeef',
@@ -177,40 +161,35 @@ beforeEach(() => {
 });
 
 describe('resolveViaColibri', () => {
-  test('constructs the client lazily with the partner-confirmed config', async () => {
-    expect(mockColibriCtor).not.toHaveBeenCalled();
+  test('constructs the worker client lazily with the configured prover', async () => {
+    expect(mockCreateClient).not.toHaveBeenCalled();
     await resolveViaColibri('vitalik.eth', '0xbc1c58d1...');
-    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
-    expect(mockColibriCtor).toHaveBeenCalledWith({
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledWith({
       chainId: 1,
-      prover: ['https://test-prover.example'],
-      zk_proof: true,
-      privacy_mode: 'basic',
-      proofStrategy: Strategy.VerifiedOnly,
-      max_latest_age_seconds: 60,
+      proverUrl: 'https://test-prover.example',
+      zkProof: true,
     });
   });
 
-  test('registers disk storage exactly once and before the first client constructor', async () => {
+  test('waits for the chain worker before creating the first client', async () => {
     await resolveViaColibri('a.eth', '0x');
-    await resolveViaColibri('b.eth', '0x');
-    expect(mockRegisterStorage).toHaveBeenCalledTimes(1);
-    expect(mockRegisterStorage.mock.invocationCallOrder[0])
-      .toBeLessThan(mockColibriCtor.mock.invocationCallOrder[0]);
+    expect(mockEnsureWorker).toHaveBeenCalledWith(1);
+    expect(mockEnsureWorker.mock.invocationCallOrder[0])
+      .toBeLessThan(mockCreateClient.mock.invocationCallOrder[0]);
   });
 
-  test('does not re-register storage on a settings-driven rebuild', async () => {
-    await resolveViaColibri('a.eth', '0x');
-    mockLoadSettings.mockReturnValue({ ...DEFAULTS, ensColibriZkProof: false });
-    await resolveViaColibri('b.eth', '0x');
-    expect(mockRegisterStorage).toHaveBeenCalledTimes(1);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+  test('fails the request when the chain worker cannot start', async () => {
+    mockEnsureWorker.mockRejectedValueOnce(new Error('Colibri worker failed to start: boom'));
+    await expect(resolveViaColibri('a.eth', '0x')).rejects.toThrow(/failed to start/);
+    expect(mockCreateClient).not.toHaveBeenCalled();
+    await expect(resolveViaColibri('b.eth', '0x')).resolves.toBeDefined();
   });
 
   test('reuses the singleton across calls when settings are unchanged', async () => {
     await resolveViaColibri('one.eth', '0x');
     await resolveViaColibri('two.eth', '0x');
-    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
     expect(mockBrowserProvider).toHaveBeenCalledTimes(1);
   });
 
@@ -220,8 +199,7 @@ describe('resolveViaColibri', () => {
       resolveViaColibri('b.eth', '0x'),
       resolveViaColibri('c.eth', '0x'),
     ]);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
-    expect(mockRegisterStorage).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
     expect(mockBrowserProvider).toHaveBeenCalledTimes(1);
     expect(a).toBeDefined();
     expect(b).toBeDefined();
@@ -236,8 +214,8 @@ describe('resolveViaColibri', () => {
       ensColibriProverUrl: 'https://other-prover.example',
     });
     await resolveViaColibri('two.eth', '0x');
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
-    expect(mockColibriCtor.mock.calls[1][0].prover).toEqual(['https://other-prover.example']);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
+    expect(mockCreateClient.mock.calls[1][0].proverUrl).toBe('https://other-prover.example');
     expect(mockBrowserProvider).toHaveBeenCalledTimes(2);
     expect(firstClient.destroy).toHaveBeenCalledTimes(1);
     expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
@@ -247,13 +225,13 @@ describe('resolveViaColibri', () => {
     await resolveViaColibri('one.eth', '0x');
     mockLoadSettings.mockReturnValue({ ...DEFAULTS, ensColibriZkProof: false });
     await resolveViaColibri('two.eth', '0x');
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
-    expect(mockColibriCtor.mock.calls[1][0].zk_proof).toBe(false);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
+    expect(mockCreateClient.mock.calls[1][0].zkProof).toBe(false);
   });
 
   test('does not let an obsolete in-flight build replace newer settings', async () => {
-    let releaseStorage;
-    mockRegisterStorage.mockImplementationOnce(() => new Promise((resolve) => { releaseStorage = resolve; }));
+    let releaseWorker;
+    mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
 
     const first = resolveViaColibri('old.eth', '0x');
     mockLoadSettings.mockReturnValue({
@@ -262,21 +240,22 @@ describe('resolveViaColibri', () => {
     });
     const second = resolveViaColibri('new.eth', '0x');
 
-    releaseStorage();
+    releaseWorker();
     await Promise.all([first, second]);
 
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
-    expect(mockClientInstances[0].config.prover).toEqual(['https://test-prover.example']);
-    expect(mockClientInstances[1].config.prover).toEqual(['https://new-prover.example']);
-    expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
-    expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
+    const byProver = (url) => mockClientInstances.find((c) => c.config.proverUrl === url);
+    const oldClient = byProver('https://test-prover.example');
+    const newClient = byProver('https://new-prover.example');
+    expect(oldClient.destroy).toHaveBeenCalledTimes(1);
+    expect(newClient.destroy).not.toHaveBeenCalled();
     expect(mockUniversalResolverCall).toHaveBeenCalledWith(
-      expect.objectContaining({ client: mockClientInstances[1] }),
+      expect.objectContaining({ client: newClient }),
       'old.eth',
       '0x',
     );
     expect(mockUniversalResolverCall).toHaveBeenCalledWith(
-      expect.objectContaining({ client: mockClientInstances[1] }),
+      expect.objectContaining({ client: newClient }),
       'new.eth',
       '0x',
     );
@@ -288,7 +267,7 @@ describe('resolveViaColibri', () => {
       ensColibriProverUrl: 'https://custom.example/keyXYZ',
     });
     await resolveViaColibri('a.eth', '0x');
-    expect(mockColibriCtor.mock.calls[0][0].prover).toEqual(['https://custom.example/keyXYZ']);
+    expect(mockCreateClient.mock.calls[0][0].proverUrl).toBe('https://custom.example/keyXYZ');
   });
 
   test('passes name + callData through to universalResolverCall via the cached BrowserProvider', async () => {
@@ -313,7 +292,7 @@ describe('resolveViaColibri', () => {
     const err = new Error('proof verification failed');
     mockUniversalResolverCall.mockRejectedValue(err);
     await expect(resolveViaColibri('a.eth', '0x')).rejects.toBe(err);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
   });
 
   test('rebuilds once and retries a CALL_EXCEPTION without revert data', async () => {
@@ -330,7 +309,7 @@ describe('resolveViaColibri', () => {
     await expect(resolveViaColibri('retry.eth', '0x')).resolves.toEqual(recovered);
 
     expect(mockUniversalResolverCall).toHaveBeenCalledTimes(2);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
     expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
     expect(mockLogWarn).toHaveBeenCalledWith(
       '[colibri] chain 1 request failed; rebuilding client and retrying once ' +
@@ -346,7 +325,7 @@ describe('resolveViaColibri', () => {
     await expect(resolveViaColibri('still-down.eth', '0x')).rejects.toBe(err);
 
     expect(mockUniversalResolverCall).toHaveBeenCalledTimes(2);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
   });
 
   test('does not destroy a failed shared client while a sibling request still uses it', async () => {
@@ -381,7 +360,7 @@ describe('resolveViaColibri', () => {
     await expect(resolveViaColibri('reverted.eth', '0x')).rejects.toBe(err);
 
     expect(mockUniversalResolverCall).toHaveBeenCalledTimes(1);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -403,7 +382,7 @@ describe('resolveReverseViaColibri', () => {
   test('reuses the singleton + cached provider across forward and reverse calls', async () => {
     await resolveViaColibri('vitalik.eth', '0x');
     await resolveReverseViaColibri(ADDR_BYTES);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
     expect(mockBrowserProvider).toHaveBeenCalledTimes(1);
   });
 
@@ -421,14 +400,22 @@ describe('requestViaColibri', () => {
       requestViaColibri(100, 'eth_getBalance', ['0xabc', 'latest'])
     ).resolves.toBe('0x2a');
     const gnosisClient = mockClientInstances[0];
-    expect(mockColibriCtor).toHaveBeenCalledWith(expect.objectContaining({ chainId: 100 }));
+    expect(mockCreateClient).toHaveBeenCalledWith(expect.objectContaining({ chainId: 100 }));
     expect(gnosisClient.request).toHaveBeenCalledWith({
       method: 'eth_getBalance',
       params: ['0xabc', 'latest'],
-    });
+    }, { deadlineMs: undefined });
 
     await requestViaColibri(1, 'eth_blockNumber');
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
+  });
+
+  test('hands the caller deadline to the worker client', async () => {
+    await requestViaColibri(100, 'eth_call', [{}, 'latest'], { deadlineMs: 2000 });
+    expect(mockClientInstances[0].request).toHaveBeenCalledWith(
+      { method: 'eth_call', params: [{}, 'latest'] },
+      { deadlineMs: 2000 },
+    );
   });
 
   test('rebuilds the affected chain client once after a network failure', async () => {
@@ -442,57 +429,7 @@ describe('requestViaColibri', () => {
     await expect(requestViaColibri(100, 'eth_blockNumber')).resolves.toBe('0x2a');
 
     expect(firstClient.destroy).toHaveBeenCalledTimes(1);
-    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+    expect(mockCreateClient).toHaveBeenCalledTimes(2);
     expect(mockClientInstances[1].request).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('disk storage adapter', () => {
-  // Captured from the register_storage call after triggering construction.
-  // No public export — the integration assertion (passed to register_storage)
-  // is more valuable than unit-testing the adapter in isolation.
-  async function captureStorage() {
-    await resolveViaColibri('a.eth', '0x');
-    return mockRegisterStorage.mock.calls[0][0];
-  }
-
-  test('creates the colibri subdirectory under app userData on first use', async () => {
-    await captureStorage();
-    expect(mockGetPath).toHaveBeenCalledWith('userData');
-    expect(mockMkdirSync).toHaveBeenCalledWith(
-      '/tmp/freedom-test-userdata/colibri',
-      { recursive: true },
-    );
-  });
-
-  test('get/set/del route through fs against the colibri subdirectory', async () => {
-    const storage = await captureStorage();
-    mockReadFileSync.mockReturnValue(Buffer.from([1, 2, 3]));
-    expect(storage.get('states_1')).toEqual(Buffer.from([1, 2, 3]));
-    expect(mockReadFileSync).toHaveBeenCalledWith('/tmp/freedom-test-userdata/colibri/states_1');
-
-    storage.set('sync_1_42', new Uint8Array([9, 9]));
-    expect(mockWriteFileSync).toHaveBeenCalledWith(
-      '/tmp/freedom-test-userdata/colibri/sync_1_42',
-      new Uint8Array([9, 9]),
-    );
-
-    storage.del('states_1');
-    expect(mockUnlinkSync).toHaveBeenCalledWith('/tmp/freedom-test-userdata/colibri/states_1');
-  });
-
-  test('get returns null when the underlying file is missing (warm-cache miss)', async () => {
-    const storage = await captureStorage();
-    mockReadFileSync.mockImplementation(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); });
-    expect(storage.get('missing')).toBeNull();
-  });
-
-  test('del absorbs ENOENT but rethrows other errors (e.g. permission)', async () => {
-    const storage = await captureStorage();
-    mockUnlinkSync.mockImplementation(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); });
-    expect(() => storage.del('already-gone')).not.toThrow();
-
-    mockUnlinkSync.mockImplementation(() => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); });
-    expect(() => storage.del('locked')).toThrow(/EACCES/);
   });
 });

@@ -139,31 +139,43 @@ test.describe('with no filter lists and ad blocking switched off', () => {
   });
 });
 
-test('ad blocking and site permissions are separate navigable sections', async ({
+test('ad blocking and site permissions are panels of one Privacy and security entry', async ({
   window,
   electronApp,
 }) => {
   const page = await openAdblockSettings(window, electronApp);
-  const adblockNav = page.locator('.nav-item[data-target="adblock"]');
-  const permissionsNav = page.locator('.nav-item[data-target="permissions"]');
+  // Since #268 Ad Blocking and Site Permissions are two panels of one
+  // "Privacy and security" entry, which the old `adblock` address opens.
+  const privacyNav = page.locator('.nav-item[data-target="privacy"]');
 
-  await expect(adblockNav).toHaveCount(1);
-  await expect(adblockNav).toContainText('Ad Blocking');
-  await expect(permissionsNav).toHaveCount(1);
-  await expect(permissionsNav).toContainText('Site Permissions');
-  await expect(adblockNav).toHaveClass(/active/);
+  await expect(page.locator('.nav-item[data-target="adblock"]')).toHaveCount(0);
+  await expect(page.locator('.nav-item[data-target="permissions"]')).toHaveCount(0);
+  await expect(privacyNav).toHaveCount(1);
+  await expect(privacyNav).toContainText('Privacy and security');
+  await expect(privacyNav).toHaveClass(/active/);
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#privacy');
   await expect(page.locator('#adblock')).not.toHaveClass(/hidden/);
-
-  await permissionsNav.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#permissions');
-  await expect(permissionsNav).toHaveClass(/active/);
   await expect(page.locator('#permissions')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#adblock')).toHaveClass(/hidden/);
+  await expect(page.locator('#adblock .panel-title')).toHaveText('Ad Blocking');
+  await expect(page.locator('#permissions .panel-title')).toHaveText('Site Permissions');
 
-  await adblockNav.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#adblock');
-  await expect(adblockNav).toHaveClass(/active/);
+  // One entry, one icon: the merged item is Feather's `shield` (#279).
+  await expect(privacyNav.locator('svg path')).toHaveAttribute(
+    'd',
+    'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'
+  );
+
+  // Leaving hides both panels; the entry brings both back.
+  await page.locator('.nav-item[data-target="downloads"]').click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#downloads');
+  await expect(page.locator('#adblock')).toHaveClass(/hidden/);
+  await expect(page.locator('#permissions')).toHaveClass(/hidden/);
+
+  await privacyNav.click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#privacy');
+  await expect(privacyNav).toHaveClass(/active/);
   await expect(page.locator('#adblock')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#permissions')).not.toHaveClass(/hidden/);
 });
 
 test('allowlist hosts can be added and removed through the section', async ({

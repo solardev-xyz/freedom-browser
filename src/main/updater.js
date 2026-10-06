@@ -2,13 +2,27 @@ const { autoUpdater } = require('electron-updater');
 const { app, dialog, ipcMain } = require('electron');
 const log = require('./logger');
 const path = require('path');
-const { loadSettings } = require('./settings-store');
+const { loadSettings, onSettingsChanged } = require('./settings-store');
 const { getActiveProfile } = require('./profile-resolver');
 const { DEFAULT_PROFILE_ID } = require('./profile-catalog');
 const {
   releaseUpdaterOwnerLock,
   tryAcquireUpdaterOwnerLock,
 } = require('./updater-owner-lock');
+const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
+const {
+  UNSUPPORTED_REASON,
+  initialState,
+  reduceUpdateState,
+  describeUpdateState,
+  canCheckForUpdates,
+  classifyUpdaterError,
+} = require('./update-state');
+
+// Main → renderer broadcast of the update state snapshot (#87), and the
+// matching pull for a surface that opens later (a Settings tab, a new window).
+const UPDATE_STATE_CHANNEL = 'update:state';
+const UPDATE_GET_STATE_CHANNEL = 'update:get-state';
 
 // IPC handler for restart and install
 ipcMain.on('update:restart-and-install', () => {
@@ -21,6 +35,9 @@ ipcMain.on('update:check', () => {
   log.info('[updater] Manual update check requested via IPC');
   checkForUpdatesManually();
 });
+
+// Current update state, for a surface that missed the broadcasts.
+ipcMain.handle(UPDATE_GET_STATE_CHANNEL, () => getUpdateState());
 
 // Configure logging
 autoUpdater.logger = log;
@@ -58,14 +75,53 @@ let updateDownloaded = false;
 let menuUpdateCallback = null;
 let isManualCheck = false;
 let updaterOwnerLock = null;
+// Set by initUpdater when this copy can't update at all (dev checkout,
+// unpacked, a Linux package electron-updater can't replace).
+let buildUnsupportedReason = null;
 let releaseRegistered = false;
 let ownershipRetryInterval = null;
 let initialUpdateCheckTimeout = null;
 let periodicUpdateCheckInterval = null;
 
+// Until initUpdater runs (it never does in E2E test mode) this process isn't
+// updating anything, and the state says so instead of offering a dead button.
+let updateState = initialState({
+  currentVersion: app.getVersion(),
+  reason: UNSUPPORTED_REASON.INACTIVE,
+});
+
 const UPDATER_OWNERSHIP_RETRY_MS = 30000;
 const INITIAL_UPDATE_CHECK_DELAY_MS = 10000;
 const PERIODIC_UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
+
+// The snapshot every renderer gets: the reducer state plus the derived copy,
+// so the hamburger item and Settings can't word the same state differently.
+function getUpdateState() {
+  const mode = getInstallRelaunchMode();
+  return {
+    ...updateState,
+    message: describeUpdateState(updateState, { autoCheck: isUpdateCheckEnabled() }),
+    canCheck: canCheckForUpdates(updateState),
+    installLabel: mode.autoRunAfterInstall ? 'Restart to update' : 'Install update and close',
+    // Title case for the hamburger menu, like its other rows.
+    menuInstallLabel: mode.autoRunAfterInstall ? 'Restart to Update' : 'Install Update and Close',
+    installNote: mode.readyMessage,
+  };
+}
+
+// The status line depends on the auto-update switch (idle/error wording), so
+// flipping it re-broadcasts the snapshot to every open surface.
+onSettingsChanged((merged, previous) => {
+  if ((merged?.autoUpdate !== false) === (previous?.autoUpdate !== false)) return;
+  broadcastToAllWebContents(UPDATE_STATE_CHANNEL, getUpdateState());
+});
+
+function dispatchUpdateEvent(event) {
+  const next = reduceUpdateState(updateState, event);
+  if (next === updateState) return;
+  updateState = next;
+  broadcastToAllWebContents(UPDATE_STATE_CHANNEL, getUpdateState());
+}
 
 function getInstallRelaunchMode(profile = getActiveProfile()) {
   // Named and explicit profile-dir launches cannot rely on Squirrel preserving profile argv.
@@ -192,6 +248,7 @@ function scheduleOwnershipRetry(options = {}) {
 
     clearInterval(ownershipRetryInterval);
     ownershipRetryInterval = null;
+    markUpdaterSupported();
     scheduleOwnedUpdateChecks();
   }, retryMs);
 }
@@ -205,13 +262,15 @@ function isUpdateCheckEnabled() {
   return settings.autoUpdate !== false;
 }
 
-function checkForUpdates() {
+// `manual`: the user asked (menu, Settings → Check now). The "Automatically
+// check for updates" switch only governs the background checks.
+function checkForUpdates({ manual = false } = {}) {
   if (!hasUpdaterOwnership()) {
     log.info('[updater] Skipping update check; another profile owns updater');
     return;
   }
 
-  if (!isUpdateCheckEnabled()) {
+  if (!manual && !isUpdateCheckEnabled()) {
     log.info('[updater] Auto-update is disabled');
     return;
   }
@@ -229,16 +288,35 @@ function checkForUpdates() {
 
   updateCheckInProgress = true;
   log.info('[updater] Checking for updates...');
-  autoUpdater.checkForUpdates().catch((_err) => {
-    // Error is already handled by the 'error' event, this just prevents unhandled rejection
-  });
+  dispatchUpdateEvent({ type: 'checking' });
+  autoUpdater
+    .checkForUpdates()
+    .then((result) => {
+      // electron-updater answers null, with no event at all, when it can't
+      // update this copy (unpacked, or a Linux build that isn't an AppImage
+      // or a deb/pacman install) — without this the state would sit on
+      // "Checking…" forever.
+      if (result == null) {
+        updateCheckInProgress = false;
+        isManualCheck = false;
+        dispatchUpdateEvent({ type: 'unsupported', reason: UNSUPPORTED_REASON.BUILD });
+      }
+    })
+    .catch((_err) => {
+      // Error is already handled by the 'error' event, this just prevents unhandled rejection
+    });
 }
+
+autoUpdater.on('checking-for-update', () => {
+  dispatchUpdateEvent({ type: 'checking' });
+});
 
 // Event: Update available
 autoUpdater.on('update-available', (info) => {
   updateCheckInProgress = false;
   isManualCheck = false;
   log.info('[updater] Update available:', info.version);
+  dispatchUpdateEvent({ type: 'available', version: info?.version });
   // Download happens automatically (autoDownload = true)
   log.info('[updater] Downloading update in background...');
 });
@@ -247,6 +325,7 @@ autoUpdater.on('update-available', (info) => {
 autoUpdater.on('update-not-available', () => {
   updateCheckInProgress = false;
   log.info('[updater] No updates available');
+  dispatchUpdateEvent({ type: 'not-available' });
 
   // Only show notification for manual checks
   if (isManualCheck && mainWindow && !mainWindow.isDestroyed()) {
@@ -263,15 +342,20 @@ autoUpdater.on('download-progress', (progressObj) => {
   const message = `Download speed: ${progressObj.bytesPerSecond} - Downloaded ${progressObj.percent}%`;
   log.info('[updater]', message);
 
-  if (mainWindow) {
-    mainWindow.webContents.send('update-progress', progressObj.percent);
-  }
+  dispatchUpdateEvent({
+    type: 'progress',
+    percent: progressObj?.percent,
+    bytesPerSecond: progressObj?.bytesPerSecond,
+    transferred: progressObj?.transferred,
+    total: progressObj?.total,
+  });
 });
 
 // Event: Update downloaded
 autoUpdater.on('update-downloaded', (info) => {
   log.info('[updater] Update downloaded:', info.version);
   updateDownloaded = true;
+  dispatchUpdateEvent({ type: 'downloaded', version: info?.version });
   const installMode = getInstallRelaunchMode();
 
   // Update the application menu to show "Install Update..."
@@ -298,6 +382,7 @@ autoUpdater.on('error', (error) => {
   updateCheckInProgress = false;
   isManualCheck = false;
   log.error('[updater] Error:', error);
+  dispatchUpdateEvent(classifyUpdaterError(error));
 
   // Don't show error dialog for expected/recoverable issues
   if (error.message) {
@@ -318,18 +403,57 @@ function initUpdater(window, onMenuUpdate, options = {}) {
   menuUpdateCallback = onMenuUpdate;
   ensureUpdaterCleanupRegistered();
 
+  // Say up front when this copy can't update, rather than letting the first
+  // check discover it 10s later (or never, for the silent null answer).
+  buildUnsupportedReason = detectBuildUnsupportedReason();
+  if (buildUnsupportedReason) {
+    dispatchUpdateEvent({ type: 'unsupported', reason: buildUnsupportedReason });
+  }
+
   if (!acquireUpdaterOwnership(options)) {
     log.info('[updater] Update checks disabled in this profile process');
+    if (!buildUnsupportedReason) {
+      dispatchUpdateEvent({ type: 'unsupported', reason: UNSUPPORTED_REASON.NOT_OWNER });
+    }
     scheduleOwnershipRetry(options);
     return false;
   }
 
+  markUpdaterSupported();
   scheduleOwnedUpdateChecks();
   return true;
 }
 
+function detectBuildUnsupportedReason() {
+  if (isDevModeWithoutUpdater()) return UNSUPPORTED_REASON.DEVELOPMENT;
+  try {
+    if (typeof autoUpdater.isUpdaterActive === 'function' && !autoUpdater.isUpdaterActive()) {
+      return UNSUPPORTED_REASON.BUILD;
+    }
+  } catch {
+    return UNSUPPORTED_REASON.BUILD;
+  }
+  return null;
+}
+
+// This process owns updates; idle unless the build itself can't update.
+function markUpdaterSupported() {
+  if (!buildUnsupportedReason) dispatchUpdateEvent({ type: 'supported' });
+}
+
+function isDevModeWithoutUpdater() {
+  return process.env.NODE_ENV === 'development' && !process.env.ENABLE_DEV_UPDATER;
+}
+
 // Manual update check (from menu)
 function checkForUpdatesManually() {
+  // E2E: record the request instead of reaching for the network or a native
+  // dialog (installed by test-harness.js in test mode only).
+  if (typeof globalThis.__FREEDOM_TEST_UPDATER__?.record === 'function') {
+    globalThis.__FREEDOM_TEST_UPDATER__.record('check');
+    return;
+  }
+
   if (!hasUpdaterOwnership()) {
     dialog.showMessageBox(mainWindow, {
       type: 'info',
@@ -339,7 +463,7 @@ function checkForUpdatesManually() {
     return;
   }
 
-  if (process.env.NODE_ENV === 'development' && !process.env.ENABLE_DEV_UPDATER) {
+  if (isDevModeWithoutUpdater()) {
     dialog.showMessageBox(mainWindow, {
       type: 'info',
       title: 'Updates Disabled',
@@ -348,17 +472,8 @@ function checkForUpdatesManually() {
     return;
   }
 
-  if (!isUpdateCheckEnabled()) {
-    dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: 'Updates Disabled',
-      message: 'Auto-update is disabled in settings. Enable it to receive updates automatically.',
-    });
-    return;
-  }
-
   isManualCheck = true;
-  checkForUpdates();
+  checkForUpdates({ manual: true });
 }
 
 // Check if update is ready to install
@@ -368,6 +483,10 @@ function isUpdateReady() {
 
 // Manually trigger install
 function installUpdate() {
+  if (typeof globalThis.__FREEDOM_TEST_UPDATER__?.record === 'function') {
+    globalThis.__FREEDOM_TEST_UPDATER__.record('install');
+    return;
+  }
   if (updateDownloaded) {
     log.info('[updater] Manually triggering update install');
     quitAndInstallForActiveProfile();
@@ -381,5 +500,11 @@ module.exports = {
   installUpdate,
   hasUpdaterOwnership,
   getInstallRelaunchMode,
+  getUpdateState,
+  // E2E harness only (test-harness.js): drive the real state machine through
+  // the same entry point electron-updater's events use.
+  dispatchUpdateEvent,
+  UPDATE_STATE_CHANNEL,
+  UPDATE_GET_STATE_CHANNEL,
   UPDATER_OWNERSHIP_RETRY_MS,
 };

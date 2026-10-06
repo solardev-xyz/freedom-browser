@@ -429,7 +429,7 @@
                   id="popup-blocked-allowed"
                   data-test="popup-blocked-allowed"
                 >
-                  Pop-ups are allowed on this site. Remove it in Settings &gt; Site Permissions.
+                  Pop-ups are allowed on this site. Remove it in Settings &gt; Privacy and security &gt; Site Permissions.
                 </div>
               </div>
             </div>
@@ -1082,6 +1082,7 @@
             <line x1="4" x2="20" y1="6" y2="6" vector-effect="non-scaling-stroke" />
             <line x1="4" x2="20" y1="18" y2="18" vector-effect="non-scaling-stroke" />
           </svg>
+          <span class="menu-button-badge" id="menu-update-badge" hidden></span>
         </button>
         <div id="menu-dropdown" class="menu-dropdown chrome-popover" role="menu">
           <!-- Group 0: Profiles -->
@@ -1232,8 +1233,20 @@
           <button id="about-btn" class="menu-item" type="button">
             <span class="menu-item-label">About Freedom</span>
           </button>
-          <button id="check-updates-btn" class="menu-item" type="button">
-            <span class="menu-item-label">Check for Updates…</span>
+          <!-- State-driven (#87): lib/update-status-ui.js rewrites the label,
+               the right-hand status and the progress bar from main's update
+               state. -->
+          <button
+            id="check-updates-btn"
+            class="menu-item update-menu-item"
+            type="button"
+            data-update-status="unsupported"
+          >
+            <span class="menu-item-label" id="update-menu-label">Check for Updates…</span>
+            <span class="menu-item-shortcut update-menu-status" id="update-menu-status" hidden></span>
+            <span class="update-menu-progress" id="update-menu-progress" hidden>
+              <span class="update-menu-progress-bar" id="update-menu-progress-bar"></span>
+            </span>
           </button>
         </div>
       </div>
@@ -2556,6 +2569,44 @@
                         <span class="node-balance-symbol">xBZZ</span>
                         <span class="node-balance-value" id="swarm-chequebook-balance">--</span>
                       </div>
+                    </div>
+
+                    <!-- Browsing credit (#488): the chequebook also pays for faster downloads -->
+                    <div class="node-info-group hidden" id="swarm-credit-group">
+                      <div class="node-info-label-row">
+                        <span class="node-info-label">Browsing Credit</span>
+                        <span
+                          class="node-card-status hidden"
+                          id="swarm-credit-tier"
+                          data-status="stopped"
+                        ></span>
+                      </div>
+                      <div class="node-balance-row">
+                        <span class="node-balance-symbol">xBZZ</span>
+                        <span class="node-balance-value" id="swarm-credit-available">--</span>
+                      </div>
+                      <div class="swarm-credit-line hidden" id="swarm-credit-detail"></div>
+                      <div class="swarm-credit-line hidden" id="swarm-credit-spend"></div>
+                      <p class="swarm-credit-status hidden" id="swarm-credit-status"></p>
+                      <div class="node-upgrade-cta hidden" id="swarm-credit-topup-cta">
+                        <button type="button" class="node-upgrade-btn" id="swarm-credit-topup">
+                          <span>Top Up Credit</span>
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="m9 18 6-6-6-6" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="swarm-credit-toggle-row">
+                        <label class="swarm-credit-toggle-text" for="swarm-credit-switch">
+                          <span class="swarm-credit-toggle-label">Pay peers from the chequebook</span>
+                          <span class="swarm-credit-line" id="swarm-credit-toggle-hint"></span>
+                        </label>
+                        <label class="toggle-switch">
+                          <input type="checkbox" role="switch" id="swarm-credit-switch" disabled />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+                      <p class="swarm-credit-note" id="swarm-credit-note"></p>
                     </div>
 
                     <!-- Publisher Identities CTA (visible when identities exist) -->
@@ -4202,6 +4253,15 @@
 
                 <!-- Pick a plan -->
                 <div class="hidden" id="publish-setup-plans">
+                  <!-- Ant could not finish looking for storage the wallet owns -->
+                  <div class="swarm-connect-note hidden" id="publish-setup-plans-warning">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="12" y1="8" x2="12" y2="12" />
+                      <line x1="12" y1="16" x2="12.01" y2="16" />
+                    </svg>
+                    <span id="publish-setup-plans-warning-text"></span>
+                  </div>
                   <p class="publish-setup-intro">
                     Pick a storage plan. You pay once, in xDAI: your Swarm node swaps it, buys the
                     storage and sets up its network payments.
@@ -4377,8 +4437,9 @@
 
               <div class="subscreen-content">
                 <p class="stamp-manager-intro">
-                  Your node pays other nodes for bandwidth from its chequebook. It keeps a small
-                  xBZZ deposit there, which stays yours until it is spent.
+                  Your node pays other nodes for bandwidth from its chequebook: for uploads, and for
+                  downloads faster than the free tier. It keeps a small xBZZ deposit there, which
+                  stays yours until it is spent.
                 </p>
 
                 <div class="stamp-cost-section" id="chequebook-balances">
@@ -4386,13 +4447,42 @@
                     <span class="stamp-cost-label">Deposit</span>
                     <span class="stamp-cost-value" id="chequebook-current-bzz">--</span>
                   </div>
-                  <div class="stamp-cost-row">
+                  <!-- Only for a target-only top-up: an amount deposit is not capped by it. -->
+                  <div class="stamp-cost-row" id="chequebook-target-row">
                     <span class="stamp-cost-label">Target</span>
                     <span class="stamp-cost-value" id="chequebook-target-bzz">--</span>
+                  </div>
+                  <!-- An amount deposit swaps this first (see publish-setup-service.js). -->
+                  <div class="stamp-cost-row hidden" id="chequebook-wallet-row">
+                    <span class="stamp-cost-label">Node wallet</span>
+                    <span class="stamp-cost-value" id="chequebook-wallet-xdai">--</span>
                   </div>
                 </div>
 
                 <p class="stamp-manager-intro" id="chequebook-deposit-text"></p>
+
+                <!-- Any amount (freedom-hq/ant#126); hidden on an older node, which
+                     only tops up to its target. Presets come from browsing-credit.js. -->
+                <div class="hidden" id="chequebook-amount">
+                  <div class="send-field">
+                    <span class="send-label">Add to the deposit</span>
+                    <div class="safe-preset-row" id="chequebook-amount-presets"></div>
+                  </div>
+                  <div class="send-field">
+                    <label class="send-label" for="chequebook-amount-input">Other amount</label>
+                    <input
+                      type="text"
+                      class="send-input"
+                      id="chequebook-amount-input"
+                      inputmode="decimal"
+                      placeholder="xBZZ, from 0.001 to 10"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <div class="send-field-error hidden" id="chequebook-amount-error"></div>
+                  </div>
+                  <p class="stamp-manager-intro hidden" id="chequebook-amount-spend"></p>
+                </div>
 
                 <button type="button" class="stamp-purchase-btn hidden" id="chequebook-deposit-btn">
                   Top Up Deposit

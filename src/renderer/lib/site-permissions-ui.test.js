@@ -436,8 +436,9 @@ describe('site-permissions-ui popover revoke label', () => {
     getDisplayUrlForWebview.mockReturnValue('');
   });
 
-  // #226: the popover said 'Reset' while Settings > Site Permissions says
-  // 'Remove' / 'Remove site' / 'Remove all' for the same action.
+  // #226: the popover said 'Reset' while Settings > Privacy and security >
+  // Site Permissions says 'Remove' / 'Remove site' / 'Remove all' for the
+  // same action.
   test("each row's revoke button says Remove, matching Settings", async () => {
     // Let the indicator refresh kicked off by init resolve.
     await Promise.resolve();

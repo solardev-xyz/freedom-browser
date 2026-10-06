@@ -261,6 +261,9 @@ function loadIpcHandlersModule(options = {}) {
         isProfileLocked,
       }),
       [require.resolve('./myotis/myotis-manager')]: () => myotisManager,
+      ...(options.radicleManager
+        ? { [require.resolve('./radicle-manager')]: () => options.radicleManager }
+        : {}),
       ...(options.swarmProbeMock
         ? { [require.resolve('./swarm/swarm-probe')]: () => options.swarmProbeMock }
         : {}),
@@ -1329,6 +1332,73 @@ describe('ipc-handlers', () => {
     );
 
     expect(ctx.updateActiveProfileNodeConfig).not.toHaveBeenCalled();
+  });
+
+  test('reports a node config whose apply step throws as saved, not refused', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: { nodes: { radicle: { mode: 'managed' } } },
+    };
+    const radicleManager = {
+      syncProfileMode: jest.fn(async () => {
+        throw new Error('radicle stop failed');
+      }),
+    };
+    const profileWebContents = { send: jest.fn() };
+    const ctx = loadIpcHandlersModule({
+      activeProfile,
+      radicleManager,
+      webContentsList: [profileWebContents],
+    });
+    ctx.mod.registerBaseIpcHandlers();
+
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'radicle',
+      config: { mode: 'disabled' },
+    });
+
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('radicle', {
+      mode: 'disabled',
+    });
+    expect(radicleManager.syncProfileMode).toHaveBeenCalled();
+    expect(result).toEqual(
+      failure(
+        'PROFILE_NODE_APPLY_FAILED',
+        'radicle stop failed',
+        { saved: true },
+        {
+          profile: expect.objectContaining({
+            nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
+          }),
+        }
+      )
+    );
+    // The write landed, so other windows still hear about it.
+    expect(profileWebContents.send).toHaveBeenCalledWith(
+      IPC.PROFILE_UPDATED,
+      expect.objectContaining({
+        nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
+      })
+    );
+  });
+
+  test('a node config whose catalog write fails is still refused as not saved', async () => {
+    const ctx = loadIpcHandlersModule({
+      activeProfile: { id: 'work', displayName: 'Work', source: 'catalog', metadata: {} },
+      updateActiveProfileNodeConfig: jest.fn(() => {
+        throw new Error('disk full');
+      }),
+    });
+    ctx.mod.registerBaseIpcHandlers();
+
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'bee',
+        config: { mode: 'disabled' },
+      })
+    ).resolves.toEqual(failure('PROFILE_UPDATE_FAILED', 'disk full'));
   });
 
   test('rejects profile node updates outside catalog profiles', async () => {

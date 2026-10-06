@@ -107,7 +107,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(31);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -126,6 +126,7 @@ describe('preload', () => {
       'remoteSigner',
       'swarmNode',
       'publishSetup',
+      'browsingCredit',
       'networks',
       'payments',
       'tokens',
@@ -173,13 +174,8 @@ describe('preload', () => {
       ],
       [exposures.electronAPI, 'openProfile', ['work'], IPC.PROFILE_OPEN, [{ id: 'work' }]],
       [exposures.electronAPI, 'getSettings', [], IPC.SETTINGS_GET, []],
-      [
-        exposures.electronAPI,
-        'saveSettings',
-        [{ theme: 'dark' }],
-        IPC.SETTINGS_SAVE,
-        [{ theme: 'dark' }],
-      ],
+      [exposures.electronAPI, 'getUpdateState', [], 'update:get-state', []],
+      [exposures.electronAPI, 'saveSettings', [{ theme: 'dark' }], IPC.SETTINGS_SAVE, [{ theme: 'dark' }]],
       [exposures.electronAPI, 'getBookmarks', [], IPC.BOOKMARKS_GET, []],
       [exposures.electronAPI, 'addBookmark', [{ label: 'Example', target: 'https://example.com' }], IPC.BOOKMARKS_ADD, [{ label: 'Example', target: 'https://example.com' }]],
       [exposures.electronAPI, 'updateBookmark', ['https://old.example', { label: 'New', target: 'https://new.example' }], IPC.BOOKMARKS_UPDATE, [{ originalTarget: 'https://old.example', bookmark: { label: 'New', target: 'https://new.example' } }]],
@@ -528,6 +524,8 @@ describe('preload', () => {
       [exposures.publishSetup, 'dismiss', [7], IPC.SWARM_SETUP_CANCEL, [7, { dismiss: true }]],
       [exposures.publishSetup, 'trackFundingTx', ['0x' + '1'.repeat(64)], IPC.SWARM_SETUP_TRACK_FUNDING_TX, ['0x' + '1'.repeat(64)]],
       [exposures.publishSetup, 'restartNode', [], IPC.SWARM_SETUP_RESTART_NODE, []],
+      [exposures.browsingCredit, 'getState', [], IPC.SWARM_CREDIT_GET_STATE, []],
+      [exposures.browsingCredit, 'setSwapEnable', [false], IPC.SWARM_CREDIT_SET_SWAP_ENABLE, [false]],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {
@@ -686,6 +684,7 @@ describe('preload', () => {
         [{ origin: 'https://example.com', permissions: ['camera'] }],
         [{ origin: 'https://example.com', permissions: ['camera'] }],
       ],
+      [exposures.electronAPI, 'onUpdateState', 'update:state', [{ status: 'downloading', percent: 42 }], [{ status: 'downloading', percent: 42 }]],
       [exposures.sitePermissions, 'onChanged', IPC.PERMISSIONS_CHANGED, [{}], [{}]],
       [exposures.githubBridge, 'onProgress', IPC.GITHUB_BRIDGE_PROGRESS, [{ step: 'cloning' }], [{ step: 'cloning' }]],
       [exposures.serviceRegistry, 'onUpdate', IPC.SERVICE_REGISTRY_UPDATE, [{ ant: { mode: 'bundled' } }], [{ ant: { mode: 'bundled' } }]],

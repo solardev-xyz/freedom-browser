@@ -70,10 +70,11 @@ describe('per-page formatCount copies', () => {
 
 describe('how each page calls it', () => {
   test('history counts pages, not generic "entries"', () => {
+    // Paged since #503: the counts come from main, not from the rows loaded.
     expect(COPIES['history.html']).toMatch(
-      /statsEl\.textContent = formatCount\([^)]*allHistory\.length, 'page'\)/
+      /statsEl\.textContent = formatCount\(matchedCount, totalCount, 'page'\)/
     );
-    expect(COPIES['history.html']).not.toContain('${allHistory.length} entries');
+    expect(COPIES['history.html']).not.toContain('${totalCount} entries');
   });
 
   test('downloads counts downloads and keeps its "in progress" suffix', () => {

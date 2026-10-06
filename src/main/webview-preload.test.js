@@ -168,7 +168,14 @@ function loadWebviewPreloadModule(options = {}) {
     ipcRenderer,
   }));
 
-  require(require.resolve('./webview-preload'));
+  // `options.argv` models the renderer's command line (the #512 boot switch).
+  const originalArgv = process.argv;
+  if (options.argv) process.argv = options.argv;
+  try {
+    require(require.resolve('./webview-preload'));
+  } finally {
+    process.argv = originalArgv;
+  }
 
   return {
     clipboard,
@@ -301,6 +308,7 @@ describe('webview-preload', () => {
       ],
       ['checkRadicleBinary', [], IPC.RADICLE_CHECK_BINARY, []],
       ['checkTorBinary', [], IPC.TOR_CHECK_BINARY, []],
+      ['getUpdateState', [], 'update:get-state', []],
     ];
 
     for (const [method, args, channel, expectedArgs] of mutationCases) {
@@ -308,6 +316,51 @@ describe('webview-preload', () => {
       await exposures.freedomAPI[method](...args);
       expect(ipcRenderer.invoke).toHaveBeenCalledWith(channel, ...expectedArgs);
     }
+
+    // Settings → About Freedom → Updates actions (#87) are fire-and-forget sends.
+    exposures.freedomAPI.checkForUpdates();
+    expect(ipcRenderer.send).toHaveBeenCalledWith('update:check');
+    exposures.freedomAPI.restartToUpdate();
+    expect(ipcRenderer.send).toHaveBeenCalledWith('update:restart-and-install');
+  });
+
+  test('update state and actions are settings-only (#87)', async () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'file:///app/pages/history.html',
+        protocol: 'file:',
+        pathname: '/app/pages/history.html',
+      },
+    });
+
+    for (const method of ['getUpdateState', 'checkForUpdates', 'restartToUpdate']) {
+      await expect(exposures.freedomAPI[method]()).rejects.toThrow(
+        'freedomAPI profile changes are only available on settings'
+      );
+    }
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith('update:get-state');
+    expect(ipcRenderer.send).not.toHaveBeenCalledWith('update:check');
+    expect(ipcRenderer.send).not.toHaveBeenCalledWith('update:restart-and-install');
+  });
+
+  test('onUpdateState forwards the update-state broadcast and unsubscribes (#87)', () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'file:///app/pages/settings.html',
+        protocol: 'file:',
+        pathname: '/app/pages/settings.html',
+      },
+    });
+    const callback = jest.fn();
+
+    const unsubscribe = exposures.freedomAPI.onUpdateState(callback);
+    ipcRenderer.emit('update:state', { status: 'downloading', percent: 42 });
+    expect(callback).toHaveBeenCalledWith({ status: 'downloading', percent: 42 });
+
+    unsubscribe();
+    callback.mockClear();
+    ipcRenderer.emit('update:state', { status: 'ready' });
+    expect(callback).not.toHaveBeenCalled();
   });
 
   test('blocks profile mutation methods on other internal pages', async () => {
@@ -2444,5 +2497,147 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
     vm.runInContext(`(${src})()`, parent);
     expect(() => vm.runInContext('new Node().appendChild({});', parent)).toThrow('boom');
     expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  // #512: the per-load constants come with the renderer's command line, so a
+  // page load no longer waits on the main thread for them.
+  describe('boot switch', () => {
+    const SOURCE = '/* provider source from the boot switch */';
+    const INFO = {
+      name: 'Freedom',
+      icon: 'data:image/png;base64,AA==',
+      rdns: 'baby.freedom.browser',
+    };
+    const bootArg = (boot) =>
+      '--freedom-webview-boot=' + Buffer.from(JSON.stringify(boot), 'utf-8').toString('base64');
+    const normalBoot = {
+      isPrivate: false,
+      internalPages,
+      ethereum: { info: INFO, source: SOURCE },
+    };
+    const dapp = { href: 'https://dapp.example/', protocol: 'https:', pathname: '/' };
+    const providerCalls = (contextBridge) =>
+      contextBridge.executeInMainWorld.mock.calls.filter(([{ func }]) =>
+        String(func).includes('__FREEDOM_PROVIDER_CONFIG__')
+      );
+    const configOf = (call) =>
+      JSON.parse(/__FREEDOM_PROVIDER_CONFIG__ = (\{.*\});\n/.exec(String(call[0].func))[1]);
+    const STATIC_CHANNELS = [
+      IPC.PRIVATE_IS_PRIVATE,
+      IPC.GET_ETHEREUM_INJECT_SOURCE,
+      IPC.GET_INTERNAL_PAGES,
+    ];
+
+    test('an isolated Agent preview stays provider-free with normal-window boot metadata', () => {
+      const { contextBridge, ipcRenderer, document } = loadWebviewPreloadModule({
+        location: {
+          href: `freedom-preview://${'a'.repeat(40)}/index.html`,
+          protocol: 'freedom-preview:',
+          pathname: '/index.html',
+        },
+        argv: ['electron', bootArg(normalBoot)],
+      });
+      expect(providerCalls(contextBridge)).toHaveLength(0);
+      for (const channel of [
+        'dapp:provider-response',
+        'dapp:provider-event',
+        'swarm:provider-response',
+        'swarm:provider-event',
+        'radicle:provider-response',
+        'radicle:provider-event',
+      ]) {
+        expect(ipcRenderer.on.mock.calls.map(([name]) => name)).not.toContain(channel);
+      }
+      for (const channel of STATIC_CHANNELS) expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(channel);
+      expect(global.window.addEventListener.mock.calls.filter(([event]) => event === 'message')).toHaveLength(0);
+      expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain('DOMContentLoaded');
+    });
+
+    test('a page load makes none of the static sync calls and still gets its provider', () => {
+      const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+        location: dapp,
+        argv: ['electron', bootArg(normalBoot)],
+      });
+      for (const channel of STATIC_CHANNELS) {
+        expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(channel);
+      }
+      const calls = providerCalls(contextBridge);
+      expect(calls).toHaveLength(1);
+      expect(String(calls[0][0].func)).toContain(SOURCE);
+      const config = configOf(calls[0]);
+      expect(config).toEqual({ ...INFO, uuid: expect.any(String) });
+      expect(config.uuid).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+    });
+
+    test('every page load gets its own provider uuid', () => {
+      const uuids = [1, 2].map(
+        () =>
+          configOf(
+            providerCalls(
+              loadWebviewPreloadModule({ location: dapp, argv: ['electron', bootArg(normalBoot)] })
+                .contextBridge
+            )[0]
+          ).uuid
+      );
+      expect(uuids[0]).not.toBe(uuids[1]);
+    });
+
+    test("'<' in a provider field cannot close the fallback <script> tag", () => {
+      const { contextBridge } = loadWebviewPreloadModule({
+        location: dapp,
+        argv: [
+          'electron',
+          bootArg({
+            ...normalBoot,
+            ethereum: { info: { ...INFO, name: '</script>' }, source: SOURCE },
+          }),
+        ],
+      });
+      const func = String(providerCalls(contextBridge)[0][0].func);
+      expect(func).not.toContain('</script>');
+      expect(configOf(providerCalls(contextBridge)[0]).name).toBe('</script>');
+    });
+
+    test('internal pages are recognised from the boot switch', () => {
+      const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+        argv: ['electron', bootArg(normalBoot)],
+      });
+      expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(IPC.GET_INTERNAL_PAGES);
+      expect(exposures.freedomAPI).toBeDefined();
+    });
+
+    test('a private boot installs no provider and asks main for nothing static', () => {
+      const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+        location: dapp,
+        argv: ['electron', bootArg({ isPrivate: true, internalPages })],
+        // Were the preload to ask anyway, main would say "not private".
+        isPrivateWindow: false,
+      });
+      for (const channel of STATIC_CHANNELS) {
+        expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(channel);
+      }
+      expect(providerCalls(contextBridge)).toHaveLength(0);
+      expect(ipcRenderer.on.mock.calls.map(([c]) => c)).not.toContain('dapp:provider-response');
+    });
+
+    test.each([
+      ['no switch', ['electron']],
+      ['two switches', ['electron', bootArg(normalBoot), bootArg(normalBoot)]],
+      ['not base64 JSON', ['electron', '--freedom-webview-boot=%%%']],
+      ['no private flag', ['electron', bootArg({ internalPages, ethereum: normalBoot.ethereum })]],
+      ['no provider source', ['electron', bootArg({ isPrivate: false, internalPages })]],
+    ])('%s: falls back to the sync IPC', (_label, argv) => {
+      const { ipcRenderer } = loadWebviewPreloadModule({
+        location: dapp,
+        argv,
+        isPrivateWindow: true,
+      });
+      expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.PRIVATE_IS_PRIVATE);
+      expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.GET_INTERNAL_PAGES);
+      // Private, per main: the provider source is not even fetched.
+      expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(IPC.GET_ETHEREUM_INJECT_SOURCE);
+    });
   });
 });

@@ -1,0 +1,1 @@
+- Large uploads to Swarm no longer make the node drop thousands of peer connections ([#501](https://github.com/solardev-xyz/freedom-browser/pull/501))

@@ -49,7 +49,12 @@ module.exports = defineConfig({
   // scheme cache and (in live mode) over Bee's default-port detection.
   fullyParallel: false,
   workers: 1,
-  reporter: [['list']],
+  // On GitHub Actions the `github` reporter is added next to `list`: it turns
+  // every failed test, and every test that passed only on a retry (`flaky`),
+  // into a check-run annotation. Annotations outlive the job log — which
+  // auto-retry's attempt 2 replaces — so they are the durable record
+  // scripts/ci/flake-report.js counts flakes from (#535).
+  reporter: process.env.GITHUB_ACTIONS ? [['list'], ['github']] : [['list']],
   // Screenshot baselines (test-e2e/renderer-screenshots.spec.js, #261 item 1c)
   // are named explicitly by the spec and live in one flat directory, rather
   // than the default per-spec/per-platform tree: they are rendered on Linux and
@@ -58,7 +63,11 @@ module.exports = defineConfig({
   snapshotPathTemplate: 'test-e2e/__screenshots__/{arg}{ext}',
   use: {
     trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    // Failure screenshots are taken by test-e2e/close-app.js instead, of the
+    // chrome window only: 'only-on-failure' screenshots every page of the
+    // context on *every* close, including background-tab webviews that never
+    // paint, which added 5 s to each multi-tab test's teardown (#535).
+    screenshot: 'off',
     video: 'off',
   },
   projects: [

@@ -52,7 +52,10 @@ function loadManager(options = {}) {
     BrowserWindow: { getAllWindows: jest.fn(() => windows) },
   }));
   jest.doMock('./logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
-  jest.doMock('./profile-paths', () => ({ getRadicleDataDir: jest.fn(() => dataDir) }));
+  jest.doMock('./profile-paths', () => ({
+    getRadicleDataDir: jest.fn(() => dataDir),
+    prepareRadicleDataDir: jest.fn(async () => dataDir),
+  }));
   jest.doMock('./profile-resolver', () => ({
     getActiveProfile: jest.fn(() => options.profile || { metadata: { nodes: {} } }),
   }));
@@ -120,7 +123,9 @@ test('a stop during native startup shuts the completed runtime down once', async
   const ctx = loadManager({ embedded: { start } });
   const starting = ctx.mod.startRadicle();
   const stopping = ctx.mod.stopRadicle();
-  await Promise.resolve();
+  // Startup awaits the Radicle home first (prepareRadicleDataDir), so give it
+  // a few microtask turns to reach embedded.start.
+  for (let i = 0; i < 20 && !finishStart; i += 1) await Promise.resolve();
   finishStart({ did: 'did:key:z6MkNative' });
   await Promise.all([starting, stopping]);
   expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);

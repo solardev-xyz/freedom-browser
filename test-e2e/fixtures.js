@@ -22,6 +22,7 @@ const {
   packagedLaunchTarget,
   launchApp: launchTarget,
 } = require('./packaged-launch');
+const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -53,6 +54,13 @@ function launchOptions(userDataDir) {
 // Playwright's Electron launcher; see packaged-launch.js.
 function launchApp(userDataDir) {
   return launchTarget(launchOptions(userDataDir));
+}
+
+// Teardown deadline for one instance (see close-app.js). A packaged app has
+// its own 90 s quit-then-SIGKILL in packaged-launch.js; stay above it so that
+// path keeps deciding, and only a close that outlives it is reported here.
+function closeOptions() {
+  return isPackagedRun() ? { timeout: 100_000 } : {};
 }
 
 // First BrowserWindow, waited until the browser chrome has mounted. The
@@ -108,11 +116,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // Window may already have been closed by the spec.
-    }
+    await closeApp(app, closeOptions());
   },
 
   // Start another instance of the same executable against the same scratch
@@ -129,13 +133,12 @@ const test = base.extend({
       return app;
     });
 
+    // Close every instance even if one of them is stuck, then report it.
+    const stuck = [];
     for (const app of started) {
-      try {
-        await app.close();
-      } catch {
-        // Already closed by the spec.
-      }
+      await closeApp(app, closeOptions()).catch((err) => stuck.push(err));
     }
+    if (stuck.length) throw stuck[0];
   },
 
   window: async ({ electronApp }, use) => {

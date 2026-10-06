@@ -30,7 +30,6 @@ let fullscreenBtn = null;
 let printBtn = null;
 let devtoolsBtn = null;
 let aboutBtn = null;
-let checkUpdatesBtn = null;
 
 // Callback for opening history (set by external module)
 let onOpenHistory = null;
@@ -306,7 +305,6 @@ export const initMenus = () => {
   printBtn = document.getElementById('print-btn');
   devtoolsBtn = document.getElementById('devtools-btn');
   aboutBtn = document.getElementById('about-btn');
-  checkUpdatesBtn = document.getElementById('check-updates-btn');
   beeMenuButton = document.getElementById('bee-menu-button');
   beeMenuDropdown = document.getElementById('bee-menu-dropdown');
   profileMenuWrap = document.getElementById('profile-menu-wrap');
@@ -490,11 +488,8 @@ export const initMenus = () => {
     electronAPI?.showAbout?.();
   });
 
-  // Check for Updates
-  checkUpdatesBtn?.addEventListener('click', () => {
-    setMenuOpen(false);
-    electronAPI?.checkForUpdates?.();
-  });
+  // The update row (#check-updates-btn) is state-driven and wired by
+  // update-status-ui.js.
 
   beeMenuButton?.addEventListener('click', (event) => {
     event.stopPropagation();

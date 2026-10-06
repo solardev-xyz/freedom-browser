@@ -385,9 +385,9 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
   // radicle-data/. On upgrade the default profile is catalog-managed, so the
   // Radicle home moves to the short, app-owned <appRoot>/R/<slot> (the runtime
   // canonicalizes RAD_HOME before binding its control.sock, which has a hard
-  // sockaddr_un length limit). This exercises copyProfileRadicleDataIfNeeded on
+  // sockaddr_un length limit). This exercises the async Radicle-home migration on
   // the full upgrade path — the pre-upgrade identity must be carried across.
-  test('carries the Radicle identity to the short Radicle home on the full upgrade path', () => {
+  test('carries the Radicle identity to the short Radicle home on the full upgrade path', async () => {
     writeLegacyInstall(userDataDir);
     const legacyRadicle = path.join(userDataDir, 'radicle-data');
     fs.mkdirSync(path.join(legacyRadicle, 'keys'), { recursive: true });
@@ -399,7 +399,7 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
     const resolver = require('../../profile-resolver');
     resolver.initializeProfile(paths.app, { argv: ['electron', '.'], env: {}, now: NOW });
 
-    const radicleDir = paths.mod.getRadicleDataDir();
+    const radicleDir = await paths.mod.prepareRadicleDataDir();
 
     // The default profile (slot 0) uses the short app-owned Radicle home, which
     // is shorter than the profile-local radicle-data/ it replaces.

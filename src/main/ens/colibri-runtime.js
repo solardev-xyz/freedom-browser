@@ -60,7 +60,12 @@ process.env.C4_DISABLE_NATIVE = '1';
 // chain-data router falls through to the next source. It is read when a module
 // is compiled, and `c4w.wasm` is compiled lazily on the first Colibri call, so
 // setting it here (before the package is even required) covers every Colibri
-// instance in this process and in the checkpoint-verifier worker thread.
+// instance in this process. Since #495 that process-side code runs in worker
+// threads — the chain-data/ENS worker (`colibri-worker.js`) and the
+// checkpoint-verifier worker — and V8 flags are process-wide, so whichever
+// worker loads this first sets it for both. (Re-checked 2026-10-04 on Electron
+// 44: an unknown-hash receipt through the Colibri worker throws the catchable
+// "memory access out of bounds" error and the app keeps running.)
 require('node:v8').setFlagsFromString('--wasm-enforce-bounds-checks');
 
 const path = require('node:path');
@@ -173,8 +178,10 @@ async function provideRuntime() {
   const runtime = guardRuntime(await loadFreshWasmRuntime());
   // Storage lives on the Emscripten instance, so a replacement starts on the
   // package's default (cwd-backed) adapter. Re-attach whatever the host
-  // registered last — Colibri's disk store in the main process, the in-memory
-  // map in the checkpoint worker — before anyone can use the new instance.
+  // registered last — Colibri's disk store in the chain-data/ENS worker, the
+  // in-memory map in the checkpoint worker — before anyone can use the new
+  // instance. (The chain-data host retires a worker after its first trap
+  // anyway; this keeps requests still draining there on real storage.)
   if (registeredStorage) runtime.registerStorage(registeredStorage);
   return runtime;
 }

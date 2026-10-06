@@ -850,10 +850,18 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     }
   });
 
-  function loadIdentityManager(dataDirsForLoad) {
+  function loadIdentityManager(dataDirsForLoad, fsOffloadOverrides = null) {
     return loadMainModule(require.resolve('./identity-manager'), {
       extraMocks: {
         [require.resolve('./identity')]: () => makeRestartIdentityMock(),
+        ...(fsOffloadOverrides
+          ? {
+              [require.resolve('./fs-offload')]: () => ({
+                ...jest.requireActual('./fs-offload'),
+                ...fsOffloadOverrides,
+              }),
+            }
+          : {}),
       },
       userDataDir: dataDirsForLoad.identity,
     }).mod;
@@ -916,6 +924,35 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     });
   });
 
+  // #513: an older profile's Radicle home is carried into the short home
+  // asynchronously. Injection must wait for that to land before judging
+  // whether Radicle already has an identity — otherwise it reads "missing",
+  // re-injects, and wipes the node/cobs/storage that were on their way in.
+  test('waits for a pending Radicle home migration before judging injection', async () => {
+    const mgr = loadMainModule(require.resolve('./identity-manager'), {
+      extraMocks: {
+        [require.resolve('./identity')]: () => makeRestartIdentityMock(),
+        [require.resolve('./profile-paths')]: () => ({
+          ...jest.requireActual('./profile-paths'),
+          prepareRadicleDataDir: async () => {
+            await new Promise((r) => setTimeout(r, 10));
+            // The migration lands: identity and seeded storage arrive.
+            seedRadicleInjected();
+            fs.mkdirSync(path.join(dataDirs.radicle, 'storage', 'repo'), { recursive: true });
+            return dataDirs.radicle;
+          },
+        }),
+      },
+      userDataDir: dataDirs.identity,
+    }).mod;
+    await mgr.createNewVault('password-123');
+
+    const results = await mgr.injectAllIdentities('FreedomBrowser', false);
+
+    expect(results.radicle).toMatchObject({ alreadyInjected: true });
+    expect(fs.existsSync(path.join(dataDirs.radicle, 'storage', 'repo'))).toBe(true);
+  });
+
   test('status reports native IPFS ephemeral identity mode', async () => {
     seedIpfsIdentityMetadata();
 
@@ -960,5 +997,72 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     expect(fs.existsSync(path.join(beeDir, 'keys', 'libp2p_v2.key'))).toBe(false);
     // The keystore is preserved — injection rewrites it immediately after.
     expect(fs.existsSync(path.join(beeDir, 'keys', 'swarm.key'))).toBe(true);
+  });
+
+  // #513: the Windows EPERM/EBUSY retry loop (issue #90) used to Atomics.wait
+  // between attempts, freezing the main thread for up to ~4.5 s. The back-off
+  // is now an async delay, and the deletes themselves run in a worker.
+  test('wipeStaleBeeState retries a locked dir with an async back-off', async () => {
+    const beeDir = dataDirs.bee;
+    fs.mkdirSync(path.join(beeDir, 'statestore'), { recursive: true });
+    fs.writeFileSync(path.join(beeDir, 'statestore', 'LOCK'), 'x');
+
+    const realOffload = jest.requireActual('./fs-offload');
+    let lockedAttempts = 0;
+    const removePath = jest.fn((target, opts) => {
+      if (target.endsWith('statestore') && lockedAttempts < 2) {
+        lockedAttempts += 1;
+        return Promise.reject(Object.assign(new Error('locked'), { code: 'EPERM' }));
+      }
+      return realOffload.removePath(target, opts);
+    });
+    const rmSyncSpy = jest.spyOn(fs, 'rmSync');
+    let ticks = 0;
+    const ticker = setInterval(() => {
+      ticks += 1;
+    }, 10);
+
+    try {
+      const mgr = loadIdentityManager(dataDirs, { removePath });
+      await mgr.wipeStaleBeeState(beeDir);
+    } finally {
+      clearInterval(ticker);
+      rmSyncSpy.mockRestore();
+    }
+
+    expect(lockedAttempts).toBe(2);
+    expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(false);
+    expect(rmSyncSpy).not.toHaveBeenCalled();
+    // Back-off was 100 ms + 200 ms; the event loop kept running through it.
+    expect(ticks).toBeGreaterThan(10);
+  });
+
+  test('wipeStaleBeeState surfaces a still-locked dir after the retry budget', async () => {
+    const beeDir = dataDirs.bee;
+    fs.mkdirSync(path.join(beeDir, 'statestore'), { recursive: true });
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    const rmSpy = jest.fn(() =>
+      Promise.reject(Object.assign(new Error('busy'), { code: 'EBUSY' }))
+    );
+
+    try {
+      const mgr = loadIdentityManager(dataDirs, { removePath: rmSpy });
+      const wiping = mgr.wipeStaleBeeState(beeDir);
+      let done = false;
+      const settled = expect(wiping).rejects.toThrow(/still in use/).finally(() => {
+        done = true;
+      });
+      // The back-off timers are scheduled after real (un-faked) fs I/O, so keep
+      // advancing until the wipe gives up rather than flushing once.
+      for (let i = 0; i < 200 && !done; i += 1) {
+        await jest.advanceTimersByTimeAsync(100);
+        await new Promise((r) => setImmediate(r));
+      }
+      await settled;
+      expect(rmSpy).toHaveBeenCalledTimes(10);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(true);
   });
 });

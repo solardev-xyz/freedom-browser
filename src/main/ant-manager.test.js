@@ -282,6 +282,9 @@ function loadAntManagerModule(options = {}) {
         spawn,
         execSync,
       }),
+      [require.resolve('./settings-store')]: () => ({
+        loadSettings: jest.fn(() => options.settings || {}),
+      }),
       crypto: () => ({
         randomBytes,
       }),
@@ -302,6 +305,8 @@ function loadAntManagerModule(options = {}) {
         getActiveProfile: jest.fn(() => options.activeProfile || null),
         getReservedProfilePorts: jest.fn(() => new Set(options.reservedPorts || [])),
         updateActiveProfileNodeConfig,
+        updateActiveProfileNodeConfigWhenIdle: jest.fn(async (...args) =>
+          updateActiveProfileNodeConfig(...args)),
       }),
       [require.resolve('./service-registry')]: () => ({
         MODE: {
@@ -470,12 +475,16 @@ describe('ant-manager', () => {
     expect(ctx.spawnedProcesses).toHaveLength(1);
     expect(ctx.spawnedProcesses[0].binary).toBe(ctx.antBinPath);
     expect(ctx.mod.getStatus()).toEqual({ status: 'running', error: null });
+    // Publish setup's fallback rediscovery hold runs from the spawn (#510).
+    expect(ctx.mod.getSpawnedAt()).toEqual(expect.any(Number));
+    expect(ctx.mod.getSpawnedAt()).toBeLessThanOrEqual(Date.now());
 
     const stopPromise = ctx.mod.stopAnt();
     await jest.advanceTimersByTimeAsync(0);
     await flushMicrotasks();
     await stopPromise;
     expect(jest.getTimerCount()).toBe(0);
+    expect(ctx.mod.getSpawnedAt()).toBeNull();
   });
 
   test('reuses an existing daemon and clears the health-check interval on stop', async () => {
@@ -508,6 +517,8 @@ describe('ant-manager', () => {
       gateway: 'http://127.0.0.1:1633',
       mode: 'reused',
     });
+    // Not spawned by Freedom: its start time is unknown.
+    expect(ctx.mod.getSpawnedAt()).toBeNull();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node: localhost:1633');
     expect(setIntervalSpy).toHaveBeenCalled();
     expect(window.webContents.send).toHaveBeenCalledWith(IPC.ANT_STATUS_UPDATE, {
@@ -840,9 +851,10 @@ describe('ant-manager', () => {
     const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
     expect(configContent).toContain('api-addr: 127.0.0.1:1634');
     expect(configContent).toContain('p2p-addr: :1634');
-    // antd ignores swap-enable, and the chain RPC reaches it only as the
-    // bridge flag, never as a URL on disk.
-    expect(configContent).not.toContain('swap-enable');
+    // swap-enable follows the antSwapEnable setting, on by default as in
+    // bee (#488); the chain RPC reaches the node only as the bridge flag,
+    // never as a URL on disk.
+    expect(configContent).toMatch(/^swap-enable: true$/m);
     expect(configContent).not.toContain('blockchain-rpc-endpoint');
     expect(configContent).toContain('resolver-options: "https://ethereum.publicnode.com"');
     expect(configContent).toContain(`data-dir: ${ctx.dataDir}`);
@@ -1071,6 +1083,49 @@ describe('ant-manager', () => {
     expect(ctx.spawn).not.toHaveBeenCalled();
     expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
+  });
+
+  // #488: bee's swap-enable, written from the antSwapEnable setting.
+  describe('swap-enable', () => {
+    test('writes swap-enable: false when the user switched paying peers off', () => {
+      const ctx = loadAntManagerModule({ settings: { antSwapEnable: false } });
+      const content = ctx.mod.buildAntConfigContent({
+        dataDir: '/d',
+        apiPort: 1633,
+        p2pPort: 1634,
+        password: 'pw',
+        resolverRpcEndpoint: 'https://eth.example',
+        swapEnable: false,
+      });
+      expect(content).toMatch(/^swap-enable: false$/m);
+      expect(content).not.toMatch(/^swap-enable: true$/m);
+    });
+
+    test('startAnt writes the setting into config.yaml', async () => {
+      const ctx = loadAntManagerModule({
+        settings: { antSwapEnable: false },
+        portSequence: [false, false],
+        httpResponse: () => ({ statusCode: 200, body: { status: 'ok', version: '0.5.55' } }),
+      });
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === ctx.configPath);
+      expect(config[1]).toMatch(/^swap-enable: false$/m);
+      await ctx.mod.stopAnt();
+    });
+
+    // Whether the running antd has the switch is read from the node itself
+    // (`GET /node`'s `settlement`, browsing-credit-service.js), not from
+    // `antd --help`: ant-manager only says whether Freedom runs the node.
+    test('a bundled node is managed; an external or disabled profile node is not', () => {
+      expect(loadAntManagerModule().mod.isManagedAntNode()).toBe(true);
+      for (const mode of ['external', 'disabled']) {
+        const ctx = loadAntManagerModule({
+          activeProfile: { metadata: { nodes: { bee: { mode, url: 'http://127.0.0.1:1633' } } } },
+        });
+        expect(ctx.mod.isManagedAntNode()).toBe(false);
+      }
+    });
   });
 
   // Regression guard for issue #90: identity injection must stop a Bee node that

@@ -29,9 +29,10 @@
  * id, as the messaging SWIP requires.
  */
 
-const { Topic, Identifier, Bytes } = require('@ethersphere/bee-js');
+const { Topic, Identifier, Bytes, PrivateKey } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError } = require('./batch-errors');
+const { mineSigner, joinJob } = require('./gsoc-miner');
 const log = require('electron-log');
 
 // GSOC topic → address derivation (Freedom profile v1).
@@ -43,10 +44,12 @@ const log = require('electron-log');
 //
 // gsocMine is deterministic (fixed nonce start, sequential search), so every
 // participant passing the same topic to this provider converges on the same
-// signer and address. Changing any constant here breaks address stability for
-// existing rooms — treat this block as frozen once shipped. Cross-provider
-// convergence is not guaranteed by the SWIP; interop across implementations
-// exchanges the resolved `address` out of band.
+// signer and address. The mining runs in a worker thread (gsoc-miner.js,
+// #503): the same bee-js gsocMine on the same inputs, so moving it off the
+// main thread changed no address. Changing any constant here breaks address
+// stability for existing rooms — treat this block as frozen once shipped.
+// Cross-provider convergence is not guaranteed by the SWIP; interop across
+// implementations exchanges the resolved `address` out of band.
 const GSOC_TARGET_CONTEXT = 'freedom-gsoc-v1:';
 const GSOC_PROXIMITY = 12; // bee-js default; ~4k keccak attempts worst case
 
@@ -82,34 +85,123 @@ const WS_CLOSE_TRY_AGAIN = 1013;
 // are page-controlled: bound the cache (eviction just costs a re-mine).
 const GSOC_CACHE_MAX = 128;
 const gsocDerivationCache = new Map();
+// topic → Promise of the derivation, while it is being mined. A second
+// send/subscribe for the same topic joins it instead of mining again.
+const gsocInFlight = new Map();
+
+// New-topic budget per origin. Mining runs off the main thread now, but it
+// still costs a CPU core for ~0.02-1 s per topic (up to ~5 s for a topic whose
+// search runs to bee-js's 0xffff-key cap), and every origin shares the one
+// mining worker. The budget bounds how many topics an origin can start — a page
+// cycling through fresh topics (the cache only holds 128) — but it counts
+// topics, not mining time: 16 deliberately slow topics can still exceed a
+// minute of worker time. What keeps that from delaying other pages' rooms
+// without bound is the miner's per-origin round-robin queue (gsoc-miner.js):
+// another origin's job waits for at most one job of each busy origin, not for
+// an origin's whole backlog. That holds for an origin joining another origin's
+// in-flight derivation of the same topic too: the join adds it as an owner of
+// the queued job (joinJob), so the job runs at its turn, not only at the
+// mining origin's. Only derivations that actually start mining count
+// here, including ones that fail (a failure is not cached, so a retry mines and
+// counts again): cache hits and joins of an in-flight derivation are free.
+// 16 a minute is far beyond what a chat app joining its rooms needs.
+const NEW_TOPIC_WINDOW_MS = 60_000;
+const NEW_TOPICS_PER_WINDOW = 16;
+const newTopicStarts = new Map(); // origin → start timestamps within the window
 
 function keccakOfUtf8(text) {
   return Bytes.keccak256(Buffer.from(text, 'utf-8')).toUint8Array();
 }
 
-/**
- * Derive the GSOC coordinates for a topic (cached).
- * @param {string} topic
- * @returns {{ identifier: Identifier, signer: import('@ethersphere/bee-js').PrivateKey, address: string }}
- */
-function deriveGsoc(topic) {
-  const cached = gsocDerivationCache.get(topic);
-  if (cached) return cached;
+function newTopicRateLimitedError(retryAfterMs) {
+  const err = new Error(
+    `Too many new messaging topics: at most ${NEW_TOPICS_PER_WINDOW} new topics per ` +
+    `${NEW_TOPIC_WINDOW_MS / 1000} s per origin. Retry in ${Math.ceil(retryAfterMs / 1000)} s.`
+  );
+  err.reason = 'topic_rate_limited';
+  err.limit = NEW_TOPICS_PER_WINDOW;
+  err.windowMs = NEW_TOPIC_WINDOW_MS;
+  err.retryAfterMs = retryAfterMs;
+  return err;
+}
 
+// Record a new-topic derivation for `origin`, or throw if it is over budget.
+function consumeNewTopicBudget(origin) {
+  const key = String(origin || '');
+  const now = Date.now();
+  // Prune every origin's expired starts, so origins that went quiet do not
+  // accumulate here.
+  for (const [o, starts] of newTopicStarts) {
+    while (starts.length && now - starts[0] >= NEW_TOPIC_WINDOW_MS) starts.shift();
+    if (starts.length === 0) newTopicStarts.delete(o);
+  }
+  const starts = newTopicStarts.get(key) || [];
+  if (starts.length >= NEW_TOPICS_PER_WINDOW) {
+    throw newTopicRateLimitedError(NEW_TOPIC_WINDOW_MS - (now - starts[0]));
+  }
+  starts.push(now);
+  newTopicStarts.set(key, starts);
+}
+
+function miningJobKey(topic) {
+  return `gsoc-topic:${topic}`;
+}
+
+async function mineDerivation(topic, origin) {
   const bee = getBee();
   const identifier = new Identifier(keccakOfUtf8(topic));
   const targetOverlay = keccakOfUtf8(GSOC_TARGET_CONTEXT + topic);
-  const signer = bee.messaging.gsocMine(targetOverlay, identifier, GSOC_PROXIMITY);
+  const signerHex = await mineSigner(targetOverlay, identifier.toUint8Array(), GSOC_PROXIMITY, {
+    owner: origin,
+    key: miningJobKey(topic),
+  });
+  const signer = new PrivateKey(signerHex);
   const address = toHex(
     bee.calculateSingleOwnerChunkAddress(identifier, signer.publicKey().address())
   );
+  return { identifier, signer, address };
+}
 
-  const derivation = { identifier, signer, address };
-  if (gsocDerivationCache.size >= GSOC_CACHE_MAX) {
-    gsocDerivationCache.delete(gsocDerivationCache.keys().next().value);
+/**
+ * Derive the GSOC coordinates for a topic (cached; concurrent calls for the
+ * same topic share one mining job).
+ * @param {string} topic
+ * @param {{ origin?: string }} [options] - the requesting origin, charged
+ *   against its new-topic budget when this call has to mine.
+ * @returns {Promise<{ identifier: Identifier, signer: import('@ethersphere/bee-js').PrivateKey, address: string }>}
+ *   Rejects with `reason: 'topic_rate_limited'` when `origin` is over its
+ *   new-topic budget, or with the miner's `gsoc_mining_timeout` /
+ *   `gsoc_mining_failed`.
+ */
+async function deriveGsoc(topic, { origin } = {}) {
+  const cached = gsocDerivationCache.get(topic);
+  if (cached) return cached;
+  const inFlight = gsocInFlight.get(topic);
+  if (inFlight) {
+    // The job may be queued under another origin with a backlog of its own:
+    // queue it under this origin too, so it runs at this origin's round-robin
+    // turn if that comes first.
+    joinJob(miningJobKey(topic), { owner: origin });
+    return inFlight;
   }
-  gsocDerivationCache.set(topic, derivation);
-  return derivation;
+
+  consumeNewTopicBudget(origin);
+  const promise = mineDerivation(topic, origin).then(
+    (derivation) => {
+      gsocInFlight.delete(topic);
+      if (gsocDerivationCache.size >= GSOC_CACHE_MAX) {
+        gsocDerivationCache.delete(gsocDerivationCache.keys().next().value);
+      }
+      gsocDerivationCache.set(topic, derivation);
+      return derivation;
+    },
+    (err) => {
+      gsocInFlight.delete(topic);
+      throw err;
+    }
+  );
+  gsocInFlight.set(topic, promise);
+  return promise;
 }
 
 /**
@@ -163,12 +255,12 @@ async function sendPss({ topic, targets, recipient, data }) {
 
 /**
  * Broadcast a GSOC message on a topic.
- * @param {{ topic: string, data: string|Buffer }} params
+ * @param {{ topic: string, data: string|Buffer, origin?: string }} params
  * @returns {Promise<{ address: string }>}
  */
-async function sendGsoc({ topic, data }) {
+async function sendGsoc({ topic, data, origin }) {
   const bee = getBee();
-  const { identifier, signer, address } = deriveGsoc(topic);
+  const { identifier, signer, address } = await deriveGsoc(topic, { origin });
   const batchId = await selectMessageBatch();
   await bee.messaging.gsocSend(batchId, signer, identifier, data);
   log.info(`[MessagingService] GSOC message sent: topic=${topic}, address=${address}`);
@@ -305,6 +397,8 @@ function openSubscriptionSocket({ kind, key }, { onMessage }) {
 // Exported for testing
 function _resetGsocCache() {
   gsocDerivationCache.clear();
+  gsocInFlight.clear();
+  newTopicStarts.clear();
 }
 
 module.exports = {
@@ -317,5 +411,7 @@ module.exports = {
   MAX_MESSAGE_BYTES,
   MAX_TARGET_DEPTH,
   DEFAULT_TARGET_DEPTH,
+  NEW_TOPIC_WINDOW_MS,
+  NEW_TOPICS_PER_WINDOW,
   _resetGsocCache,
 };

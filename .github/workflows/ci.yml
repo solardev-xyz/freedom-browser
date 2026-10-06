@@ -240,7 +240,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
           - os: ubuntu-latest
             target: linux-x64
@@ -304,7 +304,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: mac-arm64
             flags: --mac --arm64
           - os: macos-15-intel
@@ -360,7 +360,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
             addon: myotis-bin/mac-arm64/myotis-node.node
           - os: macos-15-intel
@@ -431,7 +431,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
             addon: myotis-bin/mac-arm64/myotis-node.node
           - os: ubuntu-latest
@@ -606,6 +606,14 @@ jobs:
   # `error-page.spec.js` covers the error page's title and node-state copy
   # (#236, #445), and `internal-page-theme.spec.js` asserts the pages follow
   # Settings > Appearance rather than the OS scheme (#233).
+  # `updates.spec.js` drives the auto-update state through both surfaces it
+  # paints, Settings > Updates and the hamburger update row (#87).
+  #
+  # This is also the per-PR job with the real filter lists downloaded, so
+  # `adblock-first-engine.spec.js` runs here: the first page of a fresh
+  # profile, with no engine cache, held behind the first ad-block engine build
+  # (#524). Without the real lists that build takes milliseconds and the path
+  # was only ever exercised by the nightly's full harness run.
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -643,10 +651,12 @@ jobs:
           xvfb-run -a npm run test:e2e --
           test-e2e/settings.spec.js
           test-e2e/settings-adblock.spec.js
+          test-e2e/adblock-first-engine.spec.js
           test-e2e/myotis-recovery.spec.js
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
           test-e2e/internal-page-theme.spec.js
+          test-e2e/updates.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -930,8 +940,12 @@ jobs:
   # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
   # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
   # is deployed on, and `publisher-identity-selector.spec.js` renders
-  # unusable publisher identities as inert. The anvil-backed Safe specs run
-  # in `e2e-safe` below.
+  # unusable publisher identities as inert. `browsing-credit.spec.js` (#488)
+  # drives the Nodes tab's Browsing Credit group through node states the
+  # pinned Ant cannot produce yet (paying, low, empty, switch on/off).
+  # `publish-setup-rediscovery.spec.js` (#510) keeps Publish Setup from
+  # offering a plan while Ant is still rediscovering the wallet's batches. The
+  # anvil-backed Safe specs run in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -965,7 +979,9 @@ jobs:
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
             test-e2e/safe-send-chain.spec.js \
-            test-e2e/publisher-identity-selector.spec.js
+            test-e2e/publisher-identity-selector.spec.js \
+            test-e2e/browsing-credit.spec.js \
+            test-e2e/publish-setup-rediscovery.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

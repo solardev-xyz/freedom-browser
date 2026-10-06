@@ -8,6 +8,8 @@
  * state the same way.
  */
 
+import { formatXbzz } from './browsing-credit.js';
+
 const FUND_ETHSWARM_URL = 'https://fund.ethswarm.org/';
 const GNOSIS_CHAIN_ID = 100;
 
@@ -60,7 +62,12 @@ export function describeOperationTarget(operation, plans = []) {
     if (size) return `Grow your storage to ${formatStorageSize(size.safeLimitBytes)}`;
     return `Keep your storage ${formatDays(request.days)} longer`;
   }
-  if (request.kind === 'deposit') return 'Top up the chequebook deposit';
+  if (request.kind === 'deposit') {
+    const amount = request.amountPlur ? formatXbzz(request.amountPlur) : null;
+    return amount
+      ? `Add ${amount} xBZZ to the chequebook deposit`
+      : 'Top up the chequebook deposit';
+  }
   return '';
 }
 
@@ -104,9 +111,11 @@ export function describeExecuting(operation) {
 export function describeDone(operation) {
   const kind = operation?.request?.kind;
   if (kind === 'deposit') {
-    return operation?.result?.alreadyFull
-      ? 'The chequebook deposit is already full.'
-      : 'The chequebook deposit is topped up. Uploads can pay for bandwidth again.';
+    if (operation?.result?.alreadyFull) return 'The chequebook deposit is already full.';
+    const amount = operation?.request?.amountPlur ? formatXbzz(operation.request.amountPlur) : null;
+    return amount
+      ? `Added ${amount} xBZZ to the chequebook deposit. It pays for faster downloads and for uploads.`
+      : 'The chequebook deposit is topped up. Uploads and faster downloads can pay for bandwidth again.';
   }
   if (kind === 'extend') return 'Your storage is extended.';
   if (operation?.result?.slow) {
@@ -132,8 +141,13 @@ export function buildFundUrl(address, xdai) {
 /**
  * The node card's publishing button: `{ visible, disabled, label, hint,
  * target }`, where `target` is the screen it opens ('setup' or 'storage').
+ *
+ * @param state  the publish setup state
+ * @param credit  browsingCredit.getState() result, if read (#488). Readiness
+ *   itself does not block on the `swap-enable` switch, since a small upload
+ *   still fits in the peers' free allowance; the ready CTA warns instead.
  */
-export function describePublishCta(state) {
+export function describePublishCta(state, credit = null) {
   const hidden = { visible: false, disabled: true, label: '', hint: '', target: null };
   if (!state) return hidden;
   const mode = state.node?.registryMode;
@@ -164,13 +178,28 @@ export function describePublishCta(state) {
 
   switch (state.readiness?.key) {
     case 'ready':
+      if (credit?.support === 'supported' && credit.swapEnable === false) {
+        return cta('Manage Storage', 'Paying peers is off, so large uploads can stall', 'storage');
+      }
       return cta('Manage Storage', 'View and extend your storage', 'storage');
     case 'storage-pending':
       return cta('Manage Storage', 'New storage is reaching the network', 'storage');
     case 'needs-storage':
       return cta('Set Up Publishing', 'Buy storage to publish on Swarm');
-    case 'checking':
+    case 'checking': {
+      // Ant is still looking for storage this wallet bought before (#510,
+      // /health.walletScan). That can take minutes, so the card opens setup,
+      // where the full message lives, and shows the progress Ant reports.
+      const { rediscovery, progress } = state.readiness;
+      const done = Number.isInteger(progress) ? ` ${progress}%` : '';
+      if (rediscovery === 'retrying') {
+        return cta('Publishing Setup', `Looking for your existing storage…${done} (retrying)`);
+      }
+      if (rediscovery === 'running') {
+        return cta('Publishing Setup', `Looking for your existing storage…${done}`);
+      }
       return cta('Checking Node Status…', '', 'setup', true);
+    }
     case 'chain-syncing':
       return cta('Publishing Setup', 'Connecting to Gnosis Chain…');
     case 'connecting':

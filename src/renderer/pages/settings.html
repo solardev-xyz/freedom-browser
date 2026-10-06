@@ -107,6 +107,14 @@
         flex-shrink: 0;
       }
 
+      /* Chrome separates its settings groups with a rule; #268 puts one
+         before the last two entries (Advanced, About Freedom). */
+      .nav-rule {
+        height: 1px;
+        margin: 8px 4px;
+        background: var(--border);
+      }
+
       /* Search settings (#281). The field sits in the sidebar header, where
          Chrome keeps its own, and is the same control as `#shortcut-search`:
          an `.rpc-input` in a flex wrapper that sizes it, with the page font
@@ -165,6 +173,42 @@
         color: var(--text-muted);
       }
 
+      /* Since #268 one nav entry can own several panels (Privacy and security
+         is Ad Blocking + Site Permissions, Networks is Chains + RPC Providers +
+         Name Resolution, …). The entry's own `h2.section-title` names the
+         page; each panel under it is named by an `h3.panel-title`, a step
+         below it and a step above a panel's own 12 px uppercase
+         `.subsection-title`s, so a route still carries exactly one large
+         heading (docs/agent-playbooks/ui-consistency.md). */
+      .panel-title {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 12px 0;
+        color: var(--text);
+      }
+
+      /* Panels after the first sit closer together than separate pages
+         would: they are one page now. */
+      .section.panel {
+        margin-bottom: 36px;
+      }
+
+      /* The heading-only section that names a multi-panel entry: its `<h2>`
+         carries the spacing to the first panel. */
+      .section.page-head {
+        margin-bottom: 0;
+      }
+
+      /* A chain's own page and the add-a-chain form take Networks over: the
+         chain list's siblings (the page heading, RPC Providers, Name
+         Resolution) step aside while one is open, the way the list itself
+         does. The Chains controller sets the class. */
+      .content.networks-chain-focus #networks,
+      .content.networks-chain-focus #rpc,
+      .content.networks-chain-focus #ens {
+        display: none;
+      }
+
       /* A section title that carries a section-level action beside it (#272):
          Site Permissions' "Remove all" sits next to the `<h2>`, where the
          page's other section-level actions live, instead of inside the list
@@ -179,7 +223,8 @@
 
       /* The heading's own bottom margin now belongs to the flex row, which
          also has to centre it against the button. */
-      .section-header .section-title {
+      .section-header .section-title,
+      .section-header .panel-title {
         margin: 0;
       }
 
@@ -269,6 +314,23 @@
 
       .row.disabled {
         opacity: 0.55;
+      }
+
+      /* The Updates section download bar (#87). Track and fill are the shared
+         border/accent tokens, so both themes come from theme.css. */
+      .update-progress {
+        height: 4px;
+        margin-top: 8px;
+        border-radius: 2px;
+        background: var(--border);
+        overflow: hidden;
+      }
+
+      .update-progress-bar {
+        width: 0;
+        height: 100%;
+        background: var(--accent);
+        transition: width 0.2s ease;
       }
 
       /* The ad-blocking category rows carry a help line only once the engine
@@ -409,16 +471,57 @@
         gap: 8px;
       }
 
+      /* Per-row progressive disclosure (#270): a network source's technical
+         name and mechanism, and the settings only someone who knows them
+         needs (the proof server, the agreement threshold), sit collapsed
+         under the plain label and help line. */
+      .row-advanced {
+        margin-top: 6px;
+      }
+
+      .row-advanced > summary {
+        width: fit-content;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      .row-advanced > summary:hover {
+        color: var(--text);
+      }
+
+      .row-advanced > .row-help {
+        margin-top: 6px;
+      }
+
+      /* An open disclosure makes the row tall; the handle, rank and toggle
+         stay level with the label they belong to instead of drifting to
+         the middle of the expanded text. */
+      .resolver-method:has(> .row-body > .row-advanced[open]) {
+        align-items: start;
+      }
+
+      /* A method's own settings, inside its open disclosure (#270): the
+         sub-row fill, inset into the row body. */
       .resolver-config {
-        padding: 14px 18px 14px 94px;
-        border-bottom: 1px solid var(--border);
+        margin-top: 10px;
+        padding: 12px 14px;
+        border-radius: 6px;
         background: var(--row-sub-bg);
       }
 
+      /* Wraps: in the row body the proof server's URL gets a line of its
+         own rather than half of one — its placeholder is the default URL
+         and has to read in full. */
       .resolver-config-line {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 14px;
+        gap: 10px 14px;
+      }
+
+      .resolver-config-line > .rpc-input {
+        flex-basis: 100%;
       }
 
       .resolver-quorum-fields {
@@ -774,10 +877,22 @@
         line-height: 1.45;
       }
 
-      .profile-node-actions {
-        display: flex;
-        justify-content: flex-end;
-        margin-top: 8px;
+      /* Nodes commit on change (#271): a row that could not be saved — an
+         external switch with an empty endpoint, or one the main process
+         refused — says so inline and flags the field. */
+      .profile-node-error {
+        margin: 0;
+        color: var(--danger);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .profile-node-error[hidden] {
+        display: none;
+      }
+
+      .profile-node-field .rpc-input[aria-invalid='true'] {
+        border-color: var(--danger);
       }
 
       .btn.danger {
@@ -920,6 +1035,22 @@
           />
         </div>
         <nav class="nav" id="nav">
+          <button type="button" class="nav-item" data-target="profile">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M20 21a8 8 0 0 0-16 0"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            Profile
+          </button>
           <button type="button" class="nav-item" data-target="appearance">
             <svg
               width="16"
@@ -959,54 +1090,6 @@
             </svg>
             Search
           </button>
-          <button type="button" class="nav-item" data-target="profile">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M20 21a8 8 0 0 0-16 0"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-            Profile
-          </button>
-          <button type="button" class="nav-item" data-target="nodes">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-              <path d="M3 5v14a9 3 0 0 0 18 0V5"></path>
-              <path d="M3 12a9 3 0 0 0 18 0"></path>
-            </svg>
-            Nodes
-          </button>
-          <button type="button" class="nav-item" data-target="startup">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-            </svg>
-            Startup
-          </button>
           <button type="button" class="nav-item" data-target="downloads">
             <svg
               width="16"
@@ -1044,7 +1127,22 @@
             </svg>
             Shortcuts
           </button>
-          <button type="button" class="nav-item" data-target="chains">
+          <button type="button" class="nav-item" data-target="privacy">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Privacy and security
+          </button>
+          <button type="button" class="nav-item" data-target="networks">
             <svg
               width="16"
               height="16"
@@ -1061,9 +1159,9 @@
               <line x1="11" y1="7.5" x2="6" y2="16.5"></line>
               <line x1="13" y1="7.5" x2="18" y2="16.5"></line>
             </svg>
-            Chains
+            Networks
           </button>
-          <button type="button" class="nav-item" data-target="rpc">
+          <button type="button" class="nav-item" data-target="nodes">
             <svg
               width="16"
               height="16"
@@ -1074,58 +1172,15 @@
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
             </svg>
-            RPC Providers
+            Nodes
           </button>
-          <button type="button" class="nav-item" data-target="ens">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polygon points="12 2 4 12 12 16 20 12 12 2"></polygon>
-              <polygon points="4 14 12 22 20 14 12 18 4 14"></polygon>
-            </svg>
-            Name Resolution
-          </button>
-          <button type="button" class="nav-item" data-target="adblock">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-            </svg>
-            Ad Blocking
-          </button>
-          <button type="button" class="nav-item" data-target="permissions">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z"></path>
-              <path d="m9 12 2 2 4-4"></path>
-            </svg>
-            Site Permissions
-          </button>
-          <button type="button" class="nav-item" data-target="experimental" id="nav-experimental">
+          <div class="nav-rule" role="separator"></div>
+          <button type="button" class="nav-item" data-target="advanced">
             <svg
               width="16"
               height="16"
@@ -1141,9 +1196,9 @@
               <path d="M8.5 2h7"></path>
               <path d="M14 9.3a6.5 6.5 0 1 1-4 0"></path>
             </svg>
-            Experimental
+            Advanced
           </button>
-          <button type="button" class="nav-item" data-target="updates">
+          <button type="button" class="nav-item" data-target="about">
             <svg
               width="16"
               height="16"
@@ -1154,10 +1209,11 @@
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
-            Updates
+            About Freedom
           </button>
         </nav>
       </aside>
@@ -1172,8 +1228,35 @@
           <div class="card" id="settings-search-list"></div>
         </section>
 
+        <!-- Profile (current profile identity) -->
+        <section class="section" id="profile" data-nav="profile">
+          <h2 class="section-title">Profile</h2>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Name</p>
+              </div>
+              <div class="row-control profile-name-control">
+                <input
+                  type="text"
+                  id="profile-name-input"
+                  class="rpc-input"
+                  spellcheck="false"
+                  placeholder="Profile name"
+                />
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-top: 12px">
+            <div class="rpc-block" style="border-top: none">
+              <button type="button" class="btn" id="manage-profiles-link">Manage profiles</button>
+            </div>
+          </div>
+          <p id="profile-save-status" class="rpc-status"></p>
+        </section>
+
         <!-- Appearance -->
-        <section class="section" id="appearance">
+        <section class="section" id="appearance" data-nav="appearance">
           <h2 class="section-title">Appearance</h2>
           <div class="card">
             <div class="row">
@@ -1206,11 +1289,22 @@
                 </label>
               </div>
             </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Show IPFS load progress in the status bar</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="show-ipfs-progress-status" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 
         <!-- Search -->
-        <section class="section" id="search">
+        <section class="section" id="search" data-nav="search">
           <h2 class="section-title">Search</h2>
           <div class="card">
             <div class="row">
@@ -1278,117 +1372,8 @@
           <p id="search-provider-status" class="rpc-status"></p>
         </section>
 
-        <!-- Profile (current profile identity) -->
-        <section class="section" id="profile">
-          <h2 class="section-title">Profile</h2>
-          <div class="card">
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">Name</p>
-              </div>
-              <div class="row-control profile-name-control">
-                <input
-                  type="text"
-                  id="profile-name-input"
-                  class="rpc-input"
-                  spellcheck="false"
-                  placeholder="Profile name"
-                />
-              </div>
-            </div>
-          </div>
-          <div class="card" style="margin-top: 12px">
-            <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" id="manage-profiles-link">Manage profiles</button>
-            </div>
-          </div>
-          <p id="profile-save-status" class="rpc-status"></p>
-        </section>
-
-        <!-- Nodes (per-profile node configuration) -->
-        <section class="section" id="nodes">
-          <h2 class="section-title">Nodes</h2>
-          <div class="card" id="profile-nodes-card">
-            <div class="profile-node-empty">Loading…</div>
-          </div>
-          <p id="profile-nodes-status" class="rpc-status"></p>
-        </section>
-
-        <!-- Startup -->
-        <section class="section" id="startup">
-          <h2 class="section-title">Startup</h2>
-          <div class="card">
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">Start Swarm node</p>
-                <p class="row-help">Restart to apply.</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-ant-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">Start IPFS node</p>
-                <p class="row-help">Restart to apply.</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-ipfs-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row" id="radicle-launch-row">
-              <div class="row-body">
-                <p class="row-label">Start Radicle node</p>
-                <p class="row-help" id="radicle-launch-help">Restart to apply.</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-radicle-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row" id="myotis-launch-row">
-              <div class="row-body">
-                <p class="row-label">
-                  Start Ethereum node
-                  <span class="resolver-badge">Beta</span>
-                </p>
-                <p class="row-help" id="myotis-launch-help">Restart to apply.</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-myotis-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row" id="myotis-gnosis-launch-row">
-              <div class="row-body">
-                <p class="row-label">
-                  Start Gnosis node
-                  <span class="resolver-badge">Beta</span>
-                </p>
-                <p class="row-help" id="myotis-gnosis-launch-help">Restart to apply.</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-myotis-gnosis-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <!-- Downloads -->
-        <section class="section" id="downloads">
+        <section class="section" id="downloads" data-nav="downloads">
           <h2 class="section-title">Downloads</h2>
           <div class="card">
             <div class="row">
@@ -1407,7 +1392,7 @@
         </section>
 
         <!-- Shortcuts -->
-        <section class="section" id="shortcuts">
+        <section class="section" id="shortcuts" data-nav="shortcuts">
           <h2 class="section-title">Shortcuts</h2>
           <p class="row-help" style="margin-bottom: 16px">
             Click a binding, press the new key combination, done — changes apply immediately. Press
@@ -1429,83 +1414,14 @@
           <p id="shortcuts-status" class="rpc-status"></p>
         </section>
 
-        <!-- Chains -->
-        <section class="section" id="chains">
-          <div id="chains-view"></div>
-          <p id="chains-status" class="rpc-status"></p>
+        <!-- Privacy and security (#268): Ad Blocking + Site Permissions. -->
+        <section class="section page-head" id="privacy" data-nav="privacy">
+          <h2 class="section-title">Privacy and security</h2>
         </section>
 
-        <!-- RPC Providers -->
-        <section class="section" id="rpc">
-          <div id="rpc-view"></div>
-          <p id="rpc-status" class="rpc-status"></p>
-        </section>
-
-        <!-- Ethereum Name Resolution — a focused lens on the Ethereum network -->
-        <section class="section" id="ens">
-          <h2 class="section-title">Name Resolution</h2>
-          <p class="row-help" style="margin-bottom: 16px">
-            How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
-            <code>.gwei</code> names. These records live on Ethereum — manage RPC endpoints under
-            <a href="#chains">Chains settings</a>.
-          </p>
-          <h3 class="subsection-title">Resolution order</h3>
-          <p class="row-help" style="margin: 0 0 12px 0">
-            Freedom tries enabled methods from top to bottom. Drag the handle to change priority;
-            with the handle focused, the arrow keys work too.
-          </p>
-          <div class="card" id="ens-method-card">
-            <div id="ens-method-list" class="resolver-list"></div>
-            <p id="ens-policy-status" class="rpc-status resolver-status"></p>
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">Prefer verified answers</p>
-                <p class="row-help">
-                  Keep an unverified answer as a fallback while later enabled methods try to produce
-                  a verified result.
-                </p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="ens-prefer-verified" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <h3 class="subsection-title">Safety</h3>
-          <div class="card">
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">When only an unverified answer is available</p>
-                <p class="row-help">Unverified answers always keep the amber shield indicator.</p>
-              </div>
-              <div class="row-control">
-                <select id="unverified-ens-action">
-                  <option value="ask">Ask before opening</option>
-                  <option value="open">Open directly</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Site Permissions -->
-        <section class="section" id="permissions">
-          <div class="section-header">
-            <h2 class="section-title">Site Permissions</h2>
-            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
-              Remove all
-            </button>
-          </div>
-          <div id="permissions-view"></div>
-        </section>
-
-        <!-- Experimental -->
         <!-- Ad Blocking -->
-        <section class="section" id="adblock">
-          <h2 class="section-title">Ad Blocking</h2>
+        <section class="section panel" id="adblock" data-nav="privacy">
+          <h3 class="panel-title">Ad Blocking</h3>
           <div class="card">
             <div class="row" id="adblock-enabled-row">
               <div class="row-body">
@@ -1609,34 +1525,93 @@
           </p>
         </section>
 
-        <section class="section" id="experimental">
-          <h2 class="section-title">Experimental</h2>
-          <div class="card">
+        <!-- Site Permissions -->
+        <section class="section panel" id="permissions" data-nav="privacy">
+          <div class="section-header">
+            <h3 class="panel-title">Site Permissions</h3>
+            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
+              Remove all
+            </button>
+          </div>
+          <div id="permissions-view"></div>
+        </section>
+
+        <!-- Networks (#268): Chains + RPC Providers + Name Resolution, which all
+             read and write the same network configuration. -->
+        <section class="section page-head" id="networks" data-nav="networks">
+          <h2 class="section-title">Networks</h2>
+        </section>
+
+        <!-- Chains -->
+        <section class="section panel" id="chains" data-nav="networks" data-title="Chains">
+          <div id="chains-view"></div>
+          <p id="chains-status" class="rpc-status"></p>
+        </section>
+
+        <!-- RPC Providers -->
+        <section class="section panel" id="rpc" data-nav="networks" data-title="RPC Providers">
+          <div id="rpc-view"></div>
+          <p id="rpc-status" class="rpc-status"></p>
+        </section>
+
+        <!-- Ethereum Name Resolution — a focused lens on the Ethereum network -->
+        <section class="section panel" id="ens" data-nav="networks">
+          <h3 class="panel-title">Name Resolution</h3>
+          <p class="row-help" style="margin-bottom: 16px">
+            How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
+            <code>.gwei</code> names. These records live on Ethereum — choose which servers Freedom
+            asks under <a href="#networks">Chains settings</a>.
+          </p>
+          <h3 class="subsection-title">Resolution order</h3>
+          <p class="row-help" style="margin: 0 0 12px 0">
+            Freedom tries enabled methods from top to bottom. Drag the handle to change priority;
+            with the handle focused, the arrow keys work too.
+          </p>
+          <div class="card" id="ens-method-card">
+            <div id="ens-method-list" class="resolver-list"></div>
+            <p id="ens-policy-status" class="rpc-status resolver-status"></p>
             <div class="row">
               <div class="row-body">
-                <p class="row-label">
-                  Enable Identity &amp; Wallet
-                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                <p class="row-label">Prefer verified answers</p>
+                <p class="row-help">
+                  Keep an unverified answer as a fallback while later enabled methods try to produce
+                  a verified result.
                 </p>
               </div>
               <div class="row-control">
                 <label class="toggle">
-                  <input type="checkbox" id="enable-identity-wallet" />
+                  <input type="checkbox" id="ens-prefer-verified" />
                   <span class="slider"></span>
                 </label>
               </div>
             </div>
+          </div>
+
+          <h3 class="subsection-title">Safety</h3>
+          <div class="card">
             <div class="row">
               <div class="row-body">
-                <p class="row-label">Show IPFS load progress in the status bar</p>
+                <p class="row-label">When only an unverified answer is available</p>
+                <p class="row-help">Unverified answers always keep the amber shield indicator.</p>
               </div>
               <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="show-ipfs-progress-status" />
-                  <span class="slider"></span>
-                </label>
+                <select id="unverified-ens-action">
+                  <option value="ask">Ask before opening</option>
+                  <option value="open">Open directly</option>
+                </select>
               </div>
             </div>
+          </div>
+        </section>
+
+        <!-- Nodes (per-profile node configuration) -->
+        <section class="section panel" id="nodes" data-nav="nodes">
+          <h2 class="section-title">Nodes</h2>
+          <div class="card" id="profile-nodes-card">
+            <div class="profile-node-empty">Loading…</div>
+          </div>
+          <p id="profile-nodes-status" class="rpc-status"></p>
+          <div class="card" style="margin-top: 12px">
             <div class="row" id="swarm-publishing-row">
               <div class="row-body">
                 <p class="row-label">Swarm publishing</p>
@@ -1646,11 +1621,117 @@
                 <button type="button" id="swarm-publishing-btn" class="btn" hidden></button>
               </div>
             </div>
+          </div>
+        </section>
+
+        <!-- Startup -->
+        <section class="section panel" id="startup" data-nav="nodes">
+          <h3 class="panel-title">Startup</h3>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Start Swarm node</p>
+                <p class="row-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-ant-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Start IPFS node</p>
+                <p class="row-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-ipfs-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row" id="radicle-launch-row">
+              <div class="row-body">
+                <p class="row-label">Start Radicle node</p>
+                <p class="row-help" id="radicle-launch-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-radicle-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row" id="myotis-launch-row">
+              <div class="row-body">
+                <p class="row-label">
+                  Start Ethereum node
+                  <span class="resolver-badge">Beta</span>
+                </p>
+                <p class="row-help" id="myotis-launch-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-myotis-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row" id="myotis-gnosis-launch-row">
+              <div class="row-body">
+                <p class="row-label">
+                  Start Gnosis node
+                  <span class="resolver-badge">Beta</span>
+                </p>
+                <p class="row-help" id="myotis-gnosis-launch-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-myotis-gnosis-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row" id="start-tor-row" data-tor>
+              <div class="row-body">
+                <p class="row-label">Start Tor when Freedom opens</p>
+                <p class="row-help" id="start-tor-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-tor-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Advanced (was Experimental): the Beta features. -->
+        <section class="section" id="experimental" data-nav="advanced">
+          <h2 class="section-title">Advanced</h2>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">
+                  Enable Identity &amp; Wallet
+                  <span class="resolver-badge">Beta</span>
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="enable-identity-wallet" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
             <div class="row" data-tor>
               <div class="row-body">
                 <p class="row-label">
                   Enable Tor (.onion access)
-                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                  <span class="resolver-badge">Beta</span>
                 </p>
                 <p class="row-help">
                   Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client.
@@ -1664,24 +1745,46 @@
                 </label>
               </div>
             </div>
-            <div class="row sub" id="start-tor-row" data-tor>
-              <div class="row-body">
-                <p class="row-label">Start Tor when Freedom opens</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-tor-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
           </div>
         </section>
 
+        <!-- About Freedom (#268): Updates, whose status row (#87) names the
+             running version — so the entry needs no version line of its own. -->
+        <section class="section page-head" id="about" data-nav="about">
+          <h2 class="section-title">About Freedom</h2>
+        </section>
+
         <!-- Updates -->
-        <section class="section" id="updates">
-          <h2 class="section-title">Updates</h2>
+        <section class="section panel" id="updates" data-nav="about">
+          <h3 class="panel-title">Updates</h3>
           <div class="card">
+            <div class="row" id="update-status-row" data-update-status="unsupported">
+              <div class="row-body">
+                <p class="row-label" id="update-current-version">Freedom</p>
+                <p class="row-help" id="update-status-message" role="status" aria-live="polite">
+                  Loading…
+                </p>
+                <div
+                  class="update-progress"
+                  id="update-progress"
+                  role="progressbar"
+                  aria-label="Update download"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  hidden
+                >
+                  <div class="update-progress-bar" id="update-progress-bar"></div>
+                </div>
+                <p class="row-help" id="update-status-detail" hidden></p>
+                <p class="row-help" id="update-last-checked" hidden></p>
+              </div>
+              <div class="row-control">
+                <button type="button" class="btn" id="update-check-now" disabled>Check now</button>
+                <button type="button" class="btn" id="update-restart" hidden>
+                  Restart to update
+                </button>
+              </div>
+            </div>
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Automatically check for updates</p>
@@ -1699,5 +1802,6 @@
     </div>
 
     <script src="scripts/settings.js"></script>
+    <script src="scripts/settings-updates.js"></script>
   </body>
 </html>

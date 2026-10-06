@@ -433,7 +433,14 @@ test.afterAll(() => {
 // ---------------------------------------------------------------------------
 // The surfaces, all reached through recipes.js.
 
-/** Settings sections worth walking; `ens` is the one #224 lived on. */
+/**
+ * Settings sections worth walking; `ens` is the one #224 lived on. These are
+ * the pre-#268 names, which still resolve — `ens` to Networks with Name
+ * Resolution brought up, `permissions` to Privacy and security with Site
+ * Permissions brought up, `chains` to the top of Networks — so the surface
+ * labels in the baseline did not have to move. Since #268 the `permissions`
+ * view also has Ad Blocking's panel on screen above Site Permissions.
+ */
 const SETTINGS_SECTIONS = ['appearance', 'nodes', 'ens', 'permissions', 'shortcuts', 'chains'];
 
 /** Internal pages, by the URL that reaches them and the file they render in. */

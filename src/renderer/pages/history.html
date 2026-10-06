@@ -339,6 +339,16 @@
         height: 1px;
         background: var(--border);
       }
+      /* Paged list (#503): the next page loads on request. */
+      .show-more {
+        display: flex;
+        justify-content: center;
+        margin-top: 16px;
+      }
+      .btn:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
       .toolbar-right {
         display: flex;
         gap: 12px;

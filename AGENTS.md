@@ -22,6 +22,7 @@ Before executing task-specific work, read the corresponding playbook:
 
 - Architecture-sensitive changes _(adding files to `src/main/` or `src/renderer/`, creating new IPC channels, moving logic between processes)_: `docs/agent-playbooks/architecture-boundaries.md`
 - Renderer/UI changes _(anything under `src/renderer/`: chrome, sidebar, settings, internal pages; and reviewing such changes)_: `docs/agent-playbooks/ui-consistency.md`
+- Settings placement _(adding, moving or renaming a setting, or a feature that needs a user-facing preference; and reviewing such changes)_: `docs/agent-playbooks/settings-placement.md`
 - Commit message conventions _(any git commit)_: `docs/agent-playbooks/commit-messages.md`
 - Merging approved pull requests _(landing one or a batch on `main`)_: `docs/agent-playbooks/merge-process.md`
 - Changelog entries _(any user-visible change: add a `changelog.d/` fragment on the pull request that makes it, never a `CHANGELOG.md` edit; also version bumps and release prep)_: `docs/agent-playbooks/changelog-process.md`

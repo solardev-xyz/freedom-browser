@@ -296,6 +296,48 @@ const openSuggestions = async (window, query, minRows) => {
   return suggestionRows(window);
 };
 
+// #503: history suggestions are looked up per query in main (a bounded query
+// in the history search worker), no longer from a whole-table copy refreshed
+// after each navigation. A page that is only in history — not open, not
+// bookmarked — must still be found by its title and its URL.
+test('a page that is only in history is suggested by title and by URL (#503)', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_B, {
+    body: '<!doctype html><title>Quokka Field Notes</title><h1>B</h1>',
+  });
+  await harness.setContentFixture(PAGE_A, { body: '<!doctype html><title>PageA</title>' });
+
+  await goTo(window, PAGE_B);
+  await expect(window.locator('[data-test="tab"] .tab-title').first()).toHaveText(
+    'Quokka Field Notes',
+    { timeout: 10_000 }
+  );
+  // Leave it, so the only way to suggest it is from history.
+  await goTo(window, PAGE_A);
+  await expect(window.locator('[data-test="tab"] .tab-title').first()).toHaveText('PageA', {
+    timeout: 10_000,
+  });
+
+  // The title is recorded when the page reports it; retype until it lands.
+  await expect
+    .poll(
+      async () => {
+        await typeInAddressBar(window, 'quokka FIELD');
+        await window.waitForTimeout(400);
+        return (await suggestionRows(window)).map((row) => row.url);
+      },
+      { timeout: 15_000 }
+    )
+    .toContain(PAGE_B);
+  await window.keyboard.press('Escape');
+  await expect(window.locator('#autocomplete-dropdown')).toBeHidden();
+  const byUrl = await openSuggestions(window, HASH_B.slice(0, 12), 1);
+  expect(byUrl.map((row) => row.url)).toContain(PAGE_B);
+  await window.keyboard.press('Escape');
+});
+
 test('a page commit does not overwrite text the user is typing (#305)', async ({
   window,
   harness,

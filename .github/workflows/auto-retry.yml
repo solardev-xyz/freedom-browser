@@ -21,6 +21,9 @@ on:
 permissions:
   contents: read
   actions: write
+  # Read-only: auto-retry.sh logs each failed job's check-run annotation (why
+  # it failed) before re-running it, since attempt 2 replaces attempt 1's log.
+  checks: read
 
 jobs:
   rerun-failed-jobs:

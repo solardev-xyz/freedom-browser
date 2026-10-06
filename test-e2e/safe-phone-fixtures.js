@@ -19,6 +19,7 @@ const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
 const { createBridgeServer } = require(path.join(repoRoot, 'scripts', 'serve-bridge.js'));
 const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 'local-mqtt-broker.js'));
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
+const { closeApp } = require('./close-app');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-Phone-2026!';
 const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
@@ -33,7 +34,7 @@ const phoneWallet = new Wallet(PHONE_KEY);
 // Second remote owner that is never reachable in the test.
 const DEAD_PHONE_ADDRESS = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 
-const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-ankr', 'gno-publicnode', 'gno-drpc-public'];
+const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-publicnode', 'gno-drpc-public'];
 
 function safePhoneE2eAvailable() {
   if (spawnSync('anvil', ['--version']).status !== 0) return false;
@@ -179,11 +180,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // window already gone
-    }
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 

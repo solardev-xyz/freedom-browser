@@ -457,9 +457,9 @@ function siteOriginForWebContents(webContents) {
  * Record an allow the user gave from chrome UI rather than from a prompt:
  * the popup blocker's "Always allow pop-ups on this site" (#442). An
  * explicit "always", so a normal window persists it (the remembered tier —
- * Settings > Site Permissions lists it and removes it). A private window
- * keeps it in its own partition tier only and drops it with the window,
- * exactly like a remembered prompt answer given there.
+ * Settings > Privacy and security > Site Permissions lists it and removes
+ * it). A private window keeps it in its own partition tier only and drops
+ * it with the window, exactly like a remembered prompt answer given there.
  *
  * @param {string} origin
  * @param {string} key - storage key (e.g. 'popups')
@@ -1201,13 +1201,14 @@ function getDecisionsForOrigin(origin, privatePartition = null) {
 //
 // WHICH run-scoped tiers it reaches is the revoke's SCOPE (#366):
 //
-//   profile-wide (the default; Settings > Site Permissions, "Remove site",
-//     "Remove all") — the store, the normal-profile session tier and EVERY
-//     live private partition. The private sweep is deliberate: without it a
-//     camera grant made inside a still-open private window keeps granting
-//     after the user hit "Revoke all", because `getEffectiveDecision`
-//     (correctly) prefers the partition-scoped answer and a removal carries
-//     no decision that could override it.
+//   profile-wide (the default; Settings > Privacy and security > Site
+//     Permissions, "Remove site", "Remove all") — the store, the
+//     normal-profile session tier and EVERY live private partition. The
+//     private sweep is deliberate: without it a camera grant made inside a
+//     still-open private window keeps granting after the user hit "Revoke
+//     all", because `getEffectiveDecision` (correctly) prefers the
+//     partition-scoped answer and a removal carries no decision that could
+//     override it.
 //
 //   window-scoped (the address-bar popover's "Remove") — exactly the tiers
 //     the ASKING window reads: the store, plus its own run-scoped tier and

@@ -100,6 +100,17 @@ $('manage-profiles-link')?.addEventListener('click', () => {
   window.open('freedom://profiles', '_blank');
 });
 let activeProfileId = null;
+// Nodes: the last stored per-protocol config, uncommitted row edits
+// (protocol → { mode, values, invalid, error }), and the commit queue.
+let storedProfileNodes = {};
+const nodeDrafts = new Map();
+let nodeSave = Promise.resolve();
+// Bumped by every refresh that goes on to fetch. A refresh's reply is only
+// rendered if no later refresh started meanwhile: the 5s timer, a commit's
+// forced refresh and the profile-updated broadcast can overlap, and an older
+// fetch landing last would repaint the old mode and leave storedProfileNodes
+// (which the commit no-op check compares against) behind the catalog.
+let profileRefreshSeq = 0;
 // The committed profile name — the baseline an in-progress edit reverts
 // to (Esc, an empty/unchanged value, or a failed save).
 let savedProfileName = '';
@@ -116,6 +127,74 @@ const esc = (s) =>
     /[&<>"]/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
   );
+
+// The four network sources, named and explained once (#269). Name
+// Resolution's method list and a chain's read/broadcast order both read
+// this table, so the same source can no longer reach the user under two
+// names with two explanations. `label` and `help` are the visible layer
+// and carry no term a user would have to look up (#270); a help line is
+// kept only where the row's badge does not already say it (`Ready` /
+// `Syncing` / `Off` for the local node, `2 of 3` for the servers that
+// must agree). `advanced` is the technical name and the mechanism, shown
+// collapsed under each row's Advanced disclosure — and still indexed by
+// the settings search, so "Myotis", "Colibri", "RPC quorum" and "Direct
+// RPC" keep finding the row they used to label. `broadcastHelp` replaces
+// `help` on a chain's Transaction broadcast rows: a broadcast hands a
+// signed transaction on and gets nothing back to verify, so the read
+// help ("nothing verifying the answer") does not describe it.
+const NETWORK_SOURCE_COPY = Object.freeze({
+  myotis: Object.freeze({
+    label: 'Local node',
+    help: '',
+    broadcastHelp: '',
+    advanced:
+      'Myotis — a peer-to-peer Ethereum and Gnosis light client running inside Freedom. It checks answers against the chain itself, with no server involved. ENS lookups prefer finalized state; newer ENS record types and .wei/.gwei names (WNS, GNS) use a verified optimistic beacon head.',
+  }),
+  colibri: Object.freeze({
+    label: 'Proof check',
+    help: 'A server answers; Freedom checks the proof itself.',
+    advanced:
+      "Colibri — a remote prover sends a cryptographic proof with each answer, and Freedom verifies that proof locally against the chain's consensus.",
+  }),
+  quorum: Object.freeze({
+    label: 'Several servers must agree',
+    help: '',
+    advanced:
+      'RPC quorum — several independently configured RPC endpoints are asked at one anchored block, and the answer counts only if enough of them return byte-identical results.',
+  }),
+  direct: Object.freeze({
+    label: 'One server, unchecked',
+    help: 'Fastest, and the only option with nothing verifying the answer.',
+    broadcastHelp: 'Hands the signed transaction to the first working server.',
+    advanced:
+      'Direct RPC — the first working configured RPC endpoint answers and nothing verifies the response.',
+  }),
+});
+
+// A source row's help line, omitted rather than left empty when the
+// table gives it none. Broadcast rows read `broadcastHelp` where the
+// table has one.
+const networkSourceHelp = (source, kind = 'read') => {
+  const meta = NETWORK_SOURCE_COPY[source];
+  const help =
+    kind === 'broadcast' && meta && 'broadcastHelp' in meta ? meta.broadcastHelp : meta?.help;
+  return help ? `<p class="row-help">${esc(help)}</p>` : '';
+};
+
+// A source row's collapsed Advanced disclosure (#270): the technical name
+// and mechanism, plus `extra` — the settings only someone who knows what
+// a prover or a quorum is needs to touch. `key` names the disclosure so a
+// controller that repaints its list can put it back the way the user left
+// it.
+const networkSourceAdvanced = (source, { key = source, open = false, extra = '' } = {}) => {
+  const advanced = NETWORK_SOURCE_COPY[source]?.advanced;
+  if (!advanced && !extra) return '';
+  return `<details class="row-advanced" data-advanced="${esc(key)}"${open ? ' open' : ''}>
+      <summary>Advanced</summary>
+      ${advanced ? `<p class="row-help">${esc(advanced)}</p>` : ''}
+      ${extra}
+    </details>`;
+};
 
 const DEFAULT_SEARCH_PROVIDER = 'duckduckgo';
 const SEARCH_TERMS_PLACEHOLDER = '{searchTerms}';
@@ -337,23 +416,65 @@ fields.searchProvider.addEventListener('change', async () => {
   setSearchProviderStatus('Default search engine updated.', 'success');
 });
 
-// Each sidebar entry maps to one section; the active section is driven
-// by location.hash so the URL is the source of truth and the outer
-// chrome can render freedom://settings/<section> in the address bar.
+// Each sidebar entry owns one or more `<section>` panels; the active entry
+// is driven by location.hash so the URL is the source of truth and the
+// outer chrome can render freedom://settings/<entry> in the address bar.
+// Since #268 an entry can own several panels — Privacy and security is
+// Ad Blocking + Site Permissions, Networks is Chains + RPC Providers +
+// Name Resolution, Nodes is Nodes + Startup, About Freedom is the version
+// + Updates — and each panel names its entry in the markup (`data-nav`),
+// so the panel ids every controller below keys on did not have to move.
 const navItems = [...document.querySelectorAll('.nav-item')];
 const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
-const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
+const DEFAULT_SECTION = SECTIONS[0] || 'profile';
+const PANEL_NAV = Object.fromEntries(
+  [...document.querySelectorAll('main.content > section[data-nav]')].map((el) => [
+    el.id,
+    el.dataset.nav,
+  ])
+);
+const PANELS = Object.keys(PANEL_NAV);
 
-const showSection = (section) => {
-  for (const id of SECTIONS) {
+// A route that names one of its entry's panels (`#networks/rpc`) opens the
+// entry and brings that panel to the top. The panels above it can still
+// grow after this runs — the chain list and RPC Providers paint from IPC a
+// beat later — so the panel is re-aligned a few times over the next second,
+// until the user scrolls or presses a key, which hands the scroll back.
+let stopPanelScroll = () => {};
+const scrollToPanel = (id) => {
+  stopPanelScroll();
+  const panel = document.getElementById(id);
+  if (!panel) return;
+  const align = () => panel.scrollIntoView({ block: 'start' });
+  align();
+  const timers = [100, 250, 500, 1000].map((ms) => setTimeout(align, ms));
+  const userTookOver = new AbortController();
+  stopPanelScroll = () => {
+    timers.forEach(clearTimeout);
+    userTookOver.abort();
+    stopPanelScroll = () => {};
+  };
+  for (const type of ['wheel', 'touchstart', 'keydown', 'mousedown']) {
+    window.addEventListener(type, () => stopPanelScroll(), {
+      passive: true,
+      signal: userTookOver.signal,
+    });
+  }
+};
+
+const showSection = (route) => {
+  const [section, sub] = String(route).split('/');
+  for (const id of PANELS) {
     const el = document.getElementById(id);
-    if (el) el.classList.toggle('hidden', id !== section);
+    if (el) el.classList.toggle('hidden', PANEL_NAV[id] !== section);
   }
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
   setProfileRefreshActive(section === 'profile' || section === 'nodes');
   // Always scroll the content area to the top when switching — avoids a
   // stale scroll offset from a taller prior section.
+  stopPanelScroll();
   window.scrollTo({ top: 0 });
+  if (sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
 };
 
 navItems.forEach((item) => {
@@ -368,23 +489,53 @@ navItems.forEach((item) => {
 });
 
 /* settings-hash routing: start */
-// The section is the part before any `/` sub-route, so a deep link
-// like #chains/1 (a chain detail) still resolves to `chains`.
-const resolveSection = (hash) => {
-  const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
-  return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+// Every hash the page answered to before #268 regrouped the nav, mapped to
+// the entry that holds it now and the panel to bring up. Bookmarks, history
+// and older builds' links carry these, and so did the app itself
+// (`freedom://settings/rpc` from the wallet and the onchain-app
+// interstitial), so each still lands where it used to point and is then
+// rewritten to its new name. A panel that heads its entry needs no `/panel`.
+const LEGACY_ROUTES = {
+  chains: 'networks',
+  rpc: 'networks/rpc',
+  ens: 'networks/ens',
+  adblock: 'privacy',
+  permissions: 'privacy/permissions',
+  startup: 'nodes/startup',
+  experimental: 'advanced',
+  updates: 'about/updates',
 };
 
-// Normalize the URL onto the section that is actually on screen, so
-// freedom://settings becomes freedom://settings/appearance and a hash
-// naming no section at all — a stale bookmark, a typo, a link from an
-// older build — stops promising one. history.replaceState keeps the
-// rewrite out of the back/forward stack.
-const canonicalizeHash = (section) => {
-  const rawHash = location.hash.replace(/^#/, '').toLowerCase();
-  // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
-  if (rawHash === section || rawHash.startsWith(section + '/')) return;
-  history.replaceState(null, '', `#${section}`);
+// The canonical route for a hash: `<entry>`, or `<entry>/<panel>` for a
+// panel of that entry. Under Networks any other sub-route is a chain detail
+// (`#networks/1`) — whether that chain exists is the Chains controller's
+// call, since only it has the registry. Anything else is dropped back to the
+// entry, and a hash naming no entry at all to the first one.
+const resolveRoute = (hash) => {
+  const raw = (hash || '').replace(/^#/, '').toLowerCase();
+  const [head, ...rest] = raw.split('/');
+  const sub = rest.join('/');
+  if (Object.prototype.hasOwnProperty.call(LEGACY_ROUTES, head)) {
+    // A chain detail (#chains/1) keeps its chain under Networks.
+    return head === 'chains' && sub ? `networks/${sub}` : LEGACY_ROUTES[head];
+  }
+  if (!SECTIONS.includes(head)) return DEFAULT_SECTION;
+  if (!sub) return head;
+  if (PANEL_NAV[sub] === head || head === 'networks') return `${head}/${sub}`;
+  return head;
+};
+
+// The nav entry a hash opens.
+const resolveSection = (hash) => resolveRoute(hash).split('/')[0];
+
+// Normalize the URL onto the route that is actually on screen, so
+// freedom://settings becomes freedom://settings/profile, an old name like
+// freedom://settings/rpc becomes freedom://settings/networks/rpc, and a hash
+// naming no section at all — a stale bookmark, a typo — stops promising one.
+// history.replaceState keeps the rewrite out of the back/forward stack.
+const canonicalizeHash = (route) => {
+  if (location.hash.replace(/^#/, '').toLowerCase() === route) return;
+  history.replaceState(null, '', `#${route}`);
 };
 
 // One path for every arrival at a hash — first load, a nav click, a
@@ -392,9 +543,9 @@ const canonicalizeHash = (section) => {
 // Settings tab (#280) — so no navigation can leave a hash the page
 // resolved somewhere else standing in the address bar.
 const applyHashSection = () => {
-  const section = resolveSection(location.hash);
-  canonicalizeHash(section);
-  showSection(section);
+  const route = resolveRoute(location.hash);
+  canonicalizeHash(route);
+  showSection(route);
 };
 /* settings-hash routing: end */
 
@@ -403,12 +554,12 @@ applyHashSection();
 
 // ── Search settings (#281) ──────────────────────────────────────────
 // Chrome has kept a persistent "Search settings" field in its header
-// since 2016, and on a 14-section page that is how most people
+// since 2016, and on a page this size that is how most people
 // navigate. Freedom's page is the harder case, not the easier one:
 // several settings are not under the heading their subject suggests
-// (Tor's startup toggle is under Experimental, a chain's API keys under
-// RPC Providers), so "I know the word, I don't know the section" is the
-// normal state. Until #281 the page's only search box was the
+// (a chain's API keys are under RPC Providers, Ethereum name lookups
+// under Networks), so "I know the word, I don't know the section" is
+// the normal state. Until #281 the page's only search box was the
 // Shortcuts one, which searches that list and nothing else.
 //
 // The two helpers below are pure — an element and a query in, ranked
@@ -429,8 +580,10 @@ const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').
 const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
 
 // Every element under `el` carrying one of `names` (a class, or a list
-// of them), not descending into a match: rows never nest, and a
-// `.row-help` belongs to the row it is under.
+// of them), not descending into a match. Stopping at a match is what
+// makes a nested row a barrier: `settingsSearchOwn` passes the row
+// classes in alongside the label/help ones, so a `.row-help` belongs to
+// the nearest row it is under, never to a row further out.
 const settingsSearchCollect = (el, names, out = []) => {
   const wanted = Array.isArray(names) ? names : [names];
   for (const child of Array.from(el?.children || [])) {
@@ -445,16 +598,21 @@ const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] |
 
 // What counts as one setting: a card row, the drag-to-reorder rows of
 // Name Resolution's method list and a chain's read/broadcast order, and
-// the `.resolver-config` panel a method opens under itself (Colibri's
-// prover endpoint, the quorum agreement threshold) — all of which carry
+// the `.resolver-config` panel inside a method row's Advanced disclosure
+// (the proof server URL, the agreement threshold) — all of which carry
 // the same `.row-label` / `.row-help` pair without the `.row` class.
-// Those are where "Colibri", "RPC quorum", "Myotis" and the two
-// resolver settings are named, so leaving them out would make the whole
-// resolution policy unsearchable.
+// Those are where the four sources and the two resolver settings are
+// named (and, through the indexed Advanced text, where "Colibri", "RPC
+// quorum" and "Myotis" still are), so leaving them out would make the
+// whole resolution policy unsearchable.
 // The chain master list is the fourth: its `.net-row` buttons are the
 // only place a chain — a custom one above all, which exists nowhere
 // else on the page — is named, so leaving them out makes a chain
 // unfindable by the name the user gave it.
+// Since #270 a method's `.resolver-config` panel sits inside the method
+// row's own Advanced disclosure — the one place on the page where a row
+// nests in another — so the walk below goes on into a row for the rows
+// inside it, and a row's own label and help stop at a nested row.
 const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-row'];
 
 // What names a row, and what describes it under that name. A `.net-row`
@@ -464,6 +622,14 @@ const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-
 const SETTINGS_SEARCH_LABELS = ['row-label', 'net-row-name'];
 const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
 
+// The elements carrying one of `names` that belong to `row` itself: a
+// row nested inside it is a barrier, so the proof server's label and
+// help answer for the proof server rather than for the method around it.
+const settingsSearchOwn = (row, names) =>
+  settingsSearchCollect(row, [...names, ...SETTINGS_SEARCH_ROWS]).filter((el) =>
+    names.some((name) => el.classList?.contains(name))
+  );
+
 // A row this build has switched off is not a setting the user has, and
 // offering it would jump to nothing: the `[data-tor]` rows on a build
 // that bundles no Arti binary and the `[data-linux-only]` row off Linux
@@ -472,25 +638,47 @@ const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
 // attribute (`launchRow.hidden = !supported`). Both shapes read here.
 const settingsSearchHidden = (row) => Boolean(row?.hidden) || row?.style?.display === 'none';
 
+// Every row under `el` in document order, a row nested in another
+// included right after it. A row switched off takes the rows inside it
+// with it.
+const settingsSearchAllRows = (el, out = []) => {
+  for (const child of Array.from(el?.children || [])) {
+    if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
+    const isRow = SETTINGS_SEARCH_ROWS.some((name) => child.classList?.contains(name));
+    if (isRow) {
+      if (settingsSearchHidden(child)) continue;
+      out.push(child);
+    }
+    settingsSearchAllRows(child, out);
+  }
+  return out;
+};
+
 // The rows a section contributes to the index, in document order, each
 // with the label it is found by. Shared with the page's `locateRow` so
 // the two walk the same rows: a result is "the nth row in this section
 // labelled X", which is the only thing that tells two same-labelled
-// rows apart (a chain lists "Direct RPC" in both its read order and its
-// broadcast order) once the view they came from has repainted.
+// rows apart (a chain lists "One server, unchecked" in both its read
+// order and its broadcast order) once the view they came from has
+// repainted.
 const settingsSearchRows = (section) =>
-  settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)
-    .filter((row) => !settingsSearchHidden(row))
+  settingsSearchAllRows(section)
     .map((row) => ({
       row,
-      label: settingsSearchText(settingsSearchFirst(row, SETTINGS_SEARCH_LABELS)),
+      label: settingsSearchText(settingsSearchOwn(row, SETTINGS_SEARCH_LABELS)[0]),
     }))
     .filter((entry) => entry.label);
 
 // One entry per section plus one per labelled row, in document order.
 // `sectionLabels` maps a section id to its nav label, the fallback for
-// the sections whose `<h2>` comes from a view template that has not
+// the sections whose heading comes from a view template that has not
 // rendered yet (Chains, RPC Providers, Site Permissions).
+//
+// A section is one panel of a nav entry (#268), named by its own heading:
+// the entry's `h2.section-title`, or the `h3.panel-title` of a panel that
+// shares its entry with others. `groups` maps a panel to the nav entry it
+// sits under, so a row in one of those reads "Privacy and security ›
+// Ad Blocking" — the entry to click as well as the heading to look for.
 //
 // The heading is read from the section's *live* DOM, which is only the
 // right answer if a hidden section's markup still describes where its
@@ -498,15 +686,17 @@ const settingsSearchRows = (section) =>
 // rendered per sub-route has to render itself back when the sub-route
 // is left, or its heading and its rows both go on answering for the
 // section after the user has gone (see Chains' `hashchange` below).
-const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {}) => {
+const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, skip = [] } = {}) => {
   const index = [];
   for (const section of Array.from(content?.children || [])) {
     if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
     if (!section.id || skip.includes(section.id)) continue;
-    const sectionLabel =
-      settingsSearchText(settingsSearchFirst(section, 'section-title')) ||
+    const title =
+      settingsSearchText(settingsSearchFirst(section, ['section-title', 'panel-title'])) ||
       sectionLabels[section.id] ||
       section.id;
+    const group = groups[section.id];
+    const sectionLabel = group && group !== title ? `${group} › ${title}` : title;
     // A section's own intro paragraph is a direct child, outside every
     // card, so it describes the section rather than any one row.
     const intro = Array.from(section.children)
@@ -516,7 +706,7 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {
     index.push({
       sectionId: section.id,
       section: sectionLabel,
-      label: sectionLabel,
+      label: title,
       help: intro,
       element: section,
     });
@@ -529,7 +719,7 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {
         section: sectionLabel,
         label,
         labelIndex,
-        help: settingsSearchCollect(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
+        help: settingsSearchOwn(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
         element: row,
       });
     }
@@ -601,6 +791,13 @@ const settingsSearchResets = [];
   const NAV_LABELS = Object.fromEntries(
     navItems.map((item) => [item.dataset.target, settingsSearchText(item)])
   );
+  // Each panel's entry label, the group a row is listed under…
+  const PANEL_GROUPS = Object.fromEntries(PANELS.map((id) => [id, NAV_LABELS[PANEL_NAV[id]]]));
+  // …and the name for a panel whose view has not painted its heading yet:
+  // its own `data-title` (Chains, RPC Providers), else its entry's label.
+  const PANEL_LABELS = Object.fromEntries(
+    PANELS.map((id) => [id, document.getElementById(id)?.dataset.title || PANEL_GROUPS[id]])
+  );
 
   let results = [];
   let showing = false;
@@ -648,7 +845,11 @@ const settingsSearchResets = [];
     for (const reset of settingsSearchResets) reset();
     const query = input.value.trim();
     results = matchSettingsSearch(
-      buildSettingsSearchIndex(content, { sectionLabels: NAV_LABELS, skip: [panel.id] }),
+      buildSettingsSearchIndex(content, {
+        sectionLabels: PANEL_LABELS,
+        groups: PANEL_GROUPS,
+        skip: [panel.id],
+      }),
       query
     );
     list.replaceChildren(...results.map(resultRow));
@@ -664,7 +865,8 @@ const settingsSearchResets = [];
     revealToken += 1;
     clearHighlight();
     render();
-    for (const id of SECTIONS) document.getElementById(id)?.classList.add('hidden');
+    stopPanelScroll();
+    for (const id of PANELS) document.getElementById(id)?.classList.add('hidden');
     panel.classList.remove('hidden');
     showing = true;
     window.scrollTo({ top: 0 });
@@ -674,15 +876,15 @@ const settingsSearchResets = [];
     results = [];
     list.replaceChildren();
     panel.classList.add('hidden');
-    if (showing && restoreSection) showSection(resolveSection(location.hash));
+    if (showing && restoreSection) showSection(resolveRoute(location.hash));
     showing = false;
   };
 
   // Re-found rather than kept as a node: Chains, RPC Providers and Site
   // Permissions rebuild their view from IPC state on `hashchange`, so
   // the node the result was built from can be gone. A label alone does
-  // not identify it — a chain names "Direct RPC" once in its read order
-  // and again in its broadcast order — so the result's position among
+  // not identify it — a chain names "One server, unchecked" once in its
+  // read order and again in its broadcast order — so the result's position among
   // its section's same-labelled rows picks which one it was, walking
   // the same rows the index was built from. If the repaint left fewer
   // of them than there were, the first is still better than nothing.
@@ -699,6 +901,18 @@ const settingsSearchResets = [];
   // aligned to its top — see `settingsSearchScrollBlock` above.
   const applyHighlight = (row) => {
     clearHighlight();
+    // A `#entry/panel` route the reveal went through would otherwise go
+    // on re-aligning that panel over the row it just scrolled to.
+    stopPanelScroll();
+    // A row inside a collapsed Advanced disclosure (#270) has no box until
+    // the disclosure is open, so open every one around it first.
+    for (
+      let d = row.parentElement?.closest('details');
+      d;
+      d = d.parentElement?.closest('details')
+    ) {
+      d.open = true;
+    }
     row.scrollIntoView({ block: settingsSearchScrollBlock(row, window.innerHeight) });
     row.classList.add('settings-search-hit');
     highlighted = row;
@@ -722,21 +936,30 @@ const settingsSearchResets = [];
   };
 
   // Jumping to a result leaves the result list behind and opens the
-  // section the control is in, the way clicking its nav item would.
+  // nav entry the control is in, the way clicking that nav item would.
+  // The open route is kept when it already shows the result's panel — a
+  // chain's own page is where that chain's rows are. A panel of the open
+  // entry that is not on screen (Networks' RPC Providers behind an open
+  // chain or the add-a-chain form) is brought back by moving the hash,
+  // which is what sends the Chains view back to its list.
   const reveal = (result) => {
-    if (!result?.sectionId) return;
+    const panelId = result?.sectionId;
+    const entry = PANEL_NAV[panelId];
+    if (!entry) return;
     closeResults({ restoreSection: false });
     revealToken += 1;
-    const current = location.hash.replace(/^#/, '').toLowerCase();
-    if (current === result.sectionId || current.startsWith(result.sectionId + '/')) {
-      showSection(result.sectionId);
-      revealResult(result, revealToken);
-      return;
+    const route = resolveRoute(location.hash);
+    if (route.split('/')[0] === entry) {
+      showSection(route);
+      if (document.getElementById(panelId)?.getClientRects().length) {
+        revealResult(result, revealToken);
+        return;
+      }
     }
     // The hash change repaints and scrolls the content to the top, so
     // the scroll-and-flash waits for it (see the handler below).
     pending = { result, token: revealToken };
-    location.hash = result.sectionId;
+    location.hash = route === entry ? `${entry}/${panelId}` : entry;
   };
 
   const clearSearch = () => {
@@ -758,7 +981,7 @@ const settingsSearchResets = [];
     // have moved on from, so the field, the results and the highlight
     // all go. Closing the results is this handler's job and not
     // `showSection`'s — the panel is deliberately not one of
-    // `SECTIONS`, so nothing else on the page can hide it, and left up
+    // `PANELS`, so nothing else on the page can hide it, and left up
     // it would stack a stale result list above the section the nav's
     // own handler just opened.
     clearSearch();
@@ -836,6 +1059,21 @@ const setFieldEnabled = (checkbox, container, ...inputs) => {
   container?.classList.toggle('disabled', !enabled);
   for (const input of inputs) {
     if (input) input.disabled = !enabled;
+  }
+};
+
+// "Start Tor when Freedom opens" sits with the other startup rows under
+// Nodes (#275), away from the Advanced toggle it depends on, so while that
+// toggle is off the row says where to turn it on — the way the Radicle
+// startup row names Settings → Nodes when Radicle is disabled there.
+const startTorHelp = $('start-tor-help');
+const defaultStartTorHelp = startTorHelp?.textContent || '';
+const applyStartTorRowState = () => {
+  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  if (startTorHelp) {
+    startTorHelp.textContent = fields.enableTor?.checked
+      ? defaultStartTorHelp
+      : 'Turn on Enable Tor (.onion access) under Advanced first.';
   }
 };
 
@@ -958,10 +1196,12 @@ const renderModeOptions = (protocol, mode) =>
     )
     .join('');
 
-const renderExternalEditor = (protocol, config, mode) => {
+const renderExternalEditor = (protocol, config, mode, draft) => {
   const definition = SERVICE_DEFINITIONS[protocol];
-  const fields = externalFields(definition, config).map(
-    (field) => `
+  const fields = externalFields(definition, config).map((field) => {
+    const value = draft?.values?.[field.key] ?? field.value ?? '';
+    const invalid = draft?.invalid?.includes(field.key);
+    return `
       <div class="profile-node-field">
         <label for="profile-${protocol}-${field.key}">${esc(field.label)}</label>
         <input
@@ -969,12 +1209,12 @@ const renderExternalEditor = (protocol, config, mode) => {
           class="rpc-input"
           data-endpoint-field="${field.key}"
           type="text"
-          value="${esc(field.value || '')}"
+          value="${esc(value)}"
           placeholder="${esc(field.placeholder || '')}"
-          spellcheck="false"
+          spellcheck="false"${invalid ? ' aria-invalid="true"' : ''}
         />
-      </div>`
-  );
+      </div>`;
+  });
 
   const note = definition?.externalNote
     ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
@@ -1005,11 +1245,17 @@ const setExternalEditorVisible = (row, mode) => {
 
 const renderProfileNodes = (profile, registry, settings) => {
   const nodes = profile?.nodes || {};
+  storedProfileNodes = nodes;
   const rows = visibleProfileServices(settings).map((definition) => {
     const protocol = definition.protocol;
     const config = nodes[protocol] || {};
     const service = registry?.[protocol] || {};
-    const mode = config.mode || 'managed';
+    // An uncommitted edit (an external switch still missing its endpoint,
+    // or one the main process refused) outlives the periodic re-render, so
+    // the row keeps showing what the user picked next to why it was not
+    // saved — the stored config underneath is untouched.
+    const draft = nodeDrafts.get(protocol);
+    const mode = draft?.mode || config.mode || 'managed';
     const lines = endpointLines(definition, config, service);
     const details = lines.length
       ? lines.map((line) => `<div class="profile-node-detail">${esc(line)}</div>`).join('')
@@ -1026,15 +1272,40 @@ const renderProfileNodes = (profile, registry, settings) => {
         <div class="profile-node-status">
           <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
           ${details}
-          ${renderExternalEditor(protocol, config, mode)}
-          <div class="profile-node-actions">
-            <button type="button" class="btn" data-save-node="${protocol}">Save</button>
-          </div>
+          ${renderExternalEditor(protocol, config, mode, draft)}
+          <p class="profile-node-error" data-node-error role="alert"${draft?.error ? '' : ' hidden'}>${esc(draft?.error || '')}</p>
         </div>
       </div>`;
   });
 
+  // Committing one row re-renders the card (the profile-updated broadcast),
+  // usually just as focus moves on to the next control. Put focus — and
+  // anything already typed into a focused field — back where it was.
+  const active = document.activeElement;
+  const focused =
+    active && profileFields.nodesCard.contains(active)
+      ? {
+          protocol: active.closest('.profile-node')?.dataset.protocol,
+          field: active.dataset?.endpointField,
+          mode: active.matches?.('[data-node-mode]'),
+          value: active.value,
+        }
+      : null;
+
   profileFields.nodesCard.innerHTML = rows.join('');
+
+  if (focused?.protocol && (focused.field || focused.mode)) {
+    const row = profileFields.nodesCard.querySelector(
+      `.profile-node[data-protocol="${focused.protocol}"]`
+    );
+    const target = focused.field
+      ? row?.querySelector(`[data-endpoint-field="${focused.field}"]`)
+      : row?.querySelector('[data-node-mode]');
+    if (target) {
+      if (focused.field) target.value = focused.value;
+      target.focus();
+    }
+  }
 };
 
 const refreshProfileSection = async (force = false) => {
@@ -1048,13 +1319,17 @@ const refreshProfileSection = async (force = false) => {
     return;
   }
 
+  const seq = ++profileRefreshSeq;
   try {
     const [profile, registry, settings] = await Promise.all([
       freedomAPI.getActiveProfile?.(),
       freedomAPI.getServiceRegistry().catch(() => null),
       freedomAPI.getSettings?.().catch(() => null),
     ]);
-    activeProfileId = profile?.id || null;
+    if (seq !== profileRefreshSeq) return;
+    const profileId = profile?.id || null;
+    if (profileId !== activeProfileId) nodeDrafts.clear();
+    activeProfileId = profileId;
     const label = profile?.displayName || profile?.id || '';
     if (profileFields.nameInput && profileFields.nameInput !== document.activeElement) {
       profileFields.nameInput.value = label;
@@ -1062,6 +1337,7 @@ const refreshProfileSection = async (force = false) => {
     }
     renderProfileNodes(profile, registry, settings);
   } catch {
+    if (seq !== profileRefreshSeq) return;
     profileFields.nodesCard.innerHTML =
       '<div class="profile-node-empty">Profile data unavailable</div>';
   }
@@ -1132,54 +1408,200 @@ profileFields.nameInput?.addEventListener('keydown', (event) => {
   }
 });
 
+// Nodes commit the way every other Settings control does: the mode
+// <select> on change, the endpoint fields when they are left (focusout,
+// or Enter). There is no Save button. "Use external node" only commits
+// once its endpoint fields are filled; until then the row keeps the
+// selection as a draft, flags the empty fields and says the stored mode
+// is unchanged. The main process validates a patch as a whole and
+// refuses it as a whole, so a refused commit can't half-apply either.
+const nodeRowConfig = (row) => {
+  const protocol = row?.dataset.protocol;
+  const mode = row?.querySelector('[data-node-mode]')?.value;
+  const values = {};
+  for (const input of row?.querySelectorAll('[data-endpoint-field]') || []) {
+    values[input.dataset.endpointField] = input.value.trim();
+  }
+  return { protocol, mode, values };
+};
+
+// Paint a row's draft state onto whatever row is live now: a commit's
+// reply can land after a re-render replaced the row it started from.
+const setNodeDraft = (protocol, draft) => {
+  if (draft) nodeDrafts.set(protocol, draft);
+  else nodeDrafts.delete(protocol);
+  const row = profileFields.nodesCard?.querySelector(`.profile-node[data-protocol="${protocol}"]`);
+  if (!row) return;
+  for (const input of row.querySelectorAll('[data-endpoint-field]')) {
+    if (draft?.invalid?.includes(input.dataset.endpointField)) {
+      input.setAttribute('aria-invalid', 'true');
+    } else {
+      input.removeAttribute('aria-invalid');
+    }
+  }
+  const error = row.querySelector('[data-node-error]');
+  if (error) {
+    error.textContent = draft?.error || '';
+    error.hidden = !draft?.error;
+  }
+};
+
+// Why a row was not saved, ending with what the stored config still is.
+const nodeNotSavedMessage = (protocol, mode, reason) => {
+  const label = SERVICE_LABELS[protocol];
+  const storedMode = storedProfileNodes?.[protocol]?.mode || 'managed';
+  const kept =
+    mode === storedMode
+      ? `the saved ${label} endpoint is unchanged`
+      : `${label} is still set to ${NODE_MODE_LABELS[storedMode] || storedMode}`;
+  return `${reason} Not saved — ${kept}.`;
+};
+
+// Which endpoint fields a refused commit should flag. Only an endpoint
+// error names fields; any other refusal (profile not editable, catalog
+// write failed) says nothing about what was typed, so nothing is flagged.
+const invalidNodeFields = (error) => {
+  const details = error?.details || {};
+  if (typeof details.field === 'string') return [details.field];
+  if (Array.isArray(details.fields)) return details.fields;
+  return [];
+};
+
+const commitNodeRow = (row) => {
+  const { protocol, mode, values } = nodeRowConfig(row);
+  if (!protocol || !mode) return Promise.resolve();
+  const label = SERVICE_LABELS[protocol];
+  const fieldKeys = Object.keys(values);
+
+  if (mode === 'external') {
+    const missing = fieldKeys.filter((key) => !values[key]);
+    if (missing.length) {
+      const names = (SERVICE_DEFINITIONS[protocol]?.externalFields || [])
+        .filter((field) => missing.includes(field.key))
+        .map((field) => field.label);
+      setNodesStatus('', null);
+      setNodeDraft(protocol, {
+        mode,
+        values,
+        invalid: missing,
+        error: nodeNotSavedMessage(
+          protocol,
+          mode,
+          `Enter the ${names.join(', ')} endpoint to use an external ${label} node.`
+        ),
+      });
+      return Promise.resolve();
+    }
+  }
+
+  // Only an external commit carries endpoints. Switching to managed or
+  // disabled leaves the stored endpoint as it is (the catalog merges), so a
+  // half-typed endpoint in a now-hidden field can't make that switch fail.
+  const config = mode === 'external' ? { mode, ...values } : { mode };
+
+  // Serialise commits so two quick edits land in the order they were made
+  // (IPC replies are not guaranteed to come back in dispatch order), and
+  // compare against the stored config only once the previous commit landed.
+  nodeSave = nodeSave
+    .catch(() => {})
+    .then(async () => {
+      const stored = storedProfileNodes?.[protocol] || {};
+      const unchanged =
+        mode === (stored.mode || 'managed') &&
+        (mode !== 'external' || fieldKeys.every((key) => values[key] === (stored[key] || '')));
+      if (unchanged) {
+        // Picking the stored mode again, or leaving a field as it was, is
+        // not an edit: nothing to save, and nothing to restart.
+        setNodeDraft(protocol, null);
+        return;
+      }
+      setNodesStatus(`Saving ${label} node settings…`, 'testing');
+      try {
+        const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
+        // `details.saved`: the catalog write landed and only applying it to
+        // the running node failed — the config is stored, so it is not a
+        // draft and must not be reported as "not saved".
+        const saved = result?.success || result?.error?.details?.saved === true;
+        if (!saved) {
+          const err = new Error(result?.error?.message || 'Profile node settings were not saved');
+          err.invalid = invalidNodeFields(result?.error);
+          throw err;
+        }
+        // Take the stored config from the reply rather than from the forced
+        // refresh below: a newer refresh (the 5s timer, a profile-updated
+        // broadcast) can supersede that one, and it returns without
+        // rendering — the next queued commit's no-op check would then compare
+        // against the config from before this one landed.
+        const storedNodes = result.profile?.nodes;
+        if (
+          storedNodes &&
+          typeof storedNodes === 'object' &&
+          result.profile.id === activeProfileId
+        ) {
+          storedProfileNodes = storedNodes;
+        }
+        setNodeDraft(protocol, null);
+        if (result.success) {
+          setNodesStatus(
+            `${label} saved. Restart the node to apply mode or endpoint changes.`,
+            'success'
+          );
+        } else {
+          setNodesStatus(
+            `${label} saved, but applying it failed: ${String(result.error.message || 'unknown error').replace(/[.\s]+$/, '')}. Restart the node to apply mode or endpoint changes.`,
+            'error'
+          );
+        }
+        await refreshProfileSection(true);
+        await refreshRadicleLaunchStatus();
+      } catch (err) {
+        setNodesStatus('', null);
+        setNodeDraft(protocol, {
+          mode,
+          values,
+          invalid: err?.invalid || [],
+          error: nodeNotSavedMessage(
+            protocol,
+            mode,
+            `${err?.message || 'Profile node settings were not saved'}.`
+          ),
+        });
+      }
+    });
+  return nodeSave;
+};
+
 profileFields.nodesCard?.addEventListener('change', (event) => {
   const modeSelect = event.target?.closest?.('[data-node-mode]');
   if (!modeSelect) return;
-  setExternalEditorVisible(modeSelect.closest('.profile-node'), modeSelect.value);
+  const row = modeSelect.closest('.profile-node');
+  setExternalEditorVisible(row, modeSelect.value);
+  commitNodeRow(row);
 });
 
-profileFields.nodesCard?.addEventListener('click', async (event) => {
-  const saveButton = event.target?.closest?.('[data-save-node]');
-  if (!saveButton) return;
+profileFields.nodesCard?.addEventListener('input', (event) => {
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  // Keep a pending draft's values current so a re-render (profile update,
+  // the 5s refresh once focus leaves the card) doesn't drop what was typed.
+  const row = input.closest('.profile-node');
+  const draft = nodeDrafts.get(row?.dataset.protocol);
+  if (draft) draft.values = nodeRowConfig(row).values;
+});
 
-  const row = saveButton.closest('.profile-node');
-  const protocol = saveButton.dataset.saveNode;
-  const mode = row?.querySelector('[data-node-mode]')?.value;
-  if (!protocol || !mode) return;
+profileFields.nodesCard?.addEventListener('focusout', (event) => {
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  commitNodeRow(input.closest('.profile-node'));
+});
 
-  const config = { mode };
-  for (const input of row.querySelectorAll('[data-endpoint-field]')) {
-    config[input.dataset.endpointField] = input.value.trim();
-  }
-
-  if (mode === 'external') {
-    const missing = [...row.querySelectorAll('[data-endpoint-field]')]
-      .filter((input) => !input.value.trim())
-      .map((input) => input.previousElementSibling?.textContent || 'Endpoint');
-    if (missing.length) {
-      setNodesStatus(
-        `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
-        'error'
-      );
-      return;
-    }
-  }
-
-  saveButton.disabled = true;
-  setNodesStatus(`Saving ${SERVICE_LABELS[protocol]} node settings…`, 'testing');
-  try {
-    const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
-    if (!result?.success) {
-      throw new Error(result?.error?.message || 'Profile node settings were not saved');
-    }
-    setNodesStatus('Saved. Restart the node to apply mode or endpoint changes.', 'success');
-    await refreshProfileSection(true);
-    await refreshRadicleLaunchStatus();
-  } catch (err) {
-    setNodesStatus(err?.message || 'Profile node settings were not saved', 'error');
-  } finally {
-    saveButton.disabled = false;
-  }
+profileFields.nodesCard?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  event.preventDefault();
+  // Blur commits via the focusout handler, like the profile name field.
+  input.blur();
 });
 
 const currentFormState = () => ({
@@ -1227,7 +1649,7 @@ const applyFormState = (settings) => {
   fields.adblockCookies.checked = settings.adblockCookies === true;
   fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
   fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
-  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  applyStartTorRowState();
   // Re-evaluated whenever the form is repainted from a payload — first
   // load, and a broadcast that differs from what's on screen. Enabling
   // the integration is what keeps the rows on a build that bundles no
@@ -1405,7 +1827,7 @@ const renderSwarmPublishingRow = (settings, setupState) => {
   // deep-link into a sidebar the user can't open.
   if (settings?.enableIdentityWallet !== true) {
     swarmPublishingHelp.textContent =
-      'Enable Identity & Wallet (in Experimental, above) to publish on Swarm.';
+      'Enable Identity & Wallet under Advanced to publish on Swarm.';
     hideAction();
     return;
   }
@@ -1467,7 +1889,7 @@ fields.startMyotisGnosis.addEventListener('change', save);
 fields.askWhereToSave.addEventListener('change', save);
 fields.startRadicle.addEventListener('change', save);
 fields.enableTor.addEventListener('change', () => {
-  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  applyStartTorRowState();
   // Enabling the integration only reveals the controls — it does not
   // start Tor. Starting is via the node-status menu toggle or
   // "Start Tor when Freedom opens". Disabling stops it (settings-ui.js).
@@ -1896,16 +2318,18 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 })();
 
 // ── Chains settings page ────────────────────────────────────────
-// Master-detail controller for the #chains section: a list of
+// Master-detail controller for the #chains panel of Networks: a list of
 // chains, each drilling into a per-chain detail view of that chain's
-// endpoint sources. Hash-routed — #chains is the list,
-// #chains/<chainId> a detail. Talks to the registry via
+// endpoint sources. Hash-routed — #networks is the list (with RPC
+// Providers and Name Resolution under it), #networks/<chainId> a detail
+// (#chains and #chains/<chainId> before #268, still accepted). Talks to the registry via
 // freedomAPI's networks:* bridge; every mutation re-fetches and
 // re-renders so the view mirrors the registry.
 (() => {
   const section = $('chains');
   const view = $('chains-view');
   const statusEl = $('chains-status');
+  const content = document.querySelector('main.content');
   if (!section || !view) return;
 
   const esc = (s) =>
@@ -1935,9 +2359,13 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const chainName = (cid) => config.networks[cid]?.name || 'Chain ' + cid;
 
   // The chain whose detail is open, parsed from the hash; null = list.
+  // `#networks/rpc` and `#networks/ens` name Networks' other panels, not a
+  // chain.
   const openChainId = () => {
-    const parts = location.hash.replace(/^#/, '').toLowerCase().split('/');
-    return parts[0] === 'chains' && parts[1] ? parts[1] : null;
+    const parts = resolveRoute(location.hash).split('/');
+    return parts[0] === 'networks' && parts[1] && PANEL_NAV[parts[1]] !== 'networks'
+      ? parts[1]
+      : null;
   };
 
   // A master-list button row: name + sub-line, trailing chevron.
@@ -1973,10 +2401,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       )
       .join('');
     view.innerHTML = `
-      <h2 class="section-title">Chains</h2>
+      <h3 class="panel-title">Chains</h3>
       <p class="row-help" style="margin-bottom: 16px">
         The chains Freedom resolves names and balances on. Select a
-        chain to manage its RPC and prover endpoints.
+        chain to choose how Freedom reads it and which servers it asks.
       </p>
       <div class="card">${rows}</div>
       ${cardButton('Add chain', 'add-chain')}`;
@@ -2095,7 +2523,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
     view.innerHTML = `
       <div class="settings-search-skip">
-        <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
+        <button type="button" class="back-link" data-action="cancel-add">‹ Networks</button>
         <h2 class="section-title">Add a chain</h2>
         <p class="row-help" style="margin-bottom: 16px">
           Search the public chain catalogue, or enter a chain manually.
@@ -2161,24 +2589,12 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       </div>`;
   };
 
-  const accessMeta = {
-    myotis: {
-      label: 'Myotis P2P light client',
-      help: 'Verified locally against the chain; no RPC endpoint involved.',
-    },
-    colibri: {
-      label: 'Colibri cryptographic verification',
-      help: 'Verifies prover responses against the chain consensus.',
-    },
-    quorum: {
-      label: 'RPC quorum',
-      help: 'Requires matching responses from independently configured RPC endpoints.',
-    },
-    direct: {
-      label: 'Direct RPC',
-      help: 'Compatibility fallback using the first working configured endpoint.',
-    },
-  };
+  // Which source rows' Advanced disclosures are open, as
+  // `chainId:kind:source`. The detail repaints from scratch on every
+  // config change, and a disclosure the user opened should not snap shut
+  // under them; the chain id keeps one opened on one chain's detail from
+  // rendering open on every other chain's.
+  const openAccessAdvanced = new Set();
 
   const sourceStatus = (source, cid) => {
     if (source === 'myotis') {
@@ -2204,7 +2620,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
         (entry) => entry.role === 'prover' && entry.coverage?.[cid] && !entry.removed
       )
         ? 'Available'
-        : 'No prover';
+        : 'No proof server';
     }
     const count = config.sources.filter(
       (entry) =>
@@ -2223,22 +2639,34 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const accessRows = (cid, kind, order) =>
     order
       .map((source, index) => {
-        const meta = accessMeta[source];
+        const meta = NETWORK_SOURCE_COPY[source];
         if (!meta) return '';
+        const key = `${cid}:${kind}:${source}`;
         return `<div class="resolver-method" draggable="true" tabindex="0"
               data-access-kind="${kind}" data-access-source="${source}">
             <span class="resolver-drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>
             <span class="resolver-rank">${index + 1}</span>
             <div class="row-body">
               <div class="resolver-title-line">
-                <p class="row-label">${meta.label}</p>
+                <p class="row-label">${esc(meta.label)}</p>
                 <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
               </div>
-              <p class="row-help">${meta.help}</p>
+              ${networkSourceHelp(source, kind)}
+              ${networkSourceAdvanced(source, { key, open: openAccessAdvanced.has(key) })}
             </div>
           </div>`;
       })
       .join('');
+
+  // The broadcast section's intro, said from the chain's actual order: a
+  // custom chain has no local node, and a user can drag the server first.
+  const BROADCAST_SOURCE_PHRASE = { myotis: 'the local node', direct: 'a server' };
+  const broadcastIntro = (order) => {
+    const named = order.map((source) => BROADCAST_SOURCE_PHRASE[source]).filter(Boolean);
+    if (!named.length) return 'Signed transactions go out through the sources below.';
+    if (named.length === 1) return `Signed transactions go out through ${named[0]}.`;
+    return `Signed transactions go out through ${named[0]} first, with ${named[1]} as the fallback.`;
+  };
 
   // --- detail: one chain's access policy + endpoints ------------
   // Verified/local sources are ordered first; RPC inventory remains
@@ -2267,7 +2695,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     const proverConfig = supportsVerifiedSources
       ? `<div class="card" style="margin-top: 12px">
           <div class="rpc-block" style="border-top: none">
-            <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
+            <p class="row-label">Proof server</p>
+            <p class="row-help" style="margin-bottom: 8px">Where ${esc(NETWORK_SOURCE_COPY.colibri.label)} gets its proofs.</p>
             <div class="rpc-row">
               <input class="rpc-input" data-chain-prover="${esc(cid)}"
                 data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
@@ -2288,7 +2717,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       }</div>`;
 
     view.innerHTML = `
-      <button type="button" class="back-link" data-action="back">‹ Chains</button>
+      <button type="button" class="back-link" data-action="back">‹ Networks</button>
       <h2 class="section-title">${esc(chainName(cid))}</h2>
       <p class="row-help" style="margin-bottom: 16px">chain ${esc(cid)}${isCustom ? ' · custom chain' : ''}</p>
 
@@ -2304,7 +2733,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       ${proverConfig}
 
       <h3 class="subsection-title">Transaction broadcast</h3>
-      <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
+      <p class="row-help" style="margin-bottom: 12px">${esc(broadcastIntro(broadcastOrder))}</p>
       <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
       ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
@@ -2349,24 +2778,33 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // registry. Only such a render may conclude that a chain named in the
   // hash is gone: a hash change re-renders off the cached config first,
   // and that copy can simply predate a chain added in another window.
+  // A chain's own page and the add-a-chain form are the whole of
+  // Networks while they are open: the page heading, RPC Providers and
+  // Name Resolution step aside (`.networks-chain-focus` in the page CSS),
+  // so the chain list's siblings do not stack under a single chain.
+  const setChainFocus = (focused) => content?.classList.toggle('networks-chain-focus', focused);
+
   const render = ({ fresh = false } = {}) => {
     clearChainGoneStatus(); // the branch below re-raises it if it still holds
     if (addState) {
+      setChainFocus(true);
       renderAdd();
       return;
     }
     const cid = openChainId();
     if (cid && config.networks[cid]) {
+      setChainFocus(true);
       renderDetail(cid);
       return;
     }
+    setChainFocus(false);
     if (cid && fresh) {
       // The chain is not configured — removed here or in another
       // window, or a typo. Rendering the list under the detail hash
       // leaves the URL promising a chain nothing on screen names, so
       // put the URL back on the list and say what happened.
       // replaceState keeps the dead link out of the back/forward stack.
-      history.replaceState(null, '', '#chains');
+      history.replaceState(null, '', '#networks');
       setStatus(CHAIN_GONE_STATUS, 'error');
     }
     renderList();
@@ -2471,7 +2909,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       setStatus('', '');
       addState = null;
       await reload();
-      location.hash = 'chains/' + def.chainId;
+      location.hash = 'networks/' + def.chainId;
     } catch (err) {
       const message = err?.message || 'Could not add chain';
       if (onError) onError(message);
@@ -2547,9 +2985,24 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     section.querySelectorAll('.dragging').forEach((row) => row.classList.remove('dragging'));
   });
 
+  // `toggle` does not bubble, so it is caught on the way down.
+  section.addEventListener(
+    'toggle',
+    (e) => {
+      const key = e.target?.dataset?.advanced;
+      if (!key || !e.target.closest('[data-access-source]')) return;
+      if (e.target.open) openAccessAdvanced.add(key);
+      else openAccessAdvanced.delete(key);
+    },
+    true
+  );
+
   section.addEventListener('keydown', async (e) => {
     const row = e.target.closest('[data-access-source]');
     if (!row || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    // The arrows reorder the focused row, not a row whose Advanced
+    // disclosure happens to have focus inside it.
+    if (e.target !== row) return;
     e.preventDefault();
     await reorderAccess(
       row.dataset.accessKind,
@@ -2566,9 +3019,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     const id = btn.dataset.id;
 
     if (action === 'open-chain') {
-      location.hash = 'chains/' + btn.dataset.chain;
+      location.hash = 'networks/' + btn.dataset.chain;
     } else if (action === 'back') {
-      location.hash = 'chains';
+      location.hash = 'networks';
     } else if (action === 'add-endpoint') {
       endpointForm = { mode: 'add', id: null, url: '' };
       render();
@@ -2638,7 +3091,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     } else if (action === 'delete-source') {
       await mutate(() => freedomAPI.removeEndpointSource(id));
     } else if (action === 'open-rpc-page') {
-      location.hash = 'rpc';
+      location.hash = 'networks/rpc';
     } else if (action === 'remove-chain') {
       const cid = openChainId();
       if (!cid) return;
@@ -2653,11 +3106,21 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           return;
         }
         setStatus('', '');
-        location.hash = 'chains';
+        location.hash = 'networks';
       } catch (err) {
         setStatus(err?.message || 'Could not remove chain', 'error');
       }
     } else if (action === 'add-chain') {
+      // The form is part of the Chains list view, which `#networks` names.
+      // Arriving via `#networks/rpc` or `#networks/ens` (the wallet's RPC
+      // button, the onchain-app interstitial) leaves that hash in place,
+      // and the form's focus mode hides the very panel it names — so put
+      // the URL back on the list. replaceState fires no `hashchange`, which
+      // would clear `addState`, and keeps the swap out of back/forward.
+      if (resolveRoute(location.hash) !== 'networks') {
+        stopPanelScroll();
+        history.replaceState(null, '', '#networks');
+      }
       addState = { mode: 'search', results: null, picked: null };
       render();
       runChainSearch('');
@@ -2791,7 +3254,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // leaving is not a visit. The transient add/edit form is cleared on
   // any navigation either way.
   window.addEventListener('hashchange', () => {
-    const entering = resolveSection(location.hash) === 'chains';
+    const entering = resolveSection(location.hash) === 'networks';
     clearTimeout(searchTimer);
     endpointForm = null;
     addState = null;
@@ -2814,34 +3277,14 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const policyStatus = $('ens-policy-status');
   if (!list || !preferVerified) return;
 
+  // Names and explanations come from NETWORK_SOURCE_COPY, shared with a
+  // chain's detail page (#269); only the links are this list's own.
   const METHODS = [
-    {
-      id: 'myotis',
-      label: 'Myotis light client',
-      help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
-      link: '#nodes',
-      linkLabel: 'Node settings',
-    },
-    {
-      id: 'colibri',
-      label: 'Colibri',
-      help: 'A remote prover produces the witness; Freedom verifies the cryptographic proof locally.',
-    },
-    {
-      id: 'quorum',
-      label: 'RPC quorum',
-      help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
-      link: '#chains/1',
-      linkLabel: 'Manage endpoints',
-    },
-    {
-      id: 'direct',
-      label: 'Direct RPC',
-      help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
-      link: '#chains/1',
-      linkLabel: 'Configure',
-    },
-  ];
+    { id: 'myotis', link: '#nodes', linkLabel: 'Node settings' },
+    { id: 'colibri' },
+    { id: 'quorum', link: '#networks/1', linkLabel: 'Manage servers' },
+    { id: 'direct', link: '#networks/1', linkLabel: 'Configure' },
+  ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
 
   let config = { networks: {}, sources: [] };
@@ -2856,6 +3299,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   let draggedMethod = null;
   let dropPlacement = null;
   let policyLoaded = false;
+  // Which methods' Advanced disclosures are open: every change here
+  // repaints the list, and the proof server and agreement threshold
+  // live inside the disclosure.
+  const openAdvanced = new Set();
 
   preferVerified.disabled = true;
 
@@ -2922,7 +3369,11 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
 
     const hasProver = activeSources('prover').length > 0;
-    setBadge('colibri', hasProver ? 'Verified' : 'No prover', hasProver ? 'verified' : 'warning');
+    setBadge(
+      'colibri',
+      hasProver ? 'Verified' : 'No proof server',
+      hasProver ? 'verified' : 'warning'
+    );
     setBadge(
       'quorum',
       `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -2930,7 +3381,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     );
     setBadge(
       'direct',
-      customRpc ? 'User endpoint' : rpcSources.length ? 'Public endpoint' : 'No endpoint',
+      customRpc ? 'Your server' : rpcSources.length ? 'Public server' : 'No server',
       'warning'
     );
   };
@@ -2961,8 +3412,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           configRow = `<div class="resolver-config" data-method-config="colibri">
                 <div class="resolver-config-line">
                   <div class="row-body">
-                    <p class="row-label">Prover endpoint</p>
-                    <p class="row-help">Leave empty to use the corpus.core default.</p>
+                    <p class="row-label">Proof server</p>
+                    <p class="row-help">Leave empty to use the default.</p>
                   </div>
                   <input type="text" id="ens-prover-url" class="rpc-input"
                     placeholder="https://mainnet1.colibri-proof.tech" spellcheck="false" />
@@ -2973,15 +3424,15 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <div class="resolver-config-line">
                   <div class="row-body">
                     <p class="row-label">Agreement threshold</p>
-                    <p class="row-help">Require matching responses from independently configured RPC providers. ${activeSources('rpc').length} currently available.</p>
+                    <p class="row-help">How many servers must give the same answer. ${activeSources('rpc').length} currently available.</p>
                   </div>
                   <div class="resolver-quorum-fields">
                     Require
-                    <select data-quorum-field="m" aria-label="Required matching RPC answers">
+                    <select data-quorum-field="m" aria-label="Servers that must agree">
                       ${numberOptions(2, currentQuorum.k, currentQuorum.m)}
                     </select>
                     out of
-                    <select data-quorum-field="k" aria-label="RPC providers queried">
+                    <select data-quorum-field="k" aria-label="Servers asked">
                       ${numberOptions(3, 9, currentQuorum.k)}
                     </select>
                   </div>
@@ -2999,11 +3450,12 @@ freedomAPI.onSettingsUpdated?.((settings) => {
             <span class="resolver-rank">${enabled ? index + 1 : '–'}</span>
             <div class="row-body">
               <div class="resolver-title-line">
-                <p class="row-label">${method.label}</p>
+                <p class="row-label">${esc(method.label)}</p>
                 <span class="resolver-badge" data-method-status="${id}">Loading…</span>
               </div>
-              <p class="row-help">${method.help}</p>
+              ${networkSourceHelp(id)}
               ${link}
+              ${networkSourceAdvanced(id, { open: openAdvanced.has(id), extra: configRow })}
             </div>
             <div class="resolver-controls">
               <label class="toggle" aria-label="Enable ${method.label}">
@@ -3011,8 +3463,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <span class="slider"></span>
               </label>
             </div>
-          </div>
-          ${configRow}`;
+          </div>`;
       })
       .join('');
 
@@ -3059,7 +3510,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           ...(config.networks['1'].quorum || {}),
           ...quorum,
         };
-        setPolicyStatus('RPC quorum saved.', 'success');
+        setPolicyStatus('Agreement threshold saved.', 'success');
       });
     return quorumSave;
   };
@@ -3136,6 +3587,18 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
   };
 
+  // `toggle` does not bubble, so it is caught on the way down.
+  list.addEventListener(
+    'toggle',
+    (event) => {
+      const id = event.target?.dataset?.advanced;
+      if (!id || !METHOD_IDS.has(id)) return;
+      if (event.target.open) openAdvanced.add(id);
+      else openAdvanced.delete(id);
+    },
+    true
+  );
+
   list.addEventListener('keydown', (event) => {
     const handle = event.target.closest?.('[data-drag-handle]');
     if (!handle || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
@@ -3203,7 +3666,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       try {
         await persistQuorum();
       } catch (err) {
-        setPolicyStatus(err?.message || 'Failed to update the RPC quorum.', 'error');
+        setPolicyStatus(err?.message || 'Failed to update the agreement threshold.', 'error');
         refresh();
       }
       return;
@@ -3253,10 +3716,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
             },
           })
         : await freedomAPI.resetEndpointSourceCoverage(proverId, 1);
-      if (result?.success === false) throw new Error(result.error || 'Prover was not saved');
+      if (result?.success === false) throw new Error(result.error || 'Proof server was not saved');
       await refresh();
     } catch (err) {
-      setPolicyStatus(err?.message || 'Failed to update the Colibri prover.', 'error');
+      setPolicyStatus(err?.message || 'Failed to update the proof server.', 'error');
     }
   });
 
@@ -3333,7 +3796,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   };
 
   window.addEventListener('hashchange', () => {
-    if (location.hash.replace(/^#/, '').toLowerCase() === 'ens') refresh();
+    if (resolveSection(location.hash) === 'networks') refresh();
   });
   freedomAPI.onSettingsUpdated?.((settings) => {
     if (settings?.networkConfigUpdated) refresh();
@@ -3415,7 +3878,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       ? `<div class="card">${providers.map(providerRow).join('')}</div>`
       : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available</p></div></div>';
     view.innerHTML = `
-      <h2 class="section-title">RPC Providers</h2>
+      <h3 class="panel-title">RPC Providers</h3>
       <p class="row-help" style="margin-bottom: 16px">
         Commercial RPC providers. Add an API key to use one — a single
         key covers every chain that provider serves. Keyless public
@@ -3514,7 +3977,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // otherwise sit there with a typed API key in it until the user came
   // back.
   window.addEventListener('hashchange', () => {
-    if (resolveSection(location.hash) !== 'rpc') {
+    if (resolveSection(location.hash) !== 'networks') {
       if (keyFor !== null) {
         keyFor = null;
         render();
@@ -3662,7 +4125,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 
   // Re-sync on navigation into this section.
   window.addEventListener('hashchange', () => {
-    if (resolveSection(location.hash) !== 'permissions') return;
+    if (resolveSection(location.hash) !== 'privacy') return;
     reload();
   });
 

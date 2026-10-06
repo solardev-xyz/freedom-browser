@@ -144,7 +144,8 @@ function rewriteRequestForDispatch(details) {
     if (shouldRewrite) {
       const redirectTarget = buildRewriteTarget(details.url, bzzBaseUrl);
       if (redirectTarget) {
-        log.info(
+        // Every rewritten sub-resource: verbose keeps it out of main.log (#511).
+        log.verbose(
           `[rewrite:bzz] ${sanitizeUrlForLog(details.url)} -> ${sanitizeUrlForLog(redirectTarget)}`
         );
         return { redirectURL: redirectTarget };

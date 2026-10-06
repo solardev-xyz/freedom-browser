@@ -104,6 +104,7 @@ import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
 import { initPopoverBounds } from './lib/popover-bounds.js';
 import { onWindowDeactivated } from './lib/window-deactivation.js';
+import { initUpdateStatusUi } from './lib/update-status-ui.js';
 
 const electronAPI = window.electronAPI;
 
@@ -884,6 +885,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     closeMenus();
     loadTarget('freedom://settings');
+  });
+  initUpdateStatusUi({
+    closeMenus,
+    openSettings: () => loadTarget('freedom://settings/about/updates'),
   });
   initBookmarks();
   initNavigation(); // Sets up event handler with tabs module

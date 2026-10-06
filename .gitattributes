@@ -4,3 +4,6 @@ docs/audits/evidence/** text=auto eol=lf
 docs/audits/evidence/**/*.png -text
 docs/audits/evidence/**/*.ssz -text
 docs/audits/evidence/**/*.bin -text
+# Pinned by sha256 in scripts/fetch-adblock-lists.js: never convert line endings,
+# or a core.autocrlf checkout (Windows runners) fails the check (#502).
+scripts/vendor/** -text

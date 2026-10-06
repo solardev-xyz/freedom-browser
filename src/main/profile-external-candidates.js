@@ -3,7 +3,7 @@ const https = require('https');
 const crypto = require('crypto');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
-const { updateActiveProfileNodeConfig } = require('./profile-resolver');
+const { updateActiveProfileNodeConfigWhenIdle } = require('./profile-resolver');
 const { probeSocks5Endpoint } = require('./socks-probe');
 const {
   IPFS_GATEWAY_PROBE_PATH,
@@ -207,8 +207,12 @@ function normalizeChoice(choice) {
   return choice === 'external' ? 'external' : 'managed';
 }
 
-function applyExternalCandidateDecisions(candidates, choices = {}, options = {}) {
-  const updateNodeConfig = options.updateNodeConfig || updateActiveProfileNodeConfig;
+// Async: the decision usually lands while the user may have a profile delete
+// running from the Profiles manager, which holds the catalog lock across its
+// off-thread rm. Waiting it out (rather than failing fast with ELOCKED) keeps
+// a Tor start that asked for this decision from wedging in STARTING.
+async function applyExternalCandidateDecisions(candidates, choices = {}, options = {}) {
+  const updateNodeConfig = options.updateNodeConfig || updateActiveProfileNodeConfigWhenIdle;
   const logger = options.logger || console;
   const decisions = [];
 
@@ -219,7 +223,7 @@ function applyExternalCandidateDecisions(candidates, choices = {}, options = {})
       ? { ...candidate.externalConfig, [EXTERNAL_CANDIDATE_PROMPT_KEY]: marker }
       : { [EXTERNAL_CANDIDATE_PROMPT_KEY]: marker };
 
-    updateNodeConfig(candidate.protocol, updates);
+    await updateNodeConfig(candidate.protocol, updates);
     decisions.push({
       protocol: candidate.protocol,
       choice,
@@ -362,7 +366,7 @@ async function promptForDefaultExternalCandidates(profile, options = {}) {
     });
 
     const choice = result.response === 0 ? 'external' : 'managed';
-    decisions.push(...applyExternalCandidateDecisions(
+    decisions.push(...await applyExternalCandidateDecisions(
       [candidate],
       { [candidate.protocol]: choice },
       { ...options, logger }

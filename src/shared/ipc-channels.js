@@ -134,6 +134,10 @@ module.exports = {
 
   // History
   HISTORY_GET: 'history:get',
+  // Bounded queries, answered off the main thread (#503): address-bar
+  // suggestion candidates, and one page of the History page's list.
+  HISTORY_AUTOCOMPLETE: 'history:autocomplete',
+  HISTORY_PAGE: 'history:page',
   HISTORY_ADD: 'history:add',
   HISTORY_REMOVE: 'history:remove',
   HISTORY_CLEAR: 'history:clear',
@@ -430,6 +434,11 @@ module.exports = {
   SWARM_SETUP_CANCEL: 'swarm:setup-cancel',
   SWARM_SETUP_TRACK_FUNDING_TX: 'swarm:setup-track-funding-tx',
   SWARM_SETUP_RESTART_NODE: 'swarm:setup-restart-node',
+
+  // The node's chequebook as browsing credit, and its swap-enable switch
+  // (src/main/swarm/browsing-credit-service.js, #488). Chrome only.
+  SWARM_CREDIT_GET_STATE: 'swarm:credit-get-state',
+  SWARM_CREDIT_SET_SWAP_ENABLE: 'swarm:credit-set-swap-enable',
 
   // Swarm Feed Store
   SWARM_GET_ALL_ORIGINS: 'swarm:get-all-origins',

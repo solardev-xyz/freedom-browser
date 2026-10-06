@@ -1,0 +1,5 @@
+- Update progress you can see ([#87](https://github.com/solardev-xyz/freedom-browser/issues/87)):
+  - The menu's update row shows checking, download percent, and "Restart to Update" with a dot on the menu button
+  - Settings > About Freedom shows the version, status, download progress, last check, "Check now" and the restart button
+  - Builds that can't update themselves say so instead of offering a button that does nothing
+  - "Check now" works with automatic checks turned off

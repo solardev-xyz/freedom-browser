@@ -27,9 +27,11 @@ const {
   captureOnchainProvenance,
   guardOnchainAppRequest,
   handleOnchainAppRequest,
+  htmlWorker,
   parseOnchainAppUrl,
   registerOnchainAppProtocol,
 } = require('./onchain-app-protocol');
+const { TaskWorkerTimeout } = require('../task-worker-host');
 
 const ADDRESS = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
 const CANONICAL_ADDRESS = ethers.getAddress(ADDRESS);
@@ -533,5 +535,141 @@ describe('onchain-app-guard registration', () => {
         { failClosed: true }
       );
     });
+  });
+});
+
+describe('html() decoding off the main thread (#503 item 9)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  let dir;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'onchain-html-worker-'));
+    htmlWorker.resetForTest();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    htmlWorker.resetForTest();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function trustedResult(html) {
+    return {
+      result: encodedHtml(html),
+      trust: { level: 'verified', method: 'myotis', agreed: ['myotis-p2p'] },
+    };
+  }
+
+  test('decodes and hashes the document in the worker, not on the main thread', async () => {
+    const html = '<!doctype html><h1>caf\u00e9 \u{1f680}</h1>';
+    const run = jest.spyOn(htmlWorker, 'run');
+    const decodeOnMain = jest.spyOn(ethers.Interface.prototype, 'decodeFunctionResult');
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => trustedResult(html)),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe(html);
+    expect(run).toHaveBeenCalledWith(
+      'decode',
+      { result: encodedHtml(html) },
+      { signal: expect.any(AbortSignal) }
+    );
+    // The worker has its own copy of ethers; this one was never asked.
+    expect(decodeOnMain).not.toHaveBeenCalled();
+    const provenance = decodeOnchainProvenance(response.headers.get(PROVENANCE_HEADER));
+    expect(provenance.htmlHash).toBe(ethers.keccak256(ethers.toUtf8Bytes(html)));
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  test('carries a worker-reported error code back to the response', async () => {
+    const scripted = path.join(dir, 'too-large-worker.js');
+    fs.writeFileSync(
+      scripted,
+      `require('node:worker_threads').parentPort.on('message', function (m) {
+         this.postMessage({ id: m.id, ok: false, code: 'ONCHAIN_APP_TOO_LARGE', error: 'too big' });
+       });`
+    );
+    htmlWorker.resetForTest({ path: scripted });
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => trustedResult('<h1>x</h1>')),
+    });
+    expect(response.status).toBe(413);
+  });
+
+  test('rejects a malformed result in the worker', async () => {
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => ({ result: '0xzz', source: 'direct', verified: false })),
+    });
+    expect(response.status).toBe(502);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('malformed ABI data'));
+  });
+
+  test('decodes on the main thread only when the worker cannot run', async () => {
+    htmlWorker.resetForTest({ path: path.join(dir, 'missing-worker.js') });
+    const html = '<h1>fallback</h1>';
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => trustedResult(html)),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe(html);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('[OnchainHtml] worker'));
+  });
+
+  test('a decode that hangs fails the request instead of falling back to main', async () => {
+    const hanging = path.join(dir, 'hanging-worker.js');
+    fs.writeFileSync(hanging, "require('node:worker_threads').parentPort.on('message', () => {});");
+    htmlWorker.resetForTest({ path: hanging, timeoutMs: 100 });
+    const decodeOnMain = jest.spyOn(ethers.Interface.prototype, 'decodeFunctionResult');
+    const run = jest.spyOn(htmlWorker, 'run');
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => trustedResult('<h1>never</h1>')),
+    });
+    expect(response.status).toBe(502);
+    await expect(run.mock.results[0].value).rejects.toBeInstanceOf(TaskWorkerTimeout);
+    expect(decodeOnMain).not.toHaveBeenCalled();
+  });
+
+  function hangingWorker() {
+    const hanging = path.join(dir, 'hanging-worker.js');
+    fs.writeFileSync(hanging, "require('node:worker_threads').parentPort.on('message', () => {});");
+    return hanging;
+  }
+
+  test('the request deadline covers the decode, not just the chain read', async () => {
+    // The worker's own limit is far away; the request's 150 ms must still hold.
+    htmlWorker.resetForTest({ path: hangingWorker(), timeoutMs: 60_000 });
+    const run = jest.spyOn(htmlWorker, 'run');
+    const decodeOnMain = jest.spyOn(ethers.Interface.prototype, 'decodeFunctionResult');
+    const started = Date.now();
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return trustedResult('<h1>never</h1>');
+      }),
+      timeoutMs: 150,
+    });
+    expect(response.status).toBe(504);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // The abandoned decode is withdrawn from the worker, not left running.
+    await expect(run.mock.results[0].value).rejects.toMatchObject({ name: 'AbortError' });
+    expect(decodeOnMain).not.toHaveBeenCalled();
+  });
+
+  test('a cancelled navigation frees the decode worker for the next load', async () => {
+    htmlWorker.resetForTest({ path: hangingWorker(), timeoutMs: 60_000 });
+    const run = jest.spyOn(htmlWorker, 'run');
+    const controller = new AbortController();
+    const pending = handleOnchainAppRequest(request(appUrl(), 'GET', controller.signal), {
+      chainRequest: jest.fn(async () => trustedResult('<h1>never</h1>')),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    controller.abort();
+    const response = await pending;
+    expect(response.status).toBe(504);
+    await expect(run.mock.results[0].value).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

@@ -30,10 +30,26 @@ function createBindingMock({
   const binding = {
     constants,
     version: jest.fn(() => 'freedom-ipfs-test'),
-    nodeNewWithDataDir: jest.fn(() => nodeHandle),
-    nodeStartNativeGatewayOnline: jest.fn(() => true),
-    nodeStopGateway: jest.fn(() => true),
-    nodeFree: jest.fn(),
+    // The lifecycle runs through the Promise-returning exports only (#503).
+    // The sync ones stay on the addon for other callers; here they throw, the
+    // way the real addon does while an async call is pending on the handle,
+    // so any use of them fails the test.
+    nodeNewWithDataDirAsync: jest.fn(() => Promise.resolve(nodeHandle)),
+    nodeStartNativeGatewayOnlineAsync: jest.fn(() => Promise.resolve(true)),
+    nodeStopGatewayAsync: jest.fn(() => Promise.resolve(true)),
+    nodeFreeAsync: jest.fn(() => Promise.resolve()),
+    nodeNewWithDataDir: jest.fn(() => {
+      throw new Error('sync nodeNewWithDataDir must not be used');
+    }),
+    nodeStartNativeGatewayOnline: jest.fn(() => {
+      throw new Error('sync nodeStartNativeGatewayOnline must not be used');
+    }),
+    nodeStopGateway: jest.fn(() => {
+      throw new Error('sync nodeStopGateway must not be used');
+    }),
+    nodeFree: jest.fn(() => {
+      throw new Error('sync nodeFree must not be used');
+    }),
     nodeProgressSnapshotJson: jest.fn(() => '{"active":[],"events":[]}'),
     nodeNativeGatewayStatsJson: jest.fn(() => '{}'),
     gatewayRequestStart: jest.fn(() => requestHandle),
@@ -96,6 +112,26 @@ function createDispatcherNode(FreedomIpfsNativeNode, onFailure) {
   node.nodeHandle = '1';
   node.startDispatcher();
   return node;
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+// The most recent dispatcher the node spawned. A stop queued behind a start
+// detaches it from `node.dispatcher` as soon as that start settles, so read
+// it off the mocked constructor rather than the node.
+function lastWorker() {
+  const { Worker } = require('worker_threads');
+  return Worker.mock.results[Worker.mock.results.length - 1].value;
 }
 
 describe('FreedomIpfsNativeNode', () => {
@@ -165,24 +201,28 @@ describe('FreedomIpfsNativeNode', () => {
     });
   });
 
-  test('rejects invalid native node handles during startup', () => {
+  test('rejects invalid native node handles during startup', async () => {
     const binding = createBindingMock({ nodeHandle: 'not-a-handle' });
     const { FreedomIpfsNativeNode } = loadModule(binding);
     const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
 
-    expect(node.start()).toBe(false);
-    expect(binding.nodeStartNativeGatewayOnline).not.toHaveBeenCalled();
+    await expect(node.start()).resolves.toBe(false);
+    expect(binding.nodeStartNativeGatewayOnlineAsync).not.toHaveBeenCalled();
     expect(node.nodeHandle).toBe('0');
   });
 
-  test('starts native gateway with a request queue timeout', () => {
+  test('starts native gateway with a request queue timeout', async () => {
     const binding = createBindingMock();
     const { FreedomIpfsNativeNode, REQUEST_QUEUE_TIMEOUT_MS } = loadModule(binding);
     const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
 
-    expect(node.start()).toBe(true);
+    await expect(node.start()).resolves.toBe(true);
 
-    expect(binding.nodeStartNativeGatewayOnline).toHaveBeenCalledWith(
+    expect(binding.nodeNewWithDataDirAsync).toHaveBeenCalledWith(
+      '/tmp/freedom-ipfs-test',
+      256 * 1024 * 1024
+    );
+    expect(binding.nodeStartNativeGatewayOnlineAsync).toHaveBeenCalledWith(
       '1',
       '',
       binding.constants.ROUTING_MODE_AUTO,
@@ -358,16 +398,16 @@ describe('FreedomIpfsNativeNode', () => {
     await Promise.resolve();
 
     expect(worker.postMessage).toHaveBeenCalledWith({ type: 'stop' });
-    expect(binding.nodeStopGateway).not.toHaveBeenCalled();
-    expect(binding.nodeFree).not.toHaveBeenCalled();
+    expect(binding.nodeStopGatewayAsync).not.toHaveBeenCalled();
+    expect(binding.nodeFreeAsync).not.toHaveBeenCalled();
 
     worker.emit('message', { type: 'stopped' });
     worker.emit('exit', 0);
     await stopped;
 
     expect(worker.terminate).not.toHaveBeenCalled();
-    expect(binding.nodeStopGateway).toHaveBeenCalledWith('1');
-    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+    expect(binding.nodeStopGatewayAsync).toHaveBeenCalledWith('1');
+    expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
     expect(node.nodeHandle).toBe('0');
   });
 
@@ -389,7 +429,7 @@ describe('FreedomIpfsNativeNode', () => {
     await stopped;
 
     expect(worker.terminate).not.toHaveBeenCalled();
-    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+    expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
   });
 
   test('stop() terminates an acknowledged dispatcher that never exits', async () => {
@@ -413,7 +453,7 @@ describe('FreedomIpfsNativeNode', () => {
     expect(log.warn).toHaveBeenCalledWith(
       '[IPFS] native dispatcher acknowledged stop but did not exit; terminating'
     );
-    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+    expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
   });
 
   test('stop() falls back to terminate() when the dispatcher never acknowledges', async () => {
@@ -425,13 +465,13 @@ describe('FreedomIpfsNativeNode', () => {
 
     const stopped = node.stop();
     await Promise.resolve();
-    expect(binding.nodeStopGateway).not.toHaveBeenCalled();
+    expect(binding.nodeStopGatewayAsync).not.toHaveBeenCalled();
 
     jest.advanceTimersByTime(DISPATCHER_STOP_TIMEOUT_MS);
     await stopped;
 
     expect(worker.terminate).toHaveBeenCalled();
-    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+    expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
   });
 
   test('a late exit from a stopped dispatcher does not fail the one that replaced it', async () => {
@@ -471,5 +511,252 @@ describe('FreedomIpfsNativeNode', () => {
     expect(node.dispatcher).toBeNull();
     expect(onFailure).toHaveBeenCalledWith('Native event dispatcher exited with code 1', node);
     expect(node.isHealthy()).toBe(false);
+  });
+
+  // The addon's async lifecycle contract (freedom-ipfs docs/release.md, v0.4.5):
+  // calls on one handle run in call order, the sync start/stop/free throw while
+  // one is pending, and a handle is never used after nodeFreeAsync.
+  describe('async native lifecycle', () => {
+    test('start() returns before the native work finishes and publishes the handle only once started', async () => {
+      const binding = createBindingMock();
+      const created = deferred();
+      const started = deferred();
+      binding.nodeNewWithDataDirAsync.mockReturnValueOnce(created.promise);
+      binding.nodeStartNativeGatewayOnlineAsync.mockReturnValueOnce(started.promise);
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
+
+      const starting = node.start();
+      await flush();
+      expect(binding.nodeNewWithDataDirAsync).toHaveBeenCalledTimes(1);
+      created.resolve('7');
+      await flush();
+      expect(binding.nodeStartNativeGatewayOnlineAsync).toHaveBeenCalledWith(
+        '7',
+        '',
+        binding.constants.ROUTING_MODE_AUTO,
+        0,
+        3,
+        0,
+        expect.any(Number)
+      );
+      // Half-started: nothing may reach the handle yet.
+      expect(node.nodeHandle).toBe('0');
+      expect(node.dispatcher).toBeNull();
+      await expect(
+        node.request({ path: '/ipfs/bafkqaaa', headers: new Headers() })
+      ).rejects.toThrow('not running');
+      expect(binding.gatewayRequestStart).not.toHaveBeenCalled();
+
+      started.resolve(true);
+      await expect(starting).resolves.toBe(true);
+      expect(node.nodeHandle).toBe('7');
+      expect(node.dispatcher).not.toBeNull();
+      expect(binding.nodeNewWithDataDir).not.toHaveBeenCalled();
+      expect(binding.nodeStartNativeGatewayOnline).not.toHaveBeenCalled();
+    });
+
+    test('a start the gateway refuses frees its handle and never publishes it', async () => {
+      const binding = createBindingMock();
+      binding.nodeStartNativeGatewayOnlineAsync.mockResolvedValueOnce(false);
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
+
+      await expect(node.start()).resolves.toBe(false);
+      expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
+      expect(binding.nodeFree).not.toHaveBeenCalled();
+      expect(node.nodeHandle).toBe('0');
+      expect(node.dispatcher).toBeNull();
+    });
+
+    test('a start that throws frees its handle before rethrowing', async () => {
+      const binding = createBindingMock();
+      const order = [];
+      binding.nodeStartNativeGatewayOnlineAsync.mockImplementationOnce(() => {
+        order.push('start');
+        return Promise.reject(new Error('bind failed'));
+      });
+      binding.nodeFreeAsync.mockImplementationOnce((handle) => {
+        order.push(`free:${handle}`);
+        return Promise.resolve();
+      });
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
+
+      await expect(node.start()).rejects.toThrow('bind failed');
+      expect(order).toEqual(['start', 'free:1']);
+      expect(node.nodeHandle).toBe('0');
+    });
+
+    test('stop() waits for a start still in flight, then stops and frees that handle', async () => {
+      const binding = createBindingMock();
+      const order = [];
+      const started = deferred();
+      binding.nodeNewWithDataDirAsync.mockImplementation(() => {
+        order.push('new');
+        return Promise.resolve('1');
+      });
+      binding.nodeStartNativeGatewayOnlineAsync.mockImplementation(() => {
+        order.push('start');
+        return started.promise;
+      });
+      binding.nodeStopGatewayAsync.mockImplementation((handle) => {
+        order.push(`stop:${handle}`);
+        return Promise.resolve(true);
+      });
+      binding.nodeFreeAsync.mockImplementation((handle) => {
+        order.push(`free:${handle}`);
+        return Promise.resolve();
+      });
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
+
+      const starting = node.start();
+      const stopping = node.stop();
+      await flush();
+      expect(order).toEqual(['new', 'start']);
+
+      started.resolve(true);
+      await expect(starting).resolves.toBe(true);
+      const worker = lastWorker();
+      await flush();
+      worker.emit('message', { type: 'stopped' });
+      worker.emit('exit', 0);
+      await stopping;
+
+      expect(order).toEqual(['new', 'start', 'stop:1', 'free:1']);
+      expect(node.nodeHandle).toBe('0');
+    });
+
+    test('the handle is cleared before nodeFreeAsync and never used while it is freed', async () => {
+      const binding = createBindingMock();
+      const freed = deferred();
+      binding.nodeFreeAsync.mockReturnValueOnce(freed.promise);
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = createStartedNode(FreedomIpfsNativeNode);
+      node.dispatcher = null;
+
+      const stopping = node.stop();
+      await flush();
+      expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
+      expect(node.nodeHandle).toBe('0');
+
+      // Diagnostics and requests during the free must not reach the handle.
+      expect(node.progressSnapshotJson()).toBe('{"active":[],"events":[]}');
+      expect(node.nativeGatewayStatsJson()).toBe('{}');
+      await expect(
+        node.request({ path: '/ipfs/bafkqaaa', headers: new Headers() })
+      ).rejects.toThrow('not running');
+      expect(binding.nodeProgressSnapshotJson).not.toHaveBeenCalled();
+      expect(binding.nodeNativeGatewayStatsJson).not.toHaveBeenCalled();
+      expect(binding.gatewayRequestStart).not.toHaveBeenCalled();
+
+      freed.resolve();
+      await stopping;
+    });
+
+    test('concurrent stop() calls share one stop and free the handle once', async () => {
+      const binding = createBindingMock();
+      const freed = deferred();
+      binding.nodeFreeAsync.mockReturnValueOnce(freed.promise);
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = createStartedNode(FreedomIpfsNativeNode);
+      node.dispatcher = null;
+
+      const first = node.stop();
+      const second = node.stop();
+      expect(second).toBe(first);
+      await flush();
+      freed.resolve();
+      await Promise.all([first, second]);
+
+      expect(binding.nodeStopGatewayAsync).toHaveBeenCalledTimes(1);
+      expect(binding.nodeFreeAsync).toHaveBeenCalledTimes(1);
+    });
+
+    test('a restart waits for the previous free before reopening the data dir', async () => {
+      const binding = createBindingMock();
+      const freed = deferred();
+      binding.nodeFreeAsync.mockReturnValueOnce(freed.promise);
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = createStartedNode(FreedomIpfsNativeNode);
+      node.dispatcher = null;
+
+      const stopping = node.stop();
+      const restarting = node.start();
+      await flush();
+      expect(binding.nodeFreeAsync).toHaveBeenCalledWith('1');
+      expect(binding.nodeNewWithDataDirAsync).not.toHaveBeenCalled();
+
+      freed.resolve();
+      await stopping;
+      await expect(restarting).resolves.toBe(true);
+      expect(binding.nodeNewWithDataDirAsync).toHaveBeenCalledTimes(1);
+      expect(node.nodeHandle).toBe('1');
+    });
+
+    test('a stop queued after a later start still stops that start', async () => {
+      const binding = createBindingMock();
+      const freed = deferred();
+      binding.nodeFreeAsync.mockReturnValueOnce(freed.promise);
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = createStartedNode(FreedomIpfsNativeNode);
+      node.dispatcher = null;
+
+      const firstStop = node.stop();
+      const restart = node.start();
+      const secondStop = node.stop();
+      expect(secondStop).not.toBe(firstStop);
+
+      freed.resolve();
+      await firstStop;
+      await expect(restart).resolves.toBe(true);
+      const worker = lastWorker();
+      await flush();
+      worker.emit('message', { type: 'stopped' });
+      worker.emit('exit', 0);
+      await secondStop;
+
+      expect(binding.nodeFreeAsync).toHaveBeenCalledTimes(2);
+      expect(node.nodeHandle).toBe('0');
+    });
+
+    test('a start queued after a stop is a new start, not the one before the stop', async () => {
+      const binding = createBindingMock();
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
+
+      const first = node.start();
+      const stopping = node.stop();
+      const second = node.start();
+      expect(second).not.toBe(first);
+
+      await expect(first).resolves.toBe(true);
+      const worker = lastWorker();
+      await flush();
+      worker.emit('message', { type: 'stopped' });
+      worker.emit('exit', 0);
+      await stopping;
+      await expect(second).resolves.toBe(true);
+
+      // Up again after the stop: the user's last request wins.
+      expect(binding.nodeNewWithDataDirAsync).toHaveBeenCalledTimes(2);
+      expect(binding.nodeFreeAsync).toHaveBeenCalledTimes(1);
+      expect(node.nodeHandle).toBe('1');
+      expect(node.isHealthy()).toBe(true);
+    });
+
+    test('an addon without the async exports fails the start instead of blocking', async () => {
+      const binding = createBindingMock();
+      delete binding.nodeNewWithDataDirAsync;
+      const { FreedomIpfsNativeNode } = loadModule(binding);
+      const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test' });
+
+      await expect(node.start()).rejects.toMatchObject({
+        code: 'FREEDOM_IPFS_NATIVE_ADDON_TOO_OLD',
+      });
+      expect(binding.nodeNewWithDataDir).not.toHaveBeenCalled();
+      expect(node.nodeHandle).toBe('0');
+    });
   });
 });

@@ -1,3 +1,7 @@
+// Before anything can queue libuv threadpool work: the pool is sized once,
+// on first use (uv-threadpool.js, #514).
+require('./uv-threadpool').applyThreadpoolSize();
+
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog, ipcMain } = require('electron');
 
@@ -63,7 +67,11 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
 // on a scratch profile, i.e. the packaged E2E launcher
 // (docs/security-audit-electron.md, O-4/O-12); see test-mode.js.
 const TEST_MODE = require('./test-mode').isTestModeRequested();
-const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
+const {
+  migrateBeeDataToAntData,
+  migrateUserData,
+  purgeSetAsideBeeData,
+} = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
 }
@@ -186,12 +194,23 @@ process.on('unhandledRejection', (reason, _promise) => {
   log.error('Unhandled rejection:', reason);
 });
 
+// Main-process event-loop watchdog (#498): logs `[main] event loop blocked N ms`
+// when the loop stalls for 1 s or more, with the chain-data reads that were
+// running. Started this early so a stall during startup is caught too.
+const { describeChainDataActivity } = require('./networks/chain-data-activity');
+const eventLoopWatchdog = require('./event-loop-watchdog').startEventLoopWatchdog({
+  log,
+  describeActivity: describeChainDataActivity,
+});
+
 const { createShutdownDiagnostics, registerShutdownSignalHandlers } = require('./shutdown-signals');
+const { drainLogFile, flushLogFileSync } = require('./log-file-flush');
 const shutdownDiagnostics = createShutdownDiagnostics({ app, logger: log });
 const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({
   app,
   logger: log,
   onSignal: shutdownDiagnostics.signal,
+  beforeForceExit: () => flushLogFileSync(log.transports.file),
 });
 const { BrowserWindow, protocol, safeStorage, session, shell } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
@@ -343,6 +362,7 @@ const { registerExternalProtocolIpc } = require('./external-protocol');
 const { registerPopupBlockerIpc } = require('./popup-blocker');
 const { registerSwarmIpc } = require('./swarm/stamp-service');
 const { registerPublishSetupIpc } = require('./swarm/publish-setup-service');
+const { registerBrowsingCreditIpc } = require('./swarm/browsing-credit-service');
 const { registerPublishIpc } = require('./swarm/publish-service');
 const {
   registerPublishHistoryIpc,
@@ -382,6 +402,7 @@ const {
   createAgentWalletTestOptions,
   installTestHarness,
   registerStubProtocols,
+  adblockEngineLandingGate,
 } = require('./test-harness');
 const {
   automationController,
@@ -401,6 +422,11 @@ const {
   DEFAULT_RUNTIME_IDLE_TIMEOUT_MS,
   createRuntimeIdleController,
 } = require('./automation/runtime-idle-controller');
+// Every chain-data caller above holds the router module object and reads
+// `.request` at call time, so wrapping the export here covers all of them.
+require('./networks/chain-data-activity').instrumentChainDataRouter(
+  require('./networks/chain-data-router')
+);
 
 let runtimeServer = null;
 let hiddenPageManager = null;
@@ -425,6 +451,8 @@ log.info('[profile] Active profile:', {
 });
 warnAboutLegacyDevData(activeProfile, { logger: log });
 app.on('will-quit', () => {
+  // Writes out any stalls still folded into the watchdog's pending summary.
+  eventLoopWatchdog.stop();
   unregisterShutdownSignalHandlers();
   profileFocusWatcher.stop();
   if (activeProfileLock) {
@@ -434,9 +462,19 @@ app.on('will-quit', () => {
 });
 
 async function bootstrap() {
+  // A suspended machine is not a blocked loop: don't report the sleep.
+  // 'suspend' opens the window before the machine sleeps, so the sleep gap is
+  // recognised even when the overdue tick beats 'resume' on wake (Windows),
+  // while a real stall around the sleep is still reported (see the watchdog).
+  const { powerMonitor } = require('electron');
+  powerMonitor.on('suspend', () => eventLoopWatchdog.suspend());
+  powerMonitor.on('resume', () => eventLoopWatchdog.reset());
+
   // Carry the injected Swarm identity from the Bee-era bee-data/ into
   // ant-data/. Must run before the Ant node is started below, or antd
-  // self-generates a throwaway identity on the empty directory.
+  // self-generates a throwaway identity on the empty directory. Its
+  // gigabytes of Bee-only state are only set aside here; they are deleted
+  // off the main thread once the first window has painted (below, #526).
   migrateBeeDataToAntData();
 
   const defaultSession = session.defaultSession;
@@ -505,6 +543,7 @@ async function bootstrap() {
   paymentHistory.registerPaymentHistoryIpc();
   registerSwarmIpc();
   registerPublishSetupIpc();
+  registerBrowsingCreditIpc();
   registerPublishIpc();
   registerPublishHistoryIpc();
   registerSwarmPermissionsIpc();
@@ -579,8 +618,9 @@ async function bootstrap() {
   installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
-  // x402, so blocked requests never reach the payment flow.
-  installAdblockInterception();
+  // x402, so blocked requests never reach the payment flow. The landing gate
+  // is null unless the E2E harness armed it for this launch (#538).
+  installAdblockInterception({ engineLandingGate: adblockEngineLandingGate() });
   // Also installs the `onchain-app-guard` onBeforeRequest handler, which keeps
   // web content out of the `web3:` trust gate. Runs unconditionally — the test
   // harness owns the `web3:` bytes in test mode, but the guard is browser
@@ -695,6 +735,10 @@ async function bootstrap() {
       ? PROFILE_SETTINGS_DEEPLINK
       : null;
     mainWindow = createMainWindow(coldStartUrl);
+    // Defer upgrade cleanup until a visible window is ready (#526).
+    mainWindow.once('ready-to-show', () => {
+      void purgeSetAsideBeeData({ logger: log });
+    });
   }
 
   if (!RUNTIME_MODE && !TEST_MODE) {
@@ -971,6 +1015,7 @@ app.on('before-quit', async (event) => {
 
   const watchdog = setTimeout(() => {
     log.warn('[App] Shutdown watchdog fired; quitting with the wind-down unfinished');
+    flushLogFileSync(log.transports.file);
     shutdownSettled = true;
     app.quit();
   }, SHUTDOWN_WATCHDOG_MS);
@@ -981,6 +1026,9 @@ app.on('before-quit', async (event) => {
     // A manager that rejects must not strand the app in a half-quit state.
     log.error('[App] Wind-down failed:', err);
   } finally {
+    // The log file is written asynchronously (#511): write everything still
+    // pending, in order, and make the quit handlers' lines land at once.
+    await drainLogFile(log.transports.file);
     clearTimeout(watchdog);
     shutdownSettled = true;
   }

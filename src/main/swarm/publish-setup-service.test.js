@@ -22,13 +22,19 @@ const {
   normalizeQuote,
   roundUpToCent,
   formatUnits,
+  parseXdaiShortfall,
+  parseDepositAmount,
   PLANS,
   REQUOTE_MS,
   WATCH_REFRESH_MS,
+  STARTUP_REFRESH_MS,
   FUNDING_TX_POLL_MS,
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
   CHAIN_INIT_SLOW_MS,
+  REDISCOVERY_MAX_WAIT_MS,
+  REDISCOVERY_SLOW_MS,
+  SCAN_STALL_MAX_MS,
 } = require('./publish-setup-service');
 
 const WALLET = '0x1234567890abcdef1234567890abcdef12345678';
@@ -123,8 +129,10 @@ function setup({
   error = null,
   registryMode = 'bundled',
   api = createApi(),
+  getWalletTxCount,
+  startedAt = null,
 } = {}) {
-  const node = { status, error, registryMode };
+  const node = { status, error, registryMode, startedAt };
   const published = [];
   const restartNode = jest.fn().mockResolvedValue();
   const getTransactionStatus = jest.fn().mockResolvedValue({ status: 'pending' });
@@ -134,6 +142,8 @@ function setup({
     getRegistryMode: () => node.registryMode,
     restartNode,
     getTransactionStatus,
+    getWalletTxCount,
+    getNodeStartedAt: () => node.startedAt,
     publish: (state) => published.push(state),
     now: () => Date.now(),
   });
@@ -326,6 +336,582 @@ describe('classifyReadiness', () => {
   });
 });
 
+describe('classifyReadiness while Ant rediscovers batches (#510, #484)', () => {
+  const running = { status: 'running', error: null, registryMode: 'bundled' };
+  const withStamps = (stamps) => ({
+    at: 0,
+    unreachable: false,
+    chainReady: true,
+    nodeMode: 'light',
+    peersReady: true,
+    stamps: { known: true, pending: 0, propagating: 0, ...stamps },
+  });
+  const empty = withStamps({ usable: 0, total: 0 });
+  const scanning = { state: 'scanning', percent: 42, slow: false };
+
+  test('an empty list is "looking", with the progress Ant reports, not "pick a plan"', () => {
+    const held = classifyReadiness({ node: running, probe: empty, rediscovery: scanning });
+    expect(held).toMatchObject({
+      ok: false,
+      key: 'checking',
+      reason: 'node-not-ready',
+      slow: false,
+      rediscovery: 'running',
+      progress: 42,
+    });
+    expect(held.message).toBe(
+      'Looking for your existing storage… 42% checked. Storage plans appear if this wallet has none.'
+    );
+    // Full or expired batches are no proof either: the scan may add more.
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 0, full: 1, total: 1 }),
+        rediscovery: scanning,
+      }).key
+    ).toBe('checking');
+  });
+
+  test('before the first window there is no percentage to show', () => {
+    const pending = classifyReadiness({
+      node: running,
+      probe: empty,
+      rediscovery: { state: 'pending', percent: null, slow: false },
+    });
+    expect(pending).toMatchObject({ key: 'checking', progress: null, rediscovery: 'running' });
+    expect(pending.message).toBe(
+      'Looking for your existing storage… Storage plans appear if this wallet has none.'
+    );
+  });
+
+  test('a retrying scan says the node tries again, and offers no restart', () => {
+    const retrying = classifyReadiness({
+      node: running,
+      probe: empty,
+      rediscovery: { state: 'retrying', percent: 10, slow: false },
+    });
+    // A restart would start the scan over; antd retries on its own.
+    expect(retrying).toMatchObject({
+      key: 'checking',
+      slow: false,
+      rediscovery: 'retrying',
+      progress: 10,
+    });
+    expect(retrying.message).toMatch(/^Looking for your existing storage… 10% checked\./);
+    expect(retrying.message).toMatch(/trying again/);
+  });
+
+  test('the fallback hold says a long first check is expected, without offering a restart', () => {
+    const quick = classifyReadiness({
+      node: running,
+      probe: empty,
+      rediscovery: { state: 'unreported', percent: null, slow: false },
+    });
+    expect(quick).toMatchObject({ key: 'checking', slow: false, rediscovery: 'running' });
+    expect(quick.message).toBe('Looking for your existing storage…');
+    const slow = classifyReadiness({
+      node: running,
+      probe: empty,
+      rediscovery: { state: 'unreported', percent: null, slow: true },
+    });
+    expect(slow).toMatchObject({ key: 'checking', slow: false });
+    expect(slow.message).toMatch(/can take several minutes/);
+  });
+
+  test('a stalled scan shows the plans with a warning, only when there is no storage', () => {
+    const stalled = classifyReadiness({ node: running, probe: empty, scanStalled: true });
+    expect(stalled).toMatchObject({
+      key: 'needs-storage',
+      reason: 'no-usable-stamps',
+      scanStalled: true,
+    });
+    expect(classifyReadiness({ node: running, probe: empty })).not.toHaveProperty('scanStalled');
+    expect(stalled.message).toMatch(/could not finish looking for storage/);
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 1, total: 1 }),
+        scanStalled: true,
+      }).key
+    ).toBe('ready');
+  });
+
+  test('storage the node already lists wins over the hold', () => {
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 1, total: 1 }),
+        rediscovery: scanning,
+      }).key
+    ).toBe('ready');
+    expect(
+      classifyReadiness({
+        node: running,
+        probe: withStamps({ usable: 0, pending: 1, propagating: 1, total: 1 }),
+        rediscovery: scanning,
+      }).key
+    ).toBe('storage-pending');
+  });
+});
+
+describe('publish setup while Ant reports its wallet scan (/health.walletScan, #484)', () => {
+  const health = (walletScan, version = 'antd/0.5.59') =>
+    ok({ status: 'ok', version, chainReady: true, ...(walletScan ? { walletScan } : {}) });
+  const scan = (state, extra = {}) => ({
+    state,
+    from: 16_514_506,
+    scannedThrough: null,
+    head: 48_560_000,
+    ...extra,
+  });
+
+  function scanSetup(walletScan, { registryMode = 'bundled' } = {}) {
+    const api = createApi();
+    api.getHealth.mockResolvedValue(health(walletScan));
+    const getWalletTxCount = jest.fn(async () => 5);
+    const ctx = setup({ api, registryMode, getWalletTxCount });
+    return { ...ctx, getWalletTxCount };
+  }
+
+  test('holds while scanning, with progress, then shows the storage it found', async () => {
+    const { service, api, getWalletTxCount } = scanSetup(scan('pending'));
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      ok: false,
+      reason: 'node-not-ready',
+    });
+    expect(service.getState().readiness).toMatchObject({ key: 'checking', progress: null });
+
+    // Half of the blocks from `from` to `head` read.
+    api.getHealth.mockResolvedValue(health(scan('scanning', { scannedThrough: 32_537_252 })));
+    await service.refresh();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'checking',
+      rediscovery: 'running',
+      progress: 49,
+    });
+    expect(service.getState().readiness.message).toMatch(/49% checked/);
+
+    // Done: the batch it found is registered, so /stamps lists it.
+    api.getHealth.mockResolvedValue(health(scan('done', { scannedThrough: 48_559_000 })));
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ batchID: BATCH_A, usable: true }] }));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('ready');
+    // Read once for this run of the node, to skip the wait for a new wallet.
+    expect(getWalletTxCount).toHaveBeenCalledTimes(1);
+    expect(getWalletTxCount).toHaveBeenCalledWith(WALLET.toLowerCase());
+  });
+
+  test('a wallet that never sent a transaction does not wait for the scan', async () => {
+    const { service, getWalletTxCount } = scanSetup(scan('scanning', { scannedThrough: 17e6 }));
+    getWalletTxCount.mockResolvedValue(0);
+    await service.refresh();
+    await settle();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('while the wallet history is unknown, a reported scan holds', async () => {
+    const { service, getWalletTxCount } = scanSetup(scan('scanning', { scannedThrough: 17e6 }));
+    getWalletTxCount.mockRejectedValue(new Error('no quorum'));
+    await service.refresh();
+    await settle();
+    expect(service.getState().readiness.key).toBe('checking');
+  });
+
+  test('a finished scan that found nothing offers a plan', async () => {
+    const { service, api } = scanSetup(scan('scanning', { scannedThrough: 20_000_000 }));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    api.getHealth.mockResolvedValue(health(scan('done')));
+    await service.refresh();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'needs-storage',
+      reason: 'no-usable-stamps',
+    });
+  });
+
+  test('`confirming` (an unverified first read, ant#143) counts as finished', async () => {
+    const { service } = scanSetup(scan('confirming', { scannedThrough: 48_560_000 }));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('a retrying scan stays held, with no restart offered', async () => {
+    const { service } = scanSetup(
+      scan('retrying', { error: 'http: error sending request for url (<url>)' })
+    );
+    await service.refresh();
+    expect(service.getState().readiness).toMatchObject({
+      key: 'checking',
+      rediscovery: 'retrying',
+      slow: false,
+    });
+  });
+
+  test('a scan that keeps failing without reading a block is released after the bound, with a warning', async () => {
+    const failing = (scannedThrough, state = 'retrying') =>
+      health(scan(state, { scannedThrough, error: 'RPC quorum needs 2 endpoints' }));
+    const { service, api } = scanSetup(scan('retrying', { scannedThrough: 20_000_000 }));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    // antd flips to `scanning` on each attempt; no block read, so the clock runs on.
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS / 2);
+    api.getHealth.mockResolvedValue(failing(20_000_000, 'scanning'));
+    await service.refresh();
+    api.getHealth.mockResolvedValue(failing(20_000_000));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS / 2 + 1);
+    await service.refresh();
+    const released = service.getState().readiness;
+    expect(released).toMatchObject({
+      key: 'needs-storage',
+      reason: 'no-usable-stamps',
+      scanStalled: true,
+    });
+    expect(released.message).toMatch(/could not finish looking for storage/);
+    expect(released.message).toMatch(/Gnosis RPC in Settings/);
+
+    // Once it reads a block again it is held again, with a fresh clock.
+    api.getHealth.mockResolvedValue(failing(20_500_000, 'scanning'));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+    api.getHealth.mockResolvedValue(failing(20_500_000));
+    await service.refresh();
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS - 60_000);
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+  });
+
+  test('a retrying scan that still reads blocks is not released', async () => {
+    const { service, api } = scanSetup(scan('retrying', { scannedThrough: 20_000_000 }));
+    await service.refresh();
+    for (let i = 1; i <= 4; i += 1) {
+      jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS / 2);
+      api.getHealth.mockResolvedValue(
+        health(scan('retrying', { scannedThrough: 20_000_000 + i * 1_000_000 }))
+      );
+      await service.refresh();
+      expect(service.getState().readiness.key).toBe('checking');
+    }
+  });
+
+  test('a stalled scan restarts its clock on the next run of the node', async () => {
+    const { service, node } = scanSetup(scan('retrying', { scannedThrough: 20_000_000 }));
+    await service.refresh();
+    jest.setSystemTime(Date.now() + SCAN_STALL_MAX_MS + 1);
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    service.handleNodeStatus();
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+    service.dispose();
+  });
+
+  test('progress counts from where the scan started, across a retry and a node restart', async () => {
+    const at = (state, from, scannedThrough) =>
+      health(scan(state, { from, scannedThrough, head: 48_600_000 }));
+    const { service, api, node } = scanSetup(scan('scanning', { scannedThrough: 43_000_000 }));
+    api.getHealth.mockResolvedValue(at('scanning', 16_514_506, 43_000_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(82);
+
+    // One failed attempt: antd resumes from its saved progress + 1.
+    api.getHealth.mockResolvedValue(at('retrying', 43_000_001, 43_000_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(82);
+    api.getHealth.mockResolvedValue(at('scanning', 43_000_001, 43_200_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(83);
+
+    // A node restart, same wallet: still counted from the original start.
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    service.handleNodeStatus();
+    api.getHealth.mockResolvedValue(at('scanning', 43_200_001, 43_300_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(83);
+
+    // Once a scan finishes, the next one counts from its own start.
+    api.getHealth.mockResolvedValue(at('done', 43_300_001, 48_600_000));
+    await service.refresh({ withAccount: true });
+    api.getHealth.mockResolvedValue(at('scanning', 48_000_000, 48_300_000));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(50);
+    service.dispose();
+  });
+
+  test('a node restarted with a different wallet does not inherit the old scan start', async () => {
+    const at = (from, scannedThrough) =>
+      health(scan('scanning', { from, scannedThrough, head: 48_600_000 }));
+    const { service, api, node } = scanSetup(scan('scanning', { scannedThrough: 43_000_000 }));
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(82);
+
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    service.handleNodeStatus();
+    const other = '0x' + '2'.repeat(40);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, shortfallPlur: '0', walletAddress: other }))
+    );
+    api.getHealth.mockResolvedValue(at(48_000_000, 48_300_000));
+    await service.refresh({ withAccount: true });
+    await service.refresh({ withAccount: true });
+    expect(service.getState().readiness.progress).toBe(50);
+    service.dispose();
+  });
+
+  test('a reported scan is not cut short by the fallback bound', async () => {
+    const { service } = scanSetup(scan('scanning', { scannedThrough: 17_000_000 }));
+    await service.refresh();
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS + 60_000);
+    expect(service.getState().readiness).toMatchObject({ key: 'checking', progress: 1 });
+  });
+
+  test('polls at the startup cadence while the scan runs, so its progress moves', async () => {
+    const { service, api } = scanSetup(scan('scanning', { scannedThrough: 20_000_000 }));
+    service.watch('test', true);
+    await settle();
+    const calls = api.getHealth.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(STARTUP_REFRESH_MS);
+    expect(api.getHealth.mock.calls.length).toBe(calls + 1);
+
+    api.getHealth.mockResolvedValue(health(scan('done')));
+    await jest.advanceTimersByTimeAsync(STARTUP_REFRESH_MS);
+    const settled = api.getHealth.mock.calls.length;
+    // Finished: back to the steady cadence.
+    await jest.advanceTimersByTimeAsync(STARTUP_REFRESH_MS);
+    expect(api.getHealth.mock.calls.length).toBe(settled);
+    await jest.advanceTimersByTimeAsync(WATCH_REFRESH_MS);
+    expect(api.getHealth.mock.calls.length).toBe(settled + 1);
+    service.dispose();
+  });
+
+  test('an external node that reports its scan is held the same way', async () => {
+    const { service } = scanSetup(scan('scanning'), { registryMode: 'external' });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+  });
+
+  test('an antd v0.5.59+ without the field has no background scan: not held', async () => {
+    const { service, getWalletTxCount } = scanSetup(null);
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    expect(getWalletTxCount).not.toHaveBeenCalled();
+  });
+});
+
+describe('publish setup fallback for a node that does not report its scan (#510)', () => {
+  // Ant v0.5.58 rediscovers in the background and reports nothing about it.
+  function fallbackSetup({ txCount = 3, api = createApi(), version = 'antd/0.5.58' } = {}) {
+    api.getHealth.mockResolvedValue(ok({ status: 'ok', version, chainReady: true }));
+    const getWalletTxCount = jest.fn(async () => {
+      if (txCount instanceof Error) throw txCount;
+      return txCount;
+    });
+    const ctx = setup({ api, getWalletTxCount });
+    return { ...ctx, getWalletTxCount };
+  }
+
+  test('a wallet with history is held, says when the check is slow, and is released after the bound', async () => {
+    const { service, getWalletTxCount } = fallbackSetup({ txCount: 5 });
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      ok: false,
+      reason: 'node-not-ready',
+    });
+    expect(getWalletTxCount).toHaveBeenCalledWith(WALLET.toLowerCase());
+    expect(service.getState().readiness).toMatchObject({
+      key: 'checking',
+      rediscovery: 'running',
+      progress: null,
+    });
+    expect(service.getState().readiness.message).toBe('Looking for your existing storage…');
+
+    jest.setSystemTime(Date.now() + REDISCOVERY_SLOW_MS + 1);
+    expect(service.getState().readiness).toMatchObject({ key: 'checking', slow: false });
+    expect(service.getState().readiness.message).toMatch(/several minutes/);
+
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS);
+    expect(service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('storage the scan adds shows at once', async () => {
+    const { service, api } = fallbackSetup({ txCount: 5 });
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('checking');
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ batchID: BATCH_A, usable: true }] }));
+    await service.refresh();
+    expect(service.getState().readiness.key).toBe('ready');
+  });
+
+  test('a wallet that never sent a transaction has nothing to rediscover', async () => {
+    const { service, getWalletTxCount } = fallbackSetup({ txCount: 0 });
+    await service.refresh();
+    await settle();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+
+    // Known for this run: later probes do not read it again.
+    await service.refresh();
+    expect(getWalletTxCount).toHaveBeenCalledTimes(1);
+  });
+
+  test('a history that cannot be read holds, and is read again next probe', async () => {
+    const { service, getWalletTxCount } = fallbackSetup({ txCount: new Error('no quorum') });
+    await service.refresh();
+    await settle();
+    expect(service.getState().readiness.key).toBe('checking');
+
+    getWalletTxCount.mockResolvedValue(0);
+    await service.refresh();
+    await settle();
+    expect(getWalletTxCount).toHaveBeenCalledTimes(2);
+    expect(service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('without the wallet address it holds rather than guess', async () => {
+    const api = createApi();
+    api.getAddresses.mockResolvedValue(fail(503));
+    const { service, getWalletTxCount } = fallbackSetup({ api, txCount: 0 });
+    await service.refresh();
+    await settle();
+    expect(getWalletTxCount).not.toHaveBeenCalled();
+    expect(service.getState().readiness.key).toBe('checking');
+  });
+
+  test('an antd whose version cannot be read, or a scan state not known here, is held', async () => {
+    const odd = fallbackSetup({ txCount: 5, version: 'antd/dev' });
+    await odd.service.refresh();
+    expect(odd.service.getState().readiness.key).toBe('checking');
+
+    const api = createApi();
+    api.getHealth.mockResolvedValue(
+      ok({ status: 'ok', version: 'antd/0.6.0', chainReady: true, walletScan: { state: 'new' } })
+    );
+    const unknown = setup({ api, getWalletTxCount: jest.fn(async () => 5) });
+    await unknown.service.refresh();
+    expect(unknown.service.getState().readiness.key).toBe('checking');
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS + 1);
+    expect(unknown.service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('an external or reused antd v0.5.58 is not held: its start time is unknown here', async () => {
+    for (const registryMode of ['external', 'reused']) {
+      const api = createApi();
+      api.getHealth.mockResolvedValue(
+        ok({ status: 'ok', version: 'antd/0.5.58', chainReady: true })
+      );
+      const getWalletTxCount = jest.fn(async () => 5);
+      const { service } = setup({ api, registryMode, getWalletTxCount });
+      await service.refresh();
+      expect(service.getState().readiness.key).toBe('needs-storage');
+      expect(getWalletTxCount).not.toHaveBeenCalled();
+    }
+  });
+
+  test('the bound runs from when the node was spawned, not from when the service first looked', async () => {
+    const api = createApi();
+    api.getHealth.mockResolvedValue(ok({ status: 'ok', version: 'antd/0.5.58', chainReady: true }));
+    // Spawned 25 minutes before publish setup first looked at it.
+    const { service } = setup({
+      api,
+      getWalletTxCount: jest.fn(async () => 5),
+      startedAt: Date.now() - 25 * 60_000,
+    });
+    await service.refresh();
+    expect(service.getState().readiness).toMatchObject({ key: 'checking', rediscovery: 'running' });
+    expect(service.getState().readiness.message).toMatch(/several minutes/);
+    jest.setSystemTime(Date.now() + REDISCOVERY_MAX_WAIT_MS - 25 * 60_000 + 1);
+    expect(service.getState().readiness.key).toBe('needs-storage');
+  });
+
+  test('Bee and older Ant releases (which rediscover before chainReady) are not held', async () => {
+    for (const version of ['2.4.0-5b1b7e5c', 'antd/0.5.45', null]) {
+      const { service, getWalletTxCount } = fallbackSetup({ txCount: 5, version });
+      await service.refresh();
+      expect(service.getState().readiness.key).toBe('needs-storage');
+      expect(getWalletTxCount).not.toHaveBeenCalled();
+    }
+  });
+
+  test('a history read for one run of the node does not answer for the next', async () => {
+    const { service, node, getWalletTxCount } = fallbackSetup({ txCount: 0 });
+    await service.refresh();
+    await settle();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+
+    // Restarted, maybe with another key: the old "no history" no longer
+    // holds, even while the new run's own read fails.
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    getWalletTxCount.mockRejectedValue(new Error('no quorum'));
+    service.handleNodeStatus();
+    await service.refresh();
+    await settle();
+    expect(getWalletTxCount).toHaveBeenCalledTimes(2);
+    expect(service.getState().readiness.key).toBe('checking');
+    service.dispose();
+  });
+
+  test('a read still in flight across a restart is dropped', async () => {
+    let answer;
+    const api = createApi();
+    api.getHealth.mockResolvedValue(ok({ status: 'ok', version: 'antd/0.5.58', chainReady: true }));
+    const getWalletTxCount = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    const { service, node } = setup({ api, getWalletTxCount });
+    await service.refresh();
+    await settle();
+    node.status = 'stopped';
+    service.handleNodeStatus();
+    node.status = 'running';
+    service.handleNodeStatus();
+    answer(0);
+    await service.refresh();
+    await settle();
+    // Run 1's "no history" must not release run 2's hold.
+    expect(service.getState().readiness.key).toBe('checking');
+    service.dispose();
+  });
+
+  test('the pre-flight does not wait for the wallet history read', async () => {
+    let answer;
+    const api = createApi();
+    api.getHealth.mockResolvedValue(ok({ status: 'ok', version: 'antd/0.5.58', chainReady: true }));
+    const getWalletTxCount = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+    );
+    const { service, published } = setup({ api, getWalletTxCount });
+    // Resolves while the RPC read is still out, holding meanwhile.
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({
+      ok: false,
+      reason: 'node-not-ready',
+    });
+    expect(getWalletTxCount).toHaveBeenCalledTimes(1);
+    // The answer lands later and is broadcast on its own.
+    answer(0);
+    await settle();
+    expect(service.getState().readiness.key).toBe('needs-storage');
+    expect(published.at(-1).readiness.key).toBe('needs-storage');
+    service.dispose();
+  });
+});
+
 describe('publish readiness', () => {
   test('reads chain init, mode, peers and usable stamps', async () => {
     const { service, api } = setup();
@@ -386,6 +972,28 @@ describe('publish readiness', () => {
       reason: 'node-not-ready',
     });
     expect(api.getStamps).not.toHaveBeenCalled();
+  });
+
+  test("/readiness 503 'unready' is connecting until it turns 200", async () => {
+    // Ant v0.5.57 (freedom-hq/ant#136) answers 503 until a routing peer that
+    // is not a bootnode can serve, and again if every such peer drops.
+    const { service, api } = setup();
+    api.getStamps.mockResolvedValue(ok({ stamps: [{ usable: true }] }));
+    api.getReadiness.mockResolvedValue({
+      ok: false,
+      status: 503,
+      data: { status: 'unready', version: 'antd/0.5.57' },
+      message: null,
+    });
+    await expect(service.getPublishReadiness()).resolves.toEqual({
+      ok: false,
+      reason: 'node-not-ready',
+      message: 'The Swarm node is connecting to peers…',
+    });
+
+    api.getReadiness.mockResolvedValue(ok({ status: 'ready', version: 'antd/0.5.57' }));
+    jest.advanceTimersByTime(2_500); // past the probe's 2 s reuse window
+    await expect(service.getPublishReadiness()).resolves.toMatchObject({ ok: true });
   });
 
   test('treats a node without the chainReady flag as ready', async () => {
@@ -1015,6 +1623,188 @@ describe('extend and deposit', () => {
   });
 });
 
+describe('a deposit of a chosen amount (freedom-hq/ant#126)', () => {
+  const AMOUNT = '1000000000000000'; // 0.1 xBZZ
+  const SHORT = 'not enough xDAI: send 0.1201 more xDAI to your account, then try again';
+  const withSettlement = (api) =>
+    api.getNode.mockResolvedValue(
+      ok({ beeMode: 'light', settlement: { supported: true, swapSwitch: true } })
+    );
+
+  test('the node prices it by refusing, the pay step asks for that, and it deposits once paid', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    // A full deposit is no reason to skip an amount the user asked for.
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, shortfallPlur: '0', walletXdaiWei: '0' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(fail(400, SHORT));
+
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(api.topUpSettlementDeposit).toHaveBeenLastCalledWith({ amountPlur: AMOUNT });
+    expect(service.getState().operation).toMatchObject({
+      phase: 'awaiting-funds',
+      request: { kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' },
+      notice: null,
+      quote: {
+        walletAddress: WALLET,
+        send: { display: '0.13', wei: '130000000000000000' },
+        depositXbzz: '0.1',
+        sufficientFunds: false,
+      },
+    });
+
+    // Not enough arrived yet: no second write.
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '120000000000000000' }))
+    );
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation.quote.send.display).toBe('0.01');
+
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '130000000000000000' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(ok(depositBody({ needsTopUp: false })));
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(2);
+    expect(api.topUpSettlementDeposit).toHaveBeenLastCalledWith({ amountPlur: AMOUNT });
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { deposit: true },
+    });
+  });
+
+  test('a node that already holds the xDAI deposits at once, once the user saw that balance', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '900000000000000000' }))
+    );
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '900000000000000000' });
+    await settle();
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation.phase).toBe('done');
+  });
+
+  test('never lets the node swap wallet xDAI the deposit screen did not show', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '900000000000000000' }))
+    );
+    // No balance shown (an older screen, or a wallet read as empty)…
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      error: expect.stringMatching(/more xDAI than when you chose/),
+    });
+    // …or a smaller one than the wallet holds now: nothing is sent either.
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+    expect(service.getState().operation.phase).toBe('failed');
+    expect(api.topUpSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('a wallet that grew after the price was known pays without asking again', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '0' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(fail(400, SHORT));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' });
+    await settle();
+    expect(service.getState().operation.phase).toBe('awaiting-funds');
+    // The user paid the figure the pay step showed (and a little more).
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '200000000000000000' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(ok(depositBody({ needsTopUp: false })));
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(2);
+    expect(service.getState().operation.phase).toBe('done');
+  });
+
+  test('the wallet balance the screen showed must be a wei integer', () => {
+    const { service } = setup();
+    for (const walletXdaiWei of ['-1', '1.5', 'abc', '01', 5]) {
+      expect(service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei }).ok).toBe(false);
+    }
+    expect(service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' }).ok).toBe(true);
+  });
+
+  test('an Ant from before #126 would ignore the amount, so nothing is sent', async () => {
+    const { service, api } = setup();
+    // createApi's /node has no `settlement` object: v0.5.56 and older.
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation).toMatchObject({ phase: 'failed' });
+    expect(service.getState().operation.error).toMatch(/default target/);
+    expect(api.topUpSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('keeps the deposit route’s guards: no chequebook, unmanaged', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ chequebook: null })));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation.error).toMatch(/first storage purchase creates/);
+
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ managed: false })));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation.error).toMatch(/its own configuration/);
+    expect(api.topUpSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('a refusal without a figure fails rather than guessing', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.topUpSettlementDeposit.mockResolvedValue(fail(400, 'not enough xDAI'));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      error: 'not enough xDAI',
+    });
+  });
+
+  test('an amount out of range or not a PLUR integer is refused before anything runs', () => {
+    const { service, api } = setup();
+    for (const amountPlur of [
+      '0',
+      '-1',
+      '1.5',
+      'abc',
+      '01000000000000000',
+      1e15,
+      '9999999999999',
+    ]) {
+      expect(service.arm({ kind: 'deposit', amountPlur })).toEqual({
+        ok: false,
+        error: expect.stringMatching(/between 0\.001 and 10 xBZZ/),
+      });
+    }
+    expect(service.arm({ kind: 'deposit', amountPlur: '100000000000000001' }).ok).toBe(false);
+    expect(parseDepositAmount('10000000000000')).toBe('10000000000000');
+    expect(parseDepositAmount('100000000000000000')).toBe('100000000000000000');
+    expect(api.getSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('reads the shortfall antd names', () => {
+    expect(parseXdaiShortfall(SHORT)).toBe(120_100_000_000_000_000n);
+    expect(parseXdaiShortfall('not enough xDAI: send 2 more xDAI')).toBe(2n * 10n ** 18n);
+    expect(parseXdaiShortfall('not enough xDAI')).toBeNull();
+    expect(parseXdaiShortfall('send 0.0000 more xDAI')).toBeNull();
+    expect(parseXdaiShortfall(null)).toBeNull();
+  });
+});
+
 describe('the payment from the Freedom wallet', () => {
   test('a confirmed payment re-quotes at once instead of waiting for the next tick', async () => {
     const { service, api, getTransactionStatus } = setup();
@@ -1080,6 +1870,7 @@ describe('watching and the account snapshot', () => {
       storage: 'available',
       walletAddress: WALLET,
       xdai: '0.25',
+      xdaiWei: '250000000000000000',
       bzz: '0',
       chequebook: {
         address: CHEQUEBOOK,
@@ -1108,6 +1899,7 @@ describe('watching and the account snapshot', () => {
       storage: 'missing',
       walletAddress: WALLET,
       xdai: '0.25',
+      xdaiWei: '250000000000000000',
       bzz: '0.5',
       chequebook: {
         address: CHEQUEBOOK,

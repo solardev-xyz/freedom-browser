@@ -83,6 +83,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   invalidateTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:invalidate', { name }),
   // History
   getHistory: (options) => ipcRenderer.invoke('history:get', options),
+  // Address-bar suggestion candidates for what the user typed (#503).
+  autocompleteHistory: (query) => ipcRenderer.invoke('history:autocomplete', { query }),
   addHistory: (entry) => ipcRenderer.invoke('history:add', entry),
   removeHistory: (id) => ipcRenderer.invoke('history:remove', id),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
@@ -537,6 +539,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   restartAndInstallUpdate: () => ipcRenderer.send('update:restart-and-install'),
   checkForUpdates: () => ipcRenderer.send('update:check'),
+  // Update state (#87): `getUpdateState` for the first paint, `onUpdateState`
+  // for every change after it (update-state.js documents the snapshot).
+  getUpdateState: () => ipcRenderer.invoke('update:get-state'),
+  onUpdateState: (callback) => {
+    const handler = (_event, state) => callback(state);
+    ipcRenderer.on('update:state', handler);
+    return () => ipcRenderer.removeListener('update:state', handler);
+  },
 });
 
 // Re-dispatch main-process broadcasts as window CustomEvents so existing
@@ -852,6 +862,13 @@ contextBridge.exposeInMainWorld('publishSetup', {
   },
 });
 
+// The node's chequebook as browsing credit and its swap-enable switch
+// (src/main/swarm/browsing-credit-service.js, #488). Chrome only.
+contextBridge.exposeInMainWorld('browsingCredit', {
+  getState: () => ipcRenderer.invoke('swarm:credit-get-state'),
+  setSwapEnable: (enabled) => ipcRenderer.invoke('swarm:credit-set-swap-enable', enabled),
+});
+
 contextBridge.exposeInMainWorld('networks', {
   getChains: () => ipcRenderer.invoke('networks:get-chains'),
   getChain: (chainId) => ipcRenderer.invoke('networks:get-chain', chainId),
@@ -919,10 +936,10 @@ contextBridge.exposeInMainWorld('sitePermissions', {
   // The address-bar popover lists what applies in THIS window, so its Remove
   // is window-scoped: it lifts the asking window's own run-scoped decision
   // (a private window's partition tier, a normal window's session tier) plus
-  // the shared stored one — never the other scope's (#366). Settings > Site
-  // Permissions goes through webview-preload.js without this marker and stays
-  // profile-wide. Main resolves WHICH window from the IPC sender, never from
-  // here.
+  // the shared stored one — never the other scope's (#366). Settings >
+  // Privacy and security > Site Permissions goes through webview-preload.js
+  // without this marker and stays profile-wide. Main resolves WHICH window
+  // from the IPC sender, never from here.
   revoke: (origin, permission) =>
     ipcRenderer.invoke('permissions:revoke', origin, permission, { scope: 'window' }),
   revokeOrigin: (origin) =>

@@ -89,18 +89,18 @@ const navigateWithAddressBar = async (
 async function enableTorIntegrationFromSettings(window) {
   await navigateWithAddressBar(
     window,
-    'freedom://settings/experimental',
-    /freedom:\/\/settings\/experimental/,
+    'freedom://settings/advanced',
+    /freedom:\/\/settings\/advanced/,
     SETTINGS_TIMEOUT_MS
   );
 
   await waitForWebviewCondition(
     window,
     `
-      (() => location.hash === '#experimental'
+      (() => location.hash === '#advanced'
         && !!document.querySelector('#enable-tor-integration'))()
     `,
-    'Waiting for the Experimental settings section'
+    'Waiting for the Advanced settings section'
   );
 
   await expect

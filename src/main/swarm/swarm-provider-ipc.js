@@ -1581,11 +1581,16 @@ async function handleSendPss(params, origin) {
 
   const { targets } = params;
   const targetByteLen = typeof targets === 'string' ? targets.length / 2 : NaN;
+  // Bound the length before any regexp sees the page-supplied string: a
+  // grouped-loop pattern on megabytes of input can overflow V8's regexp
+  // backtrack stack once the isolate stops optimising regexps (#478), which
+  // would surface as an internal error instead of invalid_target.
   const targetBytesValid =
     typeof targets === 'string' &&
-    /^([0-9a-fA-F]{2})+$/.test(targets) &&
+    Number.isInteger(targetByteLen) &&
     targetByteLen >= LIMITS.minTargetDepth &&
-    targetByteLen <= LIMITS.maxTargetDepth;
+    targetByteLen <= LIMITS.maxTargetDepth &&
+    !/[^0-9a-fA-F]/.test(targets);
   if (!targetBytesValid) {
     // Floor is the storability depth (a 1-byte target is too shallow to
     // be retained by any storer); cap is the mining-cost ceiling.
@@ -1621,6 +1626,26 @@ async function handleSendPss(params, origin) {
     log.error(`[SwarmProvider] sendPss failed for ${origin}:`, err.message);
     return nodeWriteError(err);
   }
+}
+
+/**
+ * The page-facing error for a GSOC topic derivation that failed before any
+ * node write: the origin is over its new-topic budget, or mining the signer
+ * failed or overran its hard timeout (messaging-service / gsoc-miner, #503).
+ * Null for anything else.
+ */
+function gsocDerivationError(err) {
+  if (err?.reason === 'topic_rate_limited') {
+    return invalidParams(err.message, 'rate_limited', {
+      limit: err.limit,
+      windowMs: err.windowMs,
+      retryAfterMs: err.retryAfterMs,
+    });
+  }
+  if (err?.reason === 'gsoc_mining_timeout' || err?.reason === 'gsoc_mining_failed') {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message, data: { reason: err.reason } } };
+  }
+  return null;
 }
 
 /**
@@ -1666,11 +1691,11 @@ async function handleSendGsoc(params, origin) {
   }
 
   try {
-    const result = await messagingService.sendGsoc({ topic: params.topic, data: payload });
+    const result = await messagingService.sendGsoc({ topic: params.topic, data: payload, origin });
     return { result: { sent: true, address: result.address } };
   } catch (err) {
     log.error(`[SwarmProvider] sendGsoc failed for ${origin}:`, err.message);
-    return nodeWriteError(err);
+    return gsocDerivationError(err) || nodeWriteError(err);
   }
 }
 
@@ -1836,11 +1861,11 @@ async function handleSubscribe(params, origin, meta) {
     // Topic-derived key: GSOC mines the room address, PSS hashes the topic.
     try {
       key = kind === 'gsoc'
-        ? messagingService.deriveGsoc(params.topic).address
+        ? (await messagingService.deriveGsoc(params.topic, { origin })).address
         : messagingService.resolvePssTopicHex(params.topic);
     } catch (err) {
       log.error(`[SwarmProvider] subscribe derivation failed for ${origin}:`, err.message);
-      return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+      return gsocDerivationError(err) || { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
     }
   }
 
@@ -1850,8 +1875,10 @@ async function handleSubscribe(params, origin, meta) {
   }
 
   // Everything above this line can take arbitrarily long — the messaging
-  // grant prompt is user-paced and the reachability probe is a network
-  // round-trip — and a webview keeps its webContents across navigations.
+  // grant prompt is user-paced, the reachability probe is a network
+  // round-trip, and a GSOC topic's signer is mined in a worker that may
+  // be busy with other topics — and a webview keeps its webContents across
+  // navigations.
   // If the user navigated the tab elsewhere while we waited, the registry
   // entry we are about to create would bind `origin`'s subscription to a
   // webContents now hosting someone else, and the delivery check would

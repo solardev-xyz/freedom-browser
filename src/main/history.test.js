@@ -10,9 +10,6 @@ const {
 function loadHistoryModule(options = {}) {
   return loadMainModule(require.resolve('./history'), {
     ...options,
-    extraMocks: {
-      'better-sqlite3': () => FakeBetterSqlite3Database,
-    },
   });
 }
 
@@ -138,6 +135,113 @@ describe('history', () => {
     ]);
     await expect(ipcMain.invoke(IPC.HISTORY_REMOVE, created.id)).resolves.toBe(true);
     await expect(ipcMain.invoke(IPC.HISTORY_CLEAR)).resolves.toBe(0);
+  });
+});
+
+// #503: the address bar and the History page get bounded queries, answered
+// by the search worker (real worker_threads, real SQLite file here).
+describe('history bounded queries', () => {
+  let userDataDir;
+  let historyModule;
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir();
+    historyModule = null;
+  });
+
+  afterEach(() => {
+    historyModule?.closeDb();
+    removeTempUserDataDir(userDataDir);
+  });
+
+  const load = (extraMocks) => {
+    const ipcMain = createIpcMainMock();
+    const ctx = loadMainModule(require.resolve('./history'), { userDataDir, ipcMain, extraMocks });
+    historyModule = ctx.mod;
+    ctx.mod.registerHistoryIpc();
+    return { mod: ctx.mod, ipcMain };
+  };
+
+  const seed = (mod) => {
+    mod.addHistoryEntry({ url: 'https://alpha.example/', title: 'Alpha', protocol: 'https' });
+    mod.addHistoryEntry({ url: 'https://beta.example/', title: 'Beta', protocol: 'https' });
+    mod.addHistoryEntry({ url: 'https://alpha.example/', title: 'Alpha', protocol: 'https' });
+  };
+
+  test('history:autocomplete and history:page answer from the worker', async () => {
+    const { mod, ipcMain } = load();
+    seed(mod);
+
+    await expect(ipcMain.invoke(IPC.HISTORY_AUTOCOMPLETE, { query: 'ALPHA' })).resolves.toEqual([
+      expect.objectContaining({ url: 'https://alpha.example/', visit_count: 2 }),
+    ]);
+    await expect(ipcMain.invoke(IPC.HISTORY_AUTOCOMPLETE, { query: 42 })).resolves.toEqual([]);
+    await expect(
+      ipcMain.invoke(IPC.HISTORY_PAGE, { query: '', sort: 'visited', offset: 0, limit: 1 })
+    ).resolves.toEqual({
+      entries: [expect.objectContaining({ url: 'https://alpha.example/' })],
+      matched: 2,
+      total: 2,
+    });
+    await expect(ipcMain.invoke(IPC.HISTORY_PAGE, null)).resolves.toEqual(
+      expect.objectContaining({ matched: 2, total: 2 })
+    );
+  });
+
+  test('falls back to the main thread when the worker cannot run', async () => {
+    const realHost = jest.requireActual('./history-search-host');
+    const runInWorker = jest.fn(() =>
+      Promise.reject(new realHost.HistorySearchUnavailable('no worker'))
+    );
+    const { mod, ipcMain } = load({
+      [require.resolve('./history-search-host')]: () => ({ ...realHost, runInWorker }),
+    });
+    seed(mod);
+
+    await expect(ipcMain.invoke(IPC.HISTORY_AUTOCOMPLETE, { query: 'beta' })).resolves.toEqual([
+      expect.objectContaining({ url: 'https://beta.example/' }),
+    ]);
+    await expect(ipcMain.invoke(IPC.HISTORY_PAGE, { query: 'beta' })).resolves.toEqual(
+      expect.objectContaining({ matched: 1, total: 2 })
+    );
+    expect(runInWorker).toHaveBeenCalledTimes(2);
+  });
+
+  test('a timed-out suggestion lookup yields no history rather than an error', async () => {
+    const realHost = jest.requireActual('./history-search-host');
+    const runInWorker = jest.fn(() => Promise.reject(new realHost.HistorySearchTimeout('slow')));
+    const { mod, ipcMain } = load({
+      [require.resolve('./history-search-host')]: () => ({ ...realHost, runInWorker }),
+    });
+    seed(mod);
+
+    await expect(ipcMain.invoke(IPC.HISTORY_AUTOCOMPLETE, { query: 'beta' })).resolves.toEqual([]);
+    // The History page reports it instead.
+    await expect(ipcMain.invoke(IPC.HISTORY_PAGE, { query: 'beta' })).rejects.toThrow('slow');
+  });
+
+  test('history:get without a limit no longer returns the whole table', async () => {
+    const { mod, ipcMain } = load();
+    mod.getDb().transaction(() => {
+      for (let i = 0; i < 1010; i++) {
+        mod.addHistoryEntry({ url: `https://x.example/${i}`, title: 'x', protocol: 'https' });
+      }
+    })();
+
+    await expect(ipcMain.invoke(IPC.HISTORY_GET)).resolves.toHaveLength(1000);
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 5000 })).resolves.toHaveLength(1000);
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 3 })).resolves.toHaveLength(3);
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { query: 'x.example' })).resolves.toHaveLength(50);
+    // SQLite reads LIMIT -1 as unlimited: a negative limit must not lift the cap.
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: -1 })).resolves.toHaveLength(1000);
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 0.5 })).resolves.toHaveLength(1000);
+    await expect(ipcMain.invoke(IPC.HISTORY_GET, { limit: 'abc' })).resolves.toHaveLength(1000);
+    await expect(
+      ipcMain.invoke(IPC.HISTORY_GET, { query: 'x.example', limit: -1 })
+    ).resolves.toHaveLength(50);
+    await expect(
+      ipcMain.invoke(IPC.HISTORY_GET, { query: 'x.example', limit: 5000 })
+    ).resolves.toHaveLength(1000);
   });
 });
 

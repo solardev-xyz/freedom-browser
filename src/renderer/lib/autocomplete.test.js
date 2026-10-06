@@ -61,8 +61,7 @@ const createElement = (initialClasses = []) => {
 };
 
 const flushMicrotasks = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
 };
 
 const loadAutocompleteModule = async (options = {}) => {
@@ -108,6 +107,7 @@ const loadAutocompleteModule = async (options = {}) => {
   const addressInput = createElement();
   const webviewElement = createElement();
   const electronAPI = {
+    autocompleteHistory: jest.fn().mockResolvedValue(history),
     getHistory: jest.fn().mockResolvedValue(history),
     getBookmarks: jest.fn().mockResolvedValue(bookmarks),
     getCachedFavicon: jest.fn((url) => faviconBehavior(url)),
@@ -330,9 +330,9 @@ describe('autocomplete', () => {
     mod.initAutocomplete();
     await flushMicrotasks();
 
-    expect(debugMocks.pushDebug).toHaveBeenCalledWith(
-      '[Autocomplete] Cache refreshed: 1 history, 1 bookmarks'
-    );
+    expect(debugMocks.pushDebug).toHaveBeenCalledWith('[Autocomplete] Cache refreshed: 1 bookmarks');
+    // History is queried per keystroke, never read whole (#503).
+    expect(electronAPI.getHistory).not.toHaveBeenCalled();
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('[Autocomplete] Initialized');
 
     addressInput.value = 'example';
@@ -340,6 +340,7 @@ describe('autocomplete', () => {
     jest.runAllTimers();
     await flushMicrotasks();
 
+    expect(electronAPI.autocompleteHistory).toHaveBeenCalledWith('example');
     expect(autocompleteUtilsMocks.generateSuggestions).toHaveBeenCalledWith('example', {
       openTabs: [{ id: 11, title: 'Open Tab', url: 'https://tab.example' }],
       historyItems: [{ title: 'History Entry', url: 'https://history.example' }],
@@ -701,12 +702,93 @@ describe('autocomplete', () => {
     expect(webviewElement.handlers.focus).toBeUndefined();
     expect(webviewElement.handlers.mousedown).toBeUndefined();
 
-    electronAPI.getHistory.mockRejectedValueOnce(new Error('history unavailable'));
+    electronAPI.getBookmarks.mockRejectedValueOnce(new Error('bookmarks unavailable'));
     await mod.refreshCache();
 
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       '[Autocomplete] Failed to refresh cache:',
       expect.any(Error)
     );
+  });
+  describe('history is looked up per query (#503)', () => {
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((r) => (resolve = r));
+      return { promise, resolve };
+    };
+
+    const type = async (ctx, value) => {
+      ctx.addressInput.value = value;
+      ctx.addressInput.handlers.input();
+      jest.runAllTimers();
+      await flushMicrotasks();
+    };
+
+    test('a lookup that lands after the user committed never opens the list', async () => {
+      jest.useFakeTimers();
+      const ctx = await loadAutocompleteModule();
+      ctx.mod.initAutocomplete();
+      await flushMicrotasks();
+      const lookup = deferred();
+      ctx.electronAPI.autocompleteHistory.mockReturnValueOnce(lookup.promise);
+
+      await type(ctx, 'exa');
+      expect(ctx.electronAPI.autocompleteHistory).toHaveBeenCalledWith('exa');
+      // Enter while the list is still closed: the navigation has started.
+      ctx.addressInput.handlers.keydown({ key: 'Enter', preventDefault: jest.fn() });
+      lookup.resolve([{ title: 'Late', url: 'https://late.example' }]);
+      await flushMicrotasks();
+
+      expect(ctx.autocompleteUtilsMocks.generateSuggestions).not.toHaveBeenCalled();
+      expect(ctx.dropdown.classList.remove).not.toHaveBeenCalledWith('hidden');
+    });
+
+    test('only the latest query is rendered; ones typed meanwhile are skipped', async () => {
+      jest.useFakeTimers();
+      const ctx = await loadAutocompleteModule();
+      ctx.mod.initAutocomplete();
+      await flushMicrotasks();
+      const first = deferred();
+      ctx.electronAPI.autocompleteHistory.mockReturnValueOnce(first.promise);
+
+      await type(ctx, 'e');
+      await type(ctx, 'ex');
+      await type(ctx, 'exa');
+      // One lookup in flight; the queries typed meanwhile wait, newest only.
+      expect(ctx.electronAPI.autocompleteHistory.mock.calls).toEqual([['e']]);
+
+      first.resolve([{ title: 'Stale', url: 'https://stale.example' }]);
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.autocompleteHistory.mock.calls).toEqual([['e'], ['exa']]);
+      expect(ctx.autocompleteUtilsMocks.generateSuggestions).toHaveBeenCalledTimes(1);
+      expect(ctx.autocompleteUtilsMocks.generateSuggestions).toHaveBeenCalledWith(
+        'exa',
+        expect.objectContaining({
+          historyItems: [{ title: 'History Entry', url: 'https://history.example' }],
+        })
+      );
+    });
+
+    test('a failed lookup still suggests tabs and bookmarks', async () => {
+      jest.useFakeTimers();
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const ctx = await loadAutocompleteModule();
+      ctx.mod.initAutocomplete();
+      await flushMicrotasks();
+      ctx.electronAPI.autocompleteHistory.mockRejectedValueOnce(new Error('worker gone'));
+
+      await type(ctx, 'exa');
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[Autocomplete] History lookup failed:',
+        expect.any(Error)
+      );
+      expect(ctx.autocompleteUtilsMocks.generateSuggestions).toHaveBeenCalledWith(
+        'exa',
+        expect.objectContaining({ historyItems: [] })
+      );
+      expect(ctx.dropdown.classList.remove).toHaveBeenCalledWith('hidden');
+    });
   });
 });

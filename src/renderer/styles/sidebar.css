@@ -1733,6 +1733,58 @@
   color: var(--text);
 }
 
+/* Browsing credit (#488): the chequebook as credit for faster downloads.
+   Badge colours come from .node-card-status; no colour of its own. */
+.swarm-credit-line {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+#swarm-credit-detail,
+#swarm-credit-spend {
+  padding-bottom: 4px;
+}
+
+.swarm-credit-status {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.swarm-credit-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.swarm-credit-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.swarm-credit-toggle-label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.swarm-credit-toggle-row .toggle-switch input:disabled + .toggle-slider {
+  opacity: 0.5;
+}
+
+.swarm-credit-note {
+  margin: 10px 0 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 /* ============================================
    Publish Setup
    ============================================ */

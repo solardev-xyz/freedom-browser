@@ -42,6 +42,8 @@ let nodeView;
 let nodeText;
 let nodeActionBtn;
 let plansView;
+let plansWarning;
+let plansWarningText;
 let planList;
 let plansError;
 let readyView;
@@ -118,6 +120,8 @@ export function initPublishSetup() {
   nodeText = document.getElementById('publish-setup-node-text');
   nodeActionBtn = document.getElementById('publish-setup-node-action');
   plansView = document.getElementById('publish-setup-plans');
+  plansWarning = document.getElementById('publish-setup-plans-warning');
+  plansWarningText = document.getElementById('publish-setup-plans-warning-text');
   planList = document.getElementById('publish-plan-list');
   plansError = document.getElementById('publish-plans-error');
   readyView = document.getElementById('publish-setup-ready');
@@ -338,6 +342,11 @@ function render() {
 
   if (view === 'node') renderNode(state);
   if (view === 'plans') renderPlans();
+  // Ant's search for storage this wallet already owns stopped finishing
+  // (a scan that keeps failing): the plans show, with why to look first.
+  const stalled = view === 'plans' && state.readiness?.scanStalled === true;
+  show(plansWarning, stalled);
+  if (plansWarningText) plansWarningText.textContent = stalled ? state.readiness.message : '';
   if (view === 'ready' && readyText) {
     readyText.textContent = roomShortfall
       ? 'None of your storage batches has room for that upload. Make one bigger under Manage Storage, or buy more storage.'

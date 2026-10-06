@@ -73,7 +73,9 @@ describe('remote-debugging gate', () => {
   test('index.js applies the gate before any other app module is loaded', () => {
     const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
     const requires = [...source.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
-    expect(requires.slice(0, 4)).toEqual([
+    expect(requires.slice(0, 5)).toEqual([
+      // Sets UV_THREADPOOL_SIZE only; requires nothing (uv-threadpool.test.js).
+      './uv-threadpool',
       'electron',
       './ipc-sender-policy',
       // The policy's lazy logger callback, not run at load time.

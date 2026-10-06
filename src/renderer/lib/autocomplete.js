@@ -19,9 +19,22 @@ import {
 
 const electronAPI = window.electronAPI;
 
-// Cache for suggestions data
-let historyCache = [];
+// Bookmarks are few and cached in main, so the list is kept here and
+// refreshed after each navigation. History is not: it can run to hundreds of
+// thousands of rows, so each (debounced) query asks main for a bounded set of
+// candidates instead (`history:autocomplete`, answered off main's thread).
+// Before #503 the whole table was re-read and sent here after every
+// navigation (~190 ms of main-thread time per navigation at 200k rows).
 let bookmarksCache = [];
+
+// History lookups in flight. `queryGeneration` is bumped by every new query
+// and every cancel (hide, a commit before the debounce fired), so a result
+// that lands late is dropped instead of reopening the list. Only one lookup
+// is in flight at a time; while it is, the latest query waits in
+// `pendingQuery` and older ones waiting there are simply replaced.
+let queryGeneration = 0;
+let lookupInFlight = false;
+let pendingQuery = null;
 
 // DOM elements
 let dropdown = null;
@@ -62,30 +75,66 @@ export const setOnNavigate = (callback) => {
 };
 
 /**
- * Load history and bookmarks into cache
+ * Reload the bookmarks list used for suggestions. Called after every
+ * recorded navigation; history needs no refresh (it is queried per keystroke).
  */
 export const refreshCache = async () => {
   try {
-    const [history, bookmarks] = await Promise.all([
-      electronAPI?.getHistory?.() || [],
-      electronAPI?.getBookmarks?.() || [],
-    ]);
-    historyCache = history;
+    const bookmarks = (await electronAPI?.getBookmarks?.()) || [];
     bookmarksCache = bookmarks;
-    pushDebug(
-      `[Autocomplete] Cache refreshed: ${history.length} history, ${bookmarks.length} bookmarks`
-    );
+    pushDebug(`[Autocomplete] Cache refreshed: ${bookmarks.length} bookmarks`);
   } catch (err) {
     console.error('[Autocomplete] Failed to refresh cache:', err);
   }
 };
 
-const generateSuggestions = (query) =>
+const generateSuggestions = (query, historyItems) =>
   generateAutocompleteSuggestions(query, {
     openTabs: getOpenTabs(),
-    historyItems: historyCache,
+    historyItems,
     bookmarks: bookmarksCache,
   });
+
+const fetchHistoryCandidates = async (query) => {
+  if (!electronAPI?.autocompleteHistory) return [];
+  try {
+    return (await electronAPI.autocompleteHistory(query)) || [];
+  } catch (err) {
+    console.error('[Autocomplete] History lookup failed:', err);
+    return [];
+  }
+};
+
+const lookUpAndRender = async (query, generation) => {
+  lookupInFlight = true;
+  // Never rejects: a failed lookup suggests tabs and bookmarks only.
+  const historyItems = await fetchHistoryCandidates(query);
+  lookupInFlight = false;
+  if (pendingQuery) {
+    const next = pendingQuery;
+    pendingQuery = null;
+    lookUpAndRender(next.query, next.generation);
+    return;
+  }
+  if (generation !== queryGeneration) return;
+  renderSuggestions(generateSuggestions(query, historyItems));
+};
+
+/** Look up suggestions for `query` and render them unless superseded. */
+const requestSuggestions = (query) => {
+  const generation = ++queryGeneration;
+  if (lookupInFlight) {
+    pendingQuery = { query, generation };
+    return;
+  }
+  lookUpAndRender(query, generation);
+};
+
+/** Drop any lookup in flight or waiting, so its result never renders. */
+const cancelSuggestionRequests = () => {
+  queryGeneration++;
+  pendingQuery = null;
+};
 
 /**
  * Get badge for item type
@@ -216,6 +265,7 @@ const show = () => {
  * Hide dropdown
  */
 export const hide = () => {
+  cancelSuggestionRequests();
   if (!dropdown) return;
   const wasOpen = isOpen;
   dropdown.classList.add('hidden');
@@ -329,8 +379,8 @@ const handleInput = () => {
 
   // Debounce
   debounceTimer = setTimeout(() => {
-    const suggestions = generateSuggestions(query);
-    renderSuggestions(suggestions);
+    debounceTimer = null;
+    requestSuggestions(query);
   }, 80);
 };
 
@@ -345,12 +395,15 @@ const handleKeyDown = (e) => {
       e.preventDefault();
       return;
     }
-    // User committed before the 80 ms debounce fired. Cancel the
-    // pending suggestion render so the dropdown doesn't pop open
-    // after the navigation has already started.
-    if ((e.key === 'Enter' || e.key === 'Escape') && debounceTimer) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
+    // User committed before the 80 ms debounce fired, or before the history
+    // lookup came back. Cancel the pending suggestion render so the dropdown
+    // doesn't pop open after the navigation has already started.
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      cancelSuggestionRequests();
     }
     return;
   }

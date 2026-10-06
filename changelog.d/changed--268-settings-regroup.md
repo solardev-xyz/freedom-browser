@@ -1,0 +1,6 @@
+- Settings regrouped into ten entries in Chrome's order, with old Settings addresses and bookmarks still landing on their section ([#551](https://github.com/solardev-xyz/freedom-browser/pull/551)):
+  - Ad Blocking and Site Permissions under Settings > Privacy and security
+  - Chains, RPC Providers and Name Resolution under Settings > Networks
+  - Startup toggles, Tor's included, and Swarm publishing under Settings > Nodes
+  - Settings > Experimental renamed Advanced, holding only the Beta features
+  - Updates under Settings > About Freedom, its status row naming the running version

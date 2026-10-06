@@ -8,8 +8,8 @@
  * blocked popups per tab and shows a small icon in the address bar while the
  * active tab has any. Its popover lists them (capped), each with "Open", and
  * offers "Always allow pop-ups on this site" — the `popups` site permission,
- * which then shows in the permission indicator and in Settings > Site
- * Permissions, where it is removed.
+ * which then shows in the permission indicator and in Settings > Privacy
+ * and security > Site Permissions, where it is removed.
  *
  * Like Chrome, the list belongs to the page: a committed main-frame
  * navigation of that tab clears it. "Open" opens the popup as a tab, exactly

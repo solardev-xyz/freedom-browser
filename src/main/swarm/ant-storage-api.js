@@ -4,7 +4,11 @@
  * The Swarm node routes the publish setup reads and writes:
  *
  *   - the Bee-compatible reads readiness is built from (`/health`, `/node`,
- *     `/readiness`, `/stamps`, `/addresses`, `/wallet`, `/chequebook/*`);
+ *     `/readiness`, `/stamps`, `/addresses`, `/wallet`, `/chequebook/*`),
+ *     and `/settlements` for the browsing credit (browsing-credit-service.js);
+ *   - the node's `swap-enable` switch, `GET|PUT /v0/settlement/swap`, on Ant
+ *     releases with freedom-hq/ant#126 (they also report it in `/node`'s
+ *     `settlement` object; older ones lack both);
  *   - antd's xDAI storage routes: `GET /v0/storage/quote`,
  *     `POST /v0/storage/buy`, `POST /v0/storage/extend` and
  *     `GET|POST /v0/settlement/deposit`. The user sends plain xDAI to the node
@@ -66,7 +70,7 @@ function isConnectFailure(err) {
 async function antRequest(
   method,
   endpoint,
-  { query, timeoutMs = READ_TIMEOUT_MS, fetchImpl } = {}
+  { query, body, timeoutMs = READ_TIMEOUT_MS, fetchImpl } = {}
 ) {
   const base = apiBase();
   if (!base) {
@@ -79,6 +83,9 @@ async function antRequest(
     response = await (fetchImpl || fetch)(buildUrl(base, endpoint, query), {
       method,
       signal: AbortSignal.timeout(timeoutMs),
+      ...(body === undefined
+        ? {}
+        : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     });
     text = await response.text();
   } catch (err) {
@@ -113,6 +120,7 @@ const getAddresses = (opts) => antRequest('GET', '/addresses', opts);
 const getWallet = (opts) => antRequest('GET', '/wallet', opts);
 const getChequebookAddress = (opts) => antRequest('GET', '/chequebook/address', opts);
 const getChequebookBalance = (opts) => antRequest('GET', '/chequebook/balance', opts);
+const getSettlements = (opts) => antRequest('GET', '/settlements', opts);
 
 /**
  * Price a new batch (`{ depth, days }`) or an extension of an existing one
@@ -147,8 +155,36 @@ function getSettlementDeposit(opts = {}) {
   return antRequest('GET', '/v0/settlement/deposit', { timeoutMs: QUOTE_TIMEOUT_MS, ...opts });
 }
 
-function topUpSettlementDeposit(opts = {}) {
-  return antRequest('POST', '/v0/settlement/deposit', { timeoutMs: WRITE_TIMEOUT_MS, ...opts });
+/**
+ * Top the chequebook deposit up to the node's target, or, with `amountPlur`
+ * (a PLUR integer string), deposit that much more whatever the target. Only
+ * Ant releases with freedom-hq/ant#126 read `amount`; an older one ignores it
+ * and tops up to its target, so callers check `/node`'s `settlement` first.
+ */
+function topUpSettlementDeposit({ amountPlur } = {}, opts = {}) {
+  return antRequest('POST', '/v0/settlement/deposit', {
+    timeoutMs: WRITE_TIMEOUT_MS,
+    ...opts,
+    query: { amount: amountPlur },
+  });
+}
+
+// antd waits up to 5 s for its node loop to apply the switch.
+const SWAP_SWITCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Flip the running node's `swap-enable` (`{ swapEnabled }`): downloads and
+ * uploads alike, no restart. Answers the node's settlement state afterwards.
+ * Not persisted by antd: ant-manager writes the setting into config.yaml for
+ * the next start. Main-process fetches send no `Origin`, which the route's
+ * web-page guard lets through.
+ */
+function setSwapEnabled(enabled, opts = {}) {
+  return antRequest('PUT', '/v0/settlement/swap', {
+    timeoutMs: SWAP_SWITCH_TIMEOUT_MS,
+    ...opts,
+    body: { swapEnabled: enabled === true },
+  });
 }
 
 /**
@@ -234,11 +270,13 @@ module.exports = {
   getWallet,
   getChequebookAddress,
   getChequebookBalance,
+  getSettlements,
   getStorageQuote,
   buyStorage,
   extendStorage,
   getSettlementDeposit,
   topUpSettlementDeposit,
+  setSwapEnabled,
   isStorageRouteMissing,
   isUncertainWrite,
   isBatchNotYetKnownError,

@@ -1,5 +1,4 @@
 const crypto = require('crypto');
-const fs = require('fs');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const log = require('./logger');
@@ -58,41 +57,11 @@ const BZZ_PROBE_ABANDON_TTL_MS = 5 * 60 * 1000;
 // Path to webview preload script (for internal pages)
 const webviewPreloadPath = path.join(__dirname, 'webview-preload.js');
 
-// Canonical internal-pages list (shared with preloads via sync IPC)
-const internalPages = require('../shared/internal-pages.json');
-
-// Ethereum provider injection source, read once and shared with webview preloads
-// over sync IPC. The preload is sandboxed and cannot `require('fs')` itself.
-const ethereumInjectSource = fs.readFileSync(
-  path.join(__dirname, 'webview-preload-ethereum-inject.js'),
-  'utf-8'
-);
-
-// EIP-6963 ProviderInfo static fields. Icon is a 96×96 PNG base64-encoded
-// (spec recommends square, 96×96 minimum, and requires an RFC-2397 data URI).
-// Name and rdns come from src/shared/brand.json. We cannot read them from
-// package.json at runtime because electron-builder strips the `build` section
-// (which holds productName and appId) from the packaged package.json.
-const ethereumProviderIconPath = app.isPackaged
-  ? path.join(process.resourcesPath, 'assets', 'icon-6963.png')
-  : path.join(__dirname, '..', '..', 'assets', 'icon-6963.png');
-const brand = require('../shared/brand.json');
-// Read the icon defensively: a missing/corrupt file must not block main-process
-// startup. Fall back to an empty icon and let the 6963 announcement still fire.
-let ethereumProviderIconDataUri = '';
-try {
-  ethereumProviderIconDataUri =
-    'data:image/png;base64,' + fs.readFileSync(ethereumProviderIconPath, 'base64');
-} catch (err) {
-  log.error('[eip6963] Failed to load provider icon:', err.message);
-}
-const ethereumProviderInfoStatic = Object.freeze({
-  name: brand.productName,
-  icon: ethereumProviderIconDataUri,
-  // rdns is EIP-6963's "reverse-DNS" identifier; brand.appId (baby.freedom.browser)
-  // is already valid reverse-DNS of freedom.baby, so we reuse it.
-  rdns: brand.appId,
-});
+// Canonical internal-pages list and the ethereum provider source. Tab
+// webviews get both on their command line (webview-boot.js); the sync IPC
+// below is what the chrome window's preload uses, and the webview preload's
+// fallback.
+const { internalPages, buildEthereumInjectSource } = require('./webview-boot');
 
 const isAllowedBaseUrl = (value) => {
   if (!value) return false;
@@ -333,12 +302,23 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
   const validation = validateProfileNodeConfigUpdate(protocol, patch);
   if (!validation.ok) return validation.response;
 
+  let profile;
   try {
     const result = updateActiveProfileNodeConfig(protocol, validation.sanitized);
     if (!result) {
       return failure('PROFILE_UPDATE_FAILED', 'Profile node config was not updated');
     }
-    const profile = serializeActiveProfile();
+    profile = serializeActiveProfile();
+  } catch (err) {
+    log.error('[profile] Failed to update node config:', err);
+    return failure('PROFILE_UPDATE_FAILED', err.message || 'Profile node config update failed');
+  }
+
+  // The catalog write above has landed. A failure from here on (applying the
+  // new mode to a running node) must not read as "not saved": the caller
+  // gets `details.saved: true` and the stored profile, so Settings reports
+  // the config as saved and only the apply step as failed.
+  try {
     broadcastProfileUpdated(profile);
     if (protocol === 'myotis') {
       const myotisManager = require('./myotis/myotis-manager');
@@ -363,11 +343,16 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
       const ipfsManager = require('./ipfs-manager');
       await ipfsManager.syncProfileMode();
     }
-    return success({ profile });
   } catch (err) {
-    log.error('[profile] Failed to update node config:', err);
-    return failure('PROFILE_UPDATE_FAILED', err.message || 'Profile node config update failed');
+    log.error('[profile] Node config saved, but applying it failed:', err);
+    return failure(
+      'PROFILE_NODE_APPLY_FAILED',
+      err.message || 'Profile node config was saved but could not be applied',
+      { saved: true },
+      { profile }
+    );
   }
+  return success({ profile });
 }
 
 function listProfilesFromIpc() {
@@ -603,7 +588,7 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
       );
     }
 
-    const result = deleteProfileForActiveApp(payload.id, payload.confirmDisplayName);
+    const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName);
     if (!result) {
       return failure(
         'PROFILE_CATALOG_UNAVAILABLE',
@@ -923,13 +908,7 @@ function registerBaseIpcHandlers(callbacks = {}) {
     // One UUID per webview-preload load (i.e. per page session), stable
     // across eip6963:requestProvider re-announcements within that session.
     // Each new tab / reload is a fresh session and gets a fresh UUID.
-    // Escape '<' as \u003c so a future field value containing '</script>'
-    // can't break out of the injected <script> tag (defense in depth;
-    // today's fields all come from package.json).
-    const info = { ...ethereumProviderInfoStatic, uuid: crypto.randomUUID() };
-    const infoJson = JSON.stringify(info).replace(/</g, '\\u003c');
-    const preamble = `window.__FREEDOM_PROVIDER_CONFIG__ = ${infoJson};\n`;
-    event.returnValue = preamble + ethereumInjectSource;
+    event.returnValue = buildEthereumInjectSource(crypto.randomUUID());
   });
 
   ipcMain.handle(IPC.OPEN_URL_IN_NEW_TAB, (event, url) => {

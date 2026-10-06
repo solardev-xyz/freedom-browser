@@ -81,7 +81,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.53` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.59` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -90,7 +90,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### freedom-ipfs (Native IPFS Addon)
 
 - **Source:** https://github.com/solardev-xyz/freedom-ipfs
-- **Version:** `v0.4.3` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
+- **Version:** `v0.4.5` (pin: `scripts/fetch-freedom-ipfs-native.js` `releaseTag`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Native addon loaded by the Electron main process
@@ -155,7 +155,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ## Electron Framework
 
-- **Version:** 44.4.5 (lockfile-resolved)
+- **Version:** 44.5.1 (lockfile-resolved)
 - **License:** MIT
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.

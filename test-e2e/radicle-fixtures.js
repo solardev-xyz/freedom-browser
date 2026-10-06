@@ -18,6 +18,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -179,11 +180,8 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // window may already be closed
-    }
+    // Real nodes stop on quit; same deadline as live-fixtures.js.
+    await closeApp(app, { timeout: 100_000 });
   },
 
   window: async ({ electronApp }, use) => {

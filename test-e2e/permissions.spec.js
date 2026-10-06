@@ -267,7 +267,8 @@ test('Settings > Site Permissions lists remembered decisions and revoke-all clea
     ])
   );
 
-  // #272: the section-level action sits next to the `<h2>`, outside the
+  // #272: the section-level action sits next to the panel heading (an
+  // `<h3>` since #268 made Site Permissions a panel of Privacy and security), outside the
   // rendered list — so it is one button across every render, and it is the
   // heading's own row that centres it.
   expect(
@@ -276,7 +277,7 @@ test('Settings > Site Permissions lists remembered decisions and revoke-all clea
       `(() => {
         const button = document.getElementById('permissions-revoke-all');
         const header = button.closest('.section-header');
-        const title = header?.querySelector('h2.section-title');
+        const title = header?.querySelector('h3.panel-title');
         return {
           insideView: !!document.getElementById('permissions-view').contains(button),
           beside: header?.contains(title) === true,

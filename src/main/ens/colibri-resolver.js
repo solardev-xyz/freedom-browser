@@ -1,72 +1,18 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const { app } = require('electron');
 const { ethers } = require('ethers');
 const { ccipReadFetch } = require('./ccip-fetch');
-// Never require the package directly — colibri-runtime pins the WASM runtime
-// (see the comment there; the 2.0.5+ native addon crashes Electron).
-const { Colibri, Strategy, setRuntimeResetListener } = require('./colibri-runtime');
+// Colibri itself runs in a per-chain worker thread (#495): proof verification
+// is synchronous WASM and must never block Electron's main process. The worker
+// owns the package (via colibri-runtime), its disk storage and trap recovery.
+const workerHost = require('./colibri-worker-host');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
 const { universalResolverCall, universalResolverReverse, hostOf } = require('../ens-resolver');
-
-// privacy_mode 'basic' is a strict improvement (call params never sent
-// to the prover); pinning rather than exposing as a toggle keeps the
-// threat model legible.
-const PRIVACY_MODE = 'basic';
-const MAX_LATEST_AGE_SECONDS = 60;
-
-// A WASM trap (e.g. a receipt lookup for a hash the prover has not seen) fails
-// only the request that hit it; colibri-runtime swaps in a fresh instance for
-// the next one. Say so, since the failed read itself is logged by the caller.
-setRuntimeResetListener((err) => {
-  log.warn(
-    `[colibri] WASM verifier trapped (${sanitizeColibriErrorDetail(err?.message)}); ` +
-    'replaced the runtime instance'
-  );
-});
 
 const clients = new Map();
 const inFlightBuilds = new Map();
 const clientReferences = new Map();
 const retiredClients = new Set();
-let storageRegistration = null;
-let storageRegistered = false;
 const buildGenerations = new Map();
-
-// Disk-backed storage adapter for Colibri's verifier state (sync committee
-// pubkeys, current head witness, etc — keys like "states_1" / "sync_1_<slot>").
-// The bundled default writes these to process.cwd(), which means launching
-// the browser from a different directory loses the warm-cache state and
-// scatters files across the filesystem. Redirect to a stable per-app dir.
-function createDiskStorage() {
-  const dir = path.join(app.getPath('userData'), 'colibri');
-  fs.mkdirSync(dir, { recursive: true });
-  return {
-    get: (key) => {
-      try { return fs.readFileSync(path.join(dir, key)); }
-      catch { return null; }
-    },
-    set: (key, value) => { fs.writeFileSync(path.join(dir, key), value); },
-    del: (key) => {
-      try { fs.unlinkSync(path.join(dir, key)); }
-      catch (err) { if (err.code !== 'ENOENT') throw err; }
-    },
-  };
-}
-
-async function ensureStorageRegistered() {
-  if (storageRegistered) return;
-  if (!storageRegistration) {
-    storageRegistration = Colibri.register_storage(createDiskStorage())
-      .then(() => { storageRegistered = true; })
-      .catch((err) => {
-        storageRegistration = null;
-        throw err;
-      });
-  }
-  await storageRegistration;
-}
 
 function destroyClient(client) {
   if (!client || typeof client.destroy !== 'function') return;
@@ -205,19 +151,11 @@ async function withColibriClientRetry(chainId, operation) {
 }
 
 async function buildClient({ chainId, key, proverUrl, zkProof, generation }) {
-  // Storage adapter is registered exactly once per process: on the very
-  // first construction. Later settings-change rebuilds reuse it — the
-  // adapter is keyless and the Colibri runtime expects a single global.
-  await ensureStorageRegistered();
+  // The chain's worker registers the verifier's disk storage before it reports
+  // ready; settings-change rebuilds reuse the same worker and storage.
+  await workerHost.ensureWorker(chainId);
 
-  const client = new Colibri({
-    chainId,
-    prover: [proverUrl],
-    zk_proof: zkProof,
-    privacy_mode: PRIVACY_MODE,
-    proofStrategy: Strategy.VerifiedOnly,
-    max_latest_age_seconds: MAX_LATEST_AGE_SECONDS,
-  });
+  const client = workerHost.createClient({ chainId, proverUrl, zkProof });
 
   if (generation !== buildGenerations.get(chainId)) {
     destroyClient(client);
@@ -299,9 +237,11 @@ async function resolveReverseViaColibri(addressBytes, coinType = 60n) {
   );
 }
 
-async function requestViaColibri(chainId, method, params = []) {
+// `deadlineMs` is how long the caller will wait: past it, a worker still
+// verifying this request is terminated rather than left running.
+async function requestViaColibri(chainId, method, params = [], { deadlineMs } = {}) {
   return withColibriClientRetry(chainId, ({ client }) =>
-    client.request({ method, params })
+    client.request({ method, params }, { deadlineMs })
   );
 }
 
@@ -319,8 +259,6 @@ function clearColibriClientForTest() {
   for (const client of retiredClients) destroyClient(client);
   clientReferences.clear();
   retiredClients.clear();
-  storageRegistration = null;
-  storageRegistered = false;
 }
 
 module.exports = {
