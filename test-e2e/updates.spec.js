@@ -9,7 +9,7 @@
 // preload + the main-side sender policy) into updater.js, where the harness's
 // recorder stands in for the network and for quitting the app.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, waitForPopoverFrame } = require('./fixtures');
 
 const dispatch = (app, event) =>
   app.evaluate((_electron, ev) => globalThis.__FREEDOM_TEST_HARNESS__.dispatchUpdate(ev), event);
@@ -34,6 +34,8 @@ async function openSettingsUpdates(window, electronApp) {
 async function openMenu(window) {
   await window.click('#menu-button');
   await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+  // Submit the menu frame before a synthetic row click can reach the guest below it.
+  await waitForPopoverFrame(window);
 }
 
 test('without a running updater both surfaces say so instead of offering a dead button', async ({

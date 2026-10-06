@@ -1,0 +1,205 @@
+{
+  "schema": "privacy-main-sync-v1",
+  "date": "2026-10-06",
+  "main": "59dd2079497455014b96f0b3640a41db3df65cfa",
+  "merge": "f581637477e9a93e5c02b271e31744ba6eb0d92b",
+  "previousFeature": "b5f3b5af",
+  "npmLockAndPackageUnchanged": true,
+  "nodePinsUnchanged": true,
+  "dependenciesReinstalled": false,
+  "bundledNodes": {
+    "Ant": "0.5.59",
+    "freedom-ipfs": "0.4.5",
+    "Radicle": "0.7.1",
+    "Myotis": "0.1.12",
+    "Arti": "2.6.0"
+  },
+  "refresh": {
+    "Ant": "all downloader targets; Windows ARM64 remains x64 emulation",
+    "freedom-ipfs": "host download/checksum plus native version/required async-export load",
+    "Radicle": "host download/checksum plus 30-export/status load, no node start",
+    "Myotis": "five targets checksum verified; ABI32 host constructors; supervisor rebuilt",
+    "Arti": "download/build command refused Rust1.88.0 below required1.91.0; existing matching2.6.0 retained, no toolchain upgrade"
+  },
+  "checks": {
+    "unit": {
+      "suites": 14,
+      "tests": 354,
+      "exitCode": 0,
+      "originalHandle": 43918
+    },
+    "strictLint": {
+      "exitCode": 0,
+      "originalHandle": 75817
+    },
+    "strictLintAfterSpecFix": {
+      "exitCode": 0,
+      "originalHandle": 19978
+    },
+    "initialHarness": {
+      "passed": 42,
+      "failed": 1,
+      "exitCode": 1,
+      "originalHandle": 93240,
+      "failure": "updates.spec.js missing second install request after newly opened menu click"
+    },
+    "isolatedUnmodifiedRecheck": {
+      "passed": 1,
+      "exitCode": 0,
+      "originalHandle": 65011
+    },
+    "unmodifiedUpdatesSuite": {
+      "passed": 5,
+      "successfulSubcommandOf": 39854,
+      "combinedExitCode": 1,
+      "combinedFailure": "subsequent theme-parity command; no separate original updater process handle observed"
+    },
+    "fixedUpdatesSuite": {
+      "passed": 5,
+      "exitCode": 0,
+      "originalHandle": 87679
+    },
+    "themeParityOnMac": {
+      "passed": 6,
+      "failed": 2,
+      "exitCode": 1,
+      "originalHandle": 39854,
+      "failures": "both chrome tours: Linux baseline entries for node-toggle labels already meet contrast on macOS; recipe sends Control+f instead of macOS shortcut",
+      "linuxScreenshotBaselinesRerendered": false
+    },
+    "checkBinaries": {
+      "exitCode": 0,
+      "scope": "mac-arm64 presence and Myotis provenance"
+    },
+    "nodeRefreshBatch": {
+      "originalHandle": 77820,
+      "exitCode": 1,
+      "reason": "Arti build refused old Rust after other four nodes and Myotis supervisor completed"
+    }
+  },
+  "sourceReviews": {
+    "merge": "existing Codex reviewer cleared four automatic merge paths and privacy/IPC gates",
+    "specFix": "existing Codex reviewer cleared frame-wait helper with exact actions and assertions unchanged"
+  },
+  "railgunEvidence": {
+    "sourceCommit": "98cbfd775b51b729763b552744cba4a6572c0604",
+    "inventoryCount": 167,
+    "allInventoryFilesUnchangedAfterMerge": true,
+    "nativeRerun": false,
+    "historicalScopeUnchanged": true
+  },
+  "installedFiles": {
+    "ant-bin/mac-arm64/antd": {
+      "sha256": "32dde463f09cf832607ed6b815b34ffe7d10414bcf571197ab6b841b212bd3ec",
+      "bytes": 14507120
+    },
+    "native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node": {
+      "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897",
+      "bytes": 35554504
+    },
+    "radicle-bin/mac-arm64/libradicle.node": {
+      "sha256": "807ef2c0679ee3cedebf9ef2f9f4c012f921b2f43bdcba52d3715a35e6d4d210",
+      "bytes": 13006512
+    },
+    "myotis-bin/mac-arm64/myotis-node.node": {
+      "sha256": "19f1866ce23230ebad65262b79bf2dd0792f5b98684fdfdd9a0e6c5d0295d9cc",
+      "bytes": 9859088
+    },
+    "myotis-bin/mac-arm64/myotis-supervisor": {
+      "sha256": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203",
+      "bytes": 34768
+    },
+    "arti-bin/mac-arm64/arti": {
+      "sha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34",
+      "bytes": 22463904
+    },
+    "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron": {
+      "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83",
+      "bytes": 33968
+    }
+  },
+  "logs": {
+    "ant": {
+      "sha256": "c57b432e937e3a6600211214cdcaa7935de03fb47879a1122ae2b2acf8a69009",
+      "bytes": 2311
+    },
+    "ipfs": {
+      "sha256": "c2ccc9b07baf71489836ee1f499568e5247163eab986f6093e4f7fc6337fda81",
+      "bytes": 582
+    },
+    "radicle": {
+      "sha256": "17efb0b671a5ae45e89a99371c35e78eb9ab73427bc10e5c4cd6179e2231ff5c",
+      "bytes": 265
+    },
+    "myotis": {
+      "sha256": "7a8d32e64cd86ecdec3a68ca39da218f4d0ef3873145c0d7e604e36183572661",
+      "bytes": 396
+    },
+    "supervisor": {
+      "sha256": "9e92838d110dcd4a96ebbf8e716d6caeb815a40a045a90cedb437fc67b5ccb1a",
+      "bytes": 190
+    },
+    "arti": {
+      "sha256": "a84c3ba4009cebdc9ec7c700f8c3ae9078a4b8d942ac59243f8b7b1fc619d4a1",
+      "bytes": 207
+    },
+    "binaries": {
+      "sha256": "6fd167b0d7d1263ed5cfe93953236d35a8b6663f9e8a3e80aad6b2eecf5b1b86",
+      "bytes": 145
+    },
+    "radicle-load": {
+      "sha256": "aeb4ac21b39c501a267426de044fd429b5e727f3a53e12360668f1775a797d02",
+      "bytes": 86
+    },
+    "ant-version": {
+      "sha256": "4aa8a2a4fa1145eb8d9e42a835e111ceeab917af8ef2a8ef0a215df25055d73b",
+      "bytes": 12
+    },
+    "arti-version": {
+      "sha256": "c89377250ebe9fa1e0c1c6b4cc733065ca8c740e962c48d9239526b6bd7d7afd",
+      "bytes": 88
+    },
+    "ipfs-load": {
+      "sha256": "fd4917e90f9b72eb3d7f893c46923714aa7c7332d2e5a37dc443ab3cb549deb2",
+      "bytes": 595
+    },
+    "tests": {
+      "sha256": "6c42ad98e93ae19948217db38b2eda3f70ae127c17c4cdac867a3dcb0b91bac3",
+      "bytes": 4411
+    },
+    "lint": {
+      "sha256": "d56e357ebba7dd4f6225baf0c364cba405502e9215c1ec184119ea9ba3318d6c",
+      "bytes": 63
+    },
+    "lint-after-click": {
+      "sha256": "d56e357ebba7dd4f6225baf0c364cba405502e9215c1ec184119ea9ba3318d6c",
+      "bytes": 63
+    },
+    "e2e": {
+      "sha256": "27e4d77dd4ede5cd72d1fd1d29724cdab4524315ecafc9ac5b2d905c9354fd64",
+      "bytes": 10286
+    },
+    "update-recheck": {
+      "sha256": "d48dfca2a1b5085cd337ac4009a49fa86010a3da9a8159bee0fdbf7846e812cc",
+      "bytes": 549
+    },
+    "updates": {
+      "sha256": "d508e36efc41441e5f33189cd01fa744e9bad25ff9230c13d6f28aa11d6eff3e",
+      "bytes": 1051
+    },
+    "updates-fixed": {
+      "sha256": "163fb6d5a33a132b81a1de6ac680f308c1cf0aab6a46bedb07ce5ca59058a327",
+      "bytes": 1057
+    },
+    "theme": {
+      "sha256": "bc0e4dedc4cdb2ba0722026010bad8231760b11740e48880781b79024ce1a77d",
+      "bytes": 11164
+    }
+  },
+  "limits": [
+    "Root observed command outcomes; reviewers did not rerun them.",
+    "No full repository test run or Linux screenshot baseline refresh.",
+    "No live node-network or funded wallet test.",
+    "The first updater failure and macOS theme failures remain recorded; later passes do not erase them."
+  ]
+}
