@@ -1,3 +1,14 @@
+const mockConsumeIssuance = jest.fn(),
+  mockConsumeProof = jest.fn(),
+  mockAssertIssuance = jest.fn();
+jest.mock(
+  './railgun-relay-operation',
+  () => ({
+    consumeRailgunRelayIssuancePermit: (...args) => mockConsumeIssuance(...args),
+    consumeRailgunRelayProofPermit: (...args) => mockConsumeProof(...args),
+  }),
+  { virtual: true }
+);
 let mockEnrollment, mockIdentity, mockSession, mockCoverage, mockJournal, mockRunner, mockView;
 let mockCheckpointHash = (value) => JSON.stringify(value);
 const mockCompletedStore = jest.fn();
@@ -32,6 +43,7 @@ jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
 }));
 jest.mock('./railgun-identity', () => ({
+  assertRailgunRelayCredentialIssuance: (...args) => mockAssertIssuance(...args),
   quarantineRailgunIdentityCredentials: (...args) => mockQuarantine(...args),
   assertRailgunIdentity: (v) => {
     if (v !== mockIdentity) throw Error('identity');
@@ -3660,7 +3672,7 @@ test.each(['quote', 'deadline', 'identity', 'generation'])(
         assertRelayWindow(window, account, f.owners);
         if (kind === 'quote') jest.spyOn(Date, 'now').mockReturnValue(f.fields.feeExpiration + 1);
         if (kind === 'deadline')
-          jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 30001);
+          jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 180001);
         if (kind === 'identity')
           mockIdentity.descriptor = { ...mockIdentity.descriptor, accountIndex: 1 };
         if (kind === 'generation') generation.id = 'f'.repeat(64);
@@ -3677,7 +3689,7 @@ test.each(['quote', 'deadline', 'identity', 'generation'])(
     await account.close();
   }
 );
-test('prepared continuation does not renew the review deadline', async () => {
+test('prepared continuation has the original entry absolute 180 second deadline', async () => {
   const f = reviewedRelayFixture(),
     account = await f.opened();
   let now = performance.now();
@@ -3690,8 +3702,9 @@ test('prepared continuation does not renew the review deadline', async () => {
       },
       onPrepared: (_offer, { window }) => {
         const data = assertRelayWindow(window, account, f.owners);
-        expect(data.deadline - now).toBeLessThanOrEqual(1000);
-        now += 1001;
+        expect(data.deadline - data.started).toBe(180000);
+        expect(data.deadline - now).toBe(151000);
+        now = data.deadline + 1;
       },
     })
   ).rejects.toThrow();
@@ -3733,7 +3746,7 @@ test('prepared promise intrinsic observation ignores overridden then and drains 
     review: () => true,
     onPrepared: () => {
       entered = true;
-      jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 30001);
+      jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 180001);
       return original;
     },
   });
@@ -3752,3 +3765,702 @@ test('prepared promise intrinsic observation ignores overridden then and drains 
   await expect(work).rejects.toThrow();
   await account.close();
 });
+
+const {
+  prepareRailgunAccountRelayPrePoi: prePoiRelay,
+  recordRailgunAccountRelayCredentialIssuance: issueRelay,
+  completeRailgunAccountRelayProof: proveRelay,
+} = require('./railgun-account-wallet');
+function connectedData(offer) {
+  const f =
+    require('../../../scripts/fixtures/railgun-relay-main-proof-data').createRailgunRelayMainProofData();
+  const record = f.record;
+  record.draft = offer.preparation.data;
+  record.walletId = record.draft.walletId;
+  record.generationId = generation.id;
+  record.checkpointHash = offer.review.summary.state.checkpointHash;
+  record.history.draftDigest = offer.preparation.digest;
+  record.prePoiBinding.draftDigest = offer.preparation.digest;
+  const decode = require('./railgun-relay-recovery-data').decodeRailgunRelayLocalRecord;
+  const row = decode(JSON.stringify(record));
+  const text = JSON.stringify(row);
+  const sha = (value) =>
+    require('crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const proof = {
+    ...f.proof,
+    recordDigest: require('./railgun-relay-recovery-data').digestRailgunRelayLocalIntent(text),
+    draftDigest: offer.preparation.digest,
+    historyDigest: require('./railgun-relay-poi-history').normalizeRailgunRelayPoiHistory(
+      row.history
+    ).digest,
+    expectedHash: row.draft.intent.expectedHash,
+    transaction: row.draft.intent.transaction,
+  };
+  proof.transactionDigest = sha(proof.transaction);
+  return { row, text, proof };
+}
+function connectMocks(f, account, offer, window) {
+  const d = connectedData(offer),
+    signer = {},
+    issuance = {},
+    proofPermit = {};
+  const saved = { row: d.row };
+  const reservations = {
+    readRelay: jest.fn(async () => {
+      events.push('custody-read');
+      return {
+        entry: { origin: 'relay-local-v4', state: 'signing-local' },
+        interruptedStep: null,
+        record: saved.row,
+      };
+    }),
+  };
+  const recoveryStore = {
+    saveProof: jest.fn(async (id, proved) => {
+      events.push('save-proof');
+      expect(id).toBe(d.row.id);
+      saved.row = { ...saved.row, state: 'ready-local', proved };
+    }),
+  };
+  jest
+    .spyOn(require('./railgun-private-reservations'), 'assertRailgunPrivateReservationsOwner')
+    .mockImplementation((value) => {
+      if (value !== reservations) throw Error('foreign ledger');
+    });
+  jest
+    .spyOn(require('./railgun-relay-recovery-store'), 'assertRailgunRelayRecoveryStoreOwner')
+    .mockImplementation((value) => {
+      if (value !== recoveryStore) throw Error('foreign recovery');
+    });
+  mockConsumeIssuance.mockImplementation((token, a, owners, w, s) => {
+    expect(a).toBe(account);
+    expect(owners).toEqual(f.owners);
+    expect(w).toBe(window);
+    expect(s).toBe(signer);
+    if (token !== issuance) throw Error('forged issuance');
+    return Object.freeze({
+      intent: offer.preparation.data.intent,
+      recordDigest: d.proof.recordDigest,
+    });
+  });
+  mockAssertIssuance.mockImplementation((s, identity, input) => {
+    if (s !== signer || identity !== mockIdentity || input.recordDigest !== d.proof.recordDigest)
+      throw Error('not issuing');
+  });
+  const custody = Object.freeze({
+    reservations,
+    recoveryStore,
+    operationId: d.row.id,
+    recordText: d.text,
+    archive: options.archive,
+    proverArchive: '/synthetic-prover.asar',
+    artifactDirectory: '/synthetic-artifacts',
+    assertCurrent: jest.fn(async () => {}),
+  });
+  mockConsumeProof.mockImplementation((token, a, owners, w) => {
+    expect(a).toBe(account);
+    expect(owners).toEqual(f.owners);
+    expect(w).toBe(window);
+    if (token !== proofPermit) throw Error('forged proof');
+    return custody;
+  });
+  mockRunner.proveRelayReadOnly = jest.fn(async (input) => {
+    events.push('producer-closed');
+    expect(input.relayProof.recordText).toBe(d.text);
+    expect(input.relayProof.timeoutMs).toBeLessThanOrEqual(110000);
+    return {
+      receipt: {},
+      coverage: f.coverage.coverage,
+      relayOwned: structuredClone(f.owned),
+      readOnly: { readOnly: true, writeAttempts: 0 },
+      relayProof: d.proof,
+    };
+  });
+  const verified = { receipt: {}, close: jest.fn(() => events.push('verifier-scope-close')) };
+  const verify = jest
+    .spyOn(require('./railgun-relay-proof'), 'verifyRailgunRelayProof')
+    .mockImplementation(async (input) => {
+      expect(events).toContain('producer-closed');
+      expect(input.signal.aborted).toBe(false);
+      events.push('verifier-closed');
+      return verified;
+    });
+  jest
+    .spyOn(require('./railgun-relay-proof'), 'assertRailgunRelayProof')
+    .mockImplementation((receipt) => {
+      expect(receipt).toBe(verified.receipt);
+      events.push('proof-assert');
+    });
+  return {
+    ...d,
+    signer,
+    issuance,
+    proofPermit,
+    custody,
+    saved,
+    verify,
+    verified,
+    reservations,
+    recoveryStore,
+  };
+}
+test('fixed connected proof observes A then C, refreshes, then directly saves and reads custody', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let connected;
+  const result = await continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: async (offer, { window }) => {
+      connected = connectMocks(f, account, offer, window);
+      const local = issueRelay(window, account, f.owners, connected.signer, connected.issuance);
+      expect(Object.keys(local)).toEqual(['assertCurrent']);
+      local.assertCurrent();
+      expect(() => assertRelayWindow(window, account, f.owners)).toThrow();
+      const staged = await proveRelay(account, f.owners, { window, permit: connected.proofPermit });
+      expect(staged).toEqual({ status: 'proof-staged', operationId: connected.row.id });
+      expect(connected.recoveryStore.saveProof).not.toHaveBeenCalled();
+      events.push('handler-ended');
+    },
+  });
+  expect(result).toEqual({ status: 'ready-local', operationId: connected.row.id });
+  expect(events.indexOf('producer-closed')).toBeLessThan(events.indexOf('verifier-closed'));
+  expect(events.indexOf('handler-ended')).toBeLessThan(events.lastIndexOf('revalidate'));
+  expect(events.lastIndexOf('revalidate')).toBeLessThan(events.indexOf('save-proof'));
+  expect(events.lastIndexOf('custody-read')).toBeGreaterThan(events.indexOf('save-proof'));
+  expect(connected.saved.row.state).toBe('ready-local');
+  await account.close();
+});
+test.each(['forged', 'not-issuing', 'expired'])(
+  'fixed issuance refuses %s before local mode',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    let calls = 0,
+      returned = false;
+    await expect(
+      continueRelay(account, f.owners, f.request, {
+        review: () => true,
+        onPrepared: (offer, { window }) => {
+          const c = connectMocks(f, account, offer, window);
+          if (kind === 'not-issuing')
+            mockAssertIssuance.mockImplementation(() => {
+              throw Error('not issuing');
+            });
+          if (kind === 'expired')
+            jest.spyOn(Date, 'now').mockReturnValue(f.fields.feeExpiration + 1);
+          calls++;
+          issueRelay(window, account, f.owners, c.signer, kind === 'forged' ? {} : c.issuance);
+          returned = true;
+        },
+      })
+    ).rejects.toThrow();
+    expect(calls).toBe(1);
+    expect(returned).toBe(false);
+    expect(mockRunner.proveRelayReadOnly).not.toHaveBeenCalled();
+    await account.close();
+  }
+);
+test('actual issuance removes only quote expiry; public fresh window remains refused', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const result = await continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: async (offer, { window }) => {
+      const c = connectMocks(f, account, offer, window);
+      const local = issueRelay(window, account, f.owners, c.signer, c.issuance);
+      jest.spyOn(Date, 'now').mockReturnValue(f.fields.feeExpiration + 1);
+      local.assertCurrent();
+      expect(() => assertRelayWindow(window, account, f.owners)).toThrow();
+      await proveRelay(account, f.owners, { window, permit: c.proofPermit });
+    },
+  });
+  expect(result.status).toBe('ready-local');
+  await account.close();
+});
+test.each(['before-producer', 'after-verifier', 'post-refresh'])(
+  'fixed proof %s deadline crossing refuses success',
+  async (stage) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    let c;
+    let now = performance.now();
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    await expect(
+      continueRelay(account, f.owners, f.request, {
+        review: () => true,
+        onPrepared: async (offer, { window }) => {
+          c = connectMocks(f, account, offer, window);
+          const end = assertRelayWindow(window, account, f.owners).deadline;
+          issueRelay(window, account, f.owners, c.signer, c.issuance);
+          if (stage === 'before-producer') now = end - 44000;
+          if (stage === 'after-verifier') {
+            const verify = c.verify.getMockImplementation();
+            c.verify.mockImplementation(async (x) => {
+              const r = await verify(x);
+              now = end;
+              return r;
+            });
+          }
+          await proveRelay(account, f.owners, { window, permit: c.proofPermit });
+          if (stage === 'post-refresh') {
+            const validate = mockJournal.revalidate.getMockImplementation();
+            mockJournal.revalidate.mockImplementation(async (x) => {
+              await validate(x);
+              now = end;
+            });
+          }
+        },
+      })
+    ).rejects.toThrow();
+    expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+    await account.close();
+  }
+);
+test.each(['producer', 'verifier'])(
+  'unawaited fixed %s original remains owned through close and unknown exit quarantines',
+  async (role) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      gate = completedDeferred();
+    let c,
+      entered = false;
+    const work = continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared: (offer, { window }) => {
+        c = connectMocks(f, account, offer, window);
+        issueRelay(window, account, f.owners, c.signer, c.issuance);
+        (role === 'producer' ? mockRunner.proveRelayReadOnly : c.verify).mockImplementation(
+          async () => {
+            entered = true;
+            await gate.promise;
+            throw Object.assign(Error('unknown'), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+          }
+        );
+        proveRelay(account, f.owners, { window, permit: c.proofPermit }).catch(() => {});
+      },
+    });
+    work.catch(() => {});
+    await waitRelay(() => entered);
+    let done = false;
+    const closing = account.close().catch((error) => {
+      done = true;
+      return error;
+    });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(done).toBe(false);
+    gate.resolve();
+    await expect(work).rejects.toThrow();
+    expect((await closing).code).toBe('RAILGUN_WALLET_EXIT_UNOBSERVED');
+    expect(mockQuarantine).toHaveBeenCalled();
+    expect(c.verify).toHaveBeenCalledTimes(role === 'producer' ? 0 : 1);
+    expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+  }
+);
+test('fixed pre-POI binds the exact draft, detaches history, consumes receipt and retains original reconstruction', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let originalReconstruction;
+  const result = await continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: async (offer, { window }) => {
+      const d = connectedData(offer),
+        input = {
+          draftText: JSON.stringify(offer.preparation.data),
+          history: JSON.parse(JSON.stringify(d.row.history)),
+        };
+      originalReconstruction = offer.reconstruction;
+      mockRunner.prepareRelayPrePoiReadOnly = jest.fn(async (job) => {
+        expect(job.relayPrePoi.history).toEqual(d.row.history);
+        return {
+          receipt: {},
+          coverage: f.coverage.coverage,
+          relayOwned: structuredClone(f.owned),
+          readOnly: { readOnly: true, writeAttempts: 0 },
+          relayPrePoiBinding: {
+            binding: d.row.prePoiBinding,
+            historyDigest: d.proof.historyDigest,
+            draftDigest: offer.preparation.digest,
+            expectedHash: offer.preparation.data.intent.expectedHash,
+          },
+        };
+      });
+      const work = prePoiRelay(window, account, f.owners, input);
+      input.history.proof.root = 'f'.repeat(64);
+      const binding = await work;
+      expect(binding.historyDigest).toBe(d.proof.historyDigest);
+      expect(() => prePoiRelay(window, account, f.owners, input)).toThrow();
+    },
+  });
+  expect(result.reconstruction).toEqual(originalReconstruction);
+  await account.close();
+});
+test.each(['foreign-window', 'draft', 'history'])(
+  'fixed pre-POI rejects %s before a viewing utility',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    await expect(
+      continueRelay(account, f.owners, f.request, {
+        review: () => true,
+        onPrepared: (offer, { window }) => {
+          const d = connectedData(offer),
+            input = { draftText: JSON.stringify(offer.preparation.data), history: d.row.history };
+          if (kind === 'draft') input.draftText += ' ';
+          if (kind === 'history') input.history = {};
+          prePoiRelay(kind === 'foreign-window' ? {} : window, account, f.owners, input);
+        },
+      })
+    ).rejects.toThrow();
+    expect(mockRunner.prepareRelayPrePoiReadOnly).toBeUndefined();
+    await account.close();
+  }
+);
+test('local issuance without proof completion cannot publish a misleading successful diagnostic', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  await expect(
+    continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared: (offer, { window }) => {
+        const c = connectMocks(f, account, offer, window);
+        issueRelay(window, account, f.owners, c.signer, c.issuance);
+      },
+    })
+  ).rejects.toThrow();
+  await account.close();
+});
+async function coldConnectedFixture() {
+  const f = reviewedRelayFixture(),
+    warm = await f.opened();
+  let offer;
+  await continueRelay(warm, f.owners, f.request, {
+    review: () => true,
+    onPrepared: (value) => {
+      offer = value;
+    },
+  });
+  await warm.close();
+  const coldController = new AbortController();
+  mockSession.signal = coldController.signal;
+  mockSession.closed = Promise.resolve({ exitCode: 0 });
+  mockSession.close.mockImplementation(() => coldController.abort());
+  const input = completedOptions();
+  const completedSnapshot = options.coordinator.withCompletedPublicSnapshot.getMockImplementation();
+  options.coordinator.withCompletedPublicSnapshot.mockImplementation((input, run) =>
+    completedSnapshot(input, (snapshot) =>
+      run({
+        ...snapshot,
+        dispatch: async () => {
+          throw Error('unexpected mock dispatch');
+        },
+      })
+    )
+  );
+  state.checkpoint.target.hash = mockCheckpointHash({});
+  state.checkpoint.wallet = { storeId: generation.storeId, state: true };
+  const account = await openRailgunCompletedAccountWallet(input);
+  const c = connectMocks(f, account, offer, undefined);
+  f.owned.ownedPoi[0].type = c.row.history.note.type;
+  f.owned.ownedPoi[0].blindedCommitment = c.row.history.note.blindedCommitment;
+  return { f, account, c };
+}
+test('cold original-signature proof uses completed snapshot and original deadline without quote or signer', async () => {
+  const { f, account, c } = await coldConnectedFixture();
+  const calls = f.verify.mock.calls.length;
+  const signCalls = mockAssertIssuance.mock.calls.length;
+  const result = await proveRelay(account, f.owners, {
+    permit: c.proofPermit,
+    signal: f.request.signal,
+  });
+  expect(result).toEqual({ status: 'ready-local', operationId: c.row.id });
+  expect(f.verify).toHaveBeenCalledTimes(calls);
+  expect(mockAssertIssuance).toHaveBeenCalledTimes(signCalls);
+  expect(options.coordinator.withCompletedPublicSnapshot).toHaveBeenCalledTimes(2);
+  expect(options.coordinator.withPublicSnapshot).not.toHaveBeenCalled();
+  await account.close();
+});
+test.each(['identity', 'generation', 'abort', 'wall-rollback'])(
+  'local issuance still refuses %s after key',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    await expect(
+      continueRelay(account, f.owners, f.request, {
+        review: () => true,
+        onPrepared: (offer, { window }) => {
+          const c = connectMocks(f, account, offer, window),
+            local = issueRelay(window, account, f.owners, c.signer, c.issuance);
+          if (kind === 'identity') mockIdentity.descriptor.accountIndex = 99;
+          if (kind === 'generation') generation.id = 'f'.repeat(64);
+          if (kind === 'abort') f.abort.abort();
+          if (kind === 'wall-rollback') jest.spyOn(Date, 'now').mockReturnValue(0);
+          local.assertCurrent();
+        },
+      })
+    ).rejects.toThrow();
+    await account.close();
+  }
+);
+test('post-refresh custody drift refuses persistence despite a controller current callback', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let c;
+  await expect(
+    continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared: async (offer, { window }) => {
+        c = connectMocks(f, account, offer, window);
+        issueRelay(window, account, f.owners, c.signer, c.issuance);
+        await proveRelay(account, f.owners, { window, permit: c.proofPermit });
+        const validate = mockJournal.revalidate.getMockImplementation();
+        mockJournal.revalidate.mockImplementation(async (value) => {
+          await validate(value);
+          c.saved.row = { ...c.saved.row, state: 'discarded-signed' };
+        });
+      },
+    })
+  ).rejects.toThrow();
+  expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+  await account.close();
+});
+test('proof options reject proxy and getters before controller code', () => {
+  const trap = jest.fn(() => {
+    throw Error('must not execute');
+  });
+  const owner = { identity: {}, enrollment: {}, coordinator: {} };
+  expect(() => proveRelay({}, owner, new Proxy({}, { getOwnPropertyDescriptor: trap }))).toThrow();
+  const input = {};
+  Object.defineProperty(input, 'window', { enumerable: true, get: trap });
+  expect(() => proveRelay({}, owner, input)).toThrow();
+  expect(trap).not.toHaveBeenCalled();
+});
+test.each(['capacity-time', 'unknown-exit'])(
+  'cold proof %s refuses without quote renewal or lost ownership',
+  async (kind) => {
+    const { f, account, c } = await coldConnectedFixture();
+    if (kind === 'capacity-time')
+      jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 140000);
+    else
+      c.verify.mockRejectedValue(
+        Object.assign(Error('C original exit unknown'), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' })
+      );
+    await expect(
+      proveRelay(account, f.owners, { permit: c.proofPermit, signal: f.request.signal })
+    ).rejects.toThrow();
+    expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+    if (kind === 'unknown-exit') {
+      expect(mockQuarantine).toHaveBeenCalled();
+      await expect(account.close()).rejects.toMatchObject({
+        code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+      });
+      expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    } else await account.close();
+  }
+);
+test.each(['unchanged', 'changed-after-refresh'])(
+  'ready-local cold C-only %s preserves stored bytes and never invokes producer/write',
+  async (kind) => {
+    const { f, account, c } = await coldConnectedFixture();
+    const text = require('./railgun-relay-proof-results').createRailgunRelayReadyCandidate(
+      c.text,
+      c.proof
+    );
+    c.saved.row = JSON.parse(text);
+    const coldState = require('./railgun-account-wallet').readRailgunCompletedAccountRelayState(
+      account,
+      f.owners
+    );
+    expect(coldState.signal).toBe(account.signal);
+    expect(coldState.generationId).toBe(account.generationId);
+    const custody = Object.freeze({
+      ...c.custody,
+      recordText: text,
+      assertCurrent: async () => coldState.assertCurrent(),
+    });
+    const consume = mockConsumeProof.getMockImplementation();
+    mockConsumeProof.mockImplementation((...args) => {
+      consume(...args);
+      return custody;
+    });
+    c.verify.mockImplementation(async (input) => {
+      coldState.assertCurrent();
+      expect(input.signedRecordText).toBe(c.text);
+      expect(
+        require('./railgun-relay-proof-results').createRailgunRelayReadyCandidate(
+          input.signedRecordText,
+          input.proof
+        )
+      ).toBe(text);
+      events.push('stored-verifier-closed');
+      return c.verified;
+    });
+    if (kind === 'changed-after-refresh') {
+      const revalidate = mockJournal.revalidate.getMockImplementation();
+      mockJournal.revalidate.mockImplementation(async (input) => {
+        await revalidate(input);
+        c.saved.row = { ...c.saved.row, state: 'discarded-signed' };
+      });
+    }
+    const work = proveRelay(account, f.owners, { permit: c.proofPermit, signal: f.request.signal });
+    if (kind === 'unchanged') {
+      expect(await work).toEqual({ status: 'ready-local', operationId: c.row.id });
+      expect(JSON.stringify(c.saved.row)).toBe(text);
+    } else await expect(work).rejects.toThrow();
+    expect(mockRunner.proveRelayReadOnly).not.toHaveBeenCalled();
+    expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+    expect(c.verify).toHaveBeenCalledTimes(1);
+    await account.close();
+    expect(() => coldState.assertCurrent()).toThrow();
+  }
+);
+test('cold caller cancellation drains original producer and cannot reset completed deadline', async () => {
+  const { f, account, c } = await coldConnectedFixture(),
+    abort = new AbortController(),
+    gate = completedDeferred();
+  let entered = false;
+  const state = require('./railgun-account-wallet').readRailgunCompletedAccountRelayState(
+      account,
+      f.owners
+    ),
+    end = state.deadline;
+  mockRunner.proveRelayReadOnly.mockImplementation(async (input) => {
+    entered = true;
+    await gate.promise;
+    expect(input.relaySignal.aborted).toBe(true);
+    throw Error('cancelled original');
+  });
+  const work = proveRelay(account, f.owners, { permit: c.proofPermit, signal: abort.signal });
+  work.catch(() => {});
+  await waitRelay(() => entered);
+  abort.abort();
+  let settled = false;
+  work
+    .finally(() => {
+      settled = true;
+    })
+    .catch(() => {});
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(state.deadline).toBe(end);
+  gate.resolve();
+  await expect(work).rejects.toThrow();
+  expect(c.verify).not.toHaveBeenCalled();
+  await account.close();
+});
+test('connected scheduling keeps quote deadline until genuine issuance then only original absolute deadline', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const wall = Date.now();
+  jest.spyOn(Date, 'now').mockReturnValue(wall);
+  jest.spyOn(performance, 'now').mockReturnValue(1000);
+  f.fields.feeExpiration = wall + 130000;
+  f.request.quote.data = Buffer.from(JSON.stringify(f.fields)).toString('hex');
+  const scheduled = [],
+    set = setTimeout;
+  jest.spyOn(global, 'setTimeout').mockImplementation((fn, ms, ...args) => {
+    const timer = set(fn, ms, ...args);
+    scheduled.push({ fn, ms, timer });
+    return timer;
+  });
+  const clear = jest.spyOn(global, 'clearTimeout');
+  await continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: async (offer, { window }) => {
+      const before = scheduled.at(-1);
+      expect(before.ms).toBe(130000);
+      const c = connectMocks(f, account, offer, window);
+      issueRelay(window, account, f.owners, c.signer, c.issuance);
+      expect(clear).toHaveBeenCalledWith(before.timer);
+      expect(scheduled.at(-1).ms).toBe(180000);
+      await proveRelay(account, f.owners, { window, permit: c.proofPermit });
+    },
+  });
+  await account.close();
+});
+test('completed relay projection refuses an active account and forged owner without a mode boolean', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const read = require('./railgun-account-wallet').readRailgunCompletedAccountRelayState;
+  expect(() => read(account, f.owners)).toThrow();
+  expect(() => read({}, f.owners)).toThrow();
+  await account.close();
+});
+
+test('unknown reservation drain in original handler cause chain quarantines account', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  await expect(
+    continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared: async () => {
+        throw Object.assign(Error('controller failed'), {
+          cause: Object.assign(Error('store drain unknown'), {
+            code: 'RAILGUN_RESERVATIONS_DRAIN_UNOBSERVED',
+          }),
+        });
+      },
+    })
+  ).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect(mockQuarantine).toHaveBeenCalled();
+  await expect(account.close()).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+});
+
+test.each(['RAILGUN_WALLET_EXIT_UNOBSERVED', 'RAILGUN_RESERVATIONS_DRAIN_UNOBSERVED'])(
+  'late original callback %s survives coordinator cancellation and retains phase',
+  async (code) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    const snapshot = options.coordinator.withPublicSnapshot;
+    let cancel,
+      release,
+      done = false,
+      closed = false;
+    options.coordinator.withPublicSnapshot = (use) =>
+      Promise.race([
+        snapshot(use),
+        new Promise((_resolve, reject) => {
+          cancel = reject;
+        }),
+      ]);
+    const work = continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared: async () => {
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+        throw Error('late controller failure', {
+          cause: Object.assign(Error('original work unknown'), { code }),
+        });
+      },
+    });
+    work.then(
+      () => {
+        done = true;
+      },
+      () => {
+        done = true;
+      }
+    );
+    await waitRelay(() => !!release);
+    cancel(Error('coordinator cancellation'));
+    const drain = account.close();
+    drain.then(
+      () => {
+        closed = true;
+      },
+      () => {
+        closed = true;
+      }
+    );
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+    expect(done).toBe(false);
+    expect(closed).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    release();
+    await expect(work).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    await expect(drain).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    expect(mockQuarantine).toHaveBeenCalled();
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  }
+);
