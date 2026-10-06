@@ -683,3 +683,93 @@ test('readonly private intent exchange is never exposed to local relay proof cal
   });
   expect(mockMessages.some((v) => v.method === 'private-intent')).toBe(false);
 });
+// New binding purpose reuses the actual withWallet lifetime but no record route.
+function prePoiWalletFixture() {
+  const f = fixtureRun();
+  f.context.requestKey = jest.fn(async (wire) => {
+    const message = JSON.parse(wire);
+    expect(message).toEqual({ id: 1, method: 'key', purpose: 'relay-pre-poi' });
+    mockMessages.push(message);
+    return mockKey;
+  });
+  f.context.request = jest.fn(async (wire) => {
+    const message = JSON.parse(wire);
+    mockMessages.push(message);
+    const reply = JSON.stringify({ id: message.id, value: message.channel ? 'reply' : null });
+    return mockFrameHook ? mockFrameHook(message, reply) : reply;
+  });
+  return f;
+}
+test('pre-POI restored scope has fixed viewing purpose, no private exchange or signed record reader', async () => {
+  const { wallet } = jobs(),
+    f = prePoiWalletFixture();
+  await wallet(JSON.stringify(f.input), f.context, 'relay-pre-poi', async (restored) => {
+    expect(restored.exchangePrivateIntent).toBeUndefined();
+    expect(restored.readRelayProofRecord).toBeUndefined();
+    return { relayPrePoiBinding: { structural: true } };
+  });
+  expect(mockMessages.map((m) => m.id)).toEqual([1, 2, 3, 4]);
+  expect(mockMessages.map((m) => m.method || m.channel)).toEqual([
+    'key',
+    'public',
+    'wallet',
+    'result',
+  ]);
+  expect(mockKey.every((v) => v === 0)).toBe(true);
+  expect(mockRemotes.every((r) => r.close.mock.calls.length === 1)).toBe(true);
+});
+test('pre-POI cancellation during engine initialization admits no viewing key', async () => {
+  const { wallet } = jobs(),
+    f = prePoiWalletFixture(),
+    held = deferred();
+  mockInit = held.promise;
+  const original = wallet(JSON.stringify(f.input), f.context, 'relay-pre-poi', async () => ({}));
+  f.c.abort();
+  held.resolve();
+  await expect(original).rejects.toThrow();
+  expect(f.context.requestKey).not.toHaveBeenCalled();
+});
+test('pre-POI cancellation at callback completion withholds result and wipes loan', async () => {
+  const { wallet } = jobs(),
+    f = prePoiWalletFixture();
+  await expect(
+    wallet(JSON.stringify(f.input), f.context, 'relay-pre-poi', async () => {
+      f.c.abort();
+      return {};
+    })
+  ).rejects.toThrow();
+  expect(mockMessages.some((m) => m.method === 'result')).toBe(false);
+  expect(mockKey.every((v) => v === 0)).toBe(true);
+});
+test('pre-POI original final acknowledgement stays owned through cancellation', async () => {
+  const { wallet } = jobs(),
+    f = prePoiWalletFixture(),
+    held = deferred(),
+    reached = deferred();
+  mockFrameHook = async (message, reply) => {
+    if (message.method === 'result') {
+      reached.resolve();
+      await held.promise;
+    }
+    return reply;
+  };
+  let settled = false;
+  const original = wallet(JSON.stringify(f.input), f.context, 'relay-pre-poi', async () => ({}));
+  original.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await reached.promise;
+  f.c.abort();
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(mockKey.every((v) => v === 7)).toBe(true);
+  held.resolve();
+  await expect(original).rejects.toThrow();
+  expect(mockKey.every((v) => v === 0)).toBe(true);
+  expect(mockRemotes.every((r) => r.close.mock.calls.length === 1)).toBe(true);
+});

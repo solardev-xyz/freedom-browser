@@ -15,7 +15,7 @@ async function withWallet(
     inventory = require('./railgun-engine-manifest.json').inventory;
   const { initPoseidonPromise } = require(path.join(root, 'utils/poseidon'));
   await initPoseidonPromise;
-  if (purpose === 'relay-prove-local')
+  if (purpose === 'relay-prove-local' || purpose === 'relay-pre-poi')
     require('./railgun-relay-wallet-data').assertRailgunRelaySignal(signal);
   let sequence = 1,
     poiCalls = 0,
@@ -170,7 +170,7 @@ async function withWallet(
             : {}),
         })
       : {};
-    if (purpose === 'relay-prove-local')
+    if (purpose === 'relay-prove-local' || purpose === 'relay-pre-poi')
       require('./railgun-relay-wallet-data').assertRailgunRelaySignal(signal);
     assert.equal(poiCalls, 0);
     assert.equal(guardReport().attempts, 0);
@@ -194,7 +194,7 @@ async function withWallet(
       ),
       { id: messageId, value: null }
     );
-    if (purpose === 'relay-prove-local')
+    if (purpose === 'relay-prove-local' || purpose === 'relay-pre-poi')
       require('./railgun-relay-wallet-data').assertRailgunRelaySignal(signal);
   } finally {
     viewingKey.fill(0);
