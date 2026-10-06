@@ -76,3 +76,69 @@ test.each(['missing', 'replaced', 'extra', 'reordered', 'canary'])(
     expect(() => assertVerification({ ...report, guards }, 1)).toThrow();
   }
 );
+
+// Exercise the actual top-level entry statement, not a duplicated predicate.
+// No Electron module or native process is loaded by this VM test.
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const entryFilename = require.resolve('../qualify-railgun-relay-proof');
+const entrySource = fs.readFileSync(entryFilename, 'utf8');
+const entryStart = entrySource.lastIndexOf('\nif (') + 1;
+const entryEnd = entrySource.indexOf('\nmodule.exports =', entryStart);
+function executeEntry({
+  electron = '44.5.1',
+  type = 'browser',
+  script = entryFilename,
+  nodeMain = false,
+} = {}) {
+  expect(entryStart).toBeGreaterThan(0);
+  expect(entryEnd).toBeGreaterThan(entryStart);
+  expect(entrySource.slice(entryStart, entryEnd)).toContain('main().then(');
+  const module = {};
+  const exit = jest.fn();
+  const require = jest.fn((name) => {
+    expect(name).toBe('electron');
+    return { app: { exit } };
+  });
+  require.main = nodeMain ? module : {};
+  const main = jest.fn(async () => {});
+  const result = vm.runInNewContext(entrySource.slice(entryStart, entryEnd), {
+    require,
+    module,
+    main,
+    path,
+    __filename: entryFilename,
+    process: { versions: electron ? { electron } : {}, type, argv: ['electron', script] },
+    console: { error: jest.fn() },
+  });
+  return { result, main, exit, require };
+}
+test('Electron exact browser app entry runs despite distinct require.main and exits through original promise', async () => {
+  const call = executeEntry();
+  expect(call.main).toHaveBeenCalledTimes(1);
+  await call.result;
+  expect(call.exit).toHaveBeenCalledWith(0);
+});
+test('ordinary Node explicit entry retains existing launch behavior', async () => {
+  const call = executeEntry({ electron: '', type: 'node', nodeMain: true });
+  expect(call.main).toHaveBeenCalledTimes(1);
+  await call.result;
+  expect(call.exit).toHaveBeenCalledWith(0);
+});
+test.each([
+  ['Jest import', { electron: '', type: undefined }],
+  [
+    'different Electron application',
+    { script: path.join(path.dirname(entryFilename), 'other.js') },
+  ],
+  ['Electron renderer', { type: 'renderer' }],
+  ['Electron utility', { type: 'utility' }],
+  ['missing entry argument', { script: null }],
+  ['absent explicit app entry', { script: '' }],
+])('%s never launches the qualifier as an import', (_name, options) => {
+  const call = executeEntry(options);
+  expect(call.main).not.toHaveBeenCalled();
+  expect(call.require).not.toHaveBeenCalled();
+  expect(call.exit).not.toHaveBeenCalled();
+});

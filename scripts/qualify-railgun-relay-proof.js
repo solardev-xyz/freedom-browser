@@ -326,7 +326,15 @@ async function main() {
     scope.close();
   }
 }
-if (require.main === module)
+// Electron's app-entry loader can leave require.main distinct from this module.
+// Only the exact explicit browser-process entry may auto-run on that path.
+if (
+  require.main === module ||
+  (process.versions.electron &&
+    process.type === 'browser' &&
+    typeof process.argv[1] === 'string' &&
+    path.resolve(process.argv[1]) === path.resolve(__filename))
+)
   main().then(
     () => require('electron').app.exit(0),
     () => {
