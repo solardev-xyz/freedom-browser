@@ -122,7 +122,7 @@ async function run(h, lost = false) {
     firstRoot: pair.first.stored.capsule.preparation.expected.merkleRoot,
     firstReceipt: first.ownEvidence.receipt,
   });
-  let account, recovery;
+  let account, recovery, companionSubmission;
   try {
     secondChain.bindProved(stored);
     h.installTransport(secondChain);
@@ -136,9 +136,12 @@ async function run(h, lost = false) {
     const destination = require(
       wallet + 'railgun-account-public'
     ).getRailgunAccountPublicDestination(coordinator, enrollment);
-    const submit = require(
-      wallet + 'railgun-private-submission'
-    ).submitRailgunRecoveredPrivateTransaction;
+    companionSubmission = h.recoveryCompanion
+      ? await require('./railgun-recovery-companion-native').submission(h)
+      : undefined;
+    const submit = companionSubmission
+      ? companionSubmission.submit
+      : require(wallet + 'railgun-private-submission').submitRailgunRecoveredPrivateTransaction;
     const common = {
       identity,
       enrollment,
@@ -349,6 +352,7 @@ async function run(h, lost = false) {
         hostCounts,
         terminalIngest: terminal,
         traffic: secondChain.report(),
+        ...(companionSubmission ? { recoveryCompanion: companionSubmission.report() } : {}),
       },
     };
   } finally {
@@ -358,8 +362,12 @@ async function run(h, lost = false) {
       try {
         if (account) await account.close();
       } finally {
-        secondChain.close();
-        h.installTransport(undefined);
+        try {
+          if (companionSubmission) await companionSubmission.close();
+        } finally {
+          secondChain.close();
+          h.installTransport(undefined);
+        }
       }
     }
   }

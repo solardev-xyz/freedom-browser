@@ -35,6 +35,18 @@ function transition(name, previous, next) {
   }
   return fields;
 }
+function companionTransition(phase, name, previous, next) {
+  assert.equal(phase, 'second-recovery-companion-reopen');
+  assert.ok(
+    [
+      'railgun-private-reservations-v1',
+      'railgun-private-reservations-floor-v1',
+      'railgun-private-capsules-v1',
+      'railgun-private-capsules-floor-v1',
+    ].includes(name)
+  );
+  return transition(name, previous, next);
+}
 function install({ directory, phase }) {
   assert.equal(require.cache[require.resolve('../../src/main/wallet/privacy-storage')], undefined);
   const storage = require('../../src/main/wallet/privacy-storage');
@@ -44,6 +56,7 @@ function install({ directory, phase }) {
     undefined
   );
   const writes = [];
+  const companionWrites = [];
   const recovery = require('./railgun-combined-poi-second-recovery-storage').create();
   storage.createPrivacyStorage = (options) => {
     const filename = storage.getPrivacyStoragePath(options.handle, options.directory);
@@ -75,6 +88,14 @@ function install({ directory, phase }) {
         let record;
         await genuine.update(name, (old) => {
           const next = change(old);
+          if (phase().startsWith('second-recovery-companion-')) {
+            const mutable = companionTransition(phase(), name, old, next);
+            companionWrites.push({
+              file: path.relative(directory, filename),
+              record: name,
+              mutable,
+            });
+          }
           if (phase().startsWith('restart-')) {
             try {
               record = {
@@ -102,6 +123,7 @@ function install({ directory, phase }) {
       },
       async set(name, value) {
         assert.equal(phase().startsWith('restart-'), false);
+        assert.equal(phase().startsWith('second-recovery-companion-'), false);
         assert.ok(!['second-proof-recovery', 'second-proof-present'].includes(phase()));
         return genuine.set(name, value);
       },
@@ -109,10 +131,11 @@ function install({ directory, phase }) {
   };
   return Object.freeze({
     recovery,
+    companionReport: () => companionWrites.map((v) => ({ ...v })),
     report: () => writes.map((v) => ({ ...v })),
     close() {
       storage.createPrivacyStorage = original;
     },
   });
 }
-module.exports = { install, transition };
+module.exports = { install, transition, companionTransition };

@@ -75,6 +75,11 @@ async function main() {
   const [sourceFilename, directory, archive, proverArchive, artifactDirectory, bytecodes] = args;
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
+  const recoveryCompanionMode = require('./fixtures/railgun-recovery-companion-native').enabled(
+    process.env,
+    args[7],
+    inputCreator
+  );
   const testCase = coldLost ? 'lost-reply' : 'acknowledged';
   const transact = inputCreator === 'Transact';
   assert.ok(args.slice(0, 6).every((value) => path.isAbsolute(value)));
@@ -264,7 +269,11 @@ async function main() {
               ...broker,
               async dispatch(wire) {
                 const message = JSON.parse(wire);
-                if (launchPhase === 'second-proof-recovery' && message.method === 'key') {
+                if (
+                  (launchPhase === 'second-proof-recovery' ||
+                    launchPhase === 'second-recovery-companion-cancel') &&
+                  message.method === 'key'
+                ) {
                   assert.equal(
                     message.purpose,
                     {
@@ -811,6 +820,10 @@ async function main() {
   const witnessHost = require('../src/main/wallet/railgun-own-witness');
   timeMethod(witnessHost, 'preflightRailgunRetainedPoiCompleted', false);
   timeMethod(witnessHost, 'preflightRailgunRetainedPoiForSubmission', false);
+  const recoveryCompanion =
+    recoveryCompanionMode && (recoverStop || recoveredSubmit)
+      ? require('./fixtures/railgun-recovery-companion-observer').install({ hold: recoverStop })
+      : undefined;
   const vault = require('../src/main/identity/vault');
   const started = performance.now();
   const runs = [];
@@ -881,6 +894,9 @@ async function main() {
         sealed: coldSubmit || recoverStop ? restored.handoff : undefined,
         signatureStop,
         recoveryStorage: coldStorage.recovery,
+        ...(recoveryCompanion
+          ? { recoveryCompanion, companionStorageReport: coldStorage.companionReport }
+          : {}),
         profileSnapshot: () => restartData.profileSnapshot(directory),
         identity,
         enrollment,
@@ -1014,11 +1030,20 @@ async function main() {
       assert.equal(jobs['railgun-spend-sign-job.js'] || 0, coldSubmit || recoverStop ? 0 : 1);
       assert.equal(
         jobs['railgun-private-verify-job.js'] || 0,
-        signStop ? 0 : proveStop || coldSubmit || recoverStop ? 1 : 2
+        signStop
+          ? 0
+          : recoveryCompanionMode && recoverStop
+            ? 2
+            : proveStop || coldSubmit || recoverStop
+              ? 1
+              : 2
       );
       assert.equal(jobs['railgun-private-receive-job.js'] || 0, 0);
       assert.equal(jobs['railgun-own-poi-prove-job.js'] || 0, 0);
-      assert.equal(jobs['railgun-private-recover-job.js'] || 0, recoverStop ? 1 : 0);
+      assert.equal(
+        jobs['railgun-private-recover-job.js'] || 0,
+        recoverStop ? (recoveryCompanionMode ? 2 : 1) : 0
+      );
       assert.equal(postChain.report().posts, 0);
       assert.equal(eoa.unexpectedFailures, 0);
     } else {
@@ -1667,7 +1692,10 @@ async function main() {
       assert.equal(jobs['railgun-spend-sign-job.js'], secondSpendMode ? 2 : 1);
       assert.equal(jobs['railgun-private-verify-job.js'], secondSpendMode ? 4 : 2);
       assert.equal(jobs['railgun-private-receive-job.js'], 1);
-      assert.equal(jobs['railgun-private-recover-job.js'] || 0, recoverStop ? 1 : 0);
+      assert.equal(
+        jobs['railgun-private-recover-job.js'] || 0,
+        recoverStop ? (recoveryCompanionMode ? 2 : 1) : 0
+      );
     }
     assert.ok(loans.every((key) => key.every((value) => value === 0)));
     phase = 'close';
@@ -1892,6 +1920,7 @@ async function main() {
           await services.close();
           storeObserver.close();
           coldStorage?.close();
+          recoveryCompanion?.close();
           for (const restore of restoreTimings) restore();
           facade?.close();
           signers.getSigner = originalSigner;

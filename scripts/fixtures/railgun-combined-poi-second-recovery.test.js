@@ -334,3 +334,32 @@ test.each(['pending-child', 'unwiped'])(
     await expect(api.run(h)).rejects.toThrow();
   }
 );
+
+test('explicit companion continuation reuses the successful retained source chain handshake', async () => {
+  h.recoveryTransportAlreadyOpen = true;
+  activity.services.transportCreates = 1;
+  const original = host.getMockImplementation();
+  host.mockImplementation(async (options) => {
+    const value = await original(options);
+    if (value.status === 'proof-stored') {
+      activity.services.transportCreates--;
+      delete activity.roleMethods['private-account:protocol-rpc:eth_chainId'];
+      delete activity.chain.attempted['private-account:protocol-rpc:eth_chainId'];
+      delete activity.chain.validated['private-account:protocol-rpc:eth_chainId'];
+    }
+    return value;
+  });
+  const result = await api.run(h);
+  expect(result.report.methods['private-account:protocol-rpc:eth_chainId']).toBeUndefined();
+});
+test('an extra continuation chain handshake is not silently accepted', async () => {
+  h.recoveryTransportAlreadyOpen = true;
+  activity.services.transportCreates = 1;
+  const original = host.getMockImplementation();
+  host.mockImplementation(async (options) => {
+    const value = await original(options);
+    if (value.status === 'proof-stored') activity.services.transportCreates--;
+    return value;
+  });
+  await expect(api.run(h)).rejects.toThrow();
+});

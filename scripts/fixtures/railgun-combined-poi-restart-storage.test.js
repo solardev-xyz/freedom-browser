@@ -123,6 +123,8 @@ test('installed observer delegates genuine storage while bootstrap checks stop a
       const store=storage.createPrivacyStorage(options);
       await store.set('freedom-railgun-txid-v1',JSON.stringify({pending:{work:'legitimate-terminal-work'}}));
       await store.set('railgun-account-enrollment-v1',JSON.stringify({status:'pending'}));
+      await store.set('railgun-private-capsules-v1',JSON.stringify({lease:'a'.repeat(64),sequence:4,entries:[{signature:'public-test-vector',proof:null}]}));
+      await store.set('railgun-private-capsules-floor-v1',JSON.stringify({sequence:4}));
       await store.set('railgun-wallet-catalog-v1',JSON.stringify({lease:'a'.repeat(64),sequence:2,pending:null,active:{id:'same'}}));
       scope.close();
     })().catch(e=>{console.error(e);process.exitCode=1});
@@ -169,6 +171,20 @@ test('installed observer delegates genuine storage while bootstrap checks stop a
       await store.set('terminal-fixture-value','delegated');
       assert.equal(await store.get('terminal-fixture-value'),'delegated');
       assert.equal(observer.report().length,1);
+      const beforeCancel=fs.readFileSync(filename);
+      for(const nextPhase of ['second-recovery-companion-cancel','second-recovery-companion-history']){
+        phase=nextPhase;
+        await assert.rejects(store.update('railgun-private-capsules-v1',old=>{const value=JSON.parse(old);value.entries[0].proof='forbidden';return JSON.stringify(value)}));
+        assert.deepEqual(fs.readFileSync(filename),beforeCancel);
+      }
+      phase='second-recovery-companion-reopen';
+      await store.update('railgun-private-capsules-v1',old=>JSON.stringify({...JSON.parse(old),lease:'b'.repeat(64)}));
+      await store.update('railgun-private-capsules-floor-v1',old=>old);
+      assert.deepEqual(JSON.parse(await store.get('railgun-private-capsules-v1')),{lease:'b'.repeat(64),sequence:4,entries:[{signature:'public-test-vector',proof:null}]});
+      assert.deepEqual(observer.companionReport().map(v=>[v.record,v.mutable]),[['railgun-private-capsules-v1',['lease']],['railgun-private-capsules-floor-v1',[]]]);
+      const afterReopen=fs.readFileSync(filename);
+      await assert.rejects(store.update('railgun-private-capsules-floor-v1',()=>JSON.stringify({sequence:5})));
+      assert.deepEqual(fs.readFileSync(filename),afterReopen);
       observer.close();
       assert.notEqual(storage.createPrivacyStorage,wrappedFactory);
       const reopened=storage.createPrivacyStorage(options);
@@ -186,4 +202,41 @@ test('installed observer delegates genuine storage while bootstrap checks stop a
     expect(result.error).toBeUndefined();
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
   }
+});
+
+test('companion cancellation/history forbid writes; reopen admits only unchanged records and floors', () => {
+  const { companionTransition: observed } = require('./railgun-combined-poi-restart-storage');
+  const old = JSON.stringify({ lease: a, sequence: 4, entries: [{ signed: true, proof: null }] });
+  const next = JSON.stringify({ lease: b, sequence: 4, entries: [{ signed: true, proof: null }] });
+  for (const phase of ['second-recovery-companion-cancel', 'second-recovery-companion-history'])
+    expect(() => observed(phase, 'railgun-private-capsules-v1', old, next)).toThrow();
+  expect(
+    observed('second-recovery-companion-reopen', 'railgun-private-capsules-v1', old, next)
+  ).toEqual(['lease']);
+  expect(() =>
+    observed('second-recovery-companion-reopen', 'railgun-poi-intents-v1', old, next)
+  ).toThrow();
+  expect(() =>
+    observed('second-recovery-companion-reopen', 'railgun-private-capsules-v1', null, next)
+  ).toThrow();
+  expect(() =>
+    observed(
+      'second-recovery-companion-reopen',
+      'railgun-private-capsules-v1',
+      old,
+      JSON.stringify({ lease: b, sequence: 4, entries: [{ signed: true, proof: 'new' }] })
+    )
+  ).toThrow();
+  const floor = JSON.stringify({ sequence: 4 });
+  expect(
+    observed('second-recovery-companion-reopen', 'railgun-private-capsules-floor-v1', floor, floor)
+  ).toEqual([]);
+  expect(() =>
+    observed(
+      'second-recovery-companion-reopen',
+      'railgun-private-capsules-floor-v1',
+      floor,
+      JSON.stringify({ sequence: 5 })
+    )
+  ).toThrow();
 });

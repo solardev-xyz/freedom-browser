@@ -8,6 +8,7 @@ const signed = require('./railgun-combined-poi-second-recovery-data');
 const counts = require('./railgun-combined-poi-second-cold-counts');
 const wallet = '../../src/main/wallet/';
 async function run(h) {
+  if (h.recoveryCompanion) return require('./railgun-recovery-companion-native').recover(h, run);
   const {
     enrollment,
     identity,
@@ -46,9 +47,9 @@ async function run(h) {
   };
   h.phase('second-proof-recovery');
   const before = h.activity();
-  const result = await require(
-    wallet + 'railgun-private-proof-recovery'
-  ).resumeRailgunAccountPrivateProof(options);
+  const result = await (h.resumeProof
+    ? h.resumeProof(options.holdId)
+    : require(wallet + 'railgun-private-proof-recovery').resumeRailgunAccountPrivateProof(options));
   sticky.assertEmpty();
   assert.equal(signal.aborted, false);
   assert.equal(result.status, 'proof-stored');
@@ -76,7 +77,7 @@ async function run(h) {
     [...h.source.logs, ...h.wire.receipt.logs.filter((v) => v.address.toLowerCase() === proxy)]
   );
   const methods = {
-    'private-account:protocol-rpc:eth_chainId': 1,
+    ...(h.recoveryTransportAlreadyOpen ? {} : { 'private-account:protocol-rpc:eth_chainId': 1 }),
     'private-account:protocol-rpc:eth_getBlockByNumber': headers * 2,
     'private-account:protocol-rpc:eth_getLogs': 2,
   };
@@ -85,7 +86,7 @@ async function run(h) {
     assert.deepEqual(counts.delta(after.chain[k], before.chain[k]), methods);
   // Cold bootstrap has not sent RPC. The first completed-wallet read lazily
   // creates the shared transport; its source stays open until outer cleanup.
-  assert.equal(before.services.transportCreates, 0);
+  assert.equal(before.services.transportCreates, h.recoveryTransportAlreadyOpen ? 1 : 0);
   assert.deepEqual(after.services, { ...before.services, transportCreates: 1 });
   assert.deepEqual(after.eoa, before.eoa);
   h.recoveryStorage.assertComplete();
@@ -136,9 +137,9 @@ async function run(h) {
   h.phase('second-proof-present');
   const duplicateBefore = h.activity(),
     storageBefore = h.recoveryStorage.report();
-  const duplicate = await require(
-    wallet + 'railgun-private-proof-recovery'
-  ).resumeRailgunAccountPrivateProof(options);
+  const duplicate = await (h.resumeProof
+    ? h.resumeProof(options.holdId)
+    : require(wallet + 'railgun-private-proof-recovery').resumeRailgunAccountPrivateProof(options));
   assert.deepEqual(duplicate, { ...result, status: 'proof-present' });
   assert.deepEqual(h.activity(), duplicateBefore);
   assert.deepEqual(h.recoveryStorage.report(), storageBefore);
