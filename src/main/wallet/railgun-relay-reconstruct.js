@@ -12,15 +12,10 @@ const fail = () =>
   Object.assign(new Error('Railgun relay reconstruction refused'), {
     code: 'RAILGUN_RELAY_RECONSTRUCTION_REFUSED',
   });
-async function reconstructRailgunRelayDraft({
-  archive,
-  wallet,
-  descriptor,
-  checkpoint,
-  scan,
-  draftText,
-  signal,
-}) {
+async function reconstruct(
+  { archive, wallet, descriptor, checkpoint, scan, draftText, signal },
+  rootRule
+) {
   try {
     const active = () => assert.ok(signal instanceof AbortSignal && !signal.aborted);
     active();
@@ -83,7 +78,7 @@ async function reconstructRailgunRelayDraft({
     const captured = checkpoint.state.trees.filter((item) => item.tree === selection.tree);
     assert.equal(captured.length, 1);
     assert.ok(selection.position < captured[0].length);
-    assert.equal(expected.merkleRoot, captured[0].root);
+    if (rootRule !== 'local') assert.equal(expected.merkleRoot, captured[0].root);
     const { TransactNote } = imp('note/transact-note');
     const { ShieldNote } = imp('note/shield-note');
     const nullifyingKey = wallet.getNullifyingKey();
@@ -125,6 +120,18 @@ async function reconstructRailgunRelayDraft({
     const recipients = [peer, wallet.addressKeys];
     const values = [BigInt(context.feeAmount), BigInt(context.selfAmount)];
     const commitments = [expected.feeCommitment, expected.selfCommitment];
+    const privateNote =
+      rootRule === 'diagnostic'
+        ? undefined
+        : Object.freeze({
+            tokenHash: note.tokenHash,
+            random: note.random,
+            value: note.value,
+            notePublicKey: note.notePublicKey,
+            inputNoteType: owned[0].type,
+            commitmentType: txos[0].commitmentType,
+          });
+    const outputNpks = [];
     for (let index = 0; index < 2; index++) {
       active();
       const bundle = decoded.boundParams.commitmentCiphertext[index];
@@ -192,6 +199,7 @@ async function reconstructRailgunRelayDraft({
         );
         assert.deepEqual(Buffer.from(blinded.blindedSenderViewingKey), sender);
         assert.deepEqual(Buffer.from(blinded.blindedReceiverViewingKey), receiver);
+        outputNpks.push(output.notePublicKey);
       } finally {
         if (symmetric instanceof Uint8Array) symmetric.fill(0);
       }
@@ -209,13 +217,122 @@ async function reconstructRailgunRelayDraft({
       intent.expectedHash
     );
     active();
-    return Object.freeze({
+    const publicReconstruction = Object.freeze({
       draftDigest: normalized.digest,
       expectedHash: intent.expectedHash,
       recoveredOutputs: 2,
     });
+    if (rootRule === 'diagnostic') return publicReconstruction;
+    // Materialize private inputs before this original async operation settles.
+    // Only copied primitives from validated input/output notes are retained.
+    return privateResult(
+      {
+        publicReconstruction,
+        draft,
+        decoded,
+        note: privateNote,
+        publicKey,
+        nullifyingKey,
+        outputNpks,
+        values,
+      },
+      signal
+    );
   } catch {
     throw fail();
   }
 }
-module.exports = { reconstructRailgunRelayDraft };
+// All entrypoints remain utility-private module APIs. Only the diagnostic is
+// imported by the existing fixed relay wallet job; no private result is wired.
+function reconstructRailgunRelayDraft(input) {
+  return reconstruct(input, 'diagnostic');
+}
+function freezeData(value) {
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) freezeData(item);
+    Object.freeze(value);
+  }
+  return value;
+}
+function privateResult(captured, signal) {
+  const { draft, decoded, note, publicKey, nullifyingKey, outputNpks, values } = captured;
+  const { commitmentType } = note;
+  const {
+    selection,
+    intent: { expected },
+  } = draft;
+  const inputNoteType =
+    commitmentType === 'ShieldCommitment'
+      ? 'Shield'
+      : commitmentType === 'TransactCommitmentV2'
+        ? 'Transact'
+        : undefined;
+  assert.ok(inputNoteType);
+  assert.equal(note.inputNoteType, inputNoteType);
+  const bound = decoded.boundParams;
+  const boundParams = {
+    treeNumber: bound.treeNumber,
+    minGasPrice: bound.minGasPrice,
+    unshield: bound.unshield,
+    chainID: bound.chainID,
+    adaptContract: bound.adaptContract,
+    adaptParams: bound.adaptParams,
+    commitmentCiphertext: bound.commitmentCiphertext.map((bundle) => ({
+      ciphertext: [...bundle.ciphertext],
+      blindedSenderViewingKey: bundle.blindedSenderViewingKey,
+      blindedReceiverViewingKey: bundle.blindedReceiverViewingKey,
+      annotationData: bundle.annotationData,
+      memo: bundle.memo,
+    })),
+  };
+  const witness = {
+    txidVersion: 'V2_PoseidonMerkle',
+    publicInputs: {
+      merkleRoot: BigInt(expected.merkleRoot),
+      boundParamsHash: BigInt(expected.boundParamsHash),
+      nullifiers: [BigInt(expected.nullifier)],
+      commitmentsOut: [BigInt(expected.feeCommitment), BigInt(expected.selfCommitment)],
+    },
+    privateInputs: {
+      tokenAddress: BigInt('0x' + note.tokenHash.replace(/^0x/, '')),
+      randomIn: [BigInt('0x' + note.random.replace(/^0x/, ''))],
+      valueIn: [note.value],
+      pathElements: [draft.pathElements.map(BigInt)],
+      leavesIndices: [BigInt(selection.position)],
+      valueOut: [...values],
+      publicKey: [...publicKey],
+      npkOut: [...outputNpks],
+      nullifyingKey,
+    },
+    boundParams,
+  };
+  const prePoi = {
+    inputNoteType,
+    spendingPublicKey: [...publicKey],
+    nullifyingKey,
+    inputNpk: note.notePublicKey,
+    token: note.tokenHash,
+    randomsIn: [note.random],
+    valuesIn: [note.value],
+    utxoTreeIn: selection.tree,
+    utxoPositionsIn: [selection.position],
+    npksOut: [...outputNpks],
+    valuesOut: [...values],
+  };
+  assert.ok(signal instanceof AbortSignal && !signal.aborted);
+  return freezeData({ publicReconstruction: captured.publicReconstruction, witness, prePoi });
+}
+function reconstructRailgunRelayWitness(input) {
+  return reconstruct(input, 'fresh');
+}
+// The future fixed caller must authenticate the original local durable draft.
+// This verifies its original path while CURRENT restored ownership stays live;
+// it does not authenticate storage history or grant disclosure/proving authority.
+function reconstructRailgunRelayLocalWitness(input) {
+  return reconstruct(input, 'local');
+}
+module.exports = {
+  reconstructRailgunRelayDraft,
+  reconstructRailgunRelayWitness,
+  reconstructRailgunRelayLocalWitness,
+};

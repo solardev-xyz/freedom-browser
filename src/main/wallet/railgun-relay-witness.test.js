@@ -4,7 +4,11 @@ const { TRANSACT_ABI, BOUND_PARAMS } = require('./railgun-private-policy');
 const pins = require('./railgun-shield-pins.json');
 const { normalizeRailgunRelayDraftCapsule } = require('./railgun-relay-capsule');
 const { prepareRailgunRelayDraft } = require('./railgun-relay-witness');
-const { reconstructRailgunRelayDraft } = require('./railgun-relay-reconstruct');
+const {
+  reconstructRailgunRelayDraft,
+  reconstructRailgunRelayWitness,
+  reconstructRailgunRelayLocalWitness,
+} = require('./railgun-relay-reconstruct');
 let mockState;
 jest.mock('./railgun-engine-runtime', () => ({
   verifyRailgunEngineRuntime: jest.fn(() => '/relay-test-engine.asar'),
@@ -325,7 +329,9 @@ function fixture() {
       getSpendingKeyPair: jest.fn(() => {
         throw Error('Spending key forbidden');
       }),
-      TXOs: jest.fn(async () => [{ tree: 0, position: 3, spendtxid: false, note: input }]),
+      TXOs: jest.fn(async () => [
+        { tree: 0, position: 3, spendtxid: false, commitmentType: 'ShieldCommitment', note: input },
+      ]),
       tokenDataGetter: {},
     },
     tree: { getMerkleProof: jest.fn(async () => proof) },
@@ -333,7 +339,7 @@ function fixture() {
     scan: {
       instanceId: selfAddress,
       received: [record],
-      ownedPoi: [{ id: '0:3', hash: hex(input.hash), nullifier: hex(88) }],
+      ownedPoi: [{ type: 'Shield', id: '0:3', hash: hex(input.hash), nullifier: hex(88) }],
     },
     request: {
       selection: { tree: 0, position: 3 },
@@ -792,4 +798,206 @@ test('serialized fee commitment mismatch reaches C normalizer and refuses before
   } finally {
     jest.dontMock('./railgun-relay-capsule');
   }
+});
+
+describe.each([
+  ['fresh', reconstructRailgunRelayWitness],
+  ['local', reconstructRailgunRelayLocalWitness],
+])('private %s reconstruction', (_name, reconstruct) => {
+  const run = (draft) => reconstruct({ ...mockState.args, draftText: JSON.stringify(draft) });
+  test('returns detached circuit inputs and pre-POI notes without generating replacements', async () => {
+    const draft = await prepare();
+    mockState = fixture();
+    const [txo] = await mockState.args.wallet.TXOs();
+    const outputNpks = [mockState.output(0).notePublicKey, mockState.output(1).notePublicKey];
+    const result = await run(draft);
+    expect(Object.keys(result)).toEqual(['publicReconstruction', 'witness', 'prePoi']);
+    expect(result.publicReconstruction).toEqual({
+      draftDigest: normalizeRailgunRelayDraftCapsule(draft).digest,
+      expectedHash: draft.intent.expectedHash,
+      recoveredOutputs: 2,
+    });
+    expect(result.witness.txidVersion).toBe('V2_PoseidonMerkle');
+    expect(result.witness.publicInputs).toEqual({
+      merkleRoot: 77n,
+      boundParamsHash: BigInt(draft.intent.expected.boundParamsHash),
+      nullifiers: [88n],
+      commitmentsOut: [
+        BigInt(draft.intent.expected.feeCommitment),
+        BigInt(draft.intent.expected.selfCommitment),
+      ],
+    });
+    expect(result.witness.privateInputs).toEqual({
+      tokenAddress: 9n,
+      randomIn: [BigInt('0x' + '01'.repeat(16))],
+      valueIn: [700n],
+      pathElements: [Array(16).fill(1n)],
+      leavesIndices: [3n],
+      valueOut: [100n, 600n],
+      publicKey: [4n, 5n],
+      npkOut: outputNpks,
+      nullifyingKey: 6n,
+    });
+    expect(result.prePoi).toEqual({
+      inputNoteType: 'Shield',
+      spendingPublicKey: [4n, 5n],
+      nullifyingKey: 6n,
+      inputNpk: txo.note.notePublicKey,
+      token: txo.note.tokenHash,
+      randomsIn: [txo.note.random],
+      valuesIn: [700n],
+      utxoTreeIn: 0,
+      utxoPositionsIn: [3],
+      npksOut: outputNpks,
+      valuesOut: [100n, 600n],
+    });
+    const [[decoded]] = abi.decodeFunctionData('transact', draft.intent.transaction.data);
+    expect(result.witness.boundParams.commitmentCiphertext[0].ciphertext).toEqual([
+      ...decoded.boundParams.commitmentCiphertext[0].ciphertext,
+    ]);
+    const frozen = (value) => {
+      if (value && typeof value === 'object') {
+        expect(Object.isFrozen(value)).toBe(true);
+        Object.values(value).forEach(frozen);
+      }
+    };
+    frozen(result);
+    txo.note.value = 0n;
+    txo.note.random = 'ff'.repeat(16);
+    mockState.args.descriptor.spendingPublicKey[0] = hex(999).slice(2);
+    mockState.args.scan.ownedPoi[0].type = 'Transact';
+    expect(result.prePoi.valuesIn).toEqual([700n]);
+    expect(result.prePoi.randomsIn).toEqual(['01'.repeat(16)]);
+    expect(result.witness.privateInputs.publicKey).toEqual([4n, 5n]);
+    expect(result.prePoi.inputNoteType).toBe('Shield');
+    expect(mockState.Note.createTransfer).not.toHaveBeenCalled();
+    expect(mockState.generate).not.toHaveBeenCalled();
+    expect(mockState.args.wallet.getSpendingKeyPair).not.toHaveBeenCalled();
+    expect(mockState.loans).toHaveLength(2);
+    expect(mockState.loans.every((key) => key.every((n) => n === 0))).toBe(true);
+  });
+  test('joins actual Transact owned record and TXO commitment type', async () => {
+    const draft = await prepare();
+    const txos = await mockState.args.wallet.TXOs();
+    txos[0].commitmentType = 'TransactCommitmentV2';
+    mockState.args.wallet.TXOs.mockResolvedValue(txos);
+    mockState.args.scan.ownedPoi[0].type = 'Transact';
+    expect((await run(draft)).prePoi.inputNoteType).toBe('Transact');
+  });
+  test.each([
+    [
+      'type mismatch',
+      (s) => {
+        s.args.scan.ownedPoi[0].type = 'Transact';
+      },
+    ],
+    [
+      'missing type',
+      (s) => {
+        delete s.args.scan.ownedPoi[0].type;
+      },
+    ],
+    [
+      'nullifier',
+      (s) => {
+        s.args.scan.ownedPoi[0].nullifier = hex(99);
+      },
+    ],
+    [
+      'owned hash',
+      (s) => {
+        s.args.scan.ownedPoi[0].hash = hex(99);
+      },
+    ],
+    [
+      'wallet',
+      (s) => {
+        s.args.descriptor.walletId = 'ff'.repeat(32);
+      },
+    ],
+    [
+      'spent',
+      (s) => {
+        s.args.scan.received[0].spentTxid = 'spent';
+      },
+    ],
+    [
+      'missing owned note',
+      (s) => {
+        s.args.scan.ownedPoi = [];
+      },
+    ],
+    [
+      'current tree excludes position',
+      (s) => {
+        s.args.checkpoint.state.trees[0].length = 3;
+      },
+    ],
+    [
+      'wrong output',
+      (s) => {
+        const original = s.Note.decrypt;
+        s.Note.decrypt = jest.fn(async (...args) => ({ ...(await original(...args)), value: 1n }));
+      },
+    ],
+  ])('refuses %s without private output', async (_label, mutate) => {
+    const draft = await prepare();
+    mutate(mockState);
+    await expect(run(draft)).rejects.toMatchObject(refused);
+  });
+  test('refuses unsupported actual TXO commitment type', async () => {
+    const draft = await prepare();
+    const txos = await mockState.args.wallet.TXOs();
+    txos[0].commitmentType = 'LegacyGeneratedCommitment';
+    mockState.args.wallet.TXOs.mockResolvedValue(txos);
+    await expect(run(draft)).rejects.toMatchObject(refused);
+  });
+});
+
+test('only fixed local reconstruction permits changed current root and checks original path', async () => {
+  const draft = await prepare();
+  mockState = fixture();
+  mockState.args.checkpoint.state.trees[0].root = hex(99);
+  const input = {
+    ...mockState.args,
+    draftText: JSON.stringify(draft),
+    allowHistoricalRoot: true,
+    rootRule: 'local',
+  };
+  await expect(reconstructRailgunRelayDraft(input)).rejects.toMatchObject(refused);
+  await expect(reconstructRailgunRelayWitness(input)).rejects.toMatchObject(refused);
+  const result = await reconstructRailgunRelayLocalWitness(input);
+  expect(result.witness.publicInputs.merkleRoot).toBe(77n);
+  expect(mockState.merkle).toHaveBeenLastCalledWith({
+    leaf: draft.noteHash.slice(2),
+    root: hex(77).slice(2),
+    indices: hex(3).slice(2),
+    elements: Array(16).fill(hex(1).slice(2)),
+  });
+  const damaged = clone(draft);
+  damaged.pathElements[0] = hex(2);
+  await expect(
+    reconstructRailgunRelayLocalWitness({ ...input, draftText: JSON.stringify(damaged) })
+  ).rejects.toMatchObject(refused);
+});
+
+test('diagnostic preserves its old exact result without reading new private type fields', async () => {
+  const draft = await prepare();
+  const txos = await mockState.args.wallet.TXOs();
+  Object.defineProperty(txos[0], 'commitmentType', {
+    get() {
+      throw Error('Private type read');
+    },
+  });
+  Object.defineProperty(mockState.args.scan.ownedPoi[0], 'type', {
+    get() {
+      throw Error('Private type read');
+    },
+  });
+  mockState.args.wallet.TXOs.mockResolvedValue(txos);
+  expect(Object.keys(await recover(draft)).sort()).toEqual([
+    'draftDigest',
+    'expectedHash',
+    'recoveredOutputs',
+  ]);
 });
