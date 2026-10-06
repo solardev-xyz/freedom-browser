@@ -1,0 +1,227 @@
+{
+  "schema": "railgun-account-fence-publication-v1",
+  "sourceCommit": "6d39f4750998e225185b82a0a798d60ba02a8b22",
+  "sourceRepository": "https://github.com/solardev-xyz/freedom-browser",
+  "inputMap": [
+    {
+      "published": "report.json",
+      "originalRole": "native-output/report.json",
+      "original": {
+        "bytes": 3035,
+        "sha256": "4bbf02edc6033bc86415f1cbb8b6c53dc6d549a38690f147f93ff4f5c79e8c56"
+      },
+      "publishedBytes": {
+        "bytes": 3035,
+        "sha256": "4bbf02edc6033bc86415f1cbb8b6c53dc6d549a38690f147f93ff4f5c79e8c56"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "A-events.json",
+      "originalRole": "native-output/A-events.json",
+      "original": {
+        "bytes": 2164,
+        "sha256": "bbb8752a94dbe3aa32e9e728d00769275a4f34946842c0d7548e8973aa6389c1"
+      },
+      "publishedBytes": {
+        "bytes": 2164,
+        "sha256": "bbb8752a94dbe3aa32e9e728d00769275a4f34946842c0d7548e8973aa6389c1"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "B-events.json",
+      "originalRole": "native-output/B-events.json",
+      "original": {
+        "bytes": 2471,
+        "sha256": "70332ef69249978b2fc0bfc4aec2d4e099cd7ff394723a12341f3a3292bda180"
+      },
+      "publishedBytes": {
+        "bytes": 2471,
+        "sha256": "70332ef69249978b2fc0bfc4aec2d4e099cd7ff394723a12341f3a3292bda180"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "processes.json",
+      "originalRole": "native-output/processes.json",
+      "original": {
+        "bytes": 412,
+        "sha256": "c4263351906a90e22a082f85e98df2523c89758506884501237dc430674eeda9"
+      },
+      "publishedBytes": {
+        "bytes": 412,
+        "sha256": "c4263351906a90e22a082f85e98df2523c89758506884501237dc430674eeda9"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "A-stderr.log",
+      "originalRole": "native-output/A-stderr.log",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "publishedBytes": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "B-stderr.log",
+      "originalRole": "native-output/B-stderr.log",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "publishedBytes": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "config.json",
+      "originalRole": "root-launch-inputs/config.json",
+      "original": {
+        "bytes": 5664,
+        "sha256": "089b4c14a0dad6d39059aa5ed4bdb9b9ef06aef3f9c06055d866d0522c273403"
+      },
+      "publishedBytes": {
+        "bytes": 4681,
+        "sha256": "4a8d7a4c2f46e64c39e3b98f867e38ddb6cd0659e120a57768aeeccb1becaadd"
+      },
+      "copiedOriginal": false,
+      "transformations": [
+        "Replace the machine-local repository path in values and runtimeFiles keys with $REPOSITORY.",
+        "Replace the machine-local disposable output path with $DISPOSABLE_OUTPUT.",
+        "No other byte transformation; approval and hashes remain historical evidence, not a runnable config."
+      ]
+    },
+    {
+      "published": "preparation.json",
+      "originalRole": "root-launch-inputs/preparation.json",
+      "original": {
+        "bytes": 449,
+        "sha256": "6dfca8b1ae4791a32dc85d6cee1bc6c303645e6795ad5c0310c586c0d08a6b0c"
+      },
+      "publishedBytes": {
+        "bytes": 449,
+        "sha256": "6dfca8b1ae4791a32dc85d6cee1bc6c303645e6795ad5c0310c586c0d08a6b0c"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "driver.log",
+      "originalRole": "root-launch-inputs/driver.log",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "publishedBytes": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "source-tests.log",
+      "originalRole": "root-source-checks/source-tests.log",
+      "original": {
+        "bytes": 754,
+        "sha256": "2200ec155961aaad69093e9031a6f01e4d7b2b738dfa9a2d32d86e5ac1317f3b"
+      },
+      "publishedBytes": {
+        "bytes": 754,
+        "sha256": "2200ec155961aaad69093e9031a6f01e4d7b2b738dfa9a2d32d86e5ac1317f3b"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "source-lint.log",
+      "originalRole": "root-source-checks/source-lint.log",
+      "original": {
+        "bytes": 63,
+        "sha256": "d56e357ebba7dd4f6225baf0c364cba405502e9215c1ec184119ea9ba3318d6c"
+      },
+      "publishedBytes": {
+        "bytes": 63,
+        "sha256": "d56e357ebba7dd4f6225baf0c364cba405502e9215c1ec184119ea9ba3318d6c"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    }
+  ],
+  "sourcePins": {
+    "src/main/wallet/railgun-account-fence.js": "f324978506f6e88696a8f723e6a88ef996191283202422e728bfc8ce1ac46310",
+    "src/main/wallet/railgun-account-fence.test.js": "7bc764f70fa795245f575c910d557d4fbf122f8b1ef37fd24f5560919659c7fb",
+    "scripts/fixtures/railgun-account-fence-process.js": "6107ee0b82972bc95721416668aa4a7fdda2699729dacf7ec04c646e5c8decdb",
+    "scripts/fixtures/railgun-account-fence-process.test.js": "2fa20bb99d60e0cb81f08ffef16712130d90df85a5f754e1eaddf5a8f8a5c8c9",
+    "scripts/qualify-railgun-account-fence.js": "32289015d57151c2130d788d1ef75e2acc4db6a5fa0456bd0ea34bfa0fc88fe7",
+    "scripts/qualify-railgun-account-fence.test.js": "3c5f33073d2bcefb2013ee2ac92457f8ad51b5ac9add9ad411afd1f3073a2fd6"
+  },
+  "runtimePinCount": 19,
+  "sourceFreezeSha256": "fbfb29665880552e7622671a0ae604e7641c15655525371fee219fc526140b17",
+  "sourceReview": {
+    "recordSha256": "d023ea47cf35733b5d115cb35ef9c834916fe6517d0395dbee4bd2ccde0909ae",
+    "scope": "Independent source/composition review; no reviewer native execution."
+  },
+  "originalProcessObservation": {
+    "attribution": "Root agent observed the original tool process; archive author only checked saved public metadata and committed source bytes.",
+    "driverCompletion": "aa501b",
+    "driverSessionId": null,
+    "driverExitCode": 0,
+    "driverWallSeconds": 0.5406195,
+    "driverExitWasNatural": true,
+    "childObservationSource": "processes.json plus pinned original-handle driver source",
+    "intentionalChildTermination": "A PID 5454 received deliberate SIGTERM; this is not a natural zero exit.",
+    "B": "PID 5455 natural exit 0; no cleanup TERM/KILL intervention."
+  },
+  "sourceChecks": {
+    "tests": {
+      "command": "npm test -- -- --watchman=false --runInBand scripts/fixtures/railgun-account-fence-process.test.js scripts/qualify-railgun-account-fence.test.js src/main/wallet/railgun-account-fence.test.js",
+      "rootObservation": "b3aa56",
+      "exitCode": 0,
+      "tests": 77,
+      "suites": 3,
+      "seconds": 0.3,
+      "log": "source-tests.log"
+    },
+    "lint": {
+      "command": "npm run lint -- --max-warnings=0",
+      "originalSessionId": 86170,
+      "completion": "ddc494",
+      "exitCode": 0,
+      "log": "source-lint.log"
+    },
+    "format": {
+      "command": "npx --no-install prettier --check src/main/wallet/railgun-account-fence.js src/main/wallet/railgun-account-fence.test.js scripts/fixtures/railgun-account-fence-process.js scripts/fixtures/railgun-account-fence-process.test.js scripts/qualify-railgun-account-fence.js scripts/qualify-railgun-account-fence.test.js",
+      "completion": "fc627a",
+      "exitCode": 0,
+      "attribution": "Root tool observation supplied separately; no standalone format log was copied."
+    }
+  },
+  "expectationPrecision": {
+    "bothNamedJournalCheckpoints": "exact present regular, single-link, distinct-inode zero-length journal required and observed",
+    "historicalExpectedDynamicFieldsText": "The frozen EXPECTED.json dynamicFields phrase permitting absent versus zero is stale prose. Its exact journalObservations arrays and executable assertions require zero-length at both named checkpoints. No flexible acceptance was used; the frozen source package remains unchanged.",
+    "generalPrimitive": "Absent or safe zero-length journals are accepted outside these two qualification assertions."
+  },
+  "publicationScope": {
+    "sqliteFilesCopied": false,
+    "profileOrSyntheticDatabaseTreeRead": false,
+    "runtimePayloadsRehashedByArchiveAuthor": false,
+    "nativeRerun": false,
+    "sourcePinsAreExecutionCoverage": false,
+    "nativeOutcomeIndependentReview": "Not claimed in this author-prepared archive; subsequent reviewer examines saved evidence without a native rerun."
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "head": "6d39f4750998e225185b82a0a798d60ba02a8b22",
+  "configSha256": "089b4c14a0dad6d39059aa5ed4bdb9b9ef06aef3f9c06055d866d0522c273403",
+  "sourceFreezeSha256": "fbfb29665880552e7622671a0ae604e7641c15655525371fee219fc526140b17",
+  "runtimeFilesMeasuredNow": 19,
+  "historicalRuntimePinsMatch": true,
+  "nativeExecuted": false,
+  "scope": "Public disposable SQLite and JSON only. No wallet, profile, engine, network, funded note or real key."
+}

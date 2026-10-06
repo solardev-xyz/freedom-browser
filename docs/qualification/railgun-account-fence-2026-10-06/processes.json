@@ -1,0 +1,22 @@
+[
+  {
+    "role": "A",
+    "pid": 5454,
+    "exitObserved": true,
+    "exitCode": null,
+    "signal": "SIGTERM",
+    "intentionalTermination": true,
+    "cleanupTerminate": false,
+    "cleanupKill": false
+  },
+  {
+    "role": "B",
+    "pid": 5455,
+    "exitObserved": true,
+    "exitCode": 0,
+    "signal": null,
+    "intentionalTermination": false,
+    "cleanupTerminate": false,
+    "cleanupKill": false
+  }
+]
