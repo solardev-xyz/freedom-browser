@@ -13,7 +13,7 @@ const {
   normalizeRailgunWalletCoverage,
   summarizeRailgunWalletCoverage,
 } = require('./railgun-wallet-coverage');
-function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
+function createRailgunWalletRunner({ runJob, inventory, policy, identity, enrollment }) {
   assert.equal(typeof runJob, 'function');
   for (const value of [inventory, policy]) assert.match(value, /^[0-9a-f]{64}$/);
   const currentIdentity = () =>
@@ -38,13 +38,35 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
     relayMode
   ) {
     const relayData = relayMode === undefined ? undefined : require('./railgun-relay-wallet-data');
-    let relayRequest, relayDraft;
+    let relayRequest, relayDraft, relayProof;
+    assert.equal(options.relayEnrollment, undefined);
     if (relayMode !== undefined) {
       assert.ok(readOnly && restore && !recoveryMode);
       for (const name of ['privateIntent', 'privateOperation', 'privateRecovery'])
         assert.equal(options[name], undefined);
       relayData.assertRailgunRelaySignal(options.relaySignal);
-      if (relayMode === 'construct') {
+      if (relayMode === 'prove-local') {
+        require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
+        const owner = require('./railgun-identity').assertRailgunIdentity(
+          identity,
+          enrollment.getContext('engine')
+        );
+        assert.equal(owner.walletId, walletId);
+        assert.equal(options.relayRequest, undefined);
+        assert.equal(options.relayDraftText, undefined);
+        relayProof = require('./railgun-relay-proof-results').normalizeRailgunRelayProofInput(
+          options.relayProof,
+          walletId
+        );
+        assert.equal(
+          require('./railgun-relay-recovery-data').decodeRailgunRelayLocalRecord(
+            relayProof.recordText
+          ).binding,
+          enrollment.binding
+        );
+        options.relayProof = relayProof;
+        options.relayEnrollment = enrollment;
+      } else if (relayMode === 'construct') {
         assert.equal(options.relayDraftText, undefined);
         relayRequest = relayData.normalizeRailgunRelayRequest(options.relayRequest, walletId);
         options.relayRequest = relayRequest;
@@ -54,10 +76,18 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         relayDraft = relayData.parseRailgunRelayDraft(options.relayDraftText, walletId);
       }
     } else {
-      for (const name of ['relayRequest', 'relayDraftText', 'relaySignal'])
+      for (const name of ['relayRequest', 'relayDraftText', 'relaySignal', 'relayProof'])
         assert.equal(options[name], undefined);
     }
+    if (relayMode !== 'prove-local') assert.equal(options.relayProof, undefined);
     const relayCurrent = () => {
+      if (relayMode === 'prove-local') {
+        require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
+        require('./railgun-identity').assertRailgunIdentity(
+          identity,
+          enrollment.getContext('engine')
+        );
+      }
       if (relayMode !== undefined) {
         relayData.assertRailgunRelaySignal(options.relaySignal);
         assert.ok(!snapshot.signal.aborted && !walletSession.signal.aborted);
@@ -129,8 +159,17 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
               ),
               checkpointHash: checkpointHash(snapshot.checkpoint),
             });
-      let preparedRelay, reconstructedRelay;
-      if (relayMode === 'construct') {
+      let preparedRelay, reconstructedRelay, producedRelay;
+      if (relayMode === 'prove-local') {
+        assert.equal(result.relayDraft, undefined);
+        assert.equal(result.relayReconstruction, undefined);
+        const proofData = require('./railgun-relay-proof-results');
+        proofData.bindRailgunRelayLocalOwned(relayProof.recordText, { walletId, ...relayOwned });
+        producedRelay = proofData.normalizeRailgunRelayProducedProof(
+          result.relayProof,
+          relayProof.recordText
+        );
+      } else if (relayMode === 'construct') {
         assert.equal(result.relayReconstruction, undefined);
         preparedRelay = relayData.bindRailgunRelayDraft(result.relayDraft, relayRequest, {
           walletId,
@@ -154,6 +193,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         assert.equal(result.relayDraft, undefined);
         assert.equal(result.relayReconstruction, undefined);
       }
+      if (relayMode !== 'prove-local') assert.equal(result.relayProof, undefined);
       const preparation =
         options.privateIntent === undefined
           ? undefined
@@ -225,6 +265,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         ...(recovery ? { recovery } : {}),
         ...(relayOwned ? { relayOwned } : {}),
         ...(preparedRelay ? { relayDraft: preparedRelay } : {}),
+        ...(producedRelay ? { relayProof: producedRelay } : {}),
         ...(reconstructedRelay ? { relayReconstruction: reconstructedRelay } : {}),
       };
     } catch (error) {
@@ -268,6 +309,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
     prepareRelayReadOnly: (options) => run({ ...options, restore: true }, true, false, 'construct'),
     reconstructRelayReadOnly: (options) =>
       run({ ...options, restore: true }, true, false, 'reconstruct'),
+    proveRelayReadOnly: (options) => run({ ...options, restore: true }, true, false, 'prove-local'),
     assertScan,
     read,
     readOwned,
@@ -275,11 +317,12 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
   instances.add(instance);
   return instance;
 }
-function createRailgunAccountRunner({ identity, archive, policy }) {
+function createRailgunAccountRunner({ identity, archive, policy, enrollment }) {
   require('./railgun-identity').assertRailgunIdentity(identity);
   archive = require('./railgun-engine-runtime').verifyRailgunEngineRuntime(archive);
   return createRailgunWalletRunner({
     identity,
+    enrollment,
     policy,
     inventory: require('./railgun-engine-manifest.json').inventory.sha256,
     runJob: (options) =>

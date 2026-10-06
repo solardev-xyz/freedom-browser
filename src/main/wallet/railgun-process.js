@@ -59,6 +59,10 @@ function startRailgunProcess({
             filename === require.resolve('./railgun-private-receive-job')) ||
           (context.subject.kind === 'private-account' &&
             context.subject.role === 'engine' &&
+            context.subject.operation === 'relay-prove-local' &&
+            filename === require.resolve('./railgun-relay-prove-job')) ||
+          (context.subject.kind === 'private-account' &&
+            context.subject.role === 'engine' &&
             ['relay-prepare', 'relay-reconstruct'].includes(context.subject.operation) &&
             filename === require.resolve('./railgun-relay-wallet-job')) ||
           (context.subject.kind === 'private-account' &&

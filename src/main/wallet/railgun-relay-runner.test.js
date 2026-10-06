@@ -1,3 +1,12 @@
+let mockEnrollment, mockFenceLive;
+jest.mock('./railgun-account-enrollment', () => ({
+  assertRailgunFencedAccountEnrollment(value) {
+    if (value !== mockEnrollment || !mockFenceLive) throw Error('fence unavailable');
+  },
+}));
+const {
+  createRailgunRelayMainProofData,
+} = require('../../../scripts/fixtures/railgun-relay-main-proof-data');
 let mockAssertIdentity;
 jest.mock('./railgun-identity', () => ({
   assertRailgunIdentity: (...args) => mockAssertIdentity(...args),
@@ -17,7 +26,7 @@ const deferred = () => {
   return { promise, resolve };
 };
 // Structural store/job seams; real coverage, read, owned-note and draft normalizers.
-function setup(mode = 'construct', identity) {
+function setup(mode = 'construct', identity, enrollment) {
   const f = createRailgunRelayUnsignedData(),
     inventory = '1'.repeat(64),
     policy = '2'.repeat(64);
@@ -110,7 +119,12 @@ function setup(mode = 'construct', identity) {
     unrecoverableSent: [],
   };
   const draft = normalizeRailgunRelayDraftCapsule(f.draft);
-  if (mode === 'construct') result.relayDraft = f.draft;
+  const proofData = mode === 'prove' ? createRailgunRelayMainProofData() : undefined;
+  if (proofData) {
+    result.relayProof = proofData.proof;
+    result.ownedPoi[0].blindedCommitment = proofData.record.history.note.blindedCommitment;
+    result.ownedPoi[0].type = proofData.record.history.note.type;
+  } else if (mode === 'construct') result.relayDraft = f.draft;
   else
     result.relayReconstruction = {
       draftDigest: draft.digest,
@@ -118,19 +132,27 @@ function setup(mode = 'construct', identity) {
       recoveredOutputs: 2,
     };
   const runJob = jest.fn(async () => result),
-    runner = createRailgunWalletRunner({ runJob, inventory, policy, identity });
+    runner = createRailgunWalletRunner({ runJob, inventory, policy, identity, enrollment });
   const args = {
     snapshot: { checkpoint, signal: snapshotCancel.signal },
     walletSession: session,
     coverageStore: store,
     walletId: f.context.walletId,
     relaySignal: cancel.signal,
-    ...(mode === 'construct'
-      ? { relayRequest: f.request }
-      : { relayDraftText: JSON.stringify(draft.data) }),
+    ...(proofData
+      ? { relayProof: proofData.proofInput }
+      : mode === 'construct'
+        ? { relayRequest: f.request }
+        : { relayDraftText: JSON.stringify(draft.data) }),
   };
   const run = () =>
-    runner[mode === 'construct' ? 'prepareRelayReadOnly' : 'reconstructRelayReadOnly'](args);
+    runner[
+      mode === 'prove'
+        ? 'proveRelayReadOnly'
+        : mode === 'construct'
+          ? 'prepareRelayReadOnly'
+          : 'reconstructRelayReadOnly'
+    ](args);
   return {
     ...f,
     mode,
@@ -346,3 +368,106 @@ test.each(['construct', 'reconstruct'])(
     expect(f.store.close).toHaveBeenCalledTimes(1);
   }
 );
+
+function proofSetup() {
+  const identity = Object.freeze({});
+  mockEnrollment = {
+    binding: createRailgunRelayMainProofData().record.binding,
+    getContext: () => 'structural-engine-handle',
+  };
+  mockFenceLive = true;
+  mockAssertIdentity = jest.fn((value) => {
+    expect(value).toBe(identity);
+    return { walletId: '11'.repeat(32), instanceId: '0zk1' + 'p'.repeat(123) };
+  });
+  return setup('prove', identity, mockEnrollment);
+}
+test('local proof restores readonly owned input while retaining original signed root', async () => {
+  const f = proofSetup();
+  f.args.snapshot.checkpoint.state.trees[0].root = hex(999);
+  const result = await f.run();
+  expect(result.relayProof).toEqual(f.result.relayProof);
+  expect(f.store.finishRestore).toHaveBeenCalledWith(result.receipt);
+  expect(result.readOnly).toEqual({ readOnly: true, writeAttempts: 0 });
+  expect(f.runJob.mock.calls[0][0].relayEnrollment).toBe(mockEnrollment);
+});
+test.each([
+  'nullifier',
+  'blinded',
+  'type',
+  'amount',
+  'spent',
+  'position',
+  'state',
+  'private',
+  'dual',
+  'unsigned-result',
+  'fence',
+])('local proof refuses %s without finishing restore', async (mode) => {
+  const f = proofSetup();
+  if (mode === 'nullifier') f.result.ownedPoi[0].nullifier = hex(77);
+  if (mode === 'blinded') f.result.ownedPoi[0].blindedCommitment = hex(77);
+  if (mode === 'type') f.result.ownedPoi[0].type = 'Shield';
+  if (mode === 'amount') f.result.received[0].value = '701';
+  if (mode === 'spent') f.result.received[0].spentTxid = hex(77);
+  if (mode === 'position') f.args.snapshot.checkpoint.state.trees[0].length = 7;
+  if (mode === 'state')
+    f.session.inspectWalletState
+      .mockResolvedValueOnce({ ...f.state })
+      .mockResolvedValue({ ...f.state, count: 1 });
+  if (mode === 'private') f.args.privateIntent = {};
+  if (mode === 'dual') f.args.relayDraftText = '{}';
+  if (mode === 'unsigned-result') f.result.relayDraft = {};
+  if (mode === 'fence') mockFenceLive = false;
+  await expect(f.run()).rejects.toThrow();
+  expect(f.store.finishRestore).not.toHaveBeenCalled();
+});
+test.each(['identity', 'fence', 'signal'])(
+  'local proof rechecks %s after original final wallet inspection',
+  async (mode) => {
+    const f = proofSetup(),
+      entered = deferred(),
+      release = deferred();
+    f.session.inspectWalletState
+      .mockResolvedValueOnce({ ...f.state })
+      .mockImplementationOnce(() => {
+        entered.resolve();
+        return release.promise;
+      });
+    const work = f.run();
+    await entered.promise;
+    if (mode === 'identity')
+      mockAssertIdentity.mockImplementation(() => {
+        throw Error('revoked');
+      });
+    if (mode === 'fence') mockFenceLive = false;
+    if (mode === 'signal') f.cancel.abort();
+    release.resolve({ ...f.state });
+    await expect(work).rejects.toThrow();
+    expect(f.store.finishRestore).not.toHaveBeenCalled();
+  }
+);
+test('signed record is captured before first wallet inspection await', async () => {
+  const f = proofSetup(),
+    entered = deferred(),
+    release = deferred(),
+    original = f.args.relayProof.recordText;
+  f.session.inspectWalletState.mockImplementationOnce(() => {
+    entered.resolve();
+    return release.promise;
+  });
+  const work = f.run();
+  await entered.promise;
+  f.args.relayProof.recordText = '{}';
+  f.args.relayProof.timeoutMs = 999999;
+  release.resolve({ ...f.state });
+  await work;
+  expect(f.runJob.mock.calls[0][0].relayProof.recordText).toBe(original);
+  expect(f.runJob.mock.calls[0][0].relayProof.timeoutMs).toBe(110000);
+});
+test('ordinary route rejects proof input before inspecting state', async () => {
+  const f = proofSetup();
+  delete f.args.relaySignal;
+  await expect(f.runner.restoreReadOnly(f.args)).rejects.toThrow();
+  expect(f.session.inspectWalletState).not.toHaveBeenCalled();
+});

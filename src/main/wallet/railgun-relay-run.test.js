@@ -1,3 +1,13 @@
+let mockEnrollment, mockFenceLive;
+jest.mock('./railgun-account-enrollment', () => ({
+  assertRailgunFencedAccountEnrollment(value) {
+    if (value !== mockEnrollment || !mockFenceLive) throw Error('fence unavailable');
+  },
+}));
+jest.mock('./railgun-prover-runtime', () => ({ verifyRailgunProverRuntime: (value) => value }));
+const {
+  createRailgunRelayMainProofData,
+} = require('../../../scripts/fixtures/railgun-relay-main-proof-data');
 let mockDescriptor,
   mockRouter,
   mockOptions,
@@ -354,4 +364,185 @@ test('pre-aborted signal fails before child; proxy and own getter never execute'
   args.relaySignal = derived;
   await expect(run(args)).rejects.toThrow();
   expect(mockStarts).toBe(0);
+});
+
+function proofSetup() {
+  const f = createRailgunRelayMainProofData();
+  mockEnrollment = { binding: f.record.binding, getContext: () => args.handle };
+  mockFenceLive = true;
+  delete args.relayRequest;
+  args.relayProof = f.proofInput;
+  args.relayEnrollment = mockEnrollment;
+  mockWorker = async (options) => {
+    const input = JSON.parse(options.input);
+    const key = await options.broker.dispatch(
+      JSON.stringify({ id: 1, method: 'key', purpose: 'relay-prove-local' })
+    );
+    await options.broker.dispatch(
+      JSON.stringify({ id: 2, channel: 'public', wire: JSON.stringify({ id: 1, method: 'get' }) })
+    );
+    const chunks = [];
+    for (let index = 0; index < input.recordStream.chunks; index++) {
+      const reply = JSON.parse(
+        await options.broker.dispatch(
+          JSON.stringify({ id: 3 + index, method: 'relay-proof-record', index })
+        )
+      );
+      chunks.push(Buffer.from(reply.value.data, 'hex'));
+    }
+    expect(Buffer.concat(chunks).toString()).toBe(f.recordText);
+    await options.broker.dispatch(
+      JSON.stringify({
+        id: 3 + chunks.length,
+        method: 'result',
+        value: { instanceId: mockDescriptor.instanceId, relayProof: f.proof },
+      })
+    );
+    return key;
+  };
+  mockRouter.dispatch.mockImplementation(async (wire) =>
+    JSON.stringify({ id: JSON.parse(wire).id, value: null })
+  );
+  return f;
+}
+test('fixed producer shares key/storage/chunk sequence with exact 110s cap and observed close', async () => {
+  const f = proofSetup(),
+    result = await run(args);
+  expect(mockOptions.filename).toBe(require.resolve('./railgun-relay-prove-job'));
+  expect(mockOptions.binaryKey).toBe(true);
+  expect(mockOptions.startupMs).toBe(110000);
+  expect(mockOptions.lifetimeMs).toBe(110000);
+  expect(JSON.parse(mockOptions.input).recordText).toBeUndefined();
+  expect(result.relayProof).toEqual(f.proof);
+  expect(mockRouter.dispatch).toHaveBeenCalledTimes(1);
+  expect(mockTask.close).toHaveBeenCalledTimes(1);
+});
+test.each(['fence', 'binding', 'dual', 'cap', 'unsigned', 'record-accessor'])(
+  'producer rejects %s before key or launch',
+  async (mode) => {
+    const f = proofSetup();
+    if (mode === 'fence') mockFenceLive = false;
+    if (mode === 'binding') mockEnrollment.binding = '00'.repeat(32);
+    if (mode === 'dual') args.relayDraftText = JSON.stringify(f.record.draft);
+    if (mode === 'cap') args.relayProof.timeoutMs = 110001;
+    if (mode === 'unsigned')
+      args.relayProof.recordText = JSON.stringify({ ...f.record, state: 'held', signature: null });
+    let reads = 0;
+    if (mode === 'record-accessor')
+      Object.defineProperty(args.relayProof, 'recordText', {
+        get() {
+          reads++;
+          return f.recordText;
+        },
+      });
+    await expect(run(args)).rejects.toThrow();
+    expect(mockStarts).toBe(0);
+    expect(mockCredential).not.toHaveBeenCalled();
+    expect(reads).toBe(0);
+  }
+);
+test.each(['before-chunks', 'repeat', 'skip', 'wrong-method', 'wrong-result', 'fence-after-key'])(
+  'producer refuses %s and drains original exit',
+  async (mode) => {
+    const f = proofSetup();
+    mockWorker = async (options) => {
+      await options.broker.dispatch(
+        JSON.stringify({ id: 1, method: 'key', purpose: 'relay-prove-local' })
+      );
+      if (mode === 'fence-after-key') mockFenceLive = false;
+      if (mode === 'before-chunks')
+        return options.broker.dispatch(
+          JSON.stringify({
+            id: 2,
+            method: 'result',
+            value: { instanceId: mockDescriptor.instanceId, relayProof: f.proof },
+          })
+        );
+      const message = {
+        id: 2,
+        method: mode === 'wrong-method' ? 'relay-verify-record' : 'relay-proof-record',
+        index: mode === 'skip' ? 1 : 0,
+      };
+      await options.broker.dispatch(JSON.stringify(message));
+      if (mode === 'repeat') return options.broker.dispatch(JSON.stringify({ ...message, id: 3 }));
+      if (mode === 'wrong-result')
+        return options.broker.dispatch(
+          JSON.stringify({
+            id: 3,
+            method: 'result',
+            value: { relayProof: { ...f.proof, payloadDigest: '0'.repeat(64) } },
+          })
+        );
+    };
+    await expect(run(args)).rejects.toThrow();
+    expect(mockTask.close).toHaveBeenCalledTimes(1);
+  }
+);
+test('producer holds original exit despite successful result, and preserves unknown barrier', async () => {
+  proofSetup();
+  mockHoldExit = true;
+  const work = run(args);
+  await mockCloseReached.promise;
+  let settled = false;
+  work.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await new Promise(setImmediate);
+  expect(settled).toBe(false);
+  mockRejectExit(Error('unknown'));
+  await expect(work).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect(mockQuarantine).toHaveBeenCalledWith(args.identity);
+});
+test('ordinary route rejects producer result', async () => {
+  const f = createRailgunRelayMainProofData();
+  delete args.relayRequest;
+  delete args.relaySignal;
+  mockWorker = (options) =>
+    worker(options, (value) => {
+      value.relayProof = f.proof;
+    });
+  await expect(run(args)).rejects.toThrow();
+});
+
+test('producer drains held original storage even when a concurrent chunk causes immediate refusal', async () => {
+  proofSetup();
+  const entered = deferred(),
+    release = deferred();
+  mockRouter.dispatch.mockImplementation(() => {
+    entered.resolve();
+    return release.promise;
+  });
+  mockWorker = async (options) => {
+    await options.broker.dispatch(
+      JSON.stringify({ id: 1, method: 'key', purpose: 'relay-prove-local' })
+    );
+    const storage = options.broker.dispatch(
+      JSON.stringify({ id: 2, channel: 'public', wire: JSON.stringify({ id: 1, method: 'get' }) })
+    );
+    storage.catch(() => {});
+    return options.broker.dispatch(
+      JSON.stringify({ id: 3, method: 'relay-proof-record', index: 0 })
+    );
+  };
+  let settled = false;
+  const work = run(args);
+  work.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await entered.promise;
+  await mockCloseReached.promise;
+  await new Promise(setImmediate);
+  expect(settled).toBe(false);
+  release.resolve(JSON.stringify({ id: 1, value: null }));
+  await expect(work).rejects.toThrow();
 });
