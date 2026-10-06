@@ -292,6 +292,12 @@
   margin-bottom: 0;
 }
 
+/* The hidden settings headings otherwise leave an empty flex item and gap
+   before the conversation title, offsetting it from the status below. */
+.agent-floating[data-presentation='column'][data-agent-view='workspace'] .agent-sidebar-title-row > div {
+  display: none;
+}
+
 .agent-floating[data-presentation='column'] .agent-sidebar-header-actions {
   grid-area: actions;
 }
