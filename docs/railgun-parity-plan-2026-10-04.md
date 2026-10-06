@@ -7,6 +7,16 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [controlled fee/pre-transaction proof checkpoint](railgun-relay-proof-2026-10-06.md)
+now passes at `0cc74e6c`: a synthetic 1000-unit input produces fee 100 first and
+self 900 second, with independent transaction/pre-POI verification for minimum
+gas 0 and 1 and thirteen altered-signal refusals per case. This is a cryptographic
+prerequisite using fixed public keys; production policy remains closed to this
+shape. The archive records results and provenance but does not retain proofs or
+calldata for third-party cryptographic reverification. Failed entrypoint attempt
+a remains separately recorded. The [relay integration plan](railgun-relay-integration-plan-2026-10-06.md)
+records the pinned upstream contracts and remaining implementation sequence.
+
 [Authenticated history and the fixed recovery companion](railgun-recovery-companion-2026-10-06.md)
 now pass one fresh four-process Shield chain at `cf25d54c`: setup, signature stop,
 recovery stop and recovered submission. Recovery cancels held delivery of an
@@ -26,9 +36,10 @@ audit. External services remain synthetic. This qualifies callback cancellation
 after verifier exit, not live-child cancellation or physical transport drainage.
 The standalone trusted-host package does not export this recovery authority.
 
-Next is source-pinned Railgun gas-relay feasibility and design: the existing
-broadcaster delegates to EOA self-broadcast. Production relay implementation
-requires exact quote, transport and service contracts. Specifically authorized
+Next is offline signed-fee and encrypted-wire qualification against the pinned
+public client/server contracts, followed by reviewed fee admission, pre-transaction
+POI authority, durable uncertainty and confined transport. The existing
+broadcaster still delegates to EOA self-broadcast. Specifically authorized
 live private/service qualification, return-to-origin spending policy, generic
 Host support, platform/release work and product UX remain separate gates.
 

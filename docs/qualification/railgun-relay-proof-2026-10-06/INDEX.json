@@ -1,0 +1,55 @@
+{
+  "head": "0cc74e6c7c74ca2d28f6d04c3ec6297b79469cd2",
+  "qualified": true,
+  "attempt": "b",
+  "excludedAttempt": "a",
+  "scope": "Controlled public fee/pre-transaction POI proof prerequisite; no production authority or relay protocol qualification.",
+  "sourcesOriginal": {
+    "basename": "railgun-relay-proof-native-root-freeze-oct6-b.json",
+    "sha256": "799caa831d7b21aa6be66701130f80fd0a11ad4085bf84799545b0e53e19272b",
+    "bytes": 1780956
+  },
+  "parentObservationOriginal": {
+    "basename": "railgun-relay-proof-native-observation-oct6-b.json",
+    "sha256": "b0af05098ebe11bc96388c0c6b53263712e6ea0a9326c6dbabc08c0ba77ff9a9",
+    "bytes": 1636
+  },
+  "exporterSha256": "1337f193fbb71c8297425973f1a5e062a5ac0f47ab383d6943ace0e0d0658246",
+  "files": {
+    "report.json": {
+      "sha256": "cfa0432da902bbb2c33509fa3462d389ffb2a7b65906f8095536a6db42f04b21",
+      "bytes": 78121,
+      "kind": "exact preserved bytes"
+    },
+    "EXPECTATIONS.json": {
+      "sha256": "59a3324de5121f74db4a1922625c1e7347f5cdcbed6f4014db6abb5007eca47c",
+      "bytes": 4941,
+      "kind": "exact preserved bytes"
+    },
+    "FAILED-A.json": {
+      "sha256": "959251eec06c88f7b2614e33be01ef8f2d230f1378be78c35849b621869ecdc5",
+      "bytes": 2146,
+      "kind": "exact copy of a labelled derived failed-attempt summary"
+    },
+    "CHECKS.json": {
+      "sha256": "a68c241ff5d838bc5e674def3391c0216f632f2b5f085e4ce809f423f1ceac95",
+      "bytes": 3548,
+      "kind": "derived publication metadata"
+    },
+    "PROVENANCE.json": {
+      "sha256": "fa8fa440df05f1029f8631a36090f67131aec83dbb0b582a224410c0412c650a",
+      "bytes": 7783,
+      "kind": "derived publication metadata"
+    },
+    "OBSERVATION.json": {
+      "sha256": "68eae44619e2bd1b2b6887959856fb07bcbf51d89dc170749baa5e833e8fddcf",
+      "bytes": 3640,
+      "kind": "derived publication metadata"
+    },
+    "AUDIT.md": {
+      "sha256": "eafa9ddd4eb2f4cefccee9a335559a2b7a791aba8874a7e438ce3261ff5e7ed8",
+      "bytes": 3687,
+      "kind": "derived publication metadata"
+    }
+  }
+}
