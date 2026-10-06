@@ -74,8 +74,42 @@ function bindRailgunRelayDraft(value, request, { walletId, read, ownedPoi, trees
   return draft;
 }
 
+function normalizeRailgunRelayPrePoiInput(value, walletId) {
+  shape(value, ['draftText', 'history']);
+  const draft = parseRailgunRelayDraft(value.draftText, walletId);
+  const history = require('./railgun-relay-poi-history').normalizeRailgunRelayPoiHistory(
+    value.history
+  );
+  assert.equal(history.data.draftDigest, draft.digest);
+  return freeze({ draftText: value.draftText, history: history.data });
+}
+function normalizeRailgunRelayPrePoiResult(value, input, walletId) {
+  shape(value, ['binding', 'historyDigest', 'draftDigest', 'expectedHash']);
+  const checked = normalizeRailgunRelayPrePoiInput(input, walletId);
+  const draft = parseRailgunRelayDraft(checked.draftText, walletId);
+  const history = require('./railgun-relay-poi-history').normalizeRailgunRelayPoiHistory(
+    checked.history
+  );
+  const binding = require('./railgun-relay-pre-poi-data').normalizeRailgunRelayPrePoiBinding(
+    value.binding
+  );
+  assert.equal(value.draftDigest, draft.digest);
+  assert.equal(value.expectedHash, draft.data.intent.expectedHash);
+  assert.equal(value.historyDigest, history.digest);
+  assert.equal(binding.draftDigest, draft.digest);
+  assert.deepEqual(binding.listWitness, history.data.proof);
+  return freeze({
+    binding,
+    historyDigest: history.digest,
+    draftDigest: draft.digest,
+    expectedHash: draft.data.intent.expectedHash,
+  });
+}
+
 module.exports = {
   assertRailgunRelaySignal,
+  normalizeRailgunRelayPrePoiInput,
+  normalizeRailgunRelayPrePoiResult,
   normalizeRailgunRelayRequest,
   parseRailgunRelayDraft,
   normalizeRailgunRelayReconstruction,

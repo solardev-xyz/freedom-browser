@@ -471,3 +471,90 @@ test('ordinary route rejects proof input before inspecting state', async () => {
   await expect(f.runner.restoreReadOnly(f.args)).rejects.toThrow();
   expect(f.session.inspectWalletState).not.toHaveBeenCalled();
 });
+function prePoiSetup() {
+  const f = proofSetup(),
+    p = createRailgunRelayMainProofData();
+  delete f.args.relayProof;
+  delete f.result.relayProof;
+  f.args.relayPrePoi = { draftText: JSON.stringify(p.record.draft), history: p.record.history };
+  f.result.relayPrePoiBinding = {
+    binding: p.record.prePoiBinding,
+    historyDigest: p.proof.historyDigest,
+    draftDigest: p.proof.draftDigest,
+    expectedHash: p.proof.expectedHash,
+  };
+  f.run = () => f.runner.prepareRelayPrePoiReadOnly(f.args);
+  return f;
+}
+test('fresh binding requires real owner seam, current owned note and readonly post-state', async () => {
+  const f = prePoiSetup(),
+    result = await f.run();
+  expect(result.relayPrePoiBinding).toEqual(f.result.relayPrePoiBinding);
+  expect(f.runJob.mock.calls[0][0].relayEnrollment).toBe(mockEnrollment);
+  expect(f.store.finishRestore).toHaveBeenCalledWith(result.receipt);
+  expect(f.session.inspectWalletState).toHaveBeenCalledTimes(2);
+});
+test.each([
+  'grown-root',
+  'spent',
+  'nullifier',
+  'type',
+  'blind',
+  'binding',
+  'historyDigest',
+  'expectedHash',
+  'exit',
+  'fence',
+  'private-result',
+  'write',
+])('fresh binding refuses %s without publishing receipt', async (mode) => {
+  const f = prePoiSetup();
+  if (mode === 'grown-root') f.args.snapshot.checkpoint.state.trees[0].root = hex(999);
+  if (mode === 'spent') f.result.received[0].spentTxid = hex(99);
+  if (mode === 'nullifier') f.result.ownedPoi[0].nullifier = hex(99);
+  if (mode === 'type') f.result.ownedPoi[0].type = 'Shield';
+  if (mode === 'blind') f.result.ownedPoi[0].blindedCommitment = hex(99);
+  if (mode === 'binding') f.result.relayPrePoiBinding.binding.listWitness.root = hex(99).slice(2);
+  if (mode === 'historyDigest') f.result.relayPrePoiBinding.historyDigest = 'ff'.repeat(32);
+  if (mode === 'expectedHash') f.result.relayPrePoiBinding.expectedHash = hex(99);
+  if (mode === 'exit') f.result.closed.exitCode = 0;
+  if (mode === 'fence') mockFenceLive = false;
+  if (mode === 'private-result') f.result.relayReconstruction = {};
+  if (mode === 'write')
+    f.session.inspectWalletState
+      .mockResolvedValueOnce({ ...f.state })
+      .mockResolvedValueOnce({ ...f.state, count: 1 });
+  await expect(f.run()).rejects.toThrow();
+  expect(f.store.finishRestore).not.toHaveBeenCalled();
+});
+test('binding route cannot be selected through an ordinary restore or injected enrollment', async () => {
+  const f = prePoiSetup();
+  await expect(f.runner.restoreReadOnly(f.args)).rejects.toThrow();
+  f.args.relayEnrollment = mockEnrollment;
+  await expect(f.run()).rejects.toThrow();
+  expect(f.runJob).not.toHaveBeenCalled();
+});
+test.each(['fence', 'signal'])(
+  'binding rechecks %s after pending original wallet inspection',
+  async (mode) => {
+    const f = prePoiSetup(),
+      entered = deferred(),
+      release = deferred();
+    const ordinary = f.session.inspectWalletState.getMockImplementation();
+    let count = 0;
+    f.session.inspectWalletState.mockImplementation(async () => {
+      if (++count === 2) {
+        entered.resolve();
+        await release.promise;
+      }
+      return ordinary();
+    });
+    const original = f.run();
+    await entered.promise;
+    if (mode === 'fence') mockFenceLive = false;
+    else f.args.relaySignal && f.cancel.abort();
+    release.resolve();
+    await expect(original).rejects.toThrow();
+    expect(f.store.finishRestore).not.toHaveBeenCalled();
+  }
+);

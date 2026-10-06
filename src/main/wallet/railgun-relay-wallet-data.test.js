@@ -109,3 +109,91 @@ test.each([
   change(x);
   expect(() => bindRailgunRelayDraft(x.draft, x.request, x.owner)).toThrow();
 });
+function prePoiFixture() {
+  const f =
+    require('../../../scripts/fixtures/railgun-relay-main-proof-data').createRailgunRelayMainProofData();
+  return {
+    walletId: f.record.walletId,
+    input: { draftText: JSON.stringify(f.record.draft), history: f.record.history },
+    result: {
+      binding: f.record.prePoiBinding,
+      historyDigest: f.proof.historyDigest,
+      draftDigest: f.proof.draftDigest,
+      expectedHash: f.proof.expectedHash,
+    },
+  };
+}
+test('pre-POI input/result are detached exact values, not authority', () => {
+  const f = prePoiFixture(),
+    d = require('./railgun-relay-wallet-data');
+  const input = d.normalizeRailgunRelayPrePoiInput(f.input, f.walletId),
+    result = d.normalizeRailgunRelayPrePoiResult(f.result, input, f.walletId);
+  expect(input).toEqual(f.input);
+  expect(result).toEqual(f.result);
+  expect(input.history).not.toBe(f.input.history);
+  expect(result.binding).not.toBe(f.result.binding);
+  expect(Object.isFrozen(input.history)).toBe(true);
+  expect(Object.isFrozen(result.binding)).toBe(true);
+});
+test.each([
+  'input-extra',
+  'input-accessor',
+  'input-proxy',
+  'noncanonical',
+  'wallet',
+  'history',
+  'binding',
+  'list',
+  'history-digest',
+  'draft-digest',
+  'expected',
+  'result-extra',
+  'result-accessor',
+  'result-proxy',
+])('pre-POI boundary refuses %s', (mode) => {
+  const f = prePoiFixture(),
+    d = require('./railgun-relay-wallet-data');
+  let reads = 0;
+  if (mode === 'input-extra') f.input.verified = true;
+  if (mode === 'input-accessor')
+    Object.defineProperty(f.input, 'draftText', {
+      enumerable: true,
+      get() {
+        reads++;
+        return '{}';
+      },
+    });
+  if (mode === 'input-proxy')
+    f.input = new Proxy(f.input, {
+      get() {
+        reads++;
+        throw Error('trap');
+      },
+    });
+  if (mode === 'noncanonical') f.input.draftText = ' ' + f.input.draftText;
+  if (mode === 'wallet') f.walletId = 'ff'.repeat(32);
+  if (mode === 'history') f.input.history.draftDigest = 'ff'.repeat(32);
+  if (mode === 'binding') f.result.binding.draftDigest = 'ff'.repeat(32);
+  if (mode === 'list') f.result.binding.listWitness.root = '0'.repeat(63) + '9';
+  if (mode === 'history-digest') f.result.historyDigest = 'ff'.repeat(32);
+  if (mode === 'draft-digest') f.result.draftDigest = 'ff'.repeat(32);
+  if (mode === 'expected') f.result.expectedHash = '0x' + '0'.repeat(63) + '9';
+  if (mode === 'result-extra') f.result.witness = {};
+  if (mode === 'result-accessor')
+    Object.defineProperty(f.result, 'binding', {
+      enumerable: true,
+      get() {
+        reads++;
+        return {};
+      },
+    });
+  if (mode === 'result-proxy')
+    f.result = new Proxy(f.result, {
+      get() {
+        reads++;
+        throw Error('trap');
+      },
+    });
+  expect(() => d.normalizeRailgunRelayPrePoiResult(f.result, f.input, f.walletId)).toThrow();
+  expect(reads).toBe(0);
+});

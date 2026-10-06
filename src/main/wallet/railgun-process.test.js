@@ -479,6 +479,7 @@ test.each([
   ['engine', 'poi-transact-selector', './railgun-poi-transact-selector-job'],
   ['engine', 'private-operate', './railgun-private-operate-job'],
   ['engine', 'private-recover', './railgun-private-recover-job'],
+  ['engine', 'relay-pre-poi', './railgun-relay-pre-poi-job'],
   ['engine', 'relay-prove-local', './railgun-relay-prove-job'],
   ['engine', 'relay-prepare', './railgun-relay-wallet-job'],
   ['engine', 'relay-reconstruct', './railgun-relay-wallet-job'],
@@ -590,6 +591,10 @@ test.each([
   ['spending-sign', './railgun-poi-output-recover-job'],
   ['private-operate', './railgun-spend-sign-job', 'engine'],
   ['spending-sign', './railgun-private-operate-job'],
+  ['relay-pre-poi', './railgun-relay-wallet-job', 'engine'],
+  ['relay-pre-poi', './railgun-relay-prove-job', 'engine'],
+  ['relay-pre-poi', './railgun-relay-pre-poi-job', 'keystore'],
+  ['relay-reconstruct', './railgun-relay-pre-poi-job', 'engine'],
   ['relay-prove-local', './railgun-relay-wallet-job', 'engine'],
   ['relay-prove-local', './railgun-relay-verify-job', 'engine'],
   ['relay-prove-local', './railgun-relay-prove-job', 'keystore'],
@@ -739,7 +744,12 @@ test.each(['service', 'public-address'])(
   }
 );
 
-for (const operation of ['relay-prepare', 'relay-reconstruct', 'relay-prove-local']) {
+for (const operation of [
+  'relay-prepare',
+  'relay-reconstruct',
+  'relay-prove-local',
+  'relay-pre-poi',
+]) {
   test.each([
     ['kind', 'service'],
     ['kind', 'public-address'],
@@ -764,9 +774,11 @@ for (const operation of ['relay-prepare', 'relay-reconstruct', 'relay-prove-loca
       startRailgunProcess({
         handle: scope.getContext(subject),
         filename: require.resolve(
-          operation === 'relay-prove-local'
-            ? './railgun-relay-prove-job'
-            : './railgun-relay-wallet-job'
+          operation === 'relay-pre-poi'
+            ? './railgun-relay-pre-poi-job'
+            : operation === 'relay-prove-local'
+              ? './railgun-relay-prove-job'
+              : './railgun-relay-wallet-job'
         ),
         input: '{}',
         binaryKey: true,
@@ -789,9 +801,11 @@ for (const operation of ['relay-prepare', 'relay-reconstruct', 'relay-prove-loca
         operation,
       }),
       filename: require.resolve(
-        operation === 'relay-prove-local'
-          ? './railgun-relay-prove-job'
-          : './railgun-relay-wallet-job'
+        operation === 'relay-pre-poi'
+          ? './railgun-relay-pre-poi-job'
+          : operation === 'relay-prove-local'
+            ? './railgun-relay-prove-job'
+            : './railgun-relay-wallet-job'
       ),
       input: '{}',
       binaryKey: true,

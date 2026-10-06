@@ -546,3 +546,147 @@ test('producer drains held original storage even when a concurrent chunk causes 
   release.resolve(JSON.stringify({ id: 1, value: null }));
   await expect(work).rejects.toThrow();
 });
+function prePoiSetup(change = () => {}) {
+  const f = proofSetup();
+  delete args.relayProof;
+  args.relayPrePoi = { draftText: JSON.stringify(f.record.draft), history: f.record.history };
+  const binding = {
+    binding: f.record.prePoiBinding,
+    historyDigest: f.proof.historyDigest,
+    draftDigest: f.proof.draftDigest,
+    expectedHash: f.proof.expectedHash,
+  };
+  mockWorker = async (options) => {
+    const key = await options.broker.dispatch(
+      JSON.stringify({ id: 1, method: 'key', purpose: 'relay-pre-poi' })
+    );
+    const value = { instanceId: mockDescriptor.instanceId, relayPrePoiBinding: binding };
+    change(value);
+    await options.broker.dispatch(JSON.stringify({ id: 2, method: 'result', value }));
+    return key;
+  };
+  return { ...f, binding };
+}
+test('fixed fresh binding restores once with canonical init, viewing key, 30s caps and original exit', async () => {
+  const f = prePoiSetup();
+  const result = await run(args);
+  expect(mockOptions.filename).toBe(require.resolve('./railgun-relay-pre-poi-job'));
+  expect(mockOptions.binaryKey).toBe(true);
+  expect(mockOptions.startupMs).toBe(30000);
+  expect(mockOptions.lifetimeMs).toBe(30000);
+  const input = JSON.parse(mockOptions.input);
+  expect(input.draftText).toBe(args.relayPrePoi.draftText);
+  expect(input.history).toEqual(args.relayPrePoi.history);
+  expect(input.recordStream).toBeUndefined();
+  expect(input.relayDraftText).toBeUndefined();
+  expect(result.relayPrePoiBinding).toEqual(f.binding);
+  expect(result.closed).toBe(mockExit);
+  expect(mockCredential).toHaveBeenCalledTimes(1);
+  expect([...mockLoan]).toEqual(Array(32).fill(0));
+});
+test.each([
+  'fence',
+  'legacy',
+  'draft',
+  'history',
+  'dual-proof',
+  'dual-request',
+  'private',
+  'init-size',
+  'init-utf8',
+])('binding refuses %s before process/key', async (mode) => {
+  const f = prePoiSetup();
+  if (mode === 'fence') mockFenceLive = false;
+  if (mode === 'legacy') args.relayEnrollment = {};
+  if (mode === 'draft') args.relayPrePoi.draftText = ' ' + args.relayPrePoi.draftText;
+  if (mode === 'history') args.relayPrePoi.history.draftDigest = 'ff'.repeat(32);
+  if (mode === 'dual-proof') args.relayProof = f.proofInput;
+  if (mode === 'dual-request') args.relayRequest = data.request;
+  if (mode === 'private') args.privateIntent = {};
+  if (mode === 'init-size') args.snapshot.checkpoint = { padding: 'x'.repeat(65536) };
+  if (mode === 'init-utf8') args.snapshot.checkpoint = { padding: 'é'.repeat(32768) };
+  await expect(run(args)).rejects.toThrow();
+  expect(mockStarts).toBe(0);
+  expect(mockCredential).not.toHaveBeenCalled();
+});
+test.each(['purpose', 'extra', 'id'])(
+  'binding key request exact equality refuses %s',
+  async (mode) => {
+    prePoiSetup();
+    mockWorker = (options) =>
+      options.broker.dispatch(
+        JSON.stringify({
+          id: mode === 'id' ? 2 : 1,
+          method: 'key',
+          purpose: mode === 'purpose' ? 'relay-reconstruct' : 'relay-pre-poi',
+          ...(mode === 'extra' ? { verified: true } : {}),
+        })
+      );
+    await expect(run(args)).rejects.toMatchObject({ code: 'RAILGUN_WALLET_BROKER_REFUSED' });
+    expect(mockCredential).not.toHaveBeenCalled();
+  }
+);
+test.each(['historyDigest', 'draftDigest', 'expectedHash', 'binding', 'private', 'dual'])(
+  'binding result refuses %s and swallowed broker errors remain sticky',
+  async (mode) => {
+    const f = prePoiSetup();
+    mockWorker = async (options) => {
+      await options.broker.dispatch(
+        JSON.stringify({ id: 1, method: 'key', purpose: 'relay-pre-poi' })
+      );
+      const value = {
+        instanceId: mockDescriptor.instanceId,
+        relayPrePoiBinding: JSON.parse(JSON.stringify(f.binding)),
+      };
+      if (['historyDigest', 'draftDigest'].includes(mode))
+        value.relayPrePoiBinding[mode] = 'ff'.repeat(32);
+      if (mode === 'expectedHash')
+        value.relayPrePoiBinding.expectedHash = '0x' + '0'.repeat(63) + '9';
+      if (mode === 'binding')
+        value.relayPrePoiBinding.binding.listWitness.root = '0'.repeat(63) + '9';
+      if (mode === 'private') value.relayPrePoiBinding.witness = {};
+      if (mode === 'dual') value.relayProof = f.proof;
+      await options.broker
+        .dispatch(JSON.stringify({ id: 2, method: 'result', value }))
+        .catch(() => {});
+      expect(options.broker.signal.aborted).toBe(true);
+    };
+    await expect(run(args)).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_BROKER_REFUSED',
+      closed: mockExit,
+    });
+    expect(mockCredential).toHaveBeenCalledTimes(1);
+  }
+);
+test('binding success waits for original exit and cancellation refuses its late completion', async () => {
+  prePoiSetup();
+  mockHoldExit = true;
+  let settled = false;
+  const original = run(args).then(
+    (v) => {
+      settled = true;
+      return v;
+    },
+    (e) => {
+      settled = true;
+      throw e;
+    }
+  );
+  await mockCloseReached.promise;
+  expect(settled).toBe(false);
+  cancel.abort();
+  mockResolveExit(mockExit);
+  await expect(original).rejects.toThrow();
+  expect([...mockLoan]).toEqual(Array(32).fill(0));
+});
+test('binding revoked fence after original key callback prevents result', async () => {
+  prePoiSetup();
+  const credential = mockCredential;
+  mockCredential = jest.fn(async (use) => {
+    const bytes = await credential(use);
+    mockFenceLive = false;
+    return bytes;
+  });
+  await expect(run(args)).rejects.toMatchObject({ code: 'RAILGUN_WALLET_BROKER_REFUSED' });
+  expect(mockCredential).toHaveBeenCalledTimes(1);
+});
