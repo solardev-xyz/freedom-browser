@@ -124,6 +124,7 @@ async function main() {
       'src/main/wallet/railgun-private-reservations.js',
       'src/main/wallet/railgun-private-receive.js',
       'src/main/wallet/railgun-private-receive-job.js',
+      'src/main/wallet/railgun-private-destination.js',
       'src/main/wallet/railgun-private-results.js',
       'src/main/networks/private-rpc.js',
       'src/main/networks/wallet-tor-transport.js',

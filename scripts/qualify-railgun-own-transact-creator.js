@@ -141,6 +141,7 @@ const sources = [
   'src/main/wallet/railgun-private-policy.js',
   'src/main/wallet/railgun-private-receive.js',
   'src/main/wallet/railgun-private-receive-job.js',
+  'src/main/wallet/railgun-private-destination.js',
   'src/main/wallet/railgun-private-results.js',
   'src/main/wallet/railgun-private-signature.js',
   'src/main/wallet/railgun-shield-pins.json',

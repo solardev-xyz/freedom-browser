@@ -39,6 +39,7 @@ async function main() {
     'src/main/wallet/railgun-private-witness.js',
     'src/main/wallet/railgun-private-capsule.js',
     'src/main/wallet/railgun-private-reconstruct.js',
+    'src/main/wallet/railgun-private-destination.js',
     'src/main/wallet/railgun-private-preparation.js',
     'src/main/wallet/railgun-private-intent.js',
     'src/main/wallet/railgun-private-results.js',

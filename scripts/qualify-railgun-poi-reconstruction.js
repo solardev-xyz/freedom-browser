@@ -21,6 +21,7 @@ async function main() {
     'scripts/qualify-railgun-poi-reconstruction.js',
     'scripts/fixtures/railgun-poi-reconstruction-job.js',
     'src/main/wallet/railgun-poi-reconstruct.js',
+    'src/main/wallet/railgun-private-destination.js',
     'src/main/wallet/railgun-poi-reconstruct.test.js',
     'src/main/wallet/railgun-private-capsule.js',
     'src/main/wallet/railgun-private-preparation.js',

@@ -45,6 +45,7 @@ async function main() {
     'src/main/wallet/privacy-journal-retention.js',
     'src/main/wallet/railgun-poi-records.js',
     'src/main/wallet/railgun-poi-reconstruct.js',
+    'src/main/wallet/railgun-private-destination.js',
     'src/main/wallet/railgun-poi-reconstruct.test.js',
     'src/main/wallet/railgun-private-capsule.js',
     'src/main/wallet/railgun-private-preparation.js',
