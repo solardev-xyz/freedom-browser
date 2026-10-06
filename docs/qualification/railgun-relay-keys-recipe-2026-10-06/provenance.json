@@ -1,0 +1,180 @@
+{
+  "schema": "railgun-relay-key-repository-public-evidence-v1",
+  "status": "Completed; independent external actual-result review cleared",
+  "sourceCommit": "6bc9456ef42dee90a018f3ec706da929eacd2710",
+  "sourceFiles": {
+    "scripts/qualify-railgun-relay-keys.js": {
+      "bytes": 1475,
+      "sha256": "6949315164cbbb7033398700fc4235fc3a31dd2a40c4fc90197ec33a127fc437"
+    },
+    "scripts/fixtures/railgun-relay-keys/README.md": {
+      "bytes": 4240,
+      "sha256": "309e3279e058350db7b5ab8043c94d393e864147556208a7613609226653c416"
+    },
+    "scripts/fixtures/railgun-relay-keys/admission.js": {
+      "bytes": 3927,
+      "sha256": "ea0ee9dec260dfd194ab196b314a4f6141b3083d8038912684d2b637183dfdb0"
+    },
+    "scripts/fixtures/railgun-relay-keys/campaign.js": {
+      "bytes": 17830,
+      "sha256": "eb702d6a4f3c3c805f745559d026bdae0a56e868a7ef17db8b69506a1aa6df79"
+    },
+    "scripts/fixtures/railgun-relay-keys/cases.json": {
+      "bytes": 3712,
+      "sha256": "9064dc82eca9618d1f114716cb09f9b42857acf29dfa944c577874756f6d8fd8"
+    },
+    "scripts/fixtures/railgun-relay-keys/recipe.test.js": {
+      "bytes": 7074,
+      "sha256": "fcdd30737e91e6a7521d42c6af2fd0c92fd883f419695ee593683d1c7d1a0222"
+    },
+    "scripts/fixtures/railgun-relay-keys/vectors.json": {
+      "bytes": 1555,
+      "sha256": "3eeff85d644bcfef361d5b205a2f5855683f8a1f06c4dc197d0a39c4879b23a2"
+    }
+  },
+  "rawReport": {
+    "file": "report.json",
+    "bytes": 4198,
+    "sha256": "f98fbaa28118cffd4937d3818a68d5fd25eee5a37d47dca5c60e70d20fd9e245"
+  },
+  "originalObservation": {
+    "bytes": 1997,
+    "sha256": "b0c1ef090acca20f67228481ba3e2d33b854562a93c9c8accc058fa8ff1a0f08",
+    "check": {
+      "originalToolChunk": "ef1905",
+      "naturalExit": true,
+      "exitCode": 0
+    },
+    "run": {
+      "originalToolChunk": "39e218",
+      "naturalExit": true,
+      "exitCode": 0,
+      "seconds": 0.078682292,
+      "externalTermination": false
+    },
+    "cleanBeforeRun": true,
+    "originalProcessExitObservedBy": "Root only",
+    "rawStdoutLogFilesRetained": false,
+    "attribution": "Root recorded original tool observations; this archive does not invent stdout log files."
+  },
+  "rootFocusedChecks": {
+    "record": {
+      "bytes": 609,
+      "sha256": "7699b558f86589c0ab564c802ec093cd0dd0d988e8f335c67ee9b4a55676e9e3"
+    },
+    "candidateFreezeSha256": "ef1dbf628617633b3779cedcc7075f11f9fe1cb3130c18f8ca52d79512dd346f",
+    "tests": {
+      "originalToolChunk": "92a36e",
+      "exitCode": 0,
+      "naturalExit": true,
+      "tests": 133,
+      "suites": 3,
+      "seconds": 0.529
+    },
+    "lint": {
+      "originalSession": 5608,
+      "exitCode": 0,
+      "naturalExit": true,
+      "warnings": 0
+    },
+    "format": {
+      "originalToolChunk": "5bfe1e",
+      "exitCode": 0,
+      "files": 7
+    },
+    "sourceReview": "Root and independent Claude cleared with clean committed HEAD and post-run recipe-pin comparison conditions",
+    "actualCryptoExecuted": false
+  },
+  "runtime": {
+    "node": "v24.18.1",
+    "openssl": "3.5.7",
+    "executableSha256": "f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5"
+  },
+  "build": {
+    "reusedWithoutRepreparation": true,
+    "manifestSha256": "2bf6fa947e89bcaeef4ff94ffdc22cac8acbc3ed66a8055cf464f02d60ee8d97",
+    "preparedOutputs": {
+      "upstream.cjs": {
+        "bytes": 302335,
+        "sha256": "1045d0c1358d44db4bffe57849de7dee22f3d8738bcc972f9d77fdf66359b5fb"
+      },
+      "selected-upstream.ts": {
+        "bytes": 5529,
+        "sha256": "9d0eead2440c2858c673fe6e4db20439913438996156ce71d00291e13c0383cb"
+      }
+    },
+    "basisEvidence": "../railgun-relay-wire-recipe-2026-10-06/provenance.json",
+    "keyNobleSource": {
+      "input": "engineDependencies:@noble/ed25519/lib/index.js",
+      "bytes": 31131,
+      "sha256": "85e967d2b67d830b75ac033d5faae0b5a19212e6404cf49fa5abf3bb4325c2d9"
+    },
+    "existingElevenWireRecipePinsUnchanged": true,
+    "wireDefaultThirtyNineCaseCampaignRerun": false
+  },
+  "portSourceEvidence": {
+    "freezeSha256": "ef1dbf628617633b3779cedcc7075f11f9fe1cb3130c18f8ca52d79512dd346f",
+    "payloadSha256": "08d1880d7bddb9e66f063abadb430b596f6b1b31bc199e218f1595c40b13ee24",
+    "astEquivalence": {
+      "bytes": 2004,
+      "sha256": "b374baab800003d36f89218a49e638d39da42da2485117798bd79c70f0fefe79"
+    },
+    "allAdmissionDeclarationsAndSeventeenCaseBodiesAstEqual": true,
+    "commonJsStrict": true,
+    "casesByteExact": true,
+    "vectorsFormattingOnly": true
+  },
+  "historicalComparison": {
+    "report": {
+      "bytes": 3166,
+      "sha256": "d3d7a5bc21d357f858eb45404c64716528945c99071e2de4d5716583a904fbfb"
+    },
+    "resultsCountsCallsDiagnosticsEqual": true,
+    "randomCiphertextIdentityClaimed": false
+  },
+  "scope": {
+    "liveService": false,
+    "fundedProfile": false,
+    "fullClientOrServer": false,
+    "productionRelayAuthority": false,
+    "operatorIdentityEstablished": false,
+    "wakuPeerBound": false,
+    "topicSigned": false,
+    "finality": false,
+    "RPolicyIsHardenedSubset": true,
+    "curveMathIndependentlyImplemented": false,
+    "offCurveAdversarialVectorQualified": false,
+    "invalidEcdhRefusalAttributesExactGuard": false,
+    "fullRegressionClaimed": false
+  },
+  "publicationMapping": {
+    "report.json": "Exact original bytes; no normalization",
+    "provenance.json": "Derived public index; original source record hashes retained and local input locations omitted",
+    "OVERVIEW.md": "New summary; not original runtime output"
+  },
+  "independentResultReview": {
+    "reviewer": "Independent external Claude reviewer",
+    "disposition": "cleared",
+    "originalProcessExitObservedBy": "Root only",
+    "reviewerReranCampaign": false,
+    "attribution": "Final disposition relayed by parent; read-only verification, no campaign rerun",
+    "checks": [
+      "All seven committed source blobs equal reviewed payload",
+      "All five report recipe pins and build/Noble source bindings match",
+      "Node v24.18.1, OpenSSL 3.5.7 and exact Node executable hash match",
+      "Full results, counts, call counters and diagnostics equal original scratch r2, including valid identity-R limitation",
+      "No machine-local paths or leaks in report"
+    ]
+  },
+  "finalObservation": {
+    "bytes": 2509,
+    "sha256": "3d53a39e33527af0283b83431c847f3c826fee54cfe8b27cc57a8377702dd471",
+    "priorObservationSha256": "b0c1ef090acca20f67228481ba3e2d33b854562a93c9c8accc058fa8ff1a0f08",
+    "actualResultReview": {
+      "reviewer": "independent Claude via existing Herdr w6:p2",
+      "status": "cleared",
+      "verified": "All seven committed payload blobs, five report recipe pins, build/Noble input, identical runtime and full results/counts/calls/diagnostics vs historical r2; no paths or expanded scope",
+      "processObservation": "Root alone observed original processes; reviewer read source/evidence and did not rerun"
+    }
+  }
+}

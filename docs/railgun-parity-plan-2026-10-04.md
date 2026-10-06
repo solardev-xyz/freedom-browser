@@ -12,7 +12,9 @@ passes 17 offline checks, including a genuine key outside the earlier fixture
 registry, torsion/mixed-torsion refusals, separate signature R/S checks and actual
 shared-key exchange. Its hardened R policy deliberately rejects one mathematically
 valid zero-nonce signature. This is a qualified experimental predicate, not
-operator trust or integration into production relay admission.
+operator trust or integration into production relay admission. Its [checked-in replay](qualification/railgun-relay-keys-recipe-2026-10-06/OVERVIEW.md)
+now independently reproduces all seventeen cases at `6bc9456e`, with exact
+source/runtime bindings, 133 affected tests and strict lint.
 
 The [offline wire checkpoint](railgun-relay-wire-2026-10-06.md) now passes 39
 checks against selected pinned upstream functions: original-byte signatures,
@@ -55,8 +57,8 @@ audit. External services remain synthetic. This qualifies callback cancellation
 after verifier exit, not live-child cancellation or physical transport drainage.
 The standalone trusted-host package does not export this recovery authority.
 
-Next are a checked-in key-admission replay and actual fee/proof-to-wire
-composition, followed by production key and fee admission,
+Next is actual fee/proof-to-wire composition, followed by production key and fee
+admission,
 pre-transaction POI authority, durable uncertainty and confined transport. The existing
 broadcaster still delegates to EOA self-broadcast. Specifically authorized
 live private/service qualification, return-to-origin spending policy, generic
