@@ -321,6 +321,7 @@ test('native key deltas follow actual job purposes and count requests before dis
     snapshotProbe: undefined,
     localReviewProbe: undefined,
     relayPreparationProbe: undefined,
+    exactReviewProbe: undefined,
     stagingGuard: false,
     failReadOnlyRestore: false,
     privateViewingKeys: 0,

@@ -337,6 +337,7 @@ test('default-off selected inventory remains exact and cannot load snapshot fixt
       snapshotProbe,
       localReviewProbe: null,
       relayPreparationProbe: null,
+      exactReviewProbe: null,
       privateAdapterMode: false,
       publicAdapterMode: false,
       require: () => {
@@ -424,6 +425,7 @@ test('actual qualifier counts every broker entry before parsing, including non-k
   const context = {
     localReviewProbe: null,
     relayPreparationProbe: null,
+    exactReviewProbe: null,
     messages: 0,
     snapshotProbe: { count: (key) => counts.push(key) },
   };
@@ -455,6 +457,7 @@ test('private adapter inventory is opt-in and includes both bridge and independe
       snapshotProbe: null,
       localReviewProbe: null,
       relayPreparationProbe: null,
+      exactReviewProbe: null,
       privateAdapterMode,
       publicAdapterMode: false,
       require: () => {

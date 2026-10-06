@@ -24,6 +24,18 @@ async function main() {
   assert.ok(
     path.isAbsolute(sourceFilename) && path.isAbsolute(directory) && !fs.existsSync(directory)
   );
+  const exactReviewFlag = process.env.FREEDOM_RAILGUN_EXACT_RELAY_REVIEW;
+  assert.ok([undefined, 'accept', 'held-close'].includes(exactReviewFlag));
+  if (exactReviewFlag) {
+    assert.equal(composition, 'enrolled');
+    assert.ok(accountArchive);
+    assert.equal(proverArchive, undefined);
+    assert.equal(artifactDirectory, undefined);
+    for (const name of Object.keys(process.env).filter(
+      (name) => name.startsWith('FREEDOM_RAILGUN_') && name !== 'FREEDOM_RAILGUN_EXACT_RELAY_REVIEW'
+    ))
+      assert.equal(process.env[name], undefined);
+  }
   const relayPreparationFlag = process.env.FREEDOM_RAILGUN_UNSIGNED_RELAY_PREPARATION;
   assert.ok(relayPreparationFlag === undefined || relayPreparationFlag === '1');
   if (relayPreparationFlag) {
@@ -85,6 +97,10 @@ async function main() {
     ? require('./fixtures/railgun-relay-preparation-native').install()
     : null;
   let unsignedRelayPreparationQualification;
+  const exactReviewProbe = exactReviewFlag
+    ? require('./fixtures/railgun-relay-exact-review-native').install()
+    : null;
+  let exactRelayReviewQualification;
   const kohakuMode = process.env.FREEDOM_RAILGUN_KOHAKU;
   const privateAdapterMode = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER === '1';
   const privateAdapterDenied = process.env.FREEDOM_RAILGUN_KOHAKU_PRIVATE_ADAPTER_DENY === '1';
@@ -199,6 +215,7 @@ async function main() {
     snapshotProbe?.count('transportFactories');
     localReviewProbe?.count('transportFactories');
     relayPreparationProbe?.count('transportFactories');
+    exactReviewProbe?.count('transportFactories');
     if (stagingGuard) {
       forbiddenStaging.transports++;
       throw Error('External transport forbidden during synthetic staging');
@@ -213,6 +230,7 @@ async function main() {
     : (snapshotProbe?.resources ??
       localReviewProbe?.resources ??
       relayPreparationProbe?.resources ??
+      exactReviewProbe?.resources ??
       null);
   const readContracts = [];
   let restoreContractRuntime;
@@ -264,10 +282,12 @@ async function main() {
             snapshotProbe?.count('brokerMessages');
             localReviewProbe?.count('brokerMessages');
             relayPreparationProbe?.count('brokerMessages');
+            exactReviewProbe?.count('brokerMessages');
             const message = JSON.parse(wire);
             if (message.method === 'key') snapshotProbe?.count('railgunKeyRequests');
             if (message.method === 'key') localReviewProbe?.count('railgunKeyRequests');
             if (message.method === 'key') relayPreparationProbe?.count('railgunKeyRequests');
+            if (message.method === 'key') exactReviewProbe?.count('railgunKeyRequests');
             if (stagingGuard && message.method === 'key' && message.purpose === 'spending-sign') {
               forbiddenStaging.spendingKeys++;
               assert.ok(
@@ -292,6 +312,7 @@ async function main() {
             if (message.method === 'key') snapshotProbe?.count('railgunKeyReplies');
             if (message.method === 'key') localReviewProbe?.count('railgunKeyReplies');
             if (message.method === 'key') relayPreparationProbe?.count('railgunKeyReplies');
+            if (message.method === 'key') exactReviewProbe?.count('railgunKeyReplies');
             if (
               message.method === 'key' &&
               message.purpose === 'spending-sign' &&
@@ -438,6 +459,7 @@ async function main() {
     snapshotProbe?.count('rpcFactories');
     localReviewProbe?.count('rpcFactories');
     relayPreparationProbe?.count('rpcFactories');
+    exactReviewProbe?.count('rpcFactories');
     const lifetime = AbortSignal.any([getPrivacyContext(handle).signal, signal]);
     const active = () => {
       getPrivacyContext(handle);
@@ -452,7 +474,9 @@ async function main() {
         snapshotProbe?.count('rpcRequests');
         localReviewProbe?.count('rpcRequests');
         relayPreparationProbe?.count('rpcRequests');
+        exactReviewProbe?.count('rpcRequests');
         relayPreparationProbe?.rpc(method, params);
+        exactReviewProbe?.rpc(method, params);
         if (stagingGuard && !['eth_getLogs', 'eth_getBlockByNumber'].includes(method)) {
           forbiddenStaging.rpc++;
           throw Error('Private RPC forbidden during synthetic staging');
@@ -694,7 +718,7 @@ async function main() {
           'scripts/qualify-railgun-wallet-journal.test.js',
         ]
       : []),
-    ...(relayPreparationProbe
+    ...(relayPreparationProbe || exactReviewProbe
       ? [
           'scripts/fixtures/railgun-relay-preparation-native.js',
           'scripts/fixtures/railgun-relay-preparation-native.test.js',
@@ -719,6 +743,18 @@ async function main() {
           'src/main/wallet/railgun-relay-wallet-data.test.js',
           'src/main/wallet/railgun-relay-wallet-job.test.js',
           'scripts/qualify-railgun-wallet-journal.test.js',
+        ]
+      : []),
+    ...(exactReviewProbe
+      ? [
+          'scripts/fixtures/railgun-relay-exact-review-native.js',
+          'scripts/fixtures/railgun-relay-exact-review-native.test.js',
+          'src/main/wallet/railgun-account-wallet.js',
+          'src/main/wallet/railgun-account-wallet.test.js',
+          'src/main/wallet/railgun-relay-review-summary.js',
+          'src/main/wallet/railgun-relay-review-summary.test.js',
+          'src/main/wallet/railgun-wallet-policy.js',
+          'src/main/wallet/railgun-wallet-policy.test.js',
         ]
       : []),
     ...(localReviewProbe
@@ -1479,6 +1515,26 @@ async function main() {
                     }),
                   jobs: relayPreparationProbe.jobs,
                   rpc: relayPreparationProbe.rpcSnapshot,
+                });
+            }
+            if (exactReviewProbe && stage === 30 && attempt === 'restore') {
+              assert.equal(exactRelayReviewQualification, undefined);
+              exactRelayReviewQualification =
+                await require('./fixtures/railgun-relay-exact-review-native').qualify({
+                  scenario: exactReviewFlag,
+                  storage: exactReviewProbe.storage,
+                  account: opened,
+                  owners: { identity: accountIdentity, enrollment, coordinator },
+                  archive: accountArchive,
+                  profile: path.join(directory, 'profile'),
+                  walletDirectory,
+                  measure: () =>
+                    exactReviewProbe.measure({
+                      applications: applications.length,
+                      walletRestores: walletRestores.length,
+                    }),
+                  jobs: exactReviewProbe.jobs,
+                  rpc: exactReviewProbe.rpcSnapshot,
                 });
             }
             runs.push({
@@ -2443,6 +2499,7 @@ async function main() {
     if (localReviewProbe) assert.equal(localRelayReviewQualification?.admittedQuoteJobs, 3);
     if (relayPreparationProbe)
       assert.equal(unsignedRelayPreparationQualification?.relayRestores, 2);
+    if (exactReviewProbe) assert.equal(exactRelayReviewQualification?.relayRestores, 2);
     assert.deepEqual(hashes(), sourceSha256);
     assert.doesNotMatch(JSON.stringify(runs), /"(?:ownedPoi|npk|nullifier|blindedCommitment)"\s*:/);
     fs.writeFileSync(
@@ -2454,6 +2511,7 @@ async function main() {
           ...(snapshotProbe ? { snapshotAdapterQualification } : {}),
           ...(localReviewProbe ? { localRelayReviewQualification } : {}),
           ...(relayPreparationProbe ? { unsignedRelayPreparationQualification } : {}),
+          ...(exactReviewProbe ? { exactRelayReviewQualification } : {}),
           syntheticPublicHistory: true,
           liveAcquisition: false,
           publicViewingVector: true,

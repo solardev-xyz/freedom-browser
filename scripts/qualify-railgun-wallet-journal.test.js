@@ -109,6 +109,7 @@ function inventory(publicAdapterMode, publicShield = true) {
     snapshotProbe: null,
     localReviewProbe: null,
     relayPreparationProbe: null,
+    exactReviewProbe: null,
     require: (name) => {
       expect([
         '../docs/qualification/railgun-shield-prerequisites-2026-10-04.json',
@@ -323,6 +324,7 @@ test('local review inventory adds exact 15 bounded paths only for the new select
       snapshotProbe: null,
       localReviewProbe,
       relayPreparationProbe: null,
+      exactReviewProbe: null,
     });
   const off = evaluate(null),
     on = evaluate({});
@@ -393,6 +395,7 @@ test('unsigned preparation inventory adds only the bounded optional source set',
       snapshotProbe: null,
       localReviewProbe: null,
       relayPreparationProbe,
+      exactReviewProbe: null,
     });
   const off = evaluate(null),
     on = evaluate({});
@@ -401,4 +404,79 @@ test('unsigned preparation inventory adds only the bounded optional source set',
   expect(on).toContain('scripts/fixtures/railgun-relay-preparation-native.js');
   expect(off).not.toContain('scripts/fixtures/railgun-relay-preparation-native.js');
   for (const filename of on) expect(fs.existsSync(path.join(__dirname, '..', filename))).toBe(true);
+});
+
+function exactReviewSelection(flag, extra = {}, inputs = {}) {
+  vm.runInNewContext(section('  const exactReviewFlag =', '  const relayPreparationFlag ='), {
+    assert,
+    process: {
+      env: {
+        ...(flag === undefined ? {} : { FREEDOM_RAILGUN_EXACT_RELAY_REVIEW: flag }),
+        ...extra,
+      },
+    },
+    composition: 'enrolled',
+    accountArchive: '/public/engine.asar',
+    proverArchive: undefined,
+    artifactDirectory: undefined,
+    ...inputs,
+  });
+}
+test.each([undefined, 'accept', 'held-close'])(
+  'exact review selector %j is supported before directory creation',
+  (flag) => {
+    expect(() => exactReviewSelection(flag)).not.toThrow();
+    expect(source.indexOf('  const exactReviewFlag =')).toBeLessThan(
+      source.indexOf('  fs.mkdirSync(directory,')
+    );
+  }
+);
+test.each(['', '0', '1', 'true', 'decline'])('exact review refuses selector %j', (flag) => {
+  expect(() => exactReviewSelection(flag)).toThrow();
+});
+test.each([
+  'FREEDOM_RAILGUN_UNSIGNED_RELAY_PREPARATION',
+  'FREEDOM_RAILGUN_LOCAL_RELAY_REVIEW',
+  'FREEDOM_RAILGUN_KOHAKU',
+  'FREEDOM_RAILGUN_UNKNOWN',
+])('exact review refuses mixed %s', (name) => {
+  expect(() => exactReviewSelection('accept', { [name]: '1' })).toThrow();
+});
+test.each([
+  { composition: undefined },
+  { accountArchive: undefined },
+  { proverArchive: '/prover' },
+  { artifactDirectory: '/artifacts' },
+])('exact review rejects incompatible input %j', (input) => {
+  expect(() => exactReviewSelection('held-close', {}, input)).toThrow();
+});
+test('exact review inventory includes the unchanged unsigned observer plus exact production review sources', () => {
+  const expression =
+    section('  const sources = [', '\n  ];').replace('  const sources = ', '') + '\n]';
+  const evaluate = (enabled) =>
+    vm.runInNewContext(expression, {
+      kohaku: null,
+      publicShield: false,
+      privateAdapterMode: false,
+      publicAdapterMode: false,
+      snapshotProbe: null,
+      localReviewProbe: null,
+      relayPreparationProbe: null,
+      exactReviewProbe: enabled ? {} : null,
+    });
+  const off = evaluate(false),
+    on = evaluate(true);
+  expect(on.length - off.length).toBe(31);
+  expect(new Set(on).size - new Set(off).size).toBe(26);
+  for (const name of [
+    'scripts/fixtures/railgun-relay-exact-review-native.js',
+    'scripts/fixtures/railgun-relay-preparation-native.js',
+    'src/main/wallet/railgun-relay-review-summary.js',
+    'src/main/wallet/railgun-account-wallet.test.js',
+  ])
+    expect(on).toContain(name);
+  expect(off).not.toContain('scripts/fixtures/railgun-relay-exact-review-native.js');
+  const hook = source.indexOf("if (exactReviewProbe && stage === 30 && attempt === 'restore')");
+  expect(hook).toBeGreaterThan(source.indexOf('const accountWindows = []'));
+  expect(hook).toBeLessThan(source.indexOf('runs.push({\n              ...(transactStaging'));
 });
