@@ -1323,6 +1323,96 @@ const settle = async (work) => {
 const between = (timeline, from, to) =>
   timeline.slice(timeline.indexOf(from) + 1, timeline.indexOf(to));
 
+// Observation over the real journal rules and a fake transact recovery.
+function observeWorld({
+  target = 'transfer',
+  confirmations = 14,
+  finalized = 120,
+  output,
+  previousMode = target,
+} = {}) {
+  const calls = { resolve: [], network: [] };
+  const sent = target === 'transfer' ? TRANSFER : UNSHIELD;
+  const operation = target === 'transfer' ? 'railgun-private-transfer' : 'railgun-token-unshield';
+  const journal = {
+    records: [
+      ...(target === 'unshield' ? [settledTransfer()] : []),
+      { hash: sent, state: 'submitted', intent: { kind: 'railgun-transact', operation } },
+    ],
+    archive: [shieldRecord()],
+  };
+  const transactOutput =
+    output ??
+    (target === 'transfer'
+      ? { kind: 'shielded', tree: 0, position: 2 }
+      : { kind: 'unshield', recipient: OWNER, amount: AMOUNT.toString(), received: '1', fee: '1' });
+  const recovery = {
+    observe: async (txHash) => ({
+      record: {
+        hash: txHash,
+        state: 'submitted',
+        observation: { status: 'included', blockNumber: 100, blockHash: hash('0b'), confirmations },
+      },
+      transact: {
+        status: 'matched',
+        operation,
+        nullifier: 'private-nullifier',
+        output: transactOutput,
+        trust: 'unverified-rpc',
+      },
+    }),
+    resolve: async (txHash, options) => {
+      calls.resolve.push(options.minimumConfirmations);
+      const decision = await options.review({
+        transact: { status: 'matched', operation, output: transactOutput },
+      });
+      const record = journal.records.find((value) => value.hash === txHash);
+      record.resolution = {
+        minimumConfirmations: options.minimumConfirmations,
+        railgun: {
+          outcome: 'matched',
+          finalizedBlockNumber: finalized,
+          finalizedBlockHash: hash('fb'),
+        },
+      };
+      return decision;
+    },
+    list: async () => journal.records.filter((value) => value.intent?.kind === 'railgun-transact'),
+    close() {},
+  };
+  const ctx = {
+    report: { passed: false },
+    stage: 'preconditions',
+    owner: OWNER,
+    previous: {
+      mode: previousMode,
+      spend: { journaled: true, journaledHash: sent },
+      spendRequest: target === 'unshield' ? { amount: AMOUNT.toString() } : undefined,
+    },
+    chain: {
+      shieldTransactionHash: SHIELD,
+      transfer: target === 'unshield' ? { hash: TRANSFER, blockNumber: 100 } : { hash: TRANSFER },
+      unshield: target === 'unshield' ? { hash: UNSHIELD, amount: AMOUNT.toString() } : null,
+    },
+    network: {
+      request: async (_chainId, method) => {
+        calls.network.push(method);
+        if (method === 'eth_getTransactionReceipt')
+          return { result: { gasUsed: '0xf4240', effectiveGasPrice: '0x3b9aca00', status: '0x1' } };
+        if (method === 'eth_getBlockByNumber')
+          return { result: { number: '0x' + finalized.toString(16) } };
+        throw Error('unexpected method ' + method);
+      },
+    },
+    readJournal: async () => JSON.parse(JSON.stringify(journal)),
+    load: (name) => {
+      if (name !== 'wallet/railgun-transact-recovery') throw Error('unexpected module ' + name);
+      return { openRailgunTransactRecovery: () => recovery };
+    },
+  };
+  return { ctx, calls, journal };
+}
+
 // Each probe holds for the real script and must fail for its mutation rows.
 const PROBES = {
   'fee-boundary': async (m) => {
@@ -1693,6 +1783,45 @@ const PROBES = {
     expect(calls.timeline).not.toContain('membership');
     expect(calls.timeline).not.toContain('poi-submit');
   },
+  'observe-runner': async (m) => {
+    const settled = observeWorld();
+    await m.RUNNERS.observe(settled.ctx);
+    expect(settled.calls.resolve).toEqual([12]);
+    expect(settled.ctx.report).toMatchObject({
+      passed: true,
+      target: 'transfer',
+      observedHash: TRANSFER,
+      resolved: { outcome: 'matched', finalizedBlockNumber: 120, minimumConfirmations: 12 },
+      gas: { gasUsed: '1000000', feePaidWei: '1000000000000000' },
+    });
+    expect(settled.ctx.chain.transfer).toEqual({ hash: TRANSFER, blockNumber: 100 });
+    expect(m.assertAggregateReport(settled.ctx.report)).toBe(true);
+    // Too few confirmations, or a finalized head below the block: observe only.
+    for (const options of [{ confirmations: 11 }, { finalized: 99 }]) {
+      const open = observeWorld(options);
+      await m.RUNNERS.observe(open.ctx);
+      expect(open.calls.resolve).toEqual([]);
+      expect(open.ctx.report.resolved).toBeUndefined();
+      expect(open.ctx.report.passed).toBe(true);
+    }
+    // The unshield resolves only for the enrolled EOA and the full amount.
+    const unshield = observeWorld({ target: 'unshield' });
+    await m.RUNNERS.observe(unshield.ctx);
+    expect(unshield.ctx.report.resolved.outcome).toBe('matched');
+    for (const output of [
+      { kind: 'unshield', recipient: OWNER, amount: '1', received: '1', fee: '0' },
+      {
+        kind: 'unshield',
+        recipient: '0x' + '11'.repeat(20),
+        amount: AMOUNT.toString(),
+        received: '1',
+        fee: '0',
+      },
+    ]) {
+      const wrong = observeWorld({ target: 'unshield', output });
+      expect(await settle(m.RUNNERS.observe(wrong.ctx))).toEqual(refused('resolution'));
+    }
+  },
   'read-only-runners': async (m) => {
     const recovered = world({ step: 'recover' });
     await m.RUNNERS.recover(recovered.ctx);
@@ -1978,6 +2107,36 @@ const MUTATIONS = [
     "check(existing[0]?.state !== 'attempted', 'poi-attempted');",
     'void 0;',
     'poi-attempted',
+  ],
+  [
+    'resolution before 12 confirmations',
+    'report.observation.confirmations >= MIN_CONFIRMATIONS;',
+    'report.observation.confirmations >= 0;',
+    'observe-runner',
+  ],
+  [
+    'resolution before finality',
+    'if (BigInt(finalized.number) >= BigInt(report.observation.blockNumber)) {',
+    'if (true) {',
+    'observe-runner',
+  ],
+  [
+    'resolution confirmations lowered',
+    'await ctx.recovery.resolve(hash, {\n          minimumConfirmations: MIN_CONFIRMATIONS,',
+    'await ctx.recovery.resolve(hash, {\n          minimumConfirmations: 3,',
+    'observe-runner',
+  ],
+  [
+    'unshield amount unchecked at resolution',
+    "check(transact.output.amount === expectedAmount, 'resolution');",
+    'void 0;',
+    'observe-runner',
+  ],
+  [
+    'unshield recipient unchecked at resolution',
+    "check(lower(transact.output.recipient) === ctx.owner, 'resolution');",
+    'void 0;',
+    'observe-runner',
   ],
 ];
 function loadVariant(source) {
