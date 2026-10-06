@@ -1,6 +1,8 @@
 # Railgun gas relaying: implementation continuation
 
-The [local fee/peer review](railgun-local-relay-review-2026-10-06.md) is implemented at `2c2a343f`, with 177 focused tests, strict lint and independent source review. It binds a public quote-verification job to a genuine live-wallet handoff and explicit callback, but grants no operation or disclosure authority. Native qualification of the new job and genuine account/controller composition is next. The durable relay intent, journal, reconciliation and transport below remain open.
+The [production quote-job qualification](qualification/railgun-public-quote-job-2026-10-06/OVERVIEW.md) at `44035f1a` now passes five native public-only cases and observed original process closure. Its 89 focused tests, strict lint and independent outcome review are complete. Genuine account-bound owner/controller qualification is next; the job alone does not qualify expiry admission or issue operation/disclosure authority.
+
+The [local fee/peer review](railgun-local-relay-review-2026-10-06.md) is implemented at `2c2a343f`, with 177 focused tests, strict lint and independent source review. It binds a public quote-verification job to a genuine live-wallet handoff and explicit callback, but grants no operation or disclosure authority. The new job is qualified separately above; genuine account/controller composition is next. The durable relay intent, journal, reconciliation and transport below remain open.
 
 Railgun's restricted Kohaku adapters and authenticated recovery companion are implemented and have controlled native evidence. Their current private broadcaster submits through the wallet's enrolled Ethereum account. Gas relaying is the next distinct integration: a broadcaster receives a private fee and submits the transaction from its own Ethereum account.
 

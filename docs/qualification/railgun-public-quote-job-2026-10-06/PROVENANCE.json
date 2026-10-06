@@ -1,0 +1,119 @@
+{
+  "schema": "railgun-public-quote-publication-provenance-v1",
+  "sourceCommit": "44035f1ae6a6aafdd00ee23d7505c1c6e5d11b1c",
+  "scope": "Five public fixture cases against the production quote-job body; no quote owner, account or live service qualification",
+  "normalization": "Absolute local record paths replaced by unique basenames; runtime paths replaced by roles. Original report and vectors copied byte-exact.",
+  "launcherPackageSha256": "a26cee6ed383769df0c9c369d7d98eeeee017fcba770d224540658b3588cf759",
+  "nativeSourceFreezeSha256": "89972b8fe4056aa38e6cc2e85d402a02079c32e1c80253ba61bd71125f8c35a6",
+  "qualifierCandidateFreezeSha256": "ee915b4a205223ee5372d07f319fed8dc0a747343f2c931c23ecc1653b907d72",
+  "rootChecksSha256": "ce64b6174541b9b448ef5aa11a8946d28f5005a072c27951efb15cef9926e817",
+  "rootOriginalObservation": {
+    "sha256": "6fb897c9e74437b18a112e78a45cf8728e633a711b9205e1fbb5653f70e9ecde",
+    "prepare": {
+      "session": 79828,
+      "completionChunk": "c263e2",
+      "exitCode": 0,
+      "naturalExit": true
+    },
+    "launch": {
+      "session": 48630,
+      "completionChunk": "9b4f79",
+      "exitCode": 0,
+      "naturalExit": true
+    },
+    "originalChild": {
+      "state": "finished",
+      "pid": 85806,
+      "exitObserved": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "interrupted": false,
+      "terminateRequested": false,
+      "killRequested": false
+    }
+  },
+  "observationAttribution": "Original process exits observed by root; archive preparation only reread records and applied the frozen pure report validator. No rerun or runtime payload hashing.",
+  "review": {
+    "reviewer": "Codex",
+    "result": "Outcome and provenance cleared",
+    "rootReadChunk": "8388bc",
+    "originalProcessExitsObservedBy": "root",
+    "cryptographyRerun": false,
+    "runtimePayloadRehash": false
+  },
+  "rootFocusedChecks": {
+    "tests": 89,
+    "suites": 4,
+    "seconds": 0.424,
+    "naturalExitCode": 0,
+    "lintWarnings": 0,
+    "formatFiles": 6
+  },
+  "inventory": {
+    "selectedReportSources": 556,
+    "broadSources": 11622,
+    "sourceSymlinks": 15,
+    "runtimeInputs": 3,
+    "executionCoverage": false,
+    "runtime": {
+      "engineAsar": {
+        "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+      },
+      "electronExecutable": {
+        "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+      },
+      "electronFramework": {
+        "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+      }
+    }
+  },
+  "sourceCheckResult": {
+    "unchanged": true
+  },
+  "recordHashes": {
+    "report.json": {
+      "bytes": 89031,
+      "sha256": "34093540a0bc36edeea1d97e240ef143b0b2bf67bccd718c7bb5e3f3c4422dcc"
+    },
+    "vectors.json": {
+      "bytes": 7376,
+      "sha256": "ef3368e3a6dbec41b1adfb4c828786c1a293eca522ceee5f2d2099a112a31354"
+    },
+    "process-000.json": {
+      "bytes": 188,
+      "sha256": "7f723776bc626f9167d2cf217b99111d34b598e67f88350d21c45e2c5d7ba839"
+    },
+    "process-001.json": {
+      "bytes": 185,
+      "sha256": "6b569dc4b681019d48322d0cb4a114ba1d709d3a6a0e3df98015f8a9b224efec"
+    },
+    "POST-CHECK.json": {
+      "bytes": 24,
+      "sha256": "1ae748d5796cc995906ddf0fba5e5626f9c1c6ac79cec8fb465106e92254a77b"
+    },
+    "RESULT.json": {
+      "bytes": 948,
+      "sha256": "e6d8d651932cbd93eaa398c301e16d0336b42846aab64eac589056386a2d0993"
+    },
+    "child.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "railgun-public-quote-root-request-oct6-a.json": {
+      "bytes": 744,
+      "sha256": "277ef7d577acdbe21c8c94bc391875734ce024ef8a0f0ee640cdf02dd29bd4e9"
+    },
+    "railgun-public-quote-root-freeze-oct6-a.json": {
+      "bytes": 1780250,
+      "sha256": "89972b8fe4056aa38e6cc2e85d402a02079c32e1c80253ba61bd71125f8c35a6"
+    }
+  },
+  "limits": {
+    "externalLauncherProvenanceRequired": true,
+    "cryptographicReverificationDuringExport": false,
+    "physicalDrainQualified": false,
+    "osEgressSandboxQualified": false,
+    "historicalVectorExpiryNotRenewed": true
+  },
+  "finalRootObservationSha256": "b9ab8afc2097f2e966cceccb63a1cf00a395215f2dfa5e33f1924089937144c1"
+}

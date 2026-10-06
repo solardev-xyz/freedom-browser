@@ -1,0 +1,26 @@
+{
+  "schema": "railgun-public-quote-publication-index-v1",
+  "sourceCommit": "44035f1ae6a6aafdd00ee23d7505c1c6e5d11b1c",
+  "rawByteCopies": [
+    "report.json",
+    "vectors.json"
+  ],
+  "files": {
+    "report.json": {
+      "bytes": 89031,
+      "sha256": "34093540a0bc36edeea1d97e240ef143b0b2bf67bccd718c7bb5e3f3c4422dcc"
+    },
+    "vectors.json": {
+      "bytes": 7376,
+      "sha256": "ef3368e3a6dbec41b1adfb4c828786c1a293eca522ceee5f2d2099a112a31354"
+    },
+    "PROVENANCE.json": {
+      "bytes": 4243,
+      "sha256": "746ff8ce532ec107ebdb51421d34425265b9c18e8763da6205eacb75165bdefa"
+    },
+    "OVERVIEW.md": {
+      "bytes": 3665,
+      "sha256": "2d665596f04573927379af24527b650ec57a6aec019157c648c0818030f19d47"
+    }
+  }
+}
