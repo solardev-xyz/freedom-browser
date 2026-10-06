@@ -21,7 +21,10 @@ It uses public synthetic identities and dummy calldata. Arbitrary broadcaster-ke
 admission, real fee/proof-to-wire composition, durable relay authority and live
 transport remain open. Both signature libraries accepted the adversarial
 low-order key diagnostics; the fixture refuses those keys through its pinned
-genuine-key registry. A repository reproduction recipe is being prepared.
+genuine-key registry. The [checked-in reproduction recipe](qualification/railgun-relay-wire-recipe-2026-10-06/OVERVIEW.md)
+now passes a fresh 39-case replay at `258bbee2`, with 114 focused tests and
+strict lint. Source/tool pins and independent review bind that separate run;
+the admitted builder currently targets darwin-arm64.
 
 The [controlled fee/pre-transaction proof checkpoint](railgun-relay-proof-2026-10-06.md)
 now passes at `0cc74e6c`: a synthetic 1000-unit input produces fee 100 first and
@@ -52,8 +55,8 @@ audit. External services remain synthetic. This qualifies callback cancellation
 after verifier exit, not live-child cancellation or physical transport drainage.
 The standalone trusted-host package does not export this recovery authority.
 
-Next are a repository reproduction recipe, strict broadcaster-key admission and
-actual fee/proof-to-wire composition, followed by reviewed fee admission,
+Next are a checked-in key-admission replay and actual fee/proof-to-wire
+composition, followed by production key and fee admission,
 pre-transaction POI authority, durable uncertainty and confined transport. The existing
 broadcaster still delegates to EOA self-broadcast. Specifically authorized
 live private/service qualification, return-to-origin spending policy, generic

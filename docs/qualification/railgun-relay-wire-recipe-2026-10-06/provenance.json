@@ -1,0 +1,182 @@
+{
+  "schema": "railgun-relay-wire-repository-public-evidence-v1",
+  "status": "Completed; independent external result review cleared",
+  "sourceCommit": "258bbee27aca9456a4c423138e31d77eb8efb039",
+  "sourceFiles": {
+    "scripts/qualify-railgun-relay-wire.js": {
+      "bytes": 1635,
+      "sha256": "cf94ab817e4c97d615a781b282d8aa6a3282dfef03ae125c1cffa90f96c5978d"
+    },
+    "scripts/fixtures/railgun-relay-wire/README.md": {
+      "bytes": 6413,
+      "sha256": "206996047788ead2043c5eadb4e8e4099ad1694c9e9f9d5b9f9db748bf4d2e3f"
+    },
+    "scripts/fixtures/railgun-relay-wire/campaign.js": {
+      "bytes": 29928,
+      "sha256": "0ae3e99c7fe7c55eae99f17467e23542608b288b7272b13c3666d13320b042c6"
+    },
+    "scripts/fixtures/railgun-relay-wire/cases.json": {
+      "bytes": 8247,
+      "sha256": "8a5d24307b9de8d5ea6afd7d48d8e7e9388da43e891f5a4c1dbfe63b73247896"
+    },
+    "scripts/fixtures/railgun-relay-wire/inputs.js": {
+      "bytes": 7195,
+      "sha256": "e7238f737fe243449d55170e69660cb28feab7e5b81d00df34034581c2dced3a"
+    },
+    "scripts/fixtures/railgun-relay-wire/inputs.json": {
+      "bytes": 68672,
+      "sha256": "65629bc6a6b63585f198cb7ae2603c7c9421f47485f6692c1dde6bf175713dae"
+    },
+    "scripts/fixtures/railgun-relay-wire/licenses.json": {
+      "bytes": 32527,
+      "sha256": "915d5eff304f95222f8c0cef1f564df129f890699bb3b085fe687a4590344caf"
+    },
+    "scripts/fixtures/railgun-relay-wire/policy.js": {
+      "bytes": 12183,
+      "sha256": "6f820f643ac3c0c3649ae1cf84a4780988bde666abc17f7e1f705b8d8933db6b"
+    },
+    "scripts/fixtures/railgun-relay-wire/policy.json": {
+      "bytes": 1844,
+      "sha256": "fa04744da4b3cb5d7951c6a5e0e4e241e213123f8b53dc611500cfe05f7a45ef"
+    },
+    "scripts/fixtures/railgun-relay-wire/policy.test.js": {
+      "bytes": 10383,
+      "sha256": "6fca7c682e3b37c4b0de33037c4850ebf65740533269fbdcbaa4af611e333644"
+    },
+    "scripts/fixtures/railgun-relay-wire/prepare.js": {
+      "bytes": 13382,
+      "sha256": "2bf73a0b603545fe9e6cc8953d25f1195ed62431c73cb978995c54baf4307364"
+    },
+    "scripts/fixtures/railgun-relay-wire/recipe.test.js": {
+      "bytes": 13575,
+      "sha256": "3ba9c8b8e6ad334f7034e15f8b2c0a6404743815117ea812d2db9bf9ad061c68"
+    },
+    "scripts/fixtures/railgun-relay-wire/roots.example.json": {
+      "bytes": 380,
+      "sha256": "d054b38ba2f53fa78a5a498b27e8753dfe5ae327316423b2476e6d66bf706652"
+    },
+    "scripts/fixtures/railgun-relay-wire/vectors.json": {
+      "bytes": 2290,
+      "sha256": "c5e1a0d9a7a68e89d96931609fd26ab5bdb7f2892bbc392b56cee0b0f7a0844f"
+    }
+  },
+  "rawReport": {
+    "file": "report.json",
+    "sha256": "35104ffd5d64c4362fae3452eb0c21f1dbc89a03a0de0f076689dfc4626f1dcc"
+  },
+  "originalObservation": {
+    "sha256": "8d8f70afbd37b94464655120df09a4f1a005ec1aded21d140c4b578d86ef25cd",
+    "prepare": {
+      "originalToolChunk": "5857de",
+      "exitCode": 0,
+      "naturalExit": true
+    },
+    "check": {
+      "originalToolChunk": "df1809",
+      "exitCode": 0,
+      "naturalExit": true
+    },
+    "run": {
+      "originalToolChunk": "08f01b",
+      "exitCode": 0,
+      "naturalExit": true,
+      "seconds": 0.063467416,
+      "externalTermination": false
+    }
+  },
+  "artifactHashes": {
+    "manifest": "2bf6fa947e89bcaeef4ff94ffdc22cac8acbc3ed66a8055cf464f02d60ee8d97",
+    "report": "35104ffd5d64c4362fae3452eb0c21f1dbc89a03a0de0f076689dfc4626f1dcc",
+    "prepareLog": "61872eb4a5bcb159095c42d8c089a2f3f4cdd3986d4b9ddec808b0bd8af82936",
+    "checkLog": "dd835c562c154fbd56e3c89262b02fb44ed7c8991705d78f0d6e6c21e8be7a82",
+    "runLog": "1d0ede9f67d1f063f7d830bc23e9c51aeeff912b9417e934be1026c48231bac5",
+    "rootChecks": "6ffac058d86d1745c058ec64a2cd5aa29c10751699a91d367afea44c7e0dc7e0"
+  },
+  "rootFocusedChecks": {
+    "headBeforeCommit": "abb7885bedf6b1719f1ccc199828fc86c0ab388e",
+    "candidateFreezeSha256": "054a359f414cd45624beed6d5b8a1986b0b447123bf041b794fa614830f7e362",
+    "tests": {
+      "originalToolChunk": "3e9bea",
+      "exitCode": 0,
+      "naturalExit": true,
+      "tests": 114,
+      "suites": 2,
+      "seconds": 0.408
+    },
+    "lint": {
+      "originalSession": 27750,
+      "exitCode": 0,
+      "warnings": 0
+    },
+    "format": {
+      "originalToolChunk": "815715",
+      "exitCode": 0,
+      "files": 14
+    },
+    "reviewStatus": "Root and independent Codex source review; both shadow-resolution and post-build-recheck blockers resolved.",
+    "logHashes": {
+      "tests": "4d8b8c58376da0239cabbfbb57386290cb3e5771a085958e96be2868cac0ec93",
+      "lint": "70be715d8628432cbdbd618d756c397769e3155725002cdd27f48c4990f34cd7",
+      "format": "17aa973d3f004560237d9a95171210b0671deff23d61628eecf7322ff5938f20"
+    }
+  },
+  "runtime": {
+    "node": "v24.18.1",
+    "executableSha256": "f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5"
+  },
+  "preparedOutputs": {
+    "upstream.cjs": {
+      "bytes": 302335,
+      "sha256": "1045d0c1358d44db4bffe57849de7dee22f3d8738bcc972f9d77fdf66359b5fb"
+    },
+    "selected-upstream.ts": {
+      "bytes": 5529,
+      "sha256": "9d0eead2440c2858c673fe6e4db20439913438996156ce71d00291e13c0383cb"
+    }
+  },
+  "selectedInputScope": {
+    "nonGeneratedGraphInputs": 160,
+    "generatedEntryInputs": 1,
+    "selectedDeclarations": 14,
+    "sourceGraphIsExecutionCoverage": false,
+    "externalModules": [
+      "buffer",
+      "crypto",
+      "events",
+      "node:crypto",
+      "stream",
+      "string_decoder",
+      "util"
+    ]
+  },
+  "historicalComparison": {
+    "reportSha256": "c403ebb2a0c4a99b1a8bf5133ef4669e123f281ede71d0116b19c083f385727b",
+    "resultsCountsCountersDiagnosticsEqual": true,
+    "randomCiphertextIdentityClaimed": false
+  },
+  "scope": {
+    "liveService": false,
+    "fundedProfile": false,
+    "fullClientOrServer": false,
+    "productionRelayAuthority": false,
+    "arbitraryPeerKeyAdmission": false,
+    "canonicalTransactionVerified": false,
+    "crossPlatformQualification": false
+  },
+  "independentResultReview": {
+    "reviewer": "Independent external Codex reviewer (w6:p3)",
+    "disposition": "cleared",
+    "attribution": "Final disposition relayed by parent; reviewer performed read-only verification and did not rerun the campaign",
+    "checks": [
+      "Build manifest and report hashes; all six original-observation artifact hashes",
+      "All 14 committed recipe sources at 258bbee27aca9456a4c423138e31d77eb8efb039",
+      "Eleven recipe pins and generated output hashes",
+      "160 non-generated graph inputs and 14 selected spans",
+      "All 39 expected results, diagnostic values and counters match historical scope",
+      "Public wire digests recomputed; randomized envelopes differ from historical run"
+    ],
+    "originalProcessExitObservedBy": "Root only",
+    "reviewerReranCampaign": false,
+    "scopeUnchanged": true
+  }
+}

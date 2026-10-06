@@ -1,0 +1,287 @@
+{
+  "schema": "offline-relay-wire-repository-campaign-v1",
+  "buildManifestSha256": "2bf6fa947e89bcaeef4ff94ffdc22cac8acbc3ed66a8055cf464f02d60ee8d97",
+  "node": "v24.18.1",
+  "nodeExecutableSha256": "f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5",
+  "campaignSha256": "0ae3e99c7fe7c55eae99f17467e23542608b288b7272b13c3666d13320b042c6",
+  "counts": {
+    "positive": 11,
+    "negative": 17,
+    "limitationControls": 4,
+    "distinguishingControls": 4,
+    "supplementalControls": 3
+  },
+  "counters": {
+    "signatureCalls": 16,
+    "quoteSemantics": 13,
+    "clientEncryptCalls": 6,
+    "emittedOfflineEnvelopes": 5,
+    "upstreamReplyReads": 2
+  },
+  "results": [
+    {
+      "group": "positive",
+      "id": "node-seed-key-address",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "node-sign-upstream-verify",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "noble-sign-node-verify",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "resigned-reformatted-quote",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "required-poi-list-covered",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "minimum-expiry-boundary",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "changed-signed-bytes",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "wrong-genuine-signer",
+      "passed": true
+    },
+    {
+      "group": "supplementalControls",
+      "id": "mandatory-local-signature-no-dev-switch",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "identity-key-local-refusal",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "noncanonical-key-local-refusal",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "duplicate-signed-quote-key",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "required-poi-not-covered",
+      "passed": true
+    },
+    {
+      "group": "supplementalControls",
+      "id": "await-context-empty-then-covered",
+      "passed": true
+    },
+    {
+      "group": "supplementalControls",
+      "id": "await-context-covered-then-empty",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "pre-emission-expiry-recheck",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "wrong-context",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "source-common-request",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "native-gcm-request-codec",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "request-iv-tamper",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "request-tag-tamper",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "request-ciphertext-tamper",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "request-wrong-recipient",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "request-wrong-ephemeral",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "server-hash-response",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "native-error-response",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "response-wrong-operation",
+      "passed": true
+    },
+    {
+      "group": "positive",
+      "id": "interleaved-two-operations",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "duplicate-response-local",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "closed-operation-local",
+      "passed": true
+    },
+    {
+      "group": "negative",
+      "id": "authenticated-malformed-response",
+      "passed": true
+    },
+    {
+      "group": "limitationControls",
+      "id": "all-chains-signed-replay",
+      "passed": true
+    },
+    {
+      "group": "limitationControls",
+      "id": "low-order-raw-verifiers",
+      "passed": true
+    },
+    {
+      "group": "limitationControls",
+      "id": "shared-native-gcm-backend",
+      "passed": true
+    },
+    {
+      "group": "limitationControls",
+      "id": "dummy-calldata-fee-scope",
+      "passed": true
+    },
+    {
+      "group": "distinguishingControls",
+      "id": "wrong-iv-tag-split",
+      "passed": true
+    },
+    {
+      "group": "distinguishingControls",
+      "id": "ignore-authentication-mutant",
+      "passed": true
+    },
+    {
+      "group": "distinguishingControls",
+      "id": "reserialize-before-verifying-mutant",
+      "passed": true
+    },
+    {
+      "group": "distinguishingControls",
+      "id": "global-response-key-mutant",
+      "passed": true
+    }
+  ],
+  "diagnostics": {
+    "signaturePolicy": {
+      "mandatoryLocalVerification": true,
+      "ambientDevOrSubtleSwitch": false,
+      "upstreamFeeHandlerBypassExecuted": false,
+      "extractedEncryptionDevDefault": false
+    },
+    "allChainsQuoteSignsExternalTopic": false,
+    "lowOrder": [
+      {
+        "kind": "identity",
+        "node": true,
+        "noble": true
+      },
+      {
+        "kind": "noncanonical",
+        "node": true,
+        "noble": true
+      },
+      {
+        "kind": "signbit",
+        "node": true,
+        "noble": true
+      }
+    ],
+    "cryptoComparison": {
+      "ed25519": "Node versus Noble",
+      "aesGcm": "Same Node backend; independently written codec/wrapper checks only",
+      "ecdh": "Noble on both sides"
+    },
+    "feeScope": "Synthetic calldata only; token/amount/master-public-key/quote digest not demonstrated as calldata commitments"
+  },
+  "publicRequestEvidence": [
+    {
+      "localId": "a96f9761c5e2ac403aaaf7a4fbed0f00",
+      "wireSha256": "8539c3bf208be795a7856acb62696376d6e760b347d9fa943ea09ea0454edfd1",
+      "signedBytesSha256": "bbf9dcf3dc2d865431c665866b4730df939adace36e05556b9b643e401fcb222",
+      "publicKeyHex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "gas": "0",
+      "feesID": "offline-public-fee-0001",
+      "keyDigest": "4c9f4ccc6e69a1fda5c181fc5867119bddf161305bac43f5ee46b21b683362f5",
+      "wire": {
+        "pubkey": "987854a304e8d083e125dd1a0a0a7f1ae7288169b05e8f58fae8ac51078d2311",
+        "encryptedData": [
+          "0x4b2b438a316327b3e7a0dcd13844ace20508af6f183febe8b867d77b799e79d9",
+          "0xa58eca4b63d1db14238b8a12ff4b00b6418e633b2dde277d2a71bb3f6d567f31713a8e4a8a94acacac7cb7136cf619e2eed52d2746b61caaffce33ef9bbb0e1bf39411af69aca48ec7339297e8f2ef206098d614c8676952fb559d144668f45d326888b2d9f23daaa44e8bed1690670fc0b450cc80e9e93933db2e2f8a57cba0e5e13f247cf912292cdfc401494f922e3d65b5485bc8e023404a43d93c7588f322a214deff32aee7d0779cac88597ed912846fa42101534f1fab5730e56b269c2736e8ae218b285129229a25b6f7a6304d8bcd34e47734e5a16e5f35c9f63de066cd6de221850e14cfbc9a04fd7e2a121aac297a17850bb9595f4519706bd29a672bf5dfde7cf41a276a8c9dbcd07e043df22bb52b6f26dba200ac192bbebe654c27247bdd22672e3bf4aa3cd467418cb35a8f9a5ab8693979e64e1c169d86d7f80450e41dec096a64f098863e0e57786aae6d70895af0bdfb3dd4ba2ebb2005e43d140671430addd2ffd85620786680940057b617ea8587d73ffe373519c5f6858d182f62a54fae25cb2aec8a449dcff14278e3f4bc9701d42451c7ce778c0cb70818f4bbb6dbe6be76490cf7"
+        ]
+      }
+    },
+    {
+      "localId": "89db7514b0b0b15c21d330e522bb1c62",
+      "wireSha256": "31e01c736c32e10d4ab86d9169d656f21b87bbda7cf589dbe4114d3c9e632a1d",
+      "signedBytesSha256": "bbf9dcf3dc2d865431c665866b4730df939adace36e05556b9b643e401fcb222",
+      "publicKeyHex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "gas": "1",
+      "feesID": "offline-public-fee-0001",
+      "keyDigest": "66698d1dc0eb57b5669ef48329770243377227f9bca5175d21c54ab895fd18fc",
+      "wire": {
+        "pubkey": "ba711ad0d401ffa48c631538371a61c4a051f0e55e0ec873c8a0cfed7cf56c27",
+        "encryptedData": [
+          "0x492f5616f740648d66b8702c553e24c172f63dbd0f3a69b8261083422af71126",
+          "0x2ac66e9c5d71258881085990ffaf0b68e5a813a05d765f07a18e09accb2458c2702cf3aa6931bc593efd1d45eaadbb4feeadabf46e61615cf6af9c2129997fa218761b771708d4d4fd4a9a5cce37356c7e67d5f854c351ec5cc1d9ec334526ccec2e3d10fcadfacf5ce7ce00c60aa08428cd6c323fbe0156dcf645cbba78dd4034f78fef2aa6e8a61d09c39e70c1bc40eec34d4bf8ebae8de00c3776837e79b462b261917074bed6e0fc14a5e572bddfd4ea6823f18747336eebb4f26007fca84cf601d8b81b24738fcd1bbd5fbe74177a29003478457b788e7ad7b09c119d5e20976cb9cd028d5c34356aa4d1012589e3190e765fbca801936ed722b2f649fcfe0940f7a2a433f1b40ce53d08d17ab2018e34fee6d2a64ebc006383dd73d48679548adee8ada3c50b7b8e30a16a03819554a2549917a07d6227df245bd12d35320e9683fda97868827358cfc87e868c9eafe64f983670f0d0e750561391af62c91dddddf91105f2b16aa73d1bb4bb6a68d42c5d57e51d799cfb6b13376daf130b3a7838d699840d88a540cd3f91c31368f9d3ad249aa87160513b8a8faf808874da68862669083b1f982b8000"
+        ]
+      }
+    }
+  ],
+  "canonicalTransactionVerified": false,
+  "liveServiceContacted": false,
+  "fullClientOrServerInitialized": false
+}
