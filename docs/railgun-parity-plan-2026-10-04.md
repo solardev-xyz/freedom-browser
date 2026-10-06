@@ -7,6 +7,15 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [offline wire checkpoint](railgun-relay-wire-2026-10-06.md) now passes 39
+checks against selected pinned upstream functions: original-byte signatures,
+encrypted COMMON messages, expiry, context snapshots and per-operation replies.
+It uses public synthetic identities and dummy calldata. Arbitrary broadcaster-key
+admission, real fee/proof-to-wire composition, durable relay authority and live
+transport remain open. Both signature libraries accepted the adversarial
+low-order key diagnostics; the fixture refuses those keys through its pinned
+genuine-key registry. A repository reproduction recipe is being prepared.
+
 The [controlled fee/pre-transaction proof checkpoint](railgun-relay-proof-2026-10-06.md)
 now passes at `0cc74e6c`: a synthetic 1000-unit input produces fee 100 first and
 self 900 second, with independent transaction/pre-POI verification for minimum
@@ -36,9 +45,9 @@ audit. External services remain synthetic. This qualifies callback cancellation
 after verifier exit, not live-child cancellation or physical transport drainage.
 The standalone trusted-host package does not export this recovery authority.
 
-Next is offline signed-fee and encrypted-wire qualification against the pinned
-public client/server contracts, followed by reviewed fee admission, pre-transaction
-POI authority, durable uncertainty and confined transport. The existing
+Next are a repository reproduction recipe, strict broadcaster-key admission and
+actual fee/proof-to-wire composition, followed by reviewed fee admission,
+pre-transaction POI authority, durable uncertainty and confined transport. The existing
 broadcaster still delegates to EOA self-broadcast. Specifically authorized
 live private/service qualification, return-to-origin spending policy, generic
 Host support, platform/release work and product UX remain separate gates.
