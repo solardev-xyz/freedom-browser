@@ -1,0 +1,38 @@
+{
+  "schema": "railgun-relay-refusal-archive-index-v1",
+  "files": {
+    "EXPECTED.json": {
+      "bytes": 6114,
+      "sha256": "3254d068cd89551fc9c39a37155f973002f56961181d6b959a348d55369562db"
+    },
+    "README.md": {
+      "bytes": 6546,
+      "sha256": "5108b1f3a7fdce4e79ed5ac294fdda34b62783b36cf8629fd497abd452c90275"
+    },
+    "declined-disclosure-report.json": {
+      "bytes": 338785,
+      "sha256": "332a68e3d9141573ac468caf1f916ebcfb488403604932720a7b8b4425e543a4"
+    },
+    "provenance.json": {
+      "bytes": 16864,
+      "sha256": "bd4567feb9d10bea58663a0a6548fc7c95e3e864aa0e8aa9b9b932aa004c668f"
+    },
+    "source-inputs.json": {
+      "bytes": 1876085,
+      "sha256": "46a011706cac00bb3ee6385499410a3e74295fe1c7e77fcf68e4a5eb302655d1"
+    },
+    "unrelated-history-report.json": {
+      "bytes": 338836,
+      "sha256": "57c6ae201491a67d28f8ad6f233cc623592c42654b0cbbcacd464818fd249256"
+    },
+    "validation.py": {
+      "bytes": 5265,
+      "sha256": "a6cb6f083a97debaab7b264d2f5238146735bf16c235a4fd53f8381ce205a3ba"
+    },
+    "verify_archive.py": {
+      "bytes": 3832,
+      "sha256": "ceffb7da354714d4ce01405ffeeed1bf552d8aa0f2f6524a314ab78cc4cd7888"
+    }
+  },
+  "indexItselfBoundByPublicationFreeze": true
+}

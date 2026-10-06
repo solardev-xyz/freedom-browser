@@ -1,0 +1,353 @@
+{
+  "schema": "railgun-relay-refusal-publication-v1",
+  "sourceHead": "7564aaa90de2e5da61981c4123d1599172c25442",
+  "normalization": {
+    "repositoryPrefix": "$REPOSITORY",
+    "scratchPrefix": "$SCRATCH",
+    "rule": "Recursively replace the local repository prefix and /private/tmp in object keys and string values; preserve all other values. Canonical projection digest uses sorted-key compact UTF-8 JSON. Original prefixes are intentionally omitted; exact original metadata bytes cannot be recovered from this public package alone.",
+    "fullFreezeDeduplicated": true,
+    "reportBytesChanged": false
+  },
+  "cases": {
+    "declined-disclosure": {
+      "originalRecords": {
+        "sourceFreeze": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-declined-source-freeze-oct6-a.json",
+          "bytes": 1878419,
+          "sha256": "48bc414e108cc50e046debff7d1191d95da1ba4f258997e5f4ca4b2437a2b5ab",
+          "exactBytesCopied": false,
+          "normalizedCanonicalSha256": "439dd06cf1176a2f4f5783751c3b50f457415e35204a9250399091e7bb5f3295"
+        },
+        "request": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-root-requests-oct6-a/declined-disclosure.json",
+          "bytes": 741,
+          "sha256": "69a47ab063fd33c7408010b55e1dbcb2f92b955fd342a438ae6debe5d2ba411b",
+          "exactBytesCopied": false,
+          "normalized": {
+            "schema": "railgun-relay-refusal-request-v1",
+            "approvedForNative": true,
+            "head": "7564aaa90de2e5da61981c4123d1599172c25442",
+            "scenario": "declined-disclosure",
+            "candidateFreezeSha256": "f26a4d1fe270faeebec5c960542e8cab239b25cf4d130f077ef06a6942cebfa6",
+            "launcherFreezeSha256": "397b16c34125241a18944e60916cb16b8d92b9d3b2a86213d485c1ffd7f6d300",
+            "checks": {
+              "path": "$SCRATCH/railgun-relay-refusal-launcher-r2-oct6/ROOT-CHECKS.json",
+              "sha256": "04fd3a23f8dac3aff3b006e59e0c6eab777c3e3f502dfdbc370bf83f58d84b86"
+            },
+            "outputDirectory": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a",
+            "evidenceDirectory": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a-evidence"
+          },
+          "normalizedCanonicalSha256": "333e75e52b674ff5a1af646e699fb535488c40df2fd605cf112227e09cb36620"
+        },
+        "RESULT.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a-evidence/RESULT.json",
+          "bytes": 989,
+          "sha256": "6c2fa762a253b738aca649a2afa3be204e6f79d2aca0335189ae2a5c98bd954e",
+          "exactBytesCopied": false,
+          "normalized": {
+            "schema": "railgun-relay-refusal-result-v1",
+            "qualified": true,
+            "head": "7564aaa90de2e5da61981c4123d1599172c25442",
+            "scenario": "declined-disclosure",
+            "originalChild": {
+              "state": "finished",
+              "pid": 9198,
+              "exitObserved": true,
+              "exitCode": 0,
+              "timedOut": false,
+              "interrupted": false,
+              "terminateRequested": false,
+              "killRequested": false
+            },
+            "reportSha256": "332a68e3d9141573ac468caf1f916ebcfb488403604932720a7b8b4425e543a4",
+            "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "sourceFreezeSha256": "48bc414e108cc50e046debff7d1191d95da1ba4f258997e5f4ca4b2437a2b5ab",
+            "createdWindow": [
+              1791293365371,
+              1791293383104
+            ],
+            "parentOriginalHandleObservationRequired": true,
+            "sourceInventoryIsExecutionCoverage": false,
+            "profileContentsReadByLauncher": false,
+            "cryptographicReverificationByLauncher": false,
+            "osNetworkConfinementQualified": false,
+            "proverArtifactBytesLoadedOrQualified": false
+          },
+          "normalizedCanonicalSha256": "470c26395fc08f48e822444bfe98f17738066ad0096e7bdf32d0fb495f77e054"
+        },
+        "POST-CHECK.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a-evidence/POST-CHECK.json",
+          "bytes": 24,
+          "sha256": "1ae748d5796cc995906ddf0fba5e5626f9c1c6ac79cec8fb465106e92254a77b",
+          "exactBytesCopied": false,
+          "normalized": {
+            "unchanged": true
+          },
+          "normalizedCanonicalSha256": "46c5c8e8f306f35c357039c36f8ad495748b903d83f0e671284ae7378d620250"
+        },
+        "process-000.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a-evidence/process-000.json",
+          "bytes": 187,
+          "sha256": "b21a32c471d66228f58de17e5f5d660b758cc56b29b932493e3cd76103251872",
+          "exactBytesCopied": false,
+          "normalized": {
+            "state": "running",
+            "pid": 9198,
+            "exitObserved": false,
+            "exitCode": null,
+            "timedOut": false,
+            "interrupted": false,
+            "terminateRequested": false,
+            "killRequested": false
+          },
+          "normalizedCanonicalSha256": "d024abd98a2b3b09be4dc51fe8639d30b48eca4b6b8cb6a1b733772cbb37e154"
+        },
+        "process-001.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a-evidence/process-001.json",
+          "bytes": 184,
+          "sha256": "54304c2283a9ddf168847d7f1d7ff8926804873283768ee21a27ce2978938802",
+          "exactBytesCopied": false,
+          "normalized": {
+            "state": "finished",
+            "pid": 9198,
+            "exitObserved": true,
+            "exitCode": 0,
+            "timedOut": false,
+            "interrupted": false,
+            "terminateRequested": false,
+            "killRequested": false
+          },
+          "normalizedCanonicalSha256": "00a62028aba5e695a4a37444caa0cbb643f1fd6538ebc760ea341bf0a1a999af"
+        },
+        "child.log": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a-evidence/child.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "exactBytesCopied": false
+        },
+        "report": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a/report.json",
+          "bytes": 338785,
+          "sha256": "332a68e3d9141573ac468caf1f916ebcfb488403604932720a7b8b4425e543a4",
+          "exactBytesCopied": true,
+          "archiveFile": "declined-disclosure-report.json"
+        }
+      },
+      "freezeRemainder": {
+        "requestPath": "$SCRATCH/railgun-relay-refusal-root-requests-oct6-a/declined-disclosure.json",
+        "requestSha256": "69a47ab063fd33c7408010b55e1dbcb2f92b955fd342a438ae6debe5d2ba411b",
+        "command": [
+          "$REPOSITORY/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
+          "$REPOSITORY/scripts/qualify-railgun-wallet-journal.js",
+          "$REPOSITORY/docs/qualification/railgun-unsigned-relay-preparation-2026-10-06/public-source.json",
+          "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a",
+          "$REPOSITORY/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+          "enrolled",
+          "$REPOSITORY/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+          "$REPOSITORY/tmp/privacy-research-oct2/railgun-artifacts"
+        ],
+        "scenario": "declined-disclosure",
+        "outputDirectory": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a",
+        "evidenceDirectory": "$SCRATCH/railgun-relay-refusal-declined-disclosure-native-oct6-a-evidence"
+      },
+      "durationFromRecordedWallClockMs": 17733,
+      "originalElectronPid": 9198
+    },
+    "unrelated-history": {
+      "originalRecords": {
+        "sourceFreeze": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-unrelated-source-freeze-oct6-a.json",
+          "bytes": 1878409,
+          "sha256": "068bd464a0ef0fe32c73bc84a32eee731b616e2ab759f5b4f4d1342da0284ed4",
+          "exactBytesCopied": false,
+          "normalizedCanonicalSha256": "324b09b68c3820cc42ab62b1de48cd0e26c0a33e97f9e3c55af1383e7a974c64"
+        },
+        "request": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-root-requests-oct6-a/unrelated-history.json",
+          "bytes": 735,
+          "sha256": "4d6faba97afc6804ba6d935e5576ec8261d720b2a7645724b753d1bb307bec02",
+          "exactBytesCopied": false,
+          "normalized": {
+            "schema": "railgun-relay-refusal-request-v1",
+            "approvedForNative": true,
+            "head": "7564aaa90de2e5da61981c4123d1599172c25442",
+            "scenario": "unrelated-history",
+            "candidateFreezeSha256": "f26a4d1fe270faeebec5c960542e8cab239b25cf4d130f077ef06a6942cebfa6",
+            "launcherFreezeSha256": "397b16c34125241a18944e60916cb16b8d92b9d3b2a86213d485c1ffd7f6d300",
+            "checks": {
+              "path": "$SCRATCH/railgun-relay-refusal-launcher-r2-oct6/ROOT-CHECKS.json",
+              "sha256": "04fd3a23f8dac3aff3b006e59e0c6eab777c3e3f502dfdbc370bf83f58d84b86"
+            },
+            "outputDirectory": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a",
+            "evidenceDirectory": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a-evidence"
+          },
+          "normalizedCanonicalSha256": "3975c7bf963e894bf566c8c9075f8a50656b12c26f7992335c04ec5a32ab601a"
+        },
+        "RESULT.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a-evidence/RESULT.json",
+          "bytes": 987,
+          "sha256": "9bfddb587c67441caaf33e0082cbf528861b44a9dc6981fa0f1891e3a1e68d14",
+          "exactBytesCopied": false,
+          "normalized": {
+            "schema": "railgun-relay-refusal-result-v1",
+            "qualified": true,
+            "head": "7564aaa90de2e5da61981c4123d1599172c25442",
+            "scenario": "unrelated-history",
+            "originalChild": {
+              "state": "finished",
+              "pid": 9807,
+              "exitObserved": true,
+              "exitCode": 0,
+              "timedOut": false,
+              "interrupted": false,
+              "terminateRequested": false,
+              "killRequested": false
+            },
+            "reportSha256": "57c6ae201491a67d28f8ad6f233cc623592c42654b0cbbcacd464818fd249256",
+            "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "sourceFreezeSha256": "068bd464a0ef0fe32c73bc84a32eee731b616e2ab759f5b4f4d1342da0284ed4",
+            "createdWindow": [
+              1791293472447,
+              1791293490755
+            ],
+            "parentOriginalHandleObservationRequired": true,
+            "sourceInventoryIsExecutionCoverage": false,
+            "profileContentsReadByLauncher": false,
+            "cryptographicReverificationByLauncher": false,
+            "osNetworkConfinementQualified": false,
+            "proverArtifactBytesLoadedOrQualified": false
+          },
+          "normalizedCanonicalSha256": "9350a600df5b8576a42b0e52b98731448988356f03565f8849da4c09da1a059c"
+        },
+        "POST-CHECK.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a-evidence/POST-CHECK.json",
+          "bytes": 24,
+          "sha256": "1ae748d5796cc995906ddf0fba5e5626f9c1c6ac79cec8fb465106e92254a77b",
+          "exactBytesCopied": false,
+          "normalized": {
+            "unchanged": true
+          },
+          "normalizedCanonicalSha256": "46c5c8e8f306f35c357039c36f8ad495748b903d83f0e671284ae7378d620250"
+        },
+        "process-000.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a-evidence/process-000.json",
+          "bytes": 187,
+          "sha256": "5aee7e957c47d8cb681a5a30e3791726c923c9bca99d2e505220859777f5ebd9",
+          "exactBytesCopied": false,
+          "normalized": {
+            "state": "running",
+            "pid": 9807,
+            "exitObserved": false,
+            "exitCode": null,
+            "timedOut": false,
+            "interrupted": false,
+            "terminateRequested": false,
+            "killRequested": false
+          },
+          "normalizedCanonicalSha256": "a7c5910e62a43dbee60ee2aa08dc3a045280b94caad01b59c09d28cf85483d1a"
+        },
+        "process-001.json": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a-evidence/process-001.json",
+          "bytes": 184,
+          "sha256": "14cf58125e05798729fcbde1d47c8823bac74f781bc585ed918c1761fecefc1b",
+          "exactBytesCopied": false,
+          "normalized": {
+            "state": "finished",
+            "pid": 9807,
+            "exitObserved": true,
+            "exitCode": 0,
+            "timedOut": false,
+            "interrupted": false,
+            "terminateRequested": false,
+            "killRequested": false
+          },
+          "normalizedCanonicalSha256": "03b736c568e0fc63ca9109f7b1c5a6810ee5b5081744c7d365c77487f976136c"
+        },
+        "child.log": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a-evidence/child.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "exactBytesCopied": false
+        },
+        "report": {
+          "sourceLabel": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a/report.json",
+          "bytes": 338836,
+          "sha256": "57c6ae201491a67d28f8ad6f233cc623592c42654b0cbbcacd464818fd249256",
+          "exactBytesCopied": true,
+          "archiveFile": "unrelated-history-report.json"
+        }
+      },
+      "freezeRemainder": {
+        "requestPath": "$SCRATCH/railgun-relay-refusal-root-requests-oct6-a/unrelated-history.json",
+        "requestSha256": "4d6faba97afc6804ba6d935e5576ec8261d720b2a7645724b753d1bb307bec02",
+        "command": [
+          "$REPOSITORY/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
+          "$REPOSITORY/scripts/qualify-railgun-wallet-journal.js",
+          "$REPOSITORY/docs/qualification/railgun-unsigned-relay-preparation-2026-10-06/public-source.json",
+          "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a",
+          "$REPOSITORY/tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar",
+          "enrolled",
+          "$REPOSITORY/tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar",
+          "$REPOSITORY/tmp/privacy-research-oct2/railgun-artifacts"
+        ],
+        "scenario": "unrelated-history",
+        "outputDirectory": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a",
+        "evidenceDirectory": "$SCRATCH/railgun-relay-refusal-unrelated-history-native-oct6-a-evidence"
+      },
+      "durationFromRecordedWallClockMs": 18308,
+      "originalElectronPid": 9807
+    }
+  },
+  "rootObservation": {
+    "schema": "railgun-relay-refusal-root-observation-derivative-v1",
+    "attribution": "Transcribed from original root agent outcome messages and explicit first-prepare chunk clarification. The archivist did not own these processes or rerun them.",
+    "sourceHead": "7564aaa90de2e5da61981c4123d1599172c25442",
+    "declined-disclosure": {
+      "prepare": {
+        "originalSession": 31753,
+        "completionChunk": "93e50d",
+        "exitCode": 0,
+        "naturalExit": true
+      },
+      "launcher": {
+        "originalSession": 87499,
+        "completionChunk": "761fc7",
+        "exitCode": 0,
+        "naturalExit": true
+      },
+      "originalElectronPid": 9198
+    },
+    "unrelated-history": {
+      "prepare": {
+        "originalSession": 7392,
+        "completionChunk": "4a43fd",
+        "exitCode": 0,
+        "naturalExit": true
+      },
+      "launcher": {
+        "originalSession": 47474,
+        "completionChunk": "b3a3d5",
+        "exitCode": 0,
+        "naturalExit": true
+      },
+      "originalElectronPid": 9807
+    },
+    "independentOutcomeReview": {
+      "status": "clear",
+      "rootReviewReadChunk": "237268",
+      "scope": "Report contracts/hashes, requests, freezes, inventory metadata, RESULT/POST and original Electron process records agree. Parent driver observations remain attributed to root.",
+      "nativeOrCryptoRerun": false,
+      "runtimePayloadRehash": false,
+      "profileReads": false,
+      "publicationArchiveReview": "pending"
+    }
+  },
+  "scope": {
+    "originalParentObservationAttributedToRoot": true,
+    "archivistNativeRerun": false,
+    "archivistRuntimePayloadRehash": false,
+    "archivistProfileReads": false,
+    "metadataConsistencyChecked": true,
+    "independentOutcomeReview": "Root reported scoped Codex outcome clearance at 237268; publication archive review pending. No external security audit claimed."
+  }
+}

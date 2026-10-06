@@ -1,0 +1,379 @@
+{
+  "nativeExecuted": false,
+  "scenarios": {
+    "declined-disclosure": {
+      "status": "refused",
+      "stage": "disclosure",
+      "poiMethods": []
+    },
+    "unrelated-history": {
+      "status": "refused",
+      "stage": "membership",
+      "poiMethods": [
+        "ppoi_pois_per_list",
+        "ppoi_merkle_proofs"
+      ]
+    }
+  },
+  "sourceSha256": "bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc1e41",
+  "mapping": {
+    "blockOffset": 5944700,
+    "originalEventBlocks": [
+      10,
+      20,
+      30
+    ],
+    "translatedEventBlocks": [
+      5944710,
+      5944720,
+      5944730
+    ],
+    "unchanged": [
+      "topics",
+      "data",
+      "ciphertexts",
+      "commitments",
+      "types"
+    ],
+    "blockHash": "hex(blockNumber+1)",
+    "transactionHash": "hex(blockNumber+1000)"
+  },
+  "selected": {
+    "type": "Shield",
+    "tree": 0,
+    "position": 1,
+    "amount": "2000",
+    "fee": "100",
+    "self": "1900"
+  },
+  "ranges": [
+    {
+      "from": 0,
+      "to": 99999
+    },
+    {
+      "from": 100000,
+      "to": 199999
+    },
+    {
+      "from": 200000,
+      "to": 299999
+    },
+    {
+      "from": 300000,
+      "to": 399999
+    },
+    {
+      "from": 400000,
+      "to": 499999
+    },
+    {
+      "from": 500000,
+      "to": 599999
+    },
+    {
+      "from": 600000,
+      "to": 699999
+    },
+    {
+      "from": 700000,
+      "to": 799999
+    },
+    {
+      "from": 800000,
+      "to": 899999
+    },
+    {
+      "from": 900000,
+      "to": 999999
+    },
+    {
+      "from": 1000000,
+      "to": 1099999
+    },
+    {
+      "from": 1100000,
+      "to": 1199999
+    },
+    {
+      "from": 1200000,
+      "to": 1299999
+    },
+    {
+      "from": 1300000,
+      "to": 1399999
+    },
+    {
+      "from": 1400000,
+      "to": 1499999
+    },
+    {
+      "from": 1500000,
+      "to": 1599999
+    },
+    {
+      "from": 1600000,
+      "to": 1699999
+    },
+    {
+      "from": 1700000,
+      "to": 1799999
+    },
+    {
+      "from": 1800000,
+      "to": 1899999
+    },
+    {
+      "from": 1900000,
+      "to": 1999999
+    },
+    {
+      "from": 2000000,
+      "to": 2099999
+    },
+    {
+      "from": 2100000,
+      "to": 2199999
+    },
+    {
+      "from": 2200000,
+      "to": 2299999
+    },
+    {
+      "from": 2300000,
+      "to": 2399999
+    },
+    {
+      "from": 2400000,
+      "to": 2499999
+    },
+    {
+      "from": 2500000,
+      "to": 2599999
+    },
+    {
+      "from": 2600000,
+      "to": 2699999
+    },
+    {
+      "from": 2700000,
+      "to": 2799999
+    },
+    {
+      "from": 2800000,
+      "to": 2899999
+    },
+    {
+      "from": 2900000,
+      "to": 2999999
+    },
+    {
+      "from": 3000000,
+      "to": 3099999
+    },
+    {
+      "from": 3100000,
+      "to": 3199999
+    },
+    {
+      "from": 3200000,
+      "to": 3299999
+    },
+    {
+      "from": 3300000,
+      "to": 3399999
+    },
+    {
+      "from": 3400000,
+      "to": 3499999
+    },
+    {
+      "from": 3500000,
+      "to": 3599999
+    },
+    {
+      "from": 3600000,
+      "to": 3699999
+    },
+    {
+      "from": 3700000,
+      "to": 3799999
+    },
+    {
+      "from": 3800000,
+      "to": 3899999
+    },
+    {
+      "from": 3900000,
+      "to": 3999999
+    },
+    {
+      "from": 4000000,
+      "to": 4099999
+    },
+    {
+      "from": 4100000,
+      "to": 4199999
+    },
+    {
+      "from": 4200000,
+      "to": 4299999
+    },
+    {
+      "from": 4300000,
+      "to": 4399999
+    },
+    {
+      "from": 4400000,
+      "to": 4499999
+    },
+    {
+      "from": 4500000,
+      "to": 4599999
+    },
+    {
+      "from": 4600000,
+      "to": 4699999
+    },
+    {
+      "from": 4700000,
+      "to": 4799999
+    },
+    {
+      "from": 4800000,
+      "to": 4899999
+    },
+    {
+      "from": 4900000,
+      "to": 4999999
+    },
+    {
+      "from": 5000000,
+      "to": 5099999
+    },
+    {
+      "from": 5100000,
+      "to": 5199999
+    },
+    {
+      "from": 5200000,
+      "to": 5299999
+    },
+    {
+      "from": 5300000,
+      "to": 5399999
+    },
+    {
+      "from": 5400000,
+      "to": 5499999
+    },
+    {
+      "from": 5500000,
+      "to": 5599999
+    },
+    {
+      "from": 5600000,
+      "to": 5699999
+    },
+    {
+      "from": 5700000,
+      "to": 5799999
+    },
+    {
+      "from": 5800000,
+      "to": 5899999
+    },
+    {
+      "from": 5900000,
+      "to": 5944730
+    }
+  ],
+  "originalUtilityRoles": [
+    "spending-public",
+    "viewing-identity",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-plan",
+    "public-apply",
+    "wallet-scan",
+    "wallet-restore",
+    "quote",
+    "construct",
+    "reconstruct"
+  ],
+  "utilities": 68,
+  "keyReplies": 6,
+  "relaySigningLoans": 0,
+  "utilityExit": 15,
+  "escalated": false,
+  "peerDisconnected": false,
+  "resultsPerUtility": 1,
+  "operationHeaderRequests": {
+    "finalized": 3,
+    "0x5ab5e0": 3,
+    "0x5a06e0": 3,
+    "0x5ab59a": 3,
+    "0x5a06df": 3
+  },
+  "operationBudgetMs": 180000,
+  "fixtureBudgetMs": 900000,
+  "nativeLauncherApproval": false,
+  "runtimeInventory": "pending parent preparation after final source review/import"
+}
