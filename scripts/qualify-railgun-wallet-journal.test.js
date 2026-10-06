@@ -481,3 +481,37 @@ test('exact review inventory includes the unchanged unsigned observer plus exact
   expect(hook).toBeGreaterThan(source.indexOf('const accountWindows = []'));
   expect(hook).toBeLessThan(source.indexOf('runs.push({\n              ...(transactStaging'));
 });
+
+test('relay refusal branch is default off and returns before legacy enrollment setup', async () => {
+  const start = source.indexOf('  const refusalFlag =');
+  const end = source.indexOf('  const [sourceFilename,', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const calls = [],
+    fixture = {
+      select: (...args) => {
+        calls.push(['select', ...args]);
+        return { scenario: args[0] };
+      },
+      execute: async (config) => {
+        calls.push(['execute', config]);
+      },
+    };
+  const run = Function(
+    'process',
+    'require',
+    'return (async () => {' + source.slice(start, end) + 'return "legacy";})();'
+  );
+  const req = (name) => {
+    expect(name).toBe('./fixtures/railgun-relay-refusal-native');
+    return fixture;
+  };
+  await expect(run({ env: {}, argv: [] }, req)).resolves.toBe('legacy');
+  expect(calls).toEqual([]);
+  const env = { FREEDOM_RAILGUN_RELAY_REFUSAL: 'declined-disclosure' };
+  await expect(run({ env, argv: ['electron', 'script', 'public'] }, req)).resolves.toBeUndefined();
+  expect(calls).toEqual([
+    ['select', 'declined-disclosure', ['public'], env],
+    ['execute', { scenario: 'declined-disclosure' }],
+  ]);
+});

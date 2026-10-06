@@ -10,6 +10,14 @@ const { getPrivacyStoragePath } = require('../src/main/wallet/privacy-storage');
 let qualificationLock;
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 async function main() {
+  // An isolated cooperative campaign cannot share the legacy same-main reopen loop.
+  const refusalFlag = process.env.FREEDOM_RAILGUN_RELAY_REFUSAL;
+  if (refusalFlag !== undefined) {
+    const fixture = require('./fixtures/railgun-relay-refusal-native');
+    const config = fixture.select(refusalFlag, process.argv.slice(2), process.env);
+    await fixture.execute(config);
+    return;
+  }
   const [sourceFilename, directory, accountArchive, composition, proverArchive, artifactDirectory] =
     process.argv.slice(2);
   assert.ok(process.argv.slice(2).length <= 6);
