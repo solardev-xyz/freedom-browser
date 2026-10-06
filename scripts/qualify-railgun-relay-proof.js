@@ -1,6 +1,7 @@
 /** Disposable serial fee-output/pre-transaction-POI cryptography only.
  * Usage: electron script ENGINE_ASAR PROVER_ASAR ARTIFACTS NEW_DIRECTORY
- * No quotes, relay transport, accounts, credential loans or submission. */
+ * Default lane has no quotes; opt-in wire composition uses synthetic quotes.
+ * No relay transport, accounts, credential loans or submission. */
 const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -182,6 +183,7 @@ function assertVerification(value, minGasPrice) {
   assertGuards(value.guards);
 }
 async function main() {
+  const wireConfig = require('./fixtures/railgun-relay-wire-run').selectedConfig(process.env);
   const { app } = require('electron');
   const [archive, proverArchive, artifactDirectory, directory] = process.argv.slice(2);
   assert.equal(process.argv.length, 6);
@@ -196,6 +198,13 @@ async function main() {
   const repo = path.join(__dirname, '..');
   const sources = [
     'scripts/qualify-railgun-relay-proof.js',
+    ...(wireConfig
+      ? fs
+          .readdirSync(path.join(repo, 'scripts/fixtures/railgun-relay-wire'))
+          .filter((n) => /\.(js|json)$/.test(n))
+          .map((n) => 'scripts/fixtures/railgun-relay-wire/' + n)
+          .concat('scripts/qualify-railgun-relay-wire.js')
+      : []),
     ...fs
       .readdirSync(path.join(repo, 'scripts/fixtures'))
       .filter((n) => /^railgun-relay-.*\.js$/.test(n))
@@ -219,6 +228,17 @@ async function main() {
   const sourceSha256 = hashes();
   require('../src/main/wallet/railgun-engine-runtime').verifyRailgunEngineRuntime(archive);
   require('../src/main/wallet/railgun-prover-runtime').verifyRailgunProverRuntime(proverArchive);
+  if (wireConfig) {
+    return require('./fixtures/railgun-relay-wire-run').runWireQualification({
+      config: wireConfig,
+      archive,
+      proverArchive,
+      artifactDirectory,
+      directory,
+      sourceSha256,
+      hashes,
+    });
+  }
   const scope = require('../src/main/networks/privacy-context').createPrivacyScope({
     profileId: 'public-relay-fixture',
     signal: new AbortController().signal,
