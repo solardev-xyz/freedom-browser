@@ -89,8 +89,28 @@ observation and retained exclusion. Distinguishing mutations exercise truthy
 approval, early busy release, missing post-review authentication and leaked
 handoff ownership. These use controlled owners and are not native evidence.
 
-The earlier native unsigned-preparation pass remains evidence for `67612a75`.
-The new reviewed composition requires its own disposable native test. Durable
-relay input holds, authenticated recovery and uncertain attempts, confined
-broadcaster transport, specifically authorized live qualification and UX remain
-separate work.
+The [two-case native qualification](qualification/railgun-exact-relay-review-2026-10-06/README.md)
+now passes at `98cbfd77`. Separate disposable accounts exercise accepted review
+and close while the original review callback remains pending. Each uses the
+actual engine, three original utility closures, two viewing-key loans, 84 broker
+messages and ten synthetic header requests. Accepted review performs one final
+wallet-state request/reply and one authenticated journal read; held close performs
+none, refuses late approval and releases its genuine phase only after the
+original callback and close complete. Both original Electron and launcher
+processes exit naturally with zero; source/runtime/SQLite postchecks match.
+
+The callback windows were approximately 0.222 and 0.468 milliseconds. These are
+ordering checks, not sustained-hold or live-child cancellation evidence. Only
+the accepted case compares protected encrypted files before close and checks the
+unchanged owned projection; held-close storage invariance is unclaimed. Source
+and outcome reviews are independent engineering checks, not a security audit or
+an external cryptographic replay. The fixture adds 207 passing tests in five
+suites, strict repository lint and six-file formatting to the separate 447-test
+core scope above. Earlier unsigned native evidence remains pinned to `67612a75`.
+
+The next connected slice is a durable relay operation with signing/proof recovery
+and explicit handling of locally retained work, followed by uncertain handoff
+and confined broadcaster transport. Preparation and diagnostic review stay
+nonpersisting: ordinary previews must not create terminal holds or consume
+lifetime reservation capacity. Shared holds will be integrated with their actual
+operation owner and recovery path. Live qualification and UX remain separate.
