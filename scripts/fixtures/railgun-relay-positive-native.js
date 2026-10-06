@@ -377,14 +377,15 @@ function installServices(logs, expectedNote, scenario, protocol) {
     },
     assertClosed() {
       if (scenario === TRANSACT) {
-        // Observed in discovery run b: two TXID setup owners, one staging owner,
-        // one provenance transport that sends nothing, the membership POI client
-        // and the root-acquisition owner. All are closed by this point.
+        // Observed in discovery runs b/c: the shared RPC client stays open; two
+        // TXID setup owners, one staging owner, one provenance TXID owner that
+        // sends nothing, the membership POI client and the root-acquisition
+        // owner are closed by this point.
         assert.deepEqual(
           clients.map(({ state }) => state),
           ['rpc', 'service', 'service', 'service', null, 'poi', 'service'].map((kind) => ({
             kind,
-            closed: true,
+            closed: kind !== 'rpc',
           }))
         );
         assert.deepEqual(poiMethods, [
