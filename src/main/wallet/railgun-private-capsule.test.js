@@ -271,3 +271,87 @@ test.each(['selection', 'preparation', 'wallet', 'engine', 'note'])(
     expect(() => normalizeRailgunNewCapsule(f, owned)).toThrow();
   }
 );
+describe('explicit foreign full-value transfer', () => {
+  const OTHER = '0zk1' + 'p'.repeat(123);
+  const foreign = () => {
+    const f = createRailgunLegacyCapsuleData('railgun-private-transfer').capsule;
+    f.selection.recipient = OTHER;
+    f.selection.recipientRelationship = 'foreign';
+    f.preparation.recipient = OTHER;
+    return f;
+  };
+  test('keeps version 1 and the public intent shape, adding only the explicit marker', () => {
+    const capsule = normalizeRailgunPrivateCapsule(foreign());
+    const self = normalizeRailgunPrivateCapsule(
+      createRailgunLegacyCapsuleData('railgun-private-transfer').capsule
+    );
+    expect(capsule.version).toBe(1);
+    expect(Object.keys(capsule.selection)).toEqual([
+      'kind',
+      'tree',
+      'position',
+      'recipient',
+      'recipientRelationship',
+    ]);
+    expect(capsule.selection.recipientRelationship).toBe('foreign');
+    expect(capsule.preparation.expected).toEqual(self.preparation.expected);
+    expect(capsule.preparation.transaction).toEqual(self.preparation.transaction);
+    expect(Object.isFrozen(capsule.selection)).toBe(true);
+    const unmarked = foreign();
+    delete unmarked.selection.recipientRelationship;
+    expect(digestRailgunPrivateCapsule(foreign())).not.toBe(digestRailgunPrivateCapsule(unmarked));
+    expect(digestRailgunPrivateCapsule(foreign())).toBe(
+      require('crypto')
+        .createHash('sha256')
+        .update('freedom:railgun:private-capsule-v1\0')
+        .update(JSON.stringify(capsule))
+        .digest('hex')
+    );
+  });
+  test.each([
+    ['self marker value', (f) => (f.selection.recipientRelationship = 'self')],
+    ['boolean marker', (f) => (f.selection.recipientRelationship = true)],
+    ['malformed destination', (f) => (f.selection.recipient = f.preparation.recipient = 'other')],
+    [
+      'uppercase destination',
+      (f) => (f.selection.recipient = f.preparation.recipient = OTHER.toUpperCase()),
+    ],
+    ['preparation destination', (f) => (f.preparation.recipient = '0zk1' + 'r'.repeat(123))],
+    ['selection destination', (f) => (f.selection.recipient = '0zk1' + 'r'.repeat(123))],
+    ['extra selection key', (f) => (f.selection.recipientKeys = {})],
+    ['version two', (f) => (f.version = 2)],
+  ])('refuses %s', (_label, change) => {
+    const f = foreign();
+    change(f);
+    expect(() => normalizeRailgunPrivateCapsule(f)).toThrow();
+  });
+  test.each(['railgun-token-unshield', 'partial'])('marker cannot attach to %s', (kind) => {
+    const f =
+      kind === 'partial'
+        ? createRailgunPartialCapsuleData().capsule
+        : createRailgunLegacyCapsuleData(kind).capsule;
+    expect(() => normalizeRailgunPrivateCapsule(f)).not.toThrow();
+    f.selection.recipientRelationship = 'foreign';
+    expect(() => normalizeRailgunPrivateCapsule(f)).toThrow();
+  });
+  test('new-operation handoff binds the main-owned marker exactly', () => {
+    const { normalizeRailgunNewCapsule } = require('./railgun-private-capsule');
+    const f = foreign();
+    f.engineSha256 = require('./railgun-engine-manifest.json').sha256;
+    const owned = JSON.parse(
+      JSON.stringify({
+        walletId: f.walletId,
+        selection: f.selection,
+        preparation: f.preparation,
+        noteHash: f.noteHash,
+      })
+    );
+    expect(normalizeRailgunNewCapsule(f, owned).selection.recipientRelationship).toBe('foreign');
+    const unmarked = JSON.parse(JSON.stringify(owned));
+    delete unmarked.selection.recipientRelationship;
+    expect(() => normalizeRailgunNewCapsule(f, unmarked)).toThrow();
+    const self = JSON.parse(JSON.stringify(f));
+    delete self.selection.recipientRelationship;
+    expect(() => normalizeRailgunNewCapsule(self, owned)).toThrow();
+  });
+});

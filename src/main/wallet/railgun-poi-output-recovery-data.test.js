@@ -77,6 +77,34 @@ test('real capsule, transaction, receipt and witness validators accept detached 
   expect(normalized.preparation.witness.elements[0]).toBe(hex(0).slice(2));
   expect(normalized).not.toHaveProperty('proofVerified');
 });
+test("a marked foreign transfer is admitted under its own capsule digest for A's POI", () => {
+  const foreign = () => {
+    const value = input();
+    const capsule = value.preparation.ownEvidence.capsule;
+    capsule.selection.recipient = '0zk1' + 'p'.repeat(123);
+    capsule.preparation.recipient = '0zk1' + 'p'.repeat(123);
+    capsule.selection.recipientRelationship = 'foreign';
+    value.binding.capsuleDigest = digestRailgunPrivateCapsule(capsule);
+    return value;
+  };
+  const normalized = normalize(foreign());
+  expect(normalized.preparation.ownEvidence.capsule.selection.recipientRelationship).toBe(
+    'foreign'
+  );
+  expect(normalized.binding.capsuleDigest).not.toBe(input().binding.capsuleDigest);
+  const unmarked = foreign();
+  delete unmarked.preparation.ownEvidence.capsule.selection.recipientRelationship;
+  unmarked.binding.capsuleDigest = digestRailgunPrivateCapsule(
+    unmarked.preparation.ownEvidence.capsule
+  );
+  expect(() => normalize(unmarked)).toThrow();
+  const stale = foreign();
+  stale.binding.capsuleDigest = input().binding.capsuleDigest;
+  expect(() => normalize(stale)).toThrow();
+  const own = foreign();
+  own.descriptor.instanceId = '0zk1' + 'p'.repeat(123);
+  expect(() => normalize(own)).toThrow();
+});
 test.each([
   'saved-proof',
   'saved-output',

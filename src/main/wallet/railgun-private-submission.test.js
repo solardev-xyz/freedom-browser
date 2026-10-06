@@ -234,6 +234,34 @@ test('claims internally, reattests under exclusion, verifies C then preflight be
   expect((await submit(options)).status).toBe('recovery-required');
   expect(mock.events.filter((v) => v === 'broadcast')).toHaveLength(1);
 });
+test('final review names the signed foreign destination from the durable capsule only', async () => {
+  const destination = '0zk1' + 'p'.repeat(123);
+  for (const capsule of [mock.snapshot.stored.capsule, mock.stored.capsule])
+    Object.assign(capsule.selection, { recipient: destination, recipientRelationship: 'foreign' });
+  const reviews = [];
+  options.review = async (request) => {
+    reviews.push(request);
+    return true;
+  };
+  expect(await submit(options)).toEqual({ hash: '0x' + 'c'.repeat(64) });
+  expect(reviews).toHaveLength(1);
+  expect(reviews[0]).toMatchObject({
+    operation: 'railgun-private-transfer',
+    recipientRelationship: 'foreign',
+    canonicalDestination: destination,
+  });
+  expect(Object.isFrozen(reviews[0])).toBe(true);
+});
+test('self-transfer final review carries no relationship fields', async () => {
+  const reviews = [];
+  options.review = async (request) => {
+    reviews.push(request);
+    return true;
+  };
+  await submit(options);
+  expect(reviews[0]).not.toHaveProperty('recipientRelationship');
+  expect(reviews[0]).not.toHaveProperty('canonicalDestination');
+});
 test('unbranded completion refuses before stores, proof or network', async () => {
   expect(await submit({ ...options, completion: mock.claim })).toEqual({
     status: 'recovery-required',

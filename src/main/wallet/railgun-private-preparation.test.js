@@ -314,3 +314,85 @@ test.each(['spent', 'wrong-token', 'missing-owned', 'wrong-root', 'wrong-nullifi
     ).toThrow();
   }
 );
+describe('full-value transfer to a different account', () => {
+  const OTHER = '0zk1' + 'p'.repeat(123);
+  const transfer = () => {
+    const f =
+      require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunLegacyCapsuleData(
+        'railgun-private-transfer'
+      );
+    const self = f.request.recipient;
+    return { f, self, request: { ...f.request, recipient: OTHER } };
+  };
+  test('the self request keeps its exact selection; another address gains only the marker', () => {
+    const { f, self, request } = transfer();
+    const unchanged = selectRailgunPrivatePreparation(f.owned, f.request);
+    expect(unchanged).toEqual(f.capsule.selection);
+    expect(Object.keys(unchanged)).toEqual(['kind', 'tree', 'position', 'recipient']);
+    expect(unchanged.recipient).toBe(self);
+    const foreign = selectRailgunPrivatePreparation(f.owned, request);
+    expect(foreign).toEqual({
+      kind: 'railgun-private-transfer',
+      tree: 0,
+      position: 1,
+      recipient: OTHER,
+      recipientRelationship: 'foreign',
+    });
+    expect(Object.keys(foreign)).toEqual([
+      'kind',
+      'tree',
+      'position',
+      'recipient',
+      'recipientRelationship',
+    ]);
+    expect(Object.isFrozen(foreign)).toBe(true);
+  });
+  test.each([
+    ['uppercase', '0ZK1' + 'P'.repeat(123)],
+    ['short', '0zk1' + 'p'.repeat(122)],
+    ['public address', '0x' + '12'.repeat(20)],
+    ['empty', ''],
+    ['object', {}],
+  ])('a malformed %s destination refuses before a window opens', (_label, recipient) => {
+    const { f } = transfer();
+    expect(() => selectRailgunPrivatePreparation(f.owned, { ...f.request, recipient })).toThrow();
+  });
+  test('the request cannot inject a marker or relationship', () => {
+    const { f, request } = transfer();
+    for (const extra of [{ recipientRelationship: 'foreign' }, { relationship: 'self' }])
+      expect(() => selectRailgunPrivatePreparation(f.owned, { ...request, ...extra })).toThrow();
+  });
+  test('the reviewed destination binds the utility offer exactly', () => {
+    const { f, request } = transfer();
+    const selection = selectRailgunPrivatePreparation(f.owned, request);
+    const preparation = { ...f.capsule.preparation, recipient: OTHER };
+    expect(
+      normalizeRailgunPrivatePreparation(preparation, { ...f.owned, selection }).recipient
+    ).toBe(OTHER);
+    // A destination altered after review, on either side, is refused.
+    expect(() =>
+      normalizeRailgunPrivatePreparation(
+        { ...preparation, recipient: '0zk1' + 'r'.repeat(123) },
+        { ...f.owned, selection }
+      )
+    ).toThrow();
+    expect(() =>
+      normalizeRailgunPrivatePreparation(preparation, {
+        ...f.owned,
+        selection: { ...selection, recipient: '0zk1' + 'r'.repeat(123) },
+      })
+    ).toThrow();
+    // Removing the marker restores self semantics, which this destination fails.
+    const { recipientRelationship: _marker, ...unmarked } = selection;
+    expect(() =>
+      normalizeRailgunPrivatePreparation(preparation, { ...f.owned, selection: unmarked })
+    ).toThrow();
+    // A foreign marker never applies to this account's own instance address.
+    expect(() =>
+      normalizeRailgunPrivatePreparation(f.capsule.preparation, {
+        ...f.owned,
+        selection: { ...f.capsule.selection, recipientRelationship: 'foreign' },
+      })
+    ).toThrow();
+  });
+});

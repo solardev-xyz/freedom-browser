@@ -6,6 +6,7 @@ const { types } = require('util');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { normalizeRailgunSignature } = require('./railgun-private-signature');
 const { normalizeRailgunPrivateOperation } = require('./railgun-private-preparation');
+const { assertRailgunPrivateTransferRecipient } = require('./railgun-private-destination');
 const pins = require('./railgun-shield-pins.json');
 function copyData(input) {
   let nodes = 0;
@@ -90,7 +91,7 @@ function normalizeRailgunPrivateRecoveryResult(
     selection.kind === 'railgun-partial-unshield' ? preparation.inputAmount : preparation.amount
   );
   if (selection.kind === 'railgun-private-transfer')
-    assert.equal(selection.recipient, read.instanceId);
+    assertRailgunPrivateTransferRecipient(selection, read.instanceId);
   // The completed snapshot may be newer. Reconstruction authenticates the saved
   // Merkle path against the ORIGINAL signed root, never the current tree root.
   const value = copyData(input);

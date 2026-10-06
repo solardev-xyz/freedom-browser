@@ -62,6 +62,14 @@ function normalizeRailgunPrivateReceiver(value, options) {
   const checked = validateRailgunPrivateSigningIntent(transaction, expected);
   const partial = checked.kind === 'railgun-partial-unshield';
   assert.ok(partial || checked.kind === 'railgun-private-transfer');
+  // A sent-note check of a full-value foreign output reports its explicit marker.
+  // Self-transfer and change results keep their original exact shape.
+  const foreign = Object.hasOwn(options, 'recipientRelationship');
+  if (foreign) {
+    assert.ok(!partial);
+    assert.equal(options.recipientRelationship, 'foreign');
+  }
+  const relationship = foreign ? { recipientRelationship: 'foreign' } : {};
   let amounts;
   if (partial) {
     for (const key of ['amount', 'unshieldAmount', 'changeAmount'])
@@ -85,6 +93,7 @@ function normalizeRailgunPrivateReceiver(value, options) {
     'verified',
     'transactionDigest',
     'recipient',
+    ...Object.keys(relationship),
     ...Object.keys(amounts),
     'guards',
     'inventory',
@@ -92,6 +101,7 @@ function normalizeRailgunPrivateReceiver(value, options) {
   assert.equal(value.verified, true);
   assert.equal(value.transactionDigest, checked.digest);
   assert.equal(value.recipient, recipient);
+  if (foreign) assert.equal(value.recipientRelationship, 'foreign');
   for (const [key, expectedValue] of Object.entries(amounts))
     assert.equal(value[key], expectedValue);
   assert.equal(value.inventory, require('./railgun-engine-manifest.json').inventory.sha256);
@@ -100,6 +110,7 @@ function normalizeRailgunPrivateReceiver(value, options) {
     recipientVerified: true,
     transactionDigest: checked.digest,
     recipient,
+    ...relationship,
     ...amounts,
     inputOwnershipVerified: false,
     spendingEnabled: false,

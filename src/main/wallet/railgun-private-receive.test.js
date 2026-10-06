@@ -564,3 +564,81 @@ test.each(['missing', 'throwing-getter'])(
     expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
   }
 );
+
+describe('foreign full-value transfer sent-output check', () => {
+  const OTHER = '0zk1' + 'p'.repeat(123);
+  function foreignStart(change = (value) => value) {
+    mockStart.mockImplementation(({ broker, input, filename, binaryKey }) => {
+      expect(binaryKey).toBe(true);
+      expect(filename).toBe(require.resolve('./railgun-private-receive-job'));
+      mockInput = JSON.parse(input);
+      const exit = deferred();
+      const ready = Promise.resolve().then(async () => {
+        const key = await broker.dispatch(keyWire);
+        key.fill(0);
+        const wire = JSON.parse(resultWire(mockInput));
+        wire.value = change({
+          ...wire.value,
+          ...(mockInput.recipientRelationship
+            ? { recipientRelationship: mockInput.recipientRelationship }
+            : {}),
+        });
+        await broker.dispatch(JSON.stringify(wire));
+      });
+      return {
+        ready,
+        closed: exit.promise,
+        close: () => exit.resolve({ code: 'RAILGUN_PROCESS_CLOSED' }),
+      };
+    });
+  }
+  beforeEach(() => {
+    args.recipient = OTHER;
+    args.recipientRelationship = 'foreign';
+  });
+  test('the same job receives the explicit marker and returns a marker-bound result', async () => {
+    foreignStart();
+    const value = await verifyRailgunPrivateReceiver(args);
+    expect(value).toEqual({
+      recipientVerified: true,
+      transactionDigest: args.transaction.data,
+      recipient: OTHER,
+      recipientRelationship: 'foreign',
+      amount: '1000',
+      inputOwnershipVerified: false,
+      spendingEnabled: false,
+    });
+    expect(Object.keys(mockInput)).toEqual([
+      'archive',
+      'descriptor',
+      'transaction',
+      'expected',
+      'recipient',
+      'recipientRelationship',
+      'amount',
+    ]);
+    expect(JSON.stringify(mockInput)).not.toContain('07'.repeat(32));
+  });
+  test.each([
+    ['missing marker', ({ recipientRelationship: _marker, ...value }) => value],
+    ['self marker', (value) => ({ ...value, recipientRelationship: 'self' })],
+    ['other recipient', (value) => ({ ...value, recipient: '0zk1' + 'r'.repeat(123) })],
+    ['own recipient', (value) => ({ ...value, recipient: 'self' })],
+  ])('a utility result with %s is refused', async (_label, change) => {
+    foreignStart(change);
+    await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+  });
+  test.each([
+    ['unmarked destination', () => delete args.recipientRelationship],
+    ['marker value', () => (args.recipientRelationship = 'self')],
+    ['own instance', () => (args.recipient = 'self')],
+    ['malformed destination', () => (args.recipient = '0zk1' + 'P'.repeat(123))],
+    ['partial change', () => partial()],
+  ])('%s refuses before the worker or any credential', async (_label, change) => {
+    foreignStart();
+    change();
+    await expect(verifyRailgunPrivateReceiver(args)).rejects.toMatchObject(refused);
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(mockCopy).toBeUndefined();
+  });
+});

@@ -85,6 +85,20 @@ test.each(['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partia
     expect(prover.close).toHaveBeenCalledTimes(1);
   }
 );
+test('a signed foreign transfer record recovers with its exact marked capsule and the 1x1 circuit', async () => {
+  const { capsule } = fixture.createRailgunLegacyCapsuleData('railgun-private-transfer');
+  capsule.selection.recipient = capsule.preparation.recipient = '0zk1' + 'p'.repeat(123);
+  capsule.selection.recipientRelationship = 'foreign';
+  input.privateRecovery.capsule = capsule;
+  await run(JSON.stringify(input), {});
+  expect(mockReconstruct).toHaveBeenCalledWith(expect.objectContaining({ capsule }));
+  expect(mockReconstruct.mock.calls[0][0].capsule.selection.recipientRelationship).toBe('foreign');
+  expect(mockProver).toHaveBeenCalledWith(
+    expect.objectContaining({ intentKind: 'railgun-private-transfer' })
+  );
+  expect(prover.prove).toHaveBeenCalledWith(reconstructed, input.privateRecovery.signature);
+  expect(mockPrepare).not.toHaveBeenCalled();
+});
 test.each([
   'restore',
   'privateIntent',

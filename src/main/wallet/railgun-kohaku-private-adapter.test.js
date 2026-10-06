@@ -142,6 +142,37 @@ test('copies amount before await and admits only one preparation', async () => {
   f.instance.close();
   await f.instance.closed;
 });
+test('transfer destination keeps its Kohaku meaning and reaches the host unchanged', async () => {
+  const f = fixture(),
+    seen = [];
+  f.host.prepareTransfer = async (_value, to) => {
+    seen.push(to);
+    return { handle: Object.freeze({}) };
+  };
+  f.open();
+  // The adapter neither resolves self nor rewrites a different account's address;
+  // the trusted host owns the self/foreign decision and its verification.
+  await f.instance.prepareTransfer(f.input, '0zk1' + 'p'.repeat(123));
+  expect(seen).toEqual(['0zk1' + 'p'.repeat(123)]);
+  f.instance.close();
+  await f.instance.closed;
+});
+test.each([
+  '0ZK1' + 'P'.repeat(123),
+  '0zk1' + 'p'.repeat(122),
+  '0zk1' + 'p'.repeat(124),
+  '0zk1' + 'b'.repeat(123),
+  ADDRESS,
+  7,
+  undefined,
+])('malformed transfer destination %p refuses before host work', async (to) => {
+  const f = fixture();
+  f.open();
+  await expect(f.instance.prepareTransfer(f.input, to)).rejects.toMatchObject({ code: CODE });
+  expect(f.calls).toEqual([]);
+  f.instance.close();
+  await f.instance.closed;
+});
 test('copied and foreign operations do not consume genuine token; replay does', async () => {
   const a = fixture(),
     b = fixture();

@@ -39,17 +39,33 @@ function normalizeRailgunPrivateCapsule(value) {
   assert.match(value.engineSha256, /^[0-9a-f]{64}$/);
   assert.match(value.walletId, /^[0-9a-f]{64}$/);
   const s = value.selection;
-  exact(s, ['kind', 'tree', 'position', 'recipient', ...(partial ? ['unshieldAmount'] : [])]);
+  // Version 1 still names the on-chain shape: one output and one ciphertext. A
+  // foreign transfer adds only its explicit marker; records without it keep the
+  // original self-transfer meaning, and pre-marker readers refuse marked records.
+  const foreign = Object.hasOwn(s, 'recipientRelationship');
+  exact(s, [
+    'kind',
+    'tree',
+    'position',
+    'recipient',
+    ...(foreign ? ['recipientRelationship'] : []),
+    ...(partial ? ['unshieldAmount'] : []),
+  ]);
   for (const key of ['tree', 'position'])
     assert.ok(Number.isSafeInteger(s[key]) && s[key] >= 0 && s[key] <= 65535);
   assert.equal(typeof s.recipient, 'string');
   if (s.kind === 'railgun-private-transfer')
     assert.match(s.recipient, /^0zk1[023456789acdefghjklmnpqrstuvwxyz]{123}$/);
+  if (foreign) {
+    assert.equal(s.kind, 'railgun-private-transfer');
+    assert.equal(s.recipientRelationship, 'foreign');
+  }
   const selection = Object.freeze({
     kind: s.kind,
     tree: s.tree,
     position: s.position,
     recipient: s.recipient,
+    ...(foreign ? { recipientRelationship: 'foreign' } : {}),
     ...(partial ? { unshieldAmount: s.unshieldAmount } : {}),
   });
   const offer = normalizeRailgunPrivateOffer(value.preparation, selection);

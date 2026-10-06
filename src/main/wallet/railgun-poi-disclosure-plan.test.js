@@ -1451,6 +1451,37 @@ test.each(['output-first', 'plan-first'])(
   }
 );
 
+describe('foreign full-value transfer disclosure', () => {
+  test("adds the explicit link between the other account's blinded output and this spend", async () => {
+    configure(false);
+    const capsule = mock.capture.capsule;
+    capsule.selection.recipient = '0zk1' + 'p'.repeat(123);
+    capsule.preparation.recipient = '0zk1' + 'p'.repeat(123);
+    capsule.selection.recipientRelationship = 'foreign';
+    mock.capture.capsuleDigest = digestRailgunPrivateCapsule(capsule);
+    mock.entry.capsuleDigest = mock.capture.capsuleDigest;
+    options.capsuleDigest = mock.capture.capsuleDigest;
+    const result = await run();
+    expect(result.status).toBe('prepared');
+    const { recipientRelationship, disclosureExplanation, ...rest } = result.summary;
+    expect(rest).toEqual(summaryFor());
+    expect(recipientRelationship).toBe('foreign');
+    expect(disclosureExplanation).toBe(
+      "Submitting this proof links the other account's blinded output commitment to your spend at the POI aggregator."
+    );
+    expect(Object.keys(result.summary).indexOf('recipientRelationship')).toBe(
+      Object.keys(result.summary).indexOf('unshieldIdCategory') + 1
+    );
+    expect(JSON.stringify(result.summary)).not.toContain('0zk1');
+    expect(Object.isFrozen(result.summary)).toBe(true);
+    expect((await recheck(result)).status).toBe('current');
+  });
+  test('self-transfer summary bytes stay exactly unchanged', async () => {
+    configure(false);
+    const result = await run();
+    expect(JSON.stringify(result.summary)).toBe(JSON.stringify(summaryFor()));
+  });
+});
 describe('partial unshield disclosure', () => {
   test('derives both disclosures and explicit change-to-public-unshield linkage from genuine plan capture', async () => {
     configure('partial');

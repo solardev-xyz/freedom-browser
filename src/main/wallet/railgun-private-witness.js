@@ -6,6 +6,12 @@ const assert = require('assert/strict'),
 const { Interface } = require('ethers');
 const { TRANSACT_ABI } = require('./railgun-private-policy');
 const { validateRailgunPrivateSigningIntent } = require('./railgun-private-intent');
+const {
+  isRailgunForeignTransfer,
+  assertRailgunPrivateTransferRecipient,
+  decodeRailgunForeignDestination,
+  verifyRailgunForeignOutput,
+} = require('./railgun-private-destination');
 const pins = require('./railgun-shield-pins.json');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 async function prepareRailgunPrivateWitness({
@@ -35,23 +41,30 @@ async function prepareRailgunPrivateWitness({
   const partial = selection.kind === 'railgun-partial-unshield';
   const unshield = partial || selection.kind === 'railgun-token-unshield';
   assert.ok(unshield || selection.kind === 'railgun-private-transfer');
-  assert.deepEqual(Object.keys(selection).sort(), [
-    'kind',
-    'position',
-    'recipient',
-    'tree',
-    ...(partial ? ['unshieldAmount'] : []),
-  ]);
+  const foreign = !unshield && isRailgunForeignTransfer(selection);
+  assert.deepEqual(
+    Object.keys(selection).sort(),
+    [
+      'kind',
+      'position',
+      'recipient',
+      'tree',
+      ...(foreign ? ['recipientRelationship'] : []),
+      ...(partial ? ['unshieldAmount'] : []),
+    ].sort()
+  );
   assert.ok(Number.isInteger(selection.tree) && selection.tree >= 0 && selection.tree <= 65535);
   assert.ok(
     Number.isInteger(selection.position) && selection.position >= 0 && selection.position <= 65535
   );
   assert.equal(wallet.getAddress(), descriptor.instanceId);
   assert.equal(scan.instanceId, descriptor.instanceId);
+  let destination;
   if (unshield) {
     assert.match(selection.recipient, /^0x[0-9a-f]{40}$/);
     assert.ok(BigInt(selection.recipient) > 0n);
-  } else assert.equal(selection.recipient, descriptor.instanceId);
+  } else if (assertRailgunPrivateTransferRecipient(selection, descriptor.instanceId) === 'foreign')
+    destination = decodeRailgunForeignDestination(imp, selection.recipient, wallet.addressKeys);
   const matching = (items) =>
     items.filter((n) => n.tree === selection.tree && n.position === selection.position);
   const recovered = matching(scan.received),
@@ -94,17 +107,30 @@ async function prepareRailgunPrivateWitness({
   const outputs =
     unshield && !partial
       ? []
-      : [
-          TransactNote.createTransfer(
-            wallet.addressKeys,
-            wallet.addressKeys,
-            partial ? changeAmount : note.value,
-            note.tokenData,
-            partial,
-            partial ? imp('models/formatted-types').OutputType.Change : 0,
-            undefined
-          ),
-        ];
+      : destination
+        ? [
+            // Full value to the decoded destination with the sender address hidden.
+            TransactNote.createTransfer(
+              destination,
+              wallet.addressKeys,
+              note.value,
+              note.tokenData,
+              false,
+              imp('models/formatted-types').OutputType.Transfer,
+              undefined
+            ),
+          ]
+        : [
+            TransactNote.createTransfer(
+              wallet.addressKeys,
+              wallet.addressKeys,
+              partial ? changeAmount : note.value,
+              note.tokenData,
+              partial,
+              partial ? imp('models/formatted-types').OutputType.Change : 0,
+              undefined
+            ),
+          ];
   const transaction = new Transaction(chain, note.tokenData, selection.tree, [txo], outputs, {
     contract: '0x' + '0'.repeat(40),
     parameters: hex(0n),
@@ -185,7 +211,24 @@ async function prepareRailgunPrivateWitness({
       imp('note/note-util').getNoteHash(selection.recipient, note.tokenData, unshieldAmount),
       pub.commitmentsOut[partial ? 1 : 0]
     );
-  if (!unshield || partial) {
+  if (destination) {
+    // The foreign output is not ours to receive: recover it as the sender.
+    assert.equal(dummy.boundParams.commitmentCiphertext.length, 1);
+    const sent = await verifyRailgunForeignOutput(imp, {
+      bundle: dummy.boundParams.commitmentCiphertext[0],
+      viewingPrivateKey: wallet.viewingKeyPair.privateKey,
+      sender: wallet.addressKeys,
+      destination,
+      value: note.value,
+      tokenHash: note.tokenHash,
+      commitment: pub.commitmentsOut[0],
+      tokenDataGetter: wallet.tokenDataGetter,
+      active,
+    });
+    assert.deepEqual(witness.privateInputs.valueIn, [note.value]);
+    assert.deepEqual(witness.privateInputs.valueOut, [note.value]);
+    assert.deepEqual(witness.privateInputs.npkOut, [sent.notePublicKey]);
+  } else if (!unshield || partial) {
     assert.equal(dummy.boundParams.commitmentCiphertext.length, 1);
     const bundle = dummy.boundParams.commitmentCiphertext[0];
     const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex');

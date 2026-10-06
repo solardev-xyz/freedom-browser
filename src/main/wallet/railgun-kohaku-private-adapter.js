@@ -86,12 +86,13 @@ function amount(value, max = U120 * 10000n) {
   assert.ok(typeof value === 'bigint' && value >= 0n && value < max);
   return value;
 }
+function railgunAddress(value) {
+  assert.equal(typeof value, 'string');
+  assert.match(value, /^0zk1[023456789acdefghjklmnpqrstuvwxyz]{123}$/);
+  return value;
+}
 function resultRead(method, value) {
-  if (method === 'instanceId') {
-    assert.equal(typeof value, 'string');
-    assert.match(value, /^0zk1[023456789acdefghjklmnpqrstuvwxyz]{123}$/);
-    return value;
-  }
+  if (method === 'instanceId') return railgunAddress(value);
   array(value, 10000);
   const ids = new Set();
   return value.map((record) => {
@@ -151,7 +152,12 @@ function input(value, recipient, options, unshield) {
     hex(recipient, 40);
     assert.ok(BigInt(recipient) > 0n);
     if (options !== undefined) shape(options, []);
-  } else resultRead('instanceId', recipient);
+  } else {
+    // Kohaku's prepareTransfer(value, to) names the destination address. It is
+    // passed through unchanged; the host alone decides self or foreign and
+    // refuses what it cannot verify. This adapter neither resolves nor rewrites it.
+    railgunAddress(recipient);
+  }
   return [
     Object.freeze({
       asset: Object.freeze(copiedAsset),

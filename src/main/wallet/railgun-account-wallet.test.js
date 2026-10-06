@@ -1677,6 +1677,58 @@ for (const kind of [
   );
 }
 
+function foreignProofRecoveryFixture(creator = 'Shield') {
+  const f = proofRecoveryFixture('railgun-private-transfer', creator);
+  const destination = '0zk1' + 'p'.repeat(123);
+  f.capsule.selection.recipient = destination;
+  f.capsule.selection.recipientRelationship = 'foreign';
+  f.capsule.preparation.recipient = destination;
+  return f;
+}
+test.each(['Shield', 'Transact'])(
+  'fixed recovery of a signed foreign transfer/%s forwards its exact marked record',
+  async (creator) => {
+    const input = completedOptions(),
+      f = foreignProofRecoveryFixture(creator);
+    const account = await openRailgunCompletedAccountWallet(input);
+    try {
+      expect(await recoverRailgunAccountPrivateProof(account, options, f.recovery)).toEqual(
+        f.candidate
+      );
+      const call = mockRunner.recoverReadOnly.mock.calls[0][0];
+      expect(call.privateRecovery.capsule.selection).toEqual({
+        kind: 'railgun-private-transfer',
+        tree: 0,
+        position: 1,
+        recipient: '0zk1' + 'p'.repeat(123),
+        recipientRelationship: 'foreign',
+      });
+      expect(call.privateRecovery.capsule.version).toBe(1);
+    } finally {
+      await account.close();
+    }
+  }
+);
+test.each([
+  ['unmarked destination', (f) => delete f.capsule.selection.recipientRelationship],
+  [
+    'marked own instance',
+    (f) => {
+      f.capsule.selection.recipient = f.capsule.preparation.recipient = f.owned.read.instanceId;
+    },
+  ],
+])('fixed recovery refuses a foreign record with %s before the utility', async (_l, change) => {
+  const input = completedOptions(),
+    f = foreignProofRecoveryFixture();
+  change(f);
+  const account = await openRailgunCompletedAccountWallet(input);
+  try {
+    await expect(recoverRailgunAccountPrivateProof(account, options, f.recovery)).rejects.toThrow();
+    expect(mockRunner.recoverReadOnly).not.toHaveBeenCalled();
+  } finally {
+    await account.close();
+  }
+});
 test('proof recovery cannot adopt ordinary wallet accounts, copied accounts or foreign owners', async () => {
   const f = proofRecoveryFixture();
   const ordinary = await openRailgunAccountWallet(options);

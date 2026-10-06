@@ -446,6 +446,16 @@ function create(options) {
       });
       const baseline = selected(account, owners, request);
       assert.equal(inputAmount, baseline.note.amount);
+      // `to` keeps Kohaku's meaning: the destination. Main compares only the exact
+      // string with this account's instance address; key identity is verified by
+      // the guarded utilities before signing, and own keys behind another
+      // encoding are refused there rather than treated as a foreign recipient.
+      const foreign = Object.hasOwn(baseline.selection, 'recipientRelationship');
+      assert.equal(
+        foreign,
+        kind === 'railgun-private-transfer' &&
+          recipient !== assertRailgunIdentity(identity, parent).instanceId
+      );
       return start(async () => {
         const started = performance.now(),
           deadline = started + PREPARE_MS;
@@ -538,6 +548,18 @@ function create(options) {
             },
             selectedInputs: 1,
             fullNote: !partial,
+            // Self-transfer review bytes are pinned by a golden; only an explicitly
+            // foreign destination adds its relationship and disclosures.
+            ...(foreign
+              ? {
+                  recipientRelationship: 'foreign',
+                  canonicalDestination: recipient,
+                  destinationVerification:
+                    'Before private signing, a guarded utility strictly decodes this exact canonical address (version 1, all-chain or Sepolia), refuses either key of this account, and recovers the encrypted output to confirm its recipient keys, full value, Transfer type, absent memo and hidden sender address.',
+                  foreignOutputPoiDisclosure:
+                    "This account later submits the transaction's POI proof. That submission links the recipient's blinded output commitment to this spend at the POI aggregator. This operation does not submit it.",
+                }
+              : {}),
             ...(partial
               ? {
                   inputAmount: inputAmount.toString(),

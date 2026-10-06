@@ -7,6 +7,11 @@ const path = require('path');
 const { Interface } = require('ethers');
 const { TRANSACT_ABI } = require('./railgun-private-policy');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
+const {
+  assertRailgunPrivateTransferRecipient,
+  decodeRailgunForeignDestination,
+  verifyRailgunForeignOutput,
+} = require('./railgun-private-destination');
 const pins = require('./railgun-shield-pins.json');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 async function reconstructRailgunPrivateWitness({
@@ -111,8 +116,26 @@ async function reconstructRailgunPrivateWitness({
       imp('note/note-util').getNoteHash(selection.recipient, note.tokenData, note.value),
       BigInt(expected.commitment)
     );
+  } else if (
+    !partial &&
+    assertRailgunPrivateTransferRecipient(selection, descriptor.instanceId) === 'foreign'
+  ) {
+    // Original foreign output only: recover it from the saved ciphertext as the
+    // sender. The decoded destination must match the decrypted recipient keys.
+    assert.equal(decoded.boundParams.commitmentCiphertext.length, 1);
+    const sent = await verifyRailgunForeignOutput(imp, {
+      bundle: decoded.boundParams.commitmentCiphertext[0],
+      viewingPrivateKey: wallet.viewingKeyPair.privateKey,
+      sender: wallet.addressKeys,
+      destination: decodeRailgunForeignDestination(imp, selection.recipient, wallet.addressKeys),
+      value: note.value,
+      tokenHash: note.tokenHash,
+      commitment: BigInt(expected.commitment),
+      tokenDataGetter: wallet.tokenDataGetter,
+      active,
+    });
+    outputNpk = sent.notePublicKey;
   } else {
-    if (!partial) assert.equal(selection.recipient, descriptor.instanceId);
     const bundle = decoded.boundParams.commitmentCiphertext[0];
     const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex');
     const receiver = Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex');

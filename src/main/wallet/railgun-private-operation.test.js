@@ -1309,3 +1309,111 @@ test('unknown provenance failure survives another throwing close and waits the o
   expect(mock.callbackFailure).toBe(failure);
   expect(mock.events).not.toContain('A-response');
 });
+
+const FOREIGN = '0zk1' + 'p'.repeat(123);
+function enableForeign() {
+  mock.capsule =
+    require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunLegacyCapsuleData(
+      'railgun-private-transfer'
+    ).capsule;
+  mock.capsule.engineSha256 = require('./railgun-engine-manifest.json').sha256;
+  mock.capsule.selection.recipient = FOREIGN;
+  mock.capsule.selection.recipientRelationship = 'foreign';
+  mock.capsule.preparation.recipient = FOREIGN;
+  mock.offer = normalizeRailgunPrivateOffer(mock.capsule.preparation, mock.capsule.selection);
+  mock.owner = '0x' + '45'.repeat(20);
+  mock.identity.descriptor.walletId = mock.capsule.walletId;
+  mock.identity.descriptor.instanceId = mock.owned.read.instanceId;
+  mock.data.selection = mock.capsule.selection;
+  const selected = mock.owned.ownedPoi[0];
+  selected.nullifier = mock.offer.expected.nullifier;
+  selected.hash = mock.capsule.noteHash;
+  mock.poiValue.input.nullifier = selected.nullifier;
+  mock.poiValue.input.noteHash = selected.hash;
+  mock.preflightValue.input.nullifier = selected.nullifier;
+  mock.preflightValue.input.merkleRoot = mock.offer.expected.merkleRoot;
+  mock.receiverValue = {
+    transactionDigest: mock.offer.transactionDigest,
+    recipientVerified: true,
+    recipient: FOREIGN,
+    recipientRelationship: 'foreign',
+    amount: '1000',
+  };
+  options.request = { kind: 'railgun-private-transfer', noteId: '0:1', recipient: FOREIGN };
+}
+test.each(['Shield', 'Transact'])(
+  'foreign %s input binds the marked destination and sent-output result into signing',
+  async (type) => {
+    enableForeign();
+    if (type === 'Transact') enableTransact();
+    const result = await prove(options);
+    expect(result).toMatchObject({ status: 'proved', submissionEnabled: false });
+    expect(mock.receiverOptions).toMatchObject({
+      recipient: FOREIGN,
+      recipientRelationship: 'foreign',
+      amount: '1000',
+      expected: mock.offer.expected,
+    });
+    expect(mock.receiverOptions).not.toHaveProperty('inputAmount');
+    expect(mock.stored.capsule.version).toBe(1);
+    expect(mock.stored.capsule.selection).toEqual({
+      kind: 'railgun-private-transfer',
+      tree: 0,
+      position: 1,
+      recipient: FOREIGN,
+      recipientRelationship: 'foreign',
+    });
+    expect(mock.reservedFacts.kind).toBe('railgun-private-transfer');
+    // The verified foreign receiver result is an input of the durable gates digest.
+    const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
+    const authorization = require('crypto')
+      .createHash('sha256')
+      .update('freedom:railgun:private-gates-v1\0')
+      .update(
+        JSON.stringify({
+          operation: type === 'Transact' ? 'transact-input-private-v1' : 'shield-input-private-v1',
+          submitter: mock.owner,
+          capsuleDigest: digestRailgunPrivateCapsule(mock.capsule),
+          checkpointHash: mock.owned.checkpointHash,
+          receiver: mock.receiverValue,
+          poi: mock.poiValue,
+          preflight: mock.preflightValue,
+          signer: {
+            transactionDigest: mock.offer.transactionDigest,
+            expectedHash: mock.offer.expectedHash,
+          },
+          ...(type === 'Transact' ? { provenance: mock.provenanceValue } : {}),
+        })
+      )
+      .digest('hex');
+    expect(mock.stored.authorizationDigest).toBe(authorization);
+    const order = ['R', 'POI', 'preflight', 'reserve', 'put', 'mark', 'key', 'save-signature'];
+    for (let i = 1; i < order.length; i++)
+      expect(mock.events.indexOf(order[i])).toBeGreaterThan(mock.events.indexOf(order[i - 1]));
+  }
+);
+test.each([
+  ['missing marker', (v) => delete v.recipientRelationship],
+  ['self marker', (v) => (v.recipientRelationship = 'self')],
+  ['other destination', (v) => (v.recipient = '0zk1' + 'r'.repeat(123))],
+  ['own destination', (v) => (v.recipient = mock.owned.read.instanceId)],
+  ['unverified', (v) => (v.recipientVerified = false)],
+])('foreign receiver result with %s refuses before POI, reservation or key', async (_l, change) => {
+  enableForeign();
+  change(mock.receiverValue);
+  expect(await prove(options)).toMatchObject({ status: 'refused', stage: 'receiver' });
+  for (const event of ['POI-open', 'preflight-open', 'reserve', 'key'])
+    expect(mock.events).not.toContain(event);
+});
+test('a utility capsule without the reviewed foreign marker cannot reach the receiver', async () => {
+  enableForeign();
+  delete mock.capsule.selection.recipientRelationship;
+  expect((await prove(options)).status).toBe('refused');
+  for (const event of ['R', 'POI-open', 'reserve', 'key']) expect(mock.events).not.toContain(event);
+});
+test('a malformed foreign destination refuses before network, A or receive work', async () => {
+  enableForeign();
+  options.request = { ...options.request, recipient: '0zk1' + 'P'.repeat(123) };
+  expect(await prove(options)).toEqual({ status: 'refused', stage: 'local' });
+  expect(mock.events).toEqual([]);
+});

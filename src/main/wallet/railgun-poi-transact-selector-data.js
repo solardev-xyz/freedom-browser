@@ -4,6 +4,7 @@ const assert = require('assert/strict');
 const path = require('path');
 const { createHash } = require('crypto');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
+const { assertRailgunPrivateTransferRecipient } = require('./railgun-private-destination');
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const shape = (value, keys) => {
   assert.ok(value && typeof value === 'object' && !Array.isArray(value));
@@ -57,7 +58,7 @@ function prepareRailgunPoiTransactSelectorInput(value) {
     )
   );
   if (capsule.selection.kind === 'railgun-private-transfer')
-    assert.equal(capsule.selection.recipient, descriptor.instanceId);
+    assertRailgunPrivateTransferRecipient(capsule.selection, descriptor.instanceId);
   const c = input.creator;
   shape(c, ['type', 'tree', 'position', 'hash', 'ciphertext']);
   assert.equal(c.type, 'Transact');

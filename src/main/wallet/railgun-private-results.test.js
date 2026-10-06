@@ -230,6 +230,53 @@ describe('receiver result contracts', () => {
       expect(() => normalize(value, options)).toThrow();
     }
   );
+  test('a foreign sent-output result carries and requires the explicit marker', () => {
+    const { options, value } = fixture(false);
+    const foreign = { ...options, recipient: '0zk1' + 'p'.repeat(123) };
+    const marked = { ...foreign, recipientRelationship: 'foreign' };
+    const result = normalize(
+      { ...value, recipient: foreign.recipient, recipientRelationship: 'foreign' },
+      marked
+    );
+    expect(JSON.stringify(result)).toBe(
+      JSON.stringify({
+        recipientVerified: true,
+        transactionDigest: value.transactionDigest,
+        recipient: foreign.recipient,
+        recipientRelationship: 'foreign',
+        amount: '1000',
+        inputOwnershipVerified: false,
+        spendingEnabled: false,
+      })
+    );
+    // A self-shaped result cannot satisfy a foreign request, nor the reverse.
+    expect(() => normalize({ ...value, recipient: foreign.recipient }, marked)).toThrow();
+    expect(() => normalize({ ...value, recipientRelationship: 'foreign' }, options)).toThrow();
+    expect(() =>
+      normalize({ ...value, recipient: foreign.recipient, recipientRelationship: 'self' }, marked)
+    ).toThrow();
+    expect(() =>
+      normalize(
+        { ...value, recipient: options.recipient, recipientRelationship: 'foreign' },
+        marked
+      )
+    ).toThrow();
+    expect(() =>
+      normalize(
+        { ...value, recipient: foreign.recipient, recipientRelationship: 'self' },
+        { ...foreign, recipientRelationship: 'self' }
+      )
+    ).toThrow();
+  });
+  test('partial change can never be foreign', () => {
+    const { options, value } = fixture(true);
+    expect(() =>
+      normalize(
+        { ...value, recipientRelationship: 'foreign' },
+        { ...options, recipientRelationship: 'foreign' }
+      )
+    ).toThrow();
+  });
   test('cannot transplant either shape across a real kind/digest', () => {
     const legacy = fixture(false),
       partial = fixture(true);

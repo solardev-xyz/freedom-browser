@@ -75,6 +75,25 @@ test.each([false, true])(
     expect(value.capsule.pathElements[0]).not.toBe(hex(99));
   }
 );
+test('a marked foreign transfer binds its destination and marker into the selector input', () => {
+  const foreign = () => {
+    const raw = input();
+    raw.capsule.selection.recipient = '0zk1' + 'p'.repeat(123);
+    raw.capsule.preparation.recipient = '0zk1' + 'p'.repeat(123);
+    raw.capsule.selection.recipientRelationship = 'foreign';
+    return raw;
+  };
+  const value = prepare(foreign());
+  expect(value.capsule.selection.recipientRelationship).toBe('foreign');
+  expect(normalize(value)).toEqual(value);
+  expect(value.bindingDigest).not.toBe(prepare(input()).bindingDigest);
+  const unmarked = foreign();
+  delete unmarked.capsule.selection.recipientRelationship;
+  expect(() => prepare(unmarked)).toThrow();
+  const own = foreign();
+  own.descriptor.instanceId = '0zk1' + 'p'.repeat(123);
+  expect(() => prepare(own)).toThrow();
+});
 test('partial input uses the v2 domain and binds the full input, not either output', () => {
   const raw = partialInput();
   const value = prepare(raw);

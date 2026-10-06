@@ -103,6 +103,38 @@ test.each([
     expect(() => input(f.privateRecovery, { walletId: f.capsule.walletId })).toThrow();
   else expect(() => result(f.proof, f.context)).toThrow();
 });
+describe('signed foreign full-value transfer record', () => {
+  const FOREIGN = '0zk1' + 'p'.repeat(123);
+  function foreign() {
+    const f = fixture('railgun-private-transfer');
+    f.capsule.selection.recipient = FOREIGN;
+    f.capsule.selection.recipientRelationship = 'foreign';
+    f.capsule.preparation.recipient = FOREIGN;
+    return f;
+  }
+  test('cold recovery input and result keep the explicit marker and destination', () => {
+    const f = foreign();
+    const normalized = input(f.privateRecovery, { walletId: f.capsule.walletId });
+    expect(normalized.capsule.selection).toEqual({
+      kind: 'railgun-private-transfer',
+      tree: 0,
+      position: 1,
+      recipient: FOREIGN,
+      recipientRelationship: 'foreign',
+    });
+    expect(normalized.capsule.version).toBe(1);
+    expect(result(f.proof, f.context)).toEqual(f.proof);
+  });
+  test.each([
+    ['unmarked destination', (f) => delete f.capsule.selection.recipientRelationship],
+    ['own instance with marker', (f) => (f.owned.read.instanceId = FOREIGN)],
+    ['altered destination', (f) => (f.capsule.selection.recipient = '0zk1' + 'r'.repeat(123))],
+  ])('refuses %s', (_label, change) => {
+    const f = foreign();
+    change(f);
+    expect(() => result(f.proof, f.context)).toThrow();
+  });
+});
 test.each(['getter', 'proxy', 'symbol', 'array-property'])(
   'input %s never invokes a getter or accepts hidden state',
   (mode) => {

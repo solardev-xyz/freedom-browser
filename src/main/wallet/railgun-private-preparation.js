@@ -3,6 +3,7 @@
  */
 const assert = require('assert/strict');
 const { validateRailgunPrivateSigningIntent } = require('./railgun-private-intent');
+const { assertRailgunPrivateTransferRecipient } = require('./railgun-private-destination');
 const pins = require('./railgun-shield-pins.json');
 const shape = (v, keys) => {
   assert.ok(v && typeof v === 'object' && !Array.isArray(v));
@@ -16,6 +17,10 @@ function selectRailgunPrivatePreparation(owned, request) {
       request.kind
     )
   );
+  // The request keeps its existing shape. Only a transfer to a destination other
+  // than this account's instance address gains the explicit foreign marker.
+  const foreign =
+    request.kind === 'railgun-private-transfer' && request.recipient !== owned.read.instanceId;
   assert.equal(typeof request.noteId, 'string');
   const note = owned.read.received.find((v) => v.id === request.noteId);
   const record = owned.ownedPoi.find((v) => v.id === request.noteId);
@@ -31,18 +36,22 @@ function selectRailgunPrivatePreparation(owned, request) {
   if (partial || request.kind === 'railgun-token-unshield') {
     assert.match(request.recipient, /^0x[0-9a-f]{40}$/);
     assert.ok(BigInt(request.recipient) > 0n);
-  } else assert.equal(request.recipient, owned.read.instanceId);
+  }
   if (partial) {
     amount(request.unshieldAmount);
     assert.ok(BigInt(request.unshieldAmount) < note.amount);
   }
-  return Object.freeze({
+  const selection = Object.freeze({
     kind: request.kind,
     tree: note.tree,
     position: note.position,
     recipient: request.recipient,
+    ...(foreign ? { recipientRelationship: 'foreign' } : {}),
     ...(partial ? { unshieldAmount: request.unshieldAmount } : {}),
   });
+  if (request.kind === 'railgun-private-transfer')
+    assertRailgunPrivateTransferRecipient(selection, owned.read.instanceId);
+  return selection;
 }
 function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, trees }) {
   const offer = normalizeRailgunPrivateOffer(value, selection);
@@ -70,7 +79,7 @@ function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, 
   } else if (expected.kind === 'railgun-token-unshield') {
     assert.equal(expected.recipient, selection.recipient);
     assert.equal(expected.amount, value.amount);
-  } else assert.equal(value.recipient, read.instanceId);
+  } else assertRailgunPrivateTransferRecipient(selection, read.instanceId);
   return Object.freeze({
     ...offer,
     witnessRetained: false,

@@ -1,11 +1,17 @@
-/** Fresh viewing-only self-transfer or partial change check. No note database, preparer witness,
- * spending key, network or prover. The exact zero-proof intent is checked first.
+/** Fresh viewing-only self-transfer, partial change or foreign sent-output check. No
+ * note database, preparer witness, spending key, network or prover. The exact
+ * zero-proof intent and any foreign destination are checked before the key request.
  */
 const assert = require('assert/strict'),
   path = require('path');
 const { Interface } = require('ethers');
 const { TRANSACT_ABI } = require('./railgun-private-policy');
 const { validateRailgunPrivateSigningIntent } = require('./railgun-private-intent');
+const {
+  assertRailgunPrivateTransferRecipient,
+  decodeRailgunForeignDestination,
+  verifyRailgunForeignOutput,
+} = require('./railgun-private-destination');
 const pins = require('./railgun-shield-pins.json');
 exports.run = async function run(text, { request, requestKey, signal, guardReport }) {
   const input = JSON.parse(text);
@@ -14,6 +20,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
   const checked = validateRailgunPrivateSigningIntent(input.transaction, input.expected);
   const partial = checked.kind === 'railgun-partial-unshield';
   assert.ok(partial || checked.kind === 'railgun-private-transfer');
+  const foreign = Object.hasOwn(input, 'recipientRelationship');
   assert.deepEqual(
     Object.keys(input).sort(),
     [
@@ -22,10 +29,20 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
       'descriptor',
       'expected',
       'recipient',
+      ...(foreign ? ['recipientRelationship'] : []),
       'transaction',
     ].sort()
   );
-  assert.equal(input.recipient, input.descriptor.instanceId);
+  if (foreign)
+    assertRailgunPrivateTransferRecipient(
+      {
+        kind: checked.kind,
+        recipient: input.recipient,
+        recipientRelationship: input.recipientRelationship,
+      },
+      input.descriptor.instanceId
+    );
+  else assert.equal(input.recipient, input.descriptor.instanceId);
   const amount = partial ? input.inputAmount : input.amount;
   assert.match(amount, /^[1-9][0-9]{0,16}$/);
   assert.ok(BigInt(amount) <= BigInt(pins.maxQualificationAmount));
@@ -44,6 +61,16 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
     require(path.join(archive, 'node_modules/@railgun-community/engine/dist', name));
   await imp('utils/poseidon').initPoseidonPromise;
   active();
+  let destination;
+  if (foreign) {
+    for (const name of ['masterPublicKey', 'viewingPublicKey'])
+      assert.match(input.descriptor[name], /^[0-9a-f]{64}$/);
+    // Refuse a malformed, wrong-chain or own-key destination before key release.
+    destination = decodeRailgunForeignDestination(imp, input.recipient, {
+      masterPublicKey: BigInt('0x' + input.descriptor.masterPublicKey),
+      viewingPublicKey: Buffer.from(input.descriptor.viewingPublicKey, 'hex'),
+    });
+  }
   const { ViewOnlyWallet } = imp('wallet/view-only-wallet'),
     { TransactNote } = imp('note/transact-note');
   const { getPublicViewingKey, getSharedSymmetricKey } = imp('utils/keys-utils');
@@ -89,68 +116,91 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
       ViewOnlyWallet.generateID(wallet.generateShareableViewingKey()),
       descriptor.walletId
     );
-    const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex'),
-      receiver = Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex');
-    symmetric = await getSharedSymmetricKey(key, sender);
-    active();
-    assert.ok(symmetric);
-    const tokenData = getTokenDataERC20(pins.wrappedNative),
-      tokenHash = getTokenDataHash(tokenData);
-    const note = await TransactNote.decrypt(
-      'V2_PoseidonMerkle',
-      { type: 0, id: pins.chainId },
-      wallet.addressKeys,
-      {
-        iv: bundle.ciphertext[0].slice(2, 34),
-        tag: bundle.ciphertext[0].slice(34),
-        data: bundle.ciphertext.slice(1).map((v) => v.slice(2)),
-      },
-      symmetric,
-      bundle.memo,
-      bundle.annotationData,
-      key,
-      receiver,
-      sender,
-      false,
-      false,
-      {
-        getTokenDataFromHash: async (_version, _chain, value) => {
-          assert.equal(value.replace(/^0x/, ''), tokenHash.replace(/^0x/, ''));
-          return tokenData;
+    if (destination) {
+      const tokenData = getTokenDataERC20(pins.wrappedNative),
+        tokenHash = getTokenDataHash(tokenData);
+      // Sender-side recovery with this account's viewing key: the recipient's
+      // keys, NPK, blinding keys, Transfer type, absent memo and hidden sender.
+      await verifyRailgunForeignOutput(imp, {
+        bundle,
+        viewingPrivateKey: key,
+        sender: wallet.addressKeys,
+        destination,
+        value: BigInt(amount),
+        tokenHash,
+        commitment: BigInt(checked.commitment),
+        tokenDataGetter: {
+          getTokenDataFromHash: async (_version, _chain, value) => {
+            assert.equal(value.replace(/^0x/, ''), tokenHash.replace(/^0x/, ''));
+            return tokenData;
+          },
         },
-      },
-      undefined,
-      undefined
-    );
-    active();
-    assert.equal(note.value, change);
-    assert.equal(note.tokenHash.replace(/^0x/, ''), tokenHash.replace(/^0x/, ''));
-    assert.equal(note.hash, BigInt(partial ? checked.changeCommitment : checked.commitment));
-    if (partial) {
-      assert.equal(
-        imp('note/shield-note').ShieldNote.getNotePublicKey(wallet.masterPublicKey, note.random),
-        note.notePublicKey
-      );
-      assert.equal(note.tokenData.tokenType, 0);
-      assert.equal(note.tokenData.tokenAddress.toLowerCase(), pins.wrappedNative);
-      assert.equal(BigInt(note.tokenData.tokenSubID), 0n);
-      assert.equal(bundle.memo, '0x');
-      assert.equal(note.memoText, undefined);
-      const annotation = imp('note/memo').Memo.decryptNoteAnnotationData(
+        active,
+      });
+    } else {
+      const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex'),
+        receiver = Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex');
+      symmetric = await getSharedSymmetricKey(key, sender);
+      active();
+      assert.ok(symmetric);
+      const tokenData = getTokenDataERC20(pins.wrappedNative),
+        tokenHash = getTokenDataHash(tokenData);
+      const note = await TransactNote.decrypt(
+        'V2_PoseidonMerkle',
+        { type: 0, id: pins.chainId },
+        wallet.addressKeys,
+        {
+          iv: bundle.ciphertext[0].slice(2, 34),
+          tag: bundle.ciphertext[0].slice(34),
+          data: bundle.ciphertext.slice(1).map((v) => v.slice(2)),
+        },
+        symmetric,
+        bundle.memo,
         bundle.annotationData,
-        key
+        key,
+        receiver,
+        sender,
+        false,
+        false,
+        {
+          getTokenDataFromHash: async (_version, _chain, value) => {
+            assert.equal(value.replace(/^0x/, ''), tokenHash.replace(/^0x/, ''));
+            return tokenData;
+          },
+        },
+        undefined,
+        undefined
       );
-      assert.equal(annotation?.outputType, imp('models/formatted-types').OutputType.Change);
-      assert.equal(
-        annotation.senderRandom,
-        imp('models/transaction-constants').MEMO_SENDER_RANDOM_NULL
-      );
-      assert.equal(
-        imp('note/note-util').getNoteHash(checked.recipient, tokenData, u),
-        BigInt(checked.unshieldCommitment)
-      );
+      active();
+      assert.equal(note.value, change);
+      assert.equal(note.tokenHash.replace(/^0x/, ''), tokenHash.replace(/^0x/, ''));
+      assert.equal(note.hash, BigInt(partial ? checked.changeCommitment : checked.commitment));
+      if (partial) {
+        assert.equal(
+          imp('note/shield-note').ShieldNote.getNotePublicKey(wallet.masterPublicKey, note.random),
+          note.notePublicKey
+        );
+        assert.equal(note.tokenData.tokenType, 0);
+        assert.equal(note.tokenData.tokenAddress.toLowerCase(), pins.wrappedNative);
+        assert.equal(BigInt(note.tokenData.tokenSubID), 0n);
+        assert.equal(bundle.memo, '0x');
+        assert.equal(note.memoText, undefined);
+        const annotation = imp('note/memo').Memo.decryptNoteAnnotationData(
+          bundle.annotationData,
+          key
+        );
+        assert.equal(annotation?.outputType, imp('models/formatted-types').OutputType.Change);
+        assert.equal(
+          annotation.senderRandom,
+          imp('models/transaction-constants').MEMO_SENDER_RANDOM_NULL
+        );
+        assert.equal(
+          imp('note/note-util').getNoteHash(checked.recipient, tokenData, u),
+          BigInt(checked.unshieldCommitment)
+        );
+      }
+      assert.equal(TransactNote.getHash(note.notePublicKey, note.tokenHash, note.value), note.hash);
     }
-    assert.equal(TransactNote.getHash(note.notePublicKey, note.tokenHash, note.value), note.hash);
   } finally {
     key.fill(0);
     symmetric?.fill(0);
@@ -168,6 +218,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
             verified: true,
             transactionDigest: checked.digest,
             recipient: input.recipient,
+            ...(foreign ? { recipientRelationship: 'foreign' } : {}),
             ...amounts,
             inventory: require('./railgun-engine-manifest.json').inventory.sha256,
             guards,

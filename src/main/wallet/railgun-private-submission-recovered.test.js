@@ -885,6 +885,45 @@ test('partial requires exact circuit observation before transaction network', as
   expect((await submit(options)).stage).toBe('preflight');
   expect(mock.events).not.toContain('network');
 });
+test.each(['Shield', 'Transact'])(
+  'cold foreign transfer/%s reviews its signed destination, marker and POI linkage',
+  async (type) => {
+    setup('railgun-private-transfer', type);
+    const destination = '0zk1' + 'p'.repeat(123);
+    mock.capsule.selection.recipient = destination;
+    mock.capsule.selection.recipientRelationship = 'foreign';
+    mock.capsule.preparation.recipient = destination;
+    const reviews = [];
+    options.reviewTransaction = async (summary) => {
+      reviews.push(summary);
+      await mock.step('transaction-review');
+      return true;
+    };
+    expect(await submit(options)).toEqual({
+      transactionHash: hex(17),
+      submissionStatus: 'acknowledged',
+    });
+    expect(mock.summary).toMatchObject({
+      operation: 'railgun-private-transfer',
+      recipient: destination,
+      recipientRelationship: 'foreign',
+    });
+    expect(mock.summary.foreignOutputPoiDisclosure).toContain(
+      "links the recipient's blinded output commitment to this spend"
+    );
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({
+      recipientRelationship: 'foreign',
+      canonicalDestination: destination,
+    });
+  }
+);
+test('cold self transfer disclosure summary carries no relationship fields', async () => {
+  setup('railgun-private-transfer');
+  await submit(options);
+  expect(mock.summary).not.toHaveProperty('recipientRelationship');
+  expect(mock.summary).not.toHaveProperty('foreignOutputPoiDisclosure');
+});
 test('legacy refuses an observation claiming partial intent', async () => {
   setup('railgun-private-transfer');
   mock.preflightOverride = { intentKind: 'railgun-partial-unshield' };

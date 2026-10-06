@@ -341,6 +341,9 @@ async function prove({
             let receiver = null;
             stage = 'receiver';
             const partial = selection.kind === 'railgun-partial-unshield';
+            // The explicit marker selects the sent-note check of a foreign output;
+            // its verified result is part of the signing authorization digest.
+            const foreign = Object.hasOwn(selection, 'recipientRelationship');
             if (selection.kind === 'railgun-private-transfer' || partial) {
               receiver = await verifyRailgunPrivateReceiver({
                 identity,
@@ -349,11 +352,16 @@ async function prove({
                 transaction: offer.transaction,
                 expected: offer.expected,
                 recipient: partial ? identity.descriptor.instanceId : offer.recipient,
+                ...(foreign ? { recipientRelationship: selection.recipientRelationship } : {}),
                 ...(partial ? { inputAmount: offer.inputAmount } : { amount: offer.amount }),
                 signal: operationScope.signal,
               });
               assert.equal(receiver.transactionDigest, offer.transactionDigest);
               assert.equal(receiver.recipientVerified, true);
+              if (foreign) {
+                assert.equal(receiver.recipient, selection.recipient);
+                assert.equal(receiver.recipientRelationship, 'foreign');
+              }
               if (partial) {
                 assert.equal(receiver.recipient, identity.descriptor.instanceId);
                 for (const key of ['inputAmount', 'unshieldAmount', 'changeAmount'])

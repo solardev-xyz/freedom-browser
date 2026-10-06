@@ -249,6 +249,13 @@ async function submitFinal({
                   ...request,
                   intent,
                   operation: intent.operation,
+                  // The signed capsule's own foreign destination, never caller data.
+                  ...(Object.hasOwn(capsule.selection, 'recipientRelationship')
+                    ? {
+                        recipientRelationship: 'foreign',
+                        canonicalDestination: capsule.selection.recipient,
+                      }
+                    : {}),
                   maxGasFee,
                   fundingAddressPublic: true,
                   chainStateVerified: false,
@@ -672,6 +679,13 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
       operation: capsule.selection.kind,
       submitter: owner,
       recipient: capsule.selection.recipient,
+      ...(Object.hasOwn(capsule.selection, 'recipientRelationship')
+        ? {
+            recipientRelationship: 'foreign',
+            foreignOutputPoiDisclosure:
+              "A later POI submission for this transaction by this account links the recipient's blinded output commitment to this spend at the POI aggregator.",
+          }
+        : {}),
       selection: {
         noteId: `${capsule.selection.tree}:${capsule.selection.position}`,
         originalCheckpointHash: baseline.entry.facts.checkpointHash,

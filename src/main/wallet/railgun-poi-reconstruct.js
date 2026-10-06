@@ -1,13 +1,19 @@
 /** Utility-only post-transaction reconstruction for a Shield/Transact input and one
- * self-transfer/full-unshield or change plus unshield output. Caller owns the
- * viewing key. Witness secrets stay in that utility, never serialized to main.
- * Supplied creator/capsule data is not authenticated source or spending authority.
+ * self-transfer, foreign full-value transfer, full-unshield or change plus unshield
+ * output. Caller owns the viewing key. Witness secrets stay in that utility, never
+ * serialized to main. Supplied creator/capsule data is not authenticated source or
+ * spending authority.
  */
 const assert = require('assert/strict');
 const path = require('path');
 const { Interface } = require('ethers');
 const { TRANSACT_ABI } = require('./railgun-private-policy');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
+const {
+  assertRailgunPrivateTransferRecipient,
+  decodeRailgunForeignDestination,
+  verifyRailgunForeignOutput,
+} = require('./railgun-private-destination');
 const pins = require('./railgun-shield-pins.json');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 async function reconstructRailgunPoiNotes({
@@ -240,8 +246,33 @@ async function reconstructRailgunPoiNotes({
         BigInt(preparation.expected.unshieldCommitment)
       );
     }
-    if (selection.kind === 'railgun-private-transfer' || partial) {
-      if (!partial) assert.equal(selection.recipient, descriptor.instanceId);
+    if (
+      !partial &&
+      selection.kind === 'railgun-private-transfer' &&
+      assertRailgunPrivateTransferRecipient(selection, descriptor.instanceId) === 'foreign'
+    ) {
+      // The foreign output is never received by this account. Recover it as the
+      // sender; its verified NPK blinds the recipient's actual output commitment.
+      assert.equal(tx.boundParams.commitmentCiphertext.length, 1);
+      const sent = await verifyRailgunForeignOutput(imp, {
+        bundle: tx.boundParams.commitmentCiphertext[0],
+        viewingPrivateKey: key,
+        sender: wallet.addressKeys,
+        destination: decodeRailgunForeignDestination(imp, selection.recipient, wallet.addressKeys),
+        value: note.value,
+        tokenHash,
+        commitment: BigInt(preparation.expected.commitment),
+        tokenDataGetter: {
+          getTokenDataFromHash: async (_v, _c, hash) => {
+            assert.equal(BigInt('0x' + hash.replace(/^0x/, '')), BigInt('0x' + tokenHash));
+            return tokenData;
+          },
+        },
+        active,
+      });
+      npksOut.push(sent.notePublicKey);
+      valuesOut.push(sent.value);
+    } else if (selection.kind === 'railgun-private-transfer' || partial) {
       assert.equal(tx.boundParams.commitmentCiphertext.length, 1);
       const bundle = tx.boundParams.commitmentCiphertext[0];
       const output = await decryptReceived(bundle);

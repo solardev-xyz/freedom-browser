@@ -26,6 +26,7 @@ const {
 } = require('./railgun-own-poi-binding');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
+const { isRailgunForeignTransfer } = require('./railgun-private-destination');
 const plans = new WeakMap(),
   live = new Map(),
   operations = new Map();
@@ -236,6 +237,14 @@ function summaryFor(state) {
       ? {
           disclosureExplanation:
             'Submitting this proof links your blinded change output to the public unshield transaction, including its recipient address and amount, at the POI aggregator.',
+        }
+      : {}),
+    // Self-transfer summaries keep their exact original bytes.
+    ...(operation === 'transfer' && isRailgunForeignTransfer(state.capture.capsule.selection)
+      ? {
+          recipientRelationship: 'foreign',
+          disclosureExplanation:
+            "Submitting this proof links the other account's blinded output commitment to your spend at the POI aggregator.",
         }
       : {}),
     requestInventory: [

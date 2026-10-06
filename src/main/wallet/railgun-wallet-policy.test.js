@@ -25,6 +25,7 @@ test.each([
   'railgun-relay-proof-verifier',
   'railgun-relay-recovery-data',
   'railgun-relay-proof',
+  'railgun-private-destination',
 ])('policy is location-independent but binds the engine and %s bytes', (validator) => {
   const first = getRailgunWalletPolicy('/first/engine.asar');
   expect(first).toMatch(/^[0-9a-f]{64}$/);
@@ -107,5 +108,5 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-relay-proof',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(56);
+  expect(visited.size).toBe(57);
 });

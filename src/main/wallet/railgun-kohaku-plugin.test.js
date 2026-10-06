@@ -600,10 +600,18 @@ test('internal controller has only the reviewed application importers and one pr
   ]);
   expect(callers).toEqual(['main/wallet/railgun-kohaku-plugin.js']);
 });
-test('no foreign recipient or tailCalls callback', async () => {
+test('no malformed transfer destination, foreign unshield recipient or tailCalls callback', async () => {
   const plugin = create(),
     tailCalls = jest.fn();
-  await expect(plugin.prepareTransfer(amount(), '0zk-foreign')).rejects.toMatchObject(refusal);
+  for (const to of [
+    '0zk-foreign',
+    '0ZK1' + 'P'.repeat(123),
+    '0zk1' + 'p'.repeat(122),
+    '0zk1' + 'b'.repeat(123),
+    '0x' + '2'.repeat(40),
+    '',
+  ])
+    await expect(plugin.prepareTransfer(amount(), to)).rejects.toMatchObject(refusal);
   await expect(plugin.prepareUnshield(amount(), '0x' + '2'.repeat(40))).rejects.toMatchObject(
     refusal
   );
@@ -612,6 +620,81 @@ test('no foreign recipient or tailCalls callback', async () => {
   ).rejects.toMatchObject(refusal);
   expect(tailCalls).not.toHaveBeenCalled();
   expect(options.reviewPreparation).not.toHaveBeenCalled();
+  expect(mock.prove).not.toHaveBeenCalled();
+});
+describe('full-value transfer to a different Railgun account', () => {
+  const FOREIGN = '0zk1' + 'p'.repeat(123);
+  test("Kohaku's destination argument is reviewed as foreign and proved unchanged", async () => {
+    const plugin = create();
+    const op = await plugin.prepareTransfer(amount(), FOREIGN);
+    expect(mock.events).toEqual([
+      'preview-client',
+      'preview-client',
+      'preparation-review',
+      'prove',
+    ]);
+    const summary = options.reviewPreparation.mock.calls[0][0];
+    expect(summary).toMatchObject({
+      operation: 'railgun-private-transfer',
+      amount: '123',
+      recipient: FOREIGN,
+      recipientRelationship: 'foreign',
+      canonicalDestination: FOREIGN,
+      fullNote: true,
+      selectedInputs: 1,
+      privateSigning: true,
+      broadcastsTransaction: false,
+    });
+    expect(summary.destinationVerification).toContain('strictly decodes this exact canonical');
+    expect(summary.destinationVerification).toContain('refuses either key of this account');
+    expect(summary.foreignOutputPoiDisclosure).toContain(
+      "links the recipient's blinded output commitment to this spend at the POI aggregator"
+    );
+    expect(summary).not.toHaveProperty('changeAmount');
+    expect(Object.isFrozen(summary)).toBe(true);
+    const request = mock.prove.mock.calls[0][0].request;
+    expect(request).toEqual({
+      kind: 'railgun-private-transfer',
+      noteId: '0:1',
+      recipient: FOREIGN,
+    });
+    expect(Object.isFrozen(request)).toBe(true);
+    expect(op).toEqual({ __type: 'privateOperation' });
+    expect((await createRailgunKohakuBroadcaster(plugin).broadcast(op)).status).toBe('submitted');
+  });
+  test('a reviewer cannot alter the destination that is proved', async () => {
+    options.reviewPreparation.mockImplementation(async (summary) => {
+      try {
+        summary.recipient = '0zk1' + 'r'.repeat(123);
+        summary.destination = '0zk1' + 'r'.repeat(123);
+      } catch {
+        /* Frozen review data. */
+      }
+      return true;
+    });
+    const plugin = create();
+    await plugin.prepareTransfer(amount(), FOREIGN);
+    expect(mock.prove.mock.calls[0][0].request.recipient).toBe(FOREIGN);
+  });
+  test('the identity instance address must agree with the reviewed relationship', async () => {
+    mock.identity.descriptor.instanceId = FOREIGN;
+    const plugin = create();
+    await expect(plugin.prepareTransfer(amount(), FOREIGN)).rejects.toMatchObject(refusal);
+    expect(options.reviewPreparation).not.toHaveBeenCalled();
+    expect(mock.prove).not.toHaveBeenCalled();
+  });
+  test('the own instance address keeps the unmarked self review', async () => {
+    const plugin = create();
+    await plugin.prepareTransfer(amount(), '0zk-self');
+    const summary = options.reviewPreparation.mock.calls[0][0];
+    for (const key of [
+      'recipientRelationship',
+      'canonicalDestination',
+      'destinationVerification',
+      'foreignOutputPoiDisclosure',
+    ])
+      expect(summary).not.toHaveProperty(key);
+  });
 });
 test('whole unshield binds the genuine submitter and supported kind', async () => {
   const plugin = create();

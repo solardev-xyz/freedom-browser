@@ -11,6 +11,7 @@ const {
 } = require('./railgun-identity');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { validateRailgunPrivateSigningIntent } = require('./railgun-private-intent');
+const { assertRailgunPrivateTransferRecipient } = require('./railgun-private-destination');
 const { normalizeRailgunPrivateReceiver } = require('./railgun-private-results');
 const { startRailgunProcess } = require('./railgun-process');
 const pins = require('./railgun-shield-pins.json');
@@ -26,12 +27,25 @@ async function verify(options) {
   const handle = enrollment.getContext('engine', 'private-receive');
   const descriptor = assertRailgunIdentity(identity, handle);
   assert.equal(enrollment.descriptor.walletId, descriptor.walletId);
-  assert.equal(recipient, descriptor.instanceId);
+  // Only an explicit foreign marker may name another destination. Without it the
+  // recipient is this account exactly, as for every self-transfer and change.
+  const foreign = Object.hasOwn(options, 'recipientRelationship');
+  if (!foreign) assert.equal(recipient, descriptor.instanceId);
   const intent = Object.freeze({ ...transaction }),
     wanted = Object.freeze({ ...expected });
   const checked = validateRailgunPrivateSigningIntent(intent, wanted);
   const partial = checked.kind === 'railgun-partial-unshield';
   assert.ok(partial || checked.kind === 'railgun-private-transfer');
+  if (foreign)
+    assertRailgunPrivateTransferRecipient(
+      {
+        kind: checked.kind,
+        recipient,
+        recipientRelationship: options.recipientRelationship,
+      },
+      descriptor.instanceId
+    );
+  const relationship = foreign ? { recipientRelationship: 'foreign' } : {};
   if (partial) {
     assert.ok(!Object.hasOwn(options, 'amount') && !Object.hasOwn(options, 'changeAmount'));
     assert.ok(!Object.hasOwn(options, 'unshieldAmount'));
@@ -147,6 +161,7 @@ async function verify(options) {
         transaction: intent,
         expected: wanted,
         recipient,
+        ...relationship,
         ...amounts,
       });
       return JSON.stringify({ id: 2, value: null });
@@ -172,6 +187,7 @@ async function verify(options) {
         transaction: intent,
         expected: wanted,
         recipient,
+        ...relationship,
         ...amounts,
       }),
       broker: {

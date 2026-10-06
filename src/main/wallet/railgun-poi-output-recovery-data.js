@@ -5,6 +5,7 @@ const assert = require('assert/strict');
 const path = require('path');
 const { getRailgunOwnPoiShape } = require('./railgun-own-poi-shape-data');
 const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
+const { assertRailgunPrivateTransferRecipient } = require('./railgun-private-destination');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
 const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
 const { matchRailgunOwnTxid } = require('./railgun-own-txid');
@@ -80,7 +81,10 @@ function normalizeRailgunPoiOutputRecoveryInput(value) {
   assert.equal(outputShape.hasPrivateOutput, true);
   assert.equal(input.descriptor.walletId, ownEvidence.capsule.walletId);
   if (!outputShape.hasUnshield)
-    assert.equal(ownEvidence.capsule.selection.recipient, input.descriptor.instanceId);
+    assertRailgunPrivateTransferRecipient(
+      ownEvidence.capsule.selection,
+      input.descriptor.instanceId
+    );
   assert.equal(digestRailgunPrivateCapsule(ownEvidence.capsule), input.binding.capsuleDigest);
   const matched = matchRailgunOwnTxid(ownEvidence);
   const normalizedWitness = normalizeRailgunTxidWitness(witness, state);

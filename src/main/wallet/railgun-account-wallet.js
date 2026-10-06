@@ -287,11 +287,17 @@ function bindRecoveryInput(capsule, owned, descriptor) {
   const amount =
     selection.kind === 'railgun-partial-unshield' ? preparation.inputAmount : preparation.amount;
   check(note.amount.toString() === amount);
-  if (selection.kind === 'railgun-private-transfer')
-    check(
-      selection.recipient === descriptor.instanceId &&
-        owned.read.instanceId === descriptor.instanceId
-    );
+  if (selection.kind === 'railgun-private-transfer') {
+    check(owned.read.instanceId === descriptor.instanceId);
+    try {
+      require('./railgun-private-destination').assertRailgunPrivateTransferRecipient(
+        selection,
+        descriptor.instanceId
+      );
+    } catch {
+      throw fail();
+    }
+  }
   // Deliberately no equality against tree.root: the stored signature binds the
   // capsule's original root/path. Current restoration authenticates ownership,
   // not current spendability or creator/TXID/POI admission.

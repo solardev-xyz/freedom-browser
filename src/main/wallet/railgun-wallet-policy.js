@@ -47,6 +47,7 @@ const sources = [
   'railgun-private-preparation',
   'railgun-private-intent',
   'railgun-private-policy',
+  'railgun-private-destination',
   'railgun-shield-pins.json',
   'railgun-wallet-runner',
   'railgun-wallet-run',
