@@ -335,6 +335,7 @@ test('default-off selected inventory remains exact and cannot load snapshot fixt
       kohaku: null,
       publicShield: false,
       snapshotProbe,
+      localReviewProbe: null,
       privateAdapterMode: false,
       publicAdapterMode: false,
       require: () => {
@@ -419,7 +420,11 @@ test('actual qualifier counts every broker entry before parsing, including non-k
   expect(end).toBeGreaterThan(start);
   const prefix = source.slice(start, end);
   const counts = [];
-  const context = { messages: 0, snapshotProbe: { count: (key) => counts.push(key) } };
+  const context = {
+    localReviewProbe: null,
+    messages: 0,
+    snapshotProbe: { count: (key) => counts.push(key) },
+  };
   const dispatch = vm.runInNewContext('(wire) => {' + prefix + '; return message; }', context);
   for (const method of ['key', 'txCommit', 'unknown'])
     expect(dispatch(JSON.stringify({ method })).method).toBe(method);
@@ -446,6 +451,7 @@ test('private adapter inventory is opt-in and includes both bridge and independe
       kohaku: {},
       publicShield: false,
       snapshotProbe: null,
+      localReviewProbe: null,
       privateAdapterMode,
       publicAdapterMode: false,
       require: () => {

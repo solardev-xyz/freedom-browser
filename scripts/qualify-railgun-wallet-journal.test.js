@@ -107,6 +107,7 @@ function inventory(publicAdapterMode, publicShield = true) {
     publicAdapterMode,
     privateAdapterMode: false,
     snapshotProbe: null,
+    localReviewProbe: null,
     require: (name) => {
       expect([
         '../docs/qualification/railgun-shield-prerequisites-2026-10-04.json',
@@ -263,4 +264,68 @@ test.each([
   const candidate = report(mode);
   candidate.publicAdapterQualification.originalSettlement[key] = value;
   expect(() => gate(mode, candidate)).toThrow();
+});
+
+function localReviewSelection(flag, extra = {}, inputs = {}) {
+  const context = {
+    assert,
+    process: {
+      env: {
+        ...(flag === undefined ? {} : { FREEDOM_RAILGUN_LOCAL_RELAY_REVIEW: flag }),
+        ...extra,
+      },
+    },
+    composition: 'enrolled',
+    proverArchive: undefined,
+    artifactDirectory: undefined,
+    ...inputs,
+  };
+  vm.runInNewContext(section('  const localReviewFlag =', '  fs.mkdirSync(directory,'), context);
+}
+test('local review is default-off and validates its selector before output creation', () => {
+  expect(() => localReviewSelection(undefined)).not.toThrow();
+  expect(() => localReviewSelection('1')).not.toThrow();
+  expect(source.indexOf('  const localReviewFlag =')).toBeLessThan(
+    source.indexOf('  fs.mkdirSync(directory,')
+  );
+  expect(source).toContain("localReviewProbe && stage === 30 && attempt === 'restore'");
+});
+test.each(['', '0', 'true', '2'])('local review refuses unknown selector %j', (flag) => {
+  expect(() => localReviewSelection(flag)).toThrow();
+});
+test.each([
+  'FREEDOM_RAILGUN_KOHAKU',
+  'FREEDOM_RAILGUN_KOHAKU_SNAPSHOT',
+  'FREEDOM_RAILGUN_PRIVATE_OPERATION',
+  'FREEDOM_RAILGUN_KOHAKU_PUBLIC_ADAPTER',
+  'FREEDOM_RAILGUN_FUTURE_UNKNOWN',
+])('local review refuses inherited %s mode', (name) => {
+  expect(() => localReviewSelection('1', { [name]: '1' })).toThrow();
+  expect(() => localReviewSelection(undefined, { [name]: '1' })).not.toThrow();
+});
+test.each([
+  { composition: undefined },
+  { proverArchive: '/public/prover' },
+  { artifactDirectory: '/public/artifacts' },
+])('local review rejects incompatible route %j', (inputs) => {
+  expect(() => localReviewSelection('1', {}, inputs)).toThrow();
+});
+test('local review inventory adds exact 15 bounded paths only for the new selector', () => {
+  const expression =
+    section('  const sources = [', '\n  ];').replace('  const sources = ', '') + '\n]';
+  const evaluate = (localReviewProbe) =>
+    vm.runInNewContext(expression, {
+      kohaku: null,
+      publicShield: false,
+      privateAdapterMode: false,
+      publicAdapterMode: false,
+      snapshotProbe: null,
+      localReviewProbe,
+    });
+  const off = evaluate(null),
+    on = evaluate({});
+  expect(on.length - off.length).toBe(15);
+  expect(on).toContain('scripts/fixtures/railgun-relay-quote-native-vectors.js');
+  expect(on).toContain('src/main/wallet/railgun-relay-review.js');
+  expect(off).not.toContain('src/main/wallet/railgun-relay-review.js');
 });
