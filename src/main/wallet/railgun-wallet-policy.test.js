@@ -19,6 +19,12 @@ test.each([
   'railgun-relay-capsule',
   'railgun-relay-quote-data',
   'railgun-relay-review-summary',
+  'railgun-relay-pre-poi-job',
+  'railgun-relay-pre-poi-witness',
+  'railgun-relay-proof-results',
+  'railgun-relay-proof-verifier',
+  'railgun-relay-recovery-data',
+  'railgun-relay-proof',
 ])('policy is location-independent but binds the engine and %s bytes', (validator) => {
   const first = getRailgunWalletPolicy('/first/engine.asar');
   expect(first).toMatch(/^[0-9a-f]{64}$/);
@@ -61,6 +67,8 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     require.resolve('./railgun-engine-runtime'),
     require.resolve('./railgun-engine-manifest.json'),
     require.resolve('./railgun-identity'),
+    // Enrollment owns the genuine account/fence, not derived scan semantics.
+    require.resolve('./railgun-account-enrollment'),
     require.resolve('./railgun-process'),
     // Worker transport/storage provenance is an infrastructure boundary;
     // derived wallet and recovery semantics remain traversed and source-pinned.
@@ -93,7 +101,11 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-wallet-coverage-store',
     'railgun-wallet-state',
     'railgun-kohaku-read',
+    'railgun-relay-pre-poi-job',
+    'railgun-relay-prove-job',
+    'railgun-relay-verify-job',
+    'railgun-relay-proof',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(41);
+  expect(visited.size).toBe(56);
 });
