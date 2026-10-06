@@ -16,6 +16,11 @@ const SIGNED_STOP = 'synthetic-list-signed-stop';
 const TRANSACT = 'synthetic-list-transact';
 const SCENARIOS = ['synthetic-list', SIGNED_STOP, TRANSACT];
 const TXID_CONTEXT = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
+// Local failure diagnostics only: the last reached fixture step.
+let progress = 'start';
+const step = (name) => {
+  progress = name;
+};
 const TEST_LIST = '43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c';
 const AUDIT_CASES = ['unmodified', 'signature', 'transaction-proof', 'pre-poi-proof'];
 const hex = (v) => '0x' + v.toString(16).padStart(64, '0');
@@ -1460,6 +1465,7 @@ async function qualify({
   custody,
 }) {
   assert.ok(SCENARIOS.includes(scenario));
+  step('qualify-selection');
   const transact = scenario === TRANSACT;
   // Shield: the 2,000 note at block +10. Transact: the 700 self-transfer output
   // at block +30, created in the same transaction as the derived nullifier.
@@ -1496,6 +1502,7 @@ async function qualify({
     amount: input.amount,
   };
   const helperInput = { archive, createdAt, selected: publicSelected };
+  step('qualify-membership-fixture');
   const helper = await runFixtureJob(
     'membership-fixture',
     helperInput,
@@ -1580,6 +1587,7 @@ async function qualify({
   const stagingLifetime = new AbortController(),
     stagingRpcBefore = services.requests.length;
   if (transact) {
+    step('qualify-staging');
     services.mark('staging-call');
     staged = await require(
       wallet + 'railgun-relay-transact-staging'
@@ -1649,6 +1657,7 @@ async function qualify({
         })
       : null;
   let result;
+  step('qualify-operation');
   try {
     result = await operation.proveRailgunAccountRelayOperation({
       account: operationAccount,
@@ -1707,6 +1716,7 @@ async function qualify({
     hold?.restore();
   }
   services.mark('operation-complete');
+  step('qualify-post-operation');
   assert.equal(reviewed, 1);
   assert.equal(disclosed, 1);
   assert.equal(stagingReviews, transact ? 1 : 0);
@@ -1759,6 +1769,7 @@ async function qualify({
       spendingPublicKey: owners.identity.descriptor.spendingPublicKey,
     });
   const audits = [];
+  step('qualify-audits');
   for (const auditCase of AUDIT_CASES) {
     const control = new AbortController();
     const sender = require(
@@ -1992,6 +2003,49 @@ function inspectMainModuleCache() {
   });
 }
 
+// Local, failure-only diagnostic beside the disposable profile. It is never a
+// qualification output and never masks the original failure.
+function writeFailureDiagnostic(config, failure, jobs, services) {
+  try {
+    const clean = (text) =>
+      String(text ?? '').replace(/\/(?:Users|private|var)\/[^\s)'"]*/g, '<path>');
+    fs.writeFileSync(
+      path.join(config.directory, 'diagnostic.json'),
+      JSON.stringify(
+        {
+          schema: 'railgun-relay-positive-failure-diagnostic-v1',
+          scenario: config.scenario,
+          stage: progress,
+          error: {
+            name: failure?.name ?? null,
+            code: failure?.code ?? null,
+            message: clean(failure?.message).slice(0, 4000),
+            stack: clean(failure?.stack).split('\n').slice(0, 16),
+          },
+          violations: native.report(),
+          jobs: jobs.rows.map((r) => ({
+            role: r.role,
+            results: r.results,
+            keyRequests: r.keyRequests,
+            keyReplies: r.keyReplies,
+            closedObserved: r.closedObserved,
+            exitCode: r.closed?.exitCode ?? null,
+            observedKeyPurpose: r.observedKeyPurpose ?? null,
+            methods: r.methods,
+          })),
+          timeline: services.timeline,
+          clients: services.clientKinds(),
+          requests: services.requests.length,
+        },
+        null,
+        2
+      ) + '\n',
+      { flag: 'wx', mode: 0o600 }
+    );
+  } catch {
+    // Diagnostics are best-effort.
+  }
+}
 // Keyless pinned-engine construction of the derived public TXID row, as in the
 // reviewed enrolled-staging fixture; the result seeds only synthetic services.
 async function runTxidRow(archive, row, enrollment) {
@@ -2124,6 +2178,7 @@ async function execute(config) {
     assert.ok(performance.now() >= started && performance.now() - started < 900000);
   };
   try {
+    step('bootstrap');
     const vaultDirectory = path.join(profile.userDataDir, 'identity');
     await vault.importVault(
       vaultDirectory,
@@ -2179,7 +2234,9 @@ async function execute(config) {
       services.mark('txid-setup');
       const setupBefore = services.requests.length;
       await account.close();
+      step('txid-row');
       const state = await runTxidRow(archive, derived.row, enrollment);
+      step('txid-advance');
       services.txid(state);
       const txidApi = require(wallet + 'railgun-account-txid');
       const txid = await txidApi.openRailgunAccountTxid({
@@ -2194,6 +2251,7 @@ async function execute(config) {
       } finally {
         await txid.close();
       }
+      step('txid-reopen');
       account = await api.openRailgunAccountWallet({
         identity,
         enrollment,
@@ -2217,6 +2275,7 @@ async function execute(config) {
       jobs,
       custody,
     });
+    step('finish');
     await jobs.finish();
     if (config.scenario === TRANSACT) {
       assert.equal(
@@ -2264,7 +2323,10 @@ async function execute(config) {
         failure ??= error;
       }
   }
-  if (failure) throw failure;
+  if (failure) {
+    writeFailureDiagnostic(config, failure, jobs, services);
+    throw failure;
+  }
   current();
   native.assertEmpty();
   assert.deepEqual(sourceHashes(), before);
