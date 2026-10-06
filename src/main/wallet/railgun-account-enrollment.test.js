@@ -1564,6 +1564,24 @@ test('legacy enrollment cannot open relay custody or create its files', async ()
   await expect(entry.openRelayRecoveryStore()).rejects.toThrow();
   expect(rename).not.toHaveBeenCalled();
   expect(inventory()).toEqual(previous);
+  expect(() => entry.getContext('prover', 'relay-verify')).toThrow();
+  expect(() => entry.getContext('prover', 'relay-signature-verify')).toThrow();
+});
+
+test('relay verifier contexts require a live cooperative fence and fixed purpose', async () => {
+  const entry = await cooperativeOpen(true);
+  const { getPrivacyContext } = require('../networks/privacy-context');
+  for (const purpose of ['relay-verify', 'relay-signature-verify']) {
+    const context = getPrivacyContext(entry.getContext('prover', purpose));
+    expect(context.subject.role).toBe('prover');
+    expect(context.subject.operation).toBe(purpose);
+    expect(context.subject.chainId).toBe(11155111);
+  }
+  expect(() => entry.getContext('prover', 'relay-prove')).toThrow();
+  expect(() => entry.getContext('keystore', 'relay-sign')).toThrow();
+  entry.close();
+  expect(() => entry.getContext('prover', 'relay-verify')).toThrow();
+  expect(() => entry.getContext('prover', 'relay-signature-verify')).toThrow();
 });
 
 test('fenced relay custody gets a dedicated typed floor and survives cold reopening', async () => {

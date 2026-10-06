@@ -723,7 +723,9 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
       active();
       check(
         ['engine', 'storage', 'protocol-rpc'].includes(role) ||
-          (role === 'prover' && ['private-verify', 'poi-verify'].includes(operation))
+          (role === 'prover' &&
+            (['private-verify', 'poi-verify'].includes(operation) ||
+              (fence && ['relay-verify', 'relay-signature-verify'].includes(operation))))
       );
       const next = { ...subject, role };
       delete next.operation;
