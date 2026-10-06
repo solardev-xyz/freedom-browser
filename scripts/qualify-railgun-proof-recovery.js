@@ -1622,6 +1622,10 @@ async function main() {
       assert.equal(BigInt(sentOutput[0].hash), BigInt(preparation.expected.commitment));
       const spentInput = senderView.read.received.find((value) => value.id === inputId);
       assert.equal(BigInt(spentInput.spentTxid), BigInt(FOREIGN_TRANSACTION));
+      // Each public account holds a source and a public store worker, and one
+      // process admits three. A's view is complete, so B and C scan after it closes.
+      await publicAccount.close();
+      publicAccount = null;
       phase = 'foreign-recipient-wallet';
       const keysBeforeRecipient = plain(keysByAccount);
       // B's own authority only: B's owners, B's descriptor and B's key loans.
@@ -1888,7 +1892,7 @@ async function main() {
       };
     }
     phase = 'close';
-    await publicAccount.close();
+    await publicAccount?.close();
     publicAccount = null;
     enrollment.close();
     identity.close();
