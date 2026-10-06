@@ -224,7 +224,7 @@ function rpcReply(method, params, logs) {
   );
   return { number: tag(n), hash: hex(n + 1), parentHash: hex(n) };
 }
-function assertRpc(rows) {
+function assertRpc(rows, mode = 'ready') {
   const counts = {};
   for (const row of rows) {
     const key =
@@ -244,19 +244,28 @@ function assertRpc(rows) {
     ['eth_getBlockByNumber:' + tag(5944710)]: 2,
     ['eth_getBlockByNumber:' + tag(5944720)]: 2,
   };
+  if (mode === 'signing') {
+    // Opening only, no proof snapshot (signing run a): 25 requests.
+    assert.deepEqual(counts, {
+      eth_chainId: 1,
+      eth_getLogs: 1,
+      ...Object.fromEntries(
+        ['finalized', tag(FROM), tag(ANCHOR), tag(FROM - 1)].map((v) => [
+          'eth_getBlockByNumber:' + v,
+          4,
+        ])
+      ),
+      ['eth_getBlockByNumber:' + tag(TO)]: 5,
+      ['eth_getBlockByNumber:' + tag(5944710)]: 1,
+      ['eth_getBlockByNumber:' + tag(5944720)]: 1,
+    });
+    assert.equal(rows.length, 25);
+    return counts;
+  }
   // Proof A reads snapshot storage, not RPC: signed run a observed exactly the
   // ready resume's requests, so both modes share this exact map.
   assert.deepEqual(counts, expected);
   assert.equal(rows.length, 49);
-  return counts;
-}
-function rpcRows(rows) {
-  const counts = {};
-  for (const row of rows) {
-    const key =
-      row.method === 'eth_getBlockByNumber' ? row.method + ':' + row.params[0] : row.method;
-    counts[key] = (counts[key] || 0) + 1;
-  }
   return counts;
 }
 function installServices(logs) {
@@ -669,13 +678,12 @@ function installJobs(firstRecordSha256, mode = 'ready') {
           assert.equal(row.methods['relay-proof-record'], row.recordStream.chunks);
         }
       }
-      // Proof A shares the completed snapshot's read-only worker (signed run a).
-      // A signing discard never opens a proof snapshot; its workers are observed.
-      if (mode !== 'signing')
-        assert.deepEqual(
-          workers.map((v) => v.readOnly),
-          [false, false, true]
-        );
+      // Proof A shares the completed snapshot's read-only worker (signed run a);
+      // a signing discard uses the same opening workers (signing run a).
+      assert.deepEqual(
+        workers.map((v) => v.readOnly),
+        [false, false, true]
+      );
       assert.ok(workers.every((v) => v.closedObserved));
     },
     restore() {
@@ -1065,8 +1073,7 @@ async function execute(admitted) {
       payloadDigest: report.payloadSha256,
     });
   if (signed) assert.equal(jobs.rows.at(-1).recordStream.sha256, report.recordSha256);
-  // A signing discard opens no proof snapshot; its RPC map is observed first.
-  const rpc = signing ? services.rows.length : assertRpc(services.rows);
+  const rpc = assertRpc(services.rows, mode);
   assert.deepEqual(sourceSnapshot(), before);
   verify();
   bounded(
@@ -1099,10 +1106,7 @@ async function execute(admitted) {
         originalJobs: jobs.rows,
         originalStorageWorkers: jobs.workers,
         syntheticRpc: rpc,
-        syntheticRpcRequests: signing ? services.rows.length : 49,
-        ...(signing
-          ? { syntheticRpcObserved: rpcRows(services.rows), storageWorkersObserved: true }
-          : {}),
+        syntheticRpcRequests: signing ? 25 : 49,
         syntheticRefusedAttempts: services.refusedAttempts,
         relaySigningOperations: 0,
         proofProducerOperations: signed ? 1 : 0,

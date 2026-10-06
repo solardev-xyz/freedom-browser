@@ -18,14 +18,10 @@ const SIGNING_STOP = 'synthetic-list-signing-stop';
 const SCENARIOS = ['synthetic-list', SIGNED_STOP, TRANSACT, SIGNING_STOP];
 // Signing stop: the request is aborted when the relay-sign key reply is
 // observed, before the signature exists. Only that one utility may then close
-// through cancellation, with these source-observed causes (railgun-process.js
-// stop(): context/session revocation or close), SIGTERM exit 15, no
-// escalation or disconnection and no result.
-const SIGNING_CANCEL_CAUSES = [
-  'PRIVACY_CONTEXT_REVOKED',
-  'RAILGUN_SESSION_REVOKED',
-  'RAILGUN_PROCESS_CLOSED',
-];
+// through cancellation: the request abort revokes its privacy context
+// (railgun-process.js stop('PRIVACY_CONTEXT_REVOKED'), observed in signing run
+// a), SIGTERM exit 15, no escalation or disconnection and no result.
+const SIGNING_CANCEL_CAUSES = ['PRIVACY_CONTEXT_REVOKED'];
 let signingReplyStop = null;
 const TXID_CONTEXT = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
 // Local failure diagnostics only: the last reached fixture step.
@@ -1079,11 +1075,11 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
     ...[ANCHOR, 5900000, THROUGH, 5899999].map((v) => '0x' + v.toString(16)),
   ];
   assert.deepEqual(Object.keys(headers).sort(), [...keys].sort());
-  // A signed stop refuses before the final canonical refresh: three uniform
-  // source reads, first observed in signed-stop run a and now exact.
-  // A Transact operation follows staging but repeats the Shield operation's
-  // four source passes (observed in Transact run d, now exact).
-  const reads = scenario === SIGNED_STOP ? 3 : 4;
+  // Signed and signing stops refuse before the final canonical refresh: three
+  // uniform source reads (signed run a, signing run a), now exact. A Transact
+  // operation follows staging but repeats the Shield operation's four source
+  // passes (Transact run d), now exact.
+  const reads = [SIGNED_STOP, SIGNING_STOP].includes(scenario) ? 3 : 4;
   assert.deepEqual(headers, Object.fromEntries(keys.map((key) => [key, reads])));
   // Preflight completes before signing, so its protocol requests are unchanged.
   assert.deepEqual(protocol, {
@@ -1094,7 +1090,7 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
     eth_call: 8,
   });
   assert.equal(requests.length, 19 + 5 * reads);
-  assert.equal(requests.length, scenario === SIGNED_STOP ? 34 : 39);
+  assert.equal(requests.length, [SIGNED_STOP, SIGNING_STOP].includes(scenario) ? 34 : 39);
   return { headers, protocol };
 }
 function assertAudit(value, auditCase, recordText, pair) {
@@ -1384,12 +1380,14 @@ async function finishSigningStop({
     'status',
   ]);
   assert.equal(result.status, 'recovery-required');
+  assert.equal(result.stage, 'signer');
   assert.equal(result.signingAttempted, true);
   assert.equal(result.signatureSaved, false);
   assert.match(result.operationId, /^[0-9a-f]{64}$/);
   assert.ok(performance.now() - operationStart < 180000);
   services.assertClosed();
   const operationRequests = services.requests.slice(rpcBefore);
+  const rpc = assertOperationRpc(operationRequests, SIGNING_STOP);
   const stopped = await reservations.readRelay(recovery, result.operationId);
   assert.equal(stopped.record.state, 'signing-local');
   assert.equal(stopped.entry.state, 'signing-local');
@@ -1450,6 +1448,7 @@ async function finishSigningStop({
     ],
     membershipControls: helper.controls,
     selectedServiceMethods: [...services.poiMethods],
+    syntheticOperationRpc: rpc,
     syntheticOperationRequests: operationRequests.length,
     recoverySequenceDelta: 2,
     stopKind: 'controlled-signing-reply-cancellation',
