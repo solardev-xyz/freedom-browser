@@ -65,7 +65,15 @@ async function main() {
     assert.ok(['shield-transfer', 'transact-unshield'].includes(kohakuMode));
     assert.equal(snapshotFlag, undefined);
   } else assert.equal(privateAdapterDenied, false);
+  const publicAdapterFlag = process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_ADAPTER;
+  assert.ok(publicAdapterFlag === undefined || publicAdapterFlag === '1');
+  const publicAdapterMode = publicAdapterFlag === '1';
   const publicShield = kohakuMode === 'public-shield';
+  if (publicAdapterMode) {
+    assert.equal(publicShield, true);
+    assert.equal(snapshotFlag, undefined);
+    assert.equal(privateAdapterMode, false);
+  }
   if (publicShield) {
     assert.equal(composition, 'enrolled');
     assert.equal(proverArchive, undefined);
@@ -98,10 +106,16 @@ async function main() {
   }
   const kohaku = kohakuMode
     ? publicShield
-      ? require('./fixtures/railgun-kohaku-public-integration').install(
-          process.env.FREEDOM_RAILGUN_SHIELD_BYTECODES,
-          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE
-        )
+      ? publicAdapterMode
+        ? require('./fixtures/railgun-kohaku-public-integration').install(
+            process.env.FREEDOM_RAILGUN_SHIELD_BYTECODES,
+            process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE,
+            { publicAdapter: true }
+          )
+        : require('./fixtures/railgun-kohaku-public-integration').install(
+            process.env.FREEDOM_RAILGUN_SHIELD_BYTECODES,
+            process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE
+          )
       : require('./fixtures/railgun-kohaku-integration').install(kohakuMode)
     : null;
   let kohakuQualification;
@@ -618,6 +632,18 @@ async function main() {
           'scripts/fixtures/railgun-kohaku-private-conformance.js',
           'scripts/fixtures/railgun-kohaku-private-native.js',
           'scripts/fixtures/railgun-kohaku-private-native.test.js',
+        ]
+      : []),
+    ...(publicAdapterMode
+      ? [
+          'src/main/wallet/railgun-kohaku-public-host.js',
+          'src/main/wallet/railgun-kohaku-public-host.test.js',
+          'src/main/wallet/railgun-kohaku-public-adapter.js',
+          'src/main/wallet/railgun-kohaku-public-adapter.test.js',
+          'scripts/fixtures/railgun-kohaku-public-contract.d.ts',
+          'scripts/fixtures/railgun-kohaku-public-conformance.js',
+          'scripts/fixtures/railgun-kohaku-public-integration.test.js',
+          'scripts/qualify-railgun-wallet-journal.test.js',
         ]
       : []),
     ...(snapshotProbe
@@ -2208,6 +2234,68 @@ async function main() {
         assert.equal(kohakuQualification.productionRestrictedPrivateHost, true);
         assert.equal(kohakuQualification.productionRestrictedPrivateAdapter, true);
         assert.equal(kohakuQualification.genericHostQualified, false);
+      } else if (publicAdapterMode) {
+        const adapter = kohakuQualification.publicAdapterQualification;
+        assert.equal(adapter.readyReads.calls, 13);
+        assert.equal(adapter.preparedReads.calls, 3);
+        assert.equal(adapter.closedReads.calls, 3);
+        assert.equal(adapter.readyReads.genuineOwnedSnapshotCompared, true);
+        assert.equal(adapter.readyReads.detachedMutationIsolation, true);
+        for (const reads of [adapter.readyReads, adapter.preparedReads, adapter.closedReads])
+          assert.equal(reads.noAdditionalMeasuredWork, true);
+        assert.equal(adapter.readyReads.eligibilityGranted, false);
+        assert.equal(adapter.readyReads.genericHostQualified, false);
+        assert.equal(adapter.originalSettlement.originalValueOrErrorIdentity, true);
+        assert.equal(adapter.originalSettlement.genuinePublicFacadeTokenDistinct, true);
+        assert.equal(
+          adapter.originalSettlement.acknowledgedValueEqualsRequest,
+          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE === 'acknowledged'
+        );
+        assert.equal(
+          adapter.originalSettlement.journalErrorCode,
+          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE === 'lost-response'
+            ? 'PRIVATE_BROADCAST_UNCERTAIN'
+            : null
+        );
+        assert.equal(
+          adapter.originalSettlement.canonicalUncertaintyHash,
+          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE === 'lost-response'
+        );
+        assert.equal(adapter.genuineAdoptingHost, true);
+        assert.equal(adapter.readyOnlyReads, true);
+        assert.equal(adapter.originalPublicErrorsRemainRejected, true);
+        assert.equal(adapter.privateOutcomeUnionUsed, false);
+        assert.equal(adapter.facadeInternalsExposed, false);
+        assert.equal(adapter.sourceDerivedNoAdditionalRpcKeysJobs, true);
+        assert.equal(
+          adapter.heldOutwardBeforeCallbackRelease,
+          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE === 'review-cancelled'
+        );
+        assert.equal(
+          adapter.originalSettlement.status,
+          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE === 'acknowledged'
+            ? 'fulfilled'
+            : 'rejected'
+        );
+        assert.deepEqual(
+          adapter.originalSettlement.fields,
+          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE === 'acknowledged'
+            ? {
+                broadcastSource: 'string',
+                chainId: 'number',
+                explorerUrl: 'object',
+                from: 'string',
+                hash: 'string',
+                nonce: 'number',
+                to: 'string',
+                value: 'string',
+              }
+            : process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE === 'lost-response'
+              ? { code: 'string', submissionStatus: 'string', transactionHash: 'string' }
+              : { code: 'string' }
+        );
+        assert.deepEqual(kohakuQualification.contract.reads, []);
+        assert.equal(kohakuQualification.contract.forwarding.checkedCalls, 1);
       } else {
         require('./fixtures/railgun-kohaku-contract-conformance').assertInstanceReadVector(
           kohakuQualification.contract.reads,

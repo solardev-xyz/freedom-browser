@@ -40,7 +40,101 @@ async function bounded(promise, label, milliseconds = 150000) {
     clearTimeout(timer);
   }
 }
-exports.install = function install(bytecodesAbsolutePath, mode) {
+async function qualifyPublicAdapterReads({ adapter, account, owners, measure }) {
+  const wallet = require('../../src/main/wallet/railgun-account-wallet');
+  const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
+  const clone = (value) =>
+    Array.isArray(value)
+      ? value.map(clone)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]))
+        : value;
+  const expected = clone(baseline);
+  assert.equal(expected.read.instanceId, owners.identity.descriptor.instanceId);
+  assert.equal(Object.isFrozen(adapter), true);
+  assert.deepEqual(
+    Object.keys(adapter).sort(),
+    [
+      'balance',
+      'close',
+      'closed',
+      'instanceId',
+      'notes',
+      'prepareShield',
+      'provenance',
+      'signal',
+    ].sort()
+  );
+  assert.equal(adapter.provenance, 'host-supplied');
+  const before = measure();
+  const calls = [
+    ['instanceId', []],
+    ['balance', []],
+    ['notes', []],
+    ['notes', [undefined, true]],
+    ['balance', [[]]],
+    ['notes', [[], true]],
+    ['balance', [[{ __type: 'native' }]]],
+  ];
+  assert.ok(expected.read.received.length >= 3, 'Fixed genuine fixture has three read examples');
+  for (const asset of expected.read.received.slice(0, 3).map((note) => note.asset)) {
+    const filter = {
+      ...asset,
+      ...(asset.contract ? { contract: '0x' + asset.contract.slice(2).toUpperCase() } : {}),
+    };
+    calls.push(['balance', [[filter]]], ['notes', [[filter], true]]);
+  }
+  for (const [method, args] of calls) {
+    const pending = adapter[method](...args),
+      value = await pending;
+    contractOracle.assertReadProjection(expected.read, {
+      method,
+      args,
+      value,
+      promiseReturned: pending instanceof Promise,
+    });
+    if (Array.isArray(value)) {
+      assert.equal(Object.isFrozen(value), false);
+      for (const item of value) {
+        const amount = item.amount + 1n;
+        item.amount = amount;
+        assert.equal(item.amount, amount);
+        item.asset.__type = 'fixture-mutated';
+        assert.equal(item.asset.__type, 'fixture-mutated');
+      }
+      value.length = 0;
+      assert.equal(value.length, 0);
+    }
+    assert.deepEqual(wallet.readRailgunAccountOwnedNotes(account, owners), expected);
+    assert.deepEqual(baseline, expected);
+    assert.equal(owners.identity.descriptor.instanceId, expected.read.instanceId);
+    assert.deepEqual(measure(), before, 'Public adapter reads added measured work');
+  }
+  return Object.freeze({
+    calls: 13,
+    genuineOwnedSnapshotCompared: true,
+    detachedMutationIsolation: true,
+    noAdditionalMeasuredWork: true,
+    eligibilityGranted: false,
+    genericHostQualified: false,
+  });
+}
+async function assertPublicAdapterReadRefusals(adapter, measure) {
+  const before = measure();
+  for (const method of ['instanceId', 'balance', 'notes'])
+    await assert.rejects(adapter[method](), { code: 'RAILGUN_KOHAKU_PUBLIC_ADAPTER_REFUSED' });
+  assert.deepEqual(measure(), before, 'Public adapter refused reads added work');
+  return Object.freeze({ calls: 3, noAdditionalMeasuredWork: true });
+}
+exports.qualifyPublicAdapterReads = qualifyPublicAdapterReads;
+exports.assertPublicAdapterReadRefusals = assertPublicAdapterReadRefusals;
+exports.install = function install(bytecodesAbsolutePath, mode, options = {}) {
+  assert.deepEqual(
+    Object.keys(options),
+    Object.hasOwn(options, 'publicAdapter') ? ['publicAdapter'] : []
+  );
+  const publicAdapter = options.publicAdapter === true;
+  assert.ok(options.publicAdapter === undefined || typeof options.publicAdapter === 'boolean');
   assert.equal(installed, false);
   installed = true;
   assert.ok(['acknowledged', 'lost-response', 'review-cancelled'].includes(mode));
@@ -307,6 +401,8 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         tasks = [],
         borrowed = [];
       let contractRead;
+      const adapterHosts = [];
+      let adapterRead, preparedReads, closedReads, originalSettlement;
       let mainAccount,
         plugin,
         expectedIntent,
@@ -331,7 +427,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
       const measureReads = () => ({ ...snapshot(), resources: measureResources() });
       const refused = (promise) =>
         assert.rejects(bounded(promise, 'refused capability', 15000), {
-          code: 'RAILGUN_KOHAKU_REFUSED',
+          code: publicAdapter ? 'RAILGUN_KOHAKU_PUBLIC_ADAPTER_REFUSED' : 'RAILGUN_KOHAKU_REFUSED',
         });
       const compareTransaction = (transaction) => {
         assert.ok(reviewedTransaction && expectedIntent && simulatedTransaction);
@@ -422,6 +518,21 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
       });
       const facade = require('../../src/main/wallet/railgun-kohaku-plugin');
       const settlements = installSettlementObserver('public');
+      let createPublicHost, createPublicAdapter, createAdapterSubmitter;
+      if (publicAdapter) {
+        assert.equal(
+          require.cache[require.resolve('../../src/main/wallet/railgun-kohaku-public-host')],
+          undefined
+        );
+        ({
+          createRailgunKohakuPublicHost: createPublicHost,
+        } = require('../../src/main/wallet/railgun-kohaku-public-host'));
+        ({
+          createRailgunKohakuPublicAdapter: createPublicAdapter,
+          createRailgunKohakuPublicAdapterSubmitter: createAdapterSubmitter,
+        } = require('../../src/main/wallet/railgun-kohaku-public-adapter'));
+      }
+
       const {
         createRailgunKohakuPublicSubmitter,
       } = require('../../src/main/wallet/railgun-kohaku-public-submitter');
@@ -487,6 +598,16 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         ...overrides,
       });
       const adopt = (account, overrides) => {
+        if (publicAdapter) {
+          const actual = options(account, overrides);
+          const { mode: ignoredMode, ...hostOptions } = actual;
+          assert.equal(ignoredMode, 'public');
+          const host = createPublicHost(hostOptions);
+          adapterHosts.push(host);
+          const instance = createPublicAdapter({ host, signal: actual.signal });
+          plugins.push(instance);
+          return instance;
+        }
         const instance = facade.createRailgunKohakuPlugin(options(account, overrides));
         plugins.push(instance);
         return instance;
@@ -579,6 +700,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         }
         assert.equal(claim, undefined);
         assert.equal(refusal?.code, 'RAILGUN_ACCOUNT_PHASE_BUSY');
+        if (publicAdapter) await bounded(cancelling, 'early cancelled preparation outward');
         heldPreparation.release.resolve();
         await bounded(cancelling, 'cancelled preparation outward');
         await bounded(cancelled.closed, 'cancelled preparation drain');
@@ -618,14 +740,24 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
             return true;
           },
         });
-        contractRead = await contracts.qualifyOperationInstance({
-          instance: plugin,
-          account: mainAccount,
-          owners,
-          mode: 'public',
-          measure: measureReads,
-        });
-        const submitter = createRailgunKohakuPublicSubmitter(plugin);
+        if (publicAdapter)
+          adapterRead = await qualifyPublicAdapterReads({
+            adapter: plugin,
+            account: mainAccount,
+            owners,
+            measure: measureReads,
+          });
+        else
+          contractRead = await contracts.qualifyOperationInstance({
+            instance: plugin,
+            account: mainAccount,
+            owners,
+            mode: 'public',
+            measure: measureReads,
+          });
+        const submitter = publicAdapter
+          ? createAdapterSubmitter(plugin)
+          : createRailgunKohakuPublicSubmitter(plugin);
         assert.throws(() => createRailgunKohakuBroadcaster(plugin), {
           code: 'RAILGUN_KOHAKU_REFUSED',
         });
@@ -643,14 +775,21 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         assert.equal(Object.isFrozen(token), true);
         assert.equal(counters.archivedRequests, archivedBeforePublicOperation);
         assert.equal(mainAccount.signal.aborted, true);
-        assert.equal(
-          await bounded(plugin.instanceId(), 'prepared instance identity'),
-          identity.descriptor.instanceId
-        );
+        if (publicAdapter)
+          preparedReads = await assertPublicAdapterReadRefusals(plugin, measureReads);
+        else
+          assert.equal(
+            await bounded(plugin.instanceId(), 'prepared instance identity'),
+            identity.descriptor.instanceId
+          );
         const beforeCopies = snapshot();
         for (const copy of [{ ...token }, JSON.parse(JSON.stringify(token))])
           await refused(submitter.submit(copy));
-        await refused(facade.broadcastRailgunKohakuOperation(plugin, token));
+        if (publicAdapter)
+          await assert.rejects(facade.broadcastRailgunKohakuOperation(plugin, token), {
+            code: 'RAILGUN_KOHAKU_REFUSED',
+          });
+        else await refused(facade.broadcastRailgunKohakuOperation(plugin, token));
         await refused(plugin.notes());
         assert.deepEqual(snapshot(), beforeCopies);
         sendObserver = async (handle, transaction, raw) => {
@@ -668,7 +807,9 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
           assert.equal(JSON.stringify(records).includes(raw), false);
           journalBeforeSend = true;
         };
-        const forwarded = settlements.begin(plugin, token, () => submitter.submit(token));
+        const forwarded = publicAdapter
+          ? settlements.beginHiddenPublic(token, () => submitter.submit(token))
+          : settlements.begin(plugin, token, () => submitter.submit(token));
         const submitting = forwarded.promise.then(
           (result) => ({ result }),
           (error) => ({ error })
@@ -684,6 +825,7 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
           signalController.abort();
           outcome = await bounded(submitting, 'cancelled submit outcome', 25000);
           assert.equal(outcome.error?.code, 'RAILGUN_KOHAKU_REFUSED');
+          if (publicAdapter) originalSettlement = await forwarded.assert({ outcome: 'refused' });
           assert.equal(drained, false);
           assert.deepEqual(attempts, heldAttempts);
           assert.equal(counters.sends, 0);
@@ -732,15 +874,25 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
             });
           });
         }
-        await forwarded.assert({
-          outcome:
-            mode === 'review-cancelled'
-              ? 'refused'
-              : mode === 'lost-response'
-                ? 'uncertain'
-                : 'acknowledged',
-          ...(mode === 'review-cancelled' ? {} : { hash: sentHash }),
-        });
+        const observedSettlement =
+          publicAdapter && mode === 'review-cancelled'
+            ? originalSettlement
+            : await forwarded.assert({
+                outcome:
+                  mode === 'review-cancelled'
+                    ? 'refused'
+                    : mode === 'lost-response'
+                      ? 'uncertain'
+                      : 'acknowledged',
+                ...(mode === 'review-cancelled' ? {} : { hash: sentHash }),
+                ...(publicAdapter && mode === 'acknowledged'
+                  ? { requestedAmount: expectedAmount.toString() }
+                  : {}),
+              });
+        if (publicAdapter) {
+          originalSettlement = observedSettlement;
+          closedReads = await assertPublicAdapterReadRefusals(plugin, measureReads);
+        }
         const beforeReplay = snapshot();
         await refused(submitter.submit(token));
         assert.deepEqual(snapshot(), beforeReplay);
@@ -748,7 +900,8 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         const finalAccount = await reopen();
         const finalPlugin = adopt(finalAccount, { signal: enrollment.signal });
         const beforeForeign = snapshot();
-        await refused(createRailgunKohakuPublicSubmitter(finalPlugin).submit(token));
+        if (publicAdapter) await refused(createAdapterSubmitter(finalPlugin).submit(token));
+        else await refused(createRailgunKohakuPublicSubmitter(finalPlugin).submit(token));
         assert.deepEqual(snapshot(), beforeForeign);
         finalPlugin.close();
         await bounded(finalPlugin.closed, 'fresh facade drain');
@@ -767,7 +920,27 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
         assert.ok(borrowed.every((key) => key.every((byte) => byte === 0)));
         return {
           mode,
-          contract: { reads: [contractRead], forwarding: settlements.report() },
+          contract: {
+            reads: publicAdapter ? [] : [contractRead],
+            forwarding: settlements.report(),
+          },
+          ...(publicAdapter
+            ? {
+                publicAdapterQualification: {
+                  readyReads: adapterRead,
+                  preparedReads,
+                  closedReads,
+                  originalSettlement,
+                  genuineAdoptingHost: true,
+                  readyOnlyReads: true,
+                  originalPublicErrorsRemainRejected: true,
+                  privateOutcomeUnionUsed: false,
+                  facadeInternalsExposed: false,
+                  heldOutwardBeforeCallbackRelease: mode === 'review-cancelled',
+                  sourceDerivedNoAdditionalRpcKeysJobs: true,
+                },
+              }
+            : {}),
           inputType: 'Shield',
           elapsedMs: Math.round(performance.now() - started),
           productionFacadeAndPublicSubmitter: true,
@@ -836,6 +1009,12 @@ exports.install = function install(bytecodesAbsolutePath, mode) {
             'final facade cleanup'
           )
         );
+        for (const [index, host] of adapterHosts.entries()) {
+          await cleanup('adapter-host.' + index + '.close', () => host.close());
+          await cleanup('adapter-host.' + index + '.closed', () =>
+            bounded(host.closed, 'adopted public host drain')
+          );
+        }
         for (const [index, account] of accounts.entries())
           await cleanup('account.' + index, () =>
             bounded(account.close(), 'final account cleanup')

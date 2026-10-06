@@ -579,6 +579,7 @@ test.each(['private', 'public'])(
       gates: [{ release: { resolve: release } }],
       signalController: { abort },
       plugins: [first, second],
+      adapterHosts: [],
       seedTask: task,
       txid,
       preflightSources: [preflight],
@@ -755,4 +756,125 @@ test('never-settling actual resource barrier produces bounded sticky failure wit
     await Promise.resolve();
     jest.useRealTimers();
   }
+});
+
+function publicAcknowledged() {
+  return {
+    hash,
+    nonce: 0,
+    from: '0x' + 'ab'.repeat(20),
+    to: '0x' + 'cd'.repeat(20),
+    value: '1000',
+    chainId: 11155111,
+    broadcastSource: 'direct',
+    explorerUrl: null,
+  };
+}
+test.each(['acknowledged', 'uncertain', 'refused'])(
+  'hidden public %s keeps original error/value identity with distinct genuine token',
+  async (outcome) => {
+    const result =
+      outcome === 'acknowledged'
+        ? publicAcknowledged()
+        : Object.assign(
+            Error('original'),
+            outcome === 'uncertain'
+              ? {
+                  code: 'PRIVATE_BROADCAST_UNCERTAIN',
+                  transactionHash: hash,
+                  submissionStatus: 'unknown',
+                }
+              : { code: 'RAILGUN_KOHAKU_REFUSED' }
+          );
+    const state = setup('public', () =>
+      outcome === 'acknowledged' ? Promise.resolve(result) : Promise.reject(result)
+    );
+    const token = Object.freeze({ __type: 'publicOperation' });
+    const checked = state.observer.beginHiddenPublic(token, () =>
+      state.adapter(state.operation).then((v) => v)
+    );
+    expect(
+      await checked.assert({
+        outcome,
+        ...(outcome === 'refused' ? {} : { hash }),
+        requestedAmount: '1000',
+      })
+    ).toMatchObject({
+      status: outcome === 'acknowledged' ? 'fulfilled' : 'rejected',
+      originalValueOrErrorIdentity: true,
+      genuinePublicFacadeTokenDistinct: true,
+    });
+    expect(state.facade.assertRailgunKohakuPublicPlugin).toHaveBeenLastCalledWith(state.instance);
+    expect(state.observer.report()).toMatchObject({ delegateCalls: 1, checkedCalls: 1 });
+    await state.observer.close();
+  }
+);
+test.each(['copy', 'void', 'schema', 'wrong-value'])(
+  'hidden public detects %s settlement mutation',
+  async (kind) => {
+    const result = publicAcknowledged();
+    if (kind === 'schema') result.nonce = '0';
+    if (kind === 'wrong-value') result.value = '1001';
+    const state = setup('public', () => Promise.resolve(result));
+    const checked = state.observer.beginHiddenPublic(
+      Object.freeze({ __type: 'publicOperation' }),
+      () =>
+        state
+          .adapter(state.operation)
+          .then((v) => (kind === 'copy' ? { ...v } : kind === 'void' ? undefined : v))
+    );
+    await expect(
+      checked.assert({ outcome: 'acknowledged', hash, requestedAmount: '1000' })
+    ).rejects.toThrow();
+    await expect(state.observer.close()).rejects.toThrow();
+  }
+);
+test('hidden public original rejection cannot be fulfilled as a private union', async () => {
+  const error = Object.assign(Error('unknown'), {
+    code: 'PRIVATE_BROADCAST_UNCERTAIN',
+    transactionHash: hash,
+    submissionStatus: 'unknown',
+  });
+  const state = setup('public', () => Promise.reject(error));
+  const checked = state.observer.beginHiddenPublic(
+    Object.freeze({ __type: 'publicOperation' }),
+    () =>
+      state.adapter(state.operation).catch((reason) => ({
+        transactionHash: reason.transactionHash,
+        submissionStatus: 'unknown',
+      }))
+  );
+  await expect(checked.assert({ outcome: 'uncertain', hash })).rejects.toThrow();
+  await expect(state.observer.close()).rejects.toThrow();
+});
+test('hidden public refuses exposing the facade token as portable token', async () => {
+  const state = setup('public', () => Promise.resolve(publicAcknowledged()));
+  expect(() =>
+    state.observer.beginHiddenPublic(state.operation, () => state.adapter(state.operation))
+  ).toThrow('tokens differ');
+  await expect(state.observer.close()).rejects.toThrow();
+});
+test('hidden public assertion waits for outward settlement, not delegate settlement alone', async () => {
+  const held = gate(),
+    value = publicAcknowledged(),
+    state = setup('public', () => Promise.resolve(value));
+  const checked = state.observer.beginHiddenPublic(
+    Object.freeze({ __type: 'publicOperation' }),
+    () => {
+      state.adapter(state.operation);
+      return held.promise;
+    }
+  );
+  let checkedDone = false;
+  const assertion = checked
+    .assert({ outcome: 'acknowledged', hash, requestedAmount: '1000' })
+    .then(() => {
+      checkedDone = true;
+    });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(checkedDone).toBe(false);
+  held.resolve(value);
+  await assertion;
+  await state.observer.close();
 });

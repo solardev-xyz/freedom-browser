@@ -617,3 +617,110 @@ describe.each(['from', 'to'])('acknowledged %s address shape', (field) => {
     });
   });
 });
+
+function unobservablePromise(kind) {
+  const held = deferred();
+  let entries = 0;
+  const descriptor = {
+    get() {
+      entries++;
+      throw Error('unobservable host work');
+    },
+  };
+  if (kind === 'constructor') Object.defineProperty(held.promise, 'constructor', descriptor);
+  else
+    Object.defineProperty(held.promise, 'constructor', {
+      value: Object.defineProperty({}, Symbol.species, descriptor),
+    });
+  return { held, entries: () => entries };
+}
+async function closedState(instance) {
+  let state = 'pending';
+  instance.closed.then(
+    () => {
+      state = 'fulfilled';
+    },
+    (error) => {
+      state = error.code;
+    }
+  );
+  await tick();
+  return state;
+}
+test.each([
+  ['constructor', 'prepareTransfer'],
+  ['species', 'prepareTransfer'],
+  ['constructor', 'broadcast'],
+  ['species', 'broadcast'],
+  ['constructor', 'instanceId'],
+  ['species', 'instanceId'],
+])('unobservable %s promise from %s refuses reuse and rejects drainage', async (kind, method) => {
+  const f = fixture(),
+    bad = unobservablePromise(kind);
+  let callbackEntries = 0;
+  f.host[method] = () => {
+    callbackEntries++;
+    return bad.held.promise;
+  };
+  f.open();
+  const result =
+    method === 'broadcast'
+      ? broadcaster(f.instance).broadcast(await f.prepare())
+      : method === 'instanceId'
+        ? f.instance.instanceId()
+        : f.prepare();
+  await expect(result).rejects.toMatchObject({ code: CODE });
+  expect(callbackEntries).toBe(1);
+  expect(bad.entries()).toBe(1);
+  expect(f.instance.signal.aborted).toBe(true);
+  expect(f.calls.filter((call) => call.method === 'close')).toHaveLength(1);
+  expect(await closedState(f.instance)).toBe(CODE);
+  await expect(f.prepare()).rejects.toMatchObject({ code: CODE });
+  expect(callbackEntries).toBe(1);
+  // A later host settlement cannot turn failed observation into successful drain.
+  bad.held.resolve({});
+  expect(await closedState(f.instance)).toBe(CODE);
+});
+test.each(['constructor', 'species'])(
+  'unobservable %s close return preserves acknowledged identity and rejects drainage',
+  async (kind) => {
+    const f = fixture(),
+      bad = unobservablePromise(kind),
+      close = f.host.close;
+    f.host.close = () => {
+      close();
+      return bad.held.promise;
+    };
+    f.open();
+    const token = await f.prepare();
+    expect(await broadcaster(f.instance).broadcast(token)).toBe(f.acknowledged);
+    expect(await closedState(f.instance)).toBe(CODE);
+    expect(bad.entries()).toBe(1);
+    expect(f.calls.filter((call) => call.method === 'close')).toHaveLength(1);
+    await expect(broadcaster(f.instance).broadcast(token)).rejects.toMatchObject({ code: CODE });
+    bad.held.resolve();
+    expect(await closedState(f.instance)).toBe(CODE);
+  }
+);
+test('unobservable work still waits for other admitted observable reads and host closure', async () => {
+  const f = fixture(),
+    held = deferred(),
+    bad = unobservablePromise('species');
+  f.host.instanceId = () => held.promise;
+  f.host.balance = () => bad.held.promise;
+  f.host.close = () => {
+    f.calls.push({ method: 'close' });
+  };
+  f.open();
+  const read = f.instance.instanceId();
+  const readRejection = expect(read).rejects.toMatchObject({ code: CODE });
+  await expect(f.instance.balance()).rejects.toMatchObject({ code: CODE });
+  expect(f.instance.signal.aborted).toBe(true);
+  await readRejection;
+  expect(await closedState(f.instance)).toBe('pending');
+  f.drain.resolve();
+  expect(await closedState(f.instance)).toBe('pending');
+  held.resolve(INSTANCE);
+  expect(await closedState(f.instance)).toBe(CODE);
+  bad.held.resolve();
+});

@@ -124,7 +124,8 @@ function installSettlementObserver(lane) {
     refused: 0,
     unresolved: 0,
   };
-  let active = true;
+  let active = true,
+    hiddenPublicUsed = false;
   const settle = (promise) =>
     Promise.resolve(promise).then(
       (value) => ({
@@ -178,6 +179,79 @@ function installSettlementObserver(lane) {
         },
       });
     },
+    beginHiddenPublic(operation, invoke) {
+      assert.equal(active, true);
+      assert.equal(lane, 'public');
+      hiddenPublicUsed = true;
+      oracle.assertOpaqueOperationShape(operation, 'public');
+      const index = records.length;
+      const promise = invoke();
+      const caller = settle(promise);
+      pending.push(caller);
+      assert.equal(records.length, index + 1, 'Exactly one hidden genuine public delegate');
+      const delegated = records[index];
+      facade.assertRailgunKohakuPublicPlugin(delegated.instance);
+      oracle.assertOpaqueOperationShape(delegated.operation, 'public');
+      assert.notEqual(delegated.operation, operation, 'Portable and genuine facade tokens differ');
+      let checked = false;
+      return Object.freeze({
+        promise,
+        async assert(expected) {
+          assert.equal(checked, false);
+          const actual = await caller,
+            source = await delegated.settled;
+          oracle.assertForwardedSettlement(actual, source, { ...expected, lane });
+          const value = actual.status === 'fulfilled' ? actual.value : actual.reason;
+          const fields = Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => {
+                const descriptor = Object.getOwnPropertyDescriptor(value, key);
+                assert.ok(Object.hasOwn(descriptor, 'value'));
+                return [key, typeof descriptor.value];
+              })
+          );
+          assert.deepEqual(
+            fields,
+            expected.outcome === 'acknowledged'
+              ? {
+                  broadcastSource: 'string',
+                  chainId: 'number',
+                  explorerUrl: 'object',
+                  from: 'string',
+                  hash: 'string',
+                  nonce: 'number',
+                  to: 'string',
+                  value: 'string',
+                }
+              : expected.outcome === 'uncertain'
+                ? {
+                    code: 'string',
+                    submissionStatus: 'string',
+                    transactionHash: 'string',
+                  }
+                : { code: 'string' }
+          );
+          if (expected.outcome === 'acknowledged') {
+            assert.equal(typeof expected.requestedAmount, 'string');
+            assert.equal(value.value, expected.requestedAmount);
+            assert.equal(value.explorerUrl, null);
+          }
+          checked = true;
+          counts.checkedCalls++;
+          counts[expected.outcome]++;
+          return Object.freeze({
+            acknowledgedValueEqualsRequest: expected.outcome === 'acknowledged',
+            journalErrorCode: expected.outcome === 'uncertain' ? value.code : null,
+            canonicalUncertaintyHash: expected.outcome === 'uncertain',
+            status: actual.status,
+            fields: Object.freeze(fields),
+            originalValueOrErrorIdentity: true,
+            genuinePublicFacadeTokenDistinct: true,
+          });
+        },
+      });
+    },
     report: () => ({ ...counts }),
     async close() {
       if (!active) return;
@@ -188,6 +262,7 @@ function installSettlementObserver(lane) {
       } finally {
         await boundedDrain(Promise.all(pending), 'kohaku-contract.settlements');
         assert.equal(counts.delegateCalls, counts.delegateSettlements);
+        if (hiddenPublicUsed) assert.equal(counts.delegateCalls, counts.checkedCalls);
         records.length = 0;
         pending.length = 0;
       }

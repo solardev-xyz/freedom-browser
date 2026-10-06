@@ -1,4 +1,4 @@
-/** Restricted host-relative transaction interface. Trusted host code owns all
+/** Restricted public Shield trusted-host interface. Trusted host code owns all
  * cryptography, durable state and authority; this adapter issues none of those.
  */
 const assert = require('assert/strict');
@@ -12,10 +12,14 @@ const MAX = BigInt(pins.maxQualificationAmount),
   U120 = 1n << 120n;
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const refusal = () =>
-  Object.assign(new Error('Kohaku private adapter unavailable'), {
-    code: 'RAILGUN_KOHAKU_PRIVATE_ADAPTER_REFUSED',
+  Object.assign(new Error('Kohaku public adapter unavailable'), {
+    code: 'RAILGUN_KOHAKU_PUBLIC_ADAPTER_REFUSED',
   });
-const recovery = () => Object.freeze({ status: 'recovery-required', stage: 'adapter-contract' });
+const contract = () =>
+  Object.assign(new Error('Kohaku public submission contract failed'), {
+    code: 'RAILGUN_KOHAKU_PUBLIC_ADAPTER_CONTRACT',
+    submissionMayHaveOccurred: true,
+  });
 function shape(value, keys) {
   assert.ok(value && !isProxy(value) && Object.getPrototypeOf(value) === Object.prototype);
   assert.deepEqual(Reflect.ownKeys(value).sort(), [...keys].sort());
@@ -138,100 +142,39 @@ function resultRead(method, value) {
     };
   });
 }
-function input(value, recipient, options, unshield) {
-  shape(value, ['asset', 'amount', 'noteId']);
-  const copiedAsset = asset(value.asset);
-  assert.equal(copiedAsset.__type, 'erc20');
+function input(value, to) {
+  shape(value, ['asset', 'amount']);
+  shape(value.asset, ['__type']);
+  assert.equal(value.asset.__type, 'native');
   assert.ok(typeof value.amount === 'bigint' && value.amount > 0n && value.amount <= MAX);
-  assert.equal(typeof value.noteId, 'string');
-  assert.match(value.noteId, /^(0|[1-9][0-9]{0,2}):(0|[1-9][0-9]{0,4})$/);
-  const [tree, position] = value.noteId.split(':').map(Number);
-  assert.ok(tree < 256 && position < 65536);
-  if (unshield) {
-    hex(recipient, 40);
-    assert.ok(BigInt(recipient) > 0n);
-    if (options !== undefined) shape(options, []);
-  } else resultRead('instanceId', recipient);
-  return [
-    Object.freeze({
-      asset: Object.freeze(copiedAsset),
-      amount: value.amount,
-      noteId: value.noteId,
-    }),
-    recipient,
-    ...(unshield ? [options === undefined ? undefined : Object.freeze({})] : []),
-  ];
+  if (to !== undefined) resultRead('instanceId', to);
+  return Object.freeze({ asset: Object.freeze({ __type: 'native' }), amount: value.amount });
 }
-function outcome(value) {
-  assert.ok(value && !isProxy(value));
-  if (Object.hasOwn(value, 'transactionHash')) {
-    shape(value, ['transactionHash', 'submissionStatus']);
-    assert.match(value.transactionHash, /^0x[0-9a-f]{64}$/);
-    assert.equal(value.submissionStatus, 'unknown');
-  } else if (Object.hasOwn(value, 'status')) {
-    shape(value, ['status', 'stage']);
-    assert.equal(value.status, 'recovery-required');
-    assert.ok(
-      [
-        'completion',
-        'recovery',
-        'proof',
-        'preflight',
-        'eoa',
-        'submission',
-        'kohaku',
-        'review-draining',
-      ].includes(value.stage)
-    );
-  } else {
-    shape(value, [
-      'hash',
-      'nonce',
-      'from',
-      'to',
-      'value',
-      'chainId',
-      'broadcastSource',
-      'explorerUrl',
-    ]);
-    assert.match(value.hash, /^0x[0-9a-f]{64}$/);
-    getAddress(hex(value.from, 40));
-    getAddress(hex(value.to, 40));
-    assert.ok(Number.isSafeInteger(value.nonce) && value.nonce >= 0);
-    assert.equal(value.value, '0');
-    assert.equal(value.chainId, pins.chainId);
-    assert.equal(value.broadcastSource, 'direct');
-    if (value.explorerUrl !== null) {
-      assert.ok(typeof value.explorerUrl === 'string' && value.explorerUrl.length <= 4096);
-      assert.equal(new URL(value.explorerUrl).protocol, 'https:');
-    }
+function acknowledged(value, expectedAmount) {
+  shape(value, [
+    'hash',
+    'nonce',
+    'from',
+    'to',
+    'value',
+    'chainId',
+    'broadcastSource',
+    'explorerUrl',
+  ]);
+  assert.match(value.hash, /^0x[0-9a-f]{64}$/);
+  getAddress(hex(value.from, 40));
+  getAddress(hex(value.to, 40));
+  assert.ok(Number.isSafeInteger(value.nonce) && value.nonce >= 0);
+  assert.equal(value.value, expectedAmount);
+  assert.equal(value.chainId, pins.chainId);
+  assert.equal(value.broadcastSource, 'direct');
+  if (value.explorerUrl !== null) {
+    assert.ok(typeof value.explorerUrl === 'string' && value.explorerUrl.length <= 4096);
+    assert.equal(new URL(value.explorerUrl).protocol, 'https:');
   }
-  // Preserve the original host settlement identity; shape is not authority.
   return value;
 }
-function checkedOutcome(value) {
-  try {
-    return outcome(value);
-  } catch {
-    // A single canonical own-data hash is the only uncertainty we can salvage.
-    // Never invoke accessors or choose between conflicting hash fields.
-    if (value && !isProxy(value) && Object.getPrototypeOf(value) === Object.prototype) {
-      const hash = Object.getOwnPropertyDescriptor(value, 'hash');
-      const transactionHash = Object.getOwnPropertyDescriptor(value, 'transactionHash');
-      const one =
-        hash && !transactionHash ? hash : transactionHash && !hash ? transactionHash : null;
-      if (
-        one &&
-        Object.hasOwn(one, 'value') &&
-        typeof one.value === 'string' &&
-        /^0x[0-9a-f]{64}$/.test(one.value)
-      )
-        return Object.freeze({ transactionHash: one.value, submissionStatus: 'unknown' });
-    }
-    return recovery();
-  }
-}
-function createRailgunKohakuPrivateAdapter(options) {
+function createRailgunKohakuPublicAdapter(options) {
   try {
     return create(options);
   } catch {
@@ -247,54 +190,38 @@ function create(options) {
     'instanceId',
     'balance',
     'notes',
-    'prepareTransfer',
-    'prepareUnshield',
-    'broadcast',
+    'prepareShield',
+    'submit',
     'close',
   ]);
-  assert.ok(
-    signal instanceof AbortSignal &&
-      host.signal instanceof AbortSignal &&
-      !signal.aborted &&
-      !host.signal.aborted
-  );
+  assert.ok(signal instanceof AbortSignal && !signal.aborted);
+  assert.ok(host.signal instanceof AbortSignal && !host.signal.aborted);
   assert.ok(!adopted.has(host));
   const methods = {};
-  for (const name of [
-    'instanceId',
-    'balance',
-    'notes',
-    'prepareTransfer',
-    'prepareUnshield',
-    'broadcast',
-    'close',
-  ]) {
+  for (const name of ['instanceId', 'balance', 'notes', 'prepareShield', 'submit', 'close']) {
     assert.equal(typeof host[name], 'function');
     assert.ok(!isProxy(host[name]));
     methods[name] = host[name];
   }
-  const hostClosed = nativePromise(host.closed),
-    controller = new AbortController();
+  const hostClosed = nativePromise(host.closed);
   const lifetime = AbortSignal.any([signal, host.signal]);
+  const controller = new AbortController(),
+    tasks = new Set(),
+    tokens = new WeakMap();
   let state = 'ready',
     closing = false,
     closeCalled = false,
-    failed = false,
-    hostSettled = false;
-  let resolveClosed, rejectClosed;
+    hostSettled = false,
+    failed = false;
+  let activeToken, expectedAmount, resolveClosed, rejectClosed;
   const closed = new Promise((yes, no) => {
     resolveClosed = yes;
     rejectClosed = no;
   });
   closed.catch(() => {});
-  const aborters = new Set();
-  const tasks = new Set(),
-    tokens = new WeakMap(),
-    handles = new WeakSet();
-  let activeToken;
   const current = () => assert.ok(!closing && !lifetime.aborted);
   function finish() {
-    if (!closing || tasks.size || !hostSettled || !closeCalled) return;
+    if (!closing || !closeCalled || !hostSettled || tasks.size) return;
     lifetime.removeEventListener('abort', close);
     if (failed) rejectClosed(refusal());
     else resolveClosed();
@@ -308,8 +235,8 @@ function create(options) {
     try {
       observe(promise, settled, settled);
     } catch (error) {
-      // Native then can throw while reading a hostile constructor/species. Its
-      // work is unobservable: refuse session reuse and successful drainage.
+      // A hostile constructor/species can prevent native observation. We cannot
+      // establish drainage for that promise: closed must reject, never succeed.
       tasks.delete(promise);
       failed = true;
       close();
@@ -323,75 +250,45 @@ function create(options) {
     if (activeToken) tokens.delete(activeToken);
     activeToken = undefined;
     controller.abort();
-    for (const stop of aborters) stop();
-    aborters.clear();
-    // Mark invocation before calling trusted reentrant host code.
     closeCalled = true;
     try {
-      const value = methods.close.call(host);
-      if (isPromise(value) && !isProxy(value)) track(value);
-      assert.equal(value, undefined);
+      const result = methods.close.call(host);
+      if (isPromise(result) && !isProxy(result)) track(result);
+      assert.equal(result, undefined);
     } catch {
       failed = true;
     }
     finish();
   }
-  adopted.add(host);
-  observe(
-    hostClosed,
-    (value) => {
-      if (value !== undefined) failed = true;
-      hostSettled = true;
-      if (!closing) close();
-      finish();
-    },
-    () => {
-      failed = true;
-      hostSettled = true;
-      close();
-      finish();
-    }
-  );
-  function invoke(
-    method,
-    args,
-    fulfilled,
-    rejected = () => {
-      throw refusal();
-    }
-  ) {
-    // Reserve the whole validation/settlement chain before invoking host code.
+  // Track a real supplied promise BEFORE shape validation. Contract refusal is
+  // outward only: a malformed pending promise still retains logical drainage.
+  function invoke(method, args, fulfilled, rejected, malformed) {
     let yes, no;
     const raw = new Promise((resolve, reject) => {
       yes = resolve;
       no = reject;
     });
     const pending = raw.then((box) => fulfilled(box.value), rejected);
-    tasks.add(pending);
-    const settled = () => {
-      tasks.delete(pending);
-      finish();
-    };
-    observe(pending, settled, settled);
+    track(pending);
+    let supplied;
     try {
-      const supplied = methods[method].apply(host, args);
+      supplied = methods[method].apply(host, args);
+    } catch (error) {
+      no(error);
+      return pending;
+    }
+    try {
       if (isPromise(supplied) && !isProxy(supplied)) track(supplied);
-      observe(nativePromise(supplied), (value) => yes(Object.freeze({ value })), no);
+      nativePromise(supplied);
+      // No Promise resolution with untrusted host data: a late-added then getter
+      // must not run before our own-data validation.
+      observe(supplied, (value) => yes(Object.freeze({ value })), no);
     } catch {
-      no(refusal());
+      // Observation failures are post-admission contract violations, not a
+      // pre-admission refusal. Always settle our own tracked admission promise.
+      no(malformed());
     }
     return pending;
-  }
-  function outward(pending) {
-    let stop;
-    const aborted = new Promise((resolve, reject) => {
-      stop = () => reject(refusal());
-    });
-    aborters.add(stop);
-    const result = Promise.race([pending, aborted]).finally(() => aborters.delete(stop));
-    if (closing) stop();
-    result.catch(() => {});
-    return result;
   }
   function read(method, args) {
     try {
@@ -403,8 +300,10 @@ function create(options) {
         copied.push(args[1]);
       }
       current();
-      return outward(
-        invoke(method, copied, (value) => {
+      return invoke(
+        method,
+        copied,
+        (value) => {
           try {
             const result = resultRead(method, value);
             current();
@@ -412,52 +311,55 @@ function create(options) {
           } catch {
             throw refusal();
           }
-        })
+        },
+        () => {
+          throw refusal();
+        },
+        refusal
       );
     } catch {
       return Promise.reject(refusal());
     }
   }
-  function prepare(method, value, recipient, opts) {
+  function prepareShield(value, to) {
     try {
       current();
       assert.equal(state, 'ready');
       assert.equal(tasks.size, 0);
-      const args = input(value, recipient, opts, method === 'prepareUnshield');
+      const copied = input(value, to);
       current();
+      expectedAmount = copied.amount.toString();
       state = 'preparing';
-      return outward(
-        invoke(
-          method,
-          args,
-          (result) => {
-            try {
-              shape(result, ['handle']);
-              shape(result.handle, []);
-              assert.ok(Object.isFrozen(result.handle) && !handles.has(result.handle));
-              handles.add(result.handle);
-              current();
-              const token = Object.freeze({ __type: 'privateOperation' });
-              tokens.set(token, result.handle);
-              activeToken = token;
-              state = 'prepared';
-              return token;
-            } catch {
-              close();
-              throw refusal();
-            }
-          },
-          () => {
+      return invoke(
+        'prepareShield',
+        [copied, to],
+        (value) => {
+          try {
+            shape(value, ['handle']);
+            shape(value.handle, []);
+            assert.ok(Object.isFrozen(value.handle));
+            current();
+            const token = Object.freeze({ __type: 'publicOperation' });
+            tokens.set(token, value.handle);
+            activeToken = token;
+            state = 'prepared';
+            return token;
+          } catch {
             close();
             throw refusal();
           }
-        )
+        },
+        (error) => {
+          close();
+          throw error;
+        },
+        refusal
       );
     } catch {
       return Promise.reject(refusal());
     }
   }
-  function broadcast(token) {
+  function submit(token) {
     try {
       current();
       assert.equal(state, 'prepared');
@@ -465,21 +367,24 @@ function create(options) {
       const handle = tokens.get(token);
       tokens.delete(token);
       activeToken = undefined;
-      state = 'broadcasting';
+      state = 'submitting';
       return invoke(
-        'broadcast',
+        'submit',
         [handle],
         (value) => {
           try {
-            return checkedOutcome(value);
+            return acknowledged(value, expectedAmount);
+          } catch {
+            throw contract();
           } finally {
             close();
           }
         },
-        () => {
+        (error) => {
           close();
-          throw refusal();
-        }
+          throw error;
+        },
+        contract
       );
     } catch {
       return Promise.reject(refusal());
@@ -489,24 +394,36 @@ function create(options) {
     instanceId: () => read('instanceId', []),
     balance: (assets) => read('balance', [assets]),
     notes: (assets, includeSpent) => read('notes', [assets, includeSpent]),
-    prepareTransfer: (value, to) => prepare('prepareTransfer', value, to),
-    prepareUnshield: (value, to, opts) => prepare('prepareUnshield', value, to, opts),
+    prepareShield,
     provenance: 'host-supplied',
     signal: controller.signal,
-    close,
     closed,
+    close,
   });
-  instances.set(adapter, broadcast);
+  instances.set(adapter, submit);
+  adopted.add(host);
+  observe(
+    hostClosed,
+    (value) => {
+      if (value !== undefined) failed = true;
+      hostSettled = true;
+      close();
+      finish();
+    },
+    () => {
+      failed = true;
+      hostSettled = true;
+      close();
+      finish();
+    }
+  );
   lifetime.addEventListener('abort', close, { once: true });
   if (lifetime.aborted) close();
   return adapter;
 }
-function createRailgunKohakuPrivateAdapterBroadcaster(adapter) {
-  const broadcast = instances.get(adapter);
-  if (!broadcast) throw refusal();
-  return Object.freeze({ broadcast });
+function createRailgunKohakuPublicAdapterSubmitter(adapter) {
+  const submit = instances.get(adapter);
+  if (!submit) throw refusal();
+  return Object.freeze({ submit });
 }
-module.exports = {
-  createRailgunKohakuPrivateAdapter,
-  createRailgunKohakuPrivateAdapterBroadcaster,
-};
+module.exports = { createRailgunKohakuPublicAdapter, createRailgunKohakuPublicAdapterSubmitter };

@@ -336,6 +336,7 @@ test('default-off selected inventory remains exact and cannot load snapshot fixt
       publicShield: false,
       snapshotProbe,
       privateAdapterMode: false,
+      publicAdapterMode: false,
       require: () => {
         throw Error('Unexpected off import');
       },
@@ -446,6 +447,7 @@ test('private adapter inventory is opt-in and includes both bridge and independe
       publicShield: false,
       snapshotProbe: null,
       privateAdapterMode,
+      publicAdapterMode: false,
       require: () => {
         throw Error('Inventory evaluation must not load host or observer');
       },
