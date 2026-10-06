@@ -151,10 +151,12 @@ so an existing account needs a fresh wallet generation.
 
 ## Open questions
 
-1. Native Electron qualification has not run yet. The `foreign` kind of
-   `scripts/qualify-railgun-proof-recovery.js` is written for it: signing,
-   proving and original-signature recovery of a transfer to account 1, the
-   receiver gate on the real intent, and wallet scans by A, B and an
+1. Native Electron qualification ran at `ea9cbdc0`; see the
+   [native archive](qualification/railgun-foreign-recipient-native-2026-10-07/README.md).
+   It covers Shield and Transact inputs, warm and fresh-process restart runs
+   (same and advanced root), and a self-transfer regression. Each foreign case
+   covers signing, proving and original-signature recovery of a transfer to
+   account 1, the receiver gate on the real intent, and wallet scans by A, B and an
    unrelated account 2 enrolled in the same profile, against synthetic chain
    data. With its own owners only, B attributes the note to A's Transact,
    prepares a full unshield and reconstructs its POI input. It does not cover
@@ -171,10 +173,10 @@ so an existing account needs a fresh wallet generation.
 5. Refusing an address that shares only one key with A is stricter than refusing
    only both keys. It is deliberate and can be relaxed if a real use needs it.
 6. The qualification scripts with fixed source lists that cover the witness,
-   receiver job or reconstruction now hash `railgun-private-destination.js`.
-   The exception is `qualify-railgun-wallet-journal.js`, whose test pins its
-   inventory size. The proof-recovery qualifier hashes the whole wallet
-   directory. None of these scripts has been run since.
+   receiver job or reconstruction now hash `railgun-private-destination.js`,
+   including `qualify-railgun-wallet-journal.js` with its pinned inventory size.
+   The proof-recovery qualifier hashes the whole wallet directory. Of these,
+   only the proof-recovery qualifier has run since.
 7. No changelog fragment: this is internal, unshipped work with no UI or IPC.
 8. The destination is any canonical address that is not A's. Nothing checks that
    B is enrolled in the same vault, as with Kohaku's `prepareTransfer(value, to)`.
