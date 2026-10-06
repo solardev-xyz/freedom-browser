@@ -5,7 +5,10 @@
 const assert = require('assert/strict');
 const { getRailgunOwnPoiShape } = require('./railgun-own-poi-shape-data');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
-const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
+const {
+  isRailgunAccountEnrollment,
+  quarantineRailgunAccountEnrollmentCredentials,
+} = require('./railgun-account-enrollment');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const { getRailgunTxidPolicy } = require('./railgun-txid-policy');
@@ -69,7 +72,8 @@ async function captureRailgunOwnWitness(
     roots,
     sourceOutcome,
     rootScope,
-    verificationPhase;
+    verificationPhase,
+    verificationExitUnknown = false;
   const controller = new AbortController();
   try {
     if (submission) {
@@ -600,17 +604,40 @@ async function captureRailgunOwnWitness(
     } finally {
       lifetime.removeEventListener('abort', stop);
     }
-  } catch {
+  } catch (error) {
+    if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') {
+      verificationExitUnknown = true;
+      try {
+        quarantineRailgunAccountEnrollmentCredentials(enrollment);
+      } catch {
+        // Credential cleanup cannot turn an unknown original exit into release.
+      }
+      throw error;
+    }
     return Object.freeze({ status: 'refused', stage, ...(sourceOutcome ? { sourceOutcome } : {}) });
   } finally {
     clearTimeout(timer);
     clearTimeout(tailTimer);
-    controller.abort();
-    verificationPhase?.release();
-    source?.close();
-    roots?.close();
-    rootScope?.close();
-    if (txid) await txid.close();
+    let cleanupError;
+    for (const close of [
+      () => controller.abort(),
+      () => source?.close(),
+      () => roots?.close(),
+      () => rootScope?.close(),
+    ]) {
+      try {
+        close();
+      } catch (error) {
+        cleanupError ||= error;
+      }
+    }
+    try {
+      if (txid) await txid.close();
+    } catch (error) {
+      cleanupError ||= error;
+    }
+    if (!verificationExitUnknown) verificationPhase?.release();
+    assert.ok(verificationExitUnknown || !cleanupError, cleanupError);
   }
 }
 module.exports = {
@@ -636,7 +663,8 @@ module.exports.preflightRailgunOwnTransactPoiMembership = async (options) => {
       ['archive', 'coordinator', 'enrollment', 'selector', 'signal']
     );
     return await captureRailgunOwnWitness(options, true, true, true, undefined, true);
-  } catch {
+  } catch (error) {
+    if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') throw error;
     return Object.freeze({ status: 'refused', stage: 'context' });
   }
 };
@@ -702,7 +730,8 @@ module.exports.captureRailgunOwnTransactPoiMembershipInput = async (options) => 
     assert.equal(result.creatorProvenance.txidPolicy, txidPolicy);
     assert.equal(result.observations.archiveAnchorChecked, true);
     return freeze(result);
-  } catch {
+  } catch (error) {
+    if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') throw error;
     return Object.freeze({ status: 'refused', stage });
   }
 };
@@ -793,7 +822,8 @@ async function preflightRetained(options, input, submissionMode = false) {
       assert.equal(result.creatorProvenance.txidPolicy, txidPolicy);
     } else assert.equal(result.creatorProvenance, undefined);
     return freeze(result);
-  } catch {
+  } catch (error) {
+    if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') throw error;
     return Object.freeze({ status: 'refused', stage });
   }
 }

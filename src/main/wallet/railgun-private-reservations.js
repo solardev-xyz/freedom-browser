@@ -576,7 +576,15 @@ async function createRailgunPrivateReservations({
       completed(result);
       return result;
     } catch (error) {
-      close();
+      if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') {
+        // Fixed trusted verifier outcome: retain this writer and recovery phase.
+        // This only revokes; it grants no caller authority or recovery receipt.
+        try {
+          retain();
+        } catch {
+          /* Preserve the original unknown-exit category. */
+        }
+      } else close();
       throw error;
     } finally {
       clearTimeout(timer);

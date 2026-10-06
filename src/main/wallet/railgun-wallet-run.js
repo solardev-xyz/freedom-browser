@@ -368,7 +368,22 @@ async function runRailgunWalletSnapshot({
           task.signal,
           controller.signal,
         ]);
-        const response = await onIntent(offer, operationSignal, capsule);
+        let response;
+        try {
+          response = await onIntent(offer, operationSignal, capsule);
+        } catch (error) {
+          if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') {
+            // This is the detached provenance child, not the viewing child.
+            // Quarantine before awaiting any remaining viewing-task drainage.
+            unobservedExits.add(identity);
+            try {
+              quarantineRailgunIdentityCredentials(identity);
+            } catch {
+              // Preserve the account-retaining outcome despite cleanup failure.
+            }
+          }
+          throw error;
+        }
         active();
         assert.ok(!operationSignal.aborted);
         assertRailgunIdentity(identity, handle);
@@ -515,7 +530,7 @@ async function runRailgunWalletSnapshot({
       // A missing exit quarantines credential issuance immediately, including
       // sibling identities for this profile/account, while borrowed work drains.
       // The account owner also retains its phase on this distinct outcome.
-      if (task && !exitObserved) {
+      if (task && !exitObserved && !unobservedExits.has(identity)) {
         unobservedExits.add(identity);
         try {
           quarantineRailgunIdentityCredentials(identity);

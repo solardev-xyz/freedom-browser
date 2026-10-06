@@ -1,3 +1,4 @@
+const mockQuarantine = jest.fn();
 const fs = require('fs'),
   os = require('os'),
   path = require('path');
@@ -88,6 +89,7 @@ jest.mock('../identity/vault', () => ({
   getMnemonic: () => (mockVault.signal.aborted ? null : mockMnemonic),
 }));
 jest.mock('./railgun-identity', () => ({
+  quarantineRailgunIdentityCredentials: (...args) => mockQuarantine(...args),
   assertRailgunIdentity: (identity, handle) => {
     if (identity !== mockIdentity || identity.signal.aborted) throw Error('identity');
     if (handle) {
@@ -123,6 +125,7 @@ function bind(index = 0) {
   };
 }
 beforeEach(() => {
+  mockQuarantine.mockReset();
   enrollments = [];
   mockFenceOwners = new Map();
   mockFenceHistory = [];
@@ -1698,3 +1701,19 @@ test.each(['close', 'vault-lock'])(
     expect(key.every((value) => value === 0)).toBe(true);
   }
 );
+
+test('credential quarantine accepts only original enrolled instances, including closed originals', async () => {
+  const {
+    quarantineRailgunAccountEnrollmentCredentials: quarantine,
+  } = require('./railgun-account-enrollment');
+  const entry = await open(true),
+    originalIdentity = mockIdentity;
+  expect(() => quarantine({ ...entry })).toThrow();
+  expect(() => quarantine({})).toThrow();
+  expect(mockQuarantine).not.toHaveBeenCalled();
+  entry.close();
+  mockVault.abort();
+  quarantine(entry);
+  expect(mockQuarantine).toHaveBeenCalledTimes(1);
+  expect(mockQuarantine).toHaveBeenCalledWith(originalIdentity);
+});

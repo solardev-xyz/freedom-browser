@@ -13,6 +13,10 @@ const fail = () =>
   Object.assign(new Error('Railgun note provenance unavailable'), {
     code: 'RAILGUN_NOTE_PROVENANCE_REFUSED',
   });
+const exitUnobserved = () =>
+  Object.assign(new Error('Railgun note provenance exit unobserved'), {
+    code: 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED',
+  });
 const shape = (value, keys) => {
   assert.ok(value && typeof value === 'object' && !Array.isArray(value));
   assert.deepEqual(Object.keys(value).sort(), [...keys].sort());
@@ -66,6 +70,9 @@ async function verify({
     deadline = started + timeoutMs;
   let task,
     result,
+    ready,
+    exit,
+    exitObserved = false,
     closed = false,
     closeFailed = false;
   const active = () => {
@@ -95,11 +102,12 @@ async function verify({
     }
   };
   const drain = async () => {
-    try {
-      close();
-    } finally {
-      // A throwing close must not release the caller before actual child exit.
-      if (task) await task.closed;
+    close();
+    // Retain both original barriers. A readiness failure is ordinary; rejected
+    // or malformed closure evidence cannot release the caller's account phase.
+    if (task) {
+      await Promise.allSettled([ready, exit]);
+      if (!exitObserved) throw exitUnobserved();
     }
     if (closeFailed) throw fail();
   };
@@ -185,11 +193,19 @@ async function verify({
         },
       },
     });
-    await task.ready;
+    ready = task.ready;
+    exit = task.closed.then((value) => {
+      assert.ok(value && typeof value.code === 'string');
+      exitObserved = true;
+      return value;
+    });
+    // Observe early rejection even while the other original remains pending.
+    exit.catch(() => {});
+    await ready;
     active();
     assert.ok(result);
     task.close();
-    const exited = await task.closed;
+    const exited = await exit;
     assert.equal(exited.code, 'RAILGUN_PROCESS_CLOSED');
     active();
     return Object.freeze({ ...result, utilityExitObserved: true });
@@ -201,7 +217,8 @@ async function verify({
 exports.verifyRailgunNoteProvenance = async (options) => {
   try {
     return await verify(options);
-  } catch {
+  } catch (error) {
+    if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') throw error;
     throw fail();
   }
 };

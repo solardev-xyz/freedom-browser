@@ -1134,3 +1134,44 @@ test('synchronous callback exception is settled, closes recovery and releases ph
   expect(s.signal.aborted).toBe(true);
   await open(false);
 });
+
+test.each([false, true])(
+  'trusted original recovery rejection unknown=%s retains only unknown writer and phase',
+  async (unknown) => {
+    const release = jest.fn();
+    const s = await open(true, { claimRecovery: () => ({ assertCurrent() {}, release }) });
+    let rejectOriginal, entered;
+    const ready = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const original = new Promise((_resolve, reject) => {
+      rejectOriginal = reject;
+    });
+    const error = Object.assign(Error('fixed verifier failure'), {
+      code: unknown ? 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED' : 'RAILGUN_NOTE_PROVENANCE_REFUSED',
+    });
+    let settled = false;
+    const work = s
+      .withSigningRecovery(() => {
+        entered();
+        return original;
+      })
+      .catch((e) => {
+        settled = true;
+        return e;
+      });
+    await ready;
+    expect(settled).toBe(false);
+    expect(release).not.toHaveBeenCalled();
+    rejectOriginal(error);
+    expect(await work).toBe(error);
+    if (unknown) {
+      expect(release).not.toHaveBeenCalled();
+      await expect(open(false)).rejects.toThrow();
+      await expect(s.withSigningRecovery(() => 'no authority')).rejects.toThrow();
+    } else {
+      expect(release).toHaveBeenCalledTimes(1);
+      await expect(open(false)).resolves.toBeDefined();
+    }
+  }
+);

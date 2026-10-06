@@ -222,8 +222,14 @@ async function open({
     const operation = Object.freeze({ acquireRoot, close, signal: scope.signal });
     operations.set(operation, { account, owners, window, assertResult });
     return operation;
-  } catch {
-    await close();
+  } catch (error) {
+    try {
+      await close();
+    } catch {
+      // Cleanup refusal must not replace the original unknown-exit category.
+    }
+    // The enclosing wallet must retain its phase on a missing verifier exit.
+    if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') throw error;
     throw fail();
   }
 }

@@ -275,6 +275,7 @@ async function prove({
             provenance,
             acquiredProvenance,
             provenanceValue,
+            provenanceExitUnknown,
             cleanupFailed = false;
           const data = assertRailgunAccountPrivateWindow(window, account, owners);
           assert.equal(data.owned.checkpointHash, baseline.checkpointHash);
@@ -576,7 +577,11 @@ async function prove({
             signedSignature = signature.signature;
             current();
             return { status: 'signed', signature: signature.signature };
-          } catch {
+          } catch (error) {
+            if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') {
+              provenanceExitUnknown = error;
+              throw error;
+            }
             return { status: 'refused' };
           } finally {
             if (permit) permits.delete(permit);
@@ -607,7 +612,12 @@ async function prove({
             // Both closes start before either wait. POI includes actual source
             // drain; provenance retains its existing root-work drain contract.
             const drained = await Promise.all(drains);
-            assert.ok(!cleanupFailed && drained.every((value) => value), fail());
+            // The catch's original unknown-exit rejection takes priority over
+            // cleanup refusal, after all admitted drains have settled.
+            assert.ok(
+              provenanceExitUnknown || (!cleanupFailed && drained.every((value) => value)),
+              fail()
+            );
             // The enclosing wallet rechecks the window after this callback.
             // Expiry after signing retains the durable signed-unfinished hold.
           }

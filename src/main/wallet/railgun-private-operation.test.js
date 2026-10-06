@@ -20,6 +20,7 @@ jest.mock('./railgun-transact-staging', () => ({
 jest.mock('./railgun-transact-provenance', () => ({
   openRailgunTransactProvenance: async ({ signal }) => {
     mockStep('provenance-open');
+    if (mock.provenanceOriginal) return mock.provenanceOriginal;
     if (mock.staging.consumed) throw Error('consumed');
     mock.staging.consumed = true;
     signal.addEventListener('abort', () => mock.provenanceController.abort(), { once: true });
@@ -76,6 +77,9 @@ jest.mock('./railgun-account-wallet', () => ({
         preparation: mock.offer,
         operation: { status: 'proved', transaction: mock.offer.transaction },
       };
+    } catch (error) {
+      mock.callbackFailure = error;
+      throw error;
     } finally {
       mock.windowLive = false;
       mockStep('A-exit');
@@ -1240,4 +1244,68 @@ test('partial cancellation while independent receive is pending drains it and ad
   release();
   expect((await work).status).toBe('refused');
   for (const event of ['POI-open', 'reserve', 'key']) expect(mock.events).not.toContain(event);
+});
+
+test.each([true, false])(
+  'fixed provenance original reaches account callback as unknown=%s without releasing early',
+  async (unknown) => {
+    enableTransact();
+    let rejectOriginal;
+    mock.provenanceOriginal = new Promise((_resolve, reject) => {
+      rejectOriginal = reject;
+    });
+    let settled = false;
+    const work = prove(options).then((result) => {
+      settled = true;
+      return result;
+    });
+    await operationTurn();
+    expect(mock.events).toContain('provenance-open');
+    expect(mock.windowLive).toBe(true);
+    expect(settled).toBe(false);
+    expect(mock.events).not.toContain('A-exit');
+    const failure = Object.assign(Error('fixed provenance refusal'), {
+      code: unknown ? 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED' : 'RAILGUN_NOTE_PROVENANCE_REFUSED',
+    });
+    rejectOriginal(failure);
+    expect((await work).status).toBe('refused');
+    if (unknown) {
+      expect(mock.callbackFailure).toBe(failure);
+      expect(mock.events).not.toContain('A-response');
+    } else {
+      expect(mock.callbackFailure).toBeUndefined();
+      expect(mock.events).toContain('A-response');
+    }
+    expect(mock.events).toContain('A-exit');
+    expect(mock.events).not.toContain('key');
+  }
+);
+
+test('unknown provenance failure survives another throwing close and waits the original POI drain', async () => {
+  enableTransact();
+  const entered = holdPoiClosure();
+  const failure = Object.assign(Error('unknown provenance child'), {
+    code: 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED',
+  });
+  mock.provenance.acquireRoot = async () => {
+    throw failure;
+  };
+  mock.provenance.close.mockImplementation(() => {
+    throw Error('cleanup failure');
+  });
+  let settled = false;
+  const work = prove(options).then((result) => {
+    settled = true;
+    return result;
+  });
+  await entered.promise;
+  await operationTurn();
+  expect(mock.provenance.close).toHaveBeenCalled();
+  expect(settled).toBe(false);
+  expect(mock.windowLive).toBe(true);
+  expect(mock.callbackFailure).toBeUndefined();
+  mock.poiExit();
+  expect((await work).status).toBe('refused');
+  expect(mock.callbackFailure).toBe(failure);
+  expect(mock.events).not.toContain('A-response');
 });

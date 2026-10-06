@@ -10,7 +10,10 @@ const vault = require('../identity/vault');
 const { getActiveProfile } = require('../profile-resolver');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { openPrivacySession } = require('./privacy-session');
-const { assertRailgunIdentity } = require('./railgun-identity');
+const {
+  assertRailgunIdentity,
+  quarantineRailgunIdentityCredentials,
+} = require('./railgun-identity');
 const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-storage');
 const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { createRailgunWalletCatalog } = require('./railgun-wallet-catalog');
@@ -21,6 +24,7 @@ const { createRailgunPoiIntentStore } = require('./railgun-poi-intent-store');
 const { openRailgunAccountFence } = require('./railgun-account-fence');
 const owners = new Set(),
   instances = new WeakSet(),
+  credentialOwners = new WeakMap(),
   fencedInstances = new WeakMap(),
   RECORD = 'railgun-account-enrollment-v1';
 const fail = () =>
@@ -734,6 +738,7 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
     },
   });
   instances.add(instance);
+  credentialOwners.set(instance, identity);
   if (fence) fencedInstances.set(instance, active);
   return instance;
 }
@@ -748,7 +753,15 @@ function assertRailgunFencedAccountEnrollment(value) {
   check(current);
   current();
 }
+// A fixed recovery owner may discover an unknown child after revocation.
+// Authenticate the original instance without requiring it to remain live.
+function quarantineRailgunAccountEnrollmentCredentials(enrollment) {
+  const identity = credentialOwners.get(enrollment);
+  check(identity);
+  quarantineRailgunIdentityCredentials(identity);
+}
 module.exports = {
+  quarantineRailgunAccountEnrollmentCredentials,
   openRailgunAccountEnrollment,
   openRailgunCooperativeAccountEnrollment,
   assertRailgunFencedAccountEnrollment,

@@ -1,3 +1,4 @@
+const mockQuarantine = jest.fn();
 const mockPoiCapture = jest.fn(),
   mockPoiCompletedCapture = jest.fn(),
   mockPoiTransactCapture = jest.fn(),
@@ -53,6 +54,7 @@ const mockCapture = jest.fn(),
   mockSelectorCapture = jest.fn(),
   mockOpen = jest.fn();
 jest.mock('./railgun-account-enrollment', () => ({
+  quarantineRailgunAccountEnrollmentCredentials: (...args) => mockQuarantine(...args),
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
 }));
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
@@ -2854,3 +2856,60 @@ describe('partial own-POI producer row binding', () => {
     phase.release();
   });
 });
+
+test.each([false, true])(
+  'creator verifier unknown=%s retains only unknown phase after original rejection and all cleanup',
+  async (unknown) => {
+    await setupTransact();
+    mockEnrollment.directory += '-typed-unknown-' + unknown;
+    let rejectOriginal, entered;
+    const ready = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const original = new Promise((_resolve, reject) => {
+      rejectOriginal = reject;
+    });
+    mockVerifyCreator.mockImplementation(() => {
+      entered();
+      return original;
+    });
+    const error = Object.assign(Error('fixed verifier failure'), {
+      code: unknown ? 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED' : 'RAILGUN_NOTE_PROVENANCE_REFUSED',
+    });
+    let settled = false;
+    const work = transactInput(options).then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    await ready;
+    expect(settled).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    if (unknown) {
+      mockQuarantine.mockImplementationOnce(() => {
+        throw Error('issuer cleanup');
+      });
+      mockSource.close.mockImplementationOnce(() => {
+        throw Error('source cleanup');
+      });
+    }
+    rejectOriginal(error);
+    const outcome = await work;
+    if (unknown) {
+      expect(outcome.error).toBe(error);
+      expect(mockQuarantine).toHaveBeenCalledWith(mockEnrollment);
+      expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    } else {
+      expect(outcome.value).toMatchObject({ status: 'refused', stage: 'creator-verify' });
+      expect(mockQuarantine).not.toHaveBeenCalled();
+      claimRailgunAccountPhase(mockEnrollment, 'recovery').release();
+    }
+    expect(mockSource.close).toHaveBeenCalled();
+    expect(mockRootCreate).not.toHaveBeenCalled();
+  }
+);

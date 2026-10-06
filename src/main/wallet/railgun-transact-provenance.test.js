@@ -513,3 +513,31 @@ test('generic mixed verifier failure drains before refusal and cannot expose roo
   await rejected;
   expect(mockRootFactory).not.toHaveBeenCalled();
 });
+
+test.each([true, false])(
+  'original verifier rejection propagates unknown=%s only after its original settles',
+  async (unknown) => {
+    let rejectOriginal;
+    const original = new Promise((_resolve, reject) => {
+      rejectOriginal = reject;
+    });
+    mockVerify.mockReturnValue(original);
+    const error = Object.assign(Error('fixed helper refusal'), {
+      code: unknown ? 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED' : 'RAILGUN_NOTE_PROVENANCE_REFUSED',
+    });
+    let settled = false;
+    const work = open().catch((failure) => {
+      settled = true;
+      return failure;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockVerify).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    rejectOriginal(error);
+    const outcome = await work;
+    if (unknown) expect(outcome).toBe(error);
+    else expect(outcome.code).toBe('RAILGUN_TRANSACT_PROVENANCE_REFUSED');
+    expect(mockServices).not.toHaveBeenCalled();
+    expect(mockRootFactory).not.toHaveBeenCalled();
+  }
+);

@@ -1,4 +1,12 @@
-let mockMode, mockTask, mockExit, mockDeferExit, mockProtocol, mockScopeCloseFailure, mockHostScope;
+let mockClosedFault,
+  mockRejectExit,
+  mockMode,
+  mockTask,
+  mockExit,
+  mockDeferExit,
+  mockProtocol,
+  mockScopeCloseFailure,
+  mockHostScope;
 jest.mock('../networks/privacy-context', () => {
   const actual = jest.requireActual('../networks/privacy-context');
   return {
@@ -20,9 +28,11 @@ jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) =
 jest.mock('./railgun-process', () => ({
   startRailgunProcess: jest.fn((options) => {
     let finish, reject;
-    const closed = new Promise((resolve) => {
+    const closed = new Promise((resolve, rejectExit) => {
+      mockRejectExit = rejectExit;
       finish = resolve;
     });
+    if (mockClosedFault) mockRejectExit(Error('PRIVATE close diagnostic'));
     mockExit = () =>
       finish({ code: mockMode === 'crash' ? 'RAILGUN_PROCESS_FAILED' : 'RAILGUN_PROCESS_CLOSED' });
     mockTask = {
@@ -98,6 +108,7 @@ let scope, controller, input;
 beforeEach(async () => {
   jest.clearAllMocks();
   mockMode = 'valid';
+  mockClosedFault = false;
   mockDeferExit = false;
   mockProtocol = undefined;
   mockScopeCloseFailure = false;
@@ -396,17 +407,21 @@ test.each(['success-close', 'refusal-cleanup'])(
   }
 );
 test.each(['valid', 'missing'])(
-  'rejecting closed after %s readiness returns only sanitized refusal',
+  'rejecting original closed after %s readiness returns typed sanitized unknown exit',
   async (mode) => {
     mockMode = mode;
+    mockClosedFault = true;
     const pending = verifyRailgunNoteProvenance(input);
     const outcome = pending.then(
       (value) => ({ value }),
       (error) => ({ error })
     );
-    mockTask.closed = Promise.reject(Error('PRIVATE close diagnostic'));
-    mockTask.closed.catch(() => {});
-    expect(await outcome).toMatchObject({ error: sanitizedRefusal });
+    expect(await outcome).toMatchObject({
+      error: {
+        code: 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED',
+        message: 'Railgun note provenance exit unobserved',
+      },
+    });
     expect(startRailgunProcess.mock.calls[0][0].broker.signal.aborted).toBe(true);
     expect(mockTask.close).toHaveBeenCalled();
   }
@@ -708,3 +723,37 @@ test.each(['normal', 'unshield-extra'])(
     }
   }
 );
+
+test('unknown original exit cannot skip a held original ready or be masked by throwing cleanup', async () => {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  mockProtocol = async () => held;
+  let settled = false;
+  const pending = verifyRailgunNoteProvenance(input).catch((error) => {
+    settled = true;
+    return error;
+  });
+  await observedTurn();
+  mockTask.close.mockImplementation(() => {
+    throw Error('PRIVATE close failure');
+  });
+  mockRejectExit(Error('PRIVATE unknown child'));
+  controller.abort();
+  await observedTurn();
+  expect(settled).toBe(false);
+  release();
+  expect(await pending).toMatchObject({
+    code: 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED',
+    message: 'Railgun note provenance exit unobserved',
+  });
+});
+test('observed failed exit remains ordinary and a fresh invocation is usable', async () => {
+  mockMode = 'crash';
+  await expect(verifyRailgunNoteProvenance(input)).rejects.toMatchObject(sanitizedRefusal);
+  mockMode = 'valid';
+  await expect(verifyRailgunNoteProvenance(input)).resolves.toMatchObject({
+    utilityExitObserved: true,
+  });
+});

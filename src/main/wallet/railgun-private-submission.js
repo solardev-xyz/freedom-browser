@@ -393,6 +393,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
     poi,
     roots,
     sourceOutcome,
+    provenanceExitUnknown = false,
     claimed = false,
     constraints = [],
     previewClients = [];
@@ -1081,7 +1082,16 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             reviewMarginMs: 50000,
             extraCurrent: live,
           });
-        } catch {
+        } catch (error) {
+          if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') {
+            provenanceExitUnknown = true;
+            try {
+              require('./railgun-identity').quarantineRailgunIdentityCredentials(identity);
+            } catch {
+              // The original typed error must still reach the recovery owner.
+            }
+            throw error;
+          }
           // Expected refusal stays inside recovery; any already durable send
           // outcome survives cleanup or outer post-attestation failure.
         } finally {
@@ -1126,7 +1136,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
         /* Logical release only. */
       }
     }
-    if (claimed) recoveredBusy.delete(enrollment);
+    if (claimed && !provenanceExitUnknown) recoveredBusy.delete(enrollment);
   }
   return Object.freeze(
     state.outcome || {

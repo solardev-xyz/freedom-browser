@@ -867,3 +867,62 @@ test('ordinary viewing broker refuses an unsolicited recovery result', async () 
     code: 'RAILGUN_WALLET_BROKER_REFUSED',
   });
 });
+
+test.each([false, true])(
+  'detached provenance unknown retains account outcome through throwing cleanup=%s and original viewing exit',
+  async (throwing) => {
+    const entered = deferred(),
+      original = deferred();
+    mockHoldExit = true;
+    const onIntent = jest.fn(async () => {
+      entered.resolve();
+      throw await original.promise;
+    });
+    const opts = operation(onIntent);
+    let settled = false;
+    const work = runRailgunWalletSnapshot(opts).catch((error) => {
+      settled = true;
+      return error;
+    });
+    await entered.promise;
+    if (throwing) {
+      mockQuarantine.mockImplementation(() => {
+        throw Error('issuer close');
+      });
+      mockRouter.close.mockImplementation(() => {
+        throw Error('storage close');
+      });
+      mockCloseFailure = true;
+    }
+    original.resolve(
+      Object.assign(Error('detached unknown'), { code: 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED' })
+    );
+    await tick();
+    expect(mockQuarantine).toHaveBeenCalledWith(args.identity);
+    expect(mockTask.close).toHaveBeenCalled();
+    expect(settled).toBe(false);
+    mockResolveClosed({ code: 'RAILGUN_PROCESS_CLOSED' });
+    expect(await work).toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    const previous = mockTask;
+    mockBorrow.mockClear();
+    await expect(runRailgunWalletSnapshot(opts)).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+    });
+    expect(mockTask).toBe(previous);
+    expect(mockBorrow).not.toHaveBeenCalled();
+    expect(mockQuarantine).toHaveBeenCalledTimes(1);
+  }
+);
+test('ordinary detached refusal preserves reuse after original callback and viewing exit', async () => {
+  await expect(
+    runRailgunWalletSnapshot(
+      operation(async () => {
+        throw Object.assign(Error('ordinary refusal'), { code: 'RAILGUN_NOTE_PROVENANCE_REFUSED' });
+      })
+    )
+  ).rejects.toMatchObject({ code: 'RAILGUN_WALLET_BROKER_REFUSED' });
+  expect(mockQuarantine).not.toHaveBeenCalled();
+  await expect(runRailgunWalletSnapshot(args)).resolves.toMatchObject({
+    instanceId: mockDescriptor.instanceId,
+  });
+});

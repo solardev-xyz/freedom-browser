@@ -11,6 +11,11 @@ jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mock.enrollment,
 }));
 jest.mock('./railgun-identity', () => ({
+  quarantineRailgunIdentityCredentials: (identity) => {
+    expect(identity).toBe(mock.identity);
+    mock.quarantined = true;
+    if (mock.quarantineThrows) throw Error('issuer cleanup');
+  },
   assertRailgunIdentity: (v, h) => {
     mock.context(h);
     if (v !== mock.identity) throw Error('identity');
@@ -375,6 +380,7 @@ function setup(kind = 'railgun-partial-unshield', type = 'Shield') {
       mock.phase = 'recovery';
       mock.events.push('recovery-open');
       const deadline = performance.now() + timeoutMs;
+      let unknown = false;
       try {
         return await use([{ entry: copy(mock.entry), receipt: mock.receipt }], {
           signal: scope.signal,
@@ -384,10 +390,15 @@ function setup(kind = 'railgun-partial-unshield', type = 'Shield') {
             if (performance.now() >= deadline) throw Error('expired recovery');
           },
         });
+      } catch (error) {
+        mock.recoveryCallbackError = error;
+        unknown = error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED';
+        throw error;
       } finally {
         mock.events.push('recovery-close');
         mock.phase = null;
-        phase.release();
+        // Mirrors the fixed real ledger catch, covered separately with real storage.
+        if (!unknown) phase.release();
       }
     },
     assertReceiptContext: (r, k) => {
@@ -1354,3 +1365,42 @@ test('late approval does not renew request.expiresAt even with current service a
   expect(mock.events).not.toContain('sign');
   expect(mock.events).not.toContain('broadcast');
 });
+
+test.each([false, true])(
+  'cold Transact verifier unknown=%s reaches recovery owner and preserves exclusion',
+  async (unknown) => {
+    setup('railgun-token-unshield', 'Transact');
+    const gate = deferred();
+    const error = Object.assign(Error('fixed verifier failure'), {
+      code: unknown ? 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED' : 'RAILGUN_NOTE_PROVENANCE_REFUSED',
+    });
+    mock.quarantineThrows = true;
+    mock.hooks['creator-verify'] = async () => {
+      await gate.promise;
+      throw error;
+    };
+    let settled = false;
+    const work = submit(options).then((v) => {
+      settled = true;
+      return v;
+    });
+    await until(() => mock.events.includes('creator-verify'));
+    expect(settled).toBe(false);
+    expect(() => claimRailgunAccountPhase(mock.enrollment, 'recovery')).toThrow();
+    gate.resolve();
+    expect((await work).status).toBe('recovery-required');
+    expect(mock.events).not.toContain('broadcast');
+    if (unknown) {
+      expect(mock.quarantined).toBe(true);
+      expect(mock.recoveryCallbackError).toBe(error);
+      expect(() => claimRailgunAccountPhase(mock.enrollment, 'recovery')).toThrow();
+      const before = [...mock.events];
+      expect((await submit(options)).status).toBe('recovery-required');
+      expect(mock.events).toEqual(before);
+    } else {
+      expect(mock.quarantined).not.toBe(true);
+      expect(mock.recoveryCallbackError).toBeUndefined();
+      claimRailgunAccountPhase(mock.enrollment, 'recovery').release();
+    }
+  }
+);
