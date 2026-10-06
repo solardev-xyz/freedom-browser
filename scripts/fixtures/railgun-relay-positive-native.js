@@ -377,12 +377,16 @@ function installServices(logs, expectedNote, scenario, protocol) {
     },
     assertClosed() {
       if (scenario === TRANSACT) {
-        // Service clients are opened per TXID/staging/root owner and are
-        // observed, not derived; the rpc client stays open for later reads.
-        const states = clients.map(({ state }) => state);
-        assert.deepEqual(states[0], { kind: 'rpc', closed: false });
-        assert.equal(states.filter((v) => v.kind === 'poi').length, 1);
-        assert.ok(states.slice(1).every((v) => v.closed && ['poi', 'service'].includes(v.kind)));
+        // Observed in discovery run b: two TXID setup owners, one staging owner,
+        // one provenance transport that sends nothing, the membership POI client
+        // and the root-acquisition owner. All are closed by this point.
+        assert.deepEqual(
+          clients.map(({ state }) => state),
+          ['rpc', 'service', 'service', 'service', null, 'poi', 'service'].map((kind) => ({
+            kind,
+            closed: true,
+          }))
+        );
         assert.deepEqual(poiMethods, [
           'ppoi_pois_per_list',
           'ppoi_merkle_proofs',
@@ -483,14 +487,7 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
       assert.ok(role);
       assert.equal(options.filename, require.resolve(wallet + path.basename(options.filename)));
     }
-    // Transact staging/TXID utilities are observed before their order is pinned;
-    // relay roles must still keep the exact positive order (checked at finish).
-    if (roles === null)
-      assert.ok(
-        TRANSACT_ROLES.has(role) || role.startsWith('txid-'),
-        'Unexpected Transact utility: ' + role
-      );
-    else assert.ok(roles[rows.length] === role, 'Unexpected original utility order: ' + role);
+    assert.ok(roles[rows.length] === role, 'Unexpected original utility order: ' + role);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);
     const row = {
       role,
@@ -564,11 +561,8 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
           'proof-A': 'relay-prove-local',
           'relay-sign': 'relay-sign',
         }[role];
-        if (roles === null && purpose === undefined) row.observedKeyPurpose = message.purpose;
-        else {
-          assert.ok(purpose);
-          assert.equal(message.purpose, purpose);
-        }
+        assert.ok(purpose);
+        assert.equal(message.purpose, purpose);
       }
       const returned = Reflect.apply(options.broker.dispatch, this, args);
       if (message.method === 'key' || ['result', 'jobResult'].includes(message.method)) {
@@ -622,31 +616,18 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
     rows,
     async finish() {
       await Promise.all([...pending]);
-      if (roles === null) {
-        // Unchanged bootstrap prefix, then the exact relay/audit order; staging
-        // and TXID utilities may interleave only between them (observed).
-        const positive = expectedRoles(),
-          relay = positive.slice(-14);
-        assert.deepEqual(
-          rows.slice(0, positive.length - 14).map((r) => r.role),
-          positive.slice(0, -14)
-        );
-        assert.deepEqual(
-          rows.map((r) => r.role).filter((role) => relay.includes(role)),
-          relay
-        );
-      } else
-        assert.deepEqual(
-          rows.map((r) => r.role),
-          roles
-        );
+      assert.deepEqual(
+        rows.map((r) => r.role),
+        roles
+      );
       for (const row of rows) {
         assert.equal(row.closedObserved, true);
         assert.equal(row.results, 1);
-        if (roles === null && !expectedRoles().includes(row.role)) {
-          // Observed staging/TXID utilities: no fixed key or guard contract yet.
-          assert.equal(row.keyReplies, row.keyRequests);
-          assert.ok(row.keyRequests <= 1);
+        if (TXID_ROLES.has(row.role)) {
+          // Keyless; their own guard reports are recorded, with no attempts.
+          assert.equal(row.keyRequests, 0);
+          assert.equal(row.keyReplies, 0);
+          if (row.guards !== undefined) assert.equal(row.guards.attempts, 0);
           continue;
         }
         assert.deepEqual(row.guards, require(wallet + 'railgun-relay-quote-data').EXPECTED_GUARDS);
@@ -692,37 +673,43 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
     },
   };
 }
-// Utility roles a Transact run may add around the relay roles. Their exact
-// order is recorded by the first observed run, then pinned.
-const TRANSACT_ROLES = new Set([
-  'spending-public',
-  'viewing-identity',
-  'public-plan',
-  'public-apply',
-  'wallet-scan',
-  'wallet-restore',
+// Transact-only keyless utilities, first observed in discovery run b.
+const TXID_ROLES = new Set([
   'txid-row-fixture',
+  'txid-inspect',
+  'txid-project',
+  'txid-apply',
+  'txid-note-witness',
   'note-provenance',
-  'membership-fixture',
-  'quote',
-  'construct',
-  'reconstruct',
-  'membership',
-  'pre-poi-binding',
-  'relay-sign',
-  'signature-C',
-  'proof-A',
-  'dual-proof-C',
-  'audit-unmodified',
-  'audit-signature',
-  'audit-transaction-proof',
-  'audit-pre-poi-proof',
 ]);
 // A signed stop ends after the held dual verifier; it runs no audit utility.
-// A Transact run returns null: its staging/TXID roles are observed first.
+// A Transact run adds keyless TXID setup, staging and a reopened wallet
+// before the unchanged relay roles (observed in discovery run b, now exact).
 function expectedRoles(scenario = 'synthetic-list') {
   assert.ok(SCENARIOS.includes(scenario));
-  if (scenario === TRANSACT) return null;
+  if (scenario === TRANSACT) {
+    const positive = expectedRoles();
+    const head = positive.slice(0, -14),
+      relay = positive.slice(-14);
+    return [
+      ...head,
+      'txid-row-fixture',
+      'txid-inspect',
+      'txid-inspect',
+      'txid-project',
+      'txid-project',
+      'txid-apply',
+      'txid-apply',
+      'wallet-restore',
+      relay[0],
+      'txid-inspect',
+      'txid-inspect',
+      'txid-note-witness',
+      'note-provenance',
+      'wallet-restore',
+      ...relay.slice(1),
+    ];
+  }
   return [
     'spending-public',
     'viewing-identity',
@@ -1230,13 +1217,22 @@ function assertTransactTimeline(timeline) {
   const [setup, setupDone, call, consent, stagedAt, root, input, done] = marks;
   const between = (a, b) => timeline.slice(a + 1, b).filter((v) => v.kind !== 'mark');
   assert.deepEqual(between(-1, setup), []);
+  const txidPair = [
+    ['service', 'poi', 'ppoi_validated_txid'],
+    ['service', 'poi', 'ppoi_validate_txid_merkleroot'],
+  ];
+  const project = (rows) => rows.map((v) => [v.kind, v.role ?? null, v.method]);
   const setupCalls = between(setup, setupDone);
-  assert.ok(setupCalls.length > 0 && setupCalls.every((v) => v.kind === 'service'));
+  assert.deepEqual(project(setupCalls), [
+    ['service', 'poi', 'ppoi_validated_txid'],
+    ['service', 'indexer', 'txidPage'],
+    ...txidPair,
+    ...txidPair,
+  ]);
   assert.deepEqual(between(setupDone, call), []);
   assert.deepEqual(between(call, consent), []);
   const stagingCalls = between(consent, stagedAt);
-  assert.ok(stagingCalls.length > 0);
-  assert.ok(stagingCalls.every((v) => v.kind === 'service' && v.role === 'poi'));
+  assert.deepEqual(project(stagingCalls), [...txidPair, ...txidPair]);
   assert.deepEqual(between(stagedAt, root), []);
   assert.deepEqual(between(root, input), []);
   const operationCalls = between(input, done);
@@ -1257,7 +1253,6 @@ function assertTransactTimeline(timeline) {
       operationCalls.findLastIndex((v) => v.kind === 'poi')
   );
   assert.deepEqual(between(done, timeline.length), []);
-  const project = (rows) => rows.map((v) => [v.kind, v.role ?? null, v.method]);
   return {
     setupServiceCalls: project(setupCalls),
     stagingServiceCalls: project(stagingCalls),
@@ -1800,11 +1795,11 @@ async function qualify({
   assert.deepEqual(await recovery.inspect(), after.recovery);
   const operationRequests = services.requests.length - rpcBefore,
     keyLoans = jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0);
-  if (!transact) {
-    assert.equal(operationRequests, 39);
-    assert.equal(jobs.rows.length, 79);
-    assert.equal(keyLoans, 9);
-  }
+  if (!transact) assert.equal(operationRequests, 39);
+  assert.equal(jobs.rows.length, expectedRoles(scenario).length);
+  assert.equal(jobs.rows.length, transact ? 92 : 79);
+  // Transact adds two keyed wallet reopenings (TXID setup and staging).
+  assert.equal(keyLoans, transact ? 11 : 9);
   await operationAccount.close();
   staged?.close();
   stagingLifetime.abort();
@@ -1827,7 +1822,7 @@ async function qualify({
           syntheticOperationRequests: operationRequests,
           originalUtilities: jobs.rows.length,
           originalKeyLoans: keyLoans,
-          stagingAndCountsObservedNotPinned: true,
+          rpcCountsObservedNotPinned: true,
         }
       : {}),
     syntheticList: TEST_LIST,

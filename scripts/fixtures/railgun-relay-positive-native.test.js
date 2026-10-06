@@ -1654,10 +1654,15 @@ function transactTimeline() {
     mark('txid-setup'),
     service('ppoi_validated_txid'),
     { kind: 'service', role: 'indexer', method: 'txidPage', after: '0x00' },
+    service('ppoi_validated_txid'),
+    service('ppoi_validate_txid_merkleroot'),
+    service('ppoi_validated_txid'),
     service('ppoi_validate_txid_merkleroot'),
     mark('txid-setup-complete'),
     mark('staging-call'),
     mark('staging-consent'),
+    service('ppoi_validated_txid'),
+    service('ppoi_validate_txid_merkleroot'),
     service('ppoi_validated_txid'),
     service('ppoi_validate_txid_merkleroot'),
     mark('staging-complete'),
@@ -1675,7 +1680,8 @@ function transactTimeline() {
 test('Transact ordering admits TXID queries only after their own consent', () => {
   const f = load();
   const value = f.assertTransactTimeline(transactTimeline());
-  expect(value.stagingServiceCalls).toHaveLength(2);
+  expect(value.setupServiceCalls).toHaveLength(6);
+  expect(value.stagingServiceCalls).toHaveLength(4);
   expect(value.operationCalls).toHaveLength(6);
   const move = (from, to) => {
     const rows = transactTimeline();
@@ -1685,14 +1691,30 @@ test('Transact ordering admits TXID queries only after their own consent', () =>
   };
   // staging query before staging consent; root query before membership;
   // root query between root consent and input disclosure; missing mark.
-  for (const rows of [move(7, 6), move(16, 12), move(16, 11), transactTimeline().slice(1)])
+  // Indexes: staging consent 9, first staging query 10, input disclosure 16,
+  // membership POI 17-20, first root query 21.
+  for (const rows of [move(10, 9), move(21, 17), move(21, 16), transactTimeline().slice(1)])
     expect(() => f.assertTransactTimeline(rows)).toThrow();
   const late = transactTimeline();
   late.push({ kind: 'service', role: 'poi', method: 'ppoi_validated_txid' });
   expect(() => f.assertTransactTimeline(late)).toThrow();
 });
-test('Transact roles are observed while relay roles keep their exact order', () => {
-  const f = load();
-  expect(f.expectedRoles(f.TRANSACT)).toBeNull();
+test('Transact roles add keyless TXID setup and staging around the unchanged relay order', () => {
+  const f = load(),
+    roles = f.expectedRoles(f.TRANSACT),
+    positive = f.expectedRoles();
+  expect(roles).toHaveLength(92);
+  expect(roles.slice(0, 65)).toEqual(positive.slice(0, 65));
+  expect(roles.filter((v) => positive.slice(-14).includes(v))).toEqual(positive.slice(-14));
+  expect(roles.slice(65, 73)).toEqual([
+    'txid-row-fixture',
+    'txid-inspect',
+    'txid-inspect',
+    'txid-project',
+    'txid-project',
+    'txid-apply',
+    'txid-apply',
+    'wallet-restore',
+  ]);
   expect(f.select(f.TRANSACT, args, {}).scenario).toBe('synthetic-list-transact');
 });
