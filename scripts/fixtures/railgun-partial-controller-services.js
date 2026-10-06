@@ -145,6 +145,9 @@ exports.install = function install({
     txidFixtureGuardHooks: 0,
   };
   const clients = new Set();
+  // Opt-in only: other enrolled accounts of the same profile may read public
+  // scan data after the selected account is fixed. No preflight, POI or EOA role.
+  const observers = new Set();
   const verificationKeyQueries = [],
     verificationKeyVariants = [],
     privateCallOrder = [];
@@ -443,7 +446,10 @@ exports.install = function install({
               assert.equal(subject.protocol, 'railgun');
               assert.equal(subject.deployment, 'sepolia');
               assert.match(subject.principal, /^railgun:(0|[1-9][0-9]{0,4})$/);
-              if (accountIndex !== undefined)
+              if (
+                accountIndex !== undefined &&
+                !(subject.operation === null && observers.has(subject.principal))
+              )
                 assert.equal(subject.principal, 'railgun:' + accountIndex);
               assert.ok(
                 [null, 'shield-preflight', 'private-preflight'].includes(subject.operation)
@@ -670,6 +676,30 @@ exports.install = function install({
           scope.close();
         }
       }
+    },
+    // Opt-in only: later public events, strictly after every served log.
+    appendLogs(entries) {
+      current();
+      assert.ok(Array.isArray(entries) && entries.length > 0);
+      assert.ok(logs.length + entries.length <= 1000);
+      for (const log of copy(entries)) {
+        const last = logs.at(-1);
+        assert.ok(Number.isSafeInteger(log.blockNumber) && log.blockNumber <= publicAnchor.number);
+        assert.ok(Number.isSafeInteger(log.logIndex) && log.logIndex >= 0);
+        assert.ok(
+          log.blockNumber > last.blockNumber ||
+            (log.blockNumber === last.blockNumber && log.logIndex > last.logIndex)
+        );
+        assert.equal(log.address.toLowerCase(), pins.proxy);
+        assert.equal(log.blockHash, blockHash(log.blockNumber));
+        logs.push(log);
+      }
+    },
+    observeAccount(index) {
+      current();
+      assert.ok(Number.isSafeInteger(index) && index >= 0 && index <= 65535);
+      assert.notEqual(index, accountIndex);
+      observers.add('railgun:' + index);
     },
     setMode(next) {
       current();

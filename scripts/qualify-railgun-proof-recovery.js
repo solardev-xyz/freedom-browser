@@ -1,7 +1,9 @@
 /** Offline original-signature proof recovery over a disposable enrolled account.
  * Synthetic external services; real account, gates, signer, stores and recovery A/C.
  * electron script SOURCE NEW_DIR ENGINE PROVER ARTIFACTS BYTECODES
- *   [Shield|Transact] [transfer|unshield|partial] [warm|setup|resume] [same-root|advanced-root]
+ *   [Shield|Transact] [transfer|unshield|partial|foreign] [warm|setup|resume] [same-root|advanced-root]
+ * foreign: a full-value transfer to account 1 of the same public vector. After
+ * recovery, account 1 and an unrelated account 2 are enrolled and scan the output.
  */
 const { app } = require('electron');
 const fs = require('fs');
@@ -14,6 +16,8 @@ const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const OFFSET = 5944700;
+const FOREIGN_BLOCK = OFFSET + 50,
+  FOREIGN_TRANSACTION = hex(1050);
 const COLD_RECORDS = [
   'railgun-wallet-catalog-v1',
   'railgun-public-catalog-v1',
@@ -67,7 +71,8 @@ async function main() {
   const inputCreator = args[6] ?? 'Shield';
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
   const kind = args[7] ?? 'transfer';
-  assert.ok(['transfer', 'unshield', 'partial'].includes(kind));
+  assert.ok(['transfer', 'unshield', 'partial', 'foreign'].includes(kind));
+  const foreignTransfer = kind === 'foreign';
   const runMode = args[8] ?? 'warm';
   assert.ok(['warm', 'setup', 'resume'].includes(runMode));
   const resuming = runMode === 'resume';
@@ -78,6 +83,8 @@ async function main() {
   const forSubmission = args[10] === 'submission-handoff';
   assert.ok(args[10] === undefined || forSubmission);
   assert.ok(!forSubmission || runMode !== 'warm');
+  // The cold submission qualifiers do not cover a foreign destination.
+  assert.ok(!forSubmission || !foreignTransfer);
   const historyMode = args[9] ?? 'same-root';
   assert.ok(['same-root', 'advanced-root'].includes(historyMode));
   const advanced = historyMode === 'advanced-root';
@@ -200,7 +207,12 @@ async function main() {
     log.blockHash = hex(log.blockNumber + 1000);
   }
   const anchor = { number: OFFSET + 100, hash: hex(OFFSET + 1100) };
-  const initialTo = advanced ? OFFSET + (transact ? 39 : 29) : anchor.number;
+  // The foreign output lands at FOREIGN_BLOCK, after the sender's signed history.
+  const initialTo = advanced
+    ? OFFSET + (transact ? 39 : 29)
+    : foreignTransfer
+      ? FOREIGN_BLOCK - 1
+      : anchor.number;
   const advancedTo = OFFSET + 40;
   if (!resuming) fs.mkdirSync(directory, { mode: 0o700 });
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
@@ -279,7 +291,8 @@ async function main() {
   const childResults = [],
     workerResults = [],
     brokerResults = [],
-    storageWrites = [];
+    storageWrites = [],
+    receiverResults = [];
   const jobs = {},
     keys = {},
     rpcMethods = {};
@@ -529,6 +542,15 @@ async function main() {
                       guardCanaries: guards.canaries,
                     });
                   }
+                  // Accepted receiver results only: the marked destination checked
+                  // before signing, as main bound it into the authorization digest.
+                  if (foreignTransfer && job === 'railgun-private-receive-job.js')
+                    receiverResults.push({
+                      phase: launchPhase,
+                      verified: message.value?.verified,
+                      recipient: message.value?.recipient,
+                      recipientRelationship: message.value?.recipientRelationship,
+                    });
                 }
                 if (
                   interruptSignature &&
@@ -570,7 +592,7 @@ async function main() {
   });
   const transport = require('../src/main/networks/wallet-tor-transport');
   const fixtureTransport = transport.createWalletTorTransport;
-  const { getPrivacyContext } = require('../src/main/networks/privacy-context');
+  const { createPrivacyScope, getPrivacyContext } = require('../src/main/networks/privacy-context');
   transport.createWalletTorTransport = (...options) => {
     const client = fixtureTransport(...options);
     return {
@@ -601,6 +623,113 @@ async function main() {
     services: services.report(),
     writes: storageWrites.length,
   });
+  const delta = (before, after) =>
+    Object.fromEntries(
+      Object.entries(after)
+        .map(([name, count]) => [name, count - (before[name] || 0)])
+        .filter(([, count]) => count !== 0)
+    );
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  // Reports and handoffs keep no wallet address, only its relationship.
+  const sanitizeReceiver = ({ recipient, ...value }) => ({
+    ...value,
+    recipientIsForeignDestination: recipient === originalCapsule.selection.recipient,
+  });
+  // One guarded utility over the published test mnemonic only; see the job.
+  async function runForeignFixture(value) {
+    const parent = getPrivacyContext(enrollment.getContext('engine'));
+    const scope = createPrivacyScope({ profileId: parent.profileId, signal: parent.signal });
+    let task, result;
+    try {
+      task = runtime.startRailgunProcess({
+        handle: scope.getContext({ ...parent.subject, operation: 'foreign-recipient-fixture' }),
+        filename: require.resolve('./fixtures/railgun-foreign-recipient-job'),
+        input: JSON.stringify({ archive, ...value }),
+        startupMs: 30000,
+        lifetimeMs: 120000,
+        broker: {
+          signal: scope.signal,
+          dispatch: async (wire) => {
+            assert.equal(result, undefined);
+            assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 65536);
+            const message = JSON.parse(wire);
+            assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+            assert.equal(message.id, 1);
+            assert.equal(message.method, 'result');
+            result = message.value;
+            return JSON.stringify({ id: 1, value: null });
+          },
+        },
+      });
+      await task.ready;
+      assert.ok(result && !scope.signal.aborted);
+      task.close();
+      assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
+      assert.equal(result.mode, value.mode);
+      assert.equal(result.guards.attempts, 0);
+      assert.ok(result.guards.hooks.length > 0);
+      assert.equal(result.guards.canaries, result.guards.hooks.length);
+      return result;
+    } finally {
+      try {
+        task?.close();
+      } finally {
+        await task?.closed;
+        scope.close();
+      }
+    }
+  }
+  // A genuine second or third enrollment of this profile: identity, public scan
+  // to the anchor and a new wallet scan, closed before returning detached data.
+  async function scanOtherAccount(accountIndex) {
+    const accountWallet = require('../src/main/wallet/railgun-account-wallet');
+    const other = {};
+    try {
+      other.identity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
+        archive,
+        accountIndex,
+      });
+      other.enrollment =
+        await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
+          { identity: other.identity, create: true }
+        );
+      other.publicAccount = await publicApi.openRailgunAccountPublic({
+        enrollment: other.enrollment,
+        archive,
+        create: true,
+      });
+      for (let from = 0; from <= anchor.number; from += 100000)
+        await other.publicAccount.advance({ to: Math.min(from + 99999, anchor.number), anchor });
+      const owners = {
+        identity: other.identity,
+        enrollment: other.enrollment,
+        coordinator: other.publicAccount.coordinator,
+      };
+      other.account = await accountWallet.openRailgunAccountWallet({
+        ...owners,
+        archive,
+        mode: 'new',
+      });
+      const notes = accountWallet.readRailgunAccountOwnedNotes(other.account, owners);
+      return {
+        descriptor: plain(other.identity.descriptor),
+        received: notes.read.received.map((note) => ({ ...note })),
+        sent: notes.read.sent.map((note) => ({ ...note })),
+        ownedPoi: notes.ownedPoi.map((record) => ({ ...record })),
+      };
+    } finally {
+      try {
+        await other.account?.close();
+      } finally {
+        try {
+          await other.publicAccount?.close();
+        } finally {
+          other.enrollment?.close();
+          other.identity?.close();
+        }
+      }
+    }
+  }
   const vault = require('../src/main/identity/vault');
   const publicApi = require('../src/main/wallet/railgun-account-public');
   let identity, enrollment, publicAccount, account, txid, staged;
@@ -612,6 +741,7 @@ async function main() {
       originalEntry,
       submissionBackend = handoff?.submissionBackend;
     let rootTransition = null;
+    let foreignAccounts, foreignDestination, foreignGate;
     if (!resuming) {
       phase = 'enroll';
       await vault.importVault(
@@ -708,14 +838,37 @@ async function main() {
           submitter: recipient,
           originalRoot: baseline.trees.find((tree) => tree.tree === note.tree).root,
         };
+      if (foreignTransfer) {
+        phase = 'foreign-accounts';
+        foreignAccounts = await runForeignFixture({ mode: 'addresses' });
+        const other = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
+          archive,
+          accountIndex: 1,
+        });
+        try {
+          foreignDestination = plain(other.descriptor);
+        } finally {
+          other.close();
+        }
+        // The vault's genuine identities are the published-mnemonic derivations.
+        assert.deepEqual(plain(identity.descriptor), foreignAccounts.accounts[0]);
+        assert.deepEqual(foreignDestination, foreignAccounts.accounts[1]);
+        assert.notEqual(foreignDestination.instanceId, baseline.read.instanceId);
+      }
       const request = {
         kind: {
           transfer: 'railgun-private-transfer',
           unshield: 'railgun-token-unshield',
           partial: 'railgun-partial-unshield',
+          foreign: 'railgun-private-transfer',
         }[kind],
         noteId: selected.id,
-        recipient: kind === 'transfer' ? baseline.read.instanceId : recipient,
+        recipient:
+          kind === 'transfer'
+            ? baseline.read.instanceId
+            : foreignTransfer
+              ? foreignDestination.instanceId
+              : recipient,
         ...(kind === 'partial' ? { unshieldAmount: (note.amount / 2n).toString() } : {}),
       };
       publicIdentity = publicApi.getRailgunAccountPublicIdentity(owners.coordinator, enrollment);
@@ -765,6 +918,28 @@ async function main() {
       assert.deepEqual(services.report().verificationKeyVariants, [
         kind === 'partial' ? '01x02' : '01x01',
       ]);
+      if (foreignTransfer) {
+        // The signed capsule names B with the explicit marker; the receiver job
+        // verified that destination before the one spending-sign key release.
+        assert.deepEqual(originalCapsule.selection, {
+          kind: 'railgun-private-transfer',
+          tree: note.tree,
+          position: note.position,
+          recipient: foreignDestination.instanceId,
+          recipientRelationship: 'foreign',
+        });
+        assert.equal(originalCapsule.version, 1);
+        assert.equal(originalCapsule.preparation.recipient, foreignDestination.instanceId);
+        assert.equal(originalCapsule.preparation.amount, note.amount.toString());
+        assert.deepEqual(receiverResults, [
+          {
+            phase: 'signed-interruption',
+            verified: true,
+            recipient: foreignDestination.instanceId,
+            recipientRelationship: 'foreign',
+          },
+        ]);
+      }
       await account.close();
       account = null;
       staged?.close();
@@ -779,6 +954,69 @@ async function main() {
         availablePhase.assertCurrent();
       } finally {
         availablePhase.release();
+      }
+      if (foreignTransfer) {
+        // The same pre-signing receiver gate on the real signed intent, where
+        // only the destination differs. No signing, hold or capsule follows.
+        phase = 'foreign-receiver-gate';
+        const {
+          verifyRailgunPrivateReceiver,
+        } = require('../src/main/wallet/railgun-private-receive');
+        const intent = originalCapsule.preparation;
+        const gate = async (address, accepted) => {
+          const startsBefore = jobs['railgun-private-receive-job.js'] || 0,
+            keysBefore = keys['private-receive'] || 0;
+          const check = verifyRailgunPrivateReceiver({
+            identity,
+            enrollment,
+            archive,
+            transaction: intent.transaction,
+            expected: intent.expected,
+            recipient: address,
+            recipientRelationship: 'foreign',
+            amount: intent.amount,
+          });
+          if (accepted) {
+            const verified = await check;
+            assert.equal(verified.recipientVerified, true);
+            assert.equal(verified.recipient, address);
+            assert.equal(verified.recipientRelationship, 'foreign');
+          } else
+            await assert.rejects(
+              check,
+              (error) => error.code === 'RAILGUN_PRIVATE_RECEIVER_REFUSED'
+            );
+          return {
+            outcome: accepted ? 'verified' : 'refused',
+            utilityStarts: (jobs['railgun-private-receive-job.js'] || 0) - startsBefore,
+            keyReleases: (keys['private-receive'] || 0) - keysBefore,
+          };
+        };
+        foreignGate = {
+          recipient: await gate(foreignDestination.instanceId, true),
+          ownKeysOtherEncoding: await gate(foreignAccounts.ownChainAddress, false),
+          unrelatedDestination: await gate(foreignAccounts.accounts[2].instanceId, false),
+          ownInstanceMarked: await gate(baseline.read.instanceId, false),
+        };
+        assert.deepEqual(foreignGate, {
+          recipient: { outcome: 'verified', utilityStarts: 1, keyReleases: 1 },
+          // Refused inside the utility before the viewing key is requested.
+          ownKeysOtherEncoding: { outcome: 'refused', utilityStarts: 1, keyReleases: 0 },
+          // A destination changed after review fails the sent-output check.
+          unrelatedDestination: { outcome: 'refused', utilityStarts: 1, keyReleases: 1 },
+          // Main's string policy refuses before any utility starts.
+          ownInstanceMarked: { outcome: 'refused', utilityStarts: 0, keyReleases: 0 },
+        });
+        assert.deepEqual(receiverResults.at(-1), {
+          phase: 'foreign-receiver-gate',
+          verified: true,
+          recipient: foreignDestination.instanceId,
+          recipientRelationship: 'foreign',
+        });
+        assert.equal(receiverResults.length, 2);
+        assert.equal(counts.spendingKeys, 1);
+        assert.equal(counts.intentRequests, 1);
+        assert.equal((await capsules.inspect()).records, 1);
       }
       if (advanced) {
         phase = 'advanced-owner-setup';
@@ -1063,6 +1301,9 @@ async function main() {
             workerResults,
             brokerResults,
             observedFaultExit: faultExits[0],
+            ...(foreignTransfer
+              ? { foreignReceivers: receiverResults.map(sanitizeReceiver), foreignGate }
+              : {}),
             durableSignedUnfinished: true,
             borrowedKeysWiped: true,
             services: services.report(),
@@ -1228,6 +1469,240 @@ async function main() {
     assert.equal(counts.forbiddenJobs + counts.forbiddenKeys + counts.forbiddenRpc, 0);
     assert.ok(loans.every((key) => key instanceof Uint8Array && key.every((value) => value === 0)));
     measuring = false;
+    let foreignReceipt;
+    if (foreignTransfer) {
+      // After measured recovery: the recovered output reaches the synthetic chain
+      // and other accounts. Nothing below changes the stored hold or its proof.
+      const receiptBefore = evidence();
+      phase = 'foreign-creator';
+      const capsule = after.stored.capsule;
+      const { selection, preparation } = capsule;
+      const { Interface } = require('ethers');
+      const { TRANSACT_ABI } = require('../src/main/wallet/railgun-private-policy');
+      const { PRIVATE_EVENTS } = require('../src/main/wallet/railgun-transact-receipt');
+      const { digestRailgunPrivateCapsule } = require('../src/main/wallet/railgun-private-capsule');
+      // The recovered transaction already matched the signed intent except for
+      // its proof, so this is the reviewed output with the signed ciphertext.
+      const [[provedTx]] = new Interface([TRANSACT_ABI]).decodeFunctionData(
+        'transact',
+        after.stored.provedTransaction.data
+      );
+      assert.deepEqual([...provedTx.commitments], [preparation.expected.commitment]);
+      assert.deepEqual([...provedTx.nullifiers], [preparation.expected.nullifier]);
+      const signedCheckpoint = restoredCheckpoint ?? originalCheckpoint;
+      assert.ok(signedCheckpoint.to.number < FOREIGN_BLOCK);
+      const outputPosition = signedCheckpoint.state.trees.find(
+        (value) => value.tree === selection.tree
+      ).length;
+      const outputId = `${selection.tree}:${outputPosition}`,
+        inputId = `${selection.tree}:${selection.position}`;
+      const {
+        captureRailgunPoiCreator,
+      } = require('../src/main/wallet/railgun-poi-creator-capture');
+      const captured = await captureRailgunPoiCreator({
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        capsule,
+        signal: enrollment.signal,
+      });
+      let creator;
+      try {
+        assert.equal(captured.observation.sourceAuthenticated, true);
+        creator = plain(captured.observation.creator);
+      } finally {
+        captured.close();
+      }
+      assert.equal(creator.type, inputCreator);
+      phase = 'foreign-receipt';
+      const eventsAbi = new Interface(PRIVATE_EVENTS);
+      const ciphertext = provedTx.boundParams.commitmentCiphertext[0];
+      const outputEvent = eventsAbi.encodeEventLog(eventsAbi.getEvent('Transact'), [
+        selection.tree,
+        outputPosition,
+        [...provedTx.commitments],
+        [
+          {
+            ciphertext: [...ciphertext.ciphertext],
+            blindedSenderViewingKey: ciphertext.blindedSenderViewingKey,
+            blindedReceiverViewingKey: ciphertext.blindedReceiverViewingKey,
+            annotationData: ciphertext.annotationData,
+            memo: ciphertext.memo,
+          },
+        ],
+      ]);
+      const receipt = await runForeignFixture({
+        mode: 'receipt',
+        descriptor: plain(identity.descriptor),
+        capsule,
+        provedData: after.stored.provedTransaction.data,
+        creator,
+        outputPosition,
+        transactionHash: FOREIGN_TRANSACTION,
+        blockNumber: FOREIGN_BLOCK,
+        event: outputEvent,
+      });
+      const [, recipientAccount, unrelatedAccount] = receipt.accounts;
+      assert.deepEqual(receipt.accounts[0], plain(identity.descriptor));
+      assert.equal(recipientAccount.instanceId, selection.recipient);
+      assert.equal(receipt.creatorType, inputCreator);
+      assert.deepEqual(receipt.poi, {
+        npkOutIsRecipientNpk: true,
+        valueOutIsFullValue: true,
+        outputHashIsReviewedCommitment: true,
+        blindedOutputIsRecipientBlindedCommitment: true,
+        alteredDestinationRefused: true,
+      });
+      // The capsule digest, and so the authorization digest, binds both.
+      const digest = digestRailgunPrivateCapsule(capsule);
+      const unmarked = plain(capsule),
+        redirected = plain(capsule);
+      delete unmarked.selection.recipientRelationship;
+      redirected.selection.recipient = unrelatedAccount.instanceId;
+      redirected.preparation.recipient = unrelatedAccount.instanceId;
+      assert.notEqual(digestRailgunPrivateCapsule(unmarked), digest);
+      assert.notEqual(digestRailgunPrivateCapsule(redirected), digest);
+      phase = 'foreign-chain';
+      const template = source.logs.find((log) => log.blockNumber === OFFSET + 30);
+      const base = {
+        ...template,
+        blockNumber: FOREIGN_BLOCK,
+        blockHash: hex(FOREIGN_BLOCK + 1000),
+        transactionHash: FOREIGN_TRANSACTION,
+        transactionIndex: 0,
+        removed: false,
+      };
+      services.appendLogs([
+        {
+          ...base,
+          ...eventsAbi.encodeEventLog(eventsAbi.getEvent('Nullified'), [
+            selection.tree,
+            [preparation.expected.nullifier],
+          ]),
+          logIndex: 0,
+        },
+        { ...base, ...outputEvent, logIndex: 1 },
+      ]);
+      services.observeAccount(1);
+      services.observeAccount(2);
+      phase = 'foreign-sender-wallet';
+      const accountWallet = require('../src/main/wallet/railgun-account-wallet');
+      await publicAccount.advance({ to: anchor.number, anchor });
+      const senderOwners = { identity, enrollment, coordinator: publicAccount.coordinator };
+      account = await accountWallet.openRailgunAccountWallet({
+        ...senderOwners,
+        archive,
+        mode: 'advance',
+      });
+      const senderView = accountWallet.readRailgunAccountOwnedNotes(account, senderOwners);
+      await account.close();
+      account = null;
+      // A records its own sent output and spent input; it never receives B's note.
+      assert.ok(!senderView.read.received.some((value) => value.id === outputId));
+      assert.ok(!senderView.ownedPoi.some((value) => value.id === outputId));
+      const sentOutput = senderView.read.sent.filter((value) => value.id === outputId);
+      assert.equal(sentOutput.length, 1);
+      assert.equal(sentOutput[0].amount, BigInt(preparation.amount));
+      assert.equal(BigInt(sentOutput[0].hash), BigInt(preparation.expected.commitment));
+      const spentInput = senderView.read.received.find((value) => value.id === inputId);
+      assert.equal(BigInt(spentInput.spentTxid), BigInt(FOREIGN_TRANSACTION));
+      phase = 'foreign-recipient-wallet';
+      const recipientView = await scanOtherAccount(1);
+      assert.deepEqual(recipientView.descriptor, recipientAccount);
+      // The Transact advanced-root vector already paid account 1 once, at block 40.
+      const earlierNotes = transact && advanced ? 1 : 0;
+      assert.equal(recipientView.received.length, earlierNotes + 1);
+      assert.ok(
+        recipientView.received.every(
+          (value) => value.id === outputId || value.position < outputPosition
+        )
+      );
+      const receivedNote = recipientView.received.find((value) => value.id === outputId);
+      assert.equal(receivedNote.amount, BigInt(preparation.amount));
+      assert.equal(BigInt(receivedNote.hash), BigInt(preparation.expected.commitment));
+      assert.equal(BigInt(receivedNote.txid), BigInt(FOREIGN_TRANSACTION));
+      assert.equal(receivedNote.spentTxid, false);
+      assert.deepEqual(recipientView.sent, []);
+      assert.equal(recipientView.ownedPoi.length, earlierNotes + 1);
+      const receivedPoi = recipientView.ownedPoi.find((value) => value.id === outputId);
+      assert.equal(receivedPoi.type, 'Transact');
+      assert.equal(receivedPoi.blockNumber, FOREIGN_BLOCK);
+      // B's own wallet derives the NPK and blinded commitment A's POI used.
+      assert.equal(BigInt(receivedPoi.npk), BigInt(receipt.recipient.npk));
+      assert.equal(
+        BigInt(receivedPoi.blindedCommitment),
+        BigInt(receipt.recipient.blindedCommitment)
+      );
+      phase = 'foreign-unrelated-wallet';
+      const unrelatedView = await scanOtherAccount(2);
+      assert.deepEqual(unrelatedView.descriptor, unrelatedAccount);
+      assert.deepEqual(
+        [unrelatedView.received, unrelatedView.sent, unrelatedView.ownedPoi],
+        [[], [], []]
+      );
+      const receiptAfter = evidence();
+      const setupForeign = resuming ? handoff.setupEvidence : null;
+      if (setupForeign) assert.ok(setupForeign.foreignGate && setupForeign.foreignReceivers);
+      const { npk: _npk, blindedCommitment: _blinded, ...recipientLeaf } = receipt.recipient;
+      foreignReceipt = {
+        accounts: {
+          sender: 0,
+          recipient: 1,
+          unrelated: 2,
+          publicMnemonicDerivationsMatchVaultIdentities: true,
+        },
+        signedCapsule: {
+          version: capsule.version,
+          recipientRelationship: selection.recipientRelationship,
+          destinationIsRecipientAccount: true,
+          markerAndDestinationBoundByCapsuleDigest: true,
+        },
+        receiverChecksBeforeSigning: setupForeign
+          ? setupForeign.foreignReceivers
+          : receiverResults.map(sanitizeReceiver),
+        receiverGate: setupForeign ? setupForeign.foreignGate : foreignGate,
+        output: {
+          tree: selection.tree,
+          position: outputPosition,
+          provedCommitmentIsReviewedCommitment: true,
+          syntheticEventAfterSignedCheckpoint: true,
+          syntheticEventAppendedAfterMeasuredRecovery: true,
+        },
+        engineLeafScan: {
+          recipient: recipientLeaf,
+          sender: receipt.sender,
+          unrelated: receipt.unrelated,
+        },
+        senderPoiReconstruction: {
+          ...receipt.poi,
+          creatorType: receipt.creatorType,
+          creatorCapturedFromAuthenticatedSource: true,
+        },
+        senderWallet: {
+          advancedToAnchor: true,
+          outputReceived: false,
+          outputSent: true,
+          inputSpentByOutputTransaction: true,
+        },
+        recipientWallet: {
+          enrolledInSameProfile: true,
+          outputReceived: true,
+          earlierVectorNotes: earlierNotes,
+          fullValue: true,
+          unspent: true,
+          creatorType: receivedPoi.type,
+          npkMatchesSenderPoi: true,
+          blindedCommitmentMatchesSenderPoi: true,
+        },
+        unrelatedWallet: { enrolledInSameProfile: true, receivedNotes: 0, sentNotes: 0 },
+        jobs: delta(receiptBefore.jobs, receiptAfter.jobs),
+        keys: delta(receiptBefore.keys, receiptAfter.keys),
+        rpcMethods: delta(receiptBefore.rpcMethods, receiptAfter.rpcMethods),
+        reviewCallbacksQualified: false,
+        submissionQualified: false,
+        poiSubmissionQualified: false,
+        recipientSpendQualified: false,
+      };
+    }
     phase = 'close';
     await publicAccount.close();
     publicAccount = null;
@@ -1260,6 +1735,7 @@ async function main() {
       ...(resuming ? { setupPID: handoff.setupPID, coldBootstrap } : {}),
       inputCreator,
       kind,
+      ...(foreignTransfer ? { foreignRecipient: foreignReceipt } : {}),
       sourceSha256: sha(sourceBytes),
       sourceHashes,
       beforeRecovery,
