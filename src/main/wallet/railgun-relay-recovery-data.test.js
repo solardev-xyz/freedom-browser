@@ -8,6 +8,7 @@ const { normalizeRailgunRelayPrePoiBinding } = require('./railgun-relay-pre-poi-
 const {
   decodeRailgunRelayLocalRecord: decode,
   digestRailgunRelayLocalIntent: digest,
+  matchRailgunRelayLocalReservation: matchReservation,
   decodeRailgunRelayLocalDocument: document,
   RAILGUN_RELAY_LOCAL_LIMITS: limits,
 } = require('./railgun-relay-recovery-data');
@@ -97,6 +98,124 @@ function envelope(entries, sequence) {
   };
 }
 const context = (value) => ({ binding: value.binding, walletId: value.walletId });
+function reservation(value, state = 'held') {
+  return {
+    id: value.id,
+    origin: 'relay-local-v4',
+    facts: {
+      ...value.draft.selection,
+      nullifier: value.draft.intent.expected.nullifier,
+      noteHash: value.draft.noteHash,
+      kind: 'railgun-relay-self-transfer',
+      checkpointHash: value.checkpointHash,
+      draftDigest: normalizeRailgunRelayDraftCapsule(value.draft).digest,
+      expectedHash: value.draft.intent.expectedHash,
+    },
+    state,
+    signing: ['signing-local', 'discarded-signed'].includes(state)
+      ? { gatesDigest: value.authorizationDigest, recordDigest: digest(text(value)) }
+      : null,
+  };
+}
+const joins = {
+  held: { held: null, 'cancelled-unsigned': 'release-unsigned' },
+  'signing-local': {
+    held: 'mark-recovery-signing',
+    'signing-local': null,
+    signed: null,
+    'ready-local': null,
+    'discarded-signed': 'release-signed',
+  },
+  'cancelled-unsigned': { 'cancelled-unsigned': null },
+  'discarded-signed': { 'discarded-signed': null },
+};
+test.each(
+  Object.keys(joins).flatMap((ledger) =>
+    [
+      'held',
+      'signing-local',
+      'signed',
+      'ready-local',
+      'cancelled-unsigned',
+      'discarded-signed',
+    ].map((record) => [ledger, record])
+  )
+)('ledger %s / record %s obeys marker-first and tombstone-first writes', (ledger, state) => {
+  const value = fixture(state),
+    entry = reservation(value, ledger);
+  if (!Object.hasOwn(joins[ledger], state)) {
+    expect(() => matchReservation(text(value), entry)).toThrow(refused);
+    return;
+  }
+  const result = matchReservation(text(value), entry);
+  expect(result).toEqual({
+    record: value,
+    recordDigest: digest(text(value)),
+    draftDigest: normalizeRailgunRelayDraftCapsule(value.draft).digest,
+    reservationState: ledger,
+    interruptedStep: joins[ledger][state],
+    authorityGranted: false,
+  });
+  expect(Object.isFrozen(result.record.draft)).toBe(true);
+});
+test.each([
+  'id',
+  'origin',
+  'state',
+  ...Object.keys(reservation(fixture()).facts).map((k) => 'facts.' + k),
+  'signing.gatesDigest',
+  'signing.recordDigest',
+])('cross-store mismatch %s refuses', (key) => {
+  const value = fixture('signed'),
+    entry = reservation(value, 'signing-local');
+  const parts = key.split('.'),
+    target = parts.length === 1 ? entry : entry[parts[0]];
+  target[parts.at(-1)] = 'wrong';
+  expect(() => matchReservation(text(value), entry)).toThrow(refused);
+});
+test.each(['private', 'relay-v3-never-signed'])(
+  'historical %s rows never gain local relay authority through a matching record',
+  (origin) => {
+    const value = fixture(),
+      entry = reservation(value);
+    entry.origin = origin;
+    expect(() => matchReservation(text(value), entry)).toThrow(refused);
+  }
+);
+test.each(['row', 'facts', 'signing'])(
+  'rejects %s accessors/proxies without invoking them',
+  (part) => {
+    const value = fixture('signed');
+    for (const proxy of [false, true]) {
+      let entry = reservation(value, 'signing-local');
+      const original = part === 'row' ? entry : entry[part];
+      const trap = jest.fn(() => {
+        throw new Error('must not execute');
+      });
+      let changed;
+      if (proxy) changed = new Proxy(original, { get: trap, ownKeys: trap, getPrototypeOf: trap });
+      else {
+        changed = { ...original };
+        Object.defineProperty(changed, Object.keys(original)[0], { enumerable: true, get: trap });
+      }
+      if (part === 'row') entry = changed;
+      else entry[part] = changed;
+      expect(() => matchReservation(text(value), entry)).toThrow(refused);
+      expect(trap).not.toHaveBeenCalled();
+    }
+  }
+);
+test('terminal signed join preserves signature and proof; rebinding another record refuses', () => {
+  const value = { ...fixture('ready-local'), state: 'discarded-signed' };
+  const entry = reservation(value, 'discarded-signed');
+  expect(matchReservation(text(value), entry).record).toEqual(value);
+  const changed = { ...value, generationId: hex(999) };
+  expect(() => matchReservation(text(changed), entry)).toThrow(refused);
+  entry.signing.recordDigest = digest(text(changed));
+  // Pure equality cannot authenticate an attacker changing both stores. The
+  // account owner must establish custody, floors and generation separately.
+  expect(matchReservation(text(changed), entry).authorityGranted).toBe(false);
+});
 test.each([
   'held',
   'signing-local',

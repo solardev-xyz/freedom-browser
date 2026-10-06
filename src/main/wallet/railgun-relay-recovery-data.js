@@ -156,6 +156,63 @@ function digestRailgunRelayLocalIntent(text) {
     .update(JSON.stringify(Object.fromEntries(IMMUTABLE.map((key) => [key, value[key]]))))
     .digest('hex');
 }
+/** Match detached data from two independently authenticated stores. This does
+ * not authenticate either store or authorize signing/release. The fixed owner
+ * must additionally assert the account, generation, floors and live exclusion.
+ * Signing writes the ledger marker first; retirement writes the record first.
+ * Only those two orders produce recoverable intermediate pairs.
+ */
+function matchRailgunRelayLocalReservation(text, entry) {
+  try {
+    const value = decodeRailgunRelayLocalRecord(text);
+    shape(entry, ['id', 'origin', 'facts', 'state', 'signing']);
+    assert.equal(entry.id, value.id);
+    assert.equal(entry.origin, 'relay-local-v4');
+    const draftDigest = normalizeRailgunRelayDraftCapsule(value.draft).digest;
+    const expected = {
+      tree: value.draft.selection.tree,
+      position: value.draft.selection.position,
+      nullifier: value.draft.intent.expected.nullifier,
+      noteHash: value.draft.noteHash,
+      kind: 'railgun-relay-self-transfer',
+      checkpointHash: value.checkpointHash,
+      draftDigest,
+      expectedHash: value.draft.intent.expectedHash,
+    };
+    shape(entry.facts, Object.keys(expected));
+    for (const key of Object.keys(expected)) assert.equal(entry.facts[key], expected[key]);
+    const recordDigest = digestRailgunRelayLocalIntent(text);
+    if (['signing-local', 'discarded-signed'].includes(entry.state)) {
+      shape(entry.signing, ['gatesDigest', 'recordDigest']);
+      assert.equal(entry.signing.gatesDigest, value.authorizationDigest);
+      assert.equal(entry.signing.recordDigest, recordDigest);
+    } else assert.equal(entry.signing, null);
+    let interruptedStep = null;
+    if (entry.state === 'held') {
+      assert.ok(['held', 'cancelled-unsigned'].includes(value.state));
+      if (value.state === 'cancelled-unsigned') interruptedStep = 'release-unsigned';
+    } else if (entry.state === 'signing-local') {
+      assert.ok(
+        ['held', 'signing-local', 'signed', 'ready-local', 'discarded-signed'].includes(value.state)
+      );
+      if (value.state === 'held') interruptedStep = 'mark-recovery-signing';
+      if (value.state === 'discarded-signed') interruptedStep = 'release-signed';
+    } else {
+      assert.ok(['cancelled-unsigned', 'discarded-signed'].includes(entry.state));
+      assert.equal(entry.state, value.state);
+    }
+    return freeze({
+      record: value,
+      recordDigest,
+      draftDigest,
+      reservationState: entry.state,
+      interruptedStep,
+      authorityGranted: false,
+    });
+  } catch {
+    throw fail();
+  }
+}
 function cost(value) {
   if (value.state === 'held') return 1;
   if (value.state === 'cancelled-unsigned') return 2;
@@ -211,6 +268,7 @@ function decodeRailgunRelayLocalDocument(text, context) {
 module.exports = {
   decodeRailgunRelayLocalRecord,
   digestRailgunRelayLocalIntent,
+  matchRailgunRelayLocalReservation,
   decodeRailgunRelayLocalDocument,
   RAILGUN_RELAY_LOCAL_LIMITS: LIMITS,
 };
