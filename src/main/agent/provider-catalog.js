@@ -197,6 +197,7 @@ function normalizeModels(providerId, body, knownModels = []) {
             : null,
         privacy,
         attestation: capabilities.supportsTeeAttestation === true,
+        ...(typeof capabilities.supportsE2EE === 'boolean' && { e2ee: capabilities.supportsE2EE }),
         // E2EE requires a distinct, verified client protocol. Never downgrade it to plaintext.
         available: spec.offline !== true && privacy !== 'e2ee',
         inputPrice: price(spec.pricing?.input?.usd),
@@ -327,6 +328,7 @@ class ProviderCatalog {
             available: m.available && m.privacy !== 'e2ee',
             privacy: m.privacy,
             ...(typeof m.attestation === 'boolean' && { attestation: m.attestation }),
+            ...(typeof m.e2ee === 'boolean' && { e2ee: m.e2ee }),
             tools: typeof m.tools === 'boolean' ? m.tools : null,
             reasoning: m.reasoning === true,
             jsonSchema: m.jsonSchema === true,

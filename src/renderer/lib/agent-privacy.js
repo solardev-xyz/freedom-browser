@@ -12,6 +12,52 @@ const el = (tag, text, className) => {
 const isLocal = route => route.providerId === 'ollama' &&
   /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(route.origin);
 
+// Catalog capabilities describe what can be checked, never a passed check.
+// In particular, a model name containing "e2ee" does not enable encryption.
+export function modelPrivacyInfo(providerId, model = {}, baseUrl = '') {
+  let label = 'Provider policy';
+  let detail = 'Privacy depends on the provider’s data policy; Freedom does not independently verify this model’s inference.';
+  if (providerId === 'ollama') {
+    const local = isLocal({ providerId, origin: baseUrl.replace(/\/v1\/?$/, '').replace(/\/$/, '') });
+    return { label: local ? 'On this device' : 'Your Ollama server',
+      detail: local ? 'Requests go to this device. Freedom cannot verify whether the model server forwards data elsewhere.'
+        : 'Requests go to the configured Ollama server. This is not necessarily on this device.' };
+  }
+  const hardware = model.attestation === true || model.privacy === 'tee';
+  if (hardware) {
+    label = 'Protected hardware (claimed)';
+    detail = 'The provider advertises hardware isolation. This is not proof of fully private inference.';
+  } else if (model.privacy === 'private') {
+    label = 'Private (provider claim)';
+    detail = 'The provider labels this model private. This is a policy claim, not independently verified protection.';
+  } else if (model.privacy === 'anonymized') {
+    label = 'Anonymized (provider claim)';
+    detail = 'The provider advertises anonymization; that does not establish that the model operator cannot read the content.';
+  } else if (model.privacy === 'external') {
+    label = 'External model provider';
+    detail = 'Requests are handled by an external model provider. Freedom does not verify protected hardware for this route.';
+  } else if (providerId === 'openrouter') {
+    label = 'Privacy varies by route';
+    detail = 'Privacy depends on the upstream provider and your OpenRouter routing settings.';
+  } else if (!model.privacy || model.privacy === 'unknown') {
+    label = 'Privacy not reported';
+    detail = 'The catalog does not report this model’s privacy capabilities. Refresh the catalog for current information.';
+  }
+  if (hardware && providerId === 'near-ai') {
+    label += ' · Connection + response checks';
+    detail += ' When used, Freedom checks CPU evidence, the connection and available response signatures. Gateway signatures do not prove which model produced a response.';
+  } else if (hardware && providerId === 'venice') {
+    label += ' · Hardware check only';
+    detail += ' Freedom checks CPU endpoint evidence, but cannot yet verify Venice’s exact request/response exchange.';
+  }
+  if (model.e2ee === true || model.privacy === 'e2ee') {
+    label += ' · E2EE offered, off in Freedom';
+    detail += ' The provider offers end-to-end encryption, but Freedom has not implemented that protocol.';
+  } else detail += ' End-to-end encryption is off in Freedom.';
+  if (hardware) detail += ' Hardware health is checked when used; GPU and approved server software are not yet verified.';
+  return { label, detail };
+}
+
 export function privacyLabel(summary) {
   const routes = summary?.routes || [];
   if (routes.some(route => route.binding?.failed)) return 'Some verification checks failed';

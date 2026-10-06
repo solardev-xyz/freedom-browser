@@ -1601,6 +1601,26 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(false);
   });
 
+  test('shows model privacy capabilities in the picker and setup before any inference', async () => {
+    const model = { id: 'qwen', name: 'Qwen', privacy: 'tee', attestation: true, tools: true };
+    const connection = { kind: 'hosted', providerId: 'near-ai', modelId: model.id };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...connection, connections: [connection] } }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{ providerId: 'near-ai', name: 'NEAR AI', models: [model] }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const row = ctx.elements['agent-model-menu-list'].children.find(item => item.className === 'agent-model-row');
+    expect(row.children[0].children[2].textContent).toBe('Protected hardware (claimed) · Connection + response checks');
+    expect(row.children[0].title).toContain('End-to-end encryption is off');
+    ctx.elements['agent-provider-select'].value = 'near-ai';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    const preview = ctx.elements['agent-provider-models-list'].children[0];
+    expect(preview.children[1].textContent).toContain('Connection + response checks');
+    expect(preview.title).toContain('Hardware health is checked when used');
+    expect(ctx.elements['agent-model-details'].children[0].textContent).toContain('GPU and approved server software are not yet verified');
+  });
+
   test('connecting an uncatalogued provider discovers models and stays on the provider screen', async () => {
     const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All'], ['tee', 'TEE only']], models: [] };
     const ctx = await loadAgentUi({ electronAPI: {
@@ -4614,7 +4634,7 @@ describe('Agent UI', () => {
     expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b']);
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
     expect(ctx.elements['agent-sidebar-back'].hidden).toBe(false);
-    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
     expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
     ctx.electronAPI.refreshAgentProviderModels = jest.fn().mockResolvedValue({
       ok: true, catalog: [], status: { configured: true, ...connection, connections: [{ ...connection, modelIds: ['qwen3:8b', 'new-model'] }] },
@@ -4622,7 +4642,7 @@ describe('Agent UI', () => {
     ctx.elements['agent-model-refresh'].dispatch('click');
     await flush();
     expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
-    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.textContent)).toEqual(['qwen3:8b', 'new-model']);
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
   });
 
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {

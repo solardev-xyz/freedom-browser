@@ -1,4 +1,4 @@
-import { createAgentPrivacy } from './agent-privacy.js';
+import { createAgentPrivacy, modelPrivacyInfo } from './agent-privacy.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
@@ -665,6 +665,7 @@ function configuredModels() {
       providerId: connection.providerId,
       modelId: model.id,
       name: model.name || model.id,
+      privacyInfo: modelPrivacyInfo(connection.providerId, model, connection.baseUrl),
     }));
   });
 }
@@ -1846,8 +1847,15 @@ function renderProviderModelPreview(providerId) {
     ? `Available models · ${available.length}` : 'Available models';
   elements.providerModelsList.replaceChildren(...available.map((model) => {
     const row = document.createElement('li');
-    row.textContent = model.name || model.id;
-    row.title = model.id;
+    const name = document.createElement('span');
+    name.textContent = model.name || model.id;
+    const info = modelPrivacyInfo(providerId, model, connection?.baseUrl);
+    const privacy = document.createElement('span');
+    privacy.className = 'agent-model-privacy';
+    privacy.textContent = info.label;
+    row.appendChild(name);
+    row.appendChild(privacy);
+    row.title = `${model.id}\n${info.detail}`;
     return row;
   }));
   elements.providerModelsList.scrollTop = 0;
@@ -2030,7 +2038,7 @@ function renderModelOptions(providerId) {
   const options = (provider?.models || []).map((model) => {
     const option = document.createElement('option');
     option.value = model.id;
-    option.textContent = `${favorites.includes(model.id) ? '★ ' : ''}${model.name || model.id}${model.available === false ? ' · Unavailable' : model.tools === false ? ' · No tool calling' : ''}`;
+    option.textContent = `${favorites.includes(model.id) ? '★ ' : ''}${model.name || model.id} · ${modelPrivacyInfo(providerId, model, connection?.baseUrl).label}${model.available === false ? ' · Unavailable' : model.tools === false ? ' · No tool calling' : ''}`;
     option.disabled = !uiModelAllowed(model, elements.privacyPolicy.value);
     return option;
   });
@@ -2054,11 +2062,16 @@ function renderModelDetails() {
     if (model.vision) parts.push('Images');
     if (model.reasoning) parts.push('Reasoning');
     parts.push(model.tools === true ? 'Tool calling' : model.tools === false ? 'No tool calling' : 'Tool support not reported');
-    if (model.privacy && !['standard', 'routing'].includes(model.privacy)) parts.push(`${model.privacy.toUpperCase()} · provider reported`);
     if (model.inputPrice != null && model.outputPrice != null) parts.push(`$${model.inputPrice} input / $${model.outputPrice} output per 1M tokens`);
   }
   elements.modelDetails.textContent = parts.join(' · ') || 'No matching models. Try another search or refresh the catalog.';
-
+  if (model) {
+    const info = modelPrivacyInfo(providerId, model, providerConnection(providerId)?.baseUrl);
+    const privacy = document.createElement('span');
+    privacy.className = 'agent-model-privacy-detail';
+    privacy.textContent = info.detail;
+    elements.modelDetails.appendChild(privacy);
+  }
 }
 
 async function saveProviderPreferences(preferences, providerId = elements.provider.value) {
@@ -2195,6 +2208,12 @@ function renderModelMenu() {
       check.textContent = active ? '✓' : '';
       option.appendChild(name);
       option.appendChild(check);
+      const privacy = document.createElement('span');
+      privacy.className = 'agent-model-privacy';
+      privacy.textContent = model.privacyInfo.label;
+      option.appendChild(privacy);
+      option.title = model.privacyInfo.detail;
+      option.setAttribute('aria-label', `${model.name}. ${model.privacyInfo.label}. ${model.privacyInfo.detail}`);
       option.addEventListener('click', () => selectModel(model.providerId, model.modelId));
       const row = document.createElement('div');
       row.className = 'agent-model-row';

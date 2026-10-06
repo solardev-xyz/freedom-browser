@@ -39,3 +39,16 @@ test('renders evidence as text, supports Escape and clears when switching conver
   delete global.document;
   delete global.window;
 });
+
+test('model previews distinguish claims, available checks and encryption that is not enabled', () => {
+  const { modelPrivacyInfo } = require('./agent-privacy');
+  expect(modelPrivacyInfo('near-ai', { privacy: 'tee', attestation: true }).label).toContain('Connection + response checks');
+  expect(modelPrivacyInfo('venice', { privacy: 'private', attestation: true, e2ee: true }).label)
+    .toBe('Protected hardware (claimed) · Hardware check only · E2EE offered, off in Freedom');
+  expect(modelPrivacyInfo('venice', { id: 'e2ee-qwen', privacy: 'private' }).label).not.toContain('E2EE offered');
+  expect(modelPrivacyInfo('near-ai', { privacy: 'external' }).label).toBe('External model provider');
+  expect(modelPrivacyInfo('ollama', {}, 'http://127.0.0.1:11434/v1').label).toBe('On this device');
+  expect(modelPrivacyInfo('ollama', {}, 'http://localhost.evil.test/v1').label).toBe('Your Ollama server');
+  expect(modelPrivacyInfo('openrouter', {}).label).toBe('Privacy varies by route');
+  expect(modelPrivacyInfo('venice', {}).label).toBe('Privacy not reported');
+});

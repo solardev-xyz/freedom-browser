@@ -56,6 +56,17 @@ plain language. Raw advisory IDs, labeled gateway/model reports, origins,
 role counts and timestamps are under technical details. No numeric trust score
 or green “private” verdict is derived from partial checks.
 
+### Before choosing a model
+
+The composer picker and connection setup's model overview show the same
+per-model privacy labels before inference: provider policy/private/anonymized
+claims, external routing, protected-hardware claims, local/configured Ollama
+endpoints, and the checks Freedom can perform. Venice's explicit `supportsE2EE`
+capability is retained in the catalog/cache and labeled offered but off in
+Freedom; names never enable or imply encryption. Details explain the limits.
+Catalog labels are capabilities, not live health results or completed checks.
+Refresh existing catalogs to obtain newly exposed provider capability metadata.
+
 ### Request-bound checks (2026-10-06)
 
 NEAR chat completions now obtain fresh CPU evidence **before each inference
