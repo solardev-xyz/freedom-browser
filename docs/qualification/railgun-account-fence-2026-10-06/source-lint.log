@@ -1,0 +1,4 @@
+
+> freedom-browser@0.8.7-dev lint
+> eslint . --max-warnings=0
+

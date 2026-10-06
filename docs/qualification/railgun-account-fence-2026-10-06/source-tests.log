@@ -1,0 +1,14 @@
+
+> freedom-browser@0.8.7-dev test
+> npm run test:unit -- --watchman=false --runInBand scripts/fixtures/railgun-account-fence-process.test.js scripts/qualify-railgun-account-fence.test.js src/main/wallet/railgun-account-fence.test.js
+
+
+> freedom-browser@0.8.7-dev test:unit
+> jest --watchman=false --runInBand scripts/fixtures/railgun-account-fence-process.test.js scripts/qualify-railgun-account-fence.test.js src/main/wallet/railgun-account-fence.test.js
+
+
+Test Suites: 3 passed, 3 total
+Tests:       77 passed, 77 total
+Snapshots:   0 total
+Time:        0.3 s, estimated 1 s
+Ran all test suites matching scripts/fixtures/railgun-account-fence-process.test.js|scripts/qualify-railgun-account-fence.test.js|src/main/wallet/railgun-account-fence.test.js.
