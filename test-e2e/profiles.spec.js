@@ -74,6 +74,292 @@ test('node config: Myotis is embedded per profile and can be disabled', async ({
   expect(updated.nodes.myotis).toEqual({ mode: 'disabled', backend: 'myotis-native' });
 });
 
+// Settings → Nodes commits on change like every other section (#271). Lives
+// here rather than in settings.spec.js because node config is only editable on
+// a catalog profile, which is what these fixtures launch. No
+// Save buttons; the mode select commits on change, the endpoint fields on
+// focusout/Enter; "Use external node" with an empty endpoint never reaches the
+// stored profile — the row flags the field and says nothing was saved.
+test('Nodes commit on change, and an external switch waits for its endpoint (#271)', async ({
+  window,
+  electronApp,
+}) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/nodes');
+  await input.press('Enter');
+
+  let page;
+  await expect
+    .poll(() => {
+      page = electronApp.windows().find((p) => p.url().includes('/pages/settings.html'));
+      return Boolean(page);
+    })
+    .toBe(true);
+
+  const storedBee = () =>
+    page.evaluate(() => window.freedomAPI.getActiveProfile().then((p) => p?.nodes?.bee || {}));
+  const row = page.locator('.profile-node[data-protocol="bee"]');
+  const mode = row.locator('[data-node-mode]');
+  const api = row.locator('[data-endpoint-field="externalApi"]');
+  const error = row.locator('[data-node-error]');
+
+  await expect(row).toBeVisible();
+  await expect(page.locator('#profile-nodes-card button')).toHaveCount(0);
+  expect((await storedBee()).mode || 'managed').toBe('managed');
+
+  // Clear any stored endpoint so the external switch has nothing to fall back on.
+  if ((await storedBee()).externalApi) {
+    await page.evaluate(() =>
+      window.freedomAPI.updateProfileNodeConfig('bee', { mode: 'managed', externalApi: '' })
+    );
+  }
+  await page.evaluate(() => (location.hash = '#nodes'));
+  await expect(api).toHaveValue('');
+
+  // External with no endpoint: inline error, flagged field, nothing stored.
+  await mode.selectOption('external');
+  await expect(api).toBeVisible();
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText(
+    /Enter the API endpoint .* Not saved — Swarm is still set to Managed by Freedom\./
+  );
+  await expect(api).toHaveAttribute('aria-invalid', 'true');
+  expect((await storedBee()).mode || 'managed').toBe('managed');
+
+  // The draft survives a forced re-render (the 5s refresh / profile broadcast).
+  await page.locator('#profile-nodes-status').click();
+  await page.evaluate(() => window.freedomAPI.updateProfileNodeConfig('ipfs', { mode: 'managed' }));
+  await expect(mode).toHaveValue('external');
+  await expect(error).toBeVisible();
+  expect((await storedBee()).mode || 'managed').toBe('managed');
+
+  // Filling the endpoint and leaving the field commits the switch.
+  await api.fill('http://127.0.0.1:1733');
+  await api.press('Tab');
+  await expect.poll(async () => (await storedBee()).mode).toBe('external');
+  expect((await storedBee()).externalApi).toBe('http://127.0.0.1:1733');
+  await expect(error).toBeHidden();
+  await expect(api).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#profile-nodes-status')).toHaveText(/Swarm saved\. Restart the node/);
+
+  // Editing the endpoint commits on Enter.
+  await api.fill('http://127.0.0.1:1833');
+  await api.press('Enter');
+  await expect.poll(async () => (await storedBee()).externalApi).toBe('http://127.0.0.1:1833');
+
+  // A refused endpoint stays a draft: the stored config keeps the old one.
+  await api.fill('not a url');
+  await api.press('Tab');
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText(
+    /Invalid profile node endpoint\. Not saved — the saved Swarm endpoint is unchanged\./
+  );
+  expect((await storedBee()).externalApi).toBe('http://127.0.0.1:1833');
+
+  // Switching back to managed commits immediately, without the endpoint.
+  await mode.selectOption('managed');
+  await expect.poll(async () => (await storedBee()).mode).toBe('managed');
+  await expect(api).toBeHidden();
+  await expect(error).toBeHidden();
+
+  // Two quick edits land in order: the second is compared with the stored
+  // config only after the first one lands, so it isn't skipped as a no-op.
+  // Both changes are dispatched in one task so neither reply can land between.
+  await page.evaluate(() => {
+    const select = document.querySelector('.profile-node[data-protocol="bee"] [data-node-mode]');
+    for (const value of ['disabled', 'managed']) {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  });
+  await page.evaluate('nodeSave');
+  expect((await storedBee()).mode).toBe('managed');
+  await expect(mode).toHaveValue('managed');
+});
+
+// Three edges of the Nodes commit path: a write that landed but whose apply
+// step threw is reported as saved, a refusal that isn't about the endpoint
+// doesn't flag the endpoint field, and an older refresh landing after a
+// commit's refresh can't repaint the stored mode back.
+test('Nodes: apply failure reads as saved, non-endpoint refusals flag nothing, stale refreshes are dropped', async ({
+  window,
+  electronApp,
+}) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/nodes');
+  await input.press('Enter');
+
+  let page;
+  await expect
+    .poll(() => {
+      page = electronApp.windows().find((p) => p.url().includes('/pages/settings.html'));
+      return Boolean(page);
+    })
+    .toBe(true);
+
+  const stored = (protocol) =>
+    page.evaluate(
+      (p) => window.freedomAPI.getActiveProfile().then((profile) => profile?.nodes?.[p] || {}),
+      protocol
+    );
+  const status = page.locator('#profile-nodes-status');
+
+  // 1. The catalog write lands, then applying it (radicle-manager) throws.
+  const radicle = page.locator('.profile-node[data-protocol="radicle"]');
+  await expect(radicle).toBeVisible();
+  await electronApp.evaluate(() => {
+    const manager = process.mainModule.require('./src/main/radicle-manager');
+    globalThis.__nodesSpecSync = manager.syncProfileMode;
+    manager.syncProfileMode = async () => {
+      // Ends in a period, as most error messages do: the status line must
+      // not double it.
+      throw new Error('radicle apply exploded.');
+    };
+  });
+  try {
+    await radicle.locator('[data-node-mode]').selectOption('disabled');
+    await expect.poll(async () => (await stored('radicle')).mode).toBe('disabled');
+    await expect(status).toHaveText(
+      /Radicle saved, but applying it failed: radicle apply exploded\. Restart/
+    );
+    await expect(radicle.locator('[data-node-error]')).toBeHidden();
+    await expect(radicle.locator('[data-node-mode]')).toHaveValue('disabled');
+  } finally {
+    await electronApp.evaluate(() => {
+      const manager = process.mainModule.require('./src/main/radicle-manager');
+      manager.syncProfileMode = globalThis.__nodesSpecSync;
+    });
+  }
+
+  // The page's freedomAPI is frozen by contextBridge, so the remaining cases
+  // swap the main-process invoke handler behind it and put it back after.
+  const swapHandler = (channel, kind) =>
+    electronApp.evaluate(
+      ({ ipcMain }, [ch, k]) => {
+        const handlers = ipcMain._invokeHandlers;
+        const real = handlers.get(ch);
+        globalThis.__nodesSpecReal = globalThis.__nodesSpecReal || {};
+        globalThis.__nodesSpecReal[ch] = real;
+        if (k === 'refuse') {
+          handlers.set(ch, async () => ({
+            success: false,
+            error: {
+              code: 'PROFILE_UPDATE_FAILED',
+              message: 'Profile node config was not updated',
+            },
+          }));
+        } else if (k === 'late-first') {
+          // The settings page's first answer is the snapshot taken now,
+          // delivered 1.5s late. Other callers (the chrome) pass through.
+          let first = true;
+          handlers.set(ch, async (event, ...args) => {
+            const live = await real(event, ...args);
+            if (!first || !/settings\.html/.test(event.sender.getURL())) return live;
+            first = false;
+            // Snapshot now: the handler's reply can share objects the commit
+            // mutates before this late answer is serialised.
+            const reply = JSON.parse(JSON.stringify(live));
+            return new Promise((resolve) => setTimeout(() => resolve(reply), 1500));
+          });
+        } else if (k === 'later-each-time') {
+          // The settings page's first four answers come back 1s, 2s, 3s and
+          // 4s late, so each lands after every earlier one. Later calls and
+          // other callers (the chrome) pass through.
+          globalThis.__nodesSpecCalls = 0;
+          handlers.set(ch, async (event, ...args) => {
+            const live = await real(event, ...args);
+            if (!/settings\.html/.test(event.sender.getURL())) return live;
+            const call = ++globalThis.__nodesSpecCalls;
+            if (call > 4) return live;
+            const reply = JSON.parse(JSON.stringify(live));
+            return new Promise((resolve) => setTimeout(() => resolve(reply), call * 1000));
+          });
+        }
+        return typeof real === 'function';
+      },
+      [channel, kind]
+    );
+  const restoreHandler = (channel) =>
+    electronApp.evaluate(({ ipcMain }, ch) => {
+      ipcMain._invokeHandlers.set(ch, globalThis.__nodesSpecReal[ch]);
+    }, channel);
+
+  // 2. A refusal that says nothing about the endpoint leaves the field alone.
+  const bee = page.locator('.profile-node[data-protocol="bee"]');
+  const beeMode = bee.locator('[data-node-mode]');
+  const beeError = bee.locator('[data-node-error]');
+  const api = bee.locator('[data-endpoint-field="externalApi"]');
+  await status.click(); // keyboard focus into the settings webview
+  expect(await swapHandler('profile:update-node-config', 'refuse')).toBe(true);
+  try {
+    await beeMode.selectOption('external');
+    await api.fill('http://127.0.0.1:1933');
+    await api.press('Tab');
+    await expect(beeError).toHaveText(/Profile node config was not updated\. Not saved/);
+    await expect(api).not.toHaveAttribute('aria-invalid', 'true');
+    expect((await stored('bee')).mode || 'managed').toBe('managed');
+  } finally {
+    await restoreHandler('profile:update-node-config');
+  }
+  await beeMode.selectOption('managed');
+  await expect(beeError).toBeHidden();
+
+  // 3. A refresh that started before a commit but answers after it is dropped.
+  await status.click(); // focus out of the card
+  // Pause the 5s timer so the delayed first answer is this refresh's, not a
+  // timer tick's (settings.js is a classic script: its top-level bindings
+  // are reachable from a string expression).
+  await page.evaluate('setProfileRefreshActive(false)');
+  expect(await swapHandler('profile:get-active', 'late-first')).toBe(true);
+  try {
+    // Don't return the promise: evaluate would wait for it.
+    await page.evaluate('window.__staleRefresh = refreshProfileSection(true); undefined');
+    await beeMode.selectOption('disabled');
+    await expect.poll(async () => (await stored('bee')).mode).toBe('disabled');
+    await page.evaluate(() => window.__staleRefresh);
+  } finally {
+    await restoreHandler('profile:get-active');
+  }
+  // Read once, right after the late answer landed: the next 5s refresh would
+  // repaint the right value and hide a stale render from a polling assertion.
+  expect(
+    await page.evaluate(
+      `[document.querySelector('.profile-node[data-protocol="bee"] [data-node-mode]').value,
+        storedProfileNodes.bee?.mode]`
+    )
+  ).toEqual(['disabled', 'disabled']);
+
+  // 4. Two quick commits whose first one's forced refresh is superseded by
+  // a newer, slower refresh: the second commit must still compare against
+  // what the first one stored, not the snapshot from before it. Bee is
+  // stored as disabled; pick managed then disabled again.
+  expect(await swapHandler('profile:get-active', 'later-each-time')).toBe(true);
+  try {
+    await page.evaluate(() => {
+      const select = document.querySelector('.profile-node[data-protocol="bee"] [data-node-mode]');
+      for (const value of ['managed', 'disabled']) {
+        select.value = value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+    // The first commit's profile-updated broadcast asks twice (the Radicle
+    // launch row and the Nodes card); its own forced refresh is the third.
+    // Start a fourth, slower still, so that forced refresh is superseded and
+    // returns without rendering before the second commit's no-op check.
+    await expect.poll(() => electronApp.evaluate(() => globalThis.__nodesSpecCalls)).toBe(3);
+    await page.evaluate('refreshProfileSection(true); undefined');
+    await page.evaluate('nodeSave');
+    expect((await stored('bee')).mode).toBe('disabled');
+  } finally {
+    await restoreHandler('profile:get-active');
+  }
+  await page.evaluate('refreshProfileSection(true)');
+  await expect(beeMode).toHaveValue('disabled');
+  await page.evaluate('setProfileRefreshActive(true)');
+});
+
 const settingsEval = (window, script) =>
   window.evaluate(async (s) => {
     const webview = [...document.querySelectorAll('webview')].find((candidate) => {
@@ -248,17 +534,15 @@ test('use: opening an already-running profile focuses it without recording a lau
   await electronApp.evaluate(
     // electronApp.evaluate calls back with the Electron module as the first arg;
     // the spec's value (target.id) arrives as the second.
-    (_electron, id) => globalThis.__FREEDOM_TEST_HARNESS__.simulateProfileFocus(id, { focused: true }),
+    (_electron, id) =>
+      globalThis.__FREEDOM_TEST_HARNESS__.simulateProfileFocus(id, { focused: true }),
     target.id
   );
   await clearLaunches(electronApp);
 
   // Drive the same trusted IPC the flyout invokes; it resolves once the focus
   // decision is made, so the no-launch assertion below isn't racy.
-  const result = await window.evaluate(
-    (id) => window.electronAPI.openProfile(id),
-    target.id
-  );
+  const result = await window.evaluate((id) => window.electronAPI.openProfile(id), target.id);
   expect(result?.success).toBe(true);
   expect(result?.focused).toBe(true);
 
@@ -442,7 +726,9 @@ test('delete: a failed delete restores the card and surfaces the error toast', a
 
   // …and the optimistically-removed card is restored (still in the catalog).
   await expect
-    .poll(() => managerEval(window, `!!document.querySelector('[data-profile-id="${created.id}"]')`))
+    .poll(() =>
+      managerEval(window, `!!document.querySelector('[data-profile-id="${created.id}"]')`)
+    )
     .toBe(true);
   expect(await findProfile(window, (p) => p.id === created.id)).not.toBeNull();
 });
@@ -450,7 +736,10 @@ test('delete: a failed delete restores the card and surfaces the error toast', a
 // --- delete the default profile (#124) -------------------------------------
 
 const hasTrash = (window, id) =>
-  managerEval(window, `!!document.querySelector('[data-profile-id="${id}"] [data-delete-profile]')`);
+  managerEval(
+    window,
+    `!!document.querySelector('[data-profile-id="${id}"] [data-delete-profile]')`
+  );
 
 test('delete: the active default profile offers no trash, a second profile does', async ({
   window,

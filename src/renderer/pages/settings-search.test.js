@@ -345,34 +345,37 @@ describe('buildSettingsSearchIndex', () => {
     expect(buildSettingsSearchIndex(decorated).map((entry) => entry.label)).toContain('Still here');
   });
 
-  test('indexes the config panel a resolver method opens under itself', () => {
-    // Colibri's prover endpoint and the quorum agreement threshold are the
-    // two settings of the resolution policy itself. They render as a
-    // `.resolver-config` sibling of the `.resolver-method` row rather than
-    // inside it, so an index that only read rows and methods would answer
-    // "prover" with the Colibri method's help text and "threshold" with
-    // nothing at all.
+  test('indexes the config panel a resolver method keeps in its Advanced disclosure', () => {
+    // Colibri's proof server and the quorum agreement threshold are the two
+    // settings of the resolution policy itself. Since #270 they render as a
+    // `.resolver-config` panel *inside* the method row's collapsed Advanced
+    // disclosure — the one place a row nests in another — so the index has
+    // to go on into a row for the rows inside it, and an index that stopped
+    // at the method would answer "threshold" with nothing at all.
     expect(SOURCE).toContain('<div class="resolver-config" data-method-config="colibri">');
     expect(SOURCE).toContain('<div class="resolver-config" data-method-config="quorum">');
-    expect(SOURCE).toContain('<p class="row-label">Prover endpoint</p>');
+    expect(SOURCE).toContain('<p class="row-label">Proof server</p>');
     expect(SOURCE).toContain('<p class="row-label">Agreement threshold</p>');
+    expect(SOURCE).toContain('extra: configRow');
     const fragment = parseFragment(
       '<section class="section" id="ens"><h2 class="section-title">Name Resolution</h2>' +
         '<div class="card"><div class="resolver-list">' +
         '<div class="resolver-method" data-method="quorum"><div class="row-body">' +
-        '<div class="resolver-title-line"><p class="row-label">RPC quorum</p></div>' +
-        '<p class="row-help">Requires matching responses.</p></div></div>' +
+        '<div class="resolver-title-line"><p class="row-label">Several servers must agree</p></div>' +
+        '<details class="row-advanced" data-advanced="quorum"><summary>Advanced</summary>' +
+        '<p class="row-help">RPC quorum — several endpoints must agree.</p>' +
         '<div class="resolver-config" data-method-config="quorum">' +
         '<div class="resolver-config-line"><div class="row-body">' +
         '<p class="row-label">Agreement threshold</p>' +
-        '<p class="row-help">Require matching responses from independently configured RPC providers.</p>' +
+        '<p class="row-help">How many servers must give the same answer.</p>' +
         '</div></div></div>' +
+        '</details></div></div>' +
         '</div></div></section>'
     );
     const entries = buildSettingsSearchIndex(fragment);
     expect(entries.map((entry) => entry.label)).toEqual([
       'Name Resolution',
-      'RPC quorum',
+      'Several servers must agree',
       'Agreement threshold',
     ]);
     expect(matchSettingsSearch(entries, 'agreement')[0]).toMatchObject({
@@ -380,16 +383,39 @@ describe('buildSettingsSearchIndex', () => {
       section: 'Name Resolution',
       rank: 0,
     });
-    // The method row's help does not swallow the panel under it, the way a
-    // `.row-help` belongs to its own row everywhere else on the page.
-    expect(entries.find((entry) => entry.label === 'RPC quorum').help).toBe(
-      'Requires matching responses.'
+    // The method row's help does not swallow the panel nested in it, the way
+    // a `.row-help` belongs to its own row everywhere else on the page…
+    expect(entries.find((entry) => entry.label === 'Several servers must agree').help).toBe(
+      'RPC quorum — several endpoints must agree.'
     );
+    expect(entries.find((entry) => entry.label === 'Agreement threshold').help).toBe(
+      'How many servers must give the same answer.'
+    );
+    // …but it does carry the collapsed technical text, so the name the row
+    // went by before #270 still finds it.
+    expect(matchSettingsSearch(entries, 'rpc quorum').map((hit) => hit.label)).toEqual([
+      'Several servers must agree',
+    ]);
+  });
+
+  test('a row nested in a switched-off row is switched off with it', () => {
+    const fragment = parseFragment(
+      '<section class="section" id="ens"><h2 class="section-title">Name Resolution</h2>' +
+        '<div class="resolver-method" hidden><div class="row-body">' +
+        '<p class="row-label">Proof check</p>' +
+        '<details class="row-advanced"><div class="resolver-config"><div class="row-body">' +
+        '<p class="row-label">Proof server</p></div></div></details>' +
+        '</div></div></section>'
+    );
+    expect(buildSettingsSearchIndex(fragment).map((entry) => entry.label)).toEqual([
+      'Name Resolution',
+    ]);
   });
 
   test('numbers same-labelled rows so a jump can tell them apart', () => {
-    // A chain's detail page lists "Direct RPC" twice — once in its read and
-    // verification order, once in its transaction broadcast order. The reveal
+    // A chain's detail page lists "One server, unchecked" (Direct RPC) twice —
+    // once in its read and verification order, once in its transaction
+    // broadcast order. The reveal
     // re-finds the row after the view has repainted, so a result has to carry
     // which of the two it is or both jump to the first.
     expect(SOURCE).toContain("accessRows(cid, 'read', readOrder)");
@@ -399,17 +425,19 @@ describe('buildSettingsSearchIndex', () => {
       `<p class="row-label">${label}</p></div></div>`;
     const fragment = parseFragment(
       '<section class="section" id="chains"><h2 class="section-title">Ethereum</h2>' +
-        `<div class="card">${method('read', 'Myotis P2P light client')}${method('read', 'Direct RPC')}</div>` +
-        `<div class="card">${method('broadcast', 'Direct RPC')}</div>` +
+        `<div class="card">${method('read', 'Local node')}${method('read', 'One server, unchecked')}</div>` +
+        `<div class="card">${method('broadcast', 'One server, unchecked')}</div>` +
         '</section>'
     );
     const entries = buildSettingsSearchIndex(fragment);
     expect(
-      entries.filter((entry) => entry.label === 'Direct RPC').map((entry) => entry.labelIndex)
+      entries
+        .filter((entry) => entry.label === 'One server, unchecked')
+        .map((entry) => entry.labelIndex)
     ).toEqual([0, 1]);
     // The first of a label is 0, not undefined — `locateRow` indexes with it.
-    expect(entries.find((entry) => entry.label === 'Myotis P2P light client').labelIndex).toBe(0);
-    // And the numbering is per section, so an unrelated section's "Direct RPC"
+    expect(entries.find((entry) => entry.label === 'Local node').labelIndex).toBe(0);
+    // And the numbering is per section, so an unrelated section's same label
     // would start over at 0 rather than continuing this one's count.
     expect(entries.filter((entry) => entry.labelIndex === 0)).toHaveLength(2);
   });

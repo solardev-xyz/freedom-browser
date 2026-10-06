@@ -101,6 +101,17 @@ $('manage-profiles-link')?.addEventListener('click', () => {
   window.open('freedom://profiles', '_blank');
 });
 let activeProfileId = null;
+// Nodes: the last stored per-protocol config, uncommitted row edits
+// (protocol → { mode, values, invalid, error }), and the commit queue.
+let storedProfileNodes = {};
+const nodeDrafts = new Map();
+let nodeSave = Promise.resolve();
+// Bumped by every refresh that goes on to fetch. A refresh's reply is only
+// rendered if no later refresh started meanwhile: the 5s timer, a commit's
+// forced refresh and the profile-updated broadcast can overlap, and an older
+// fetch landing last would repaint the old mode and leave storedProfileNodes
+// (which the commit no-op check compares against) behind the catalog.
+let profileRefreshSeq = 0;
 // The committed profile name — the baseline an in-progress edit reverts
 // to (Esc, an empty/unchanged value, or a failed save).
 let savedProfileName = '';
@@ -117,6 +128,74 @@ const esc = (s) =>
     /[&<>"]/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
   );
+
+// The four network sources, named and explained once (#269). Name
+// Resolution's method list and a chain's read/broadcast order both read
+// this table, so the same source can no longer reach the user under two
+// names with two explanations. `label` and `help` are the visible layer
+// and carry no term a user would have to look up (#270); a help line is
+// kept only where the row's badge does not already say it (`Ready` /
+// `Syncing` / `Off` for the local node, `2 of 3` for the servers that
+// must agree). `advanced` is the technical name and the mechanism, shown
+// collapsed under each row's Advanced disclosure — and still indexed by
+// the settings search, so "Myotis", "Colibri", "RPC quorum" and "Direct
+// RPC" keep finding the row they used to label. `broadcastHelp` replaces
+// `help` on a chain's Transaction broadcast rows: a broadcast hands a
+// signed transaction on and gets nothing back to verify, so the read
+// help ("nothing verifying the answer") does not describe it.
+const NETWORK_SOURCE_COPY = Object.freeze({
+  myotis: Object.freeze({
+    label: 'Local node',
+    help: '',
+    broadcastHelp: '',
+    advanced:
+      'Myotis — a peer-to-peer Ethereum and Gnosis light client running inside Freedom. It checks answers against the chain itself, with no server involved. ENS lookups prefer finalized state; newer ENS record types and .wei/.gwei names (WNS, GNS) use a verified optimistic beacon head.',
+  }),
+  colibri: Object.freeze({
+    label: 'Proof check',
+    help: 'A server answers; Freedom checks the proof itself.',
+    advanced:
+      "Colibri — a remote prover sends a cryptographic proof with each answer, and Freedom verifies that proof locally against the chain's consensus.",
+  }),
+  quorum: Object.freeze({
+    label: 'Several servers must agree',
+    help: '',
+    advanced:
+      'RPC quorum — several independently configured RPC endpoints are asked at one anchored block, and the answer counts only if enough of them return byte-identical results.',
+  }),
+  direct: Object.freeze({
+    label: 'One server, unchecked',
+    help: 'Fastest, and the only option with nothing verifying the answer.',
+    broadcastHelp: 'Hands the signed transaction to the first working server.',
+    advanced:
+      'Direct RPC — the first working configured RPC endpoint answers and nothing verifies the response.',
+  }),
+});
+
+// A source row's help line, omitted rather than left empty when the
+// table gives it none. Broadcast rows read `broadcastHelp` where the
+// table has one.
+const networkSourceHelp = (source, kind = 'read') => {
+  const meta = NETWORK_SOURCE_COPY[source];
+  const help =
+    kind === 'broadcast' && meta && 'broadcastHelp' in meta ? meta.broadcastHelp : meta?.help;
+  return help ? `<p class="row-help">${esc(help)}</p>` : '';
+};
+
+// A source row's collapsed Advanced disclosure (#270): the technical name
+// and mechanism, plus `extra` — the settings only someone who knows what
+// a prover or a quorum is needs to touch. `key` names the disclosure so a
+// controller that repaints its list can put it back the way the user left
+// it.
+const networkSourceAdvanced = (source, { key = source, open = false, extra = '' } = {}) => {
+  const advanced = NETWORK_SOURCE_COPY[source]?.advanced;
+  if (!advanced && !extra) return '';
+  return `<details class="row-advanced" data-advanced="${esc(key)}"${open ? ' open' : ''}>
+      <summary>Advanced</summary>
+      ${advanced ? `<p class="row-help">${esc(advanced)}</p>` : ''}
+      ${extra}
+    </details>`;
+};
 
 const DEFAULT_SEARCH_PROVIDER = 'duckduckgo';
 const SEARCH_TERMS_PLACEHOLDER = '{searchTerms}';
@@ -430,8 +509,10 @@ const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').
 const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
 
 // Every element under `el` carrying one of `names` (a class, or a list
-// of them), not descending into a match: rows never nest, and a
-// `.row-help` belongs to the row it is under.
+// of them), not descending into a match. Stopping at a match is what
+// makes a nested row a barrier: `settingsSearchOwn` passes the row
+// classes in alongside the label/help ones, so a `.row-help` belongs to
+// the nearest row it is under, never to a row further out.
 const settingsSearchCollect = (el, names, out = []) => {
   const wanted = Array.isArray(names) ? names : [names];
   for (const child of Array.from(el?.children || [])) {
@@ -446,16 +527,21 @@ const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] |
 
 // What counts as one setting: a card row, the drag-to-reorder rows of
 // Name Resolution's method list and a chain's read/broadcast order, and
-// the `.resolver-config` panel a method opens under itself (Colibri's
-// prover endpoint, the quorum agreement threshold) — all of which carry
+// the `.resolver-config` panel inside a method row's Advanced disclosure
+// (the proof server URL, the agreement threshold) — all of which carry
 // the same `.row-label` / `.row-help` pair without the `.row` class.
-// Those are where "Colibri", "RPC quorum", "Myotis" and the two
-// resolver settings are named, so leaving them out would make the whole
-// resolution policy unsearchable.
+// Those are where the four sources and the two resolver settings are
+// named (and, through the indexed Advanced text, where "Colibri", "RPC
+// quorum" and "Myotis" still are), so leaving them out would make the
+// whole resolution policy unsearchable.
 // The chain master list is the fourth: its `.net-row` buttons are the
 // only place a chain — a custom one above all, which exists nowhere
 // else on the page — is named, so leaving them out makes a chain
 // unfindable by the name the user gave it.
+// Since #270 a method's `.resolver-config` panel sits inside the method
+// row's own Advanced disclosure — the one place on the page where a row
+// nests in another — so the walk below goes on into a row for the rows
+// inside it, and a row's own label and help stop at a nested row.
 const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-row'];
 
 // What names a row, and what describes it under that name. A `.net-row`
@@ -465,6 +551,14 @@ const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-
 const SETTINGS_SEARCH_LABELS = ['row-label', 'net-row-name'];
 const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
 
+// The elements carrying one of `names` that belong to `row` itself: a
+// row nested inside it is a barrier, so the proof server's label and
+// help answer for the proof server rather than for the method around it.
+const settingsSearchOwn = (row, names) =>
+  settingsSearchCollect(row, [...names, ...SETTINGS_SEARCH_ROWS]).filter((el) =>
+    names.some((name) => el.classList?.contains(name))
+  );
+
 // A row this build has switched off is not a setting the user has, and
 // offering it would jump to nothing: the `[data-tor]` rows on a build
 // that bundles no Arti binary and the `[data-linux-only]` row off Linux
@@ -473,18 +567,34 @@ const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
 // attribute (`launchRow.hidden = !supported`). Both shapes read here.
 const settingsSearchHidden = (row) => Boolean(row?.hidden) || row?.style?.display === 'none';
 
+// Every row under `el` in document order, a row nested in another
+// included right after it. A row switched off takes the rows inside it
+// with it.
+const settingsSearchAllRows = (el, out = []) => {
+  for (const child of Array.from(el?.children || [])) {
+    if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
+    const isRow = SETTINGS_SEARCH_ROWS.some((name) => child.classList?.contains(name));
+    if (isRow) {
+      if (settingsSearchHidden(child)) continue;
+      out.push(child);
+    }
+    settingsSearchAllRows(child, out);
+  }
+  return out;
+};
+
 // The rows a section contributes to the index, in document order, each
 // with the label it is found by. Shared with the page's `locateRow` so
 // the two walk the same rows: a result is "the nth row in this section
 // labelled X", which is the only thing that tells two same-labelled
-// rows apart (a chain lists "Direct RPC" in both its read order and its
-// broadcast order) once the view they came from has repainted.
+// rows apart (a chain lists "One server, unchecked" in both its read
+// order and its broadcast order) once the view they came from has
+// repainted.
 const settingsSearchRows = (section) =>
-  settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)
-    .filter((row) => !settingsSearchHidden(row))
+  settingsSearchAllRows(section)
     .map((row) => ({
       row,
-      label: settingsSearchText(settingsSearchFirst(row, SETTINGS_SEARCH_LABELS)),
+      label: settingsSearchText(settingsSearchOwn(row, SETTINGS_SEARCH_LABELS)[0]),
     }))
     .filter((entry) => entry.label);
 
@@ -530,7 +640,7 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {
         section: sectionLabel,
         label,
         labelIndex,
-        help: settingsSearchCollect(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
+        help: settingsSearchOwn(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
         element: row,
       });
     }
@@ -682,8 +792,8 @@ const settingsSearchResets = [];
   // Re-found rather than kept as a node: Chains, RPC Providers and Site
   // Permissions rebuild their view from IPC state on `hashchange`, so
   // the node the result was built from can be gone. A label alone does
-  // not identify it — a chain names "Direct RPC" once in its read order
-  // and again in its broadcast order — so the result's position among
+  // not identify it — a chain names "One server, unchecked" once in its
+  // read order and again in its broadcast order — so the result's position among
   // its section's same-labelled rows picks which one it was, walking
   // the same rows the index was built from. If the repaint left fewer
   // of them than there were, the first is still better than nothing.
@@ -700,6 +810,15 @@ const settingsSearchResets = [];
   // aligned to its top — see `settingsSearchScrollBlock` above.
   const applyHighlight = (row) => {
     clearHighlight();
+    // A row inside a collapsed Advanced disclosure (#270) has no box until
+    // the disclosure is open, so open every one around it first.
+    for (
+      let d = row.parentElement?.closest('details');
+      d;
+      d = d.parentElement?.closest('details')
+    ) {
+      d.open = true;
+    }
     row.scrollIntoView({ block: settingsSearchScrollBlock(row, window.innerHeight) });
     row.classList.add('settings-search-hit');
     highlighted = row;
@@ -959,10 +1078,12 @@ const renderModeOptions = (protocol, mode) =>
     )
     .join('');
 
-const renderExternalEditor = (protocol, config, mode) => {
+const renderExternalEditor = (protocol, config, mode, draft) => {
   const definition = SERVICE_DEFINITIONS[protocol];
-  const fields = externalFields(definition, config).map(
-    (field) => `
+  const fields = externalFields(definition, config).map((field) => {
+    const value = draft?.values?.[field.key] ?? field.value ?? '';
+    const invalid = draft?.invalid?.includes(field.key);
+    return `
       <div class="profile-node-field">
         <label for="profile-${protocol}-${field.key}">${esc(field.label)}</label>
         <input
@@ -970,12 +1091,12 @@ const renderExternalEditor = (protocol, config, mode) => {
           class="rpc-input"
           data-endpoint-field="${field.key}"
           type="text"
-          value="${esc(field.value || '')}"
+          value="${esc(value)}"
           placeholder="${esc(field.placeholder || '')}"
-          spellcheck="false"
+          spellcheck="false"${invalid ? ' aria-invalid="true"' : ''}
         />
-      </div>`
-  );
+      </div>`;
+  });
 
   const note = definition?.externalNote
     ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
@@ -1006,11 +1127,17 @@ const setExternalEditorVisible = (row, mode) => {
 
 const renderProfileNodes = (profile, registry, settings) => {
   const nodes = profile?.nodes || {};
+  storedProfileNodes = nodes;
   const rows = visibleProfileServices(settings).map((definition) => {
     const protocol = definition.protocol;
     const config = nodes[protocol] || {};
     const service = registry?.[protocol] || {};
-    const mode = config.mode || 'managed';
+    // An uncommitted edit (an external switch still missing its endpoint,
+    // or one the main process refused) outlives the periodic re-render, so
+    // the row keeps showing what the user picked next to why it was not
+    // saved — the stored config underneath is untouched.
+    const draft = nodeDrafts.get(protocol);
+    const mode = draft?.mode || config.mode || 'managed';
     const lines = endpointLines(definition, config, service);
     const details = lines.length
       ? lines.map((line) => `<div class="profile-node-detail">${esc(line)}</div>`).join('')
@@ -1027,15 +1154,40 @@ const renderProfileNodes = (profile, registry, settings) => {
         <div class="profile-node-status">
           <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
           ${details}
-          ${renderExternalEditor(protocol, config, mode)}
-          <div class="profile-node-actions">
-            <button type="button" class="btn" data-save-node="${protocol}">Save</button>
-          </div>
+          ${renderExternalEditor(protocol, config, mode, draft)}
+          <p class="profile-node-error" data-node-error role="alert"${draft?.error ? '' : ' hidden'}>${esc(draft?.error || '')}</p>
         </div>
       </div>`;
   });
 
+  // Committing one row re-renders the card (the profile-updated broadcast),
+  // usually just as focus moves on to the next control. Put focus — and
+  // anything already typed into a focused field — back where it was.
+  const active = document.activeElement;
+  const focused =
+    active && profileFields.nodesCard.contains(active)
+      ? {
+          protocol: active.closest('.profile-node')?.dataset.protocol,
+          field: active.dataset?.endpointField,
+          mode: active.matches?.('[data-node-mode]'),
+          value: active.value,
+        }
+      : null;
+
   profileFields.nodesCard.innerHTML = rows.join('');
+
+  if (focused?.protocol && (focused.field || focused.mode)) {
+    const row = profileFields.nodesCard.querySelector(
+      `.profile-node[data-protocol="${focused.protocol}"]`
+    );
+    const target = focused.field
+      ? row?.querySelector(`[data-endpoint-field="${focused.field}"]`)
+      : row?.querySelector('[data-node-mode]');
+    if (target) {
+      if (focused.field) target.value = focused.value;
+      target.focus();
+    }
+  }
 };
 
 const refreshProfileSection = async (force = false) => {
@@ -1049,13 +1201,17 @@ const refreshProfileSection = async (force = false) => {
     return;
   }
 
+  const seq = ++profileRefreshSeq;
   try {
     const [profile, registry, settings] = await Promise.all([
       freedomAPI.getActiveProfile?.(),
       freedomAPI.getServiceRegistry().catch(() => null),
       freedomAPI.getSettings?.().catch(() => null),
     ]);
-    activeProfileId = profile?.id || null;
+    if (seq !== profileRefreshSeq) return;
+    const profileId = profile?.id || null;
+    if (profileId !== activeProfileId) nodeDrafts.clear();
+    activeProfileId = profileId;
     const label = profile?.displayName || profile?.id || '';
     if (profileFields.nameInput && profileFields.nameInput !== document.activeElement) {
       profileFields.nameInput.value = label;
@@ -1063,6 +1219,7 @@ const refreshProfileSection = async (force = false) => {
     }
     renderProfileNodes(profile, registry, settings);
   } catch {
+    if (seq !== profileRefreshSeq) return;
     profileFields.nodesCard.innerHTML =
       '<div class="profile-node-empty">Profile data unavailable</div>';
   }
@@ -1133,54 +1290,200 @@ profileFields.nameInput?.addEventListener('keydown', (event) => {
   }
 });
 
+// Nodes commit the way every other Settings control does: the mode
+// <select> on change, the endpoint fields when they are left (focusout,
+// or Enter). There is no Save button. "Use external node" only commits
+// once its endpoint fields are filled; until then the row keeps the
+// selection as a draft, flags the empty fields and says the stored mode
+// is unchanged. The main process validates a patch as a whole and
+// refuses it as a whole, so a refused commit can't half-apply either.
+const nodeRowConfig = (row) => {
+  const protocol = row?.dataset.protocol;
+  const mode = row?.querySelector('[data-node-mode]')?.value;
+  const values = {};
+  for (const input of row?.querySelectorAll('[data-endpoint-field]') || []) {
+    values[input.dataset.endpointField] = input.value.trim();
+  }
+  return { protocol, mode, values };
+};
+
+// Paint a row's draft state onto whatever row is live now: a commit's
+// reply can land after a re-render replaced the row it started from.
+const setNodeDraft = (protocol, draft) => {
+  if (draft) nodeDrafts.set(protocol, draft);
+  else nodeDrafts.delete(protocol);
+  const row = profileFields.nodesCard?.querySelector(`.profile-node[data-protocol="${protocol}"]`);
+  if (!row) return;
+  for (const input of row.querySelectorAll('[data-endpoint-field]')) {
+    if (draft?.invalid?.includes(input.dataset.endpointField)) {
+      input.setAttribute('aria-invalid', 'true');
+    } else {
+      input.removeAttribute('aria-invalid');
+    }
+  }
+  const error = row.querySelector('[data-node-error]');
+  if (error) {
+    error.textContent = draft?.error || '';
+    error.hidden = !draft?.error;
+  }
+};
+
+// Why a row was not saved, ending with what the stored config still is.
+const nodeNotSavedMessage = (protocol, mode, reason) => {
+  const label = SERVICE_LABELS[protocol];
+  const storedMode = storedProfileNodes?.[protocol]?.mode || 'managed';
+  const kept =
+    mode === storedMode
+      ? `the saved ${label} endpoint is unchanged`
+      : `${label} is still set to ${NODE_MODE_LABELS[storedMode] || storedMode}`;
+  return `${reason} Not saved — ${kept}.`;
+};
+
+// Which endpoint fields a refused commit should flag. Only an endpoint
+// error names fields; any other refusal (profile not editable, catalog
+// write failed) says nothing about what was typed, so nothing is flagged.
+const invalidNodeFields = (error) => {
+  const details = error?.details || {};
+  if (typeof details.field === 'string') return [details.field];
+  if (Array.isArray(details.fields)) return details.fields;
+  return [];
+};
+
+const commitNodeRow = (row) => {
+  const { protocol, mode, values } = nodeRowConfig(row);
+  if (!protocol || !mode) return Promise.resolve();
+  const label = SERVICE_LABELS[protocol];
+  const fieldKeys = Object.keys(values);
+
+  if (mode === 'external') {
+    const missing = fieldKeys.filter((key) => !values[key]);
+    if (missing.length) {
+      const names = (SERVICE_DEFINITIONS[protocol]?.externalFields || [])
+        .filter((field) => missing.includes(field.key))
+        .map((field) => field.label);
+      setNodesStatus('', null);
+      setNodeDraft(protocol, {
+        mode,
+        values,
+        invalid: missing,
+        error: nodeNotSavedMessage(
+          protocol,
+          mode,
+          `Enter the ${names.join(', ')} endpoint to use an external ${label} node.`
+        ),
+      });
+      return Promise.resolve();
+    }
+  }
+
+  // Only an external commit carries endpoints. Switching to managed or
+  // disabled leaves the stored endpoint as it is (the catalog merges), so a
+  // half-typed endpoint in a now-hidden field can't make that switch fail.
+  const config = mode === 'external' ? { mode, ...values } : { mode };
+
+  // Serialise commits so two quick edits land in the order they were made
+  // (IPC replies are not guaranteed to come back in dispatch order), and
+  // compare against the stored config only once the previous commit landed.
+  nodeSave = nodeSave
+    .catch(() => {})
+    .then(async () => {
+      const stored = storedProfileNodes?.[protocol] || {};
+      const unchanged =
+        mode === (stored.mode || 'managed') &&
+        (mode !== 'external' || fieldKeys.every((key) => values[key] === (stored[key] || '')));
+      if (unchanged) {
+        // Picking the stored mode again, or leaving a field as it was, is
+        // not an edit: nothing to save, and nothing to restart.
+        setNodeDraft(protocol, null);
+        return;
+      }
+      setNodesStatus(`Saving ${label} node settings…`, 'testing');
+      try {
+        const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
+        // `details.saved`: the catalog write landed and only applying it to
+        // the running node failed — the config is stored, so it is not a
+        // draft and must not be reported as "not saved".
+        const saved = result?.success || result?.error?.details?.saved === true;
+        if (!saved) {
+          const err = new Error(result?.error?.message || 'Profile node settings were not saved');
+          err.invalid = invalidNodeFields(result?.error);
+          throw err;
+        }
+        // Take the stored config from the reply rather than from the forced
+        // refresh below: a newer refresh (the 5s timer, a profile-updated
+        // broadcast) can supersede that one, and it returns without
+        // rendering — the next queued commit's no-op check would then compare
+        // against the config from before this one landed.
+        const storedNodes = result.profile?.nodes;
+        if (
+          storedNodes &&
+          typeof storedNodes === 'object' &&
+          result.profile.id === activeProfileId
+        ) {
+          storedProfileNodes = storedNodes;
+        }
+        setNodeDraft(protocol, null);
+        if (result.success) {
+          setNodesStatus(
+            `${label} saved. Restart the node to apply mode or endpoint changes.`,
+            'success'
+          );
+        } else {
+          setNodesStatus(
+            `${label} saved, but applying it failed: ${String(result.error.message || 'unknown error').replace(/[.\s]+$/, '')}. Restart the node to apply mode or endpoint changes.`,
+            'error'
+          );
+        }
+        await refreshProfileSection(true);
+        await refreshRadicleLaunchStatus();
+      } catch (err) {
+        setNodesStatus('', null);
+        setNodeDraft(protocol, {
+          mode,
+          values,
+          invalid: err?.invalid || [],
+          error: nodeNotSavedMessage(
+            protocol,
+            mode,
+            `${err?.message || 'Profile node settings were not saved'}.`
+          ),
+        });
+      }
+    });
+  return nodeSave;
+};
+
 profileFields.nodesCard?.addEventListener('change', (event) => {
   const modeSelect = event.target?.closest?.('[data-node-mode]');
   if (!modeSelect) return;
-  setExternalEditorVisible(modeSelect.closest('.profile-node'), modeSelect.value);
+  const row = modeSelect.closest('.profile-node');
+  setExternalEditorVisible(row, modeSelect.value);
+  commitNodeRow(row);
 });
 
-profileFields.nodesCard?.addEventListener('click', async (event) => {
-  const saveButton = event.target?.closest?.('[data-save-node]');
-  if (!saveButton) return;
+profileFields.nodesCard?.addEventListener('input', (event) => {
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  // Keep a pending draft's values current so a re-render (profile update,
+  // the 5s refresh once focus leaves the card) doesn't drop what was typed.
+  const row = input.closest('.profile-node');
+  const draft = nodeDrafts.get(row?.dataset.protocol);
+  if (draft) draft.values = nodeRowConfig(row).values;
+});
 
-  const row = saveButton.closest('.profile-node');
-  const protocol = saveButton.dataset.saveNode;
-  const mode = row?.querySelector('[data-node-mode]')?.value;
-  if (!protocol || !mode) return;
+profileFields.nodesCard?.addEventListener('focusout', (event) => {
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  commitNodeRow(input.closest('.profile-node'));
+});
 
-  const config = { mode };
-  for (const input of row.querySelectorAll('[data-endpoint-field]')) {
-    config[input.dataset.endpointField] = input.value.trim();
-  }
-
-  if (mode === 'external') {
-    const missing = [...row.querySelectorAll('[data-endpoint-field]')]
-      .filter((input) => !input.value.trim())
-      .map((input) => input.previousElementSibling?.textContent || 'Endpoint');
-    if (missing.length) {
-      setNodesStatus(
-        `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
-        'error'
-      );
-      return;
-    }
-  }
-
-  saveButton.disabled = true;
-  setNodesStatus(`Saving ${SERVICE_LABELS[protocol]} node settings…`, 'testing');
-  try {
-    const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
-    if (!result?.success) {
-      throw new Error(result?.error?.message || 'Profile node settings were not saved');
-    }
-    setNodesStatus('Saved. Restart the node to apply mode or endpoint changes.', 'success');
-    await refreshProfileSection(true);
-    await refreshRadicleLaunchStatus();
-  } catch (err) {
-    setNodesStatus(err?.message || 'Profile node settings were not saved', 'error');
-  } finally {
-    saveButton.disabled = false;
-  }
+profileFields.nodesCard?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  const input = event.target?.closest?.('[data-endpoint-field]');
+  if (!input) return;
+  event.preventDefault();
+  // Blur commits via the focusout handler, like the profile name field.
+  input.blur();
 });
 
 const currentFormState = () => ({
@@ -1986,7 +2289,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       <h2 class="section-title">Chains</h2>
       <p class="row-help" style="margin-bottom: 16px">
         The chains Freedom resolves names and balances on. Select a
-        chain to manage its RPC and prover endpoints.
+        chain to choose how Freedom reads it and which servers it asks.
       </p>
       <div class="card">${rows}</div>
       ${cardButton('Add chain', 'add-chain')}`;
@@ -2171,24 +2474,12 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       </div>`;
   };
 
-  const accessMeta = {
-    myotis: {
-      label: 'Myotis P2P light client',
-      help: 'Verified locally against the chain; no RPC endpoint involved.',
-    },
-    colibri: {
-      label: 'Colibri cryptographic verification',
-      help: 'Verifies prover responses against the chain consensus.',
-    },
-    quorum: {
-      label: 'RPC quorum',
-      help: 'Requires matching responses from independently configured RPC endpoints.',
-    },
-    direct: {
-      label: 'Direct RPC',
-      help: 'Compatibility fallback using the first working configured endpoint.',
-    },
-  };
+  // Which source rows' Advanced disclosures are open, as
+  // `chainId:kind:source`. The detail repaints from scratch on every
+  // config change, and a disclosure the user opened should not snap shut
+  // under them; the chain id keeps one opened on one chain's detail from
+  // rendering open on every other chain's.
+  const openAccessAdvanced = new Set();
 
   const sourceStatus = (source, cid) => {
     if (source === 'myotis') {
@@ -2214,7 +2505,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
         (entry) => entry.role === 'prover' && entry.coverage?.[cid] && !entry.removed
       )
         ? 'Available'
-        : 'No prover';
+        : 'No proof server';
     }
     const count = config.sources.filter(
       (entry) =>
@@ -2233,22 +2524,34 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const accessRows = (cid, kind, order) =>
     order
       .map((source, index) => {
-        const meta = accessMeta[source];
+        const meta = NETWORK_SOURCE_COPY[source];
         if (!meta) return '';
+        const key = `${cid}:${kind}:${source}`;
         return `<div class="resolver-method" draggable="true" tabindex="0"
               data-access-kind="${kind}" data-access-source="${source}">
             <span class="resolver-drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>
             <span class="resolver-rank">${index + 1}</span>
             <div class="row-body">
               <div class="resolver-title-line">
-                <p class="row-label">${meta.label}</p>
+                <p class="row-label">${esc(meta.label)}</p>
                 <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
               </div>
-              <p class="row-help">${meta.help}</p>
+              ${networkSourceHelp(source, kind)}
+              ${networkSourceAdvanced(source, { key, open: openAccessAdvanced.has(key) })}
             </div>
           </div>`;
       })
       .join('');
+
+  // The broadcast section's intro, said from the chain's actual order: a
+  // custom chain has no local node, and a user can drag the server first.
+  const BROADCAST_SOURCE_PHRASE = { myotis: 'the local node', direct: 'a server' };
+  const broadcastIntro = (order) => {
+    const named = order.map((source) => BROADCAST_SOURCE_PHRASE[source]).filter(Boolean);
+    if (!named.length) return 'Signed transactions go out through the sources below.';
+    if (named.length === 1) return `Signed transactions go out through ${named[0]}.`;
+    return `Signed transactions go out through ${named[0]} first, with ${named[1]} as the fallback.`;
+  };
 
   // --- detail: one chain's access policy + endpoints ------------
   // Verified/local sources are ordered first; RPC inventory remains
@@ -2277,7 +2580,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     const proverConfig = supportsVerifiedSources
       ? `<div class="card" style="margin-top: 12px">
           <div class="rpc-block" style="border-top: none">
-            <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
+            <p class="row-label">Proof server</p>
+            <p class="row-help" style="margin-bottom: 8px">Where ${esc(NETWORK_SOURCE_COPY.colibri.label)} gets its proofs.</p>
             <div class="rpc-row">
               <input class="rpc-input" data-chain-prover="${esc(cid)}"
                 data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
@@ -2314,7 +2618,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       ${proverConfig}
 
       <h3 class="subsection-title">Transaction broadcast</h3>
-      <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
+      <p class="row-help" style="margin-bottom: 12px">${esc(broadcastIntro(broadcastOrder))}</p>
       <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
       ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
@@ -2557,9 +2861,24 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     section.querySelectorAll('.dragging').forEach((row) => row.classList.remove('dragging'));
   });
 
+  // `toggle` does not bubble, so it is caught on the way down.
+  section.addEventListener(
+    'toggle',
+    (e) => {
+      const key = e.target?.dataset?.advanced;
+      if (!key || !e.target.closest('[data-access-source]')) return;
+      if (e.target.open) openAccessAdvanced.add(key);
+      else openAccessAdvanced.delete(key);
+    },
+    true
+  );
+
   section.addEventListener('keydown', async (e) => {
     const row = e.target.closest('[data-access-source]');
     if (!row || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    // The arrows reorder the focused row, not a row whose Advanced
+    // disclosure happens to have focus inside it.
+    if (e.target !== row) return;
     e.preventDefault();
     await reorderAccess(
       row.dataset.accessKind,
@@ -2824,34 +3143,14 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const policyStatus = $('ens-policy-status');
   if (!list || !preferVerified) return;
 
+  // Names and explanations come from NETWORK_SOURCE_COPY, shared with a
+  // chain's detail page (#269); only the links are this list's own.
   const METHODS = [
-    {
-      id: 'myotis',
-      label: 'Myotis light client',
-      help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
-      link: '#nodes',
-      linkLabel: 'Node settings',
-    },
-    {
-      id: 'colibri',
-      label: 'Colibri',
-      help: 'A remote prover produces the witness; Freedom verifies the cryptographic proof locally.',
-    },
-    {
-      id: 'quorum',
-      label: 'RPC quorum',
-      help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
-      link: '#chains/1',
-      linkLabel: 'Manage endpoints',
-    },
-    {
-      id: 'direct',
-      label: 'Direct RPC',
-      help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
-      link: '#chains/1',
-      linkLabel: 'Configure',
-    },
-  ];
+    { id: 'myotis', link: '#nodes', linkLabel: 'Node settings' },
+    { id: 'colibri' },
+    { id: 'quorum', link: '#chains/1', linkLabel: 'Manage servers' },
+    { id: 'direct', link: '#chains/1', linkLabel: 'Configure' },
+  ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
 
   let config = { networks: {}, sources: [] };
@@ -2866,6 +3165,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   let draggedMethod = null;
   let dropPlacement = null;
   let policyLoaded = false;
+  // Which methods' Advanced disclosures are open: every change here
+  // repaints the list, and the proof server and agreement threshold
+  // live inside the disclosure.
+  const openAdvanced = new Set();
 
   preferVerified.disabled = true;
 
@@ -2932,7 +3235,11 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
 
     const hasProver = activeSources('prover').length > 0;
-    setBadge('colibri', hasProver ? 'Verified' : 'No prover', hasProver ? 'verified' : 'warning');
+    setBadge(
+      'colibri',
+      hasProver ? 'Verified' : 'No proof server',
+      hasProver ? 'verified' : 'warning'
+    );
     setBadge(
       'quorum',
       `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -2940,7 +3247,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     );
     setBadge(
       'direct',
-      customRpc ? 'User endpoint' : rpcSources.length ? 'Public endpoint' : 'No endpoint',
+      customRpc ? 'Your server' : rpcSources.length ? 'Public server' : 'No server',
       'warning'
     );
   };
@@ -2971,8 +3278,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           configRow = `<div class="resolver-config" data-method-config="colibri">
                 <div class="resolver-config-line">
                   <div class="row-body">
-                    <p class="row-label">Prover endpoint</p>
-                    <p class="row-help">Leave empty to use the corpus.core default.</p>
+                    <p class="row-label">Proof server</p>
+                    <p class="row-help">Leave empty to use the default.</p>
                   </div>
                   <input type="text" id="ens-prover-url" class="rpc-input"
                     placeholder="https://mainnet1.colibri-proof.tech" spellcheck="false" />
@@ -2983,15 +3290,15 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <div class="resolver-config-line">
                   <div class="row-body">
                     <p class="row-label">Agreement threshold</p>
-                    <p class="row-help">Require matching responses from independently configured RPC providers. ${activeSources('rpc').length} currently available.</p>
+                    <p class="row-help">How many servers must give the same answer. ${activeSources('rpc').length} currently available.</p>
                   </div>
                   <div class="resolver-quorum-fields">
                     Require
-                    <select data-quorum-field="m" aria-label="Required matching RPC answers">
+                    <select data-quorum-field="m" aria-label="Servers that must agree">
                       ${numberOptions(2, currentQuorum.k, currentQuorum.m)}
                     </select>
                     out of
-                    <select data-quorum-field="k" aria-label="RPC providers queried">
+                    <select data-quorum-field="k" aria-label="Servers asked">
                       ${numberOptions(3, 9, currentQuorum.k)}
                     </select>
                   </div>
@@ -3009,11 +3316,12 @@ freedomAPI.onSettingsUpdated?.((settings) => {
             <span class="resolver-rank">${enabled ? index + 1 : '–'}</span>
             <div class="row-body">
               <div class="resolver-title-line">
-                <p class="row-label">${method.label}</p>
+                <p class="row-label">${esc(method.label)}</p>
                 <span class="resolver-badge" data-method-status="${id}">Loading…</span>
               </div>
-              <p class="row-help">${method.help}</p>
+              ${networkSourceHelp(id)}
               ${link}
+              ${networkSourceAdvanced(id, { open: openAdvanced.has(id), extra: configRow })}
             </div>
             <div class="resolver-controls">
               <label class="toggle" aria-label="Enable ${method.label}">
@@ -3021,8 +3329,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <span class="slider"></span>
               </label>
             </div>
-          </div>
-          ${configRow}`;
+          </div>`;
       })
       .join('');
 
@@ -3069,7 +3376,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           ...(config.networks['1'].quorum || {}),
           ...quorum,
         };
-        setPolicyStatus('RPC quorum saved.', 'success');
+        setPolicyStatus('Agreement threshold saved.', 'success');
       });
     return quorumSave;
   };
@@ -3146,6 +3453,18 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
   };
 
+  // `toggle` does not bubble, so it is caught on the way down.
+  list.addEventListener(
+    'toggle',
+    (event) => {
+      const id = event.target?.dataset?.advanced;
+      if (!id || !METHOD_IDS.has(id)) return;
+      if (event.target.open) openAdvanced.add(id);
+      else openAdvanced.delete(id);
+    },
+    true
+  );
+
   list.addEventListener('keydown', (event) => {
     const handle = event.target.closest?.('[data-drag-handle]');
     if (!handle || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
@@ -3213,7 +3532,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       try {
         await persistQuorum();
       } catch (err) {
-        setPolicyStatus(err?.message || 'Failed to update the RPC quorum.', 'error');
+        setPolicyStatus(err?.message || 'Failed to update the agreement threshold.', 'error');
         refresh();
       }
       return;
@@ -3263,10 +3582,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
             },
           })
         : await freedomAPI.resetEndpointSourceCoverage(proverId, 1);
-      if (result?.success === false) throw new Error(result.error || 'Prover was not saved');
+      if (result?.success === false) throw new Error(result.error || 'Proof server was not saved');
       await refresh();
     } catch (err) {
-      setPolicyStatus(err?.message || 'Failed to update the Colibri prover.', 'error');
+      setPolicyStatus(err?.message || 'Failed to update the proof server.', 'error');
     }
   });
 

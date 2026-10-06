@@ -14,7 +14,11 @@
  *   #278 `+` and `→` glyphs baked into some button labels and not their
  *        siblings, where they are part of the accessible name;
  *   #283 a sub-heading rendered as a row label with hand-written margins;
- *   #284 seven destructive actions split three/four with no rule behind it.
+ *   #284 seven destructive actions split three/four with no rule behind it;
+ *   #269 the four network sources named and explained twice, differently, by
+ *        Name Resolution and a chain's detail page;
+ *   #270 Ethereum-internals jargon (quorum, prover, light client, beacon head,
+ *        WNS/GNS, corpus.core) in the visible labels and helper lines.
  *
  * Each of those is a string (or a class) that reads fine on its own and is only
  * wrong next to its siblings, so the sweeps below are written per *set* — every
@@ -256,5 +260,143 @@ describe('settings.html helper lines earn their place (#273)', () => {
       '<p class="row-help">Ad blocking is off on these sites and their subdomains.</p>'
     );
     expect(SOURCE).not.toContain('reload open tabs');
+  });
+});
+
+/**
+ * The shared network-source table, evaluated out of the shipped script. It is
+ * a plain object literal of strings, so lifting it out keeps the assertions on
+ * the real copy rather than on a duplicate of it.
+ */
+const networkSourceCopy = () => {
+  const match = SOURCE.match(/const NETWORK_SOURCE_COPY = (Object\.freeze\(\{[\s\S]*?\n\}\));/);
+  expect(match).not.toBeNull();
+  return new Function(`return ${match[1]};`)();
+};
+
+describe('settings.html names each network source once (#269)', () => {
+  test('one table, four sources, each with a label, a help line and Advanced text', () => {
+    const copy = networkSourceCopy();
+    expect(Object.keys(copy)).toEqual(['myotis', 'colibri', 'quorum', 'direct']);
+    for (const entry of Object.values(copy)) {
+      expect(typeof entry.label).toBe('string');
+      expect(entry.label).not.toBe('');
+      expect(typeof entry.help).toBe('string');
+      expect(entry.advanced).toMatch(/\S/);
+    }
+    expect(SOURCE.match(/const NETWORK_SOURCE_COPY = /g)).toHaveLength(1);
+  });
+
+  test('Name Resolution and the chain detail both read it, and neither keeps its own', () => {
+    // The chain detail's private table is gone…
+    expect(SOURCE).not.toMatch(/\baccessMeta\b/);
+    expect(SOURCE).toContain('const meta = NETWORK_SOURCE_COPY[source];');
+    // …and Name Resolution's methods carry only their links, the copy spread
+    // in from the shared table.
+    const methods = SOURCE.match(/const METHODS = \[([\s\S]*?)\]\.map\(/);
+    expect(methods).not.toBeNull();
+    expect(methods[1]).not.toMatch(/\b(label|help|advanced):/);
+    expect(SOURCE).toContain('...NETWORK_SOURCE_COPY[method.id]');
+    // Both renderers go through the same help and disclosure helpers.
+    expect(SOURCE.match(/networkSourceHelp\((source, kind|id)\)/g)).toHaveLength(2);
+    expect(SOURCE.match(/networkSourceAdvanced\((source|id),/g)).toHaveLength(2);
+  });
+
+  test('broadcast rows get broadcast help, not the read help (R2-M1)', () => {
+    const copy = networkSourceCopy();
+    // Both broadcast sources carry their own line; the read help talks about
+    // verifying an answer a broadcast does not have.
+    expect(copy.myotis.broadcastHelp).toBe('');
+    expect(copy.direct.broadcastHelp).toMatch(/\S/);
+    expect(copy.direct.broadcastHelp).not.toMatch(/answer|verif|fastest/i);
+    expect(SOURCE).toContain('${networkSourceHelp(source, kind)}');
+    // The broadcast intro is derived from the chain's order, not hard-coded.
+    expect(SOURCE).not.toContain('>Signed transactions go out through the local node first');
+    expect(SOURCE).toContain('${esc(broadcastIntro(broadcastOrder))}');
+  });
+
+  test('the help line is omitted where the badge already carries it', () => {
+    const copy = networkSourceCopy();
+    expect(copy.myotis.help).toBe('');
+    expect(copy.quorum.help).toBe('');
+    expect(SOURCE).toContain('return help ? `<p class="row-help">${esc(help)}</p>` : \'\';');
+  });
+});
+
+describe('settings.html keeps jargon out of the visible layer (#270)', () => {
+  // Terms a daily-driver user would have to look up. They may appear in a
+  // source's Advanced text, which is collapsed by default, and nowhere a user
+  // reads without asking for it.
+  const JARGON =
+    /quorum|prover|light client|beacon|finalized|WNS|GNS|byte-identical|anchored|P2P|\bRPC\b|corpus|endpoint|Myotis|Colibri/i;
+
+  test('every source label and help line is plain language', () => {
+    for (const [source, entry] of Object.entries(networkSourceCopy())) {
+      expect([source, entry.label]).toEqual([source, expect.not.stringMatching(JARGON)]);
+      expect([source, entry.help]).toEqual([source, expect.not.stringMatching(JARGON)]);
+      if ('broadcastHelp' in entry) {
+        expect([source, entry.broadcastHelp]).toEqual([source, expect.not.stringMatching(JARGON)]);
+      }
+    }
+  });
+
+  test("the technical name is kept behind each row's Advanced disclosure", () => {
+    const copy = networkSourceCopy();
+    expect(copy.myotis.advanced).toMatch(/^Myotis — /);
+    // WNS/GNS go through Myotis's generic eth_call, pinned to the optimistic
+    // head (ens-resolver.js tryMyotisContractPath), not finalized state.
+    expect(copy.myotis.advanced).toMatch(/\.wei\/\.gwei names .*optimistic/);
+    expect(copy.colibri.advanced).toMatch(/^Colibri — /);
+    expect(copy.quorum.advanced).toMatch(/^RPC quorum — /);
+    expect(copy.direct.advanced).toMatch(/^Direct RPC — /);
+    expect(SOURCE).toContain('<details class="row-advanced"');
+    expect(SOURCE).toContain('<summary>Advanced</summary>');
+    // `open` only when the user left it open — collapsed is the default.
+    expect(SOURCE).toContain("${open ? ' open' : ''}");
+  });
+
+  test('the proof server and agreement threshold live inside the disclosure', () => {
+    expect(SOURCE).toContain(
+      'networkSourceAdvanced(id, { open: openAdvanced.has(id), extra: configRow })'
+    );
+    // Rendered only there, not again as a sibling of the method row.
+    expect(SOURCE.match(/\$\{configRow\}/g) || []).toHaveLength(0);
+  });
+
+  test('the strings the audit named are gone from the page', () => {
+    for (const gone of [
+      'WNS/GNS',
+      "Myotis light client'",
+      'Myotis P2P light client',
+      'Colibri cryptographic verification',
+      'Prover endpoint',
+      'Colibri prover endpoint',
+      'corpus.core default',
+      'Local P2P resolution',
+      'use P2P first',
+      'byte-identical answers',
+      'Required matching RPC answers',
+      'RPC providers queried',
+      'manage RPC endpoints',
+      'manage its RPC and prover endpoints',
+      "'No prover'",
+      "'Public endpoint'",
+      "'User endpoint'",
+      'RPC quorum saved.',
+    ]) {
+      expect([gone, SOURCE.includes(gone)]).toEqual([gone, false]);
+    }
+  });
+
+  test('the replacements say the same thing in plain words', () => {
+    expect(SOURCE).toContain('<p class="row-label">Proof server</p>');
+    expect(SOURCE).toContain('<p class="row-help">Leave empty to use the default.</p>');
+    expect(SOURCE).toContain('How many servers must give the same answer.');
+    // The broadcast intro is assembled from the chain's order (R2-M1).
+    expect(SOURCE).toContain("myotis: 'the local node', direct: 'a server'");
+    expect(SOURCE).toContain(
+      'Signed transactions go out through ${named[0]} first, with ${named[1]} as the fallback.'
+    );
+    expect(section('ens')).toContain('choose which servers Freedom');
   });
 });

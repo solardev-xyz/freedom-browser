@@ -992,6 +992,7 @@
             <line x1="4" x2="20" y1="6" y2="6" vector-effect="non-scaling-stroke" />
             <line x1="4" x2="20" y1="18" y2="18" vector-effect="non-scaling-stroke" />
           </svg>
+          <span class="menu-button-badge" id="menu-update-badge" hidden></span>
         </button>
         <div id="menu-dropdown" class="menu-dropdown chrome-popover" role="menu">
           <!-- Group 0: Profiles -->
@@ -1142,8 +1143,20 @@
           <button id="about-btn" class="menu-item" type="button">
             <span class="menu-item-label">About Freedom</span>
           </button>
-          <button id="check-updates-btn" class="menu-item" type="button">
-            <span class="menu-item-label">Check for Updates…</span>
+          <!-- State-driven (#87): lib/update-status-ui.js rewrites the label,
+               the right-hand status and the progress bar from main's update
+               state. -->
+          <button
+            id="check-updates-btn"
+            class="menu-item update-menu-item"
+            type="button"
+            data-update-status="unsupported"
+          >
+            <span class="menu-item-label" id="update-menu-label">Check for Updates…</span>
+            <span class="menu-item-shortcut update-menu-status" id="update-menu-status" hidden></span>
+            <span class="update-menu-progress" id="update-menu-progress" hidden>
+              <span class="update-menu-progress-bar" id="update-menu-progress-bar"></span>
+            </span>
           </button>
         </div>
       </div>

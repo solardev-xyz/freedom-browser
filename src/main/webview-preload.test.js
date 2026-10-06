@@ -308,6 +308,7 @@ describe('webview-preload', () => {
       ],
       ['checkRadicleBinary', [], IPC.RADICLE_CHECK_BINARY, []],
       ['checkTorBinary', [], IPC.TOR_CHECK_BINARY, []],
+      ['getUpdateState', [], 'update:get-state', []],
     ];
 
     for (const [method, args, channel, expectedArgs] of mutationCases) {
@@ -315,6 +316,51 @@ describe('webview-preload', () => {
       await exposures.freedomAPI[method](...args);
       expect(ipcRenderer.invoke).toHaveBeenCalledWith(channel, ...expectedArgs);
     }
+
+    // Settings → Updates actions (#87) are fire-and-forget sends.
+    exposures.freedomAPI.checkForUpdates();
+    expect(ipcRenderer.send).toHaveBeenCalledWith('update:check');
+    exposures.freedomAPI.restartToUpdate();
+    expect(ipcRenderer.send).toHaveBeenCalledWith('update:restart-and-install');
+  });
+
+  test('update state and actions are settings-only (#87)', async () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'file:///app/pages/history.html',
+        protocol: 'file:',
+        pathname: '/app/pages/history.html',
+      },
+    });
+
+    for (const method of ['getUpdateState', 'checkForUpdates', 'restartToUpdate']) {
+      await expect(exposures.freedomAPI[method]()).rejects.toThrow(
+        'freedomAPI profile changes are only available on settings'
+      );
+    }
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith('update:get-state');
+    expect(ipcRenderer.send).not.toHaveBeenCalledWith('update:check');
+    expect(ipcRenderer.send).not.toHaveBeenCalledWith('update:restart-and-install');
+  });
+
+  test('onUpdateState forwards the update-state broadcast and unsubscribes (#87)', () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'file:///app/pages/settings.html',
+        protocol: 'file:',
+        pathname: '/app/pages/settings.html',
+      },
+    });
+    const callback = jest.fn();
+
+    const unsubscribe = exposures.freedomAPI.onUpdateState(callback);
+    ipcRenderer.emit('update:state', { status: 'downloading', percent: 42 });
+    expect(callback).toHaveBeenCalledWith({ status: 'downloading', percent: 42 });
+
+    unsubscribe();
+    callback.mockClear();
+    ipcRenderer.emit('update:state', { status: 'ready' });
+    expect(callback).not.toHaveBeenCalled();
   });
 
   test('blocks profile mutation methods on other internal pages', async () => {

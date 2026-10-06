@@ -271,6 +271,23 @@
         opacity: 0.55;
       }
 
+      /* The Updates section download bar (#87). Track and fill are the shared
+         border/accent tokens, so both themes come from theme.css. */
+      .update-progress {
+        height: 4px;
+        margin-top: 8px;
+        border-radius: 2px;
+        background: var(--border);
+        overflow: hidden;
+      }
+
+      .update-progress-bar {
+        width: 0;
+        height: 100%;
+        background: var(--accent);
+        transition: width 0.2s ease;
+      }
+
       /* The ad-blocking category rows carry a help line only once the engine
          reports a rule count; until then the empty paragraph would still add
          its top margin under the label. */
@@ -409,16 +426,57 @@
         gap: 8px;
       }
 
+      /* Per-row progressive disclosure (#270): a network source's technical
+         name and mechanism, and the settings only someone who knows them
+         needs (the proof server, the agreement threshold), sit collapsed
+         under the plain label and help line. */
+      .row-advanced {
+        margin-top: 6px;
+      }
+
+      .row-advanced > summary {
+        width: fit-content;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      .row-advanced > summary:hover {
+        color: var(--text);
+      }
+
+      .row-advanced > .row-help {
+        margin-top: 6px;
+      }
+
+      /* An open disclosure makes the row tall; the handle, rank and toggle
+         stay level with the label they belong to instead of drifting to
+         the middle of the expanded text. */
+      .resolver-method:has(> .row-body > .row-advanced[open]) {
+        align-items: start;
+      }
+
+      /* A method's own settings, inside its open disclosure (#270): the
+         sub-row fill, inset into the row body. */
       .resolver-config {
-        padding: 14px 18px 14px 94px;
-        border-bottom: 1px solid var(--border);
+        margin-top: 10px;
+        padding: 12px 14px;
+        border-radius: 6px;
         background: var(--row-sub-bg);
       }
 
+      /* Wraps: in the row body the proof server's URL gets a line of its
+         own rather than half of one — its placeholder is the default URL
+         and has to read in full. */
       .resolver-config-line {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 14px;
+        gap: 10px 14px;
+      }
+
+      .resolver-config-line > .rpc-input {
+        flex-basis: 100%;
       }
 
       .resolver-quorum-fields {
@@ -774,10 +832,22 @@
         line-height: 1.45;
       }
 
-      .profile-node-actions {
-        display: flex;
-        justify-content: flex-end;
-        margin-top: 8px;
+      /* Nodes commit on change (#271): a row that could not be saved — an
+         external switch with an empty endpoint, or one the main process
+         refused — says so inline and flags the field. */
+      .profile-node-error {
+        margin: 0;
+        color: var(--danger);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .profile-node-error[hidden] {
+        display: none;
+      }
+
+      .profile-node-field .rpc-input[aria-invalid='true'] {
+        border-color: var(--danger);
       }
 
       .btn.danger {
@@ -1446,8 +1516,8 @@
           <h2 class="section-title">Name Resolution</h2>
           <p class="row-help" style="margin-bottom: 16px">
             How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
-            <code>.gwei</code> names. These records live on Ethereum — manage RPC endpoints under
-            <a href="#chains">Chains settings</a>.
+            <code>.gwei</code> names. These records live on Ethereum — choose which servers Freedom
+            asks under <a href="#chains">Chains settings</a>.
           </p>
           <h3 class="subsection-title">Resolution order</h3>
           <p class="row-help" style="margin: 0 0 12px 0">
@@ -1696,6 +1766,33 @@
         <section class="section" id="updates">
           <h2 class="section-title">Updates</h2>
           <div class="card">
+            <div class="row" id="update-status-row" data-update-status="unsupported">
+              <div class="row-body">
+                <p class="row-label" id="update-current-version">Freedom</p>
+                <p class="row-help" id="update-status-message" role="status" aria-live="polite">
+                  Loading…
+                </p>
+                <div
+                  class="update-progress"
+                  id="update-progress"
+                  role="progressbar"
+                  aria-label="Update download"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  hidden
+                >
+                  <div class="update-progress-bar" id="update-progress-bar"></div>
+                </div>
+                <p class="row-help" id="update-status-detail" hidden></p>
+                <p class="row-help" id="update-last-checked" hidden></p>
+              </div>
+              <div class="row-control">
+                <button type="button" class="btn" id="update-check-now" disabled>Check now</button>
+                <button type="button" class="btn" id="update-restart" hidden>
+                  Restart to update
+                </button>
+              </div>
+            </div>
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Automatically check for updates</p>
@@ -1713,5 +1810,6 @@
     </div>
 
     <script src="scripts/settings.js"></script>
+    <script src="scripts/settings-updates.js"></script>
   </body>
 </html>

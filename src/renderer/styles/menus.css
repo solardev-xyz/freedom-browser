@@ -121,6 +121,29 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* Update-ready dot on the hamburger button (#87), visible with the menu
+   closed. Accent fill with a ring in the toolbar colour so it reads on top of
+   the icon's strokes in both themes. */
+.menu-button {
+  position: relative;
+}
+
+.menu-button-badge {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--toolbar);
+  pointer-events: none;
+}
+
+.menu-button-badge[hidden] {
+  display: none;
+}
+
 .menu-dropdown,
 .bee-dropdown {
   position: absolute;
@@ -213,6 +236,47 @@
   font-size: 12px;
   margin-left: 16px;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+
+/* The state-driven update row (#87): a right-hand status ("42%", "Up to
+   date") in the shortcut slot, and a thin download bar along its bottom. */
+.update-menu-item {
+  position: relative;
+}
+
+.update-menu-status[hidden],
+.update-menu-progress[hidden] {
+  display: none;
+}
+
+.update-menu-item[data-update-status='ready'] .menu-item-label {
+  color: var(--accent);
+}
+
+/* A disabled row normally dims to --muted; the in-flight states are status,
+   not "unavailable", so keep them readable. */
+.update-menu-item:disabled {
+  color: var(--text);
+  opacity: 1;
+}
+
+.update-menu-progress {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 3px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.update-menu-progress-bar {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
 }
 
 /* Inline icon before a menu-item label (e.g. the Profiles row). Sits inline

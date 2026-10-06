@@ -286,12 +286,21 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
       prover: document.querySelector('[data-chain-prover="100"]').value,
       broadcast: [...document.querySelectorAll('[data-access-kind="broadcast"]')]
         .map((row) => row.dataset.accessSource),
+      broadcastHelp: [...document.querySelectorAll('[data-access-kind="broadcast"]')]
+        .map((row) => row.querySelector(':scope > .row-body > .row-help')?.textContent || ''),
+      broadcastIntro: document.querySelector('.card:has([data-access-kind="broadcast"])')
+        .previousElementSibling.textContent,
       startupDisabled: document.getElementById('start-myotis-gnosis-at-launch').disabled
     })`
   );
   expect(gnosis).toEqual({
     prover: 'https://gnosis.colibri-proof.tech',
     broadcast: ['myotis', 'direct'],
+    // A broadcast has no answer to verify: the read rows' help line is not
+    // reused here (R2-M1).
+    broadcastHelp: ['', 'Hands the signed transaction to the first working server.'],
+    broadcastIntro:
+      'Signed transactions go out through the local node first, with a server as the fallback.',
     startupDisabled: false,
   });
 
@@ -335,7 +344,9 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
     .toEqual(['direct', 'myotis', 'colibri', 'quorum']);
 });
 
-test('custom-chain access order can be reordered from its rendered defaults', async ({ window }) => {
+test('custom-chain access order can be reordered from its rendered defaults', async ({
+  window,
+}) => {
   await window.evaluate(() => document.getElementById('settings-btn')?.click());
   await expect
     .poll(() => settingsEval(window, `typeof window.freedomAPI?.addChain`))
@@ -361,6 +372,14 @@ test('custom-chain access order can be reordered from its rendered defaults', as
       )
     )
     .toEqual(['colibri', 'quorum', 'direct']);
+  // A custom chain has no local node, so the broadcast intro must not claim
+  // one goes first (R2-M1).
+  expect(
+    await settingsEval(
+      window,
+      `document.querySelector('.card:has([data-access-kind="broadcast"])').previousElementSibling.textContent`
+    )
+  ).toBe('Signed transactions go out through a server.');
 
   await settingsEval(
     window,
@@ -383,6 +402,101 @@ test('custom-chain access order can be reordered from its rendered defaults', as
       )
     )
     .toEqual(['colibri', 'direct', 'quorum']);
+});
+
+// #269/#270: Name Resolution and a chain's detail page render the same four
+// sources from one copy table, so the user meets each under one plain name;
+// the technical name sits behind a collapsed Advanced disclosure on each row.
+test('both screens name the network sources the same, with the jargon behind Advanced', async ({
+  window,
+}) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  const rowsOf = (selector) =>
+    settingsEval(
+      window,
+      `[...document.querySelectorAll(${JSON.stringify(selector)})].map((row) => ({
+        label: row.querySelector('.row-label').textContent.trim(),
+        advanced: row.querySelector('details.row-advanced > .row-help')?.textContent.trim().split(' — ')[0] || null,
+        open: row.querySelector('details.row-advanced')?.open ?? null
+      }))`
+    );
+  const EXPECTED = [
+    { label: 'Local node', advanced: 'Myotis', open: false },
+    { label: 'Proof check', advanced: 'Colibri', open: false },
+    { label: 'Several servers must agree', advanced: 'RPC quorum', open: false },
+    { label: 'One server, unchecked', advanced: 'Direct RPC', open: false },
+  ];
+
+  await expect
+    .poll(() => settingsEval(window, `location.hash = 'ens'; location.hash`))
+    .toBe('#ens');
+  await expect.poll(() => rowsOf('#ens-method-list .resolver-method')).toEqual(EXPECTED);
+
+  // A change to the threshold repaints the whole method list; the disclosure
+  // the user opened to make it stays open rather than snapping shut under the
+  // control they just used.
+  await settingsEval(
+    window,
+    `document.querySelector('[data-advanced="quorum"] > summary').click()`
+  );
+  await settingsEval(
+    window,
+    `(() => {
+      const k = document.querySelector('[data-quorum-field="k"]');
+      k.value = '4';
+      k.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`
+  );
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `[document.querySelector('[data-quorum-field="k"]').value,
+          document.querySelector('[data-advanced="quorum"]').open]`
+      )
+    )
+    .toEqual(['4', true]);
+
+  await expect
+    .poll(() => settingsEval(window, `location.hash = 'chains/1'; location.hash`))
+    .toBe('#chains/1');
+  await expect.poll(() => rowsOf('[data-access-kind="read"]')).toEqual(EXPECTED);
+
+  // An opened disclosure survives the detail repainting itself, and an arrow
+  // key pressed on its summary does not reorder the row — the arrows reorder
+  // only when the row itself has focus.
+  const readOrder = () =>
+    settingsEval(
+      window,
+      `[...document.querySelectorAll('[data-access-kind="read"]')].map((row) => row.dataset.accessSource)`
+    );
+  await settingsEval(
+    window,
+    `(() => {
+      const summary = document.querySelector('[data-advanced="1:read:colibri"] > summary');
+      summary.click();
+      summary.focus();
+      summary.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    })()`
+  );
+  // Open state is per chain: another chain's detail renders its own
+  // disclosure for the same source closed.
+  await settingsEval(window, `location.hash = 'chains/100'`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `(() => { const d = document.querySelector('[data-advanced="100:read:colibri"]'); return d ? d.open : null; })()`
+      )
+    )
+    .toBe(false);
+  await settingsEval(window, `location.hash = 'chains/1'`);
+  await expect
+    .poll(() =>
+      settingsEval(window, `document.querySelector('[data-advanced="1:read:colibri"]')?.open`)
+    )
+    .toBe(true);
+  expect(await readOrder()).toEqual(['myotis', 'colibri', 'quorum', 'direct']);
 });
 
 // The settings page loads in a webview: `settingsEval` returns null until it
@@ -747,9 +861,11 @@ test.describe('Search settings (#281)', () => {
   });
 
   // Name Resolution's method list and a chain's read order are drag-to-reorder
-  // `.resolver-method` rows, not `.row`s, and they are where "Colibri",
-  // "Myotis" and "RPC quorum" are named — the resolution policy would be
-  // unsearchable if the index only read cards.
+  // `.resolver-method` rows, not `.row`s, and they are where the network
+  // sources are named — the resolution policy would be unsearchable if the
+  // index only read cards. Since #270 a row's label is the plain name ("Proof
+  // check") and the technical one ("Colibri") sits in its collapsed Advanced
+  // disclosure, which the index still reads: the old name finds the row.
   test('a resolver method is findable by name, and reveals its own row', async ({
     window,
     electronApp,
@@ -782,7 +898,7 @@ test.describe('Search settings (#281)', () => {
     await field.click();
     await field.pressSequentially('colibri');
     const results = page.locator('#settings-search-list .settings-search-result');
-    const colibri = results.filter({ hasText: 'Colibri' }).first();
+    const colibri = results.filter({ hasText: 'Proof check' }).first();
     await expect(colibri.locator('.settings-search-section')).toHaveText('Name Resolution');
 
     await colibri.click();
@@ -796,13 +912,14 @@ test.describe('Search settings (#281)', () => {
             : null;
         })
       )
-      .toEqual(['colibri', 'Colibri']);
+      .toEqual(['colibri', 'Proof check']);
   });
 
-  // The two settings of the resolution policy itself — Colibri's prover
-  // endpoint and the quorum agreement threshold — render as a
-  // `.resolver-config` panel under the method they belong to, a third row
-  // shape again. And the index has to skip a row the page switched off with
+  // The two settings of the resolution policy itself — the proof server and
+  // the agreement threshold — render as a `.resolver-config` panel inside the
+  // collapsed Advanced disclosure of the method they belong to (#270), a third
+  // row shape again, and the one row nested in another. A jump to one has to
+  // open the disclosure, or it would mark a row with no box on screen. And the index has to skip a row the page switched off with
   // the `hidden` attribute (how the Myotis startup rows go on a build with no
   // Myotis support), not only one hidden through `style.display`.
   test('the resolver methods own settings are findable, and a switched-off row is not', async ({
@@ -826,6 +943,9 @@ test.describe('Search settings (#281)', () => {
     await expect
       .poll(() => page.locator('#ens-method-list .resolver-config .row-label').count())
       .toBeGreaterThan(0);
+    // Collapsed by default: the settings are in the DOM, not on screen.
+    await expect(page.locator('#ens-prover-url')).toBeHidden();
+    await expect(page.locator('[data-quorum-field="k"]')).toBeHidden();
 
     const field = page.locator('#settings-search');
     const results = page.locator('#settings-search-list .settings-search-result');
@@ -853,13 +973,14 @@ test.describe('Search settings (#281)', () => {
         })
       )
       .toEqual(['quorum', 'Agreement threshold']);
+    await expect(page.locator('[data-quorum-field="k"]')).toBeVisible();
 
-    // …and "prover" reaches the endpoint field, not just the Colibri method
-    // row whose help line happens to mention one.
+    // …and "proof server" reaches the field itself, opening the Colibri row's
+    // disclosure to show it.
     await field.click();
     await field.fill('');
-    await field.pressSequentially('prover endpoint');
-    const prover = results.filter({ hasText: 'Prover endpoint' });
+    await field.pressSequentially('proof server');
+    const prover = results.filter({ hasText: 'Proof server' });
     await expect(prover).toHaveCount(1);
     await prover.click();
     await expect
@@ -871,6 +992,7 @@ test.describe('Search settings (#281)', () => {
         )
       )
       .toBe(true);
+    await expect(page.locator('#ens-prover-url')).toBeVisible();
 
     // The Myotis startup row, hidden the way `updateMyotis` hides it on a
     // build where Myotis is unsupported (`launchRow.hidden = !supported`): a
@@ -905,8 +1027,8 @@ test.describe('Search settings (#281)', () => {
   });
 
   // A label alone does not identify a row: a chain's detail page lists
-  // "Direct RPC" once in its read and verification order and again in its
-  // transaction broadcast order, and the reveal re-finds the row by what the
+  // "One server, unchecked" (Direct RPC) once in its read and verification
+  // order and again in its transaction broadcast order, and the reveal re-finds the row by what the
   // result carries — so both used to jump to the read-order row.
   test('two rows with the same label reveal the one that was clicked', async ({
     window,
@@ -934,8 +1056,9 @@ test.describe('Search settings (#281)', () => {
     await field.click();
     await field.pressSequentially('direct rpc');
     const results = page.locator('#settings-search-list .settings-search-result');
-    // Name Resolution names a "Direct RPC" method of its own; the two that
-    // belong to this chain are the ambiguous pair.
+    // Searched by the pre-#270 name, which the rows' Advanced text still
+    // carries. Name Resolution has a "Direct RPC" method of its own; the two
+    // that belong to this chain are the ambiguous pair.
     const chainResults = results.filter({
       has: page.locator('.settings-search-section', {
         hasText: 'Ethereum',
@@ -952,7 +1075,7 @@ test.describe('Search settings (#281)', () => {
     // The second is the broadcast one, and clicking it marks that row.
     await chainResults.nth(1).click();
     await expect(page.locator('#chains')).toBeVisible();
-    await expect.poll(revealed).toEqual(['broadcast', 'Direct RPC']);
+    await expect.poll(revealed).toEqual(['broadcast', 'One server, unchecked']);
 
     // …and the first still marks the read-order row, so the fix did not just
     // move the collapse onto the other one. (A jump leaves the query in the
@@ -962,7 +1085,7 @@ test.describe('Search settings (#281)', () => {
     await field.pressSequentially('direct rpc');
     await expect(chainResults).toHaveCount(2);
     await chainResults.nth(0).click();
-    await expect.poll(revealed).toEqual(['read', 'Direct RPC']);
+    await expect.poll(revealed).toEqual(['read', 'One server, unchecked']);
   });
 
   // The index is built from every section's live DOM, hidden ones included —
@@ -1007,7 +1130,7 @@ test.describe('Search settings (#281)', () => {
       }, query);
     const control = { chains: await search('chains'), direct: await search('direct rpc') };
     expect(control.chains).toContainEqual(['Chains', 'Chains']);
-    expect(control.direct).toEqual([['Direct RPC', 'Name Resolution']]);
+    expect(control.direct).toEqual([['One server, unchecked', 'Name Resolution']]);
     await page.evaluate(() => {
       const field = document.getElementById('settings-search');
       field.value = '';

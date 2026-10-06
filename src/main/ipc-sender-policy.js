@@ -153,6 +153,9 @@ const SETTINGS_CHANNELS = [
   'shortcuts:reset',
   'shortcuts:set-override',
   'tor:checkBinary',
+  'update:check',
+  'update:get-state',
+  'update:restart-and-install',
 ];
 
 // freedomAPI methods wrapped in guardProfileManagerPage.

@@ -320,6 +320,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   restartAndInstallUpdate: () => ipcRenderer.send('update:restart-and-install'),
   checkForUpdates: () => ipcRenderer.send('update:check'),
+  // Update state (#87): `getUpdateState` for the first paint, `onUpdateState`
+  // for every change after it (update-state.js documents the snapshot).
+  getUpdateState: () => ipcRenderer.invoke('update:get-state'),
+  onUpdateState: (callback) => {
+    const handler = (_event, state) => callback(state);
+    ipcRenderer.on('update:state', handler);
+    return () => ipcRenderer.removeListener('update:state', handler);
+  },
 });
 
 // Re-dispatch main-process broadcasts as window CustomEvents so existing

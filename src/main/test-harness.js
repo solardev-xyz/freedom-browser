@@ -62,6 +62,10 @@ const probeFixtures = new Map();
 // Electron instance. See installProfileLaunchRecorder / profile-launcher.js.
 const profileLaunches = [];
 
+// Update check / install requests recorded instead of run (see
+// installUpdaterRecorder / updater.js).
+const updaterRequests = [];
+
 function resetProfileLaunches() {
   profileLaunches.length = 0;
 }
@@ -534,6 +538,19 @@ function installProfileDeleteSimulator() {
     profileDeleteSims.has(profileId) ? { ...profileDeleteSims.get(profileId) } : null;
 }
 
+// Neutralize the updater's user actions in test mode: "Check now" would hit
+// the network (or a native "Updates Managed Elsewhere" dialog, since index.js
+// never starts the updater in test mode) and "Restart to update" would quit
+// the app under test. updater.js checks this global and records instead.
+function installUpdaterRecorder() {
+  globalThis.__FREEDOM_TEST_UPDATER__ = {
+    record: (action) => {
+      updaterRequests.push(action);
+      log.info(`[test-harness] recorded updater request: ${action}`);
+    },
+  };
+}
+
 // Expose a synchronous shim on the main-process global so the Playwright
 // runner can drive fixtures via `electronApp.evaluate(() => globalThis
 // .__FREEDOM_TEST_HARNESS__.setContentFixture(...))` without an IPC
@@ -585,6 +602,19 @@ function exposeGlobalShim() {
       if (appName) externalHandlers.set(scheme, appName);
       else externalHandlers.delete(scheme);
     },
+    // Update state (#87). `dispatchUpdate` drives the real state machine in
+    // updater.js through the same entry point electron-updater's events use
+    // (e.g. { type: 'supported' }, { type: 'progress', percent: 42 }), so the
+    // broadcast and every renderer surface behave exactly as in a real run.
+    dispatchUpdate: (event) => {
+      require('./updater').dispatchUpdateEvent(event);
+      return require('./updater').getUpdateState();
+    },
+    updateState: () => require('./updater').getUpdateState(),
+    updaterRequests: () => [...updaterRequests],
+    clearUpdaterRequests: () => {
+      updaterRequests.length = 0;
+    },
     state: () => ({
       content: [...contentFixtures.keys()],
       ens: [...ensFixtures.keys()],
@@ -611,6 +641,7 @@ function installTestHarness({ defaultSession }) {
   installProfileFocusSimulator();
   installProfileDeleteSimulator();
   installExternalProtocolRecorder();
+  installUpdaterRecorder();
   exposeGlobalShim();
   return true;
 }

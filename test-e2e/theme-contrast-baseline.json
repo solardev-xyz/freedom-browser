@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 58,
+  "total": 60,
   "gaps": [
     {
       "surface": "Swarm connect approval",
@@ -334,7 +334,7 @@
       "surface": "settings ens",
       "theme": "dark",
       "el": "a.row-help",
-      "text": "Configure →",
+      "text": "Configure",
       "ratio": 2.98,
       "bar": 4.5
     },
@@ -342,7 +342,7 @@
       "surface": "settings ens",
       "theme": "dark",
       "el": "p.row-help",
-      "text": "Uses one configured endpoint. This is no",
+      "text": "Fastest, and the only option with nothin",
       "ratio": 2.61,
       "bar": 4.5
     },
@@ -350,7 +350,7 @@
       "surface": "settings ens",
       "theme": "dark",
       "el": "p.row-label",
-      "text": "Direct RPC",
+      "text": "One server, unchecked",
       "ratio": 4.31,
       "bar": 4.5
     },
@@ -358,7 +358,7 @@
       "surface": "settings ens",
       "theme": "dark",
       "el": "span.resolver-badge.warning",
-      "text": "Public endpoint",
+      "text": "Public server",
       "ratio": 2.96,
       "bar": 4.5
     },
@@ -372,9 +372,17 @@
     },
     {
       "surface": "settings ens",
+      "theme": "dark",
+      "el": "summary",
+      "text": "Advanced",
+      "ratio": 2.61,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
       "theme": "light",
       "el": "a.row-help",
-      "text": "Configure →",
+      "text": "Configure",
       "ratio": 2.48,
       "bar": 4.5
     },
@@ -390,7 +398,7 @@
       "surface": "settings ens",
       "theme": "light",
       "el": "p.row-help",
-      "text": "Uses one configured endpoint. This is no",
+      "text": "Fastest, and the only option with nothin",
       "ratio": 2.55,
       "bar": 4.5
     },
@@ -398,7 +406,7 @@
       "surface": "settings ens",
       "theme": "light",
       "el": "p.row-label",
-      "text": "Direct RPC",
+      "text": "One server, unchecked",
       "ratio": 3.82,
       "bar": 4.5
     },
@@ -406,7 +414,7 @@
       "surface": "settings ens",
       "theme": "light",
       "el": "span.resolver-badge.warning",
-      "text": "Public endpoint",
+      "text": "Public server",
       "ratio": 2.31,
       "bar": 4.5
     },
@@ -415,6 +423,14 @@
       "theme": "light",
       "el": "span.resolver-rank",
       "text": "–",
+      "ratio": 2.55,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "light",
+      "el": "summary",
+      "text": "Advanced",
       "ratio": 2.55,
       "bar": 4.5
     },

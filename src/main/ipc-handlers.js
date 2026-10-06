@@ -302,12 +302,23 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
   const validation = validateProfileNodeConfigUpdate(protocol, patch);
   if (!validation.ok) return validation.response;
 
+  let profile;
   try {
     const result = updateActiveProfileNodeConfig(protocol, validation.sanitized);
     if (!result) {
       return failure('PROFILE_UPDATE_FAILED', 'Profile node config was not updated');
     }
-    const profile = serializeActiveProfile();
+    profile = serializeActiveProfile();
+  } catch (err) {
+    log.error('[profile] Failed to update node config:', err);
+    return failure('PROFILE_UPDATE_FAILED', err.message || 'Profile node config update failed');
+  }
+
+  // The catalog write above has landed. A failure from here on (applying the
+  // new mode to a running node) must not read as "not saved": the caller
+  // gets `details.saved: true` and the stored profile, so Settings reports
+  // the config as saved and only the apply step as failed.
+  try {
     broadcastProfileUpdated(profile);
     if (protocol === 'myotis') {
       const myotisManager = require('./myotis/myotis-manager');
@@ -332,11 +343,16 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
       const ipfsManager = require('./ipfs-manager');
       await ipfsManager.syncProfileMode();
     }
-    return success({ profile });
   } catch (err) {
-    log.error('[profile] Failed to update node config:', err);
-    return failure('PROFILE_UPDATE_FAILED', err.message || 'Profile node config update failed');
+    log.error('[profile] Node config saved, but applying it failed:', err);
+    return failure(
+      'PROFILE_NODE_APPLY_FAILED',
+      err.message || 'Profile node config was saved but could not be applied',
+      { saved: true },
+      { profile }
+    );
   }
+  return success({ profile });
 }
 
 function listProfilesFromIpc() {

@@ -207,6 +207,51 @@ async function guestScrollbarMask(win) {
   return [win.locator(`#${GUEST_SCROLLBAR_MASK}`)];
 }
 
+// One element inside the guest, as something `mask` can be given — the same
+// parked-overlay trick as the scrollbar strip above, since `mask` only takes
+// locators on the page being captured. Used for Settings → Updates' version
+// line (#87): it prints `package.json`'s version, which every release-branch
+// rc bump changes, and a baseline must not fail on a version bump.
+async function guestElementMask(win, page, selector, id) {
+  const webview = (await win.locator('webview').all())[0];
+  const [outer, inner] = await Promise.all([
+    webview ? webview.boundingBox().catch(() => null) : null,
+    page.locator(selector).boundingBox().catch(() => null),
+  ]);
+  if (!outer || !inner) return [];
+  await win.evaluate(
+    ({ id: elId, rect }) => {
+      let el = document.getElementById(elId);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = elId;
+        document.body.appendChild(el);
+      }
+      Object.assign(el.style, {
+        position: 'fixed',
+        pointerEvents: 'none',
+        background: 'transparent',
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+      });
+    },
+    {
+      id,
+      rect: {
+        left: outer.x + inner.x,
+        top: outer.y + inner.y,
+        width: inner.width,
+        height: inner.height,
+      },
+    }
+  );
+  return [win.locator(`#${id}`)];
+}
+
+const UPDATE_VERSION_MASK = 'screenshot-update-version-mask';
+
 // Types into the settings page's own "Search settings" field (#281) the way
 // the page hears a keystroke, so the result list is rendered by the page
 // rather than assembled by the spec.
@@ -447,6 +492,18 @@ test.describe('renderer screenshots', () => {
             location.hash = hash;
           }, section);
           await page.waitForTimeout(600);
+          if (section === 'updates') {
+            const version = await guestElementMask(
+              window,
+              page,
+              '#update-current-version',
+              UPDATE_VERSION_MASK
+            );
+            await snap(surfaces, window, `${theme}-${30 + i}-settings-${section}`, {
+              mask: [...scrollbar, ...version],
+            });
+            continue;
+          }
           await shot(`${30 + i}-settings-${section}`);
         }
         // The page-wide search (#281): the sidebar field with a query, and
@@ -462,6 +519,55 @@ test.describe('renderer screenshots', () => {
 
         await recipes.shortcutConflict(ctx);
         await shot('45-settings-shortcut-conflict');
+        surfaces.tookEverySurface();
+      });
+
+      // The update states (#87). `43-settings-updates` above is the state a
+      // test-mode launch really has — no updater running; these drive the
+      // main-process state machine through the harness, the same entry point
+      // electron-updater's events use, so both renderers paint what a user
+      // would see mid-download and once an update is staged. Sizes and speed
+      // are fixed, and "Last checked just now" holds for the minute this takes.
+      test(`update states (${theme})`, async ({ electronApp, window }) => {
+        test.setTimeout(180_000);
+        const ctx = { app: electronApp, win: window };
+        const dispatch = (event) =>
+          electronApp.evaluate(
+            (_electron, ev) => globalThis.__FREEDOM_TEST_HARNESS__.dispatchUpdate(ev),
+            event
+          );
+        await dispatch({ type: 'supported' });
+        await dispatch({ type: 'available', version: '9.9.9' });
+        await dispatch({
+          type: 'progress',
+          percent: 42,
+          transferred: 42 * 1024 * 1024,
+          total: 100 * 1024 * 1024,
+          bytesPerSecond: 3 * 1024 * 1024,
+        });
+        const page = await recipes.settings(ctx, 'updates');
+        await page.waitForSelector('#update-progress:not([hidden])');
+        const scrollbar = [
+          ...(await guestScrollbarMask(window)),
+          ...(await guestElementMask(window, page, '#update-current-version', UPDATE_VERSION_MASK)),
+        ];
+        const surfaces = surfaceGroup(theme, 'update states');
+        await snap(surfaces, window, `${theme}-46-settings-updates-downloading`, {
+          mask: scrollbar,
+        });
+
+        await dispatch({ type: 'downloaded', version: '9.9.9' });
+        await page.waitForSelector('#update-restart:not([hidden])');
+        await page.waitForTimeout(300);
+        await snap(surfaces, window, `${theme}-47-settings-updates-ready`, { mask: scrollbar });
+
+        // Not the usual whole-guest mask: the dropdown hangs over the guest and
+        // a mask paints over everything inside its box, which would cover the
+        // row this baseline is for. The guest is the ready Settings page above,
+        // already stable, so only its scrollbar strip is masked.
+        await recipes.appMenu(ctx);
+        await snap(surfaces, window, `${theme}-48-app-menu-update-ready`, { mask: scrollbar });
+        await closeMenus(window);
         surfaces.tookEverySurface();
       });
 
