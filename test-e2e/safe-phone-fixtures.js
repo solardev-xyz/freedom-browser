@@ -19,6 +19,7 @@ const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
 const { createBridgeServer } = require(path.join(repoRoot, 'scripts', 'serve-bridge.js'));
 const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 'local-mqtt-broker.js'));
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
+const { closeApp } = require('./close-app');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-Phone-2026!';
 const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
@@ -179,11 +180,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // window already gone
-    }
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 

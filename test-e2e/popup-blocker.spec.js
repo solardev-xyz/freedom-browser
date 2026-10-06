@@ -248,7 +248,7 @@ test('a script-only window.open is blocked, shows the icon, and "Open" opens it'
   await expect(icon(window)).toBeHidden({ timeout: 10_000 });
 });
 
-test('"Always allow" survives a restart and is removed in Settings > Site Permissions', async ({
+test('"Always allow" survives a restart and is removed in Settings > Privacy and security > Site Permissions', async ({
   window,
   electronApp,
   relaunchApp,
@@ -281,7 +281,7 @@ test('"Always allow" survives a restart and is removed in Settings > Site Permis
   await expect(tabs(win)).toHaveCount(before + 1);
   await expect(icon(win)).toBeHidden();
 
-  // Settings > Site Permissions lists it; Remove revokes it.
+  // Settings > Privacy and security > Site Permissions lists it; Remove revokes it.
   await tabs(win)
     .nth(before - 1)
     .click();

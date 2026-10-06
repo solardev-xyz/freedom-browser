@@ -14,6 +14,8 @@
  *   #278 `+` and `→` glyphs baked into some button labels and not their
  *        siblings, where they are part of the accessible name;
  *   #283 a sub-heading rendered as a row label with hand-written margins;
+ *   #268 one nav entry grew several panels, each needing exactly one page
+ *        heading between them and a panel heading for each;
  *   #284 seven destructive actions split three/four with no rule behind it;
  *   #269 the four network sources named and explained twice, differently, by
  *        Name Resolution and a chain's detail page;
@@ -46,26 +48,45 @@ const textOf = (html) =>
 
 /** The nav's `data-target` → its visible label. */
 const navItems = () =>
-  [...SOURCE.matchAll(/<button[^>]*class="nav-item"[^>]*data-target="([a-z]+)"[^>]*>([\s\S]*?)<\/button>/g)].map(
-    ([, target, body]) => ({ target, label: textOf(body) })
-  );
+  [
+    ...SOURCE.matchAll(
+      /<button[^>]*class="nav-item"[^>]*data-target="([a-z]+)"[^>]*>([\s\S]*?)<\/button>/g
+    ),
+  ].map(([, target, body]) => ({ target, label: textOf(body) }));
 
-/** A static `<section id=…>` → the text of the `<h2 class="section-title">` it ships. */
-const staticSectionTitles = () => {
+/**
+ * Every static panel `<section>` (#268: one nav entry can own several, each
+ * naming its entry in `data-nav`) → its entry and body.
+ */
+const panels = () =>
+  [
+    ...SOURCE.matchAll(
+      /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"[^>]*>([\s\S]*?)<\/section>/g
+    ),
+  ].map(([, id, nav, body]) => ({ id, nav, body }));
+
+/** A nav entry → the text of every `<h2 class="section-title">` its panels ship. */
+const entryTitles = () => {
   const titles = new Map();
-  const sections = [...SOURCE.matchAll(/<section class="section" id="([a-z]+)">([\s\S]*?)<\/section>/g)];
-  for (const [, id, body] of sections) {
-    const heading = body.match(/<h2 class="section-title">([\s\S]*?)<\/h2>/);
-    if (heading) titles.set(id, textOf(heading[1]));
+  for (const { nav, body } of panels()) {
+    for (const [, heading] of body.matchAll(/<h2 class="section-title">([\s\S]*?)<\/h2>/g)) {
+      titles.set(nav, [...(titles.get(nav) || []), textOf(heading)]);
+    }
   }
   return titles;
 };
 
+/** A panel → the text of the `<h3 class="panel-title">` it ships, if any. */
+const panelTitle = (id) => {
+  const heading = section(id).match(/<h3 class="panel-title">([\s\S]*?)<\/h3>/);
+  return heading ? textOf(heading[1]) : null;
+};
+
 /** The body of one static `<section id=…>`. */
 const section = (id) => {
-  const match = SOURCE.match(new RegExp(`<section class="section" id="${id}">([\\s\\S]*?)</section>`));
-  expect(match).not.toBeNull();
-  return match[1];
+  const match = panels().find((panel) => panel.id === id);
+  expect(match).toBeDefined();
+  return match.body;
 };
 
 /**
@@ -86,25 +107,34 @@ const buttonLabels = () => [
 ];
 
 describe('settings.html section headings match their nav label (#276)', () => {
-  test('every nav item whose heading is in the markup agrees with it', () => {
-    const titles = staticSectionTitles();
+  test('every nav entry carries exactly one page heading, and it is the nav label', () => {
+    const titles = entryTitles();
     const items = navItems();
-    expect(items.length).toBe(14);
-
-    // `chains` and `rpc` render their own `<h2>` from a view template, so they
-    // are pinned end-to-end in `test-e2e/settings.spec.js` instead.
-    const covered = items.filter((item) => titles.has(item.target));
-    expect(covered.length).toBe(12);
-    const mismatches = covered
-      .filter((item) => titles.get(item.target) !== item.label)
-      .map((item) => ({ nav: item.label, title: titles.get(item.target) }));
+    expect(items.length).toBe(10);
+    // One `<h2>` per entry however many panels it owns (#268) — a second
+    // would put two page headings on one route.
+    const mismatches = items
+      .filter((item) => JSON.stringify(titles.get(item.target)) !== JSON.stringify([item.label]))
+      .map((item) => ({ nav: item.label, titles: titles.get(item.target) }));
     expect(mismatches).toEqual([]);
   });
 
+  test('every panel sharing an entry is named by a panel heading, not a second h2', () => {
+    // The panels whose heading is in the markup; Chains and RPC Providers
+    // render theirs from a view template, pinned end-to-end in
+    // `test-e2e/settings.spec.js`.
+    expect(panelTitle('adblock')).toBe('Ad Blocking');
+    expect(panelTitle('permissions')).toBe('Site Permissions');
+    expect(panelTitle('ens')).toBe('Name Resolution');
+    expect(panelTitle('startup')).toBe('Startup');
+    expect(panelTitle('updates')).toBe('Updates');
+    expect(SOURCE).toContain('<h3 class="panel-title">Chains</h3>');
+    expect(SOURCE).toContain('<h3 class="panel-title">RPC Providers</h3>');
+  });
+
   test('the two headings the finding named carry the nav label, not the longer form', () => {
-    const titles = staticSectionTitles();
-    expect(titles.get('startup')).toBe('Startup');
-    expect(titles.get('ens')).toBe('Name Resolution');
+    expect(panelTitle('startup')).toBe('Startup');
+    expect(panelTitle('ens')).toBe('Name Resolution');
     expect(SOURCE).not.toContain('>Automatic Startup<');
     expect(SOURCE).not.toContain('>Ethereum Name Resolution<');
   });
@@ -125,7 +155,9 @@ describe('settings.html sub-headings use the house style (#283)', () => {
   });
 
   test('the sub-headings carry no inline margin override', () => {
-    const headings = [...SOURCE.matchAll(/<h3[^>]*class="subsection-title"[^>]*>/g)].map(([tag]) => tag);
+    const headings = [...SOURCE.matchAll(/<h3[^>]*class="subsection-title"[^>]*>/g)].map(
+      ([tag]) => tag
+    );
     expect(headings.length).toBeGreaterThanOrEqual(2);
     expect(headings.filter((tag) => tag.includes('style='))).toEqual([]);
   });
@@ -139,7 +171,9 @@ describe('settings.html button labels carry no glyphs (#278)', () => {
   test('no button or link label is suffixed with a literal `→`', () => {
     // `</a\n>` is how Prettier wraps a long anchor; without `\s*` the match
     // runs on to the next anchor's `</a>` and sweeps the page in between.
-    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/g)].map(([, body]) => textOf(body));
+    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/g)].map(([, body]) =>
+      textOf(body)
+    );
     // The ENS method rows render their link text from a `linkLabel` field
     // rather than as markup, so it is swept from the registry too.
     const linkLabels = [...SOURCE.matchAll(/linkLabel:\s*'([^']*)'/g)].map(([, label]) => label);
@@ -204,13 +238,15 @@ describe('settings.html Site Permissions says it once (#272)', () => {
 
   test('one empty state, pointing at the checkbox that creates a row', () => {
     expect(SOURCE).toContain('<p class="row-label">No saved permissions</p>');
-    expect(SOURCE).toMatch(/Sites you allow or block with\s+“Remember for this site” appear here\./);
+    expect(SOURCE).toMatch(
+      /Sites you allow or block with\s+“Remember for this site” appear here\./
+    );
   });
 
   test('`Remove all` sits beside the heading, where section-level actions live', () => {
     const permissions = section('permissions');
     expect(permissions).toMatch(
-      /<div class="section-header">\s*<h2 class="section-title">Site Permissions<\/h2>\s*<button[^>]*id="permissions-revoke-all"[^>]*disabled>/
+      /<div class="section-header">\s*<h3 class="panel-title">Site Permissions<\/h3>\s*<button[^>]*id="permissions-revoke-all"[^>]*disabled>/
     );
     // Outside the list means it survives every re-render, so its enabled state
     // is set rather than re-created.
@@ -228,18 +264,17 @@ describe('settings.html helper lines earn their place (#273)', () => {
     });
   };
 
-  test('the five startup rows agree on whether they get a helper, and what it says', () => {
+  test('the six startup rows agree on whether they get a helper, and what it says', () => {
+    // Tor's joined the other five under Nodes in #275.
     const helpers = startupHelpers();
-    expect(helpers.length).toBe(5);
-    expect(helpers).toEqual(Array(5).fill('Restart to apply.'));
+    expect(helpers.length).toBe(6);
+    expect(helpers).toEqual(Array(6).fill('Restart to apply.'));
   });
 
   test('the two Myotis rows say Beta in a badge instead of in a paragraph', () => {
     const startup = section('startup');
     for (const label of ['Start Ethereum node', 'Start Gnosis node']) {
-      expect(startup).toMatch(
-        new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`)
-      );
+      expect(startup).toMatch(new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`));
     }
     expect(SOURCE).not.toContain('light client (Myotis)');
     expect(SOURCE).not.toContain('Takes effect on next launch');
@@ -260,6 +295,38 @@ describe('settings.html helper lines earn their place (#273)', () => {
       '<p class="row-help">Ad blocking is off on these sites and their subdomains.</p>'
     );
     expect(SOURCE).not.toContain('reload open tabs');
+  });
+});
+
+describe('settings.html Advanced holds only the experiments (#275)', () => {
+  const rowLabels = (html) =>
+    [...html.matchAll(/<p class="row-label">([\s\S]*?)<\/p>/g)].map(([, body]) => textOf(body));
+
+  test('Advanced retains the Beta features and the wallet Tor experiment', () => {
+    const advanced = section('experimental');
+    expect(rowLabels(advanced)).toEqual([
+      'Enable Identity &amp; Wallet Beta',
+      'Enable Tor (.onion access) Beta',
+      'Tor balance reads (experimental)',
+    ]);
+    for (const label of ['Enable Identity &amp; Wallet', 'Enable Tor \\(\\.onion access\\)']) {
+      expect(advanced).toMatch(new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`));
+    }
+    expect(SOURCE).not.toContain('(Beta)</span>');
+  });
+
+  test('the three rows that were not experiments moved where they belong', () => {
+    // A status-bar preference is Appearance…
+    expect(rowLabels(section('appearance'))).toContain('Show IPFS load progress in the status bar');
+    expect(section('appearance')).toContain('id="show-ipfs-progress-status"');
+    // …Tor's startup toggle sits with the other startup toggles…
+    expect(section('startup')).toContain('id="start-tor-at-launch"');
+    expect(rowLabels(section('startup'))).toContain('Start Tor when Freedom opens');
+    // …and the Swarm publishing readout sits with the Swarm node.
+    expect(section('nodes')).toContain('id="swarm-publishing-row"');
+    // Its "turn this on first" line points at where the toggle is now.
+    expect(SOURCE).not.toContain('in Experimental, above');
+    expect(SOURCE).toContain('Enable Identity & Wallet under Advanced to publish on Swarm.');
   });
 });
 

@@ -50,7 +50,8 @@
 //
 // The baselines also assume a checkout *without* the bundled ad-block filter
 // lists (`assets/adblock/`, git-ignored, fetched by `npm run adblock:download`).
-// CI's screenshots job never downloads them, so `40-settings-adblock` and
+// CI's screenshots job never downloads them, so `35-settings-privacy` (Ad
+// Blocking's panel, #268) and
 // `44-settings-search` (whose `block` query lists Ad Blocking rows) depict the
 // no-lists state: the section's single "cannot run" notice with its controls
 // inactive (#274). With the lists present — e.g. after running
@@ -318,12 +319,10 @@ function surfaceGroup(theme, group) {
  * the whole diff artifact.
  */
 async function snap(surfaces, page, name, { mask = [], extra = [] } = {}) {
-  await expect
-    .soft(page)
-    .toHaveScreenshot(surfaces.declared(name), {
-      ...COMPARE,
-      mask: [...maskFor(page, extra), ...mask],
-    });
+  await expect.soft(page).toHaveScreenshot(surfaces.declared(name), {
+    ...COMPARE,
+    mask: [...maskFor(page, extra), ...mask],
+  });
 }
 
 test.describe('renderer screenshots', () => {
@@ -458,26 +457,28 @@ test.describe('renderer screenshots', () => {
       test(`settings sections (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(300_000);
         const ctx = { app: electronApp, win: window };
+        // Every nav entry (#268), each at the top of its page. A route that
+        // brings a lower panel up (`networks/rpc`) is left out on purpose: a
+        // capture of the window over a *scrolled* `<webview>` guest draws the
+        // guest shifted down its frame (or blank) in this harness — a wheel
+        // scroll on an untouched page does the same — so no baseline of one
+        // would show what the user sees. `settings.spec.js` pins those routes.
         const SECTIONS = [
+          'profile',
           'appearance',
           'search',
-          'profile',
-          'nodes',
-          'startup',
           'downloads',
           'shortcuts',
-          'chains',
-          'rpc',
-          'ens',
-          'adblock',
-          'permissions',
-          'experimental',
-          'updates',
+          'privacy',
+          'networks',
+          'nodes',
+          'advanced',
+          'about',
         ];
         // `recipes.settings()` re-navigates the tab for every section, which is
         // ~6s each and the single biggest cost in this spec. The page is a hash
         // router, so the first call opens it and the rest only move the hash —
-        // the same 14 rendered states, a third of the wall clock, which is what
+        // the same rendered states, a third of the wall clock, which is what
         // keeps the CI job inside its budget.
         const page = await recipes.settings(ctx, SECTIONS[0]);
         // Every section in this walk scrolls. See `guestScrollbarMask`.
@@ -492,7 +493,9 @@ test.describe('renderer screenshots', () => {
             location.hash = hash;
           }, section);
           await page.waitForTimeout(600);
-          if (section === 'updates') {
+          // About Freedom opens on the update status row (#87), which names
+          // the running version — masked, or every release would be a diff.
+          if (section === 'about') {
             const version = await guestElementMask(
               window,
               page,
@@ -522,7 +525,7 @@ test.describe('renderer screenshots', () => {
         surfaces.tookEverySurface();
       });
 
-      // The update states (#87). `43-settings-updates` above is the state a
+      // The update states (#87). `39-settings-about` above is the state a
       // test-mode launch really has — no updater running; these drive the
       // main-process state machine through the harness, the same entry point
       // electron-updater's events use, so both renderers paint what a user
@@ -545,7 +548,7 @@ test.describe('renderer screenshots', () => {
           total: 100 * 1024 * 1024,
           bytesPerSecond: 3 * 1024 * 1024,
         });
-        const page = await recipes.settings(ctx, 'updates');
+        const page = await recipes.settings(ctx, 'about');
         await page.waitForSelector('#update-progress:not([hidden])');
         const scrollbar = [
           ...(await guestScrollbarMask(window)),

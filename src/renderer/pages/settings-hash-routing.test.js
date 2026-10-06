@@ -1,5 +1,5 @@
 /**
- * Hash → section routing for `src/renderer/pages/settings.html` (#280).
+ * Hash → section routing for `src/renderer/pages/settings.html` (#280, #268).
  *
  * The settings page is hash-routed and the outer chrome renders that hash as
  * `freedom://settings/<section>`, so the hash is what the address bar says
@@ -13,11 +13,16 @@
  * Same extraction approach as `settings-search.test.js`: the page is one
  * classic script, so the routing block is lifted out of the shipped
  * source between the markers it keeps for this, and driven directly. The
- * block's only free names are `SECTIONS`, `DEFAULT_SECTION`, `location`,
- * `history` and `showSection`, so a fake `location`/`history` pair modelling
+ * block's only free names are `SECTIONS`, `DEFAULT_SECTION`, `PANEL_NAV`,
+ * `location`, `history` and `showSection`, so a fake `location`/`history` pair modelling
  * what a browser does with `replaceState` is enough to drive the real code —
  * this repo has no jsdom. `test-e2e/settings.spec.js` drives the same code in
  * the running app, including the address bar it feeds.
+ *
+ * #268 regrouped 14 flat nav entries into 10, several of which own more than
+ * one panel, so every hash the page answered to before — bookmarks, history,
+ * and the app's own `freedom://settings/rpc` deep link — is pinned below to
+ * the entry and panel it lands on now.
  */
 
 const fs = require('fs');
@@ -33,7 +38,7 @@ const SOURCE = [
 const START = '/* settings-hash routing: start */';
 const END = '/* settings-hash routing: end */';
 
-function loadRouting({ hash, sections, defaultSection }) {
+function loadRouting({ hash, sections, defaultSection, panelNav }) {
   const start = SOURCE.indexOf(START);
   const end = SOURCE.indexOf(END);
   expect(start).toBeGreaterThanOrEqual(0);
@@ -54,11 +59,12 @@ function loadRouting({ hash, sections, defaultSection }) {
   const routing = new Function(
     'SECTIONS',
     'DEFAULT_SECTION',
+    'PANEL_NAV',
     'location',
     'history',
     'showSection',
-    `${body}\nreturn { resolveSection, canonicalizeHash, applyHashSection };`
-  )(sections, defaultSection, location, history, (section) => shown.push(section));
+    `${body}\nreturn { resolveRoute, resolveSection, canonicalizeHash, applyHashSection, LEGACY_ROUTES };`
+  )(sections, defaultSection, panelNav, location, history, (route) => shown.push(route));
 
   return { ...routing, location, replaced, shown };
 }
@@ -69,52 +75,201 @@ const shippedSections = () =>
     ([, target]) => target
   );
 
-const drive = (hash, sections = shippedSections()) => {
-  const routing = loadRouting({ hash, sections, defaultSection: sections[0] });
+/** Every panel the shipped page renders → the nav entry it names in `data-nav`. */
+const shippedPanels = () =>
+  Object.fromEntries(
+    [...SOURCE.matchAll(/<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"/g)].map(
+      ([, id, nav]) => [id, nav]
+    )
+  );
+
+const drive = (hash) => {
+  const sections = shippedSections();
+  const routing = loadRouting({
+    hash,
+    sections,
+    defaultSection: sections[0],
+    panelNav: shippedPanels(),
+  });
   routing.applyHashSection();
   return routing;
 };
 
 describe('settings hash routing', () => {
-  it('reads the shipped page as a real 14-section nav', () => {
-    const sections = shippedSections();
-    expect(sections.length).toBeGreaterThanOrEqual(10);
-    expect(sections[0]).toBe('appearance');
-    expect(sections).toEqual(expect.arrayContaining(['chains', 'shortcuts', 'nodes']));
-    // The section the bug report used has to genuinely not be one.
-    expect(sections).not.toContain('privacy');
+  it('reads the shipped page as the grouped 10-entry nav (#268)', () => {
+    expect(shippedSections()).toEqual([
+      'profile',
+      'appearance',
+      'search',
+      'downloads',
+      'shortcuts',
+      'privacy',
+      'networks',
+      'nodes',
+      'advanced',
+      'about',
+    ]);
+    const panels = shippedPanels();
+    // Every panel names a real entry, and every entry has a panel.
+    expect(new Set(Object.values(panels))).toEqual(new Set(shippedSections()));
+    expect(panels).toMatchObject({
+      adblock: 'privacy',
+      permissions: 'privacy',
+      chains: 'networks',
+      rpc: 'networks',
+      ens: 'networks',
+      nodes: 'nodes',
+      startup: 'nodes',
+      experimental: 'advanced',
+      updates: 'about',
+    });
   });
 
   // ── The bug: a hash naming no section (#280) ───────────────────────────
   it('rewrites a hash that names no section to the section it shows', () => {
-    const { location, replaced, shown } = drive('#privacy');
-    expect(shown).toEqual(['appearance']);
-    expect(replaced).toEqual(['#appearance']);
-    expect(location.hash).toBe('#appearance');
+    const { location, replaced, shown } = drive('#nonsense');
+    expect(shown).toEqual(['profile']);
+    expect(replaced).toEqual(['#profile']);
+    expect(location.hash).toBe('#profile');
   });
 
   it('rewrites a sub-route under an unknown section too', () => {
-    const { location, shown } = drive('#privacy/cookies');
-    expect(shown).toEqual(['appearance']);
-    expect(location.hash).toBe('#appearance');
+    const { location, shown } = drive('#nonsense/cookies');
+    expect(shown).toEqual(['profile']);
+    expect(location.hash).toBe('#profile');
+  });
+
+  it('drops a sub-route an entry does not have back to the entry', () => {
+    for (const [hash, route] of [
+      ['#privacy/cookies', 'privacy'],
+      ['#nodes/rpc', 'nodes'],
+      ['#appearance/x', 'appearance'],
+    ]) {
+      const { location, shown } = drive(hash);
+      expect(shown).toEqual([route]);
+      expect(location.hash).toBe(`#${route}`);
+    }
   });
 
   it('names the section on an empty hash', () => {
     const { location, replaced } = drive('');
-    expect(replaced).toEqual(['#appearance']);
-    expect(location.hash).toBe('#appearance');
+    expect(replaced).toEqual(['#profile']);
+    expect(location.hash).toBe('#profile');
   });
 
   it('settles in one pass — the rewritten hash is itself canonical', () => {
-    const routing = loadRouting({
-      hash: '#nonsense',
-      sections: shippedSections(),
-      defaultSection: 'appearance',
-    });
-    routing.applyHashSection();
-    routing.applyHashSection();
-    expect(routing.replaced).toEqual(['#appearance']);
-    expect(routing.shown).toEqual(['appearance', 'appearance']);
+    for (const hash of ['#nonsense', '#rpc', '#chains/1', '#experimental']) {
+      const routing = loadRouting({
+        hash,
+        sections: shippedSections(),
+        defaultSection: 'profile',
+        panelNav: shippedPanels(),
+      });
+      routing.applyHashSection();
+      routing.applyHashSection();
+      expect(routing.replaced).toHaveLength(1);
+      expect(routing.shown[0]).toBe(routing.shown[1]);
+    }
+  });
+
+  // ── Every hash from before #268 lands where it used to point ───────────
+  // [old hash, the route it is rewritten to]. The route's first segment is
+  // the nav entry that opens; a second names the panel brought to the top
+  // (or, under Networks, the chain whose page opens).
+  const LEGACY = [
+    ['#appearance', 'appearance'],
+    ['#search', 'search'],
+    ['#profile', 'profile'],
+    ['#nodes', 'nodes'],
+    ['#startup', 'nodes/startup'],
+    ['#downloads', 'downloads'],
+    ['#shortcuts', 'shortcuts'],
+    ['#chains', 'networks'],
+    ['#chains/1', 'networks/1'],
+    ['#chains/100', 'networks/100'],
+    ['#chains/424242', 'networks/424242'],
+    ['#chains/', 'networks'],
+    ['#rpc', 'networks/rpc'],
+    ['#ens', 'networks/ens'],
+    ['#adblock', 'privacy'],
+    ['#permissions', 'privacy/permissions'],
+    ['#experimental', 'advanced'],
+    ['#updates', 'about/updates'],
+    // Case never mattered to the old router either.
+    ['#RPC', 'networks/rpc'],
+    ['#Chains/1', 'networks/1'],
+  ];
+
+  it.each(LEGACY)('%s lands on %s', (hash, route) => {
+    const { location, shown } = drive(hash);
+    expect(shown).toEqual([route]);
+    expect(location.hash).toBe(`#${route}`);
+  });
+
+  it('covers every entry the 14-item nav had', () => {
+    const old = [
+      'appearance',
+      'search',
+      'profile',
+      'nodes',
+      'startup',
+      'downloads',
+      'shortcuts',
+      'chains',
+      'rpc',
+      'ens',
+      'adblock',
+      'permissions',
+      'experimental',
+      'updates',
+    ];
+    const covered = LEGACY.map(([hash]) => hash.slice(1));
+    expect(old.filter((id) => !covered.includes(id))).toEqual([]);
+    // …and each lands on its own panel's entry, not on the fallback.
+    const panels = shippedPanels();
+    for (const id of old) {
+      const [entry] = drive(`#${id}`).shown[0].split('/');
+      expect(entry).toBe(panels[id]);
+    }
+  });
+
+  it('keeps the legacy map pointing only at routes that exist', () => {
+    const { LEGACY_ROUTES } = drive('');
+    const panels = shippedPanels();
+    for (const route of Object.values(LEGACY_ROUTES)) {
+      const [entry, panel] = route.split('/');
+      expect(shippedSections()).toContain(entry);
+      if (panel) expect(panels[panel]).toBe(entry);
+    }
+  });
+
+  // The chrome's own links into Settings use the current routes, so none of
+  // them leans on the legacy map. #87's hamburger update row was written
+  // against the 14-item nav (`settings/updates`) and is the one a merge
+  // would most easily leave behind.
+  it('every freedom://settings/<route> the app opens is already canonical', () => {
+    const walk = (dir) =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : walk(full);
+        return /\.js$/.test(entry.name) && !/\.test\.js$/.test(entry.name) ? [full] : [];
+      });
+    const root = path.join(__dirname, '..', '..');
+    const routes = new Map();
+    for (const file of walk(root)) {
+      // settings.js names the legacy addresses in the comments that explain them.
+      if (file.endsWith(path.join('pages', 'scripts', 'settings.js'))) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      for (const [, route] of text.matchAll(/freedom:\/\/settings\/([a-z0-9/-]+)/gi)) {
+        routes.set(route, path.relative(root, file));
+      }
+    }
+    expect([...routes.keys()]).toEqual(expect.arrayContaining(['about/updates', 'networks/rpc']));
+    for (const [route, file] of routes) {
+      const { replaced, shown } = drive(`#${route}`);
+      expect([file, route, replaced]).toEqual([file, route, []]);
+      expect([file, shown]).toEqual([file, [route]]);
+    }
   });
 
   // ── Deep links that were already right stay untouched ──────────────────
@@ -127,19 +282,37 @@ describe('settings hash routing', () => {
     }
   });
 
-  it('leaves a sub-route of a real section alone', () => {
-    for (const hash of ['#chains/1', '#chains/424242', '#chains/']) {
+  it('leaves a panel route of a real entry alone', () => {
+    for (const [panel, entry] of Object.entries(shippedPanels())) {
+      const hash = `#${entry}/${panel}`;
       const { location, replaced, shown } = drive(hash);
-      expect(shown).toEqual(['chains']);
+      expect(shown).toEqual([`${entry}/${panel}`]);
+      expect(replaced).toEqual([]);
+      expect(location.hash).toBe(hash);
+    }
+  });
+
+  it('leaves a chain detail under Networks alone', () => {
+    for (const hash of ['#networks/1', '#networks/424242']) {
+      const { location, replaced, shown } = drive(hash);
+      expect(shown).toEqual([hash.slice(1)]);
       expect(replaced).toEqual([]);
       expect(location.hash).toBe(hash);
     }
   });
 
   it('treats a differently-cased hash as canonical rather than rewriting it', () => {
-    const { location, replaced } = drive('#Chains/1');
+    const { location, replaced } = drive('#Networks/1');
     expect(replaced).toEqual([]);
-    expect(location.hash).toBe('#Chains/1');
+    expect(location.hash).toBe('#Networks/1');
+  });
+
+  it('resolveSection names the entry a hash opens', () => {
+    const { resolveSection } = drive('');
+    expect(resolveSection('#rpc')).toBe('networks');
+    expect(resolveSection('#networks/1')).toBe('networks');
+    expect(resolveSection('#permissions')).toBe('privacy');
+    expect(resolveSection('#nope')).toBe('profile');
   });
 
   // ── The wiring: one path for load and for every later hash change ──────
@@ -151,7 +324,7 @@ describe('settings hash routing', () => {
     );
     // And nothing shows a section behind the canonicalisation's back.
     const block = SOURCE.slice(SOURCE.indexOf(START), SOURCE.indexOf(END));
-    expect(block).toContain('canonicalizeHash(section);');
-    expect(block).toContain('showSection(section);');
+    expect(block).toContain('canonicalizeHash(route);');
+    expect(block).toContain('showSection(route);');
   });
 });

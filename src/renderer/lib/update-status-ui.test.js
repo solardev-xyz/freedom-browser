@@ -1,6 +1,6 @@
 // Hamburger update row + update-ready dot (#87): what each update state
 // renders, and that a click does the state's action (check / restart /
-// open Settings → Updates) — or nothing while a check or download runs.
+// open Settings → About Freedom → Updates) — or nothing while a check or download runs.
 
 import {
   describeUpdateMenuItem,
@@ -168,7 +168,7 @@ describe('initUpdateStatusUi', () => {
     expect(els.button.dataset.updateStatus).toBe('ready');
   });
 
-  test('click: idle checks, ready installs, unsupported opens Settings → Updates', async () => {
+  test('click: idle checks, ready installs, unsupported opens Settings → About Freedom → Updates', async () => {
     const { electronAPI, closeMenus, openSettings, push } = await setup(STATES.idle);
     els.button.handlers.click();
     expect(electronAPI.checkForUpdates).toHaveBeenCalledTimes(1);

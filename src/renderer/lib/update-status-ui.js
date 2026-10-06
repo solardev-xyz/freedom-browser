@@ -2,7 +2,7 @@
 //
 // Both render from the main process's update state (src/main/update-state.js,
 // broadcast on `update:state`, read once through `getUpdateState()` for the
-// first paint). Settings → Updates renders the same snapshot; the long-form
+// first paint). Settings → About Freedom → Updates renders the same snapshot; the long-form
 // status sentence (`state.message`) is main's copy and goes in the row's
 // tooltip here, the row itself only has room for a short label.
 
@@ -11,7 +11,7 @@ const CHECK_LABEL = 'Check for Updates…';
 /**
  * What the menu row shows for one snapshot.
  * `action`: 'check' (ask main to check), 'install' (restart to update),
- * 'settings' (open Settings → Updates, which says why updates are off), or
+ * 'settings' (open Settings → About Freedom → Updates, which says why updates are off), or
  * null for a row that is disabled while something is in flight.
  */
 export function describeUpdateMenuItem(state) {

@@ -26,6 +26,7 @@ const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 
 const VAULT_PASSWORD = 'Freedom-E2E-Remote-Signing-2026!';
 
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
+const { closeApp } = require('./close-app');
 
 function startBridgeServer() {
   const server = createBridgeServer();
@@ -105,11 +106,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // window already gone
-    }
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 

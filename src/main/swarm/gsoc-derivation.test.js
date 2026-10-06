@@ -45,9 +45,20 @@ beforeEach(() => {
 
 afterAll(() => miner.resetForTest());
 
+// Both derivations mine for real: ~1.5 s each for the slowest topic here
+// ('ünïcødé ✓ room', mined key 0x23aa) on an idle dev box. Run back to back
+// they took 3.0 s of jest's 5 s default, and two jest runs side by side were
+// enough to push that topic over (#535). So the worker is started first and
+// the inline copy mines on this thread while it runs: same two derivations,
+// same assertions, about half the wall time.
+//
+// The 20 s ceiling sits above the miner's own 15 s runaway bound
+// (MINE_TIMEOUT_MS), so a worker that really stalls fails with the miner's
+// `gsoc_mining_timeout` rather than with jest's generic timeout.
 test.each(Object.keys(FIXED))('topic %p derives identically on the worker', async (topic) => {
+  const derivation = deriveGsoc(topic, { origin: 'https://test.example' });
   const legacy = legacyDeriveGsoc(topic);
-  const derived = await deriveGsoc(topic, { origin: 'https://test.example' });
+  const derived = await derivation;
 
   expect(derived.signer.toHex()).toBe(legacy.signer.toHex());
   expect(derived.identifier.toHex()).toBe(legacy.identifier.toHex());
@@ -57,7 +68,7 @@ test.each(Object.keys(FIXED))('topic %p derives identically on the worker', asyn
   const [address, signerTail] = FIXED[topic];
   expect(derived.address).toBe(address);
   expect(derived.signer.toHex()).toBe(signerTail.padStart(64, '0'));
-});
+}, 20_000);
 
 test('a real runaway job is terminated and the next job still mines', async () => {
   // Proximity 256 can never be met, so bee-js walks its whole 0xffff-key

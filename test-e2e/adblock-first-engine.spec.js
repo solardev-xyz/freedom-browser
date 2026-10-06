@@ -13,6 +13,15 @@
 // Runs in the e2e-settings CI job, which downloads the real lists. Every
 // test gets a fresh profile, so there is no engine cache; the test checks
 // the log to be sure the engine really was parsed, not loaded from one.
+//
+// The engine is built from install, in parallel with the window coming up, so
+// on its own nothing says the first page's lookups reach the hold before the
+// engine lands — on a runner where the build won, the hold let go of nobody
+// and the test proved nothing (#538, ~1 CI run in 10). Landing the engine
+// right away is fine for a user (the page simply meets it); for this test it
+// is not, so the launch arms the harness's landing gate: the build still runs
+// for real, but the engine is swapped in only once the spec has *seen* the
+// page waiting on the hold, and lets it land.
 
 const fs = require('fs');
 const path = require('path');
@@ -46,17 +55,58 @@ test.beforeEach(() => {
   }
 });
 
+// Launch with the first engine's landing gate armed (see the header): set in
+// the environment the app is started with, as settings-adblock.spec.js does
+// for its list dir.
+async function launchWithEngineGate(relaunchApp) {
+  const previous = process.env.FREEDOM_TEST_ADBLOCK_ENGINE_GATE;
+  process.env.FREEDOM_TEST_ADBLOCK_ENGINE_GATE = '1';
+  try {
+    const app = await relaunchApp();
+    const window = await app.firstWindow();
+    await window.waitForSelector('[data-test="address-input"]', { state: 'visible' });
+    return { app, window };
+  } finally {
+    if (previous === undefined) delete process.env.FREEDOM_TEST_ADBLOCK_ENGINE_GATE;
+    else process.env.FREEDOM_TEST_ADBLOCK_ENGINE_GATE = previous;
+  }
+}
+
 test('the first page of a fresh session waits for the engine build, not the hold timeout', async ({
-  window,
+  relaunchApp,
   userDataDir,
 }) => {
-  // Navigate as soon as the window is up — on a fresh profile that is
-  // before the engine has landed, so the page is held behind its build.
+  const { app, window } = await launchWithEngineGate(relaunchApp);
+  const firstEngineHold = () =>
+    app.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__.adblockFirstEngineHold());
+
+  // Navigate as soon as the window is up. The engine cannot land before the
+  // page asks for it, so the page is held behind its build.
   const input = window.locator('[data-test="address-input"]');
   await input.click();
   await input.fill(PAGE_URL);
   const enteredAt = Date.now();
   await input.press('Enter');
+  // The page's first lookup/request is waiting on the hold; only now may the
+  // engine land. The poll also ends if the hold runs out first — the slow side
+  // of the race, which the gate does not hide — and the check after it fails.
+  await expect
+    .poll(
+      async () => {
+        const hold = await firstEngineHold();
+        return hold.held > 0 || !hold.holding;
+      },
+      { timeout: 15_000, intervals: [25] }
+    )
+    .toBe(true);
+  expect(await firstEngineHold(), 'the page joined the hold while it was open').toEqual({
+    holding: true,
+    held: expect.any(Number),
+  });
+  expect(
+    await app.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__.landAdblockEngine()),
+    'the launch armed the landing gate'
+  ).toBe(true);
   await expect.poll(() => pageLoaded(window), { timeout: 15_000, intervals: [25] }).toBe(true);
   const loadMs = Date.now() - enteredAt;
 
@@ -69,8 +119,8 @@ test('the first page of a fresh session waits for the engine build, not the hold
   expect(log).not.toContain('[adblock] filter engine ready (cache)');
   expect(log).not.toMatch(/filter engine not ready after/);
   const released = log.match(/first-engine hold released after (\d+) ms \((\d+) request/);
-  // The page really was held behind the build — otherwise the engine landed
-  // before Enter and this test proved nothing about the held-first-page path.
+  // The page really was held behind the build — the gate makes sure of it;
+  // the release log line must agree.
   expect(Number(released[2]), 'the first page waited on the engine build').toBeGreaterThan(0);
   console.log(
     `[#524] first load ${loadMs} ms; engine built in ${ready[1]} ms; ` +

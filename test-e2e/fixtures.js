@@ -22,6 +22,7 @@ const {
   packagedLaunchTarget,
   launchApp: launchTarget,
 } = require('./packaged-launch');
+const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -95,6 +96,13 @@ async function launchApp(userDataDir) {
   }
 }
 
+// Teardown deadline for one instance (see close-app.js). A packaged app has
+// its own 90 s quit-then-SIGKILL in packaged-launch.js; stay above it so that
+// path keeps deciding, and only a close that outlives it is reported here.
+function closeOptions() {
+  return isPackagedRun() ? { timeout: 100_000 } : {};
+}
+
 // First BrowserWindow, waited until the browser chrome has mounted. The
 // address bar is the last toolbar element initialized; presence here implies
 // tab bar, bookmarks bar, and menus are all live.
@@ -148,11 +156,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // Window may already have been closed by the spec.
-    }
+    await closeApp(app, closeOptions());
   },
 
   // Start another instance of the same executable against the same scratch
@@ -174,13 +178,12 @@ const test = base.extend({
       return app;
     });
 
+    // Close every instance even if one of them is stuck, then report it.
+    const stuck = [];
     for (const app of started) {
-      try {
-        await app.close();
-      } catch {
-        // Already closed by the spec.
-      }
+      await closeApp(app, closeOptions()).catch((err) => stuck.push(err));
     }
+    if (stuck.length) throw stuck[0];
   },
 
   window: async ({ electronApp }, use) => {

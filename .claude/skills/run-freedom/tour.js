@@ -13,21 +13,23 @@
 const { launch, shot, go, closeMenus, closeSidebar, dismissOnboarding, SHOTS } = require('./lib');
 const r = require('./recipes');
 
+// Every Settings nav entry (#268), plus the routes that bring a panel below
+// the first one up (`<entry>/<panel>`), so every panel is on screen once.
 const SECTIONS = [
+  'profile',
   'appearance',
   'search',
-  'profile',
-  'nodes',
-  'startup',
   'downloads',
   'shortcuts',
-  'chains',
-  'rpc',
-  'ens',
-  'adblock',
-  'permissions',
-  'experimental',
-  'updates',
+  'privacy',
+  'privacy/permissions',
+  'networks',
+  'networks/rpc',
+  'networks/ens',
+  'nodes',
+  'nodes/startup',
+  'advanced',
+  'about',
 ];
 const PAGES = ['downloads', 'history', 'profiles', 'payments'];
 
@@ -142,7 +144,7 @@ async function tour(theme, failures) {
   await step('settings', async () => {
     for (const [i, section] of SECTIONS.entries()) {
       await r.settings(ctx, section);
-      await snap(30 + i, `settings-${section}`);
+      await snap(30 + i, `settings-${section.replace('/', '-')}`);
     }
     await r.shortcutConflict(ctx);
     await snap(45, 'settings-shortcut-conflict');

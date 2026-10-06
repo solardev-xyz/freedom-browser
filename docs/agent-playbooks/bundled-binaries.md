@@ -123,13 +123,15 @@ Bee is not held. The log matching that #522 used is gone: v0.5.59 logs
 `WalletScanState` for new states. A state Freedom doesn't know falls back to the
 bounded hold instead of being treated as finished.
 
-Freedom does **not** pass ant#143's `--gnosis-unverified-logs-rpc-url`. Its
-chain bridge answers `eth_getLogs` from an RPC quorum only (#493), and serving
-Ant an explicitly unverified full-range source, or adding Blockscout as a
-second independent full-history source for the verified route, is tracked in
-[#529](https://github.com/solardev-xyz/freedom-browser/issues/529). Until then,
-a first scan behind range-capped endpoints reads window by window and shows
-its progress.
+Freedom does **not** pass ant#143's `--gnosis-unverified-logs-rpc-url`: every
+log Ant receives is one two independent providers agreed on (#493). For a
+first scan wider than the RPC quorum can verify, the chain bridge pairs
+Blockscout's log index with one full-history RPC
+([#529](https://github.com/solardev-xyz/freedom-browser/issues/529); see
+`docs/ant-chain-bridge.md`), so the scan reaches `done` in a few requests. When
+Blockscout is down or disagrees, the scan reads window by window as before and
+shows its progress. Serving Ant an explicitly unverified source remains a
+separate, open decision.
 
 Ports matter when you are judging evidence:
 

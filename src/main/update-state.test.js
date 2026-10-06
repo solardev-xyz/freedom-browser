@@ -136,7 +136,7 @@ describe('update state machine (#87)', () => {
   });
 
   test('status sentences never name a surface-specific control', () => {
-    // main's sentence is shown both in Settings → Updates ("Check now") and as
+    // main's sentence is shown both in Settings → About Freedom → Updates ("Check now") and as
     // the hamburger row's tooltip ("Check for Updates…"), so it must name
     // neither button.
     const states = [

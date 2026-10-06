@@ -17,6 +17,7 @@ const fs = require('fs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
+const { closeApp } = require('./close-app');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-2026!';
 const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
@@ -177,11 +178,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // window already gone
-    }
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 

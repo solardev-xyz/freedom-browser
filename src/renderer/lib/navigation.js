@@ -336,7 +336,7 @@ const clearFaviconPairing = (tab) => {
   tab.reportedFavicon = null;
 };
 
-// Experimental opt-in (Settings → Experimental, default off). Mirrors the
+// Experimental opt-in (Settings → Appearance, default off). Mirrors the
 // `showIpfsProgressStatus` setting, seeded in initNavigation and kept live via
 // the `settings:updated` broadcast. While off, the IPFS progress poller never
 // starts, so the link bar stays a pure hover-URL surface.
@@ -1015,7 +1015,7 @@ const syncBzzBase = (nextBase) => {
 // and telling a private-window user with a fully set-up wallet to flip a
 // Settings toggle that is already on leaves them nowhere to go (#240).
 const SEND_FLOW_REFUSAL_MESSAGES = {
-  [SEND_FLOW_DISABLED]: 'Enable Identity & Wallet (Settings → Experimental) to accept tips.',
+  [SEND_FLOW_DISABLED]: 'Enable Identity & Wallet (Settings → Advanced) to accept tips.',
   [SEND_FLOW_PRIVATE]:
     'Wallet is unavailable in private windows. Open a normal window to accept tips.',
   [SEND_FLOW_SETUP]: 'Finish setting up Identity & Wallet to accept tips.',
@@ -1234,8 +1234,9 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 // The sub-path becomes the page's fragment, so it has to accept every depth
 // `page-urls.js#getInternalPageName` *emits* — that function is the inverse of
 // this one, and what it emits is what the address bar shows and what a user or
-// a bookmark hands back. A chain detail is `settings.html#chains/1`, shown as
-// `freedom://settings/chains/1`; while this stopped at a single segment the
+// a bookmark hands back. A chain detail is `settings.html#networks/1`, shown as
+// `freedom://settings/networks/1` (the older `chains/1` is a legacy alias the
+// page rewrites to it); while this stopped at a single segment the
 // chrome's own chain-detail URL was not a routable address at all — typing it
 // back navigated nowhere while the bar went on standing over the chain list,
 // the same "URL promises a view that isn't on screen" shape as #280 itself.
@@ -3278,7 +3279,7 @@ export const initNavigation = () => {
           const target = formatOnchainAppUrl(data.args?.[0]?.target);
           if (target) loadTarget(target, null, webview);
         } else if (data.channel === 'onchain:open-rpc-settings') {
-          loadTarget('freedom://settings/rpc', null, webview);
+          loadTarget('freedom://settings/networks/rpc', null, webview);
         } else if (data.channel === 'link:navigate') {
           const payload = data.args?.[0] || {};
           const url = payload.url;

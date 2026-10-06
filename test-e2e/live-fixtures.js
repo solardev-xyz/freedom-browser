@@ -22,6 +22,7 @@ const fs = require('fs');
 const os = require('os');
 
 const { isPackagedRun, packagedLaunchTarget, launchApp } = require('./packaged-launch');
+const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -151,11 +152,9 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // Window may already be closed by the spec.
-    }
+    // Live nodes stop on quit, and a packaged app's own quit deadline is 90 s
+    // (packaged-launch.js); stay above both.
+    await closeApp(app, { timeout: 100_000 });
     try {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     } catch {

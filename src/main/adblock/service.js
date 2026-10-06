@@ -122,6 +122,12 @@ let firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
 let holdBudgetLeftMs = null;
 // Consumers that waited on the current hold, for its release log line.
 let heldConsumers = 0;
+// E2E only (test-harness.js, #538): a promise the first parsed engine waits
+// on after its build finishes and before it is swapped in, so a spec can make
+// sure the first page's lookups reach the hold before the engine lands. The
+// build itself still runs from install, in parallel with window startup, as
+// it does for a user. One-shot; null outside that spec.
+let engineLandingGate = null;
 let lastArtifacts = null;
 // False until the first engine build has looked for lists on disk. Until
 // then `lastArtifacts === null` means "not checked yet", not "no lists", and
@@ -445,7 +451,7 @@ async function rebuildEngineOnce() {
   // is held (and no "hold ended with no engine" warning is logged for it).
   const releaseHold = engine || lists.length === 0 ? null : holdUntilEngine();
   const buildStartedAt = Date.now();
-  let bytes, warnings, inWorker;
+  let bytes, warnings, inWorker, builtMs;
   try {
     ({ bytes, warnings, inWorker } = await engineBuildHost.buildEngine({
       lists,
@@ -453,7 +459,13 @@ async function rebuildEngineOnce() {
       resources: resources ? { text: resources.text, checksum: resources.checksum } : null,
       config: ENGINE_CONFIG,
     }));
+    builtMs = Date.now() - buildStartedAt;
     for (const warning of warnings) log.warn(`[adblock] ${warning}`);
+    if (engineLandingGate && releaseHold) {
+      const gate = engineLandingGate;
+      engineLandingGate = null;
+      await gate;
+    }
     engine = bytes ? FiltersEngine.deserialize(bytes) : null;
   } finally {
     // Released after `engine` is set, so held requests see the new engine.
@@ -465,7 +477,7 @@ async function rebuildEngineOnce() {
   log.info(
     `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
       `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'}, ` +
-      `built in ${Date.now() - buildStartedAt} ms${inWorker ? '' : ' on the main thread'})`
+      `built in ${builtMs} ms${inWorker ? '' : ' on the main thread'})`
   );
   if (cacheFile) await writeEngineCache(cacheFile, bytes);
 }
@@ -700,6 +712,7 @@ function getScriptlets({ url, sourceId } = {}) {
  */
 function installAdblockInterception(options = {}) {
   artifactsDirOverride = options.artifactsDir || null;
+  engineLandingGate = options.engineLandingGate || null;
   cacheDir = options.cacheDir !== undefined ? options.cacheDir : getDefaultCacheDir();
   installed = true;
   setAllowlistedHosts(getAllowlistedHosts());
@@ -806,6 +819,7 @@ function _resetAdblockForTests() {
   firstEngineHoldMs = FIRST_ENGINE_HOLD_MS;
   holdBudgetLeftMs = null;
   heldConsumers = 0;
+  engineLandingGate = null;
   lastArtifacts = null;
   artifactsResolved = false;
   allowlistedHosts = [];
@@ -832,4 +846,7 @@ module.exports = {
   _setFirstEngineHoldForTests: (ms) => {
     firstEngineHoldMs = ms;
   },
+  // The first-engine hold as it stands: whether one is open, and how many
+  // requests/lookups have waited on it so far (the E2E harness, #538).
+  _firstEngineHoldForTests: () => ({ holding: Boolean(engineWait), held: heldConsumers }),
 };

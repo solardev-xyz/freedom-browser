@@ -18,7 +18,8 @@ const requests = (app) => app.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__
 async function openSettingsUpdates(window, electronApp) {
   const input = window.locator('[data-test="address-input"]');
   await input.click();
-  await input.fill('freedom://settings/updates');
+  // Updates is a panel of About Freedom since #268.
+  await input.fill('freedom://settings/about/updates');
   await input.press('Enter');
   let page;
   await expect
@@ -55,13 +56,16 @@ test('without a running updater both surfaces say so instead of offering a dead 
   const row = window.locator('#check-updates-btn');
   await expect(row).toHaveAttribute('data-update-status', 'unsupported');
   await expect(window.locator('#update-menu-status')).toHaveText('Unavailable');
-  // Clicking it explains why, in Settings → Updates, rather than doing nothing.
+  // Clicking it explains why, in Settings → About Freedom's Updates panel,
+  // rather than doing nothing.
   await window.locator('[data-test="address-input"]').evaluate((el) => el.blur());
   await row.click();
   await expect(window.locator('#menu-dropdown')).not.toHaveClass(/open/);
   await expect(window.locator('[data-test="address-input"]')).toHaveValue(
-    'freedom://settings/updates'
+    'freedom://settings/about/updates'
   );
+  await expect(settings.locator('.nav-item.active')).toHaveAttribute('data-target', 'about');
+  await expect(settings.locator('#update-status-row')).toBeInViewport();
   expect(await requests(electronApp)).toEqual([]);
 });
 

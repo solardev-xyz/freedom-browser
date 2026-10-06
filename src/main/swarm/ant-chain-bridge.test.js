@@ -155,6 +155,7 @@ test('Ant reads are background work, and only the RPC quorum answers its log sca
     signal: expect.any(AbortSignal),
     background: true,
     excludeSources: ['myotis', 'colibri', 'direct'],
+    includeSources: ['blockscout'],
     quorumTimeoutMs: 30000,
     rankError: rankLogScanError,
     rangeCapOf: logScanRangeCap,

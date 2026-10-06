@@ -22,8 +22,8 @@ export function initRpcSettings() {
   const btn = document.getElementById('rpc-open-providers');
   if (btn) {
     // Singleton, like every other chrome path to an internal page: an already
-    // open Settings tab is focused and routed to the RPC section rather than
+    // open Settings tab is focused and routed to Networks' RPC Providers rather than
     // duplicated. `createTab` here always made a second Settings tab (#325).
-    btn.addEventListener('click', () => openOrFocusInternalPage('settings', 'rpc'));
+    btn.addEventListener('click', () => openOrFocusInternalPage('settings', 'networks/rpc'));
   }
 }

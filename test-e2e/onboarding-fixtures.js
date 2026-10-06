@@ -23,6 +23,7 @@ const { test: base, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -102,11 +103,8 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // Window may already be closed by the spec.
-    }
+    // Real nodes stop on quit; same deadline as live-fixtures.js.
+    await closeApp(app, { timeout: 100_000 });
     try {
       fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     } catch {

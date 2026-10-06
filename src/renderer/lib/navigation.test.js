@@ -2258,7 +2258,7 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(global.alert).toHaveBeenCalledWith(
-        'Enable Identity & Wallet (Settings → Experimental) to accept tips.'
+        'Enable Identity & Wallet (Settings → Advanced) to accept tips.'
       );
     });
 
@@ -3202,7 +3202,7 @@ describe('navigation', () => {
       });
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        'file:///app/pages/settings.html#rpc'
+        'file:///app/pages/settings.html#networks/rpc'
       );
     });
 

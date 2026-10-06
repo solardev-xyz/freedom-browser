@@ -54,6 +54,8 @@ const {
   installAdblockInterception,
   registerAdblockIpc,
   _setFirstEngineHoldForTests,
+  _firstEngineHoldForTests,
+  isEngineReady,
   adblockRequestForDispatch,
   getCosmeticFilters,
   getScriptlets,
@@ -755,6 +757,46 @@ describe('scriptlets', () => {
     }
   });
 
+  // #538: the E2E harness's landing gate. The build runs, but its engine is
+  // swapped in only once the gate opens, so a spec can see the first page
+  // waiting on the hold before letting the engine land.
+  test('an engine landing gate keeps the built first engine out until it opens', async () => {
+    const realBuild = engineBuildHost.buildEngine;
+    let markBuilt;
+    const built = new Promise((resolve) => (markBuilt = resolve));
+    const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
+      const result = await realBuild(job);
+      markBuilt();
+      return result;
+    });
+    let open;
+    const gate = new Promise((resolve) => (open = resolve));
+    try {
+      _resetAdblockForTests();
+      registerAdblockIpc();
+      installAdblockInterception({ artifactsDir: dir, cacheDir: null, engineLandingGate: gate });
+      await built;
+      await settle();
+      expect(isEngineReady()).toBe(false);
+      expect(_firstEngineHoldForTests()).toEqual({ holding: true, held: 0 });
+
+      navigateTab(9, 'https://video.test/watch');
+      const held = adblockRequestForDispatch(
+        makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
+      );
+      expect(typeof held?.then).toBe('function');
+      expect(_firstEngineHoldForTests()).toEqual({ holding: true, held: 1 });
+
+      open();
+      await expect(held).resolves.toEqual({ cancel: true });
+      expect(isEngineReady()).toBe(true);
+      expect(_firstEngineHoldForTests()).toEqual({ holding: false, held: 1 });
+    } finally {
+      open();
+      spy.mockRestore();
+    }
+  });
+
   test('a rebuild over a live engine holds nothing: the old engine keeps answering', async () => {
     const build = gateBuilds();
     try {
@@ -1012,15 +1054,28 @@ describe('scriptlets', () => {
     const thirdGate = new Promise((resolve) => (openThird = resolve));
     let thirdStarted;
     const third = new Promise((resolve) => (thirdStarted = resolve));
+    // A hold starts before buildEngine() is called and lasts until it
+    // returns, so a real build inside a hold races it against the 100 ms
+    // budget below, and on a loaded machine the build lost: 15 of 16 parallel
+    // runs failed (#535). Neither hold races anything now. Build 1 always
+    // outlasts the budget, so its hold always times out and spends all of it;
+    // build 3 hands back build 1's engine once the test opens the gate, so the
+    // hold under test lasts exactly as long as the test keeps the gate shut.
+    // Only the refill can then give build 3 a budget at all.
+    let firstBuild;
     const spy = jest.spyOn(engineBuildHost, 'buildEngine').mockImplementation(async (job) => {
       calls += 1;
       // 1: install's build lands an engine. 2: the lists resolve to nothing
       // (bytes: null), so the engine is dropped. 3: rebuilt, slowly.
       if (calls === 2) return { bytes: null, warnings: [], inWorker: true };
-      if (calls === 3) thirdStarted();
-      const result = await realBuild(job);
-      if (calls === 3) await thirdGate;
-      return result;
+      if (calls === 3) {
+        thirdStarted();
+        await thirdGate;
+        return firstBuild;
+      }
+      firstBuild = await realBuild(job);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return firstBuild;
     });
     const info = jest.spyOn(log, 'info').mockImplementation(() => {});
     const warn = jest.spyOn(log, 'warn').mockImplementation(() => {});
@@ -1035,6 +1090,11 @@ describe('scriptlets', () => {
           makeDetails({ url: 'https://telemetry.test/t.js', webContentsId: 9 })
         )
       ).toBe(null);
+      // Build 1's hold timed out on purpose (see above) and said so; the
+      // assertions at the end are about build 3's hold only.
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/not ready after/));
+      info.mockClear();
+      warn.mockClear();
       // Longer than the whole budget since the first hold started.
       await new Promise((resolve) => setTimeout(resolve, 150));
 

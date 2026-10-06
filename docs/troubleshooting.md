@@ -26,12 +26,12 @@
 ## Myotis fails to start or synchronize
 
 - Confirm `npm run myotis:download` installed the native addon for the current OS and architecture.
-- Check the separate Ethereum and Gnosis controls under **Settings → Startup** and the Nodes panel.
+- Check the separate Ethereum and Gnosis controls under **Settings → Nodes → Startup** and the Nodes panel.
 - Review the application log for native-addon load, peer, or synchronization errors.
 
 ## Tor or `.onion` access fails
 
-- Ensure **Settings → Experimental → Enable Tor (.onion access) (Beta)** is enabled.
+- Ensure **Settings → Advanced → Enable Tor (.onion access)** is enabled.
 - For source builds, run `npm run tor:download`; it requires a Rust toolchain and builds Arti for the host — macOS, Linux, and Windows x64 (on Windows it also needs the x64 MSVC tools). Releases cut after Windows Arti bundling landed (September 2026) carry Arti on macOS arm64, Linux x64/arm64 and Windows x64; a Windows release older than that bundles none, so update to the latest build. The Tor rows stay hidden whenever no Arti is bundled — an older Windows release, or a source build that skipped the download.
 - Check the Nodes panel for Arti bootstrap status and the active profile's SOCKS5 endpoint.
 - Freedom fails closed for `.onion` traffic if Arti exits, so restart Tor rather than expecting a direct-network fallback.
@@ -47,7 +47,7 @@
 
 - Verify internet connectivity
 - Open the address-bar verification details to inspect the Colibri or RPC result.
-- Review **Settings → Name Resolution**, **Chains**, and **RPC Providers**.
+- Review **Settings → Networks**: Chains, RPC Providers, and Name Resolution.
 - For development, prepend a custom mainnet endpoint with `ETH_RPC`.
 
 ## Content not loading

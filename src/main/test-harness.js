@@ -105,6 +105,22 @@ function installExternalProtocolRecorder() {
   };
 }
 
+// The first ad-block engine's landing gate (#538), armed only for a launch
+// with FREEDOM_TEST_ADBLOCK_ENGINE_GATE=1 (adblock-first-engine.spec.js). The
+// engine is installed before the harness, so index.js asks for the gate here
+// and hands it to installAdblockInterception; the spec opens it through the
+// global shim once the first page is waiting on the hold — an observable
+// state, rather than hoping the window outruns the build.
+let releaseAdblockEngineGate = null;
+
+function adblockEngineLandingGate() {
+  if (!TEST_MODE_ENABLED || process.env.FREEDOM_TEST_ADBLOCK_ENGINE_GATE !== '1') return null;
+  log.info('[test-harness] first ad-block engine waits for the spec to land it');
+  return new Promise((resolve) => {
+    releaseAdblockEngineGate = resolve;
+  });
+}
+
 function resetFixtures() {
   contentFixtures.clear();
   ensFixtures.clear();
@@ -611,6 +627,16 @@ function exposeGlobalShim() {
       return require('./updater').getUpdateState();
     },
     updateState: () => require('./updater').getUpdateState(),
+    // First ad-block engine (#538, see adblockEngineLandingGate): how many
+    // requests/lookups the first-engine hold has caught so far, and the call
+    // that lets the gated engine land. Returns whether a gate was open.
+    adblockFirstEngineHold: () => require('./adblock/service')._firstEngineHoldForTests(),
+    landAdblockEngine: () => {
+      const release = releaseAdblockEngineGate;
+      releaseAdblockEngineGate = null;
+      release?.();
+      return Boolean(release);
+    },
     updaterRequests: () => [...updaterRequests],
     clearUpdaterRequests: () => {
       updaterRequests.length = 0;
@@ -649,6 +675,7 @@ function installTestHarness({ defaultSession }) {
 module.exports = {
   isTestMode,
   installTestHarness,
+  adblockEngineLandingGate,
   // Exposed so private-window sessions (created after startup) get the same
   // fixture-driven protocol stubs as the default session in test mode. The
   // fixture maps are shared module state, so per-session registration is all

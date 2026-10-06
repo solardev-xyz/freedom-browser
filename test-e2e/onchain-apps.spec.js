@@ -45,6 +45,30 @@ function readVisibleInterstitial(window) {
   });
 }
 
+// True once the tab's page has committed on `origin` *and* is back on screen
+// with its load finished. A URL check alone is not enough:
+// `getURL()` reports the new URL as soon as Chromium commits, but the shell
+// hides the webview on `did-navigate` and only un-hides it on `dom-ready`
+// (navigation.js), so for a moment after the URL flips there is no
+// `webview:not(.hidden)` to run script in (#541). Same shape as
+// `pageLoaded()` in adblock-first-engine.spec.js.
+//
+// The check compares the committed URL's origin exactly rather than matching a
+// substring: a failed load lands on `pages/error.html?url=<the original URL>`,
+// whose query string contains the host too, and a substring test would accept
+// that error page as "the page is ready" and probe from the wrong origin.
+function pageReady(window, origin) {
+  return window.evaluate((expected) => {
+    const webview = document.querySelector('webview:not(.hidden)');
+    if (!webview || webview.isLoading()) return false;
+    try {
+      return new URL(webview.getURL()).origin === expected;
+    } catch {
+      return false;
+    }
+  }, origin);
+}
+
 // Right-click inside the guest page. The webview preload intercepts
 // `contextmenu` in the capture phase and forwards the context to the shell,
 // which is what renders `#page-context-menu`.
@@ -498,11 +522,7 @@ test('blocks a page from reaching the onchain trust gate as a subresource', asyn
   const input = window.locator('[data-test="address-input"]');
   await input.fill('https://hostile.example/');
   await input.press('Enter');
-  await expect
-    .poll(() =>
-      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
-    )
-    .toContain('hostile.example');
+  await expect.poll(() => pageReady(window, 'https://hostile.example')).toBe(true);
 
   // Both shapes matter: a plain fetch reads the token outright, and an opaque
   // `no-cors` fetch still runs the handler (staging or consuming a token)

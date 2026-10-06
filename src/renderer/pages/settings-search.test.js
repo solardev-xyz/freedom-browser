@@ -16,7 +16,7 @@
  * below turns the page's *own* `<main class="content">` markup into the small
  * element interface the helpers use — `children`, `tagName`, `id`,
  * `classList.contains`, `textContent`, nothing else. That keeps these tests
- * on the shipped 14 sections and their real labels rather than on a fixture
+ * on the shipped sections and their real labels rather than on a fixture
  * that can drift from them; `test-e2e/settings.spec.js` drives the same
  * helpers over the real Chromium DOM, including the sections that only exist
  * once their view has rendered.
@@ -170,8 +170,33 @@ const NAV_LABELS = Object.fromEntries(
   ])
 );
 
+// Since #268 a nav entry can own several sections ("panels"), each naming
+// its entry in `data-nav`; the page hands the builder each panel's entry
+// label, as the fallback name and as the group its rows are listed under.
+// A panel whose heading is painted by a view template carries a
+// `data-title` to be named by until then (Chains, RPC Providers).
+const PANEL_TAGS = [
+  ...SOURCE.matchAll(
+    /<section class="section[^"]*" id="([a-z]+)" data-nav="([a-z]+)"(?: data-title="([^"]*)")?>/g
+  ),
+];
+const PANEL_NAV = Object.fromEntries(PANEL_TAGS.map(([, id, nav]) => [id, nav]));
+const PANEL_GROUPS = Object.fromEntries(
+  Object.entries(PANEL_NAV).map(([id, nav]) => [id, NAV_LABELS[nav]])
+);
+const PANEL_LABELS = Object.fromEntries(
+  PANEL_TAGS.map(([, id, nav, title]) => [id, title || NAV_LABELS[nav]])
+);
+
 const index = () =>
-  buildSettingsSearchIndex(CONTENT, { sectionLabels: NAV_LABELS, skip: [RESULTS_PANEL] });
+  buildSettingsSearchIndex(CONTENT, {
+    sectionLabels: PANEL_LABELS,
+    groups: PANEL_GROUPS,
+    skip: [RESULTS_PANEL],
+  });
+
+// A section's own entry, as opposed to one of its rows (which are numbered).
+const isSectionEntry = (entry) => entry.labelIndex === undefined;
 
 const search = (query) => matchSettingsSearch(index(), query);
 const labelsOf = (results) => results.map((result) => result.label);
@@ -179,56 +204,79 @@ const labelsOf = (results) => results.map((result) => result.label);
 describe('the markup reader these tests are built on', () => {
   test('sees the page the browser sees: every section, with its rows', () => {
     const sections = CONTENT.children.filter((child) => child.tagName === 'SECTION');
-    // The 14 nav sections plus the search-results panel, which is not one.
-    // The nav's order is its own — Site Permissions sits after Ad Blocking in
-    // the markup and before it in the nav — so this is a set comparison.
+    // Every panel of the 10 nav entries plus the search-results panel, which
+    // is not one.
     expect(new Set(sections.map((section) => section.id))).toEqual(
-      new Set([RESULTS_PANEL, ...Object.keys(NAV_LABELS)])
+      new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(15);
-    expect(Object.keys(NAV_LABELS)).toHaveLength(14);
+    expect(sections).toHaveLength(18);
+    expect(Object.keys(NAV_LABELS)).toHaveLength(10);
+    // Every panel names a real entry, and every entry has a panel.
+    expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
 
-    const experimental = sections.find((section) => section.id === 'experimental');
-    const rows = experimental.children
+    const startup = sections.find((section) => section.id === 'startup');
+    const rows = startup.children
       .flatMap((child) => child.children)
       .filter((child) => child.classList.contains('row'));
-    expect(rows.length).toBeGreaterThanOrEqual(5);
+    expect(rows.length).toBe(6);
   });
 
   test('reads text in source order, through nested elements and entities', () => {
     const tor = index().find((entry) => entry.label.startsWith('Enable Tor'));
-    // The `(Beta)` span is part of the label; `<code>.onion</code>` sits at
+    // The `Beta` badge is part of the label; `<code>.onion</code>` sits at
     // the *start* of the help line, which a reader that appended its own text
     // before its children would move to the end.
-    expect(tor.label).toBe('Enable Tor (.onion access) (Beta)');
+    expect(tor.label).toBe('Enable Tor (.onion access) Beta');
     expect(tor.help).toBe(
       'Routes only .onion addresses through the bundled Tor (Arti) client. ' +
         'Clearnet traffic stays direct.'
     );
     expect(index().find((entry) => entry.label.includes('Identity')).label).toBe(
-      'Enable Identity & Wallet (Beta)'
+      'Enable Identity & Wallet Beta'
     );
   });
 });
 
 describe('buildSettingsSearchIndex', () => {
   test('indexes one entry per section, named by its own heading', () => {
-    const sections = index().filter((entry) => entry.label === entry.section);
+    const sections = index().filter(isSectionEntry);
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
-      new Set(Object.keys(NAV_LABELS))
+      new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(14);
-    expect(sections.find((entry) => entry.sectionId === 'ens').label).toBe('Name Resolution');
-    expect(sections.find((entry) => entry.sectionId === 'experimental').label).toBe('Experimental');
+    expect(sections).toHaveLength(17);
+    const named = (id) => sections.find((entry) => entry.sectionId === id);
+    // A panel that shares its entry is named by its own heading, listed under
+    // the entry that holds it (#268)…
+    expect(named('ens')).toMatchObject({
+      label: 'Name Resolution',
+      section: 'Networks › Name Resolution',
+    });
+    expect(named('adblock')).toMatchObject({
+      label: 'Ad Blocking',
+      section: 'Privacy and security › Ad Blocking',
+    });
+    // …and an entry's own heading is found by the entry's name alone.
+    expect(named('networks')).toMatchObject({ label: 'Networks', section: 'Networks' });
+    expect(named('experimental')).toMatchObject({ label: 'Advanced', section: 'Advanced' });
+    expect(named('about')).toMatchObject({ label: 'About Freedom', section: 'About Freedom' });
   });
 
   test('falls back to the nav label for a section whose view has not rendered', () => {
-    // Chains, RPC Providers and Site Permissions build their `<h2>` in a view
-    // template, so before that paints the section carries no heading at all.
+    // Chains and RPC Providers build their heading in a view template, so
+    // before that paints the section carries no heading at all — only the
+    // `data-title` it is named by meanwhile, listed under its entry.
     const entries = index();
-    for (const id of ['chains', 'rpc']) {
-      expect(SOURCE).toContain(`<section class="section" id="${id}">`);
-      expect(entries.find((entry) => entry.sectionId === id).label).toBe(NAV_LABELS[id]);
+    for (const [id, title] of [
+      ['chains', 'Chains'],
+      ['rpc', 'RPC Providers'],
+    ]) {
+      expect(SOURCE).toContain(
+        `<section class="section panel" id="${id}" data-nav="networks" data-title="${title}">`
+      );
+      expect(entries.find((entry) => entry.sectionId === id)).toMatchObject({
+        label: title,
+        section: `Networks › ${title}`,
+      });
     }
     const bare = buildSettingsSearchIndex(CONTENT, { skip: [RESULTS_PANEL] });
     expect(bare.find((entry) => entry.sectionId === 'chains').label).toBe('chains');
@@ -238,13 +286,19 @@ describe('buildSettingsSearchIndex', () => {
     const entries = index();
     const attribution = (label) =>
       entries.find((entry) => entry.label === label && entry.label !== entry.section)?.section;
-    // The finding #281 is about: Tor's startup toggle is under Experimental,
-    // not Startup, and nothing on the page said so.
-    expect(attribution('Start Tor when Freedom opens')).toBe('Experimental');
-    expect(attribution('Enable Tor (.onion access) (Beta)')).toBe('Experimental');
+    // The finding #281 was about Tor's startup toggle sitting under
+    // Experimental, not Startup; #275 moved it, and the result says where.
+    expect(attribution('Start Tor when Freedom opens')).toBe('Nodes › Startup');
+    expect(attribution('Enable Tor (.onion access) Beta')).toBe('Advanced');
     expect(attribution('Theme')).toBe('Appearance');
-    expect(attribution('Block ads')).toBe('Ad Blocking');
-    expect(attribution('Prefer verified answers')).toBe('Name Resolution');
+    expect(attribution('Show IPFS load progress in the status bar')).toBe('Appearance');
+    expect(attribution('Swarm publishing')).toBe('Nodes');
+    expect(attribution('Block ads')).toBe('Privacy and security › Ad Blocking');
+    expect(attribution('Prefer verified answers')).toBe('Networks › Name Resolution');
+    expect(attribution('Automatically check for updates')).toBe('About Freedom › Updates');
+    // #87's status row (the running version, Check now) is part of About's
+    // Updates panel too.
+    expect(attribution('Freedom')).toBe('About Freedom › Updates');
   });
 
   test('a section keeps its intro copy, and a row keeps the help under its own label', () => {
@@ -265,7 +319,7 @@ describe('buildSettingsSearchIndex', () => {
     expect(SOURCE).toContain(`id="${RESULTS_PANEL}"`);
     expect(index().some((entry) => entry.sectionId === RESULTS_PANEL)).toBe(false);
     // Without the skip it would be in there — the guard is load-bearing.
-    const unskipped = buildSettingsSearchIndex(CONTENT, { sectionLabels: NAV_LABELS });
+    const unskipped = buildSettingsSearchIndex(CONTENT, { sectionLabels: PANEL_LABELS });
     expect(unskipped.some((entry) => entry.sectionId === RESULTS_PANEL)).toBe(true);
   });
 
@@ -545,7 +599,7 @@ describe('matchSettingsSearch', () => {
     const lower = labelsOf(search('tor'));
     expect(labelsOf(search('TOR'))).toEqual(lower);
     expect(labelsOf(search('  ToR  '))).toEqual(lower);
-    expect(lower).toContain('Enable Tor (.onion access) (Beta)');
+    expect(lower).toContain('Enable Tor (.onion access) Beta');
     expect(lower).toContain('Start Tor when Freedom opens');
     // A transposition is a miss, not a near-match.
     expect(search('tro')).toEqual([]);
@@ -555,7 +609,7 @@ describe('matchSettingsSearch', () => {
     const results = search('tor');
     const ranks = new Map(results.map((result) => [result.label, result.rank]));
     // "Tor" opens neither label, so both toggles rank as label-substring…
-    expect(ranks.get('Enable Tor (.onion access) (Beta)')).toBe(1);
+    expect(ranks.get('Enable Tor (.onion access) Beta')).toBe(1);
     expect(ranks.get('Start Tor when Freedom opens')).toBe(1);
     // …and every help-text-only hit sorts after them.
     expect(results.map((result) => result.rank)).toEqual(
@@ -583,11 +637,14 @@ describe('matchSettingsSearch', () => {
     for (const result of results.filter((entry) => entry.sectionId === 'downloads').slice(1)) {
       expect(`${result.label} ${result.help}`.toLowerCase()).toContain('downloads');
     }
+    expect(search('advanced').filter((entry) => entry.sectionId === 'experimental')).toHaveLength(
+      1
+    );
     expect(
       search('experimental')
         .filter((entry) => entry.sectionId === 'experimental')
         .map((entry) => entry.label)
-    ).toEqual(['Experimental', 'Tor balance reads (experimental)']);
+    ).toEqual(['Tor balance reads (experimental)']);
   });
 
   test('ties keep document order, so results read the way the page does', () => {
@@ -623,7 +680,7 @@ describe('matchSettingsSearch', () => {
 // ---------------------------------------------------------------------------
 
 // The index is the live DOM, so what it can answer for is whatever each
-// section currently has painted. That is invisible for the 13 sections whose
+// section currently has painted. That is invisible for the sections whose
 // rows are static markup, and it is the whole story for the chain master list:
 // a chain is named on this page only as a `.net-row`, and Chains replaces that
 // list with a chain's own page or with the add-chain form. So "a chain is

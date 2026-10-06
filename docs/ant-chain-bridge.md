@@ -33,7 +33,9 @@ froze the whole browser for 20-30 s; since
 [#495](https://github.com/solardev-xyz/freedom-browser/issues/495) it runs in a
 worker thread.) A page's `eth_getLogs` therefore comes back `verified: true`
 when RPC quorum agrees and `verified: false` only when it falls through to
-direct RPC. Ant's log scans go to the RPC quorum only (below). Ant's reads are
+direct RPC. Ant's log scans go to the RPC quorum only, or, for a span wider
+than the quorum can verify, to Blockscout's log index checked against one RPC
+(below). Ant's reads are
 background work: they use Myotis only when its single in-flight slot is idle
 and never queue for it, so the node's polling cannot push interactive
 wallet/app reads into queue-full fallback.
@@ -44,12 +46,12 @@ The router (`chain-data-router.js`) keeps one capability descriptor per read
 source, `SOURCE_CAPABILITIES`, and consults it before trying a source
 ([#497](https://github.com/solardev-xyz/freedom-browser/issues/497)):
 
-| | Myotis | Colibri | RPC quorum | direct RPC |
-|---|---|---|---|---|
-| never serves | filters, `web3_*` | filters, `web3_*`, `eth_getLogs` | filters, `web3_*` | — |
-| `eth_getLogs` span | — | 10,000 (upstream; unused) | learned per endpoint | not tracked |
-| log answer may be cut short | — | yes | yes | yes |
-| cost | serialized | proof | fan-out | single |
+| | Myotis | Colibri | RPC quorum | direct RPC | Blockscout (opt-in) |
+|---|---|---|---|---|---|
+| never serves | filters, `web3_*` | filters, `web3_*`, `eth_getLogs` | filters, `web3_*` | — | everything but `eth_getLogs` |
+| `eth_getLogs` span | — | 10,000 (upstream; unused) | learned per endpoint | not tracked | full history |
+| log answer may be cut short | — | yes | yes | yes | no: paged, a capped page is read on |
+| cost | serialized | proof | fan-out | single | paired: Blockscout + one RPC + a quorum for the newest blocks |
 
 - **Methods.** A source that never serves a method is left out of that
   request before routing starts, together with the caller's own
@@ -61,6 +63,11 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   is still refused by the source's adapter and reported as that source's
   failure: Myotis serves only the methods its addon version implements, at
   `latest`, with the call fields it can honour.
+- **Opt-in.** Blockscout is in no read order: only a caller that names it in
+  `includeSources` (the bridge, for Ant's `eth_getLogs`) is routed to it,
+  right before the quorum, and only while the read order keeps `quorum`. It
+  joins only a range-capped xBZZ `Transfer` scan by sender or recipient, the
+  filter Ant's wallet scan sends; any other request never sees it.
 - **Limits.** The quorum asks a range-capped log scan only of endpoints whose
   learned cap covers its span (below). Colibri's upstream cap is recorded but
   not consulted while `eth_getLogs` stays off Colibri.
@@ -87,6 +94,9 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   range under 2,000 blocks goes unchecked, since all its logs fall in the last
   1,000 blocks whether or not it was cut. A failed check is not counted
   against the endpoints: it neither cools them down nor bounds their span.
+  Blockscout's answer is not checked this way: it is never cut short
+  (below), and it has to agree with the RPC it is paired with, so a cut RPC
+  answer fails the pair instead.
 
 ### Log scans: the RPC quorum only, within each endpoint's range cap
 
@@ -95,7 +105,9 @@ logs (`eth_getLogs`), and re-reads everything it finds (owner, balance,
 factory, issuer) with ordinary verified reads. A log it never receives is the
 one failure it cannot detect: a missing chequebook transfer would make it
 deploy a second chequebook. So only the RPC quorum answers these scans (the
-bridge passes `excludeSources: ['myotis', 'colibri', 'direct']`): no single
+bridge passes `excludeSources: ['myotis', 'colibri', 'direct']`), or, for a
+span wider than it can verify, Blockscout checked against one RPC (the bridge
+passes `includeSources: ['blockscout']`; see the next section): no single
 endpoint's answer settles a range. Myotis serves no logs, and Colibri proves
 the logs it returns but not that none are missing (its completeness proofs did
 not answer on the Gnosis prover, #484). The quorum budget is widened to 30 s
@@ -140,6 +152,85 @@ and none is configured for Gnosis` once per node start when this happens. A
 user with a single custom Gnosis RPC must add a second, independent one (two
 hostnames of the same backend agree with each other by construction and are
 no independent check).
+
+### A wide first scan: Blockscout checked against one RPC (#529)
+
+Behind the default endpoints no quorum can verify a wide span: the keyless
+RPCs that serve a wallet's whole xBZZ history in one request
+(`rpc.gnosischain.com`, `gateway.fm`, `swiftnodes`) all run on one Tenderly
+backend, so two of them agreeing would be no independent check, and the
+independent ones stop far short of it (publicnode at 50,000 blocks, dRPC's
+free plan at 10,000, measured 2026-10-05). Ant's first scan of a wallet, from the
+token's deploy block to the head (about 32 million blocks), used to be read
+window by window. Measured in the real app on a fresh profile (2026-10-05,
+bundled antd v0.5.59): 49 minutes and 8,148 `eth_getLogs` requests from Ant
+(4,064 answered windows, each a quorum round, and as many refusals). With
+Blockscout: 2.4 seconds and 3 requests.
+
+Blockscout indexes the chain from its own archive node, so it and a Tenderly
+RPC agreeing are two independent providers agreeing, the rule the quorum
+applies to two RPCs. The router's `blockscout` source (`requestLogIndex` in
+`chain-data-router.js`, the API in `blockscout-logs.js`) answers such a scan
+when, and only when, the span is wider than the quorum can verify right now:
+
+1. The span `[from, to]` is split. Its newest blocks (1,000, or what the
+   quorum can verify if that is less) go to the quorum as an ordinary
+   range-capped scan, so a Blockscout a little behind the head does not
+   disagree with the RPC.
+2. `[from, to − 1,000]` is asked of one RPC endpoint whose learned cap covers
+   it (in practice the full-history one), then, once it has answered, of
+   Blockscout's Etherscan-compatible `module=logs&action=getLogs` API.
+   Blockscout's rate limit for keyless use is tight (10 requests, then a reset
+   of several minutes, measured 2026-10-05), so it is never asked for a span
+   no RPC answered.
+3. The two answers must list the same logs, identical in every field
+   Blockscout reports: address, topics, data, block number, transaction hash
+   and index, log index. Blockscout's rows map onto `eth_getLogs` entries
+   field for field (its topics are padded to four with `null`, and it reports
+   no `blockHash`); what Ant receives is the RPC's entries, followed by the
+   quorum's for the newest blocks. The answer is reported as verified, source
+   `blockscout`.
+
+Blockscout caps an answer at 1,000 logs and ignores `page`/`offset`. A page
+at the cap is never taken as complete: the logs before its last block are
+kept and the next page is read from that block (at most five pages; a wallet
+with more sent transfers is read the slow way). A cap Blockscout lowered
+without saying so would still be caught: its answer would have fewer logs
+than the RPC's, and the pair would fail.
+
+Anything that goes wrong falls back to the quorum path exactly as before:
+Blockscout unreachable, rate limited (it is then left alone for the reset it
+names, at least a minute and at most 15), answering out of shape, or
+disagreeing with the RPC (left alone for 5 minutes); no endpoint whose cap
+covers the span, or that endpoint failing (learned from like a quorum
+member's failure); the quorum failing the newest blocks. The request goes on
+to the quorum, which refuses the span with the widest one it can verify, and
+Ant halves its window as it did. These failures are not ranked for Ant: they
+say nothing about its query. The whole source gets one scan budget (30 s):
+the pairing, the RPC and every Blockscout page together, runs inside it less
+the configured quorum timeout, which is held back for the newest blocks'
+quorum, so the quorum after it still fits the bridge's 120 s deadline. A
+Blockscout too slow for that budget, or still reading when the caller gives
+up, is left alone for a minute.
+
+With the defaults a first scan is three requests from Ant: the first teaches
+the quorum the endpoints' caps and is refused, and each half of the
+history Ant then asks for is one paired answer. A node whose Gnosis endpoints
+include two full-history RPCs never reaches Blockscout, since the quorum can
+verify the span itself, and neither does a routine scan of the newest blocks.
+
+**What Blockscout learns.** The same filter an RPC already receives for the
+scan: the node's wallet address (as the sender topic), the xBZZ token, the
+block range, and the request's IP address and timing, which tell it that this
+address belongs to a Swarm node scanning its history. Nothing else is sent: no
+other address, no API key, no cookies or referrer. It is asked only for a scan
+the quorum cannot verify, at most a few times per first scan, and never for
+pages' `window.ethereum` requests, which do not opt in. The request goes to
+`gnosis.blockscout.com`, which redirects to `gnosisscan.io` (also Blockscout,
+as of 2026-10-05). Redirects are followed by hand, and a hop off https is
+refused before it is dialled, so the address never goes out in clear. Freedom does not pass
+ant#143's `--gnosis-unverified-logs-rpc-url`: every log Ant receives is still
+one two independent providers agreed on.
 
 ### Which error Ant sees: one ranking rule
 
@@ -278,7 +369,15 @@ behaviour measured for #484 through Ant's halving. Each case asserts what Ant
 receives, whether Ant's needles match it, the elapsed time and which RPCs were
 asked. Its `silent truncation (#496)` cases replay the measured cut-short answer
 through Ant's halving down to a complete one, and a recent-only sparse
-answer being accepted. `ant-chain-bridge.router.test.js` runs the real router behind the real
+answer being accepted. `ant-log-index-routing.test.js` replays Ant's own window loop
+(`scan_logs_with`) over the router with Blockscout and the measured endpoints:
+a first scan in three requests, the newest blocks going to the quorum, the
+quorum path after Blockscout fails, is rate limited, hangs, lags or disagrees,
+a silently cut RPC answer and a silently capped Blockscout page both failing
+the pair, and the cases that never reach Blockscout. `blockscout-logs.test.js`
+covers the filter Blockscout accepts, the mapping against answers captured
+from both providers on 2026-10-05, paging and its failures.
+`ant-chain-bridge.router.test.js` runs the real router behind the real
 bridge over loopback sockets with real timers for the same paths end to end
 (range limit, slow members inside the scan budget, a lone answer not
 settling a scan, a fourth endpoint joining, an endpoint-dependent error).

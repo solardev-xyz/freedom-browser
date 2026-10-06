@@ -317,7 +317,7 @@ describe('webview-preload', () => {
       expect(ipcRenderer.invoke).toHaveBeenCalledWith(channel, ...expectedArgs);
     }
 
-    // Settings → Updates actions (#87) are fire-and-forget sends.
+    // Settings → About Freedom → Updates actions (#87) are fire-and-forget sends.
     exposures.freedomAPI.checkForUpdates();
     expect(ipcRenderer.send).toHaveBeenCalledWith('update:check');
     exposures.freedomAPI.restartToUpdate();

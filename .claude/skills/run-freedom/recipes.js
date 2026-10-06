@@ -133,10 +133,12 @@ async function privateWindow({ app, win }) {
   return page;
 }
 
-// Open the settings page on a section (appearance, search, profile, nodes,
-// startup, downloads, shortcuts, chains, rpc, ens, adblock, permissions,
-// experimental, updates) and return the settings page. Sub-routes such as
-// 'chains/1' are set via location.hash.
+// Open the settings page on a nav entry (profile, appearance, search,
+// downloads, shortcuts, privacy, networks, nodes, advanced, about) and return
+// the settings page. Sub-routes — a panel below the first, such as
+// 'networks/rpc' or 'nodes/startup', or a chain detail such as 'networks/1' —
+// are set via location.hash too; the pre-#268 names ('rpc', 'chains/1', …)
+// still resolve.
 async function settings({ app, win }, section = 'appearance') {
   await go(win, 'freedom://settings', 2_000);
   const page = await pageFor(app, 'settings.html');

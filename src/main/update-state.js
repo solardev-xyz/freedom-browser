@@ -3,7 +3,7 @@
  *
  * `updater.js` feeds electron-updater's events in here; the result is one
  * snapshot every surface renders from — the hamburger menu item, the dot on
- * the hamburger button and Settings → Updates. It is pure (no electron, no
+ * the hamburger button and Settings → About Freedom → Updates. It is pure (no electron, no
  * timers) so the transitions are unit-testable on their own.
  *
  * Statuses:
@@ -58,7 +58,7 @@ const ERROR_MESSAGES = {
 
 // What happens next depends on the "Automatically check for updates" switch:
 // with it off nothing retries in the background, so don't promise it. This
-// sentence is shared by Settings → Updates and the hamburger menu row's
+// sentence is shared by Settings → About Freedom → Updates and the hamburger menu row's
 // tooltip, whose controls are labelled differently ("Check now" vs "Check for
 // Updates…"), so it names neither.
 const RETRY_NOTE = {

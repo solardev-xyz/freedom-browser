@@ -846,7 +846,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
   initUpdateStatusUi({
     closeMenus,
-    openSettings: () => loadTarget('freedom://settings/updates'),
+    openSettings: () => loadTarget('freedom://settings/about/updates'),
   });
   initBookmarks();
   initNavigation(); // Sets up event handler with tabs module

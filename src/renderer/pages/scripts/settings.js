@@ -417,23 +417,65 @@ fields.searchProvider.addEventListener('change', async () => {
   setSearchProviderStatus('Default search engine updated.', 'success');
 });
 
-// Each sidebar entry maps to one section; the active section is driven
-// by location.hash so the URL is the source of truth and the outer
-// chrome can render freedom://settings/<section> in the address bar.
+// Each sidebar entry owns one or more `<section>` panels; the active entry
+// is driven by location.hash so the URL is the source of truth and the
+// outer chrome can render freedom://settings/<entry> in the address bar.
+// Since #268 an entry can own several panels — Privacy and security is
+// Ad Blocking + Site Permissions, Networks is Chains + RPC Providers +
+// Name Resolution, Nodes is Nodes + Startup, About Freedom is the version
+// + Updates — and each panel names its entry in the markup (`data-nav`),
+// so the panel ids every controller below keys on did not have to move.
 const navItems = [...document.querySelectorAll('.nav-item')];
 const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
-const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
+const DEFAULT_SECTION = SECTIONS[0] || 'profile';
+const PANEL_NAV = Object.fromEntries(
+  [...document.querySelectorAll('main.content > section[data-nav]')].map((el) => [
+    el.id,
+    el.dataset.nav,
+  ])
+);
+const PANELS = Object.keys(PANEL_NAV);
 
-const showSection = (section) => {
-  for (const id of SECTIONS) {
+// A route that names one of its entry's panels (`#networks/rpc`) opens the
+// entry and brings that panel to the top. The panels above it can still
+// grow after this runs — the chain list and RPC Providers paint from IPC a
+// beat later — so the panel is re-aligned a few times over the next second,
+// until the user scrolls or presses a key, which hands the scroll back.
+let stopPanelScroll = () => {};
+const scrollToPanel = (id) => {
+  stopPanelScroll();
+  const panel = document.getElementById(id);
+  if (!panel) return;
+  const align = () => panel.scrollIntoView({ block: 'start' });
+  align();
+  const timers = [100, 250, 500, 1000].map((ms) => setTimeout(align, ms));
+  const userTookOver = new AbortController();
+  stopPanelScroll = () => {
+    timers.forEach(clearTimeout);
+    userTookOver.abort();
+    stopPanelScroll = () => {};
+  };
+  for (const type of ['wheel', 'touchstart', 'keydown', 'mousedown']) {
+    window.addEventListener(type, () => stopPanelScroll(), {
+      passive: true,
+      signal: userTookOver.signal,
+    });
+  }
+};
+
+const showSection = (route) => {
+  const [section, sub] = String(route).split('/');
+  for (const id of PANELS) {
     const el = document.getElementById(id);
-    if (el) el.classList.toggle('hidden', id !== section);
+    if (el) el.classList.toggle('hidden', PANEL_NAV[id] !== section);
   }
   navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
   setProfileRefreshActive(section === 'profile' || section === 'nodes');
   // Always scroll the content area to the top when switching — avoids a
   // stale scroll offset from a taller prior section.
+  stopPanelScroll();
   window.scrollTo({ top: 0 });
+  if (sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
 };
 
 navItems.forEach((item) => {
@@ -448,23 +490,53 @@ navItems.forEach((item) => {
 });
 
 /* settings-hash routing: start */
-// The section is the part before any `/` sub-route, so a deep link
-// like #chains/1 (a chain detail) still resolves to `chains`.
-const resolveSection = (hash) => {
-  const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
-  return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+// Every hash the page answered to before #268 regrouped the nav, mapped to
+// the entry that holds it now and the panel to bring up. Bookmarks, history
+// and older builds' links carry these, and so did the app itself
+// (`freedom://settings/rpc` from the wallet and the onchain-app
+// interstitial), so each still lands where it used to point and is then
+// rewritten to its new name. A panel that heads its entry needs no `/panel`.
+const LEGACY_ROUTES = {
+  chains: 'networks',
+  rpc: 'networks/rpc',
+  ens: 'networks/ens',
+  adblock: 'privacy',
+  permissions: 'privacy/permissions',
+  startup: 'nodes/startup',
+  experimental: 'advanced',
+  updates: 'about/updates',
 };
 
-// Normalize the URL onto the section that is actually on screen, so
-// freedom://settings becomes freedom://settings/appearance and a hash
-// naming no section at all — a stale bookmark, a typo, a link from an
-// older build — stops promising one. history.replaceState keeps the
-// rewrite out of the back/forward stack.
-const canonicalizeHash = (section) => {
-  const rawHash = location.hash.replace(/^#/, '').toLowerCase();
-  // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
-  if (rawHash === section || rawHash.startsWith(section + '/')) return;
-  history.replaceState(null, '', `#${section}`);
+// The canonical route for a hash: `<entry>`, or `<entry>/<panel>` for a
+// panel of that entry. Under Networks any other sub-route is a chain detail
+// (`#networks/1`) — whether that chain exists is the Chains controller's
+// call, since only it has the registry. Anything else is dropped back to the
+// entry, and a hash naming no entry at all to the first one.
+const resolveRoute = (hash) => {
+  const raw = (hash || '').replace(/^#/, '').toLowerCase();
+  const [head, ...rest] = raw.split('/');
+  const sub = rest.join('/');
+  if (Object.prototype.hasOwnProperty.call(LEGACY_ROUTES, head)) {
+    // A chain detail (#chains/1) keeps its chain under Networks.
+    return head === 'chains' && sub ? `networks/${sub}` : LEGACY_ROUTES[head];
+  }
+  if (!SECTIONS.includes(head)) return DEFAULT_SECTION;
+  if (!sub) return head;
+  if (PANEL_NAV[sub] === head || head === 'networks') return `${head}/${sub}`;
+  return head;
+};
+
+// The nav entry a hash opens.
+const resolveSection = (hash) => resolveRoute(hash).split('/')[0];
+
+// Normalize the URL onto the route that is actually on screen, so
+// freedom://settings becomes freedom://settings/profile, an old name like
+// freedom://settings/rpc becomes freedom://settings/networks/rpc, and a hash
+// naming no section at all — a stale bookmark, a typo — stops promising one.
+// history.replaceState keeps the rewrite out of the back/forward stack.
+const canonicalizeHash = (route) => {
+  if (location.hash.replace(/^#/, '').toLowerCase() === route) return;
+  history.replaceState(null, '', `#${route}`);
 };
 
 // One path for every arrival at a hash — first load, a nav click, a
@@ -472,9 +544,9 @@ const canonicalizeHash = (section) => {
 // Settings tab (#280) — so no navigation can leave a hash the page
 // resolved somewhere else standing in the address bar.
 const applyHashSection = () => {
-  const section = resolveSection(location.hash);
-  canonicalizeHash(section);
-  showSection(section);
+  const route = resolveRoute(location.hash);
+  canonicalizeHash(route);
+  showSection(route);
 };
 /* settings-hash routing: end */
 
@@ -483,12 +555,12 @@ applyHashSection();
 
 // ── Search settings (#281) ──────────────────────────────────────────
 // Chrome has kept a persistent "Search settings" field in its header
-// since 2016, and on a 14-section page that is how most people
+// since 2016, and on a page this size that is how most people
 // navigate. Freedom's page is the harder case, not the easier one:
 // several settings are not under the heading their subject suggests
-// (Tor's startup toggle is under Experimental, a chain's API keys under
-// RPC Providers), so "I know the word, I don't know the section" is the
-// normal state. Until #281 the page's only search box was the
+// (a chain's API keys are under RPC Providers, Ethereum name lookups
+// under Networks), so "I know the word, I don't know the section" is
+// the normal state. Until #281 the page's only search box was the
 // Shortcuts one, which searches that list and nothing else.
 //
 // The two helpers below are pure — an element and a query in, ranked
@@ -600,8 +672,14 @@ const settingsSearchRows = (section) =>
 
 // One entry per section plus one per labelled row, in document order.
 // `sectionLabels` maps a section id to its nav label, the fallback for
-// the sections whose `<h2>` comes from a view template that has not
+// the sections whose heading comes from a view template that has not
 // rendered yet (Chains, RPC Providers, Site Permissions).
+//
+// A section is one panel of a nav entry (#268), named by its own heading:
+// the entry's `h2.section-title`, or the `h3.panel-title` of a panel that
+// shares its entry with others. `groups` maps a panel to the nav entry it
+// sits under, so a row in one of those reads "Privacy and security ›
+// Ad Blocking" — the entry to click as well as the heading to look for.
 //
 // The heading is read from the section's *live* DOM, which is only the
 // right answer if a hidden section's markup still describes where its
@@ -609,15 +687,17 @@ const settingsSearchRows = (section) =>
 // rendered per sub-route has to render itself back when the sub-route
 // is left, or its heading and its rows both go on answering for the
 // section after the user has gone (see Chains' `hashchange` below).
-const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {}) => {
+const buildSettingsSearchIndex = (content, { sectionLabels = {}, groups = {}, skip = [] } = {}) => {
   const index = [];
   for (const section of Array.from(content?.children || [])) {
     if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
     if (!section.id || skip.includes(section.id)) continue;
-    const sectionLabel =
-      settingsSearchText(settingsSearchFirst(section, 'section-title')) ||
+    const title =
+      settingsSearchText(settingsSearchFirst(section, ['section-title', 'panel-title'])) ||
       sectionLabels[section.id] ||
       section.id;
+    const group = groups[section.id];
+    const sectionLabel = group && group !== title ? `${group} › ${title}` : title;
     // A section's own intro paragraph is a direct child, outside every
     // card, so it describes the section rather than any one row.
     const intro = Array.from(section.children)
@@ -627,7 +707,7 @@ const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {
     index.push({
       sectionId: section.id,
       section: sectionLabel,
-      label: sectionLabel,
+      label: title,
       help: intro,
       element: section,
     });
@@ -712,6 +792,13 @@ const settingsSearchResets = [];
   const NAV_LABELS = Object.fromEntries(
     navItems.map((item) => [item.dataset.target, settingsSearchText(item)])
   );
+  // Each panel's entry label, the group a row is listed under…
+  const PANEL_GROUPS = Object.fromEntries(PANELS.map((id) => [id, NAV_LABELS[PANEL_NAV[id]]]));
+  // …and the name for a panel whose view has not painted its heading yet:
+  // its own `data-title` (Chains, RPC Providers), else its entry's label.
+  const PANEL_LABELS = Object.fromEntries(
+    PANELS.map((id) => [id, document.getElementById(id)?.dataset.title || PANEL_GROUPS[id]])
+  );
 
   let results = [];
   let showing = false;
@@ -759,7 +846,11 @@ const settingsSearchResets = [];
     for (const reset of settingsSearchResets) reset();
     const query = input.value.trim();
     results = matchSettingsSearch(
-      buildSettingsSearchIndex(content, { sectionLabels: NAV_LABELS, skip: [panel.id] }),
+      buildSettingsSearchIndex(content, {
+        sectionLabels: PANEL_LABELS,
+        groups: PANEL_GROUPS,
+        skip: [panel.id],
+      }),
       query
     );
     list.replaceChildren(...results.map(resultRow));
@@ -775,7 +866,8 @@ const settingsSearchResets = [];
     revealToken += 1;
     clearHighlight();
     render();
-    for (const id of SECTIONS) document.getElementById(id)?.classList.add('hidden');
+    stopPanelScroll();
+    for (const id of PANELS) document.getElementById(id)?.classList.add('hidden');
     panel.classList.remove('hidden');
     showing = true;
     window.scrollTo({ top: 0 });
@@ -785,7 +877,7 @@ const settingsSearchResets = [];
     results = [];
     list.replaceChildren();
     panel.classList.add('hidden');
-    if (showing && restoreSection) showSection(resolveSection(location.hash));
+    if (showing && restoreSection) showSection(resolveRoute(location.hash));
     showing = false;
   };
 
@@ -810,6 +902,9 @@ const settingsSearchResets = [];
   // aligned to its top — see `settingsSearchScrollBlock` above.
   const applyHighlight = (row) => {
     clearHighlight();
+    // A `#entry/panel` route the reveal went through would otherwise go
+    // on re-aligning that panel over the row it just scrolled to.
+    stopPanelScroll();
     // A row inside a collapsed Advanced disclosure (#270) has no box until
     // the disclosure is open, so open every one around it first.
     for (
@@ -842,21 +937,30 @@ const settingsSearchResets = [];
   };
 
   // Jumping to a result leaves the result list behind and opens the
-  // section the control is in, the way clicking its nav item would.
+  // nav entry the control is in, the way clicking that nav item would.
+  // The open route is kept when it already shows the result's panel — a
+  // chain's own page is where that chain's rows are. A panel of the open
+  // entry that is not on screen (Networks' RPC Providers behind an open
+  // chain or the add-a-chain form) is brought back by moving the hash,
+  // which is what sends the Chains view back to its list.
   const reveal = (result) => {
-    if (!result?.sectionId) return;
+    const panelId = result?.sectionId;
+    const entry = PANEL_NAV[panelId];
+    if (!entry) return;
     closeResults({ restoreSection: false });
     revealToken += 1;
-    const current = location.hash.replace(/^#/, '').toLowerCase();
-    if (current === result.sectionId || current.startsWith(result.sectionId + '/')) {
-      showSection(result.sectionId);
-      revealResult(result, revealToken);
-      return;
+    const route = resolveRoute(location.hash);
+    if (route.split('/')[0] === entry) {
+      showSection(route);
+      if (document.getElementById(panelId)?.getClientRects().length) {
+        revealResult(result, revealToken);
+        return;
+      }
     }
     // The hash change repaints and scrolls the content to the top, so
     // the scroll-and-flash waits for it (see the handler below).
     pending = { result, token: revealToken };
-    location.hash = result.sectionId;
+    location.hash = route === entry ? `${entry}/${panelId}` : entry;
   };
 
   const clearSearch = () => {
@@ -878,7 +982,7 @@ const settingsSearchResets = [];
     // have moved on from, so the field, the results and the highlight
     // all go. Closing the results is this handler's job and not
     // `showSection`'s — the panel is deliberately not one of
-    // `SECTIONS`, so nothing else on the page can hide it, and left up
+    // `PANELS`, so nothing else on the page can hide it, and left up
     // it would stack a stale result list above the section the nav's
     // own handler just opened.
     clearSearch();
@@ -956,6 +1060,21 @@ const setFieldEnabled = (checkbox, container, ...inputs) => {
   container?.classList.toggle('disabled', !enabled);
   for (const input of inputs) {
     if (input) input.disabled = !enabled;
+  }
+};
+
+// "Start Tor when Freedom opens" sits with the other startup rows under
+// Nodes (#275), away from the Advanced toggle it depends on, so while that
+// toggle is off the row says where to turn it on — the way the Radicle
+// startup row names Settings → Nodes when Radicle is disabled there.
+const startTorHelp = $('start-tor-help');
+const defaultStartTorHelp = startTorHelp?.textContent || '';
+const applyStartTorRowState = () => {
+  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  if (startTorHelp) {
+    startTorHelp.textContent = fields.enableTor?.checked
+      ? defaultStartTorHelp
+      : 'Turn on Enable Tor (.onion access) under Advanced first.';
   }
 };
 
@@ -1539,7 +1658,7 @@ const applyFormState = (settings) => {
   fields.adblockCookies.checked = settings.adblockCookies === true;
   fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
   fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
-  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  applyStartTorRowState();
   // Re-evaluated whenever the form is repainted from a payload — first
   // load, and a broadcast that differs from what's on screen. Enabling
   // the integration is what keeps the rows on a build that bundles no
@@ -1717,7 +1836,7 @@ const renderSwarmPublishingRow = (settings, setupState) => {
   // deep-link into a sidebar the user can't open.
   if (settings?.enableIdentityWallet !== true) {
     swarmPublishingHelp.textContent =
-      'Enable Identity & Wallet (in Experimental, above) to publish on Swarm.';
+      'Enable Identity & Wallet under Advanced to publish on Swarm.';
     hideAction();
     return;
   }
@@ -1779,7 +1898,7 @@ fields.startMyotisGnosis.addEventListener('change', save);
 fields.askWhereToSave.addEventListener('change', save);
 fields.startRadicle.addEventListener('change', save);
 fields.enableTor.addEventListener('change', () => {
-  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  applyStartTorRowState();
   // Enabling the integration only reveals the controls — it does not
   // start Tor. Starting is via the node-status menu toggle or
   // "Start Tor when Freedom opens". Disabling stops it (settings-ui.js).
@@ -2209,16 +2328,18 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 })();
 
 // ── Chains settings page ────────────────────────────────────────
-// Master-detail controller for the #chains section: a list of
+// Master-detail controller for the #chains panel of Networks: a list of
 // chains, each drilling into a per-chain detail view of that chain's
-// endpoint sources. Hash-routed — #chains is the list,
-// #chains/<chainId> a detail. Talks to the registry via
+// endpoint sources. Hash-routed — #networks is the list (with RPC
+// Providers and Name Resolution under it), #networks/<chainId> a detail
+// (#chains and #chains/<chainId> before #268, still accepted). Talks to the registry via
 // freedomAPI's networks:* bridge; every mutation re-fetches and
 // re-renders so the view mirrors the registry.
 (() => {
   const section = $('chains');
   const view = $('chains-view');
   const statusEl = $('chains-status');
+  const content = document.querySelector('main.content');
   if (!section || !view) return;
 
   const esc = (s) =>
@@ -2248,9 +2369,13 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const chainName = (cid) => config.networks[cid]?.name || 'Chain ' + cid;
 
   // The chain whose detail is open, parsed from the hash; null = list.
+  // `#networks/rpc` and `#networks/ens` name Networks' other panels, not a
+  // chain.
   const openChainId = () => {
-    const parts = location.hash.replace(/^#/, '').toLowerCase().split('/');
-    return parts[0] === 'chains' && parts[1] ? parts[1] : null;
+    const parts = resolveRoute(location.hash).split('/');
+    return parts[0] === 'networks' && parts[1] && PANEL_NAV[parts[1]] !== 'networks'
+      ? parts[1]
+      : null;
   };
 
   // A master-list button row: name + sub-line, trailing chevron.
@@ -2286,7 +2411,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       )
       .join('');
     view.innerHTML = `
-      <h2 class="section-title">Chains</h2>
+      <h3 class="panel-title">Chains</h3>
       <p class="row-help" style="margin-bottom: 16px">
         The chains Freedom resolves names and balances on. Select a
         chain to choose how Freedom reads it and which servers it asks.
@@ -2408,7 +2533,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     }
     view.innerHTML = `
       <div class="settings-search-skip">
-        <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
+        <button type="button" class="back-link" data-action="cancel-add">‹ Networks</button>
         <h2 class="section-title">Add a chain</h2>
         <p class="row-help" style="margin-bottom: 16px">
           Search the public chain catalogue, or enter a chain manually.
@@ -2602,7 +2727,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       }</div>`;
 
     view.innerHTML = `
-      <button type="button" class="back-link" data-action="back">‹ Chains</button>
+      <button type="button" class="back-link" data-action="back">‹ Networks</button>
       <h2 class="section-title">${esc(chainName(cid))}</h2>
       <p class="row-help" style="margin-bottom: 16px">chain ${esc(cid)}${isCustom ? ' · custom chain' : ''}</p>
 
@@ -2663,24 +2788,33 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // registry. Only such a render may conclude that a chain named in the
   // hash is gone: a hash change re-renders off the cached config first,
   // and that copy can simply predate a chain added in another window.
+  // A chain's own page and the add-a-chain form are the whole of
+  // Networks while they are open: the page heading, RPC Providers and
+  // Name Resolution step aside (`.networks-chain-focus` in the page CSS),
+  // so the chain list's siblings do not stack under a single chain.
+  const setChainFocus = (focused) => content?.classList.toggle('networks-chain-focus', focused);
+
   const render = ({ fresh = false } = {}) => {
     clearChainGoneStatus(); // the branch below re-raises it if it still holds
     if (addState) {
+      setChainFocus(true);
       renderAdd();
       return;
     }
     const cid = openChainId();
     if (cid && config.networks[cid]) {
+      setChainFocus(true);
       renderDetail(cid);
       return;
     }
+    setChainFocus(false);
     if (cid && fresh) {
       // The chain is not configured — removed here or in another
       // window, or a typo. Rendering the list under the detail hash
       // leaves the URL promising a chain nothing on screen names, so
       // put the URL back on the list and say what happened.
       // replaceState keeps the dead link out of the back/forward stack.
-      history.replaceState(null, '', '#chains');
+      history.replaceState(null, '', '#networks');
       setStatus(CHAIN_GONE_STATUS, 'error');
     }
     renderList();
@@ -2785,7 +2919,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       setStatus('', '');
       addState = null;
       await reload();
-      location.hash = 'chains/' + def.chainId;
+      location.hash = 'networks/' + def.chainId;
     } catch (err) {
       const message = err?.message || 'Could not add chain';
       if (onError) onError(message);
@@ -2895,9 +3029,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     const id = btn.dataset.id;
 
     if (action === 'open-chain') {
-      location.hash = 'chains/' + btn.dataset.chain;
+      location.hash = 'networks/' + btn.dataset.chain;
     } else if (action === 'back') {
-      location.hash = 'chains';
+      location.hash = 'networks';
     } else if (action === 'add-endpoint') {
       endpointForm = { mode: 'add', id: null, url: '' };
       render();
@@ -2967,7 +3101,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     } else if (action === 'delete-source') {
       await mutate(() => freedomAPI.removeEndpointSource(id));
     } else if (action === 'open-rpc-page') {
-      location.hash = 'rpc';
+      location.hash = 'networks/rpc';
     } else if (action === 'remove-chain') {
       const cid = openChainId();
       if (!cid) return;
@@ -2982,11 +3116,21 @@ freedomAPI.onSettingsUpdated?.((settings) => {
           return;
         }
         setStatus('', '');
-        location.hash = 'chains';
+        location.hash = 'networks';
       } catch (err) {
         setStatus(err?.message || 'Could not remove chain', 'error');
       }
     } else if (action === 'add-chain') {
+      // The form is part of the Chains list view, which `#networks` names.
+      // Arriving via `#networks/rpc` or `#networks/ens` (the wallet's RPC
+      // button, the onchain-app interstitial) leaves that hash in place,
+      // and the form's focus mode hides the very panel it names — so put
+      // the URL back on the list. replaceState fires no `hashchange`, which
+      // would clear `addState`, and keeps the swap out of back/forward.
+      if (resolveRoute(location.hash) !== 'networks') {
+        stopPanelScroll();
+        history.replaceState(null, '', '#networks');
+      }
       addState = { mode: 'search', results: null, picked: null };
       render();
       runChainSearch('');
@@ -3120,7 +3264,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // leaving is not a visit. The transient add/edit form is cleared on
   // any navigation either way.
   window.addEventListener('hashchange', () => {
-    const entering = resolveSection(location.hash) === 'chains';
+    const entering = resolveSection(location.hash) === 'networks';
     clearTimeout(searchTimer);
     endpointForm = null;
     addState = null;
@@ -3148,8 +3292,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   const METHODS = [
     { id: 'myotis', link: '#nodes', linkLabel: 'Node settings' },
     { id: 'colibri' },
-    { id: 'quorum', link: '#chains/1', linkLabel: 'Manage servers' },
-    { id: 'direct', link: '#chains/1', linkLabel: 'Configure' },
+    { id: 'quorum', link: '#networks/1', linkLabel: 'Manage servers' },
+    { id: 'direct', link: '#networks/1', linkLabel: 'Configure' },
   ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
 
@@ -3662,7 +3806,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   };
 
   window.addEventListener('hashchange', () => {
-    if (location.hash.replace(/^#/, '').toLowerCase() === 'ens') refresh();
+    if (resolveSection(location.hash) === 'networks') refresh();
   });
   freedomAPI.onSettingsUpdated?.((settings) => {
     if (settings?.networkConfigUpdated) refresh();
@@ -3744,7 +3888,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       ? `<div class="card">${providers.map(providerRow).join('')}</div>`
       : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available</p></div></div>';
     view.innerHTML = `
-      <h2 class="section-title">RPC Providers</h2>
+      <h3 class="panel-title">RPC Providers</h3>
       <p class="row-help" style="margin-bottom: 16px">
         Commercial RPC providers. Add an API key to use one — a single
         key covers every chain that provider serves. Keyless public
@@ -3843,7 +3987,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // otherwise sit there with a typed API key in it until the user came
   // back.
   window.addEventListener('hashchange', () => {
-    if (resolveSection(location.hash) !== 'rpc') {
+    if (resolveSection(location.hash) !== 'networks') {
       if (keyFor !== null) {
         keyFor = null;
         render();
@@ -3991,7 +4135,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 
   // Re-sync on navigation into this section.
   window.addEventListener('hashchange', () => {
-    if (resolveSection(location.hash) !== 'permissions') return;
+    if (resolveSection(location.hash) !== 'privacy') return;
     reload();
   });
 

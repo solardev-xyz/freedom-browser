@@ -1,5 +1,5 @@
 /**
- * Settings → Updates page script (#87). The script exports its render
+ * Settings → About Freedom → Updates page script (#87). The script exports its render
  * helpers when `module` exists (Jest) and only wires the DOM in the page.
  */
 
@@ -37,7 +37,7 @@ const makeEls = () => ({
 
 const base = { currentVersion: '0.8.7', lastChecked: null, canCheck: true };
 
-describe('Settings → Updates', () => {
+describe('Settings → About Freedom → Updates', () => {
   test('formatUpdateBytes', () => {
     expect(formatUpdateBytes(512)).toBe('512 B');
     expect(formatUpdateBytes(1536)).toBe('1.5 KB');

@@ -710,10 +710,10 @@ contextBridge.exposeInMainWorld('sitePermissions', {
   // The address-bar popover lists what applies in THIS window, so its Remove
   // is window-scoped: it lifts the asking window's own run-scoped decision
   // (a private window's partition tier, a normal window's session tier) plus
-  // the shared stored one — never the other scope's (#366). Settings > Site
-  // Permissions goes through webview-preload.js without this marker and stays
-  // profile-wide. Main resolves WHICH window from the IPC sender, never from
-  // here.
+  // the shared stored one — never the other scope's (#366). Settings >
+  // Privacy and security > Site Permissions goes through webview-preload.js
+  // without this marker and stays profile-wide. Main resolves WHICH window
+  // from the IPC sender, never from here.
   revoke: (origin, permission) =>
     ipcRenderer.invoke('permissions:revoke', origin, permission, { scope: 'window' }),
   revokeOrigin: (origin) =>

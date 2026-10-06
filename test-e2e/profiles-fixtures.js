@@ -22,6 +22,7 @@ const { test: base, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -66,11 +67,7 @@ const test = base.extend({
 
     await use(app);
 
-    try {
-      await app.close();
-    } catch {
-      // Window may already have been closed by the spec.
-    }
+    await closeApp(app);
   },
 
   window: async ({ electronApp }, use) => {

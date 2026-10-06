@@ -146,12 +146,16 @@ describe('profile catalog', () => {
     test('holds the cross-process lock across awaits and releases it after', async () => {
       const appRoot = track(makeTempDir());
       const gate = deferred();
+      const started = deferred();
       const running = withCatalogWriteLockAsync(appRoot, async () => {
+        started.resolve();
         await gate.promise;
         return 'done';
       });
 
-      await new Promise((r) => setTimeout(r, 20));
+      // Wait for the holder itself, not a fixed 20 ms: acquiring the lock is
+      // async file I/O, and under load it took longer than that (#535).
+      await started.promise;
       expect(isCatalogLockHeld(appRoot)).toBe(true);
       gate.resolve();
       await expect(running).resolves.toBe('done');
@@ -172,9 +176,11 @@ describe('profile catalog', () => {
     test('serializes in-process async holders in call order', async () => {
       const appRoot = track(makeTempDir());
       const gate = deferred();
+      const firstStarted = deferred();
       const order = [];
       const first = withCatalogWriteLockAsync(appRoot, async () => {
         order.push('first:start');
+        firstStarted.resolve();
         await gate.promise;
         order.push('first:end');
       }, { retries: 0 });
@@ -182,6 +188,10 @@ describe('profile catalog', () => {
         order.push('second');
       }, { retries: 0 });
 
+      // Once the first holder is in, give the second every chance to run
+      // alongside it. A fixed 20 ms from the start raced the first holder's
+      // own acquisition instead: 1 failure in 20 parallel jest runs (#535).
+      await firstStarted.promise;
       await new Promise((r) => setTimeout(r, 20));
       expect(order).toEqual(['first:start']);
       gate.resolve();
@@ -195,8 +205,12 @@ describe('profile catalog', () => {
     test('fails a sync caller fast while an async holder is active', async () => {
       const appRoot = track(makeTempDir());
       const gate = deferred();
-      const running = withCatalogWriteLockAsync(appRoot, () => gate.promise);
-      await new Promise((r) => setTimeout(r, 20));
+      const started = deferred();
+      const running = withCatalogWriteLockAsync(appRoot, () => {
+        started.resolve();
+        return gate.promise;
+      });
+      await started.promise;
 
       const startedAt = Date.now();
       let caught;

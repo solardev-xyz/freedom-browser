@@ -12,6 +12,7 @@ Use these files on demand:
 - `merge-process.md`: landing one or a batch of approved pull requests on `main`.
 - `release-process.md`: release branch, version bump, tag, build, and publish steps.
 - `ui-consistency.md`: conventions and checks for renderer/UI changes; pairs with the `run-freedom` skill in `.claude/skills/`.
+- `settings-placement.md`: which Settings entry a new setting belongs in, and the routing, search and test steps for adding or moving one.
 - `security-checklist.md`: pre-commit and pre-PR security checks.
 - `windows-utm-build.md`: build and run a native Windows build in a UTM VM on macOS.
 

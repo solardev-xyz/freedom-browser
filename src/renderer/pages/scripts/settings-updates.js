@@ -1,4 +1,4 @@
-// Settings → Updates (#87): current version, live update status with
+// Settings → About Freedom → Updates (#87): current version, live update status with
 // download progress, last check, "Check now" and "Restart to update".
 //
 // Everything shown comes from one snapshot the main process builds

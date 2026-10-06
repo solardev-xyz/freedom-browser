@@ -168,10 +168,15 @@ describe('openlv protocol round-trip (real stack, local broker)', () => {
     expect(linked).toBe('connected');
   });
 
-  afterAll(async () => {
+  let closed = false;
+  const closeAll = async () => {
+    if (closed) return;
+    closed = true;
     await Promise.allSettled([hostSession?.close(), phoneSession?.close()]);
     await broker?.close();
-  });
+  };
+
+  afterAll(closeAll);
 
   test('discovers the phone account over eth_requestAccounts', async () => {
     const { result } = await send({ method: 'eth_requestAccounts', params: [] });
@@ -243,5 +248,22 @@ describe('openlv protocol round-trip (real stack, local broker)', () => {
     expect(everything).not.toContain('freedom openlv test');
     expect(everything).not.toContain('personal_sign');
     expect(everything).not.toContain(phoneWallet.address);
+  });
+
+  // Last on purpose: it tears the stack down. A transport error the client
+  // reports after the suite has finished becomes jest's "Cannot log after
+  // tests are done" in whatever suite runs next under --runInBand, and fails
+  // the whole run with every test green (#535) — so assert there is none.
+  test('closes without a late transport error', async () => {
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await closeAll();
+      // The stray error, when it happens, lands within milliseconds of the
+      // broker going away; give it ample room to show up.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

@@ -338,7 +338,11 @@ const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
-const { installTestHarness, registerStubProtocols } = require('./test-harness');
+const {
+  installTestHarness,
+  registerStubProtocols,
+  adblockEngineLandingGate,
+} = require('./test-harness');
 // Every chain-data caller above holds the router module object and reads
 // `.request` at call time, so wrapping the export here covers all of them.
 require('./networks/chain-data-activity').instrumentChainDataRouter(
@@ -464,8 +468,9 @@ async function bootstrap() {
   installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
-  // x402, so blocked requests never reach the payment flow.
-  installAdblockInterception();
+  // x402, so blocked requests never reach the payment flow. The landing gate
+  // is null unless the E2E harness armed it for this launch (#538).
+  installAdblockInterception({ engineLandingGate: adblockEngineLandingGate() });
   // Also installs the `onchain-app-guard` onBeforeRequest handler, which keeps
   // web content out of the `web3:` trust gate. Runs unconditionally — the test
   // harness owns the `web3:` bytes in test mode, but the guard is browser

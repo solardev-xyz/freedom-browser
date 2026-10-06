@@ -1981,9 +1981,10 @@ export const switchTab = (tabId, options = {}) => {
  */
 // Parse a `freedom://<page>[/<sub-path>]` URL into `{ pageName, subPath }` when
 // `<page>` is a recognised internal page, else null. A sub-path of any depth is
-// accepted (e.g. `freedom://settings/profile`, `freedom://settings/chains/1`) so
-// deep links still resolve to the page's singleton tab — the sub-path routes the
-// (possibly reused) tab to the right section. It is as deep as the page's own
+// accepted (e.g. `freedom://settings/profile`,
+// `freedom://settings/networks/1`) so deep links still resolve to the page's
+// singleton tab — the sub-path routes the (possibly reused) tab to the right
+// section. It is as deep as the page's own
 // fragment because that is what `page-urls.js#getInternalPageName` emits for it,
 // and that is what the address bar shows and a bookmark hands back; stopping at
 // one segment made the chrome's own chain-detail URL unroutable (#280). Keep in
