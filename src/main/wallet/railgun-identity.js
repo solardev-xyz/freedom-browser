@@ -15,6 +15,7 @@ const identities = new WeakMap(),
   signers = new WeakMap(),
   relaySigners = new WeakMap(),
   unobservedRelayWork = new Set(),
+  unknownRelayFailures = new WeakSet(),
   signing = new WeakSet();
 // Process-lifetime quarantine deliberately survives identity/vault replacement.
 // The key is the same stable owner used for identity opening, not a caller ID.
@@ -680,15 +681,23 @@ async function signRelayIntent({
     for (const releaseLoan of loans) cleanup(releaseLoan);
     if (!unobserved) signing.delete(identity);
   }
+  if (unobserved) {
+    const error = Object.assign(new Error('Railgun relay signer exit unavailable'), {
+      code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+    });
+    unknownRelayFailures.add(error);
+    throw error;
+  }
   if (closureError) throw closureError;
-  if (unobserved || brokerFailed || cleanupFailed) throw fail();
+  if (brokerFailed || cleanupFailed) throw fail();
   if (outcomeFailed) throw outcomeError;
   return value;
 }
 async function signRailgunRelayIntent(options) {
   try {
     return await signRelayIntent(options);
-  } catch {
+  } catch (error) {
+    if (unknownRelayFailures.delete(error)) throw error;
     throw Object.assign(new Error('Railgun relay signing unavailable'), {
       code: 'RAILGUN_RELAY_SIGNING_REFUSED',
     });

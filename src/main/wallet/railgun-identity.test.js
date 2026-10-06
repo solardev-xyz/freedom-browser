@@ -1124,7 +1124,9 @@ describe('relay unknown-original quarantine', () => {
     mockSignTask = (task) => {
       task.closed = Promise.reject(Error('unobserved child exit'));
     };
-    await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+    await expect(signRailgunRelayIntent(options)).rejects.toMatchObject({
+      code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+    });
     expect(mockDerived).toHaveLength(0);
     expect(() => assertRailgunIdentity(identity)).toThrow();
     identity.close();
@@ -1152,7 +1154,9 @@ describe('relay unknown-original quarantine', () => {
           },
         });
       options.onKeyRequest = () => original.promise;
-      await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+      await expect(signRailgunRelayIntent(options)).rejects.toMatchObject({
+        code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+      });
       expect(mockDerived).toHaveLength(0);
       expect(() => assertRailgunIdentity(identity)).toThrow();
       original.resolve({});
@@ -1278,3 +1282,43 @@ test.each(['scope', 'task', 'both'])(
     expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
   }
 );
+
+test('caller error codes cannot forge a relay unknown-exit outcome', async () => {
+  const { options } = await relaySigningFixture();
+  options.onKeyRequest = () => {
+    throw Object.assign(Error('caller'), {
+      code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+    });
+  };
+  await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+  expect(() => assertRailgunIdentity(identity)).not.toThrow();
+  expect(mockDerived).toHaveLength(0);
+});
+
+test('a forwarded relay unknown error cannot quarantine another healthy owner', async () => {
+  mockParent.close();
+  mockParent = createPrivacyScope({
+    profileId: 'relay-replayed-unknown-a',
+    signal: mockVault.signal,
+  });
+  const first = await relaySigningFixture();
+  mockSignTask = (task) => {
+    task.closed = Promise.reject(Error('unknown child'));
+  };
+  const original = await signRailgunRelayIntent(first.options).catch((error) => error);
+  expect(original.code).toBe('RAILGUN_WALLET_EXIT_UNOBSERVED');
+  identity.close();
+  mockParent.close();
+  mockParent = createPrivacyScope({
+    profileId: 'relay-replayed-unknown-b',
+    signal: mockVault.signal,
+  });
+  mockSignTask = undefined;
+  const second = await relaySigningFixture();
+  second.options.onKeyRequest = () => {
+    throw original;
+  };
+  await expect(signRailgunRelayIntent(second.options)).rejects.toMatchObject(relayRefused);
+  expect(() => assertRailgunIdentity(identity)).not.toThrow();
+  expect(mockDerived).toHaveLength(0);
+});
