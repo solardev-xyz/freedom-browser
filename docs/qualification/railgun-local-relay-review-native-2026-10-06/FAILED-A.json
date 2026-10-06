@@ -1,0 +1,169 @@
+{
+  "schema": "railgun-local-review-public-failed-attempt-v1",
+  "kind": "derived summary with exact selected diagnostic values; not raw observation/crash-report bytes",
+  "qualified": false,
+  "originalObservation": {
+    "bytes": 1984,
+    "sha256": "2359438227b1f637eae3c934303e9d403731c59e2f341d90fe7995e3f17cc072"
+  },
+  "selectedDiagnosticOriginal": {
+    "bytes": 2858,
+    "sha256": "93742997999762bc3c14114561871f5f51f9ca335442db46509fc37686bb9197"
+  },
+  "sourceHead": "c5f0a544339d9538740276cb5cc5b84f9fdf8e0b",
+  "prepare": {
+    "originalSession": 3835,
+    "completionChunk": "f39b0e",
+    "exitCode": 0
+  },
+  "launch": {
+    "originalSession": 81174,
+    "completionChunk": "ce2909",
+    "exitCode": 1
+  },
+  "child": {
+    "state": "finished",
+    "pid": 93308,
+    "exitObserved": true,
+    "exitCode": -6,
+    "timedOut": false,
+    "interrupted": false,
+    "terminateRequested": false,
+    "killRequested": false
+  },
+  "emptyChildLog": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "diagnostic": {
+    "procName": "Electron",
+    "pid": 93308,
+    "exception": {
+      "codes": "0x0000000000000000, 0x0000000000000000",
+      "rawCodes": [
+        0,
+        0
+      ],
+      "type": "EXC_CRASH",
+      "signal": "SIGABRT"
+    },
+    "termination": {
+      "flags": 0,
+      "code": 6,
+      "namespace": "SIGNAL",
+      "indicator": "Abort trap: 6",
+      "byProc": "Electron",
+      "byPid": 93308
+    },
+    "asi": {
+      "libsystem_c.dylib": [
+        "abort() called"
+      ]
+    },
+    "faultingThread": 0,
+    "frames": [
+      {
+        "imageOffset": 37768,
+        "symbol": "__pthread_kill",
+        "symbolLocation": 8,
+        "imageIndex": 6
+      },
+      {
+        "imageOffset": 26696,
+        "symbol": "pthread_kill",
+        "symbolLocation": 296,
+        "imageIndex": 7
+      },
+      {
+        "imageOffset": 494052,
+        "symbol": "abort",
+        "symbolLocation": 124,
+        "imageIndex": 8
+      },
+      {
+        "imageOffset": 18916,
+        "symbol": "_RegisterApplication",
+        "symbolLocation": 12732,
+        "imageIndex": 9
+      },
+      {
+        "imageOffset": 5864,
+        "symbol": "GetCurrentProcess",
+        "symbolLocation": 36,
+        "imageIndex": 9
+      },
+      {
+        "imageOffset": 14610964,
+        "symbol": "-[NSMenuBarPresentationInstance _getAggregateUIMode:withOptions:]",
+        "symbolLocation": 148,
+        "imageIndex": 10
+      },
+      {
+        "imageOffset": 14614160,
+        "symbol": "_NSGetAggregateUIMode",
+        "symbolLocation": 92,
+        "imageIndex": 10
+      },
+      {
+        "imageOffset": 14610160,
+        "symbol": "-[NSMenuBarPresentationInstance _isVisible]",
+        "symbolLocation": 64,
+        "imageIndex": 10
+      },
+      {
+        "imageOffset": 14623676,
+        "symbol": "+[NSMenuBarPresentationInstance _isMenuBarVisible]",
+        "symbolLocation": 40,
+        "imageIndex": 10
+      },
+      {
+        "imageOffset": 32384,
+        "symbol": "_NSInitializeAppContext",
+        "symbolLocation": 52,
+        "imageIndex": 10
+      },
+      {
+        "imageOffset": 23824,
+        "symbol": "-[NSApplication init]",
+        "symbolLocation": 768,
+        "imageIndex": 10
+      },
+      {
+        "imageOffset": 22596,
+        "symbol": "+[NSApplication sharedApplication]",
+        "symbolLocation": 128,
+        "imageIndex": 10
+      },
+      {
+        "imageOffset": 47124720,
+        "symbol": "node::PrincipalRealm::maybe_cache_generated_source_map() const",
+        "symbolLocation": 485616,
+        "imageIndex": 1
+      },
+      {
+        "imageOffset": 47071476,
+        "symbol": "node::PrincipalRealm::maybe_cache_generated_source_map() const",
+        "symbolLocation": 432372,
+        "imageIndex": 1
+      },
+      {
+        "imageOffset": 45180452,
+        "symbol": "ElectronInitializeICUandStartNode",
+        "symbolLocation": 8504,
+        "imageIndex": 1
+      }
+    ],
+    "originalDiagnosticSha256": "13335bb8d0d6cb08c4494d69adfd069de727838a9be2f4c2672723e6ef51acfa",
+    "scope": "Selected startup crash fields only; no proof of sandbox mechanism."
+  },
+  "interpretation": "Electron SIGABRT during _RegisterApplication under the restricted tool invocation; the same frozen sources/runtime subsequently passed outside that tool sandbox. Selected diagnostic fields do not prove the sandbox mechanism.",
+  "defaultElectronData": {
+    "baselineAvailable": false,
+    "touchedOrUnchanged": "unobserved",
+    "unrelatedDefaultDataInspected": false
+  },
+  "sameSourceRuntimeRunnerAsSuccessfulAttempt": true,
+  "postCheck": {
+    "unchanged": true
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "schema": "railgun-local-review-public-checks-v1",
+  "kind": "derived root check record with local log paths replaced by logical labels",
+  "originalRecord": {
+    "bytes": 4529,
+    "sha256": "a81acbcdbab496fa6e49049acc54ab3be5588e5a5cc7007402a0c6b83e8c750f"
+  },
+  "rootChecks": {
+    "schema": "railgun-local-review-root-checks-v1",
+    "head": "c5f0a544339d9538740276cb5cc5b84f9fdf8e0b",
+    "candidateFreezeSha256": "41dc5991d82387847545625d0605ca543dfeb5726b99a141dea660177c760380",
+    "sources": {
+      "scripts/fixtures/railgun-wallet-source.js": "6c01c20ab41fe0e8f7e1e036b6e4291ca3e8a0b382932dfa929b640ed2b04474",
+      "scripts/fixtures/railgun-kohaku-snapshot-native.js": "19740d4d40e0449617e4bad30f003ce702f561c3d62d4d5478371b234655336c",
+      "scripts/fixtures/railgun-kohaku-contract-observer.js": "53852a91043eb63fb939608e22b8faeced9bdeb9d2eb3d17eb020b67e5ecd8a0",
+      "scripts/fixtures/railgun-public-cold-data.js": "bf75e87b655b85c44c6fde18405c13b6b06f2ca33d21728a2e32239b173b76ca",
+      "scripts/fixtures/railgun-native-assertions.js": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874",
+      "src/main/wallet/railgun-account-wallet.js": "ec8b1113ca89bc490029b55ae3355410709b5926a2e1a533d6de9693c5d4ee54",
+      "src/main/wallet/railgun-account-phase.js": "779627c81642c4e0b4a2ac5cf06cda2e91122772ff0d6c5ecfbf6526b91dc30c",
+      "src/main/wallet/railgun-account-public.js": "6131b6785f3e616b0ebb21e0aa9e9e5e45e5f4af4302e1772ea01758ae36c0b7",
+      "src/main/wallet/railgun-account-enrollment.js": "b879498df3c5c862fc61b6fb637d76df8484712e05e8be11da5225d487a0d9c4",
+      "src/main/wallet/railgun-identity.js": "504773d178568108c7cfcfd285f2c665b4e71d9fd256c60e32c2ccfb6dfc5e22",
+      "src/main/wallet/railgun-relay-review.js": "48a6b546b6a540735d2b8dac2a8de1e233548c8f395ea30a5230a062c39914d3",
+      "src/main/wallet/railgun-relay-review.test.js": "3e607a283bc1c3569731c8abd6c3d690747ef6e5fc8a08fa803bc4132c90af17",
+      "src/main/wallet/railgun-relay-quote-verify.js": "f556284f5503e0d5b0df2c8a680065a385180c3261c3bf9508398d5feff4e934",
+      "src/main/wallet/railgun-relay-quote-job.js": "4e28e01e764a98182a4e6e2dc3b810e7229add1b5e39385d9bb020324147b5a1",
+      "src/main/wallet/railgun-relay-quote-data.js": "b5efa2509c8bec39f637d17a57fdff121a9c888e4cd1e10dfc6f5e4fbca43b38",
+      "src/main/wallet/railgun-shield-pins.json": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75",
+      "docs/agent-playbooks/architecture-boundaries.md": "ed5ca924a6215d45efc8a3f2cbc43eab369c735f1206199ecd7df31c97b7ffd2",
+      "src/main/wallet/railgun-wallet-policy.js": "5681618a3b570a0a1917fe6c3eede8cc8ea510c179065fbd9df9152c012c1def",
+      "src/main/wallet/railgun-wallet-policy.test.js": "d741ef230a616b1d6d1bc4acf9b5546751f898a49e7c57883712812c729f5db9",
+      "src/main/wallet/railgun-public-policy.js": "b42e260b0306b18ab28102f97add827b4efe7efc61a0a783728365cde91a7d9f",
+      "scripts/fixtures/railgun-relay-quote-native-vectors.js": "123c91c6cf56c085794e596673a69a9c4a70652038d6c8a9517e9c53134e62c5",
+      "scripts/fixtures/railgun-relay-review-native.js": "1c3ceff58b8e246b4eea93a4403aed88c2afee835d39684ff7b9fb5ee84d1f4d",
+      "scripts/fixtures/railgun-relay-review-native.test.js": "12a4f55c87d980df6642c5675a05987a4bc7db63721e86decb290ba5749b0ff5",
+      "scripts/fixtures/railgun-kohaku-snapshot-native.test.js": "741d4026eb199b3e4baef076945b10d39c2bf0c4838cce6e4d8d179c751e3aa5",
+      "scripts/qualify-railgun-wallet-journal.js": "7f9c8e2a5cb2e514d2b461e11b7d0b4643a7613445b814d9bda293dbde685611",
+      "scripts/qualify-railgun-wallet-journal.test.js": "e270952d3bdf8f88d04c14ae69f0adb7193ef2edc4ac09a26d543bad5b094052"
+    },
+    "tests": {
+      "exitCode": 0,
+      "originalObserved": true,
+      "naturalExit": true,
+      "description": "239 tests, 7 suites, 0.834 s",
+      "originalSession": 32919,
+      "completionChunk": "a65b06",
+      "log": {
+        "bytes": 1388,
+        "sha256": "ed544200be9531f1301b748b81fab98668a6c1342c352c920722b48f9aa93995",
+        "retainedOriginalLabel": "railgun-local-review-native-root-tests-oct6.log",
+        "archived": false
+      }
+    },
+    "lint": {
+      "exitCode": 0,
+      "originalObserved": true,
+      "naturalExit": true,
+      "description": "0 warnings",
+      "originalSession": 45933,
+      "completionChunk": "a19178",
+      "log": {
+        "bytes": 63,
+        "sha256": "d56e357ebba7dd4f6225baf0c364cba405502e9215c1ec184119ea9ba3318d6c",
+        "retainedOriginalLabel": "railgun-local-review-native-root-lint-oct6.log",
+        "archived": false
+      }
+    },
+    "format": {
+      "exitCode": 0,
+      "originalObserved": true,
+      "naturalExit": true,
+      "description": "5 files",
+      "originalSession": null,
+      "completionChunk": "c269d3",
+      "log": {
+        "bytes": 66,
+        "sha256": "17aa973d3f004560237d9a95171210b0671deff23d61628eecf7322ff5938f20",
+        "retainedOriginalLabel": "railgun-local-review-native-root-format-oct6.log",
+        "archived": false
+      }
+    }
+  },
+  "authorControls": {
+    "sourceCandidateFreezeSha256": "41dc5991d82387847545625d0605ca543dfeb5726b99a141dea660177c760380",
+    "actualControllerSourceMutations": [
+      "successful reservation retained until close",
+      "premature close release while callback pending",
+      "false review accepted",
+      "verification bypassed"
+    ],
+    "defaultAstPreserved": true,
+    "legacySubmissionMutationRefused": true,
+    "observerTaskPromiseErrorIdentityChecked": true,
+    "scope": "Controlled seams/source mutations; not native fault injection"
+  },
+  "launcherControls": {
+    "completeReportMutationsRefused": 64,
+    "installedSqliteBytePathPlatformRefusals": 14,
+    "scope": "Synthetic metadata/report controls from reviewed runner; not native execution"
+  }
+}
