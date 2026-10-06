@@ -113,7 +113,9 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
     capsules,
     openingCapsules,
     poiIntents,
-    openingPoiIntents;
+    openingPoiIntents,
+    relayRecovery,
+    openingRelayRecovery;
   const borrowed = new Set();
   let closed = false;
   function close() {
@@ -127,6 +129,7 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
     catalog?.close();
     capsules?.close();
     poiIntents?.close();
+    relayRecovery?.close();
     reservations?.close();
     scope.close();
     owners.delete(file);
@@ -317,6 +320,18 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
       const decodeFloor = (text) => {
         if (text === null) return null;
         const value = JSON.parse(text);
+        if (value?.version === 4) {
+          check(
+            fence &&
+              Object.keys(value).sort().join(',') === 'binding,sequence,version,walletId' &&
+              value.binding === binding &&
+              value.walletId === descriptor.walletId &&
+              Number.isSafeInteger(value.sequence) &&
+              value.sequence >= 0 &&
+              value.sequence <= 1024
+          );
+          return Object.freeze({ ...value });
+        }
         check(
           value &&
             Object.keys(value).sort().join(',') === 'binding,sequence,version' &&
@@ -339,11 +354,19 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
       };
       const advanceFloor = async (sequence) => {
         active();
-        check(Number.isSafeInteger(sequence) && sequence >= 0 && sequence <= 1024);
+        const typed = typeof sequence === 'object' && sequence !== null;
+        const next = typed ? decodeFloor(JSON.stringify(sequence)) : sequence;
+        check(
+          typed
+            ? fence && next?.version === 4
+            : !fence && Number.isSafeInteger(next) && next >= 0 && next <= 1024
+        );
         await manifest.update(floorRecord, (text) => {
           active();
-          check(sequence >= (decodeFloor(text) ?? 0));
-          return JSON.stringify({ version: 1, binding, sequence });
+          const previous = decodeFloor(text);
+          check(typed || previous?.version !== 4);
+          check((typed ? next.sequence : next) >= (previous?.sequence ?? previous ?? 0));
+          return JSON.stringify(typed ? next : { version: 1, binding, sequence: next });
         });
         active();
       };
@@ -358,6 +381,7 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
         create: !existingOnly && !fs.existsSync(target),
         readFloor,
         advanceFloor,
+        ...(fence ? { enrollment: instance } : {}),
         authorizeSigning: (permit, heldStore, receipt, evidence) =>
           require('./railgun-private-capsule-store').consumeRailgunCapsuleSigningPermit(
             permit,
@@ -374,6 +398,90 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
     } finally {
       key?.fill(0);
       openingReservations = false;
+    }
+  }
+  // Fixed fenced storage port only. Opening authenticates local custody, not
+  // review, proof validity, a signing permit or permission to release a hold.
+  async function openRelayRecoveryStore(options = {}) {
+    check(options && typeof options === 'object' && !require('util').types.isProxy(options));
+    const keys = Reflect.ownKeys(options);
+    check(keys.length <= 1 && keys.every((name) => name === 'existingOnly'));
+    require('./railgun-relay-quote-data').shape(options, keys);
+    const existingOnly = Object.hasOwn(options, 'existingOnly') ? options.existingOnly : false;
+    active();
+    assertRailgunFencedAccountEnrollment(instance);
+    check(typeof existingOnly === 'boolean');
+    const record = 'railgun-relay-local-recovery-v4',
+      relayHandle = scope.getContext({ ...subject, operation: record + ':' + descriptor.walletId }),
+      target = getPrivacyStoragePath(relayHandle, accountDirectory),
+      present = regularFileIfPresent(target);
+    if (existingOnly) {
+      check(present);
+      guard.assertRegistered(target);
+    } else guard.assert(target);
+    if (relayRecovery && !relayRecovery.signal.aborted) return relayRecovery;
+    check(!openingRelayRecovery);
+    openingRelayRecovery = true;
+    let key;
+    try {
+      const floorRecord = 'railgun-relay-local-recovery-floor-v4';
+      const decodeFloor = (text) => {
+        if (text === null) return null;
+        const value = JSON.parse(text);
+        check(
+          value &&
+            Object.keys(value).sort().join(',') === 'binding,sequence,version,walletId' &&
+            value.version === 4 &&
+            value.binding === binding &&
+            value.walletId === descriptor.walletId &&
+            Number.isSafeInteger(value.sequence) &&
+            value.sequence >= 0 &&
+            value.sequence <=
+              require('./railgun-relay-recovery-data').RAILGUN_RELAY_LOCAL_LIMITS.sequence
+        );
+        return Object.freeze({ ...value });
+      };
+      const readFloor = async () => {
+        active();
+        const value = state(await manifest.get(RECORD));
+        active();
+        check(value.status === 'active');
+        const minimum = decodeFloor(await manifest.get(floorRecord));
+        active();
+        return minimum;
+      };
+      const advanceFloor = async (value) => {
+        active();
+        const next = decodeFloor(JSON.stringify(value));
+        check(next !== null);
+        await manifest.update(floorRecord, (text) => {
+          active();
+          check(next.sequence >= (decodeFloor(text)?.sequence ?? 0));
+          return JSON.stringify(next);
+        });
+        active();
+      };
+      key = derive('relay-local-recovery-v4');
+      borrowed.add(key);
+      relayRecovery =
+        await require('./railgun-relay-recovery-store').createRailgunRelayRecoveryStore({
+          enrollment: instance,
+          handle: relayHandle,
+          directory: accountDirectory,
+          key,
+          binding,
+          walletId: descriptor.walletId,
+          profileGuard: guard,
+          create: !existingOnly && !present,
+          readFloor,
+          advanceFloor,
+        });
+      active();
+      return relayRecovery;
+    } finally {
+      key?.fill(0);
+      borrowed.delete(key);
+      openingRelayRecovery = false;
     }
   }
   async function openPrivateCapsules(existingOnly = false) {
@@ -570,6 +678,7 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
     openReservations: () => openReservations(),
     openPrivateCapsules: () => openPrivateCapsules(),
     openPrivateRecoveryStores,
+    openRelayRecoveryStore,
     openPoiIntents,
     // Trusted host composition only. Callers must not retain copies of these
     // borrowed buffers; a worker must own/wipe any explicitly copied key.

@@ -3,7 +3,7 @@ const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
 let mockProfile, mockParent, mockIdentity, mockVault, mockMnemonic, mockPoiFactoryHook;
-let mockCapsuleFactoryHook;
+let mockCapsuleFactoryHook, mockRelayRecoveryFactoryHook;
 let mockFenceOwners, mockFenceHistory, mockFenceOpenHook, mockFenceFailure;
 // Only marked-account tests use the explicit simulated main boundary below.
 // Legacy storage tests never call this fake. It is NOT OS-lock/drain evidence. The real
@@ -64,6 +64,16 @@ jest.mock('./railgun-poi-intent-store', () => {
         : actual.createRailgunPoiIntentStore(options),
   };
 });
+jest.mock('./railgun-relay-recovery-store', () => {
+  const actual = jest.requireActual('./railgun-relay-recovery-store');
+  return {
+    ...actual,
+    createRailgunRelayRecoveryStore: (options) =>
+      mockRelayRecoveryFactoryHook
+        ? mockRelayRecoveryFactoryHook(options, actual.createRailgunRelayRecoveryStore)
+        : actual.createRailgunRelayRecoveryStore(options),
+  };
+});
 
 const mockCoordinators = new WeakSet();
 jest.mock('./railgun-scan-coordinator', () => ({
@@ -119,6 +129,7 @@ beforeEach(() => {
   mockFenceOpenHook = mockFenceFailure = undefined;
   mockPoiFactoryHook = undefined;
   mockCapsuleFactoryHook = undefined;
+  mockRelayRecoveryFactoryHook = undefined;
   mockProfile = {
     id: 'fixture',
     userDataDir: fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-enrollment-'))),
@@ -1523,3 +1534,149 @@ test('marked activation failure retains fence and neither factory repairs pendin
   simulateMarkedMainExit();
   await expect(cooperativeOpen()).rejects.toThrow();
 });
+
+test('fenced reservations write typed v4 floor and preserve private receipts through cold reopen', async () => {
+  const entry = await cooperativeOpen(true),
+    reservations = await entry.openReservations(),
+    manifest = syntheticManifest(entry),
+    floorRecord = 'railgun-private-reservations-floor-v1';
+  const receipt = await reservations.reserve(reservationInput());
+  expect(await reservations.assertReceipt(receipt)).toMatchObject({ state: 'held' });
+  expect(JSON.parse(await manifest.get(floorRecord))).toEqual({
+    version: 4,
+    binding: entry.binding,
+    walletId: entry.descriptor.walletId,
+    sequence: 1,
+  });
+  await reservations.abandon(receipt);
+  entry.close();
+  simulateMarkedMainExit();
+  const cold = await open(),
+    reopened = await cold.openReservations();
+  expect(await reopened.inspect()).toEqual({ held: 0, signing: 0, abandoned: 1, legacy: 0 });
+  expect(JSON.parse(await syntheticManifest(cold).get(floorRecord)).version).toBe(4);
+});
+
+test('legacy enrollment cannot open relay custody or create its files', async () => {
+  const entry = await open(true),
+    previous = inventory();
+  const rename = jest.spyOn(fs, 'renameSync');
+  await expect(entry.openRelayRecoveryStore()).rejects.toThrow();
+  expect(rename).not.toHaveBeenCalled();
+  expect(inventory()).toEqual(previous);
+});
+
+test('fenced relay custody gets a dedicated typed floor and survives cold reopening', async () => {
+  const entry = await cooperativeOpen(true),
+    pending = entry.openRelayRecoveryStore();
+  await expect(entry.openRelayRecoveryStore()).rejects.toThrow();
+  const store = await pending;
+  expect(await entry.openRelayRecoveryStore({ existingOnly: true })).toBe(store);
+  expect(await store.inspect()).toEqual({ records: 0, sequence: 0, capacity: 10, states: [] });
+  expect(
+    JSON.parse(await syntheticManifest(entry).get('railgun-relay-local-recovery-floor-v4'))
+  ).toEqual({
+    version: 4,
+    binding: entry.binding,
+    walletId: entry.descriptor.walletId,
+    sequence: 0,
+  });
+  entry.close();
+  expect(store.signal.aborted).toBe(true);
+  simulateMarkedMainExit();
+  const cold = await cooperativeOpen(),
+    restored = await cold.openRelayRecoveryStore({ existingOnly: true });
+  expect(await restored.inspect()).toEqual({ records: 0, sequence: 0, capacity: 10, states: [] });
+});
+
+test('relay existing-only opener refuses missing history before any write', async () => {
+  const entry = await cooperativeOpen(true),
+    previous = inventory();
+  const rename = jest.spyOn(fs, 'renameSync');
+  await expect(entry.openRelayRecoveryStore({ existingOnly: true })).rejects.toThrow();
+  expect(rename).not.toHaveBeenCalled();
+  expect(inventory()).toEqual(previous);
+});
+
+test.each([
+  { version: 1, sequence: 0 },
+  { version: 4, sequence: 0, walletId: '9'.repeat(64) },
+  { version: 4, sequence: 1 },
+])('relay floor mismatch refuses before lease writes: %j', async (change) => {
+  const entry = await cooperativeOpen(true),
+    store = await entry.openRelayRecoveryStore(),
+    manifest = syntheticManifest(entry),
+    floorRecord = 'railgun-relay-local-recovery-floor-v4';
+  store.close();
+  await manifest.update(floorRecord, (text) => JSON.stringify({ ...JSON.parse(text), ...change }));
+  const rename = jest.spyOn(fs, 'renameSync');
+  await expect(entry.openRelayRecoveryStore({ existingOnly: true })).rejects.toThrow();
+  expect(rename).not.toHaveBeenCalled();
+});
+
+test('relay interrupted first floor write refuses missing floor on reopen', async () => {
+  const entry = await cooperativeOpen(true),
+    rename = fs.renameSync;
+  jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    if (/wallet-railgun-accounts\/[0-9a-f]{64}\.json$/.test(to))
+      throw Error('relay floor interrupted');
+    return rename(from, to);
+  });
+  await expect(entry.openRelayRecoveryStore()).rejects.toThrow();
+  jest.restoreAllMocks();
+  const writes = jest.spyOn(fs, 'renameSync');
+  await expect(entry.openRelayRecoveryStore({ existingOnly: true })).rejects.toThrow();
+  expect(writes).not.toHaveBeenCalled();
+});
+
+test.each([null, [], { existingOnly: 'yes' }, { unexpected: true }, new Proxy({}, {})])(
+  'relay custody refuses invalid options before writes',
+  async (options) => {
+    const entry = await cooperativeOpen(true),
+      rename = jest.spyOn(fs, 'renameSync');
+    await expect(entry.openRelayRecoveryStore(options)).rejects.toThrow();
+    expect(rename).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['close', 'vault-lock'])(
+  'relay opener retains original factory work and wipes borrowed key on %s',
+  async (kind) => {
+    const entry = await cooperativeOpen(true),
+      entered = deferredPoi(),
+      release = deferredPoi();
+    let key,
+      settled = false;
+    mockRelayRecoveryFactoryHook = async (options, create) => {
+      key = options.key;
+      expect(key.some((value) => value !== 0)).toBe(true);
+      entered.resolve();
+      await release.promise;
+      return create(options);
+    };
+    const original = entry.openRelayRecoveryStore();
+    const observed = original.then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error) => {
+        settled = true;
+        return error;
+      }
+    );
+    await entered.promise;
+    const rename = jest.spyOn(fs, 'renameSync');
+    if (kind === 'close') entry.close();
+    else mockVault.abort();
+    expect(key.every((value) => value === 0)).toBe(true);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await expect(entry.openRelayRecoveryStore()).rejects.toThrow();
+    expect(mockFenceHistory.at(-1).fence.retainUntilExit).toHaveBeenCalled();
+    release.resolve();
+    expect(await observed).toBeInstanceOf(Error);
+    expect(rename).not.toHaveBeenCalled();
+    expect(key.every((value) => value === 0)).toBe(true);
+  }
+);
