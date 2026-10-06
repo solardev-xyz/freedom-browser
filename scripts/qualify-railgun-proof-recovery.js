@@ -17,7 +17,8 @@ const sha = (value) => createHash('sha256').update(value).digest('hex');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const OFFSET = 5944700;
 const FOREIGN_BLOCK = OFFSET + 50,
-  FOREIGN_TRANSACTION = hex(1050);
+  FOREIGN_TRANSACTION = hex(1050),
+  FOREIGN_UNSHIELD_RECIPIENT = '0x' + '12'.repeat(20);
 const COLD_RECORDS = [
   'railgun-wallet-catalog-v1',
   'railgun-public-catalog-v1',
@@ -295,6 +296,7 @@ async function main() {
     receiverResults = [];
   const jobs = {},
     keys = {},
+    keysByAccount = {},
     rpcMethods = {};
   let measuring = false,
     interruptSignature = !resuming,
@@ -480,6 +482,16 @@ async function main() {
                 const message = JSON.parse(wire);
                 if (message.method === 'key') {
                   keys[message.purpose] = (keys[message.purpose] || 0) + 1;
+                  if (foreignTransfer) {
+                    // Which account's privacy context this key loan serves.
+                    const principal =
+                      require('../src/main/networks/privacy-context').getPrivacyContext(
+                        options.handle
+                      ).subject.principal;
+                    keysByAccount[principal] ??= {};
+                    keysByAccount[principal][message.purpose] =
+                      (keysByAccount[principal][message.purpose] || 0) + 1;
+                  }
                   if (message.purpose === 'spending-sign') counts.spendingKeys++;
                   if (resuming && message.purpose === 'spending-sign') {
                     counts.forbiddenKeys++;
@@ -636,8 +648,8 @@ async function main() {
     recipientIsForeignDestination: recipient === originalCapsule.selection.recipient,
   });
   // One guarded utility over the published test mnemonic only; see the job.
-  async function runForeignFixture(value) {
-    const parent = getPrivacyContext(enrollment.getContext('engine'));
+  async function runForeignFixture(value, owner = enrollment) {
+    const parent = getPrivacyContext(owner.getContext('engine'));
     const scope = createPrivacyScope({ profileId: parent.profileId, signal: parent.signal });
     let task, result;
     try {
@@ -681,7 +693,8 @@ async function main() {
   }
   // A genuine second or third enrollment of this profile: identity, public scan
   // to the anchor and a new wallet scan, closed before returning detached data.
-  async function scanOtherAccount(accountIndex) {
+  // `use` runs with that account's own owners only, before they close.
+  async function scanOtherAccount(accountIndex, use) {
     const accountWallet = require('../src/main/wallet/railgun-account-wallet');
     const other = {};
     try {
@@ -711,12 +724,14 @@ async function main() {
         mode: 'new',
       });
       const notes = accountWallet.readRailgunAccountOwnedNotes(other.account, owners);
-      return {
+      const view = {
         descriptor: plain(other.identity.descriptor),
         received: notes.read.received.map((note) => ({ ...note })),
         sent: notes.read.sent.map((note) => ({ ...note })),
         ownedPoi: notes.ownedPoi.map((record) => ({ ...record })),
+        trees: plain(notes.trees),
       };
+      return use ? { ...view, spend: await use(other, owners, view) } : view;
     } finally {
       try {
         await other.account?.close();
@@ -1545,7 +1560,9 @@ async function main() {
       assert.deepEqual(receipt.accounts[0], plain(identity.descriptor));
       assert.equal(recipientAccount.instanceId, selection.recipient);
       assert.equal(receipt.creatorType, inputCreator);
+      assert.match(receipt.poi.npkOut, /^0x[0-9a-f]{64}$/);
       assert.deepEqual(receipt.poi, {
+        npkOut: receipt.poi.npkOut,
         npkOutIsRecipientNpk: true,
         valueOutIsFullValue: true,
         outputHashIsReviewedCommitment: true,
@@ -1606,7 +1623,128 @@ async function main() {
       const spentInput = senderView.read.received.find((value) => value.id === inputId);
       assert.equal(BigInt(spentInput.spentTxid), BigInt(FOREIGN_TRANSACTION));
       phase = 'foreign-recipient-wallet';
-      const recipientView = await scanOtherAccount(1);
+      const keysBeforeRecipient = plain(keysByAccount);
+      // B's own authority only: B's owners, B's descriptor and B's key loans.
+      const recipientSpend = async (other, owners, view) => {
+        const notePoi = view.ownedPoi.find((value) => value.id === outputId);
+        assert.ok(notePoi);
+        phase = 'foreign-recipient-prepare';
+        const prepared = await accountWallet.prepareRailgunAccountPrivateIntent(
+          other.account,
+          owners,
+          {
+            kind: 'railgun-token-unshield',
+            noteId: outputId,
+            recipient: FOREIGN_UNSHIELD_RECIPIENT,
+          }
+        );
+        assert.deepEqual(prepared.readOnly, { readOnly: true, writeAttempts: 0 });
+        const offer = plain(prepared.preparation);
+        assert.equal(offer.witnessRetained, false);
+        assert.equal(offer.spendingEnabled, false);
+        assert.equal(offer.recipient, FOREIGN_UNSHIELD_RECIPIENT);
+        assert.equal(offer.amount, preparation.amount);
+        assert.equal(offer.expected.kind, 'railgun-token-unshield');
+        assert.equal(offer.expected.tree, selection.tree);
+        assert.equal(offer.expected.recipient, FOREIGN_UNSHIELD_RECIPIENT);
+        // B's nullifier for the received leaf under B's current tree root.
+        assert.equal(offer.expected.nullifier, notePoi.nullifier);
+        assert.notEqual(offer.expected.nullifier, preparation.expected.nullifier);
+        assert.equal(
+          offer.expected.merkleRoot,
+          view.trees.find((value) => value.tree === selection.tree).root
+        );
+        // A selector only: the creator collector and POI reconstruction read
+        // its selection, prepared intent and note hash, never its path elements.
+        const selector = {
+          version: 1,
+          walletId: view.descriptor.walletId,
+          engineSha256: require('../src/main/wallet/railgun-engine-manifest.json').sha256,
+          selection: {
+            kind: 'railgun-token-unshield',
+            tree: selection.tree,
+            position: outputPosition,
+            recipient: FOREIGN_UNSHIELD_RECIPIENT,
+          },
+          preparation: Object.fromEntries(
+            ['transaction', 'expected', 'expectedHash', 'recipient', 'amount'].map((key) => [
+              key,
+              offer[key],
+            ])
+          ),
+          noteHash: notePoi.hash,
+          pathElements: Array(16).fill(hex(0)),
+        };
+        require('../src/main/wallet/railgun-private-capsule').normalizeRailgunPrivateCapsule(
+          selector
+        );
+        phase = 'foreign-recipient-creator';
+        const recipientCapture = await captureRailgunPoiCreator({
+          enrollment: other.enrollment,
+          coordinator: owners.coordinator,
+          capsule: selector,
+          signal: other.enrollment.signal,
+        });
+        let observation;
+        try {
+          observation = plain(recipientCapture.observation);
+        } finally {
+          recipientCapture.close();
+        }
+        // B's authenticated source attributes the note to A's Transact at
+        // FOREIGN_BLOCK with the real calldata ciphertext: not a Shield.
+        assert.equal(observation.sourceAuthenticated, true);
+        assert.equal(observation.creatorHashCompared, true);
+        assert.equal(observation.spendingEnabled, false);
+        assert.deepEqual(observation.creator, {
+          type: 'Transact',
+          tree: selection.tree,
+          position: outputPosition,
+          hash: preparation.expected.commitment,
+          ciphertext: {
+            ciphertext: [...ciphertext.ciphertext],
+            blindedSenderViewingKey: ciphertext.blindedSenderViewingKey,
+            blindedReceiverViewingKey: ciphertext.blindedReceiverViewingKey,
+            annotationData: ciphertext.annotationData,
+            memo: ciphertext.memo,
+          },
+        });
+        assert.equal(observation.origin.blockNumber, FOREIGN_BLOCK);
+        assert.equal(BigInt(observation.origin.transactionHash), BigInt(FOREIGN_TRANSACTION));
+        assert.equal(observation.origin.logIndex, 1);
+        assert.equal(observation.origin.startPosition, outputPosition);
+        assert.equal(observation.origin.outputOffset, 0);
+        phase = 'foreign-recipient-poi';
+        const spendInput = {
+          mode: 'recipient-spend',
+          descriptor: view.descriptor,
+          capsule: selector,
+          creator: observation.creator,
+        };
+        const text = JSON.stringify(spendInput);
+        for (const value of [
+          identity.descriptor.walletId,
+          identity.descriptor.instanceId,
+          identity.descriptor.masterPublicKey,
+          identity.descriptor.viewingPublicKey,
+        ])
+          assert.ok(!text.includes(value));
+        const spent = await runForeignFixture(spendInput, other.enrollment);
+        assert.deepEqual(spent.derivedAccountIndexes, [1]);
+        assert.equal(spent.valueIn, preparation.amount);
+        assert.equal(spent.creatorType, 'Transact');
+        for (const key of [
+          'receiverSideDecryption',
+          'preparedNullifierMatches',
+          'noteHashMatches',
+          'unshieldCommitmentMatches',
+          'alteredCreatorRefused',
+        ])
+          assert.equal(spent[key], true, key);
+        return { inputNpk: spent.inputNpk };
+      };
+      const recipientView = await scanOtherAccount(1, recipientSpend);
+      phase = 'foreign-recipient-checks';
       assert.deepEqual(recipientView.descriptor, recipientAccount);
       // The Transact advanced-root vector already paid account 1 once, at block 40.
       const earlierNotes = transact && advanced ? 1 : 0;
@@ -1632,6 +1770,19 @@ async function main() {
         BigInt(receivedPoi.blindedCommitment),
         BigInt(receipt.recipient.blindedCommitment)
       );
+      // Independent equality: B's receiver-side POI input NPK and B's wallet NPK
+      // against A's sender-side POI output NPK.
+      assert.equal(BigInt(recipientView.spend.inputNpk), BigInt(receipt.poi.npkOut));
+      assert.equal(BigInt(recipientView.spend.inputNpk), BigInt(receivedPoi.npk));
+      const recipientKeys = Object.fromEntries(
+        Object.entries(keysByAccount)
+          .map(([name, value]) => [name, delta(keysBeforeRecipient[name] || {}, value)])
+          .filter(([, value]) => Object.keys(value).length)
+      );
+      // No key loan for A, or for anyone but B, during B's scan and preparation.
+      assert.deepEqual(Object.keys(recipientKeys), ['railgun:1']);
+      assert.equal(recipientKeys['railgun:1']['private-prepare'], 1);
+      assert.equal(recipientKeys['railgun:1']['spending-sign'], undefined);
       phase = 'foreign-unrelated-wallet';
       const unrelatedView = await scanOtherAccount(2);
       assert.deepEqual(unrelatedView.descriptor, unrelatedAccount);
@@ -1673,7 +1824,7 @@ async function main() {
           unrelated: receipt.unrelated,
         },
         senderPoiReconstruction: {
-          ...receipt.poi,
+          ...Object.fromEntries(Object.entries(receipt.poi).filter(([key]) => key !== 'npkOut')),
           creatorType: receipt.creatorType,
           creatorCapturedFromAuthenticatedSource: true,
         },
@@ -1693,6 +1844,40 @@ async function main() {
           npkMatchesSenderPoi: true,
           blindedCommitmentMatchesSenderPoi: true,
         },
+        recipientCreator: {
+          path: 'recipient-account-authenticated-public-source',
+          type: 'Transact',
+          transactionIsSenderOutputTransaction: true,
+          block: 'synthetic-foreign-block',
+          ciphertextIsProvedCalldataCiphertext: true,
+          sentRecord: false,
+        },
+        recipientSpend: {
+          scope: 'preparation-only',
+          kind: 'railgun-token-unshield',
+          recipientIsPublicTestAddress: true,
+          productionPreparation: true,
+          readOnlyNoWrites: true,
+          authority: 'recipient-account-only',
+          keyLoansByAccount: recipientKeys,
+          senderKeyLoans: 0,
+          senderDescriptorSupplied: false,
+          preparedNullifierIsRecipientNullifier: true,
+          preparedRootIsRecipientTreeRoot: true,
+          witnessExportedFromUtility: false,
+          witnessInputBoundByNullifierRootAndNoteHash: true,
+          recipientPoiInputReconstructed: true,
+          recipientInputNpkEqualsSenderPoiNpkOut: true,
+          recipientInputNpkEqualsRecipientWalletNpk: true,
+          selectorPathElementsUnused: true,
+          poiEligibility: 'synthetic-not-queried',
+          poiListAcceptance: 'synthetic-not-queried',
+          txidProvenance: 'not-staged',
+          signed: false,
+          proved: false,
+          submitted: false,
+          liveWithdrawalQualified: false,
+        },
         unrelatedWallet: { enrolledInSameProfile: true, receivedNotes: 0, sentNotes: 0 },
         jobs: delta(receiptBefore.jobs, receiptAfter.jobs),
         keys: delta(receiptBefore.keys, receiptAfter.keys),
@@ -1700,7 +1885,6 @@ async function main() {
         reviewCallbacksQualified: false,
         submissionQualified: false,
         poiSubmissionQualified: false,
-        recipientSpendQualified: false,
       };
     }
     phase = 'close';

@@ -317,3 +317,106 @@ test('receipt mode refuses an event, proof data or capsule that does not match',
   ])
     await expect(run(receiptInput(changes))).rejects.toThrow();
 });
+// B's own unshield of the received note: B's nullifier, the full value and a
+// public test recipient. Path elements are unused selector data here.
+function recipientUnshieldCapsule() {
+  const { AbiCoder, keccak256 } = require('ethers');
+  const { BOUND_PARAMS } = require('../../src/main/wallet/railgun-private-policy');
+  const { TransactNote } = imp('note/transact-note');
+  const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  const recipient = '0x' + '12'.repeat(20);
+  const bound = {
+    treeNumber: 0,
+    minGasPrice: 0,
+    unshield: 1,
+    chainID: pins.chainId,
+    adaptContract: '0x' + '0'.repeat(40),
+    adaptParams: hex(0),
+    commitmentCiphertext: [],
+  };
+  const expected = {
+    kind: 'railgun-token-unshield',
+    tree: 0,
+    merkleRoot: hex(777),
+    nullifier: hex(TransactNote.getNullifier(B.nullifyingKey, OUTPUT)),
+    commitment: hex(imp('note/note-util').getNoteHash(recipient, tokenData, 1000n)),
+    boundParamsHash: hex(
+      BigInt(keccak256(AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [bound]))) % FIELD
+    ),
+    recipient,
+    amount: '1000',
+  };
+  const data = transactAbi.encodeFunctionData('transact', [
+    [
+      {
+        proof: { a: { x: 0, y: 0 }, b: { x: [0, 0], y: [0, 0] }, c: { x: 0, y: 0 } },
+        merkleRoot: expected.merkleRoot,
+        nullifiers: [expected.nullifier],
+        commitments: [expected.commitment],
+        boundParams: bound,
+        unshieldPreimage: {
+          npk: hex(BigInt(recipient)),
+          token: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: 0 },
+          value: 1000,
+        },
+      },
+    ],
+  ]);
+  return {
+    version: 1,
+    walletId: B.descriptor.walletId,
+    engineSha256: 'e'.repeat(64),
+    selection: { kind: 'railgun-token-unshield', tree: 0, position: OUTPUT, recipient },
+    preparation: {
+      transaction: { chainId: pins.chainId, to: pins.proxy, value: '0', data },
+      expected,
+      expectedHash: hex(5),
+      recipient,
+      amount: '1000',
+    },
+    noteHash: capsule.preparation.expected.commitment,
+    pathElements: Array(16).fill(hex(0)),
+  };
+}
+test("recipient-spend mode: B alone recovers the input NPK that A's POI used", async () => {
+  const fromSender = await run(receiptInput());
+  const [[tx]] = transactAbi.decodeFunctionData('transact', capsule.preparation.transaction.data);
+  const c = tx.boundParams.commitmentCiphertext[0];
+  const recipientCreator = {
+    type: 'Transact',
+    tree: 0,
+    position: OUTPUT,
+    hash: capsule.preparation.expected.commitment,
+    ciphertext: {
+      ciphertext: [...c.ciphertext],
+      blindedSenderViewingKey: c.blindedSenderViewingKey,
+      blindedReceiverViewingKey: c.blindedReceiverViewingKey,
+      annotationData: c.annotationData,
+      memo: c.memo,
+    },
+  };
+  const input = {
+    mode: 'recipient-spend',
+    descriptor: B.descriptor,
+    capsule: recipientUnshieldCapsule(),
+    creator: recipientCreator,
+  };
+  const value = await run(input);
+  const output = await decryptAsReceiver(B, capsule.preparation.transaction.data);
+  expect(value).toMatchObject({
+    mode: 'recipient-spend',
+    derivedAccountIndexes: [1],
+    inputNpk: hex(output.notePublicKey),
+    valueIn: '1000',
+    creatorType: 'Transact',
+    alteredCreatorRefused: true,
+  });
+  expect(value.inputNpk).toBe(fromSender.poi.npkOut);
+  for (const changes of [
+    { descriptor: A.descriptor },
+    { capsule: { ...input.capsule, walletId: A.descriptor.walletId } },
+    { creator: { ...recipientCreator, position: OUTPUT + 1 } },
+    { creator: creator },
+  ])
+    await expect(run({ ...input, ...changes })).rejects.toThrow();
+});

@@ -3,8 +3,9 @@
  * C, all derived from the published test mnemonic, never from a vault, profile or
  * user key. The receipt mode runs the production per-leaf wallet classifier, the
  * engine's per-leaf wallet scan and the production POI reconstruction over one
- * Transact event built from the real proved calldata. No store, network, prover,
- * signer, submission or disclosure capability.
+ * Transact event built from the real proved calldata. The recipient-spend mode
+ * derives account 1 alone and reconstructs B's POI input for B's own prepared
+ * spend. No store, network, prover, signer, submission or disclosure capability.
  */
 const assert = require('assert/strict'),
   path = require('path'),
@@ -23,7 +24,7 @@ const bare = (value) => {
   return value.replace(/^0x/, '').toLowerCase();
 };
 // The genuine identity job's descriptor shape, from the public derivation paths.
-async function deriveAccounts(imp, signal) {
+async function deriveAccounts(imp, signal, indexes) {
   const { deriveRailgunKey } = require('../../src/main/identity/railgun-key-derivation');
   const { getPublicSpendingKey, getPublicViewingKey } = imp('utils/keys-utils');
   const { ViewOnlyWallet } = imp('wallet/view-only-wallet');
@@ -38,7 +39,7 @@ async function deriveAccounts(imp, signal) {
   const seed = require('@scure/bip39').mnemonicToSeedSync(MNEMONIC);
   const accounts = [];
   try {
-    for (const accountIndex of [0, 1, 2]) {
+    for (const accountIndex of indexes) {
       const spending = deriveRailgunKey(seed, `m/44'/1984'/0'/0'/${accountIndex}'`);
       let spendingPublicKey;
       try {
@@ -78,7 +79,10 @@ async function deriveAccounts(imp, signal) {
       };
       assert.match(account.descriptor.instanceId, ADDRESS);
     }
-    assert.equal(new Set(accounts.map((account) => account.descriptor.instanceId)).size, 3);
+    assert.equal(
+      new Set(accounts.map((account) => account.descriptor.instanceId)).size,
+      indexes.length
+    );
     return accounts;
   } catch (error) {
     for (const account of accounts) account.viewingKey.fill(0);
@@ -329,6 +333,8 @@ async function receipt(input, { imp, archive, accounts, signal }) {
       sentRecords: 0,
     },
     poi: {
+      // A's sender-side value; main compares it with B's own derivations.
+      npkOut: '0x' + hex(notes.npksOut[0]),
       npkOutIsRecipientNpk: true,
       valueOutIsFullValue: true,
       outputHashIsReviewedCommitment: true,
@@ -337,26 +343,89 @@ async function receipt(input, { imp, archive, accounts, signal }) {
     },
   };
 }
+// B's POI input for B's own prepared spend, from B's key and the original creator
+// ciphertext only. The capsule is a selector built from B's production preparation.
+async function recipientSpend(input, { imp, archive, accounts, signal }) {
+  const [recipient] = accounts;
+  assert.equal(recipient.descriptor.accountIndex, 1);
+  assert.deepEqual(input.descriptor, recipient.descriptor);
+  const capsule =
+    require('../../src/main/wallet/railgun-private-capsule').normalizeRailgunPrivateCapsule(
+      input.capsule
+    );
+  const { selection, preparation } = capsule;
+  assert.equal(capsule.walletId, recipient.descriptor.walletId);
+  assert.equal(selection.kind, 'railgun-token-unshield');
+  assert.equal(input.creator.type, 'Transact');
+  assert.equal(input.creator.tree, selection.tree);
+  assert.equal(input.creator.position, selection.position);
+  const { reconstructRailgunPoiNotes } = require('../../src/main/wallet/railgun-poi-reconstruct');
+  const options = {
+    archive,
+    descriptor: recipient.descriptor,
+    viewingKey: recipient.viewingKey,
+    capsule: input.capsule,
+    creator: input.creator,
+    signal,
+  };
+  const notes = await reconstructRailgunPoiNotes(options);
+  assert.ok(!signal.aborted);
+  const value = BigInt(preparation.amount);
+  const { TransactNote } = imp('note/transact-note');
+  const { ShieldNote } = imp('note/shield-note');
+  // The prepared nullifier, note hash and unshield commitment were each checked
+  // inside the reconstruction against this receiver-side decryption.
+  assert.deepEqual(notes.valuesIn, [value]);
+  assert.deepEqual(notes.utxoPositionsIn, [selection.position]);
+  assert.equal(notes.utxoTreeIn, selection.tree);
+  assert.deepEqual(notes.npksOut, []);
+  assert.deepEqual(notes.valuesOut, []);
+  assert.equal(
+    ShieldNote.getNotePublicKey(recipient.wallet.masterPublicKey, notes.randomsIn[0]),
+    notes.inputNpk
+  );
+  assert.equal(TransactNote.getHash(notes.inputNpk, notes.token, value), BigInt(capsule.noteHash));
+  // The same ciphertext with one changed word no longer decrypts for B.
+  const altered = JSON.parse(JSON.stringify(input.creator));
+  const word = altered.ciphertext.ciphertext[1];
+  altered.ciphertext.ciphertext[1] = word.slice(0, -1) + (word.endsWith('0') ? '1' : '0');
+  await assert.rejects(() => reconstructRailgunPoiNotes({ ...options, creator: altered }));
+  assert.ok(!signal.aborted);
+  return {
+    mode: 'recipient-spend',
+    derivedAccountIndexes: [1],
+    inputNpk: '0x' + hex(notes.inputNpk),
+    valueIn: value.toString(),
+    creatorType: input.creator.type,
+    receiverSideDecryption: true,
+    preparedNullifierMatches: true,
+    noteHashMatches: true,
+    unshieldCommitmentMatches: true,
+    alteredCreatorRefused: true,
+  };
+}
 exports.run = async function run(text, { request, signal, guardReport }) {
   assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 65536);
   const input = JSON.parse(text);
-  assert.ok(['addresses', 'receipt'].includes(input.mode));
+  assert.ok(['addresses', 'receipt', 'recipient-spend'].includes(input.mode));
   assert.deepEqual(
     Object.keys(input).sort(),
     input.mode === 'addresses'
       ? ['archive', 'mode']
-      : [
-          'archive',
-          'blockNumber',
-          'capsule',
-          'creator',
-          'descriptor',
-          'event',
-          'mode',
-          'outputPosition',
-          'provedData',
-          'transactionHash',
-        ]
+      : input.mode === 'recipient-spend'
+        ? ['archive', 'capsule', 'creator', 'descriptor', 'mode']
+        : [
+            'archive',
+            'blockNumber',
+            'capsule',
+            'creator',
+            'descriptor',
+            'event',
+            'mode',
+            'outputPosition',
+            'provedData',
+            'transactionHash',
+          ]
   );
   const archive =
     require('../../src/main/wallet/railgun-engine-runtime').verifyRailgunEngineRuntime(
@@ -366,7 +435,11 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     require(path.join(archive, 'node_modules/@railgun-community/engine/dist', name));
   await imp('utils/poseidon').initPoseidonPromise;
   assert.ok(!signal.aborted);
-  const accounts = await deriveAccounts(imp, signal);
+  const accounts = await deriveAccounts(
+    imp,
+    signal,
+    input.mode === 'recipient-spend' ? [1] : [0, 1, 2]
+  );
   let value;
   try {
     if (input.mode === 'addresses') {
@@ -383,7 +456,9 @@ exports.run = async function run(text, { request, signal, guardReport }) {
         accounts: accounts.map((account) => account.descriptor),
         ownChainAddress,
       };
-    } else value = await receipt(input, { imp, archive, accounts, signal });
+    } else if (input.mode === 'receipt')
+      value = await receipt(input, { imp, archive, accounts, signal });
+    else value = await recipientSpend(input, { imp, archive, accounts, signal });
   } finally {
     for (const account of accounts) account.viewingKey.fill(0);
   }
