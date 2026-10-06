@@ -561,3 +561,63 @@ test('aborted discovery drains real held floor work and leaves borrowed stores u
   held = false;
   expect((await f.ledger.readRelay(f.recovery, f.row.id)).record.state).toBe('signed');
 });
+
+test('sixteen-row page boundary and nextAfter authenticate seventeen genuine encrypted orphan holds', async () => {
+  // Model seventeen ledger-first interrupted writes using the real typed codec,
+  // encrypted document and floor. There are no recovery rows (capacity ten).
+  f.ledger.close();
+  const storage = createPrivacyStorage(f.ledgerOptions);
+  const codec = require('./railgun-reservation-ledger').createRailgunReservationLedgerCodec({
+    enrollment: f.base.owners.enrollment,
+    binding: f.row.binding,
+    walletId: f.row.walletId,
+  });
+  const original = await storage.get('railgun-private-reservations-v1');
+  let text = original;
+  for (let index = 17; index >= 1; index--) {
+    text = codec.apply(text, {
+      type: 'reserve-relay',
+      id: hex(index),
+      facts: {
+        tree: 0,
+        position: index,
+        nullifier: '0x' + hex(index),
+        noteHash: '0x' + hex(index + 100),
+        kind: 'railgun-relay-self-transfer',
+        checkpointHash: f.row.checkpointHash,
+        draftDigest: hex(index + 200),
+        expectedHash: '0x' + hex(index + 300),
+      },
+    });
+  }
+  await storage.update('railgun-private-reservations-v1', (value) => {
+    expect(value).toBe(original);
+    return text;
+  });
+  await f.ledgerOptions.advanceFloor({
+    version: 4,
+    binding: f.row.binding,
+    walletId: f.row.walletId,
+    sequence: 17,
+  });
+  await f.reopen();
+  expect((await f.recovery.inspect()).records).toBe(0);
+  const first = await list();
+  expect(first.records).toHaveLength(16);
+  expect(first.records.map((row) => row.operationId)).toEqual(
+    Array.from({ length: 16 }, (_, i) => hex(i + 1))
+  );
+  expect(first.nextAfter).toBe(hex(16));
+  for (const row of first.records)
+    expect(row).toEqual({
+      operationId: row.operationId,
+      reservationState: 'held',
+      localState: 'record-unavailable',
+      interruptedStep: 'append-held',
+    });
+  const next = await list(first.nextAfter);
+  expect(next.records).toHaveLength(1);
+  expect(next.records[0].operationId).toBe(hex(17));
+  expect(next.nextAfter).toBeNull();
+  expect((await list(hex(17))).records).toEqual([]);
+});
