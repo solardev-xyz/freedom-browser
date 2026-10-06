@@ -1,0 +1,10 @@
+{
+  "jobSha256": "4e28e01e764a98182a4e6e2dc3b810e7229add1b5e39385d9bb020324147b5a1",
+  "refusalLines": {
+    "signature-mismatch": 51,
+    "wrong-chain": 25,
+    "identity-key": 38,
+    "identity-r": 38
+  },
+  "status": "Source-bound candidate only; native execution requires separate reviewed launcher and root authorization"
+}
