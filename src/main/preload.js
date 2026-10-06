@@ -170,12 +170,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWebviewPreloadPath: () => ipcRenderer.invoke('internal:get-webview-preload-path'),
   bindAutomationTab: (rendererTabId, guestWebContentsId) =>
     ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
-  startAgent: (rendererTabId, prompt, approvalMode = 'every_interaction', attachmentIds = []) =>
+  startAgent: (rendererTabId, prompt, approvalMode = 'every_interaction', attachmentIds = [], privacySettings) =>
     ipcRenderer.invoke('agent:start', {
       rendererTabId,
       prompt,
       approvalMode,
       ...(attachmentIds.length && { attachmentIds }),
+      ...(privacySettings && { privacySettings }),
     }),
   steerAgent: (runId, prompt) => ipcRenderer.invoke('agent:steer', { runId, prompt }),
   pauseAgent: (runId) => ipcRenderer.invoke('agent:pause', { runId }),
@@ -231,6 +232,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:attachments:revoke', { conversationId, resourceId }),
   getAgentAttachmentPreview: (conversationId, resourceId) =>
     ipcRenderer.invoke('agent:attachments:preview', { conversationId, resourceId }),
+  setAgentPrivacySettings: (conversationId, settings) =>
+    ipcRenderer.invoke('agent:privacy-settings:set', { conversationId, settings }),
   setAgentApprovalMode: (conversationId, approvalMode) =>
     ipcRenderer.invoke('agent:approval-mode:set', { conversationId, approvalMode }),
   claimAgentTab: (rendererTabId) => ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),

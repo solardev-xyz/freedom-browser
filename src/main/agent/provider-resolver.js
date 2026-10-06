@@ -1,7 +1,7 @@
 'use strict';
 
 const { checkProviderAttestation } = require('./privacy-attestation');
-const { fetchNearWithEvidence } = require('./privacy-request');
+const { fetchNearWithEvidence, fetchVeniceEncrypted } = require('./privacy-request');
 
 const path = require('path');
 const { loadPiSdk } = require('./pi-sdk');
@@ -420,7 +420,7 @@ class AgentProviderResolver {
               throw new AgentProviderError('AGENT_MODEL_POLICY', 'Provider connection changed');
             this.#assertModelPolicy(providerId, model.id);
             const body = { ...(result || payload), model: model.id };
-            if (providerId === 'openrouter' && connection.privacyPolicy === 'zdr') {
+            if (providerId === 'openrouter' && (options.requireZeroRetention ?? (connection.privacyPolicy === 'zdr'))) {
               body.provider = {
                 ...body.provider,
                 zdr: true,
@@ -483,12 +483,18 @@ class AgentProviderResolver {
     if (selection.kind === 'hosted' && !Object.hasOwn(HOSTED_PROVIDERS, selection.providerId)) {
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Hosted provider is not supported');
     }
-    // Older catalogs do not carry attestation capabilities. Refresh that public
+    // Older catalogs do not carry attestation/encryption capabilities. Refresh that public
     // metadata once, without guessing capabilities from an e2ee/tee model name.
+    const cachedModel = this.catalog.get(selection.providerId).models.find(entry => entry.id === selection.modelId);
     if (CUSTOM_PROVIDERS.has(selection.providerId) && typeof this.catalog.refresh === 'function' &&
-        this.catalog.get(selection.providerId).models.find(entry => entry.id === selection.modelId)?.attestation === undefined) {
+        (cachedModel?.attestation === undefined || (selection.providerId === 'venice' && cachedModel?.e2ee === undefined))) {
       try { await this.catalog.refresh(selection.providerId, selection.apiKey); }
       catch { /* Existing catalog policy still applies; missing evidence stays unknown. */ }
+    }
+    const privacyModel = this.catalog.get(selection.providerId).models.find(entry => entry.id === selection.modelId);
+    if (selection.providerId === 'venice' && privacyModel?.attestation === true && privacyModel.e2ee === undefined) {
+      throw new AgentProviderError('AGENT_CATALOG_UNAVAILABLE',
+        'Could not refresh this model’s encryption capabilities. Refresh the Venice models and try again. No messages were sent.');
     }
     const runtime = await this.#createRuntime(selection.providerId);
     if (selection.kind === 'hosted') {
@@ -541,7 +547,7 @@ class AgentProviderResolver {
     this.#enforceRequestPolicy(runtime, selection.providerId);
     runtime.privacyDescriptor = requestModel => {
       const entry = this.catalog.get(selection.providerId).models.find(item => item.id === requestModel.id);
-      return { providerId: selection.providerId, claim: entry?.privacy || 'unknown',
+      return { providerId: selection.providerId, claim: entry?.privacy || 'unknown', e2ee: entry?.e2ee === true || entry?.privacy === 'e2ee',
         attestation: requestModel.provider === model.provider &&
           (entry?.attestation === true || (entry?.attestation === undefined && entry?.privacy === 'tee')) };
     };
@@ -554,7 +560,8 @@ class AgentProviderResolver {
     };
     runtime.fetchPrivacyRequest = (requestModel, input, options, tracking) => {
       const current = this.store.getSelection(selection.providerId);
-      return fetchNearWithEvidence({ input, options, modelId: requestModel.id,
+      const fetchRequest = selection.providerId === 'venice' ? fetchVeniceEncrypted : fetchNearWithEvidence;
+      return fetchRequest({ input, options, modelId: requestModel.id, encrypt: true,
         apiKey: current?.apiKey, ...tracking });
     };
     return {

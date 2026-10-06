@@ -4010,3 +4010,23 @@ test.each([
   await service.waitForIdle();
   expect(service.conversation).toMatchObject({ providerId: connectionProviderId, providerLabel });
 });
+
+test('per-conversation retention changes persist and a failed save does not weaken the active setting', async () => {
+  const parent = createFakeSession();
+  const historyStore = createHistoryStore({ updatePrivacy: jest.fn() });
+  const { service } = createService(parent, { historyStore });
+  try {
+    await service.start(startOptions());
+    expect(service.getState().privacy.settings.requireZeroRetention).toBe(true);
+    historyStore.updatePrivacy.mockImplementationOnce(() => { throw new Error('disk unavailable'); });
+    expect(() => service.updatePrivacySettings('conversation_test', { requireZeroRetention: false })).toThrow('disk unavailable');
+    expect(service.getState().privacy.settings.requireZeroRetention).toBe(true);
+    expect(() => service.updatePrivacySettings('other', { requireZeroRetention: false })).toThrow('Invalid conversation');
+    expect(() => service.updatePrivacySettings('conversation_test', { requireZeroRetention: 'false' })).toThrow('Invalid conversation');
+    service.updatePrivacySettings('conversation_test', { requireZeroRetention: false });
+    expect(service.getState().privacy.settings.requireZeroRetention).toBe(false);
+    expect(historyStore.updatePrivacy).toHaveBeenCalledWith(expect.objectContaining({
+      privacy: expect.objectContaining({ settings: { requireZeroRetention: false } }),
+    }));
+  } finally { await service.dispose(); }
+});

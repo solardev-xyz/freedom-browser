@@ -1352,6 +1352,20 @@ class FreedomAgentService {
     return renamed;
   }
 
+  updatePrivacySettings(conversationId, settings) {
+    const conversation = this.conversation;
+    if (!conversation || conversation.conversationId !== conversationId ||
+      typeof settings?.requireZeroRetention !== 'boolean') {
+      throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid conversation privacy setting');
+    }
+    conversation.privacy ||= new SessionPrivacy();
+    const privacy = { ...conversation.privacy.snapshot(), settings: { requireZeroRetention: settings.requireZeroRetention } };
+    this.historyStore?.updatePrivacy({ conversationId, privacy });
+    conversation.privacy.setSettings(settings);
+    this.#broadcast({ type: 'conversation_privacy_changed', conversationId, privacy });
+    return { conversationId, privacy };
+  }
+
   updateApprovalMode(conversationId, value) {
     const approvalMode = normalizeAgentApprovalMode(value);
     const conversation = this.conversation;
@@ -1604,6 +1618,7 @@ class FreedomAgentService {
     this.activeRun = run;
     let conversation = existingConversation;
     const privacy = existingConversation?.privacy || new SessionPrivacy();
+    if (!existingConversation && options.privacySettings) privacy.setSettings(options.privacySettings);
     privacy.changed = summary => {
       if (!this.conversations.has(run.conversationId) || this.disposed) return;
       if (typeof this.historyStore?.updatePrivacy === 'function') {

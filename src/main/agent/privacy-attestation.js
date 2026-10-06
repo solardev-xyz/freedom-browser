@@ -4,6 +4,8 @@ const { randomBytes } = require('node:crypto');
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 
+const { bindEncryptionKey } = require('./privacy-encryption');
+
 const ENDPOINTS = Object.freeze({
   venice: 'https://api.venice.ai/api/v1/tee/attestation',
   'near-ai': 'https://cloud-api.near.ai/v1/attestation/report',
@@ -34,7 +36,7 @@ function verifyInWorker(reports, nonce, signal) {
 }
 
 async function checkProviderAttestation({ providerId, modelId, apiKey, signal,
-  fetchImpl = globalThis.fetch, verify = verifyInWorker, includeTls = false }) {
+  fetchImpl = globalThis.fetch, verify = verifyInWorker, includeTls = false, includeKeys = false }) {
   if (!ENDPOINTS[providerId]) return { status: 'unsupported' };
   const nonce = randomBytes(32).toString('hex');
   const url = new URL(ENDPOINTS[providerId]);
@@ -69,7 +71,17 @@ async function checkProviderAttestation({ providerId, modelId, apiKey, signal,
       ...(providerId === 'near-ai' && report?.tls_cert_fingerprint !== undefined &&
         { tls_cert_fingerprint: report.tls_cert_fingerprint }),
     }));
-    return await verify(evidence, nonce, signal);
+    const checked = await verify(evidence, nonce, signal);
+    if (includeKeys && ['checked', 'advisory'].includes(checked.status)) {
+      if (checked.reports?.length !== reports.length) return { status: 'failed' };
+      try { checked.reports = checked.reports.map((verified, index) => {
+        // Gateway encryption keys are unnecessary; bind every returned model key.
+        if (providerId === 'near-ai' && index === 0) return verified;
+        const raw = reports[index];
+        return { ...verified, encryptionKey: bindEncryptionKey(raw.signing_public_key || raw.signing_key, verified.signingAddress) };
+      }); } catch { return { status: 'failed', checkedAt: Date.now(), reports: [] }; }
+    }
+    return checked;
   } catch {
     return { status: 'unavailable' };
   }

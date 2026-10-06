@@ -108,3 +108,59 @@ test('request-bound transport covers main, helper and permission runtimes at the
     ['agent', 1], ['helper', 1], ['permission', 1],
   ]);
 });
+
+test('requires ZDR by default for all roles, persists per-chat opt-out and preserves earlier coverage', async () => {
+  const ledger = new SessionPrivacy();
+  const calls = [];
+  const runtime = { privacyDescriptor: () => ({ providerId: 'openrouter' }),
+    completeSimple: (_model, _context, options) => options.fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST', body: JSON.stringify({ model: 'qwen', plugins: [{ id: 'web' }], models: ['other'], route: 'fallback' }),
+    }) };
+  const fetch = async (_url, options) => { calls.push(JSON.parse(options.body)); return 'ok'; };
+  for (const role of ['agent', 'helper', 'permission']) await withSessionPrivacy(runtime, ledger, role).completeSimple({ id: 'qwen' }, {}, { fetch });
+  expect(calls.every(b => b.provider.zdr && b.provider.data_collection === 'deny')).toBe(true);
+  expect(calls[0]).toEqual({ model: 'qwen', plugins: [], provider: { zdr: true, data_collection: 'deny', require_parameters: true } });
+  ledger.setSettings({ requireZeroRetention: false });
+  await withSessionPrivacy(runtime, ledger, 'agent').completeSimple({ id: 'qwen' }, {}, { fetch });
+  expect(calls[3].provider).toBeUndefined();
+  expect(ledger.snapshot().routes.map(r => r.retention)).toEqual(['required', 'required', 'required', 'not-required']);
+  expect(new SessionPrivacy(ledger.snapshot()).snapshot().settings.requireZeroRetention).toBe(false);
+  expect(new SessionPrivacy().snapshot().settings.requireZeroRetention).toBe(true);
+});
+
+test('rejects unexpected OpenRouter destinations before sending under a privacy policy', async () => {
+  const fetch = jest.fn();
+  const runtime = { privacyDescriptor: () => ({ providerId: 'openrouter' }),
+    complete: (_m, _c, options) => options.fetch('https://other.test', { method: 'POST', body: '{}' }) };
+  await expect(withSessionPrivacy(runtime, new SessionPrivacy(), 'agent').complete({}, {}, { fetch })).rejects.toThrow('retention settings');
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test('encryption reporting retains mixed coverage and counts each status only once per request', () => {
+  const ledger = new SessionPrivacy();
+  const route = ledger.record({ id: 'qwen', provider: 'venice' }, 'agent', 'https://api.venice.ai');
+  const report = ledger.encryptionReporter(route);
+  report('encrypted'); report('failed'); report('failed');
+  ledger.record({ id: 'qwen', provider: 'venice' }, 'agent', 'https://api.venice.ai');
+  ledger.encryptionReporter(route)('unencrypted', 'tools');
+  const saved = new SessionPrivacy(ledger.snapshot()).snapshot();
+  expect(saved.routes[0].encryption).toEqual({ encrypted: 1, failed: 1, blocked: 0, unencrypted: 1, reasons: ['tools'] });
+});
+
+test('counts encrypted answering and the subsequent native tool request separately', async () => {
+  const ledger = new SessionPrivacy();
+  const runtime = {
+    privacyDescriptor: () => ({ providerId: 'venice', attestation: true, e2ee: true }),
+    completeSimple: (_model, _context, opts) => opts.fetch('https://api.venice.ai/api/v1/chat/completions', { method: 'POST' }),
+    fetchPrivacyRequest: async (_model, _input, _options, tracking) => {
+      tracking.reportEncryption('encrypted');
+      tracking.report({ connection: 'unavailable', response: 'unavailable' });
+      const next = tracking.nextAttempt();
+      next.reportEncryption('unencrypted', 'tools');
+      next.report({ connection: 'unavailable', response: 'unavailable' });
+    },
+  };
+  await withSessionPrivacy(runtime, ledger, 'agent').completeSimple({ id: 'qwen' }, {});
+  expect(ledger.snapshot().routes[0]).toMatchObject({ requests: 2,
+    binding: { attempts: 2, pending: 0 }, encryption: { encrypted: 1, unencrypted: 1, reasons: ['tools'] } });
+});

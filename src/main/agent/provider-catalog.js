@@ -50,7 +50,7 @@ const PROVIDER_DEFINITIONS = Object.freeze({
     catalogUrl: 'https://api.venice.ai/api/v1/models?type=text',
     catalogKey: true,
     privacy:
-      'Privacy varies by model. Labels are provider claims; conversation privacy details show independent CPU checks and their limits. End-to-end encryption is not enabled. Provider search, scraping and added system prompts are disabled.',
+      'Privacy varies by model. Labels are provider claims; conversation privacy details show independent CPU checks and their limits. Supported text conversations use end-to-end encryption; tool and attachment requests can fall back to HTTPS, disclosed in the conversation shield. Provider search, scraping and added system prompts are disabled.',
     policies: [
       ['standard', 'All supported models'],
       ['private', 'Private or TEE models only'],
@@ -63,7 +63,7 @@ const PROVIDER_DEFINITIONS = Object.freeze({
     baseUrl: 'https://cloud-api.near.ai/v1',
     catalogUrl: 'https://cloud-api.near.ai/v1/model/list?limit=2000',
     privacy:
-      'NEAR lists both TEE-hosted and external models. TEE labels are provider claims; conversation privacy details show independent CPU checks and their limits. End-to-end encryption is not enabled.',
+      'NEAR lists both TEE-hosted and external models. TEE labels are provider claims; conversation privacy details show independent CPU checks and their limits. Supported TEE models use end-to-end encryption, including tool requests.',
     policies: [
       ['standard', 'All supported models'],
       ['tee', 'TEE models only'],
@@ -197,7 +197,7 @@ function normalizeModels(providerId, body, knownModels = []) {
             : null,
         privacy,
         attestation: capabilities.supportsTeeAttestation === true,
-        ...(typeof capabilities.supportsE2EE === 'boolean' && { e2ee: capabilities.supportsE2EE }),
+        e2ee: capabilities.supportsE2EE === true,
         // E2EE requires a distinct, verified client protocol. Never downgrade it to plaintext.
         available: spec.offline !== true && privacy !== 'e2ee',
         inputPrice: price(spec.pricing?.input?.usd),

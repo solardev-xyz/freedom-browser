@@ -4513,6 +4513,34 @@ hardware advisories remain visible. Per-role history preserves partial coverage.
 Venice's sampled proxy receipt signs different upstream bytes with a different
 signer from the model attestation, so it cannot yet verify Freedom's exchange.
 Remaining: documented Venice proxy binding, GPU evidence, measured/approved
-software, verified-only enforcement, Agent-compatible E2EE, and packaged
-cross-platform qualification. No fully-private or E2EE claim is made.
+software, stricter hardware/software acceptance policy, and packaged
+cross-platform qualification. No fully-private inference claim is made.
 See [the implementation and protocol notes](../docs/agent-session-privacy.md).
+
+
+### Session privacy: active protections (2026-10-06)
+
+Implemented on the same privacy experiment: per-conversation OpenRouter ZDR on
+by default, switchable in the shield, persisted and enforced for every runtime
+role with historical requirements preserved. NEAR ECDSA E2EE covers messages,
+tool schemas/calls/results and assistant history; live real-Pi text and tool
+round trips passed, with model signatures checked over ciphertext exchanges.
+Venice encrypts ordinary text conversations and assistant history, even when
+optional Agent tools are available. An encrypted answering step can hand actual
+tool work back to the native workflow. Actual tool requests/history, attachments
+and non-streaming requests retain the disclosed HTTPS fallback. Stale encryption
+capability metadata refreshes automatically before model resolution. Plain-text
+content-part arrays from Pi are normalized before checking E2EE eligibility;
+full AgentSession regression coverage includes browser tools, skills and codemode.
+Invalid
+encryption evidence never triggers plaintext retry. Both
+providers' hardware update advisories remain visible independently of encryption.
+No new dependency. UI checked in dark/light and a small window.
+
+Picker and connection overview now use compact privacy symbols with per-symbol
+tooltips and screen-reader descriptions.
+
+Remaining: live OpenRouter endpoint-level
+ZDR availability/pricing previews; NEAR Ed25519/v2 support; GPU and approved
+software verification; Venice response/proxy binding; stricter hardware policy;
+packaged and cross-platform verification. See the privacy implementation notes.

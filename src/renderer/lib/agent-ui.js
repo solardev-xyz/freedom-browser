@@ -1,4 +1,4 @@
-import { createAgentPrivacy, modelPrivacyInfo } from './agent-privacy.js';
+import { createAgentPrivacy, modelPrivacyInfo, createModelPrivacySymbols } from './agent-privacy.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
@@ -665,7 +665,8 @@ function configuredModels() {
       providerId: connection.providerId,
       modelId: model.id,
       name: model.name || model.id,
-      privacyInfo: modelPrivacyInfo(connection.providerId, model, connection.baseUrl),
+      privacyInfo: modelPrivacyInfo(connection.providerId, model, connection.baseUrl,
+        currentConversationId && connection.providerId === providerStatus?.providerId ? sessionPrivacy?.settings() : undefined),
     }));
   });
 }
@@ -1805,7 +1806,7 @@ function renderProviderFields() {
   elements.testProvider.hidden = !connection;
   elements.providerDisconnect.hidden = !connection;
   elements.testProviderNote.hidden = !connection;
-  const policies = descriptor?.policies || [];
+  const policies = providerId === 'openrouter' ? [] : descriptor?.policies || [];
   elements.privacyControls.hidden = policies.length === 0;
   elements.privacyPolicy.replaceChildren(...policies.map(([value, label]) => {
     const option = document.createElement('option');
@@ -1850,9 +1851,7 @@ function renderProviderModelPreview(providerId) {
     const name = document.createElement('span');
     name.textContent = model.name || model.id;
     const info = modelPrivacyInfo(providerId, model, connection?.baseUrl);
-    const privacy = document.createElement('span');
-    privacy.className = 'agent-model-privacy';
-    privacy.textContent = info.label;
+    const privacy = createModelPrivacySymbols(info);
     row.appendChild(name);
     row.appendChild(privacy);
     row.title = `${model.id}\n${info.detail}`;
@@ -2038,7 +2037,7 @@ function renderModelOptions(providerId) {
   const options = (provider?.models || []).map((model) => {
     const option = document.createElement('option');
     option.value = model.id;
-    option.textContent = `${favorites.includes(model.id) ? '★ ' : ''}${model.name || model.id} · ${modelPrivacyInfo(providerId, model, connection?.baseUrl).label}${model.available === false ? ' · Unavailable' : model.tools === false ? ' · No tool calling' : ''}`;
+    option.textContent = `${favorites.includes(model.id) ? '★ ' : ''}${model.name || model.id}${model.available === false ? ' · Unavailable' : model.tools === false ? ' · No tool calling' : ''}`;
     option.disabled = !uiModelAllowed(model, elements.privacyPolicy.value);
     return option;
   });
@@ -2067,9 +2066,8 @@ function renderModelDetails() {
   elements.modelDetails.textContent = parts.join(' · ') || 'No matching models. Try another search or refresh the catalog.';
   if (model) {
     const info = modelPrivacyInfo(providerId, model, providerConnection(providerId)?.baseUrl);
-    const privacy = document.createElement('span');
-    privacy.className = 'agent-model-privacy-detail';
-    privacy.textContent = info.detail;
+    const privacy = createModelPrivacySymbols(info);
+    privacy.classList.add('agent-model-privacy-detail');
     elements.modelDetails.appendChild(privacy);
   }
 }
@@ -2205,12 +2203,11 @@ function renderModelMenu() {
       const name = document.createElement('span');
       name.textContent = model.name;
       const check = document.createElement('span');
+      check.className = 'agent-model-check';
       check.textContent = active ? '✓' : '';
       option.appendChild(name);
       option.appendChild(check);
-      const privacy = document.createElement('span');
-      privacy.className = 'agent-model-privacy';
-      privacy.textContent = model.privacyInfo.label;
+      const privacy = createModelPrivacySymbols(model.privacyInfo);
       option.appendChild(privacy);
       option.title = model.privacyInfo.detail;
       option.setAttribute('aria-label', `${model.name}. ${model.privacyInfo.label}. ${model.privacyInfo.detail}`);
@@ -2232,6 +2229,7 @@ function renderModelMenu() {
 }
 
 function renderActiveModel() {
+  sessionPrivacy?.setProvider(providerStatus?.providerId);
   const configured = providerStatus?.configured === true;
   elements.activeModelLabel.textContent = configured
     ? modelName(providerStatus.providerId, providerStatus.modelId)
@@ -4645,7 +4643,10 @@ async function startRun(options = {}) {
     const attachmentIds = explicitPrompt
       ? []
       : pendingAttachments.map((attachment) => attachment.selectionId);
-    const response = attachmentIds.length
+    const privacySettings = sessionPrivacy?.settings();
+    const response = privacySettings?.requireZeroRetention === false
+      ? await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode, attachmentIds, privacySettings)
+      : attachmentIds.length
       ? await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode, attachmentIds)
       : await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode);
     if (!response?.ok) {
@@ -5111,7 +5112,13 @@ export function initAgentUi(options = {}) {
   panelHeader = elements.panel.querySelector?.('.agent-sidebar-header') || null;
   runHeader = elements.panel.querySelector?.('.agent-run-header') || null;
   runHeaderHome = runHeader?.parentNode || null;
-  sessionPrivacy = createAgentPrivacy(byId('agent-session-privacy'), byId('agent-session-privacy-panel'));
+  sessionPrivacy = createAgentPrivacy(byId('agent-session-privacy'), byId('agent-session-privacy-panel'), async settings => {
+    if (!currentConversationId) return;
+    const response = await window.electronAPI.setAgentPrivacySettings(currentConversationId, settings);
+    if (!response?.ok) throw new Error('Could not save privacy settings');
+    sessionPrivacy.update(response.privacy);
+    renderModelMenu();
+  });
   floatTitle = byId('agent-float-title');
   scopeHelpButton = byId('agent-scope-help');
   scopeHelpText = byId('agent-scope-help-text');

@@ -1611,14 +1611,17 @@ describe('Agent UI', () => {
     ctx.elements['agent-toggle-btn'].dispatch('click');
     await flush();
     const row = ctx.elements['agent-model-menu-list'].children.find(item => item.className === 'agent-model-row');
-    expect(row.children[0].children[2].textContent).toBe('Protected hardware (claimed) · Connection + response checks');
-    expect(row.children[0].title).toContain('End-to-end encryption is off');
+    expect(row.children[0].children[2].textContent).toBe('');
+    expect(row.children[0].children[2].children.map(icon => icon.dataset.privacy)).toEqual(['shield', 'lock']);
+    expect(row.children[0].children[2].children[1].title).toContain('Messages and tool contents');
+    expect(row.children[0].title).toContain('Freedom encrypts messages and tool contents');
     ctx.elements['agent-provider-select'].value = 'near-ai';
     ctx.elements['agent-provider-select'].dispatch('change');
     const preview = ctx.elements['agent-provider-models-list'].children[0];
-    expect(preview.children[1].textContent).toContain('Connection + response checks');
+    expect(preview.children[1].textContent).toBe('');
+    expect(preview.children[1].children.map(icon => icon.dataset.privacy)).toEqual(['shield', 'lock']);
     expect(preview.title).toContain('Hardware health is checked when used');
-    expect(ctx.elements['agent-model-details'].children[0].textContent).toContain('GPU and approved server software are not yet verified');
+    expect(ctx.elements['agent-model-details'].children[0].children[0].title).toContain('does not mean the hardware has passed');
   });
 
   test('connecting an uncatalogued provider discovers models and stays on the provider screen', async () => {

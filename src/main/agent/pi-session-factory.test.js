@@ -629,3 +629,77 @@ describe('live device clock context', () => {
     expect(JSON.stringify(context)).not.toContain('Current time from Freedom');
   });
 });
+
+test('real Pi AgentSession text parts stay encrypted with browser tools, skills and codemode enabled', () => {
+  const script = `
+    (async () => {
+      const assert = require('node:assert/strict');
+      const { createECDH, hkdfSync, createDecipheriv } = require('node:crypto');
+      const { loadPiSdk } = require('./src/main/agent/pi-sdk');
+      const { createIsolatedPiSession } = require('./src/main/agent/pi-session-factory');
+      const { createFreedomBrowserTools } = require('./src/main/agent/pi-browser-tools');
+      const { fetchVeniceEncrypted } = require('./src/main/agent/privacy-request');
+      const { encryptText } = require('./src/main/agent/privacy-encryption');
+      const { SessionPrivacy, withSessionPrivacy } = require('./src/main/agent/session-privacy');
+      globalThis.fetch = async () => { throw new Error('Network forbidden in this test'); };
+      const key = createECDH('secp256k1'); key.setPrivateKey(Buffer.from('12'.repeat(32), 'hex'));
+      const decrypt = value => {
+        const bytes = Buffer.from(value, 'hex');
+        const secret = Buffer.from(hkdfSync('sha256', key.computeSecret(bytes.subarray(0, 65)), Buffer.alloc(0), 'ecdsa_encryption', 32));
+        const cipher = createDecipheriv('aes-256-gcm', secret, bytes.subarray(65, 77));
+        cipher.setAuthTag(bytes.subarray(-16));
+        return Buffer.concat([cipher.update(bytes.subarray(77, -16)), cipher.final()]).toString();
+      };
+      const sdk = await loadPiSdk();
+      const runtime = await sdk.ModelRuntime.create({
+        credentials: { read: async () => undefined, list: async () => [] },
+        modelsPath: null, modelsStorePath: null, refreshOnCreate: false, allowModelNetwork: false,
+      });
+      runtime.registerProvider('venice', { baseUrl: 'https://api.venice.ai/api/v1', api: 'openai-completions',
+        models: [{ id: 'synthetic', name: 'Synthetic', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 1024,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsDeveloperRole: false } }],
+      });
+      await runtime.setRuntimeApiKey('venice', 'synthetic-not-a-credential');
+      runtime.privacyDescriptor = () => ({ providerId: 'venice', e2ee: true, attestation: true });
+      let requests = 0;
+      runtime.fetchPrivacyRequest = async (model, input, options, tracking) => {
+        const raw = JSON.parse(options.body);
+        assert.ok(raw.tools.length > 1);
+        assert.ok(raw.messages.some(m => m.role === 'user' && Array.isArray(m.content)));
+        return fetchVeniceEncrypted({ input, options, modelId: model.id, ...tracking,
+          attest: async () => ({ status: 'checked', reports: [{ tcb: 'UpToDate', encryptionKey: key.getPublicKey('hex') }] }),
+          fetchImpl: async (_url, encrypted) => {
+            requests++;
+            const body = JSON.parse(encrypted.body);
+            assert.equal(body.tools, undefined);
+            assert.ok(encrypted.headers.get('X-Venice-TEE-Client-Pub-Key'));
+            const messages = body.messages.map(m => ({ role: m.role, content: decrypt(m.content) }));
+            assert.ok(messages.some(m => m.content.includes('yo brother')));
+            if (requests === 2) assert.ok(messages.some(m => m.role === 'assistant' && m.content.includes('Hello there')));
+            const answer = encryptText('Hello there', encrypted.headers.get('X-Venice-TEE-Client-Pub-Key'));
+            const chunk = JSON.stringify({ id: 'synthetic', choices: [{ index: 0, delta: { role: 'assistant', content: answer }, finish_reason: null }] });
+            return new Response('data: ' + chunk + '\\n\\ndata: {"id":"synthetic","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\\n\\ndata: [DONE]\\n\\n', { headers: { 'content-type': 'text/event-stream' } });
+          },
+        });
+      };
+      const ledger = new SessionPrivacy();
+      const tools = await createFreedomBrowserTools({ sdk, controller: { execute() { throw new Error('No tool should execute for a greeting'); } }, tabId: null });
+      const { session } = await createIsolatedPiSession({ sdk, model: runtime.getModel('venice', 'synthetic'),
+        modelRuntime: withSessionPrivacy(runtime, ledger, 'agent'), customTools: tools, enableBuiltInSkills: true, enableCodemode: true });
+      try {
+        await session.prompt('yo brother');
+        await session.prompt('hello again');
+        assert.equal(requests, 2);
+        const route = ledger.snapshot().routes[0];
+        assert.equal(route.requests, 2);
+        assert.equal(route.encryption.encrypted, 2);
+        assert.equal(route.encryption.unencrypted, 0);
+        assert.equal(route.encryption.failed, 0);
+        process.stdout.write('passed');
+      } finally { session.dispose(); }
+    })().catch(error => { console.error(error); process.exit(1); });
+  `;
+  expect(execFileSync(process.execPath, ['-e', script], {
+    cwd: repositoryRoot, encoding: 'utf8', timeout: 15000,
+  })).toBe('passed');
+});

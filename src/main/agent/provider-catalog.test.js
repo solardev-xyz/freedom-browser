@@ -207,6 +207,6 @@ test('retains advertised E2EE capability without treating a model name as encryp
   expect(catalog.get('venice').models[0]).toMatchObject({ e2ee: true, available: true, privacy: 'private' });
   expect(new ProviderCatalog({ dataDir }).get('venice').models[0].e2ee).toBe(true);
   const plain = venice(); plain.data[0].id = 'e2ee-model-name';
-  expect(normalizeModels('venice', plain)[0].e2ee).toBeUndefined();
-  expect(normalizeModels('venice', venice('private', { supportsE2EE: 'true' }))[0].e2ee).toBeUndefined();
+  expect(normalizeModels('venice', plain)[0].e2ee).toBe(false);
+  expect(normalizeModels('venice', venice('private', { supportsE2EE: 'true' }))[0].e2ee).toBe(false);
 });

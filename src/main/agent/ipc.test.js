@@ -79,6 +79,7 @@ function createService(options = {}) {
     claimTab: options.claimTab || jest.fn(async () => false),
     openConversation: options.openConversation || jest.fn(async () => null),
     renameConversation: options.renameConversation || jest.fn(() => null),
+    updatePrivacySettings: options.updatePrivacySettings || jest.fn(),
     updateApprovalMode:
       options.updateApprovalMode ||
       jest.fn(async (conversationId, approvalMode) => ({ conversationId, approvalMode })),
@@ -412,6 +413,25 @@ describe('Freedom agent IPC', () => {
       )
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
     expect(ctx.attachmentStore.renderPreview).toHaveBeenCalledTimes(1);
+  });
+
+  test('privacy settings are scoped to trusted conversation owners and initial drafts', async () => {
+    const conversationId = `conversation_${'c'.repeat(16)}`;
+    const updatePrivacySettings = jest.fn(() => ({ conversationId, privacy: { settings: { requireZeroRetention: false } } }));
+    const start = jest.fn(async () => ({ runId: 'run_test', conversationId }));
+    const service = createService({ start, updatePrivacySettings });
+    const ctx = register({ service });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, {
+      rendererTabId: 7, prompt: 'Review', privacySettings: { requireZeroRetention: false },
+    });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ privacySettings: { requireZeroRetention: false } }));
+    const change = ctx.ipcMain.handlers.get(IPC.AGENT_PRIVACY_SETTINGS_SET);
+    const payload = { conversationId, settings: { requireZeroRetention: false } };
+    await expect(change({ sender: ctx.otherSender }, payload)).resolves.toMatchObject({ ok: false });
+    await expect(change({ sender: ctx.sender }, { ...payload, conversationId: 'conversation_other' })).resolves.toMatchObject({ ok: false });
+    expect(updatePrivacySettings).not.toHaveBeenCalled();
+    await expect(change({ sender: ctx.sender }, payload)).resolves.toMatchObject({ ok: true });
+    expect(updatePrivacySettings).toHaveBeenCalledWith(conversationId, payload.settings);
   });
 
   test('changes approval mode only between turns in the owning conversation', async () => {

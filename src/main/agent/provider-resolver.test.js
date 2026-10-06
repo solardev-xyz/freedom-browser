@@ -489,3 +489,20 @@ describe('AgentProviderResolver', () => {
     });
   });
 });
+
+test('refreshes cached Venice encryption metadata before resolving a model, including a failed refresh', async () => {
+  const ctx = createResolver({ kind: 'hosted', providerId: 'venice', modelId: 'qwen', apiKey: 'secret' });
+  const model = { id: 'qwen', name: 'Qwen', available: true, tools: true, attestation: true,
+    privacy: 'private', contextWindow: 32000, maxTokens: 4096 };
+  const entry = { updatedAt: Date.now(), models: [model] };
+  const refresh = jest.fn(async () => { model.e2ee = true; });
+  ctx.resolver.catalog = { get: id => id === 'venice' ? entry : { models: [] }, refresh };
+  const resolved = await ctx.resolver.resolveModel();
+  expect(refresh).toHaveBeenCalledWith('venice', 'secret');
+  expect(resolved.modelRuntime.privacyDescriptor(resolved.model)).toMatchObject({ e2ee: true, attestation: true });
+  await ctx.resolver.resolveModel();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  delete model.e2ee;
+  refresh.mockRejectedValue(new Error('offline'));
+  await expect(ctx.resolver.resolveModel()).rejects.toMatchObject({ code: 'AGENT_CATALOG_UNAVAILABLE' });
+});

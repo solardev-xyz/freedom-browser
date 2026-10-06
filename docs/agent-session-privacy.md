@@ -44,7 +44,7 @@ proof that the server is offline or cannot forward requests.
   is included with the Agent runtime. Failed attempts still count.
 - A header shield opens a bounded, keyboard-accessible detail panel in both themes.
   Hardware advisories/rejected evidence get attention; no state claims verified
-  inference or E2EE. Other providers show destination and provider classification.
+  inference. E2EE coverage is reported per actual request, separately from hardware health.
 - SQLite schema 6 retains bounded, allowlisted route aggregates (maximum 32, with
   overflow counted), not raw quotes, prompts, response bodies or credentials.
   Older history stays unknown; interrupted checks restore as unavailable. The
@@ -59,12 +59,21 @@ or green “private” verdict is derived from partial checks.
 ### Before choosing a model
 
 The composer picker and connection setup's model overview show the same
-per-model privacy labels before inference: provider policy/private/anonymized
+per-model privacy symbols with hover explanations and screen-reader descriptions
+before inference: provider policy/private/anonymized
 claims, external routing, protected-hardware claims, local/configured Ollama
 endpoints, and the checks Freedom can perform. Venice's explicit `supportsE2EE`
-capability is retained in the catalog/cache and labeled offered but off in
-Freedom; names never enable or imply encryption. Details explain the limits.
-Catalog labels are capabilities, not live health results or completed checks.
+capability is retained in the catalog/cache and labeled E2EE when supported;
+names never enable or imply encryption. NEAR attested routes use E2EE. OpenRouter
+shows the conversation's retention requirement. Details explain the limits.
+Symbols describe capabilities, not live health results or completed checks. A
+lock indicates E2EE, a dashed lock conditional E2EE, an outline shield advertised
+hardware protection, and a crossed-out database required zero-retention routing.
+Device/server, policy, external-provider and unknown symbols cover other routes.
+Direct OpenAI (including both ChatGPT logins), Anthropic and Meta connections
+remain visually plain. This is a presentation choice, not a claim about their
+retention or training terms. Models from those labs routed through OpenRouter
+still show the applicable routing protection.
 Refresh existing catalogs to obtain newly exposed provider capability metadata.
 
 ### Request-bound checks (2026-10-06)
@@ -76,9 +85,9 @@ reports in the worker, and compares the quote-bound fingerprint with that peer.
 The inference body is sent on that exact socket. A replacement socket is
 rejected before sending the body; the ordinary same-provider transport may then
 proceed with connection coverage explicitly unavailable. No POST is retried by
-this layer after it may have been sent. These are observational checks, not a
-verified-only enforcement mode: failed/unavailable evidence does not block an
-otherwise authorized inference request.
+this layer after it may have been sent. E2EE additionally requires valid model-key evidence before content is sent.
+Failure blocks the encrypted request; there is no plaintext retry. TLS and
+receipt coverage remain separate from that key requirement.
 
 Exact UTF-8 request-body bytes and raw uncompressed response bytes are hashed.
 Responses are observed incrementally with backpressure, not cloned into an
@@ -99,11 +108,11 @@ results remain visible. On reopening a chat, unfinished receipt checks become
 unavailable. Only bounded counters and CPU summaries are persisted; no request
 bodies, response bodies, keys or raw receipts enter this metadata. Final SDK text
 can arrive before the receipt lookup finishes; the conversation-scoped shield
-continues updating afterward. No new IPC or package boundary was introduced:
-credentials, sockets and verification stay in the main process; the renderer
-receives allowlisted summaries.
+continues updating afterward. Credentials, sockets and verification stay in the
+main process; the renderer receives allowlisted summaries. A chrome-only,
+conversation-owner-checked privacy-setting IPC now controls future ZDR requests.
 
-Venice retains observational CPU endpoint checks. A live synthetic test of
+Venice's non-E2EE models retain observational CPU endpoint checks. A live synthetic test of
 `e2ee-qwen3-8-27b` returned a NEAR gateway receipt with **different exact request
 and response hashes and a different signer** from Venice's model attestation.
 Its signature response itself says to treat the hashes as provider-reported
@@ -129,7 +138,7 @@ Protocol sources:
 
 Still open: GPU evidence; measured configuration/event logs and approved
 image/source policy; Venice proxy/request binding; verified-only enforcement;
-Agent-compatible E2EE; packaged worker and cross-platform qualification.
+Ed25519/v2 encryption support; packaged worker and cross-platform qualification.
 The stages below remain the plan for those stronger guarantees.
 
 ## Findings and live probes
@@ -280,3 +289,85 @@ verify the shield in both themes with keyboard and screen-reader semantics.
 - [x] Simplify the shield and implement NEAR same-connection and exact-response signature checks.
 - [ ] Complete GPU/software checks, Venice proxy binding and E2EE; keep unsupported paths explicit.
 - [ ] Review claims and enforcement before integrating into the feature branch.
+
+
+## Active protections (2026-10-06)
+
+OpenRouter conversations default to **Require zero data retention**. The shield
+can turn this off for future requests in that conversation; the value persists
+across reopening. The old connection-level control is hidden in setup. At Pi's
+actual fetch boundary all Agent, helper, permission and context-management
+requests enforce `provider.zdr=true`, `data_collection=deny`, parameter support,
+and no server plugins or alternate-model routing. Opting out cannot override
+OpenRouter account/guardrail enforcement. Routes retain their actual historical
+requirement, so toggles cannot relabel previous requests. A failed policy save
+leaves the active requirement unchanged.
+
+ZDR eligibility belongs to endpoints, not every deployment of a model. Requiring
+ZDR can change availability, latency and effective price by excluding routes;
+there is no separate ZDR token-price tier in the documented routing API.
+OpenRouter passes through the chosen provider's inference price. Account-level
+prompt logging remains a separate OpenRouter setting. In-memory implicit prompt
+caching is allowed by OpenRouter's definition of ZDR. Provider policies are not
+cryptographic guarantees and do not cover Freedom's browser/MCP activity.
+
+NEAR's attested Chat Completions routes now use its documented ECDSA E2EE
+protocol, including `X-Encrypt-All-Fields`: all message roles and multimodal
+content arrays, reasoning, tool definitions/schema, calls, arguments and tool
+results. Client keys are per request and not persisted. Every returned model
+key is bound to its independently checked CPU signing address before selecting
+one. Accepted TCB states for encryption are UpToDate and OutOfDate; the latter
+remains an explicit hardware advisory, matching the provider SDK's default
+acceptance policy. Other states, invalid evidence and unavailable keys block
+content submission. This does not establish GPU or approved software integrity.
+Routing metadata and JSON fields outside the protocol's encryption set remain
+visible; it is not encryption of the whole HTTP payload.
+
+The shared ECDSA format uses secp256k1 ECDH, HKDF-SHA256 and AES-256-GCM. Ethers'
+existing SigningKey performs curve operations (Electron BoringSSL does not
+expose secp256k1); native crypto performs HKDF and AES. No dependency was added.
+NEAR pins the raw 64-byte model key; Venice expects the uncompressed 65-byte
+form. Streams are decrypted record by record with backpressure and bounded
+buffering. Plaintext substituted for encrypted response content or a modified
+GCM tag fails authentication. Signature checks hash ciphertext wire bytes,
+before any JSON transformation. A pre-send verification failure returns an
+explicit non-retryable privacy error rather than silently submitting plaintext.
+
+Venice E2EE is used for streaming text requests, including prior assistant
+replies (verified against the live endpoint; all message content is encrypted).
+When optional tool definitions are present, an encrypted answering step lets
+the same model answer ordinary messages or explicitly hand off to the original
+native tool workflow. Tool definitions alone therefore no longer disable E2EE.
+Pi text-part arrays are normalized to text before checking eligibility; actual
+image/file parts retain their original HTTPS fallback and attachment reason.
+The full AgentSession path (browser tools, skills and codemode enabled) is covered
+by a local transport regression, alongside live synthetic text-part requests.
+The first step streams ordinary answers after inspecting their initial text;
+it does not buffer whole answers. A handoff must be complete and authenticated.
+The encrypted step and subsequent tool request are counted separately.
+
+Actual tool use/history, attachments, forced tool calls and non-streaming
+output follow the user's authorized HTTPS-only fallback. The shield records
+these reasons and warns that such requests can include previous chat history.
+Encryption/verification failures and incomplete handoffs do not trigger this
+fallback. Tool permissions and execution remain in the normal Agent workflow.
+Older Venice catalogs refresh missing encryption capabilities automatically;
+if an attested model's capabilities cannot be refreshed, resolution stops
+instead of silently submitting messages without encryption. The model name
+never selects protection.
+
+Live synthetic tests through the real Pi runtime passed on NEAR
+`Qwen/Qwen3.6-35B-A3B-FP8` (text, tool call, subsequent tool-result/history request,
+checked connection and model signatures), and Venice `e2ee-qwen3-8-27b` (encrypted
+text plus the disclosed tool fallback). No real conversation content or API keys
+were printed; configured provider settings were not changed. Dark/light shield,
+ZDR toggle, mixed coverage, Escape and a bounded 760×560 panel were exercised in
+a disposable Electron profile. Linux screenshot/WCAG baselines and packaged
+cross-platform checks remain open.
+
+Additional protocol sources:
+- [OpenRouter per-request ZDR](https://openrouter.ai/docs/guides/features/zdr)
+- [OpenRouter provider routing/prices](https://openrouter.ai/docs/guides/routing/provider-selection)
+- [OpenRouter pricing FAQ](https://openrouter.ai/docs/faq)
+- [NEAR E2EE, including the ECDSA protocol](https://docs.near.ai/cloud/guides/e2ee-chat-completions)
+- [NEAR SDK field handling](https://github.com/nearai/inference-sdk/blob/main/js/src/core/e2ee-chat.ts)
