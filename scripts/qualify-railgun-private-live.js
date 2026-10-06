@@ -11,6 +11,19 @@
  *   SCAN_REPORT SCAN_SHA256 PREVIOUS_REPORT PREVIOUS_SHA256 NEW_OUTPUT
  * MODE: check-transfer|transfer|observe|poi-submit|recover|status|check-unshield|unshield
  * check-transfer takes the owned-POI report of qualify-railgun-owned-poi-live.js.
+ *
+ * Publication: only NEW_OUTPUT/report.json is publishable. NEW_OUTPUT/transport/
+ * holds the Arti state and arti.log and stays local.
+ *
+ * Stuck states (report.liveness). Neither has a continuation in this script;
+ * each needs a separately authorized recovery step:
+ * - proved-unsent: a refusal after proving (fee cap, completion expiry,
+ *   preflight) leaves the input held in signing state. Any later spend of it
+ *   is refused with RAILGUN_PRIVATE_INPUT_RESERVED.
+ * - journaled-uncertain: a journaled attempt whose send is unknown. If its
+ *   deadline expired between the journal write and the broadcast, it was never
+ *   sent, and observe cannot resolve it.
+ * D2 never proves service acceptance. The status mode (D3) is the acceptance gate.
  */
 const fs = require('fs'),
   path = require('path');
@@ -92,6 +105,7 @@ function check(condition, step) {
 const plainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const same = (a, b) => isDeepStrictEqual(a, b);
 const lower = (value) => (typeof value === 'string' ? value.toLowerCase() : value);
+const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 function parseArguments(args) {
   check(Array.isArray(args) && args.length === 10, 'arguments');
@@ -468,8 +482,11 @@ function assertPredecessor(mode, previous, { scanSha, scan }) {
       check(notOlder && afterTransfer, 'predecessor-scan');
       return;
     case 'recover':
-      check(previous.mode === 'poi-submit' && previous.passed === true, 'predecessor');
+      // Any completed POI attempt continues to the read-only steps: whatever the
+      // response said, only the status mode (D3) establishes acceptance.
+      check(previous.mode === 'poi-submit', 'predecessor');
       check(previous.poiSubmission?.attempted === true, 'predecessor');
+      check(previous.poiSubmission.attemptCompleted === true, 'predecessor');
       check(notOlder && afterTransfer, 'predecessor-scan');
       return;
     case 'status':
@@ -697,6 +714,16 @@ const PUBLIC_HASH_KEYS = new Set([
   'blockHash',
   'finalizedBlockHash',
 ]);
+const ADDRESS_KEYS = new Set(['owner', 'recipient', 'recipientAddress']);
+// Any run of 32 or more hex digits (16-byte randoms and longer) must be one of
+// the exact public shapes under an allow-listed key.
+function allowedHexString(value, key, parent) {
+  if (HASH.test(value)) return PUBLIC_HASH_KEYS.has(key);
+  if (SHA256.test(value))
+    return /sha256$/i.test(key) || /sha256$/i.test(parent) || key === 'listKey';
+  if (ADDRESS.test(value)) return ADDRESS_KEYS.has(key);
+  return false;
+}
 function assertAggregateReport(report) {
   let nodes = 0;
   const walk = (value, key, parent, depth) => {
@@ -704,16 +731,9 @@ function assertAggregateReport(report) {
     if (value === null || ['boolean', 'number'].includes(typeof value)) return;
     if (typeof value === 'string') {
       check(value.length <= 4096, 'report-redaction');
-      check(!/0x[0-9a-fA-F]{65,}/.test(value), 'report-redaction');
       check(!/0zk1[0-9a-z]{20,}/.test(value), 'report-redaction');
-      if (/0x[0-9a-fA-F]{64}/.test(value))
-        check(PUBLIC_HASH_KEYS.has(key) && HASH.test(value), 'report-redaction');
-      else if (/(?:^|[^0-9a-fA-F])[0-9a-fA-F]{64}(?:$|[^0-9a-fA-F])/.test(value))
-        check(
-          SHA256.test(value) &&
-            (/sha256$/i.test(key) || /sha256$/i.test(parent) || key === 'listKey'),
-          'report-redaction'
-        );
+      if (/[0-9a-fA-F]{32,}/.test(value))
+        check(allowedHexString(value, key, parent), 'report-redaction');
       return;
     }
     check(typeof value === 'object', 'report-redaction');
@@ -750,13 +770,93 @@ function renderReport(report) {
   }
 }
 
+// D2 never proves acceptance. Only a matching rpc-result counts as delivered;
+// unavailable, HTTP failure, malformed, unmatched or rejected (rpc-error) do not.
+function assessPoiSubmission({ result, entryState }) {
+  const response = summarizePoiResponse(result?.response);
+  const attempted = entryState === 'attempted';
+  const attemptCompleted = attempted && result?.stage === 'response';
+  const delivered =
+    attemptCompleted &&
+    response?.classification === 'rpc-result' &&
+    response.matchingEnvelope === true;
+  return {
+    status: typeof result?.status === 'string' ? result.status : null,
+    stage: typeof result?.stage === 'string' ? result.stage : null,
+    classification: response?.classification ?? null,
+    response,
+    entryState: typeof entryState === 'string' ? entryState : null,
+    attempted,
+    attemptCompleted,
+    delivered,
+    serviceAcceptanceVerified: false,
+    acceptanceGate: 'status',
+    automaticRetry: false,
+  };
+}
+// Explicit stuck-state report for a spend. No continuation exists in this script.
+function describeLiveness({ holdCreated, spend }) {
+  if (!holdCreated) return { inputHeld: false, state: 'no-hold', continuation: 'none' };
+  if (spend?.journaled === true && spend.submissionStatus === 'acknowledged')
+    return { inputHeld: true, state: 'sent', continuation: 'observe' };
+  if (spend?.journaled === true)
+    return {
+      inputHeld: true,
+      state: 'journaled-uncertain',
+      continuation: 'observe',
+      mayNeverResolve: true,
+      unresolvedContinuation: 'separately-authorized-recovery',
+    };
+  return {
+    inputHeld: true,
+    state: spend?.journaled === false ? 'proved-unsent' : 'unknown',
+    continuation: 'separately-authorized-recovery',
+    laterSpendRefusal: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+  };
+}
+// The installed ethers must be the locked one; the lock itself is pinned.
+function dependencyIdentity({ ethersPackage, packageLock, electronVersion }) {
+  let installed, lock;
+  try {
+    installed = JSON.parse(ethersPackage);
+    lock = JSON.parse(packageLock);
+  } catch {
+    throw refusal('dependencies');
+  }
+  check(installed?.name === 'ethers' && typeof installed.version === 'string', 'dependencies');
+  check(lock?.packages?.['node_modules/ethers']?.version === installed.version, 'dependencies');
+  return {
+    ethersVersion: installed.version,
+    packageLockSha256: sha(packageLock),
+    electronVersion: typeof electronVersion === 'string' ? electronVersion : null,
+  };
+}
+// Recursive: loaded subdirectories (wallet/remote, wallet/ledger) are pinned too.
+function listSourceFiles(base, directories = SOURCE_DIRECTORIES, fsImpl = fs) {
+  const out = [];
+  const visit = (relative) => {
+    for (const entry of fsImpl.readdirSync(path.join(base, relative), { withFileTypes: true })) {
+      const name = relative + '/' + entry.name;
+      if (entry.isDirectory()) {
+        if (!/^__.*__$/.test(entry.name)) visit(name);
+      } else if (
+        entry.isFile() &&
+        /\.(?:js|json)$/.test(entry.name) &&
+        !/\.test\.js$/.test(entry.name)
+      )
+        out.push(name);
+    }
+  };
+  directories.forEach(visit);
+  return out.sort();
+}
+
 // ---------------------------------------------------------------------------
-// Electron live process. Nothing below runs under Jest.
+// Electron live process. main() alone runs under Electron. The steps below take
+// every production module through ctx.load, so Jest drives them with fakes.
 // ---------------------------------------------------------------------------
-const W = '../src/main/wallet/';
 let lock,
   backgroundFailure = false;
-const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 function readPinnedReport(filename, expected) {
   const stat = fs.lstatSync(filename);
   check(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 4 * 1024 * 1024, 'pinned');
@@ -764,18 +864,7 @@ function readPinnedReport(filename, expected) {
   check(sha(bytes) === expected, 'pinned');
   return JSON.parse(bytes);
 }
-function listSourceFiles(base) {
-  return SOURCE_DIRECTORIES.flatMap((directory) =>
-    fs
-      .readdirSync(path.join(base, directory), { withFileTypes: true })
-      .filter(
-        (entry) =>
-          entry.isFile() && /\.(?:js|json)$/.test(entry.name) && !/\.test\.js$/.test(entry.name)
-      )
-      .map((entry) => directory + '/' + entry.name)
-  );
-}
-function hashRuntime({ archive, proverArchive, artifactDirectory }) {
+function hashRuntime({ archive, proverArchive, artifactDirectory }, base) {
   // Asar archives must be read as files, not as Electron's virtual directories.
   const raw = require('original-fs');
   const artifactSha256 = {};
@@ -791,6 +880,11 @@ function hashRuntime({ archive, proverArchive, artifactDirectory }) {
     engineSha256: sha(raw.readFileSync(archive)),
     proverSha256: sha(raw.readFileSync(proverArchive)),
     artifactSha256,
+    dependencies: dependencyIdentity({
+      ethersPackage: fs.readFileSync(path.join(base, 'node_modules/ethers/package.json'), 'utf8'),
+      packageLock: fs.readFileSync(path.join(base, 'package-lock.json'), 'utf8'),
+      electronVersion: process.versions.electron,
+    }),
   };
 }
 async function main() {
@@ -831,13 +925,19 @@ async function main() {
       maxQualificationAmount: MAX_AMOUNT.toString(),
       automaticRetry: false,
     },
+    publication: { publishable: ['report.json'], localOnly: ['transport/'] },
     transport: 'qualification-only Tor endpoint shim',
     circuitIsolationQualified: false,
     passed: false,
   };
   const torModule = require.resolve('../src/main/tor-manager'),
     savedTor = require.cache[torModule];
-  const ctx = { args, report, stage: 'preconditions' };
+  const ctx = {
+    args,
+    report,
+    stage: 'preconditions',
+    load: (name) => require('../src/main/' + name),
+  };
   let client, vault;
   try {
     // Pinned predecessor, scan, sources and runtime before any profile access.
@@ -853,7 +953,7 @@ async function main() {
     if (mode === 'check-transfer')
       assertSourcesMatch(previous.sourceSha256, sourceSha256, 'predecessor-sources');
     else assertSameSources(previous.sourceSha256, sourceSha256);
-    const runtime = hashRuntime(args);
+    const runtime = hashRuntime(args, base);
     if (mode !== 'check-transfer') assertSameRuntime(previous.runtime, runtime);
     report.previous.mode = mode === 'check-transfer' ? 'owned-poi' : previous.mode;
     report.scan.anchor = { number: scan.anchor.number, hash: scan.anchor.hash };
@@ -888,11 +988,7 @@ async function main() {
     );
     await vault.unlockVault(path.join(directory, 'identity'), password, 0);
     password = undefined;
-    ctx.owner = (
-      await require(W + 'signers')
-        .getSigner(0)
-        .getAddress()
-    ).toLowerCase();
+    ctx.owner = (await ctx.load('wallet/signers').getSigner(0).getAddress()).toLowerCase();
     report.owner = ctx.owner;
     if (mode !== 'check-transfer') check(ctx.owner === previous.owner, 'owner');
     const registry = require('../src/main/networks/network-registry');
@@ -921,16 +1017,18 @@ async function main() {
       loaded: true,
       exports: { getWalletSocksEndpoint: () => client.endpoint },
     };
-    const handle = require(W + 'privacy-session')
-      .openPrivacySession()
-      .getContext({
-        kind: 'public-address',
-        principal: ctx.owner,
-        chainId: CHAIN_ID,
-        role: 'transaction-rpc',
-      });
-    ctx.network = require(W + 'private-transaction-network').getPrivateTransactionNetwork(handle);
-    const journal = require(W + 'private-submission-journal').getPrivateSubmissionJournal(handle);
+    const handle = ctx.load('wallet/privacy-session').openPrivacySession().getContext({
+      kind: 'public-address',
+      principal: ctx.owner,
+      chainId: CHAIN_ID,
+      role: 'transaction-rpc',
+    });
+    ctx.network = ctx
+      .load('wallet/private-transaction-network')
+      .getPrivateTransactionNetwork(handle);
+    const journal = ctx
+      .load('wallet/private-submission-journal')
+      .getPrivateSubmissionJournal(handle);
     ctx.readJournal = () => journal.readSnapshot();
     await RUNNERS[mode](ctx);
     ctx.stage = 'final-sources';
@@ -970,10 +1068,11 @@ async function main() {
       passed: report.passed,
       failure: report.failure,
       spend: report.spend,
+      liveness: report.liveness?.state,
       observation: report.observation?.status,
       resolved: report.resolved?.outcome,
       poi: report.poi?.statuses,
-      poiSubmission: report.poiSubmission?.entryState,
+      poiSubmission: report.poiSubmission?.classification,
     })
   );
   return report.passed ? 0 : 1;
@@ -1012,13 +1111,12 @@ async function openAccount(ctx) {
   const { archive } = ctx.args,
     scan = ctx.scan;
   ctx.stage = 'enroll';
-  ctx.identity = await require(W + 'railgun-identity').openRailgunIdentity({ archive });
-  ctx.enrollment = await require(W + 'railgun-account-enrollment').openRailgunAccountEnrollment({
-    identity: ctx.identity,
-    create: false,
-  });
+  ctx.identity = await ctx.load('wallet/railgun-identity').openRailgunIdentity({ archive });
+  ctx.enrollment = await ctx
+    .load('wallet/railgun-account-enrollment')
+    .openRailgunAccountEnrollment({ identity: ctx.identity, create: false });
   ctx.stage = 'restore-public';
-  ctx.publicAccount = await require(W + 'railgun-account-public').openRailgunAccountPublic({
+  ctx.publicAccount = await ctx.load('wallet/railgun-account-public').openRailgunAccountPublic({
     enrollment: ctx.enrollment,
     archive,
     mode: 'active',
@@ -1040,7 +1138,7 @@ async function openAccount(ctx) {
 }
 async function openWallet(ctx) {
   ctx.stage = 'restore-wallet';
-  ctx.wallet = await require(W + 'railgun-account-wallet').openRailgunAccountWallet({
+  ctx.wallet = await ctx.load('wallet/railgun-account-wallet').openRailgunAccountWallet({
     identity: ctx.identity,
     enrollment: ctx.enrollment,
     archive: ctx.args.archive,
@@ -1050,10 +1148,9 @@ async function openWallet(ctx) {
   return readOwned(ctx);
 }
 function readOwned(ctx) {
-  const owned = require(W + 'railgun-account-wallet').readRailgunAccountOwnedNotes(
-    ctx.wallet,
-    ctx.owners
-  );
+  const owned = ctx
+    .load('wallet/railgun-account-wallet')
+    .readRailgunAccountOwnedNotes(ctx.wallet, ctx.owners);
   check(same(owned.read.readiness.to, ctx.status.to), 'wallet-readiness');
   if (ctx.scan.wallet?.to) check(same(ctx.scan.wallet.to, ctx.status.to), 'wallet-readiness');
   check(owned.read.instanceId === ctx.identity.descriptor.instanceId, 'wallet-instance');
@@ -1064,6 +1161,7 @@ function wethNote(note) {
     !!note &&
     note.asset?.__type === 'erc20' &&
     lower(note.asset.contract) === pins.wrappedNative &&
+    typeof note.amount === 'bigint' &&
     note.amount > 0n &&
     note.amount <= MAX_AMOUNT
   );
@@ -1085,6 +1183,9 @@ function transferOutput(owned, transferHash) {
   check(record?.type === 'Transact' && lower(record.txid) === transferHash, 'output');
   return notes[0];
 }
+// Before proving: the one fee quote of a spend. The post-proof plan reuses it,
+// so no quote round trip sits between proof and submission; the review
+// recheck of the populated transaction remains the authoritative fee check.
 async function submitterChecks(ctx) {
   const { network, owner } = ctx;
   const read = async (method, params) => (await network.request(CHAIN_ID, method, params)).result;
@@ -1097,22 +1198,17 @@ async function submitterChecks(ctx) {
   check(BigInt(balance) >= FEE_CAP_WEI, 'submitter-balance');
   check(BigInt(latest) === BigInt(pending), 'submitter-nonce');
   const quote = await network.getFeeQuote(CHAIN_ID);
-  return {
-    codeEmpty: true,
-    balanceWei: BigInt(balance).toString(),
-    nonceSettled: true,
-    planning: planningFeeCheck(quote.gasPrice),
-  };
+  const planning = planningFeeCheck(quote.gasPrice);
+  ctx.quotedGasPrice = planning.gasPrice;
+  return { codeEmpty: true, balanceWei: BigInt(balance).toString(), nonceSettled: true, planning };
 }
 async function readOnlyPreparation(ctx, request, note) {
   const before = readOwned(ctx);
   const oldView = ctx.wallet.view,
     started = performance.now();
-  const prepared = await require(W + 'railgun-account-wallet').prepareRailgunAccountPrivateIntent(
-    ctx.wallet,
-    ctx.owners,
-    request
-  );
+  const prepared = await ctx
+    .load('wallet/railgun-account-wallet')
+    .prepareRailgunAccountPrivateIntent(ctx.wallet, ctx.owners, request);
   check(prepared.view === ctx.wallet.view && prepared.view !== oldView, 'preparation');
   const p = prepared.preparation;
   check(p.amount === note.amount.toString(), 'preparation-amount');
@@ -1122,7 +1218,7 @@ async function readOnlyPreparation(ctx, request, note) {
   check(readOwned(ctx).checkpointHash === before.checkpointHash, 'preparation');
   let receiver = null;
   if (request.kind === SPEND_KINDS.transfer) {
-    const checked = await require(W + 'railgun-private-receive').verifyRailgunPrivateReceiver({
+    const checked = await ctx.load('wallet/railgun-private-receive').verifyRailgunPrivateReceiver({
       identity: ctx.identity,
       enrollment: ctx.enrollment,
       archive: ctx.args.archive,
@@ -1153,8 +1249,8 @@ function spendRequest(ctx, step, note) {
 }
 // Binds the reviewed RPC destination from preparation through submission.
 function openDestinationConstraints(ctx) {
-  const { createPrivacyScope, getPrivacyContext } = require('../src/main/networks/privacy-context');
-  const rpc = require('../src/main/networks/private-rpc');
+  const { createPrivacyScope, getPrivacyContext } = ctx.load('networks/privacy-context');
+  const rpc = ctx.load('networks/private-rpc');
   const parent = getPrivacyContext(ctx.enrollment.getContext('engine'));
   const preview = createPrivacyScope({
     profileId: parent.profileId,
@@ -1212,6 +1308,17 @@ function openDestinationConstraints(ctx) {
 // One spend: production prove -> own estimate and fee cap -> one production submit.
 async function spend(ctx, step) {
   const { report } = ctx;
+  let holdCreated = false;
+  try {
+    await spendSteps(ctx, step, () => {
+      holdCreated = true;
+    });
+  } finally {
+    report.liveness = describeLiveness({ holdCreated, spend: report.spend });
+  }
+}
+async function spendSteps(ctx, step, onHold) {
+  const { report } = ctx;
   const { archive, proverArchive, artifactDirectory } = ctx.args;
   ctx.stage = 'journal';
   const before = await ctx.readJournal();
@@ -1252,7 +1359,7 @@ async function spend(ctx, step) {
   };
   if (step === 'unshield') {
     ctx.stage = 'transact-staging';
-    ctx.staged = await require(W + 'railgun-transact-staging').stageRailgunTransactInput({
+    ctx.staged = await ctx.load('wallet/railgun-transact-staging').stageRailgunTransactInput({
       account: ctx.wallet,
       owners: ctx.owners,
       request,
@@ -1265,17 +1372,25 @@ async function spend(ctx, step) {
   }
   ctx.stage = 'prove';
   const proveStarted = performance.now();
-  const proved = await require(W + 'railgun-private-operation').proveRailgunAccountPrivateOperation(
-    options
-  );
+  const proved = await ctx
+    .load('wallet/railgun-private-operation')
+    .proveRailgunAccountPrivateOperation(options);
+  if (typeof proved.holdId === 'string') onHold();
   report.prove = {
     status: proved.status,
     ...(proved.stage ? { stage: proved.stage } : {}),
     holdCreated: typeof proved.holdId === 'string',
     elapsedMs: Math.round(performance.now() - proveStarted),
   };
+  report.spend = {
+    attempted: false,
+    journaled: false,
+    submissionStatus: 'not-sent',
+    resendAllowed: false,
+  };
   if (proved.completion) ctx.completion = proved.completion;
-  // Submission enters account recovery; the wallet must be closed first.
+  // From here the completion's lifetime runs: only local work and one estimate
+  // precede submission. Submission enters account recovery, so close the wallet.
   await ctx.wallet.close();
   ctx.wallet = undefined;
   ctx.staged?.close?.();
@@ -1291,16 +1406,9 @@ async function spend(ctx, step) {
   ctx.stage = 'estimate';
   const rpcTx = { from: ctx.owner, to: transaction.to, value: '0x0', data: transaction.data };
   const estimate = (await ctx.network.request(CHAIN_ID, 'eth_estimateGas', [rpcTx])).result;
-  const quote = await ctx.network.getFeeQuote(CHAIN_ID);
   ctx.stage = 'fee-cap';
-  report.spend = {
-    attempted: false,
-    journaled: false,
-    submissionStatus: 'not-sent',
-    resendAllowed: false,
-  };
-  // Refuses before submission; the signed hold remains for explicit recovery.
-  const fee = planSubmissionFee({ estimate, gasPrice: quote.gasPrice });
+  // Refuses before submission; the signed hold remains (report.liveness).
+  const fee = planSubmissionFee({ estimate, gasPrice: ctx.quotedGasPrice });
   report.fee = { plan: fee, headroomReason: GAS_HEADROOM_REASON };
   ctx.stage = 'submission';
   let reviews = 0;
@@ -1314,33 +1422,35 @@ async function spend(ctx, step) {
     submissionStatus: 'unknown',
     resendAllowed: false,
   };
-  const result = await require(W + 'railgun-private-submission').submitRailgunPrivateTransaction({
-    identity: ctx.identity,
-    enrollment: ctx.enrollment,
-    completion: completion.receipt,
-    proverArchive,
-    artifactDirectory,
-    gasLimit: BigInt(fee.gasLimit),
-    maxGasFee: FEE_CAP_WEI,
-    review: async (reviewRequest) => {
-      check(++reviews === 1, 'review-repeated');
-      const actual = reviewRequest.transaction;
-      check(reviewRequest.operation === request.kind, 'review');
-      check(!Object.hasOwn(reviewRequest, 'recipientRelationship'), 'review');
-      check(lower(reviewRequest.from) === ctx.owner, 'review');
-      check(lower(actual.to) === pins.proxy && BigInt(actual.value) === 0n, 'review');
-      check(Number(actual.chainId) === CHAIN_ID, 'review');
-      check(actual.data === transaction.data, 'review');
-      check(reviewRequest.maxGasFee === FEE_CAP_WEI, 'review');
-      check(reviewRequest.fundingAddressPublic === true, 'review');
-      if (step === 'unshield') {
-        check(lower(reviewRequest.intent?.recipient) === ctx.owner, 'review');
-        check(reviewRequest.intent?.amount === note.amount.toString(), 'review');
-      }
-      report.fee.reviewed = reviewedFee(actual, fee.gasLimit);
-      return true;
-    },
-  });
+  const result = await ctx
+    .load('wallet/railgun-private-submission')
+    .submitRailgunPrivateTransaction({
+      identity: ctx.identity,
+      enrollment: ctx.enrollment,
+      completion: completion.receipt,
+      proverArchive,
+      artifactDirectory,
+      gasLimit: BigInt(fee.gasLimit),
+      maxGasFee: FEE_CAP_WEI,
+      review: async (reviewRequest) => {
+        check(++reviews === 1, 'review-repeated');
+        const actual = reviewRequest.transaction;
+        check(reviewRequest.operation === request.kind, 'review');
+        check(!Object.hasOwn(reviewRequest, 'recipientRelationship'), 'review');
+        check(lower(reviewRequest.from) === ctx.owner, 'review');
+        check(lower(actual.to) === pins.proxy && BigInt(actual.value) === 0n, 'review');
+        check(Number(actual.chainId) === CHAIN_ID, 'review');
+        check(actual.data === transaction.data, 'review');
+        check(reviewRequest.maxGasFee === FEE_CAP_WEI, 'review');
+        check(reviewRequest.fundingAddressPublic === true, 'review');
+        if (step === 'unshield') {
+          check(lower(reviewRequest.intent?.recipient) === ctx.owner, 'review');
+          check(reviewRequest.intent?.amount === note.amount.toString(), 'review');
+        }
+        report.fee.reviewed = reviewedFee(actual, fee.gasLimit);
+        return true;
+      },
+    });
   report.submission = {
     status:
       typeof result?.hash === 'string'
@@ -1397,7 +1507,9 @@ const RUNNERS = {
     const expectedAmount = chain.unshield?.amount ?? previous.spendRequest?.amount;
     if (target === 'unshield') check(/^[1-9][0-9]*$/.test(expectedAmount ?? ''), 'observe-amount');
     ctx.stage = 'observe';
-    ctx.recovery = require(W + 'railgun-transact-recovery').openRailgunTransactRecovery(ctx.owner);
+    ctx.recovery = ctx
+      .load('wallet/railgun-transact-recovery')
+      .openRailgunTransactRecovery(ctx.owner);
     const observed = await ctx.recovery.observe(hash);
     report.observation = summarizeObservation(observed.record);
     report.transact = summarizeTransact(observed.transact);
@@ -1488,7 +1600,7 @@ const RUNNERS = {
     });
     check(plainObject(selector), 'selector');
     ctx.stage = 'capture';
-    const captured = await require(W + 'railgun-own-operation').captureRailgunOwnOperation({
+    const captured = await ctx.load('wallet/railgun-own-operation').captureRailgunOwnOperation({
       enrollment: ctx.enrollment,
       selector,
       signal: ctx.enrollment.signal,
@@ -1510,13 +1622,15 @@ const RUNNERS = {
     if (!existing.length) {
       ctx.stage = 'membership';
       const membershipStarted = performance.now();
-      ctx.membership = await require(W + 'railgun-own-poi-membership').openRailgunOwnPoiMembership({
-        enrollment: ctx.enrollment,
-        coordinator: ctx.publicAccount.coordinator,
-        archive,
-        signal: ctx.enrollment.signal,
-        selector,
-      });
+      ctx.membership = await ctx
+        .load('wallet/railgun-own-poi-membership')
+        .openRailgunOwnPoiMembership({
+          enrollment: ctx.enrollment,
+          coordinator: ctx.publicAccount.coordinator,
+          archive,
+          signal: ctx.enrollment.signal,
+          selector,
+        });
       report.ownPoi.membership = {
         status: ctx.membership.status,
         ...(ctx.membership.stage ? { stage: ctx.membership.stage } : {}),
@@ -1525,7 +1639,7 @@ const RUNNERS = {
       check(ctx.membership.status === 'verified', 'membership');
       ctx.stage = 'own-poi-proof';
       const proofStarted = performance.now();
-      const proved = await require(W + 'railgun-own-poi-proof').proveRailgunOwnPoi({
+      const proved = await ctx.load('wallet/railgun-own-poi-proof').proveRailgunOwnPoi({
         ...common,
         proverArchive,
         artifactDirectory,
@@ -1557,7 +1671,7 @@ const RUNNERS = {
       check(prepared.status === 'prepared', 'prepare');
     }
     ctx.stage = 'plan';
-    const plans = require(W + 'railgun-poi-disclosure-plan');
+    const plans = ctx.load('wallet/railgun-poi-disclosure-plan');
     ctx.plan = await plans.prepareRailgunPoiDisclosurePlan({
       identity: ctx.identity,
       enrollment: ctx.enrollment,
@@ -1609,19 +1723,14 @@ const RUNNERS = {
         return true;
       },
     });
-    const entry = (await entries())[0];
+    const assessment = assessPoiSubmission({ result, entryState: (await entries())[0]?.state });
     report.poiSubmission = {
-      status: result.status,
-      stage: result.stage,
+      ...assessment,
       reviews: purposes,
-      response: summarizePoiResponse(result.response),
-      entryState: entry?.state ?? null,
-      attempted: entry?.state === 'attempted',
-      automaticRetry: false,
       elapsedMs: Math.round(performance.now() - submitStarted),
     };
-    // A service response never establishes acceptance; the status step reads it.
-    report.passed = entry?.state === 'attempted' && result.stage === 'response';
+    // Passed means delivered with a matching rpc-result, never accepted.
+    report.passed = assessment.delivered;
   },
   async recover(ctx) {
     ctx.stage = 'journal';
@@ -1653,7 +1762,7 @@ const RUNNERS = {
     const output = transferOutput(await openWallet(ctx), ctx.chain.transfer.hash);
     check(output.spentTxid === false, 'output-spent');
     ctx.stage = 'poi';
-    const api = require(W + 'railgun-account-poi');
+    const api = ctx.load('wallet/railgun-account-poi');
     ctx.poi = api.openRailgunAccountPoi({
       wallet: ctx.wallet,
       ...ctx.owners,
@@ -1764,4 +1873,12 @@ module.exports = {
   sanitizeFailure,
   assertAggregateReport,
   renderReport,
+  assessPoiSubmission,
+  describeLiveness,
+  dependencyIdentity,
+  listSourceFiles,
+  shieldInput,
+  transferOutput,
+  spend,
+  RUNNERS,
 };
