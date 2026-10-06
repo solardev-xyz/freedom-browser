@@ -164,6 +164,7 @@ beforeEach(() => {
   }));
   mockCoverage = {
     signal: scope.signal,
+    assertCoverage: jest.fn(),
     read: jest.fn(async () => {
       events.push('coverage-read');
       return {};
@@ -3904,14 +3905,88 @@ function connectMocks(f, account, offer, window) {
     recoveryStore,
   };
 }
+// Model the production host observation rules: each engine receipt is consumed
+// once, beginRestore invalidates the prior epoch, and every host read advances
+// the observation id. Journal validation must use the latest exact receipt.
+function enforceOneUseCoverage() {
+  const consumed = new Set();
+  const observations = new WeakMap();
+  let epoch = 0,
+    id = 0,
+    latestReceipt;
+  const remember = (value, receipt) => {
+    observations.set(value, { epoch, id, receipt });
+    return value;
+  };
+  for (let i = 0; i < mockCoverage.read.mock.calls.length; i++) {
+    const receipt = mockCoverage.read.mock.calls[i][0];
+    if (receipt) consumed.add(receipt);
+  }
+  // Installation after an opening is supported for the fresh continuation.
+  const read = mockCoverage.read.getMockImplementation();
+  mockCoverage.read.mockImplementation(async (receipt) => {
+    if (receipt) {
+      expect(consumed.has(receipt)).toBe(false);
+      consumed.add(receipt);
+    }
+    id++;
+    latestReceipt = receipt;
+    return remember(structuredClone(await read(receipt)), receipt);
+  });
+  mockCoverage.assertCoverage.mockImplementation((value, receipt) => {
+    expect(observations.get(value)).toEqual({ epoch, id, receipt });
+    expect(receipt).toBeTruthy();
+    expect(receipt).toBe(latestReceipt);
+  });
+  const wrapped = new WeakSet();
+  const wrapRunner = () => {
+    for (const name of [
+      'run',
+      'restoreReadOnly',
+      'prepareRelayReadOnly',
+      'reconstructRelayReadOnly',
+      'prepareRelayPrePoiReadOnly',
+      'proveRelayReadOnly',
+    ]) {
+      if (!mockRunner[name] || wrapped.has(mockRunner[name])) continue;
+      const run = mockRunner[name].getMockImplementation();
+      mockRunner[name].mockImplementation(async (...args) => {
+        if (latestReceipt) expect(consumed.has(latestReceipt)).toBe(true);
+        epoch++;
+        const result = await run(...args);
+        latestReceipt = result.receipt;
+        return result;
+      });
+      wrapped.add(mockRunner[name]);
+    }
+  };
+  wrapRunner();
+  const revalidate = mockJournal.revalidate.getMockImplementation();
+  mockJournal.revalidate.mockImplementation(async (input) => {
+    mockCoverage.assertCoverage(input.coverage, input.receipt);
+    return revalidate(input);
+  });
+  return {
+    wrapRunner,
+    invalidate() {
+      epoch++;
+    },
+    substituteReceipt() {
+      latestReceipt = {};
+    },
+    consumed,
+  };
+}
 test('fixed connected proof observes A then C, refreshes, then directly saves and reads custody', async () => {
   const f = reviewedRelayFixture(),
     account = await f.opened();
+  const coverageRules = enforceOneUseCoverage();
   let connected;
   const result = await continueRelay(account, f.owners, f.request, {
     review: () => true,
     onPrepared: async (offer, { window }) => {
       connected = connectMocks(f, account, offer, window);
+      coverageRules.wrapRunner();
       const local = issueRelay(window, account, f.owners, connected.signer, connected.issuance);
       expect(Object.keys(local)).toEqual(['assertCurrent']);
       local.assertCurrent();
@@ -4145,6 +4220,7 @@ async function coldConnectedFixture() {
   mockSession.closed = Promise.resolve({ exitCode: 0 });
   mockSession.close.mockImplementation(() => coldController.abort());
   const input = completedOptions();
+  const coverageRules = enforceOneUseCoverage();
   const completedSnapshot = options.coordinator.withCompletedPublicSnapshot.getMockImplementation();
   options.coordinator.withCompletedPublicSnapshot.mockImplementation((input, run) =>
     completedSnapshot(input, (snapshot) =>
@@ -4160,9 +4236,10 @@ async function coldConnectedFixture() {
   state.checkpoint.wallet = { storeId: generation.storeId, state: true };
   const account = await openRailgunCompletedAccountWallet(input);
   const c = connectMocks(f, account, offer, undefined);
+  coverageRules.wrapRunner();
   f.owned.ownedPoi[0].type = c.row.history.note.type;
   f.owned.ownedPoi[0].blindedCommitment = c.row.history.note.blindedCommitment;
-  return { f, account, c };
+  return { f, account, c, coverageRules };
 }
 test('cold original-signature proof uses completed snapshot and original deadline without quote or signer', async () => {
   const { f, account, c } = await coldConnectedFixture();
@@ -4867,3 +4944,71 @@ test.each(['signed', 'ready-local'])(
     }
   }
 );
+
+test.each(['epoch', 'receipt', 'host-read'])(
+  'cold proof refuses retained coverage %s invalidation after C without saving',
+  async (kind) => {
+    const { f, account, c, coverageRules } = await coldConnectedFixture();
+    const verify = c.verify.getMockImplementation();
+    c.verify.mockImplementation(async (...args) => {
+      const result = await verify(...args);
+      if (kind === 'epoch') coverageRules.invalidate();
+      else if (kind === 'receipt') coverageRules.substituteReceipt();
+      else await mockCoverage.read();
+      return result;
+    });
+    await expect(
+      proveRelay(account, f.owners, {
+        permit: c.proofPermit,
+        signal: f.request.signal,
+      })
+    ).rejects.toThrow();
+    expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+    await account.close();
+  }
+);
+
+test.each(['epoch', 'receipt', 'host-read'])(
+  'connected proof refuses retained coverage %s invalidation before final journal',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    const coverageRules = enforceOneUseCoverage();
+    let c;
+    await expect(
+      continueRelay(account, f.owners, f.request, {
+        review: () => true,
+        onPrepared: async (offer, { window }) => {
+          c = connectMocks(f, account, offer, window);
+          coverageRules.wrapRunner();
+          issueRelay(window, account, f.owners, c.signer, c.issuance);
+          await proveRelay(account, f.owners, { window, permit: c.proofPermit });
+          if (kind === 'epoch') coverageRules.invalidate();
+          else if (kind === 'receipt') coverageRules.substituteReceipt();
+          else await mockCoverage.read();
+        },
+      })
+    ).rejects.toThrow();
+    expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+    await account.close();
+  }
+);
+
+test('cold canonical finish cannot publish coverage invalidated after the original callback', async () => {
+  const { f, account, c, coverageRules } = await coldConnectedFixture();
+  const completed = options.coordinator.withCompletedPublicSnapshot.getMockImplementation();
+  options.coordinator.withCompletedPublicSnapshot.mockImplementation(async (...args) => {
+    const renewed = await completed(...args);
+    coverageRules.invalidate();
+    return renewed;
+  });
+  await expect(
+    proveRelay(account, f.owners, {
+      permit: c.proofPermit,
+      signal: f.request.signal,
+    })
+  ).rejects.toThrow();
+  expect(c.verify).toHaveBeenCalledTimes(1);
+  expect(c.recoveryStore.saveProof).not.toHaveBeenCalled();
+  await account.close();
+});

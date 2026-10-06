@@ -701,6 +701,7 @@ async function openAccount(
     else await journal.complete(pending, evidence);
     if (candidate) await enrollment.catalog.publish(candidate, journal);
     openingCurrent();
+    let currentCoverage = coverage;
     let view = createRailgunKohakuRead({
       runner,
       journal,
@@ -777,6 +778,7 @@ async function openAccount(
           }
           openingCurrent();
           checked = renewed;
+          currentCoverage = coverage;
           view = nextView;
           return privateRecovery ? candidate : view;
         })();
@@ -993,9 +995,10 @@ async function openAccount(
         phase.assertCurrent();
         check(!lifetime.aborted);
         assertRailgunIdentity(identity, handle);
-        // No await between the two assignments: account-owned reads and the
-        // exported view switch together, only after successful revalidation.
+        // No await between these assignments: the receipt, authenticated coverage
+        // and exported view switch together after successful revalidation.
         checked = renewed;
+        currentCoverage = freshCoverage;
         view = nextView;
         return privateIntent
           ? Object.freeze({
@@ -1483,6 +1486,7 @@ async function openAccount(
                   walletSession.assertFresh(state);
                   assert.deepEqual(state, baselineState);
                   latest = result;
+                  finalCoverage = coverage;
                   return result;
                 };
                 relayWindow = Object.freeze({});
@@ -1684,7 +1688,9 @@ async function openAccount(
             snapshotEvidence = connected.evidence;
             renewed = connected;
             attest();
-            finalCoverage = await coverageStore.read(renewed.value.receipt);
+            // The last restore receipt was consumed before another job could
+            // begin. Reassert its retained observation after canonical refresh.
+            coverageStore.assertCoverage(finalCoverage, renewed.value.receipt);
             attest();
             assert.deepEqual(finalCoverage, firstCoverage);
             assert.deepEqual(finalCoverage.coverage, renewed.value.coverage);
@@ -1712,6 +1718,7 @@ async function openAccount(
           // Publish only after the independently parsed second process and final
           // journal validation, with no suspension between view/receipt swaps.
           checked = renewed;
+          currentCoverage = finalCoverage;
           view = nextView;
           if (stagedProof)
             return Object.freeze({
@@ -1860,7 +1867,10 @@ async function openAccount(
           const state = await journal.readState();
           localCurrent();
           check(state.checkpoint && !state.pending);
-          const storedCoverage = await coverageStore.read();
+          // Opening already consumed this receipt. A receiptless read would
+          // invalidate its observation without producing a replacement receipt.
+          const storedCoverage = currentCoverage;
+          coverageStore.assertCoverage(storedCoverage, checked.value.receipt);
           localCurrent();
           check(storedCoverage);
           require('assert/strict').deepEqual(
@@ -1872,7 +1882,8 @@ async function openAccount(
           localCurrent();
           walletSession.assertFresh(baseline);
           require('assert/strict').deepEqual(baseline, state.checkpoint.wallet);
-          let staged;
+          let staged,
+            proofCoverage = storedCoverage;
           const renewed = await coordinator.withCompletedPublicSnapshot(
             {
               destination,
@@ -1921,10 +1932,11 @@ async function openAccount(
                     ...produced.relayOwned,
                   });
                 }
-                const coverage = await coverageStore.read(produced.receipt);
+                if (!originalReady) proofCoverage = await coverageStore.read(produced.receipt);
+                coverageStore.assertCoverage(proofCoverage, produced.receipt);
                 localCurrent();
-                require('assert/strict').deepEqual(coverage.checkpoint, snapshot.checkpoint);
-                require('assert/strict').deepEqual(coverage.coverage, produced.coverage);
+                require('assert/strict').deepEqual(proofCoverage.checkpoint, snapshot.checkpoint);
+                require('assert/strict').deepEqual(proofCoverage.coverage, produced.coverage);
                 const verified = await verifyRelayProofCandidate(
                   custody,
                   retained ? retained.proof : produced.relayProof,
@@ -1947,7 +1959,8 @@ async function openAccount(
           if (originalFailure) throw originalFailure;
           localCurrent();
           check(renewed.value);
-          const coverage = await coverageStore.read(renewed.value.receipt);
+          const coverage = proofCoverage;
+          coverageStore.assertCoverage(coverage, renewed.value.receipt);
           localCurrent();
           const freshState = await walletSession.inspectWalletState();
           localCurrent();
@@ -1973,6 +1986,7 @@ async function openAccount(
           });
           localCurrent();
           checked = renewed;
+          currentCoverage = coverage;
           view = next;
           return Object.freeze({
             status: 'ready-local',
