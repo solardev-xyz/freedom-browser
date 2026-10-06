@@ -1,0 +1,441 @@
+{
+  "cases": {
+    "signedCold": {
+      "artifactFiles": 25,
+      "artifactInventorySha256": "c47b1b4a60cbd8e0a50a86bd1a277cc38d02199362665c54012fa7a2b3146e6c",
+      "attempt": "b",
+      "case": "signed-cold",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_COLD_READY": "1"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 34850,
+          "sha256": "e07b61a1e0b706322965e02af855e206215814e8eeb50192b0ca219edabdc652"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7265,
+          "sha256": "c265f6ee131202551c689fbac84e7c9f35df419baf80c000111bcf502a4c6b70"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 70180,
+          "sha256": "20f69a85a18e40ba6b2753bc652457e24f93e79104e940dd8f49dca5e19f4c15"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        }
+      },
+      "childLog": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "createdWindow": [
+        1791311875451,
+        1791311889020
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_COLD_READY",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "isolatedFiles": 11721,
+      "isolatedInventorySha256": "00aac1d740987f752e7b1cb2e2757971762b74cd639c448922bbcb818f86e47b",
+      "isolatedLinks": 15,
+      "joinedFirstInputs": {
+        "config": {
+          "bytes": 1061,
+          "sha256": "af0b2ada276681e34c8b0c5aff60ee2de4cc2211f87434f47525115a6b8c8d62"
+        },
+        "firstDriver": {
+          "bytes": 472,
+          "sha256": "5faff444f7a5b8229429d80465f7421bb78a6460ea805b5fbe51f302322bed4d"
+        },
+        "firstOutcome": {
+          "bytes": 474,
+          "sha256": "149c030a6434882aa1f3f496c7b97bd6880fcc5babff92d6b0aec64d0095e1d6"
+        },
+        "firstResult": {
+          "bytes": 7854,
+          "sha256": "e4d678aadca0c3ca968568f3a58be2343664f531b08d006daa654d273733b7b7"
+        }
+      },
+      "launcher": "scripts/qualify-railgun-relay-cold-ready.js",
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 72265,
+        "signal": null
+      },
+      "originalInventorySha256": "7b6dc4a0525862654cde451abbe86fe75dcc795165175e9386122d01e993d574",
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 72286,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "poiSourceSha256": {
+        "isolated": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab",
+        "original": "c4511c0ea185835c67bbbc8b8ba74bec6271e4b3a457a2b6a1576b42593fd1ac"
+      },
+      "postCheck": {
+        "dependenciesUnchanged": true,
+        "isolatedUnchanged": true,
+        "repoClean": true,
+        "runtimeUnchanged": true
+      },
+      "privateOriginals": {
+        "build": {
+          "bytes": 877,
+          "sha256": "75f0c1165ed189117d328fbe8bb04bc296062f98bdac8f1b66efd5df47579d60"
+        },
+        "driver": {
+          "bytes": 741,
+          "sha256": "9d8e97d34d5ff4717ec4524207e2c7db662322f759b5683a2c23ff0081a679fd"
+        },
+        "result": {
+          "bytes": 7921,
+          "sha256": "93372fbf1575a0a61313b76142469e94ae785e08df5144ea21b756f2f6b3aa9c"
+        }
+      },
+      "productionDelta": "one REQUIRED_LIST literal",
+      "qualified": true,
+      "report": {
+        "bytes": 212500,
+        "sha256": "85c429e5614f34e1e568a1ceb545daa2bd158dc4eff18a7612d614381ffcb45b"
+      },
+      "reportContract": {
+        "checkedFields": [
+          "coldSignedResumeQualified",
+          "entryUnchanged",
+          "originalSignaturePreserved",
+          "productionServiceAuthority",
+          "proofProducerOperations",
+          "quoteOrPoiRequests",
+          "recoverySequenceAfter",
+          "recoverySequenceBefore",
+          "relaySendPermitted",
+          "relaySigningOperations",
+          "result.status",
+          "syntheticRpcRequests",
+          "transportAttempted"
+        ],
+        "schema": "railgun-relay-signed-cold-native-v1"
+      },
+      "runnerFiles": {
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "runner.py": {
+          "bytes": 19937,
+          "sha256": "8fedc693a6e89d79f994508cd1cdbaf617df937d93b7c7d2178aaa1dd01ab029"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "73d025d8fc56b6487e43ac146852bdc1c244b744"
+    },
+    "signedStop": {
+      "artifactFiles": 25,
+      "artifactInventorySha256": "c47b1b4a60cbd8e0a50a86bd1a277cc38d02199362665c54012fa7a2b3146e6c",
+      "attempt": "b",
+      "case": "signed-stop",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_POSITIVE": "synthetic-list-signed-stop"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 34850,
+          "sha256": "e07b61a1e0b706322965e02af855e206215814e8eeb50192b0ca219edabdc652"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7265,
+          "sha256": "c265f6ee131202551c689fbac84e7c9f35df419baf80c000111bcf502a4c6b70"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 70180,
+          "sha256": "20f69a85a18e40ba6b2753bc652457e24f93e79104e940dd8f49dca5e19f4c15"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        }
+      },
+      "childLog": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "createdWindow": [
+        1791311847834,
+        1791311873955
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_POSITIVE",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "isolatedFiles": 11721,
+      "isolatedInventorySha256": "00aac1d740987f752e7b1cb2e2757971762b74cd639c448922bbcb818f86e47b",
+      "isolatedLinks": 15,
+      "launcher": "scripts/qualify-railgun-relay-positive.js",
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 71847,
+        "signal": null
+      },
+      "originalInventorySha256": "7b6dc4a0525862654cde451abbe86fe75dcc795165175e9386122d01e993d574",
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 71868,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "poiSourceSha256": {
+        "isolated": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab",
+        "original": "c4511c0ea185835c67bbbc8b8ba74bec6271e4b3a457a2b6a1576b42593fd1ac"
+      },
+      "postCheck": {
+        "dependenciesUnchanged": true,
+        "isolatedUnchanged": true,
+        "repoClean": true,
+        "runtimeUnchanged": true
+      },
+      "privateOriginals": {
+        "build": {
+          "bytes": 877,
+          "sha256": "75f0c1165ed189117d328fbe8bb04bc296062f98bdac8f1b66efd5df47579d60"
+        },
+        "driver": {
+          "bytes": 472,
+          "sha256": "5faff444f7a5b8229429d80465f7421bb78a6460ea805b5fbe51f302322bed4d"
+        },
+        "result": {
+          "bytes": 7854,
+          "sha256": "e4d678aadca0c3ca968568f3a58be2343664f531b08d006daa654d273733b7b7"
+        }
+      },
+      "productionDelta": "one REQUIRED_LIST literal",
+      "qualified": true,
+      "report": {
+        "bytes": 479526,
+        "sha256": "d022c90bfb251355c513640e4c184a4d435af95c1bb3460bf49632f98a75be46"
+      },
+      "reportContract": {
+        "checkedFields": [
+          "crashOrNetworkInterruption",
+          "productionServiceAuthority",
+          "proofPersisted",
+          "recoverySequenceDelta",
+          "relaySendPermitted",
+          "result.signatureSaved",
+          "result.signingAttempted",
+          "result.stage",
+          "result.status",
+          "stopKind",
+          "syntheticOperationRequests",
+          "transportAttempted"
+        ],
+        "schema": "railgun-relay-signed-stop-native-v1"
+      },
+      "runnerFiles": {
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "runner.py": {
+          "bytes": 19937,
+          "sha256": "8fedc693a6e89d79f994508cd1cdbaf617df937d93b7c7d2178aaa1dd01ab029"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "73d025d8fc56b6487e43ac146852bdc1c244b744"
+    }
+  },
+  "developmentPairA": {
+    "signed-cold": {
+      "originalMainExitCode": 0,
+      "qualified": true,
+      "report": {
+        "bytes": 212538,
+        "sha256": "a7da692f8bb5eba6d911283e2ee31b1f18ebe442c4a2cd8fe33b062eb1cb44e7"
+      },
+      "sourceCommit": "5fedcfce9ba55aba0e798759607946cfe3259d66"
+    },
+    "signed-stop": {
+      "originalMainExitCode": 0,
+      "qualified": true,
+      "report": {
+        "bytes": 479219,
+        "sha256": "3113569ba6451dfb703673912fb879e2f686e1c561a3526a11773db1aa2b2e4f"
+      },
+      "sourceCommit": "5fedcfce9ba55aba0e798759607946cfe3259d66"
+    }
+  },
+  "pathsOmitted": true,
+  "processObservation": "owned-child exit by the runner (r5 process_owner verbatim); driver exit by a separate outer observer process",
+  "runner": "compact local-matrix runner; reproduces neither the r5 dependency/ESM/SQLite resolution freeze nor r5 report validators",
+  "schema": "railgun-relay-signed-recovery-provenance-v1"
+}
