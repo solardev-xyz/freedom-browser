@@ -1,0 +1,10 @@
+{
+  "state": "finished",
+  "pid": 42932,
+  "exitObserved": true,
+  "exitCode": 0,
+  "timedOut": false,
+  "interrupted": false,
+  "terminateRequested": false,
+  "killRequested": false
+}

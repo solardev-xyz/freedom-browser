@@ -1,0 +1,9 @@
+{
+  "qualified": true,
+  "reportSha256": "b1536b02127f7564b37bf0d69152c5ceab055792cbcc1d246ad78f2c313df6be",
+  "pid": 42932,
+  "originalParentExitObserved": true,
+  "exitCode": 0,
+  "reportedOriginalUtilityClosures": 2,
+  "profileHashing": false
+}
