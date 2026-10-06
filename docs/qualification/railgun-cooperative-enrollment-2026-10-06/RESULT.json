@@ -1,0 +1,25 @@
+{
+  "qualified": true,
+  "reports": [
+    {
+      "mode": "create",
+      "reportSha256": "7eb211deaf832a006a5fb4309c9433ef8008bb10952c074e23fcfb9696fb1680",
+      "pid": 14974,
+      "exitCode": 0
+    },
+    {
+      "mode": "cold",
+      "reportSha256": "2bd5dd92a5a0148975c39ea38c2edca8de673bdfd41885f0a6c2d757348df472",
+      "pid": 14992,
+      "exitCode": 0
+    },
+    {
+      "mode": "legacy",
+      "reportSha256": "b8dfe27abcf2fd9fd209994d3d00b7cf1102fb8a934d0ff53e98c7c5d6ff4537",
+      "pid": 15027,
+      "exitCode": 0
+    }
+  ],
+  "originalChildren": 3,
+  "profileHashing": false
+}

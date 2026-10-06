@@ -1,0 +1,19 @@
+# Local relay custody data
+
+The inactive internal recovery writer and shared reservation codec establish bounded durable formats for the future connected Railgun relay operation. Neither is called by enrollment or grants a signing, discard, proof-export or transport capability. They live in the main-process wallet modules alongside existing encrypted persistence; no renderer or package boundary changes.
+
+The recovery writer uses genuine fenced enrollment, exact account/context/directory binding, encrypted storage, a fresh lease, exact compare-and-swap, a monotonic authenticated floor and final readback. Original pending work retains same-path ownership after close. A cold opener can repair a lower authenticated floor only when both the document and floor exist. Newer floors, missing stores/floors, stale leases and postwrite failures refuse; failed writers do not retry or compensate.
+
+Each operation keeps its original canonical unsigned draft, membership history, pre-transaction POI binding and immutable intent digest. Signature and proved-transaction slots are write-once. Local discard preserves those slots and distinguishes never-signed cancellation from potentially signed work. The future owner must establish custody and exact shared-ledger joins, persist the tombstone first, and release its input conflict only afterward. Structural transaction/POI matching does not verify either cryptographic proof.
+
+Explicit qualification limits:
+
+- Ten retained operations per account, for its lifetime in this format; terminal records are not pruned. Every record reserves enough space and transitions to finish. The maximum encoded record is below 96 KiB, and ten records plus the envelope remain below the storage value's 1 MiB bound; the storage layer still enforces its aggregate 4 MiB limit.
+- An interrupted first creation that leaves a document without a floor is refused, even for an empty document. The format cannot distinguish that crash from restored ciphertext and missing rollback evidence.
+- Authenticated operation failures close the writer, including unknown IDs, illegal transitions and capacity refusals. Reopening must go through the genuine owner. This deliberately conservative internal contract is not the eventual product retention or error-handling policy.
+
+The shared v4 codec retains one `(tree, nullifier)` conflict space across private and relay rows, preserves historical origins and reserves terminal transitions before admitting another hold. It has no storage or receipt authority. Private-kind operations in v4 also require genuine current fenced enrollment. Its defensive v3 parser does not imply that a v3 profile format was shipped.
+
+Source review cleared the writer and codec with these constraints. Root verification passes 55 codec tests and 83 recovery store/data tests. Store tests use actual encrypted disposable files with a mocked enrollment issuer; they cover rename/floor/readback cuts, slot immutability, original-work retention, missing-store/floor refusal and all 50 transitions across ten retained operations. These are unit/integration checks, not native spending qualification. Before activation, fixed manifest floor ports must reject decreases, preserve the incompatible format at the existing shared-floor key and authenticate every read under the live fence.
+
+Still required: the genuine connected owner, account continuation and shared-store wiring; fresh review/disclosure and authentic membership admission; one-use signing and independent transaction/pre-transaction POI verification; cold original-signature proof continuation and explicit local discard. External handoff requires a later incompatible format before bytes leave custody. Mainnet, live service acceptance, production activation, retention expansion and UX remain separate work.

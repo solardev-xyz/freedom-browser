@@ -1,0 +1,325 @@
+{
+  "schema": "railgun-cooperative-enrollment-publication-v1",
+  "sourceCommit": "8288b5c29f00e285c2b3015cd0d071c55781df97",
+  "originalConfig": {
+    "bytes": 3568002,
+    "sha256": "fb26323805dfb47cdae20aa975e97de6d412b228dd30584e8eddb38d328d830f"
+  },
+  "map": {
+    "published": "source-hashes.json",
+    "publishedBytes": {
+      "bytes": 1755079,
+      "sha256": "a0e4208bd56514d718736ac634e594d626e85acb4eb3cc346e1d6417a6fd4a3a"
+    },
+    "origin": "config.fullInventory exactly equals POST.inputs.sources",
+    "fullEntries": 11671,
+    "reportEntries": 11665,
+    "reportExclusions": [
+      ".prettierignore",
+      ".prettierrc",
+      "babel.config.json",
+      "docs/qualification/railgun-sepolia-history-2026-10-02.json",
+      "eslint.config.js",
+      "jest.config.js"
+    ],
+    "sourceInventoryIsExecutionCoverage": false
+  },
+  "inputs": [
+    {
+      "published": "create-process-1.json",
+      "originalRole": "evidence/create-process-1.json",
+      "original": {
+        "bytes": 188,
+        "sha256": "4725f77750f1c87652c2bfa6acb499ce99f87670f6b07f87cbb1f77bea261320"
+      },
+      "publishedBytes": {
+        "bytes": 188,
+        "sha256": "4725f77750f1c87652c2bfa6acb499ce99f87670f6b07f87cbb1f77bea261320"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "create-process-2.json",
+      "originalRole": "evidence/create-process-2.json",
+      "original": {
+        "bytes": 185,
+        "sha256": "766f0e63d26cac91688272ecda261ca25409a180beb226dd2fd51cd8056d4b47"
+      },
+      "publishedBytes": {
+        "bytes": 185,
+        "sha256": "766f0e63d26cac91688272ecda261ca25409a180beb226dd2fd51cd8056d4b47"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "create-report.json",
+      "originalRole": "create/report.json",
+      "original": {
+        "bytes": 1785670,
+        "sha256": "7eb211deaf832a006a5fb4309c9433ef8008bb10952c074e23fcfb9696fb1680"
+      },
+      "publishedBytes": {
+        "bytes": 8227,
+        "sha256": "ea5f83cf6d97df90156b41e8980679c8197f0e60ff26a01a7c84f165facbbfce"
+      },
+      "copiedOriginal": false,
+      "transformations": [
+        "Replace only sourceSha256 map with reference to shared source-hashes.json excluding the six explicitly named full-inventory-only paths.",
+        "All remaining fields retained; original report bytes reconstruct exactly with two-space JSON and final LF."
+      ]
+    },
+    {
+      "published": "create.log",
+      "originalRole": "evidence/create.log",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "publishedBytes": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "cold-process-1.json",
+      "originalRole": "evidence/cold-process-1.json",
+      "original": {
+        "bytes": 188,
+        "sha256": "75b91b39251e5b5908ebae62f697141be9f174378d4769dbea1bf12bae00fd22"
+      },
+      "publishedBytes": {
+        "bytes": 188,
+        "sha256": "75b91b39251e5b5908ebae62f697141be9f174378d4769dbea1bf12bae00fd22"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "cold-process-2.json",
+      "originalRole": "evidence/cold-process-2.json",
+      "original": {
+        "bytes": 185,
+        "sha256": "91e675d77ca95ad32036b6da833cb415dcc453f70f6f02231ed7279ee54157f5"
+      },
+      "publishedBytes": {
+        "bytes": 185,
+        "sha256": "91e675d77ca95ad32036b6da833cb415dcc453f70f6f02231ed7279ee54157f5"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "cold-report.json",
+      "originalRole": "cold/report.json",
+      "original": {
+        "bytes": 1785667,
+        "sha256": "2bd5dd92a5a0148975c39ea38c2edca8de673bdfd41885f0a6c2d757348df472"
+      },
+      "publishedBytes": {
+        "bytes": 8224,
+        "sha256": "d74e7a75dabb0c3bb5b6335cb4442ef5dc42a96826dc1bc4de307bb0f4723dc7"
+      },
+      "copiedOriginal": false,
+      "transformations": [
+        "Replace only sourceSha256 map with reference to shared source-hashes.json excluding the six explicitly named full-inventory-only paths.",
+        "All remaining fields retained; original report bytes reconstruct exactly with two-space JSON and final LF."
+      ]
+    },
+    {
+      "published": "cold.log",
+      "originalRole": "evidence/cold.log",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "publishedBytes": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "legacy-process-1.json",
+      "originalRole": "evidence/legacy-process-1.json",
+      "original": {
+        "bytes": 188,
+        "sha256": "5e27794d68d6ffefc678cad47df371383cec46ae813d5d68bec96870dae47379"
+      },
+      "publishedBytes": {
+        "bytes": 188,
+        "sha256": "5e27794d68d6ffefc678cad47df371383cec46ae813d5d68bec96870dae47379"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "legacy-process-2.json",
+      "originalRole": "evidence/legacy-process-2.json",
+      "original": {
+        "bytes": 185,
+        "sha256": "65621f201c9674be806bfabb4e5e441dc2cca0621ff6194ca141f5119c2711b1"
+      },
+      "publishedBytes": {
+        "bytes": 185,
+        "sha256": "65621f201c9674be806bfabb4e5e441dc2cca0621ff6194ca141f5119c2711b1"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "legacy-report.json",
+      "originalRole": "legacy/report.json",
+      "original": {
+        "bytes": 1785671,
+        "sha256": "b8dfe27abcf2fd9fd209994d3d00b7cf1102fb8a934d0ff53e98c7c5d6ff4537"
+      },
+      "publishedBytes": {
+        "bytes": 8228,
+        "sha256": "ca4ab0bc121c3048a985b84bb58a8ddf44c476fcaaee821051bdc31cb4341417"
+      },
+      "copiedOriginal": false,
+      "transformations": [
+        "Replace only sourceSha256 map with reference to shared source-hashes.json excluding the six explicitly named full-inventory-only paths.",
+        "All remaining fields retained; original report bytes reconstruct exactly with two-space JSON and final LF."
+      ]
+    },
+    {
+      "published": "legacy.log",
+      "originalRole": "evidence/legacy.log",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "publishedBytes": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "config.json",
+      "originalRole": "config.json",
+      "original": {
+        "bytes": 3568002,
+        "sha256": "fb26323805dfb47cdae20aa975e97de6d412b228dd30584e8eddb38d328d830f"
+      },
+      "publishedBytes": {
+        "bytes": 11147,
+        "sha256": "fe1837bee4873660c4b7ed148a07e9129babca9fcf8d62db8750b47f3cf99f9b"
+      },
+      "copiedOriginal": false,
+      "transformations": [
+        "Replace sources/fullInventory with references to one shared source map.",
+        "Replace local path prefixes with named $REPOSITORY/$RUN_OUTPUT/$RUN_EVIDENCE/$RUN_PREPARATION placeholders; values, object keys and other metadata retained.",
+        "Derived historical evidence only; not executable and does not hash to the original config digest."
+      ]
+    },
+    {
+      "published": "POST.json",
+      "originalRole": "evidence/POST.json",
+      "original": {
+        "bytes": 1808107,
+        "sha256": "595de3ca140e514c9209451b10bac09c73b219af4335c899b205475792737103"
+      },
+      "publishedBytes": {
+        "bytes": 5631,
+        "sha256": "db5417109e2e6982cb22b111c313c08e658b611585c75ff53234cd12f88ccc58"
+      },
+      "copiedOriginal": false,
+      "transformations": [
+        "Replace inputs.sources with shared full-source reference; normalize local runtime-input path keys with $REPOSITORY."
+      ]
+    },
+    {
+      "published": "RESULT.json",
+      "originalRole": "evidence/RESULT.json",
+      "original": {
+        "bytes": 594,
+        "sha256": "c863d79c0246e707700ec979c1b5eabecb8de64c94c7ded165c2ecd06ef72686"
+      },
+      "publishedBytes": {
+        "bytes": 594,
+        "sha256": "c863d79c0246e707700ec979c1b5eabecb8de64c94c7ded165c2ecd06ef72686"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "checks.json",
+      "originalRole": "checks.json",
+      "original": {
+        "bytes": 1485,
+        "sha256": "78f87a7fda1dfe909ea850754eeeb7ede13208025fe514d4a461f8b1a92730d0"
+      },
+      "publishedBytes": {
+        "bytes": 1485,
+        "sha256": "78f87a7fda1dfe909ea850754eeeb7ede13208025fe514d4a461f8b1a92730d0"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    },
+    {
+      "published": "driver.log",
+      "originalRole": "driver.log",
+      "original": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "publishedBytes": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copiedOriginal": true,
+      "transformations": []
+    }
+  ],
+  "originalExecution": {
+    "attribution": "Root agent observed original driver tool execution. Archive author independently compared saved reports, process metadata and input/postcheck records; no native rerun or payload rehash.",
+    "driverSession": 91925,
+    "driverCompletion": "c8a299",
+    "driverNaturalExitCode": 0,
+    "originalMains": [
+      14974,
+      14992,
+      15027
+    ],
+    "originalMainNaturalExitCodes": [
+      0,
+      0,
+      0
+    ],
+    "originalIdentityUtilities": 6,
+    "utilityExitCode": 15,
+    "utilityClosure": "Intentional original utility termination after each completed identity result; zero escalation or peer disconnect, not natural zero exits."
+  },
+  "audit": {
+    "strictReportModeFlags": true,
+    "sameCreateColdGeneration": true,
+    "distinctLegacyGeneration": true,
+    "commonPolicy": true,
+    "originalReportHashesAndProcessJoins": true,
+    "sixExactGuardVectors": true,
+    "allTwentyRuntimeMetadataPinsAndFifteenSourceLinksUnchanged": true,
+    "sourceMapsDeduplicatedWithoutInformationLoss": true,
+    "reportByteReconstructionChecked": true,
+    "profileOrDatabaseFilesRead": false,
+    "runtimePayloadsRehashed": false,
+    "cryptoOrNativeRerun": false,
+    "sourceImplementationReviewRepeated": false
+  },
+  "limits": [
+    "Fresh public vault fixture enrollment and identity jobs only. No funded inputs, scans, transaction signing, proofs, relay authority or submissions.",
+    "Cooperative enrollment does not retroactively fence legacy writers; the legacy case explicitly retains ordinary same-process reopen behavior.",
+    "This sequential campaign proves restart reopen after the prior main closes, not overlapping process contention or unknown-work drainage. The prior standalone fence campaign covers its own narrower contention/termination cases.",
+    "No profile-tree or live fence hashing; POST covers pinned source/runtime metadata inputs, not application profile contents.",
+    "Same-process database descriptor-close hazard from the earlier fence qualification remains an integration restriction.",
+    "One selected Darwin arm64 Electron/SQLite/engine build; no general cross-platform or rollback-protection claim."
+  ],
+  "publicationCorrection": "Root source check of scenario(): same-process competing opens occur after enrollment.close(), while the original main remains alive. Corrected overview only; original result/report fields are unchanged."
+}
