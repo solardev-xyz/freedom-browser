@@ -1,0 +1,1951 @@
+{
+  "campaign": "final-b",
+  "cases": {
+    "signed-cold": {
+      "artifactInventorySha256": "881ebcca39654e3efddd2687c995a8f2642b3a3b15d69c1a9f25dab6101b0e55",
+      "case": "signed-cold",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_COLD_READY": "1"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 42501,
+          "sha256": "67bef4fd1029c83faa30d986bdbd88b169f05573f267048d2fb351e634e1f836"
+        },
+        "scripts/fixtures/railgun-relay-positive-audit-job.js": {
+          "bytes": 13159,
+          "sha256": "5cd05bae4337ba1665bf3d6cf7235336b02f8e65fd9b5ce3212fd71d2801e969"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7384,
+          "sha256": "8cbd571fa1ffcf0766a88081f3220c3eee23316b038125e3b7c249104723f7d2"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 94802,
+          "sha256": "fd7d9afd0df6d12ed1c58626a7b5886ab1f6e23723b2c1010f01b2ba9c32bf88"
+        },
+        "scripts/fixtures/railgun-transact-staging-row.js": {
+          "bytes": 1720,
+          "sha256": "bdd764435dcab8a9387e130d9ded39a70cc15fbc5bf52712a82bf6301e7de730"
+        },
+        "scripts/fixtures/railgun-transact-staging-source.js": {
+          "bytes": 1676,
+          "sha256": "89c06dcd0c8f2f30384ca407719d9a79f1ef9d06dfd4e0583143b42738a14d62"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-txid.js": {
+          "bytes": 16486,
+          "sha256": "2292ce9a1c23eaeffd1652880375c5675561f52bb73753ff616c4d7f71872b8d"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-public-services.js": {
+          "bytes": 11354,
+          "sha256": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        },
+        "src/main/wallet/railgun-relay-transact-provenance.js": {
+          "bytes": 8421,
+          "sha256": "f6ad5f2df37230867a7233d5bf08c3b17a8b0637639a12cdf9a83e33c391a2a2"
+        },
+        "src/main/wallet/railgun-relay-transact-staging.js": {
+          "bytes": 20479,
+          "sha256": "773628985489b1de112deb24fb95e38a232adc2c40f2e2429bd7995b94357d42"
+        }
+      },
+      "childLog": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copy": {
+        "directories": 1536,
+        "files": 11721,
+        "inventorySha256": "afa4d1bff51305fc3ad25554dc435cca20aa18d8afd012ab6281b859fbf8df2d",
+        "links": 15
+      },
+      "createdWindow": [
+        1791315276517,
+        1791315290063
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "dependencyResolution": {
+        "closureSha256": "cefcf839f76b3b526dfcd23387486233e3fdbb858ec69e1f51d029d54d38b125",
+        "declaredRootsSha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a",
+        "hintsSha256": "5088d9a8f15e4f742a742d2e734b55588de1c94313fc542ca9de335d33733fe6",
+        "loadersSha256": "c43cdd3ee8eb5552cec45d493dd3c59b28468388b0cb1435168cd37ad8aec1cc",
+        "packageFiles": 12435,
+        "packageRoots": 157,
+        "packagesSha256": "95c85310e5c0cda28609685312b44a554a30b2bf1f227a17567e9771fed5c2f2",
+        "records": 4410,
+        "requestSha256": "75e0d111198257391b4710227c6fc56b10a7e9ba399397a7161d1e2070d8c55d",
+        "requiredAbsent": 2514,
+        "resolutionSha256": "8aadaba462c384cea1e62f87b8f8e0da1f2f15892eef11f3bcd611f40423cacc",
+        "resolvedPackageRoots": 131,
+        "seedsSha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27",
+        "sqliteFiles": 17,
+        "sqliteSha256": "7f3b6b0623554e7562d8c49e89290dc98d69b2a7ee1b840ccdba45972f465e4b",
+        "summary": {
+          "edges": 4410,
+          "hints": 130,
+          "kinds": {
+            "application": 1340,
+            "builtin": 703,
+            "dependency": 2297,
+            "esm": 68,
+            "optional-missing": 2
+          },
+          "loaderSites": 10,
+          "nonLiteralImports": 0,
+          "nonLiteralRequires": 101,
+          "sources": 1254,
+          "unresolvedHints": 0,
+          "virtual": 62
+        },
+        "virtualSha256": "ebcbd5bc5434ab3fdfbc52d9320823b9919044d3d0d48c5b1ad20fdca913276e"
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_COLD_READY",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "firstCase": "signed-stop",
+      "frozenIdentitySha256": "9f17b4c9ba2a0763417bd3439e4bf4dcd1c5acd2cfd47683d02da31728728d8b",
+      "joinedFirstInputs": {
+        "config": {
+          "bytes": 1085,
+          "sha256": "37aa8cacf4fccdb9880b448b8f7a3fb1adc7f4b77b7d6b0e563734450aded417"
+        },
+        "firstDriver": {
+          "bytes": 656,
+          "sha256": "db440d1e84194081bb8f44fca00c03e6bcb9914e64b5d48f1abf62f4af0f2141"
+        },
+        "firstOutcome": {
+          "bytes": 478,
+          "sha256": "82d42b9aa272c27ae633c9ac344e89515e25278cb5c82070ac60488ba7aeda4c"
+        },
+        "firstReport": {
+          "bytes": 479526,
+          "sha256": "64bbeadb5c05b0660e8964e2c9785ee7527e7bbe5c3af5af2fa423609589179c"
+        },
+        "firstResult": {
+          "bytes": 13353,
+          "sha256": "5eb73975ad0ed4a107afbe89620e4d77b11b37d3287ab75d2e6b74f0b685d55e"
+        }
+      },
+      "launcher": "scripts/qualify-railgun-relay-cold-ready.js",
+      "mainCache": {
+        "insidePinnedInventories": true,
+        "insideStaticClosure": true,
+        "modules": 468
+      },
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 1911,
+        "signal": null
+      },
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 1928,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "postCheck": {
+        "frozenUnchanged": true,
+        "identityUnchanged": true,
+        "runnerUnchanged": true
+      },
+      "privateOriginals": {
+        "driver": {
+          "bytes": 943,
+          "sha256": "e140308eae19a44cd5bc64bc8049ab8e717ca950da29675e51cccde40d4e6030"
+        },
+        "result": {
+          "bytes": 13498,
+          "sha256": "5df4d957db3eb0211d485b16aab9a1ac2daf56a6821eed8cc9b0be63520ab25b"
+        }
+      },
+      "qualified": true,
+      "report": {
+        "bytes": 212507,
+        "sha256": "856636dacdd5573dcbb850e141104259bf17766db50a0258ec2363060831fb8b"
+      },
+      "runnerFiles": {
+        "GUARDS.json": {
+          "bytes": 2481,
+          "sha256": "251e7954f3c1788be741241db4f42de2d6d7bc9e6ccc8705c92e9a51b239de38"
+        },
+        "R5-DECLARED-ROOTS.json": {
+          "bytes": 1622,
+          "sha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a"
+        },
+        "R5-VERBATIM.sha256": {
+          "bytes": 668,
+          "sha256": "090b19a8de5214372f2ebbbf23b3648de911d07688a4f05ef6ca0c309c627875"
+        },
+        "REPORT-KEYS.json": {
+          "bytes": 6358,
+          "sha256": "1dea9167decee33669e472377d62adb17062dbe73cd1d7e0273dd1aa7569b6d9"
+        },
+        "SEEDS.json": {
+          "bytes": 1076,
+          "sha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27"
+        },
+        "SQLITE-INPUTS.json": {
+          "bytes": 3559,
+          "sha256": "13c6774e900652ca23cebdfc168169960c9232603a6eef91a671fdc398869301"
+        },
+        "controls.py": {
+          "bytes": 10950,
+          "sha256": "7332eac688b4e480ee77b8b154ea7a3a584eafa52ed46fb98b8b4b67a985b4b1"
+        },
+        "copy_inputs.py": {
+          "bytes": 9003,
+          "sha256": "d3ef646056fa0e3a4debd86513432d782645dad3628fba637c1135d9b141854e"
+        },
+        "deps.py": {
+          "bytes": 8286,
+          "sha256": "5e951f30849142666150615b1f08c4174e11882b12302c01b186a2dfca4368dd"
+        },
+        "edges.mjs": {
+          "bytes": 12260,
+          "sha256": "fed671611353c5e8b6f407c01656250120b561b349428c1b3c46ea05c33f7b7a"
+        },
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "report_validation.py": {
+          "bytes": 11655,
+          "sha256": "cd909c96d3ba6688b4d381d0489e28f45a27c0a5321eb6f055a91b5078ce05bc"
+        },
+        "resolve-esm-inputs.mjs": {
+          "bytes": 6917,
+          "sha256": "2972057ec69a91d22953341afa53053633ba2b07ebb62e3817469234035594cf"
+        },
+        "resolve-inputs.js": {
+          "bytes": 8503,
+          "sha256": "4d84953f45e9a417de844aeed21d53483957097ebef930bf1cd98a4891e813dd"
+        },
+        "runner.py": {
+          "bytes": 27498,
+          "sha256": "df2c07daa545974c842b12becd93cfcfe837bf3eec6f21f9aa97ba0294d5bce8"
+        },
+        "sqlite_inputs.py": {
+          "bytes": 2407,
+          "sha256": "7ac6c3cc00b84b9397fa3412922c43e5dfe59e946a7d218d7cc6b19b4fc199ff"
+        },
+        "strict.py": {
+          "bytes": 5265,
+          "sha256": "a6cb6f083a97debaab7b264d2f5238146735bf16c235a4fd53f8381ce205a3ba"
+        },
+        "validate.py": {
+          "bytes": 24346,
+          "sha256": "dffaa81f8560b7b677807adabf0ce1a5d7107e849e591f7251955813ba5ceb8a"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "e5ab48c4626b6d58902843a35f9322b090c32179",
+      "structuralValidation": {
+        "case": "signed-cold",
+        "firstReportBound": true,
+        "passed": true
+      },
+      "validatorControls": {
+        "controlsSha256": "d743877a4a3ccf3abeca56be979c8da554a3a4ec78fb5c018b03804cdffe7786",
+        "goodAccepted": 6,
+        "refused": 53
+      }
+    },
+    "signed-stop": {
+      "artifactInventorySha256": "881ebcca39654e3efddd2687c995a8f2642b3a3b15d69c1a9f25dab6101b0e55",
+      "case": "signed-stop",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_POSITIVE": "synthetic-list-signed-stop"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 42501,
+          "sha256": "67bef4fd1029c83faa30d986bdbd88b169f05573f267048d2fb351e634e1f836"
+        },
+        "scripts/fixtures/railgun-relay-positive-audit-job.js": {
+          "bytes": 13159,
+          "sha256": "5cd05bae4337ba1665bf3d6cf7235336b02f8e65fd9b5ce3212fd71d2801e969"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7384,
+          "sha256": "8cbd571fa1ffcf0766a88081f3220c3eee23316b038125e3b7c249104723f7d2"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 94802,
+          "sha256": "fd7d9afd0df6d12ed1c58626a7b5886ab1f6e23723b2c1010f01b2ba9c32bf88"
+        },
+        "scripts/fixtures/railgun-transact-staging-row.js": {
+          "bytes": 1720,
+          "sha256": "bdd764435dcab8a9387e130d9ded39a70cc15fbc5bf52712a82bf6301e7de730"
+        },
+        "scripts/fixtures/railgun-transact-staging-source.js": {
+          "bytes": 1676,
+          "sha256": "89c06dcd0c8f2f30384ca407719d9a79f1ef9d06dfd4e0583143b42738a14d62"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-txid.js": {
+          "bytes": 16486,
+          "sha256": "2292ce9a1c23eaeffd1652880375c5675561f52bb73753ff616c4d7f71872b8d"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-public-services.js": {
+          "bytes": 11354,
+          "sha256": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        },
+        "src/main/wallet/railgun-relay-transact-provenance.js": {
+          "bytes": 8421,
+          "sha256": "f6ad5f2df37230867a7233d5bf08c3b17a8b0637639a12cdf9a83e33c391a2a2"
+        },
+        "src/main/wallet/railgun-relay-transact-staging.js": {
+          "bytes": 20479,
+          "sha256": "773628985489b1de112deb24fb95e38a232adc2c40f2e2429bd7995b94357d42"
+        }
+      },
+      "childLog": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copy": {
+        "directories": 1536,
+        "files": 11721,
+        "inventorySha256": "afa4d1bff51305fc3ad25554dc435cca20aa18d8afd012ab6281b859fbf8df2d",
+        "links": 15
+      },
+      "createdWindow": [
+        1791315240725,
+        1791315266659
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "dependencyResolution": {
+        "closureSha256": "cefcf839f76b3b526dfcd23387486233e3fdbb858ec69e1f51d029d54d38b125",
+        "declaredRootsSha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a",
+        "hintsSha256": "5088d9a8f15e4f742a742d2e734b55588de1c94313fc542ca9de335d33733fe6",
+        "loadersSha256": "c43cdd3ee8eb5552cec45d493dd3c59b28468388b0cb1435168cd37ad8aec1cc",
+        "packageFiles": 12435,
+        "packageRoots": 157,
+        "packagesSha256": "95c85310e5c0cda28609685312b44a554a30b2bf1f227a17567e9771fed5c2f2",
+        "records": 4410,
+        "requestSha256": "75e0d111198257391b4710227c6fc56b10a7e9ba399397a7161d1e2070d8c55d",
+        "requiredAbsent": 2514,
+        "resolutionSha256": "8aadaba462c384cea1e62f87b8f8e0da1f2f15892eef11f3bcd611f40423cacc",
+        "resolvedPackageRoots": 131,
+        "seedsSha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27",
+        "sqliteFiles": 17,
+        "sqliteSha256": "7f3b6b0623554e7562d8c49e89290dc98d69b2a7ee1b840ccdba45972f465e4b",
+        "summary": {
+          "edges": 4410,
+          "hints": 130,
+          "kinds": {
+            "application": 1340,
+            "builtin": 703,
+            "dependency": 2297,
+            "esm": 68,
+            "optional-missing": 2
+          },
+          "loaderSites": 10,
+          "nonLiteralImports": 0,
+          "nonLiteralRequires": 101,
+          "sources": 1254,
+          "unresolvedHints": 0,
+          "virtual": 62
+        },
+        "virtualSha256": "ebcbd5bc5434ab3fdfbc52d9320823b9919044d3d0d48c5b1ad20fdca913276e"
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_POSITIVE",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "frozenIdentitySha256": "9f17b4c9ba2a0763417bd3439e4bf4dcd1c5acd2cfd47683d02da31728728d8b",
+      "launcher": "scripts/qualify-railgun-relay-positive.js",
+      "mainCache": {
+        "insidePinnedInventories": true,
+        "insideStaticClosure": true,
+        "modules": 469
+      },
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 1528,
+        "signal": null
+      },
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 1547,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "postCheck": {
+        "frozenUnchanged": true,
+        "identityUnchanged": true,
+        "runnerUnchanged": true
+      },
+      "privateOriginals": {
+        "driver": {
+          "bytes": 656,
+          "sha256": "db440d1e84194081bb8f44fca00c03e6bcb9914e64b5d48f1abf62f4af0f2141"
+        },
+        "result": {
+          "bytes": 13353,
+          "sha256": "5eb73975ad0ed4a107afbe89620e4d77b11b37d3287ab75d2e6b74f0b685d55e"
+        }
+      },
+      "qualified": true,
+      "report": {
+        "bytes": 479526,
+        "sha256": "64bbeadb5c05b0660e8964e2c9785ee7527e7bbe5c3af5af2fa423609589179c"
+      },
+      "runnerFiles": {
+        "GUARDS.json": {
+          "bytes": 2481,
+          "sha256": "251e7954f3c1788be741241db4f42de2d6d7bc9e6ccc8705c92e9a51b239de38"
+        },
+        "R5-DECLARED-ROOTS.json": {
+          "bytes": 1622,
+          "sha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a"
+        },
+        "R5-VERBATIM.sha256": {
+          "bytes": 668,
+          "sha256": "090b19a8de5214372f2ebbbf23b3648de911d07688a4f05ef6ca0c309c627875"
+        },
+        "REPORT-KEYS.json": {
+          "bytes": 6358,
+          "sha256": "1dea9167decee33669e472377d62adb17062dbe73cd1d7e0273dd1aa7569b6d9"
+        },
+        "SEEDS.json": {
+          "bytes": 1076,
+          "sha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27"
+        },
+        "SQLITE-INPUTS.json": {
+          "bytes": 3559,
+          "sha256": "13c6774e900652ca23cebdfc168169960c9232603a6eef91a671fdc398869301"
+        },
+        "controls.py": {
+          "bytes": 10950,
+          "sha256": "7332eac688b4e480ee77b8b154ea7a3a584eafa52ed46fb98b8b4b67a985b4b1"
+        },
+        "copy_inputs.py": {
+          "bytes": 9003,
+          "sha256": "d3ef646056fa0e3a4debd86513432d782645dad3628fba637c1135d9b141854e"
+        },
+        "deps.py": {
+          "bytes": 8286,
+          "sha256": "5e951f30849142666150615b1f08c4174e11882b12302c01b186a2dfca4368dd"
+        },
+        "edges.mjs": {
+          "bytes": 12260,
+          "sha256": "fed671611353c5e8b6f407c01656250120b561b349428c1b3c46ea05c33f7b7a"
+        },
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "report_validation.py": {
+          "bytes": 11655,
+          "sha256": "cd909c96d3ba6688b4d381d0489e28f45a27c0a5321eb6f055a91b5078ce05bc"
+        },
+        "resolve-esm-inputs.mjs": {
+          "bytes": 6917,
+          "sha256": "2972057ec69a91d22953341afa53053633ba2b07ebb62e3817469234035594cf"
+        },
+        "resolve-inputs.js": {
+          "bytes": 8503,
+          "sha256": "4d84953f45e9a417de844aeed21d53483957097ebef930bf1cd98a4891e813dd"
+        },
+        "runner.py": {
+          "bytes": 27498,
+          "sha256": "df2c07daa545974c842b12becd93cfcfe837bf3eec6f21f9aa97ba0294d5bce8"
+        },
+        "sqlite_inputs.py": {
+          "bytes": 2407,
+          "sha256": "7ac6c3cc00b84b9397fa3412922c43e5dfe59e946a7d218d7cc6b19b4fc199ff"
+        },
+        "strict.py": {
+          "bytes": 5265,
+          "sha256": "a6cb6f083a97debaab7b264d2f5238146735bf16c235a4fd53f8381ce205a3ba"
+        },
+        "validate.py": {
+          "bytes": 24346,
+          "sha256": "dffaa81f8560b7b677807adabf0ce1a5d7107e849e591f7251955813ba5ceb8a"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "e5ab48c4626b6d58902843a35f9322b090c32179",
+      "structuralValidation": {
+        "case": "signed-stop",
+        "firstReportBound": false,
+        "passed": true
+      },
+      "validatorControls": {
+        "controlsSha256": "d743877a4a3ccf3abeca56be979c8da554a3a4ec78fb5c018b03804cdffe7786",
+        "goodAccepted": 6,
+        "refused": 53
+      }
+    },
+    "signing-discard": {
+      "artifactInventorySha256": "881ebcca39654e3efddd2687c995a8f2642b3a3b15d69c1a9f25dab6101b0e55",
+      "case": "signing-discard",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_COLD_READY": "1"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 42501,
+          "sha256": "67bef4fd1029c83faa30d986bdbd88b169f05573f267048d2fb351e634e1f836"
+        },
+        "scripts/fixtures/railgun-relay-positive-audit-job.js": {
+          "bytes": 13159,
+          "sha256": "5cd05bae4337ba1665bf3d6cf7235336b02f8e65fd9b5ce3212fd71d2801e969"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7384,
+          "sha256": "8cbd571fa1ffcf0766a88081f3220c3eee23316b038125e3b7c249104723f7d2"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 94802,
+          "sha256": "fd7d9afd0df6d12ed1c58626a7b5886ab1f6e23723b2c1010f01b2ba9c32bf88"
+        },
+        "scripts/fixtures/railgun-transact-staging-row.js": {
+          "bytes": 1720,
+          "sha256": "bdd764435dcab8a9387e130d9ded39a70cc15fbc5bf52712a82bf6301e7de730"
+        },
+        "scripts/fixtures/railgun-transact-staging-source.js": {
+          "bytes": 1676,
+          "sha256": "89c06dcd0c8f2f30384ca407719d9a79f1ef9d06dfd4e0583143b42738a14d62"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-txid.js": {
+          "bytes": 16486,
+          "sha256": "2292ce9a1c23eaeffd1652880375c5675561f52bb73753ff616c4d7f71872b8d"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-public-services.js": {
+          "bytes": 11354,
+          "sha256": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        },
+        "src/main/wallet/railgun-relay-transact-provenance.js": {
+          "bytes": 8421,
+          "sha256": "f6ad5f2df37230867a7233d5bf08c3b17a8b0637639a12cdf9a83e33c391a2a2"
+        },
+        "src/main/wallet/railgun-relay-transact-staging.js": {
+          "bytes": 20479,
+          "sha256": "773628985489b1de112deb24fb95e38a232adc2c40f2e2429bd7995b94357d42"
+        }
+      },
+      "childLog": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copy": {
+        "directories": 1536,
+        "files": 11721,
+        "inventorySha256": "afa4d1bff51305fc3ad25554dc435cca20aa18d8afd012ab6281b859fbf8df2d",
+        "links": 15
+      },
+      "createdWindow": [
+        1791315382763,
+        1791315387510
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "dependencyResolution": {
+        "closureSha256": "cefcf839f76b3b526dfcd23387486233e3fdbb858ec69e1f51d029d54d38b125",
+        "declaredRootsSha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a",
+        "hintsSha256": "5088d9a8f15e4f742a742d2e734b55588de1c94313fc542ca9de335d33733fe6",
+        "loadersSha256": "c43cdd3ee8eb5552cec45d493dd3c59b28468388b0cb1435168cd37ad8aec1cc",
+        "packageFiles": 12435,
+        "packageRoots": 157,
+        "packagesSha256": "95c85310e5c0cda28609685312b44a554a30b2bf1f227a17567e9771fed5c2f2",
+        "records": 4410,
+        "requestSha256": "75e0d111198257391b4710227c6fc56b10a7e9ba399397a7161d1e2070d8c55d",
+        "requiredAbsent": 2514,
+        "resolutionSha256": "8aadaba462c384cea1e62f87b8f8e0da1f2f15892eef11f3bcd611f40423cacc",
+        "resolvedPackageRoots": 131,
+        "seedsSha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27",
+        "sqliteFiles": 17,
+        "sqliteSha256": "7f3b6b0623554e7562d8c49e89290dc98d69b2a7ee1b840ccdba45972f465e4b",
+        "summary": {
+          "edges": 4410,
+          "hints": 130,
+          "kinds": {
+            "application": 1340,
+            "builtin": 703,
+            "dependency": 2297,
+            "esm": 68,
+            "optional-missing": 2
+          },
+          "loaderSites": 10,
+          "nonLiteralImports": 0,
+          "nonLiteralRequires": 101,
+          "sources": 1254,
+          "unresolvedHints": 0,
+          "virtual": 62
+        },
+        "virtualSha256": "ebcbd5bc5434ab3fdfbc52d9320823b9919044d3d0d48c5b1ad20fdca913276e"
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_COLD_READY",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "firstCase": "signing-stop",
+      "frozenIdentitySha256": "9f17b4c9ba2a0763417bd3439e4bf4dcd1c5acd2cfd47683d02da31728728d8b",
+      "joinedFirstInputs": {
+        "config": {
+          "bytes": 1094,
+          "sha256": "8cc863185a96ffaa1bddc34f8e1293972e4e89869a6d8accb682d036b73fb4aa"
+        },
+        "firstDriver": {
+          "bytes": 658,
+          "sha256": "2e79f0a297b659e7581bcd8e45f96e82539634632d22744ff972c4e23d0f6096"
+        },
+        "firstOutcome": {
+          "bytes": 479,
+          "sha256": "1196dfe57360fbac209b5641b11b32a1e3d80778c906e29e3194bb06c933f73f"
+        },
+        "firstReport": {
+          "bytes": 462058,
+          "sha256": "a4e9acf94dd125d968f334f8fbf89764dca82af61513a79a01aeb12da2846291"
+        },
+        "firstResult": {
+          "bytes": 13357,
+          "sha256": "dbed387d8f3f47537bf90eaed3f56494d98aa827e8fea1efb3f65f4e3b58338c"
+        }
+      },
+      "launcher": "scripts/qualify-railgun-relay-cold-ready.js",
+      "mainCache": {
+        "insidePinnedInventories": true,
+        "insideStaticClosure": true,
+        "modules": 465
+      },
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 2365,
+        "signal": null
+      },
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 2382,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "postCheck": {
+        "frozenUnchanged": true,
+        "identityUnchanged": true,
+        "runnerUnchanged": true
+      },
+      "privateOriginals": {
+        "driver": {
+          "bytes": 954,
+          "sha256": "38b359665084205692674014fc877047a9cd82b098c877515980ff653dddd060"
+        },
+        "result": {
+          "bytes": 13510,
+          "sha256": "1c9cf5760cad735b3f788d95ebfc20dbde7aad51cee0a4f4c0cae3aa31e71fcb"
+        }
+      },
+      "qualified": true,
+      "report": {
+        "bytes": 199692,
+        "sha256": "34e680d6099959fdde739e4d72f77ff340546ce6a2a7ed5a48d247be709903a1"
+      },
+      "runnerFiles": {
+        "GUARDS.json": {
+          "bytes": 2481,
+          "sha256": "251e7954f3c1788be741241db4f42de2d6d7bc9e6ccc8705c92e9a51b239de38"
+        },
+        "R5-DECLARED-ROOTS.json": {
+          "bytes": 1622,
+          "sha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a"
+        },
+        "R5-VERBATIM.sha256": {
+          "bytes": 668,
+          "sha256": "090b19a8de5214372f2ebbbf23b3648de911d07688a4f05ef6ca0c309c627875"
+        },
+        "REPORT-KEYS.json": {
+          "bytes": 6358,
+          "sha256": "1dea9167decee33669e472377d62adb17062dbe73cd1d7e0273dd1aa7569b6d9"
+        },
+        "SEEDS.json": {
+          "bytes": 1076,
+          "sha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27"
+        },
+        "SQLITE-INPUTS.json": {
+          "bytes": 3559,
+          "sha256": "13c6774e900652ca23cebdfc168169960c9232603a6eef91a671fdc398869301"
+        },
+        "controls.py": {
+          "bytes": 10950,
+          "sha256": "7332eac688b4e480ee77b8b154ea7a3a584eafa52ed46fb98b8b4b67a985b4b1"
+        },
+        "copy_inputs.py": {
+          "bytes": 9003,
+          "sha256": "d3ef646056fa0e3a4debd86513432d782645dad3628fba637c1135d9b141854e"
+        },
+        "deps.py": {
+          "bytes": 8286,
+          "sha256": "5e951f30849142666150615b1f08c4174e11882b12302c01b186a2dfca4368dd"
+        },
+        "edges.mjs": {
+          "bytes": 12260,
+          "sha256": "fed671611353c5e8b6f407c01656250120b561b349428c1b3c46ea05c33f7b7a"
+        },
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "report_validation.py": {
+          "bytes": 11655,
+          "sha256": "cd909c96d3ba6688b4d381d0489e28f45a27c0a5321eb6f055a91b5078ce05bc"
+        },
+        "resolve-esm-inputs.mjs": {
+          "bytes": 6917,
+          "sha256": "2972057ec69a91d22953341afa53053633ba2b07ebb62e3817469234035594cf"
+        },
+        "resolve-inputs.js": {
+          "bytes": 8503,
+          "sha256": "4d84953f45e9a417de844aeed21d53483957097ebef930bf1cd98a4891e813dd"
+        },
+        "runner.py": {
+          "bytes": 27498,
+          "sha256": "df2c07daa545974c842b12becd93cfcfe837bf3eec6f21f9aa97ba0294d5bce8"
+        },
+        "sqlite_inputs.py": {
+          "bytes": 2407,
+          "sha256": "7ac6c3cc00b84b9397fa3412922c43e5dfe59e946a7d218d7cc6b19b4fc199ff"
+        },
+        "strict.py": {
+          "bytes": 5265,
+          "sha256": "a6cb6f083a97debaab7b264d2f5238146735bf16c235a4fd53f8381ce205a3ba"
+        },
+        "validate.py": {
+          "bytes": 24346,
+          "sha256": "dffaa81f8560b7b677807adabf0ce1a5d7107e849e591f7251955813ba5ceb8a"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "e5ab48c4626b6d58902843a35f9322b090c32179",
+      "structuralValidation": {
+        "case": "signing-discard",
+        "firstReportBound": true,
+        "passed": true
+      },
+      "validatorControls": {
+        "controlsSha256": "d743877a4a3ccf3abeca56be979c8da554a3a4ec78fb5c018b03804cdffe7786",
+        "goodAccepted": 6,
+        "refused": 53
+      }
+    },
+    "signing-stop": {
+      "artifactInventorySha256": "881ebcca39654e3efddd2687c995a8f2642b3a3b15d69c1a9f25dab6101b0e55",
+      "case": "signing-stop",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_POSITIVE": "synthetic-list-signing-stop"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 42501,
+          "sha256": "67bef4fd1029c83faa30d986bdbd88b169f05573f267048d2fb351e634e1f836"
+        },
+        "scripts/fixtures/railgun-relay-positive-audit-job.js": {
+          "bytes": 13159,
+          "sha256": "5cd05bae4337ba1665bf3d6cf7235336b02f8e65fd9b5ce3212fd71d2801e969"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7384,
+          "sha256": "8cbd571fa1ffcf0766a88081f3220c3eee23316b038125e3b7c249104723f7d2"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 94802,
+          "sha256": "fd7d9afd0df6d12ed1c58626a7b5886ab1f6e23723b2c1010f01b2ba9c32bf88"
+        },
+        "scripts/fixtures/railgun-transact-staging-row.js": {
+          "bytes": 1720,
+          "sha256": "bdd764435dcab8a9387e130d9ded39a70cc15fbc5bf52712a82bf6301e7de730"
+        },
+        "scripts/fixtures/railgun-transact-staging-source.js": {
+          "bytes": 1676,
+          "sha256": "89c06dcd0c8f2f30384ca407719d9a79f1ef9d06dfd4e0583143b42738a14d62"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-txid.js": {
+          "bytes": 16486,
+          "sha256": "2292ce9a1c23eaeffd1652880375c5675561f52bb73753ff616c4d7f71872b8d"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-public-services.js": {
+          "bytes": 11354,
+          "sha256": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        },
+        "src/main/wallet/railgun-relay-transact-provenance.js": {
+          "bytes": 8421,
+          "sha256": "f6ad5f2df37230867a7233d5bf08c3b17a8b0637639a12cdf9a83e33c391a2a2"
+        },
+        "src/main/wallet/railgun-relay-transact-staging.js": {
+          "bytes": 20479,
+          "sha256": "773628985489b1de112deb24fb95e38a232adc2c40f2e2429bd7995b94357d42"
+        }
+      },
+      "childLog": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copy": {
+        "directories": 1536,
+        "files": 11721,
+        "inventorySha256": "afa4d1bff51305fc3ad25554dc435cca20aa18d8afd012ab6281b859fbf8df2d",
+        "links": 15
+      },
+      "createdWindow": [
+        1791315354376,
+        1791315374210
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "dependencyResolution": {
+        "closureSha256": "cefcf839f76b3b526dfcd23387486233e3fdbb858ec69e1f51d029d54d38b125",
+        "declaredRootsSha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a",
+        "hintsSha256": "5088d9a8f15e4f742a742d2e734b55588de1c94313fc542ca9de335d33733fe6",
+        "loadersSha256": "c43cdd3ee8eb5552cec45d493dd3c59b28468388b0cb1435168cd37ad8aec1cc",
+        "packageFiles": 12435,
+        "packageRoots": 157,
+        "packagesSha256": "95c85310e5c0cda28609685312b44a554a30b2bf1f227a17567e9771fed5c2f2",
+        "records": 4410,
+        "requestSha256": "75e0d111198257391b4710227c6fc56b10a7e9ba399397a7161d1e2070d8c55d",
+        "requiredAbsent": 2514,
+        "resolutionSha256": "8aadaba462c384cea1e62f87b8f8e0da1f2f15892eef11f3bcd611f40423cacc",
+        "resolvedPackageRoots": 131,
+        "seedsSha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27",
+        "sqliteFiles": 17,
+        "sqliteSha256": "7f3b6b0623554e7562d8c49e89290dc98d69b2a7ee1b840ccdba45972f465e4b",
+        "summary": {
+          "edges": 4410,
+          "hints": 130,
+          "kinds": {
+            "application": 1340,
+            "builtin": 703,
+            "dependency": 2297,
+            "esm": 68,
+            "optional-missing": 2
+          },
+          "loaderSites": 10,
+          "nonLiteralImports": 0,
+          "nonLiteralRequires": 101,
+          "sources": 1254,
+          "unresolvedHints": 0,
+          "virtual": 62
+        },
+        "virtualSha256": "ebcbd5bc5434ab3fdfbc52d9320823b9919044d3d0d48c5b1ad20fdca913276e"
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_POSITIVE",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "frozenIdentitySha256": "9f17b4c9ba2a0763417bd3439e4bf4dcd1c5acd2cfd47683d02da31728728d8b",
+      "launcher": "scripts/qualify-railgun-relay-positive.js",
+      "mainCache": {
+        "insidePinnedInventories": true,
+        "insideStaticClosure": true,
+        "modules": 466
+      },
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 2216,
+        "signal": null
+      },
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 2236,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "postCheck": {
+        "frozenUnchanged": true,
+        "identityUnchanged": true,
+        "runnerUnchanged": true
+      },
+      "privateOriginals": {
+        "driver": {
+          "bytes": 658,
+          "sha256": "2e79f0a297b659e7581bcd8e45f96e82539634632d22744ff972c4e23d0f6096"
+        },
+        "result": {
+          "bytes": 13357,
+          "sha256": "dbed387d8f3f47537bf90eaed3f56494d98aa827e8fea1efb3f65f4e3b58338c"
+        }
+      },
+      "qualified": true,
+      "report": {
+        "bytes": 462058,
+        "sha256": "a4e9acf94dd125d968f334f8fbf89764dca82af61513a79a01aeb12da2846291"
+      },
+      "runnerFiles": {
+        "GUARDS.json": {
+          "bytes": 2481,
+          "sha256": "251e7954f3c1788be741241db4f42de2d6d7bc9e6ccc8705c92e9a51b239de38"
+        },
+        "R5-DECLARED-ROOTS.json": {
+          "bytes": 1622,
+          "sha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a"
+        },
+        "R5-VERBATIM.sha256": {
+          "bytes": 668,
+          "sha256": "090b19a8de5214372f2ebbbf23b3648de911d07688a4f05ef6ca0c309c627875"
+        },
+        "REPORT-KEYS.json": {
+          "bytes": 6358,
+          "sha256": "1dea9167decee33669e472377d62adb17062dbe73cd1d7e0273dd1aa7569b6d9"
+        },
+        "SEEDS.json": {
+          "bytes": 1076,
+          "sha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27"
+        },
+        "SQLITE-INPUTS.json": {
+          "bytes": 3559,
+          "sha256": "13c6774e900652ca23cebdfc168169960c9232603a6eef91a671fdc398869301"
+        },
+        "controls.py": {
+          "bytes": 10950,
+          "sha256": "7332eac688b4e480ee77b8b154ea7a3a584eafa52ed46fb98b8b4b67a985b4b1"
+        },
+        "copy_inputs.py": {
+          "bytes": 9003,
+          "sha256": "d3ef646056fa0e3a4debd86513432d782645dad3628fba637c1135d9b141854e"
+        },
+        "deps.py": {
+          "bytes": 8286,
+          "sha256": "5e951f30849142666150615b1f08c4174e11882b12302c01b186a2dfca4368dd"
+        },
+        "edges.mjs": {
+          "bytes": 12260,
+          "sha256": "fed671611353c5e8b6f407c01656250120b561b349428c1b3c46ea05c33f7b7a"
+        },
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "report_validation.py": {
+          "bytes": 11655,
+          "sha256": "cd909c96d3ba6688b4d381d0489e28f45a27c0a5321eb6f055a91b5078ce05bc"
+        },
+        "resolve-esm-inputs.mjs": {
+          "bytes": 6917,
+          "sha256": "2972057ec69a91d22953341afa53053633ba2b07ebb62e3817469234035594cf"
+        },
+        "resolve-inputs.js": {
+          "bytes": 8503,
+          "sha256": "4d84953f45e9a417de844aeed21d53483957097ebef930bf1cd98a4891e813dd"
+        },
+        "runner.py": {
+          "bytes": 27498,
+          "sha256": "df2c07daa545974c842b12becd93cfcfe837bf3eec6f21f9aa97ba0294d5bce8"
+        },
+        "sqlite_inputs.py": {
+          "bytes": 2407,
+          "sha256": "7ac6c3cc00b84b9397fa3412922c43e5dfe59e946a7d218d7cc6b19b4fc199ff"
+        },
+        "strict.py": {
+          "bytes": 5265,
+          "sha256": "a6cb6f083a97debaab7b264d2f5238146735bf16c235a4fd53f8381ce205a3ba"
+        },
+        "validate.py": {
+          "bytes": 24346,
+          "sha256": "dffaa81f8560b7b677807adabf0ce1a5d7107e849e591f7251955813ba5ceb8a"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "e5ab48c4626b6d58902843a35f9322b090c32179",
+      "structuralValidation": {
+        "case": "signing-stop",
+        "firstReportBound": false,
+        "passed": true
+      },
+      "validatorControls": {
+        "controlsSha256": "d743877a4a3ccf3abeca56be979c8da554a3a4ec78fb5c018b03804cdffe7786",
+        "goodAccepted": 6,
+        "refused": 53
+      }
+    },
+    "transact": {
+      "artifactInventorySha256": "881ebcca39654e3efddd2687c995a8f2642b3a3b15d69c1a9f25dab6101b0e55",
+      "case": "transact",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_POSITIVE": "synthetic-list-transact"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 42501,
+          "sha256": "67bef4fd1029c83faa30d986bdbd88b169f05573f267048d2fb351e634e1f836"
+        },
+        "scripts/fixtures/railgun-relay-positive-audit-job.js": {
+          "bytes": 13159,
+          "sha256": "5cd05bae4337ba1665bf3d6cf7235336b02f8e65fd9b5ce3212fd71d2801e969"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7384,
+          "sha256": "8cbd571fa1ffcf0766a88081f3220c3eee23316b038125e3b7c249104723f7d2"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 94802,
+          "sha256": "fd7d9afd0df6d12ed1c58626a7b5886ab1f6e23723b2c1010f01b2ba9c32bf88"
+        },
+        "scripts/fixtures/railgun-transact-staging-row.js": {
+          "bytes": 1720,
+          "sha256": "bdd764435dcab8a9387e130d9ded39a70cc15fbc5bf52712a82bf6301e7de730"
+        },
+        "scripts/fixtures/railgun-transact-staging-source.js": {
+          "bytes": 1676,
+          "sha256": "89c06dcd0c8f2f30384ca407719d9a79f1ef9d06dfd4e0583143b42738a14d62"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-txid.js": {
+          "bytes": 16486,
+          "sha256": "2292ce9a1c23eaeffd1652880375c5675561f52bb73753ff616c4d7f71872b8d"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-public-services.js": {
+          "bytes": 11354,
+          "sha256": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        },
+        "src/main/wallet/railgun-relay-transact-provenance.js": {
+          "bytes": 8421,
+          "sha256": "f6ad5f2df37230867a7233d5bf08c3b17a8b0637639a12cdf9a83e33c391a2a2"
+        },
+        "src/main/wallet/railgun-relay-transact-staging.js": {
+          "bytes": 20479,
+          "sha256": "773628985489b1de112deb24fb95e38a232adc2c40f2e2429bd7995b94357d42"
+        }
+      },
+      "childLog": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copy": {
+        "directories": 1536,
+        "files": 11721,
+        "inventorySha256": "afa4d1bff51305fc3ad25554dc435cca20aa18d8afd012ab6281b859fbf8df2d",
+        "links": 15
+      },
+      "createdWindow": [
+        1791315298905,
+        1791315329863
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "dependencyResolution": {
+        "closureSha256": "cefcf839f76b3b526dfcd23387486233e3fdbb858ec69e1f51d029d54d38b125",
+        "declaredRootsSha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a",
+        "hintsSha256": "5088d9a8f15e4f742a742d2e734b55588de1c94313fc542ca9de335d33733fe6",
+        "loadersSha256": "c43cdd3ee8eb5552cec45d493dd3c59b28468388b0cb1435168cd37ad8aec1cc",
+        "packageFiles": 12435,
+        "packageRoots": 157,
+        "packagesSha256": "95c85310e5c0cda28609685312b44a554a30b2bf1f227a17567e9771fed5c2f2",
+        "records": 4410,
+        "requestSha256": "75e0d111198257391b4710227c6fc56b10a7e9ba399397a7161d1e2070d8c55d",
+        "requiredAbsent": 2514,
+        "resolutionSha256": "8aadaba462c384cea1e62f87b8f8e0da1f2f15892eef11f3bcd611f40423cacc",
+        "resolvedPackageRoots": 131,
+        "seedsSha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27",
+        "sqliteFiles": 17,
+        "sqliteSha256": "7f3b6b0623554e7562d8c49e89290dc98d69b2a7ee1b840ccdba45972f465e4b",
+        "summary": {
+          "edges": 4410,
+          "hints": 130,
+          "kinds": {
+            "application": 1340,
+            "builtin": 703,
+            "dependency": 2297,
+            "esm": 68,
+            "optional-missing": 2
+          },
+          "loaderSites": 10,
+          "nonLiteralImports": 0,
+          "nonLiteralRequires": 101,
+          "sources": 1254,
+          "unresolvedHints": 0,
+          "virtual": 62
+        },
+        "virtualSha256": "ebcbd5bc5434ab3fdfbc52d9320823b9919044d3d0d48c5b1ad20fdca913276e"
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_POSITIVE",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "frozenIdentitySha256": "9f17b4c9ba2a0763417bd3439e4bf4dcd1c5acd2cfd47683d02da31728728d8b",
+      "launcher": "scripts/qualify-railgun-relay-positive.js",
+      "mainCache": {
+        "insidePinnedInventories": true,
+        "insideStaticClosure": true,
+        "modules": 470
+      },
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 1978,
+        "signal": null
+      },
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 2008,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "postCheck": {
+        "frozenUnchanged": true,
+        "identityUnchanged": true,
+        "runnerUnchanged": true
+      },
+      "privateOriginals": {
+        "driver": {
+          "bytes": 650,
+          "sha256": "1df8679dad29440f021fb2c7fba1f717cbe3127a892e4d493a7f1153688a77da"
+        },
+        "result": {
+          "bytes": 13341,
+          "sha256": "d85503462fe1866c4d3f68f0938eb8375f65a141ea030a79ed249c0738e9d3c6"
+        }
+      },
+      "qualified": true,
+      "report": {
+        "bytes": 566488,
+        "sha256": "44f500d5457da88751664d121161d5bb3bb44e5a14b88ddcf2f3f273bc3ee0f1"
+      },
+      "runnerFiles": {
+        "GUARDS.json": {
+          "bytes": 2481,
+          "sha256": "251e7954f3c1788be741241db4f42de2d6d7bc9e6ccc8705c92e9a51b239de38"
+        },
+        "R5-DECLARED-ROOTS.json": {
+          "bytes": 1622,
+          "sha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a"
+        },
+        "R5-VERBATIM.sha256": {
+          "bytes": 668,
+          "sha256": "090b19a8de5214372f2ebbbf23b3648de911d07688a4f05ef6ca0c309c627875"
+        },
+        "REPORT-KEYS.json": {
+          "bytes": 6358,
+          "sha256": "1dea9167decee33669e472377d62adb17062dbe73cd1d7e0273dd1aa7569b6d9"
+        },
+        "SEEDS.json": {
+          "bytes": 1076,
+          "sha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27"
+        },
+        "SQLITE-INPUTS.json": {
+          "bytes": 3559,
+          "sha256": "13c6774e900652ca23cebdfc168169960c9232603a6eef91a671fdc398869301"
+        },
+        "controls.py": {
+          "bytes": 10950,
+          "sha256": "7332eac688b4e480ee77b8b154ea7a3a584eafa52ed46fb98b8b4b67a985b4b1"
+        },
+        "copy_inputs.py": {
+          "bytes": 9003,
+          "sha256": "d3ef646056fa0e3a4debd86513432d782645dad3628fba637c1135d9b141854e"
+        },
+        "deps.py": {
+          "bytes": 8286,
+          "sha256": "5e951f30849142666150615b1f08c4174e11882b12302c01b186a2dfca4368dd"
+        },
+        "edges.mjs": {
+          "bytes": 12260,
+          "sha256": "fed671611353c5e8b6f407c01656250120b561b349428c1b3c46ea05c33f7b7a"
+        },
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "report_validation.py": {
+          "bytes": 11655,
+          "sha256": "cd909c96d3ba6688b4d381d0489e28f45a27c0a5321eb6f055a91b5078ce05bc"
+        },
+        "resolve-esm-inputs.mjs": {
+          "bytes": 6917,
+          "sha256": "2972057ec69a91d22953341afa53053633ba2b07ebb62e3817469234035594cf"
+        },
+        "resolve-inputs.js": {
+          "bytes": 8503,
+          "sha256": "4d84953f45e9a417de844aeed21d53483957097ebef930bf1cd98a4891e813dd"
+        },
+        "runner.py": {
+          "bytes": 27498,
+          "sha256": "df2c07daa545974c842b12becd93cfcfe837bf3eec6f21f9aa97ba0294d5bce8"
+        },
+        "sqlite_inputs.py": {
+          "bytes": 2407,
+          "sha256": "7ac6c3cc00b84b9397fa3412922c43e5dfe59e946a7d218d7cc6b19b4fc199ff"
+        },
+        "strict.py": {
+          "bytes": 5265,
+          "sha256": "a6cb6f083a97debaab7b264d2f5238146735bf16c235a4fd53f8381ce205a3ba"
+        },
+        "validate.py": {
+          "bytes": 24346,
+          "sha256": "dffaa81f8560b7b677807adabf0ce1a5d7107e849e591f7251955813ba5ceb8a"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "e5ab48c4626b6d58902843a35f9322b090c32179",
+      "structuralValidation": {
+        "case": "transact",
+        "firstReportBound": false,
+        "passed": true
+      },
+      "validatorControls": {
+        "controlsSha256": "d743877a4a3ccf3abeca56be979c8da554a3a4ec78fb5c018b03804cdffe7786",
+        "goodAccepted": 6,
+        "refused": 53
+      }
+    },
+    "transact-cold": {
+      "artifactInventorySha256": "881ebcca39654e3efddd2687c995a8f2642b3a3b15d69c1a9f25dab6101b0e55",
+      "case": "transact-cold",
+      "caseEnv": {
+        "FREEDOM_RAILGUN_RELAY_COLD_READY": "1"
+      },
+      "caseSources": {
+        "scripts/fixtures/railgun-native-assertions.js": {
+          "bytes": 1522,
+          "sha256": "ce0cf713ec4dd0172c7f6d8462ab75003f5296fe3f7f2d2506694341c57e9874"
+        },
+        "scripts/fixtures/railgun-relay-cold-ready-native.js": {
+          "bytes": 42501,
+          "sha256": "67bef4fd1029c83faa30d986bdbd88b169f05573f267048d2fb351e634e1f836"
+        },
+        "scripts/fixtures/railgun-relay-positive-audit-job.js": {
+          "bytes": 13159,
+          "sha256": "5cd05bae4337ba1665bf3d6cf7235336b02f8e65fd9b5ce3212fd71d2801e969"
+        },
+        "scripts/fixtures/railgun-relay-positive-membership-job.js": {
+          "bytes": 7384,
+          "sha256": "8cbd571fa1ffcf0766a88081f3220c3eee23316b038125e3b7c249104723f7d2"
+        },
+        "scripts/fixtures/railgun-relay-positive-native.js": {
+          "bytes": 94802,
+          "sha256": "fd7d9afd0df6d12ed1c58626a7b5886ab1f6e23723b2c1010f01b2ba9c32bf88"
+        },
+        "scripts/fixtures/railgun-transact-staging-row.js": {
+          "bytes": 1720,
+          "sha256": "bdd764435dcab8a9387e130d9ded39a70cc15fbc5bf52712a82bf6301e7de730"
+        },
+        "scripts/fixtures/railgun-transact-staging-source.js": {
+          "bytes": 1676,
+          "sha256": "89c06dcd0c8f2f30384ca407719d9a79f1ef9d06dfd4e0583143b42738a14d62"
+        },
+        "scripts/qualify-railgun-relay-cold-ready.js": {
+          "bytes": 1428,
+          "sha256": "c4da943e217ef85f6a4c21997ec8ae1929bd4afceaa262063df993fef6acc29d"
+        },
+        "scripts/qualify-railgun-relay-positive.js": {
+          "bytes": 2901,
+          "sha256": "90a79097e1f63d122d8694dd424953ac5d5470edbf71c304b518c90fcd44d5a3"
+        },
+        "src/main/wallet/railgun-account-txid.js": {
+          "bytes": 16486,
+          "sha256": "2292ce9a1c23eaeffd1652880375c5675561f52bb73753ff616c4d7f71872b8d"
+        },
+        "src/main/wallet/railgun-account-wallet.js": {
+          "bytes": 91910,
+          "sha256": "a3e0aab9acb73449e564ff267c3253a61962ea6d1dc96c8d0c978935fe2d2f08"
+        },
+        "src/main/wallet/railgun-poi-records.js": {
+          "bytes": 5116,
+          "sha256": "16a8e5e15621d2da51568319717a43ca51e3517beb59441e44931539d47b45ab"
+        },
+        "src/main/wallet/railgun-private-reservations.js": {
+          "bytes": 34069,
+          "sha256": "0998a02c58e85dc1d3d339917b913003b3a8661b19e242ff6cbdef2f2c7d40bd"
+        },
+        "src/main/wallet/railgun-public-services.js": {
+          "bytes": 11354,
+          "sha256": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad"
+        },
+        "src/main/wallet/railgun-relay-operation.js": {
+          "bytes": 40287,
+          "sha256": "01248a8cf96bee9e202960c040d170341e2fdc1222bdfd8760f9a6b4de8bdf5e"
+        },
+        "src/main/wallet/railgun-relay-proof.js": {
+          "bytes": 10096,
+          "sha256": "fa87c8d26c0edc4db6e82aa5cba2608446aca42ceb67c6f359dcb0534c186b95"
+        },
+        "src/main/wallet/railgun-relay-recovery-store.js": {
+          "bytes": 15342,
+          "sha256": "cc562102b5cd76bfae31cd27c6b60de33dc61d9af7fc38505f606ec8066ca0ce"
+        },
+        "src/main/wallet/railgun-relay-transact-provenance.js": {
+          "bytes": 8421,
+          "sha256": "f6ad5f2df37230867a7233d5bf08c3b17a8b0637639a12cdf9a83e33c391a2a2"
+        },
+        "src/main/wallet/railgun-relay-transact-staging.js": {
+          "bytes": 20479,
+          "sha256": "773628985489b1de112deb24fb95e38a232adc2c40f2e2429bd7995b94357d42"
+        }
+      },
+      "childLog": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "copy": {
+        "directories": 1536,
+        "files": 11721,
+        "inventorySha256": "afa4d1bff51305fc3ad25554dc435cca20aa18d8afd012ab6281b859fbf8df2d",
+        "links": 15
+      },
+      "createdWindow": [
+        1791315338665,
+        1791315345881
+      ],
+      "dependencyPins": {
+        "node_modules/.package-lock.json": {
+          "bytes": 507295,
+          "sha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6"
+        },
+        "node_modules/electron/package.json": {
+          "bytes": 744,
+          "sha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+        },
+        "package-lock.json": {
+          "bytes": 540811,
+          "sha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+        }
+      },
+      "dependencyResolution": {
+        "closureSha256": "cefcf839f76b3b526dfcd23387486233e3fdbb858ec69e1f51d029d54d38b125",
+        "declaredRootsSha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a",
+        "hintsSha256": "5088d9a8f15e4f742a742d2e734b55588de1c94313fc542ca9de335d33733fe6",
+        "loadersSha256": "c43cdd3ee8eb5552cec45d493dd3c59b28468388b0cb1435168cd37ad8aec1cc",
+        "packageFiles": 12435,
+        "packageRoots": 157,
+        "packagesSha256": "95c85310e5c0cda28609685312b44a554a30b2bf1f227a17567e9771fed5c2f2",
+        "records": 4410,
+        "requestSha256": "75e0d111198257391b4710227c6fc56b10a7e9ba399397a7161d1e2070d8c55d",
+        "requiredAbsent": 2514,
+        "resolutionSha256": "8aadaba462c384cea1e62f87b8f8e0da1f2f15892eef11f3bcd611f40423cacc",
+        "resolvedPackageRoots": 131,
+        "seedsSha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27",
+        "sqliteFiles": 17,
+        "sqliteSha256": "7f3b6b0623554e7562d8c49e89290dc98d69b2a7ee1b840ccdba45972f465e4b",
+        "summary": {
+          "edges": 4410,
+          "hints": 130,
+          "kinds": {
+            "application": 1340,
+            "builtin": 703,
+            "dependency": 2297,
+            "esm": 68,
+            "optional-missing": 2
+          },
+          "loaderSites": 10,
+          "nonLiteralImports": 0,
+          "nonLiteralRequires": 101,
+          "sources": 1254,
+          "unresolvedHints": 0,
+          "virtual": 62
+        },
+        "virtualSha256": "ebcbd5bc5434ab3fdfbc52d9320823b9919044d3d0d48c5b1ad20fdca913276e"
+      },
+      "envKeys": [
+        "FREEDOM_RAILGUN_RELAY_COLD_READY",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TMPDIR",
+        "USER",
+        "__CF_USER_TEXT_ENCODING"
+      ],
+      "firstCase": "transact",
+      "frozenIdentitySha256": "9f17b4c9ba2a0763417bd3439e4bf4dcd1c5acd2cfd47683d02da31728728d8b",
+      "joinedFirstInputs": {
+        "config": {
+          "bytes": 1086,
+          "sha256": "fe8b8a31561a6eaf5ec419dbbd1e5805fdda0106fbe2649346d7424fed5fcb30"
+        },
+        "firstDriver": {
+          "bytes": 650,
+          "sha256": "1df8679dad29440f021fb2c7fba1f717cbe3127a892e4d493a7f1153688a77da"
+        },
+        "firstOutcome": {
+          "bytes": 475,
+          "sha256": "ae88699e026dc7d8e1421c2755b55cc340e740a1dc1cf40382ab5a6e0296b510"
+        },
+        "firstReport": {
+          "bytes": 566488,
+          "sha256": "44f500d5457da88751664d121161d5bb3bb44e5a14b88ddcf2f3f273bc3ee0f1"
+        },
+        "firstResult": {
+          "bytes": 13341,
+          "sha256": "d85503462fe1866c4d3f68f0938eb8375f65a141ea030a79ed249c0738e9d3c6"
+        }
+      },
+      "launcher": "scripts/qualify-railgun-relay-cold-ready.js",
+      "mainCache": {
+        "insidePinnedInventories": true,
+        "insideStaticClosure": true,
+        "modules": 469
+      },
+      "originalDriver": {
+        "exitCode": 0,
+        "natural": true,
+        "pid": 2155,
+        "signal": null
+      },
+      "originalMain": {
+        "exitCode": 0,
+        "exitObserved": true,
+        "interrupted": false,
+        "killRequested": false,
+        "pid": 2182,
+        "state": "finished",
+        "terminateRequested": false,
+        "timedOut": false
+      },
+      "postCheck": {
+        "frozenUnchanged": true,
+        "identityUnchanged": true,
+        "runnerUnchanged": true
+      },
+      "privateOriginals": {
+        "driver": {
+          "bytes": 938,
+          "sha256": "55618d489826b1bd4276fe42d46c35912cf0230e493e664cda86260c13f491eb"
+        },
+        "result": {
+          "bytes": 13504,
+          "sha256": "d7ce0f8d0c2c42287dae2367d1b337a0ec00a7f557fe27ef249d27ce829e07e5"
+        }
+      },
+      "qualified": true,
+      "report": {
+        "bytes": 208335,
+        "sha256": "24629ed74e35ab03ccc25f53265417db580c78bf75a4f347b3c1b49215745041"
+      },
+      "runnerFiles": {
+        "GUARDS.json": {
+          "bytes": 2481,
+          "sha256": "251e7954f3c1788be741241db4f42de2d6d7bc9e6ccc8705c92e9a51b239de38"
+        },
+        "R5-DECLARED-ROOTS.json": {
+          "bytes": 1622,
+          "sha256": "6f7dfd3b0b21401883bb39671d4cb98567c20f56a7ba6dc664ccf3a04842143a"
+        },
+        "R5-VERBATIM.sha256": {
+          "bytes": 668,
+          "sha256": "090b19a8de5214372f2ebbbf23b3648de911d07688a4f05ef6ca0c309c627875"
+        },
+        "REPORT-KEYS.json": {
+          "bytes": 6358,
+          "sha256": "1dea9167decee33669e472377d62adb17062dbe73cd1d7e0273dd1aa7569b6d9"
+        },
+        "SEEDS.json": {
+          "bytes": 1076,
+          "sha256": "494078d9adfe784d3a12075b9bba7d254e7d7ab400213a5e3f9be93a8af76e27"
+        },
+        "SQLITE-INPUTS.json": {
+          "bytes": 3559,
+          "sha256": "13c6774e900652ca23cebdfc168169960c9232603a6eef91a671fdc398869301"
+        },
+        "controls.py": {
+          "bytes": 10950,
+          "sha256": "7332eac688b4e480ee77b8b154ea7a3a584eafa52ed46fb98b8b4b67a985b4b1"
+        },
+        "copy_inputs.py": {
+          "bytes": 9003,
+          "sha256": "d3ef646056fa0e3a4debd86513432d782645dad3628fba637c1135d9b141854e"
+        },
+        "deps.py": {
+          "bytes": 8286,
+          "sha256": "5e951f30849142666150615b1f08c4174e11882b12302c01b186a2dfca4368dd"
+        },
+        "edges.mjs": {
+          "bytes": 12260,
+          "sha256": "fed671611353c5e8b6f407c01656250120b561b349428c1b3c46ea05c33f7b7a"
+        },
+        "outer.py": {
+          "bytes": 1230,
+          "sha256": "db9cdc54554b745a4b7d2ca01dd50bc6c8e5422ec1e810e22d397695c4ba71b3"
+        },
+        "process_owner.py": {
+          "bytes": 2129,
+          "sha256": "493b5a98b7c1dc1dcb52b714b20162ae4060e0ba2e5e9ad1142149e94d51bf5b"
+        },
+        "report_validation.py": {
+          "bytes": 11655,
+          "sha256": "cd909c96d3ba6688b4d381d0489e28f45a27c0a5321eb6f055a91b5078ce05bc"
+        },
+        "resolve-esm-inputs.mjs": {
+          "bytes": 6917,
+          "sha256": "2972057ec69a91d22953341afa53053633ba2b07ebb62e3817469234035594cf"
+        },
+        "resolve-inputs.js": {
+          "bytes": 8503,
+          "sha256": "4d84953f45e9a417de844aeed21d53483957097ebef930bf1cd98a4891e813dd"
+        },
+        "runner.py": {
+          "bytes": 27498,
+          "sha256": "df2c07daa545974c842b12becd93cfcfe837bf3eec6f21f9aa97ba0294d5bce8"
+        },
+        "sqlite_inputs.py": {
+          "bytes": 2407,
+          "sha256": "7ac6c3cc00b84b9397fa3412922c43e5dfe59e946a7d218d7cc6b19b4fc199ff"
+        },
+        "strict.py": {
+          "bytes": 5265,
+          "sha256": "a6cb6f083a97debaab7b264d2f5238146735bf16c235a4fd53f8381ce205a3ba"
+        },
+        "validate.py": {
+          "bytes": 24346,
+          "sha256": "dffaa81f8560b7b677807adabf0ce1a5d7107e849e591f7251955813ba5ceb8a"
+        }
+      },
+      "runtime": {
+        "electron-default-app": {
+          "bytes": 110862,
+          "sha256": "0eb2491b0a9ac94790389d39c09dd5005c6c1f0665842943829bbd0193f6cc4f"
+        },
+        "electron-framework": {
+          "bytes": 202631744,
+          "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+        },
+        "electron-main-executable": {
+          "bytes": 33968,
+          "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+        },
+        "railgun-engine-archive": {
+          "bytes": 81790332,
+          "sha256": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a"
+        },
+        "railgun-prover-archive": {
+          "bytes": 1613882,
+          "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+        }
+      },
+      "sourceCommit": "e5ab48c4626b6d58902843a35f9322b090c32179",
+      "structuralValidation": {
+        "case": "transact-cold",
+        "firstReportBound": true,
+        "passed": true
+      },
+      "validatorControls": {
+        "controlsSha256": "d743877a4a3ccf3abeca56be979c8da554a3a4ec78fb5c018b03804cdffe7786",
+        "goodAccepted": 6,
+        "refused": 53
+      }
+    }
+  },
+  "frozenIdentitySha256": "9f17b4c9ba2a0763417bd3439e4bf4dcd1c5acd2cfd47683d02da31728728d8b",
+  "pathsOmitted": true,
+  "runner": "compact local-matrix runner r3: r5 resolvers, helpers, process owner and report cache_inventory verbatim; static transitive edge derivation; frozen pre-run identity; scenario validators with 53 refusal controls",
+  "schema": "railgun-relay-local-matrix-provenance-v1",
+  "sourceCommit": "e5ab48c4626b6d58902843a35f9322b090c32179"
+}

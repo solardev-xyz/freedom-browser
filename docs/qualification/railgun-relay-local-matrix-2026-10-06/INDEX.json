@@ -1,0 +1,37 @@
+{
+  "schema": "railgun-relay-local-matrix-index-v1",
+  "files": {
+    "README.md": {
+      "bytes": 5815,
+      "sha256": "e7659360bcabf2e8d074542b6594dfbe680d96d46ecff4677b46258c17bd72cc"
+    },
+    "provenance.json": {
+      "bytes": 74405,
+      "sha256": "4dad3b5636fd0f07d8f52e6e67a9f3b086ff1674fa719bac7048dba47134bc28"
+    },
+    "signed-cold-report.json": {
+      "bytes": 212507,
+      "sha256": "856636dacdd5573dcbb850e141104259bf17766db50a0258ec2363060831fb8b"
+    },
+    "signed-stop-report.json": {
+      "bytes": 479526,
+      "sha256": "64bbeadb5c05b0660e8964e2c9785ee7527e7bbe5c3af5af2fa423609589179c"
+    },
+    "signing-discard-report.json": {
+      "bytes": 199692,
+      "sha256": "34e680d6099959fdde739e4d72f77ff340546ce6a2a7ed5a48d247be709903a1"
+    },
+    "signing-stop-report.json": {
+      "bytes": 462058,
+      "sha256": "a4e9acf94dd125d968f334f8fbf89764dca82af61513a79a01aeb12da2846291"
+    },
+    "transact-cold-report.json": {
+      "bytes": 208335,
+      "sha256": "24629ed74e35ab03ccc25f53265417db580c78bf75a4f347b3c1b49215745041"
+    },
+    "transact-report.json": {
+      "bytes": 566488,
+      "sha256": "44f500d5457da88751664d121161d5bb3bb44e5a14b88ddcf2f3f273bc3ee0f1"
+    }
+  }
+}
