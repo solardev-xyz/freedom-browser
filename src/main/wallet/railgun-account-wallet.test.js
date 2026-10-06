@@ -3193,6 +3193,9 @@ test.each(['state', 'journal', 'owned', 'generation', 'clock', 'elapsed'])(
     const f = reviewedRelayFixture(),
       account = await f.opened(),
       old = account.view;
+    // Freeze the pre-callback wall clock so a one-millisecond rollback cannot
+    // accidentally equal a prior reading after real scheduling time elapses.
+    if (kind === 'clock') jest.spyOn(Date, 'now').mockReturnValue(Date.now());
     const callback = () => {
       if (kind === 'state')
         mockSession.inspectWalletState.mockResolvedValue({
@@ -3368,4 +3371,293 @@ test('a callback that invalidates time before returning its pending promise is s
   release(true);
   await expect(work).rejects.toThrow();
   await drain;
+});
+
+const {
+  operateRailgunAccountRelayIntent: continueRelay,
+  assertRailgunAccountRelayWindow: assertRelayWindow,
+} = require('./railgun-account-wallet');
+test.each(['sync', 'async'])(
+  'pre-key continuation %s retains owner and never grants signing',
+  async (mode) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      old = account.view;
+    let retained;
+    const onPrepared = jest.fn((offer, { signal, window }) => {
+      retained = window;
+      const facts = assertRelayWindow(window, account, f.owners, 1);
+      expect(facts.draftDigest).toBe(offer.preparation.digest);
+      expect(facts.summaryDigest).toBe(offer.review.summaryDigest);
+      expect(facts.signingEnabled).toBe(false);
+      expect(facts.proofAuthority).toBe(false);
+      expect(signal.aborted).toBe(false);
+      expect(Object.isFrozen(offer)).toBe(true);
+      expect(Object.keys(window)).toEqual([]);
+      expect(account.view).toBe(old);
+      expect(() => readRailgunAccountOwnedNotes(account, f.owners)).toThrow();
+      expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+      expect(() => assertRelayWindow({}, account, f.owners)).toThrow();
+      expect(() => assertRelayWindow(window, account, { ...f.owners, identity: {} })).toThrow();
+      expect(() => assertRelayWindow(window, account, f.owners, 120000)).toThrow();
+      return mode === 'async' ? Promise.resolve() : undefined;
+    });
+    const result = await continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared,
+    });
+    expect(result.status).toBe('continued-pre-key');
+    expect(result.signingEnabled).toBe(false);
+    expect(result.poiQueriesPermitted).toBe(false);
+    expect(result.capsulePersisted).toBe(false);
+    expect(result.relaySendPermitted).toBe(false);
+    expect(onPrepared).toHaveBeenCalledTimes(1);
+    expect(mockJournal.revalidate).toHaveBeenCalledTimes(3);
+    expect(() => assertRelayWindow(retained, account, f.owners)).toThrow();
+    await account.close();
+  }
+);
+test('declined continuation never calls the prepared handler', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened(),
+    onPrepared = jest.fn();
+  expect(
+    (await continueRelay(account, f.owners, f.request, { review: () => false, onPrepared })).status
+  ).toBe('declined');
+  expect(onPrepared).not.toHaveBeenCalled();
+  await account.close();
+});
+test('continuation captures exact handler descriptors without getters or proxies', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened(),
+    getter = jest.fn(),
+    onPrepared = jest.fn();
+  const bad = { review: () => true };
+  Object.defineProperty(bad, 'onPrepared', { enumerable: true, get: getter });
+  expect(() => continueRelay(account, f.owners, f.request, bad)).toThrow();
+  expect(() =>
+    continueRelay(
+      account,
+      f.owners,
+      f.request,
+      new Proxy({ review: () => true, onPrepared }, { ownKeys: getter })
+    )
+  ).toThrow();
+  expect(() =>
+    continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared,
+      markLocal: () => {},
+    })
+  ).toThrow();
+  expect(getter).not.toHaveBeenCalled();
+  const operation = {
+    review: () => {
+      operation.onPrepared = () => {
+        throw Error('alias');
+      };
+      return true;
+    },
+    onPrepared,
+  };
+  await continueRelay(account, f.owners, f.request, operation);
+  expect(onPrepared).toHaveBeenCalledTimes(1);
+  await account.close();
+});
+test('held prepared original retains close and phase after cancellation', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let release,
+    window,
+    done = false,
+    closed = false;
+  const work = continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: (_offer, value) => {
+      window = value.window;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  work.then(
+    () => {
+      done = true;
+    },
+    () => {
+      done = true;
+    }
+  );
+  await waitRelay(() => !!release);
+  await expect(restoreRailgunAccountWallet(account, f.owners)).rejects.toThrow();
+  f.abort.abort();
+  expect(() => assertRelayWindow(window, account, f.owners)).toThrow();
+  const drain = account.close().then(() => {
+    closed = true;
+  });
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  expect(done).toBe(false);
+  expect(closed).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  release();
+  await expect(work).rejects.toThrow();
+  await drain;
+  expect(closed).toBe(true);
+  claimRailgunAccountPhase(mockEnrollment, 'recovery').release();
+});
+test('original preparation callback outlives coordinator cancellation race and blocks owner release', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const snapshot = options.coordinator.withPublicSnapshot;
+  let cancel,
+    release,
+    closed = false,
+    done = false;
+  options.coordinator.withPublicSnapshot = (use) =>
+    Promise.race([
+      snapshot(use),
+      new Promise((_resolve, reject) => {
+        cancel = reject;
+      }),
+    ]);
+  const read = mockCoverage.read.getMockImplementation();
+  mockCoverage.read.mockImplementationOnce(async (...args) => {
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    return read(...args);
+  });
+  const handler = jest.fn();
+  const work = continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: handler,
+  });
+  work.then(
+    () => {
+      done = true;
+    },
+    () => {
+      done = true;
+    }
+  );
+  await waitRelay(() => !!release);
+  cancel(Error('coordinator cancellation'));
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  const drain = account.close().then(() => {
+    closed = true;
+  });
+  for (let i = 0; i < 15; i++) await Promise.resolve();
+  expect(done).toBe(false);
+  expect(closed).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  release();
+  await expect(work).rejects.toThrow();
+  await drain;
+  expect(handler).not.toHaveBeenCalled();
+  claimRailgunAccountPhase(mockEnrollment, 'recovery').release();
+});
+test.each(['quote', 'deadline', 'identity', 'generation'])(
+  'prepared continuation %s drift refuses and closes without publishing',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      old = account.view;
+    let windowRefused = false;
+    const work = continueRelay(account, f.owners, f.request, {
+      review: () => true,
+      onPrepared: (_offer, { window }) => {
+        assertRelayWindow(window, account, f.owners);
+        if (kind === 'quote') jest.spyOn(Date, 'now').mockReturnValue(f.fields.feeExpiration + 1);
+        if (kind === 'deadline')
+          jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 30001);
+        if (kind === 'identity')
+          mockIdentity.descriptor = { ...mockIdentity.descriptor, accountIndex: 1 };
+        if (kind === 'generation') generation.id = 'f'.repeat(64);
+        try {
+          assertRelayWindow(window, account, f.owners);
+        } catch {
+          windowRefused = true;
+        }
+      },
+    });
+    await expect(work).rejects.toThrow();
+    expect(windowRefused).toBe(true);
+    expect(account.view).toBe(old);
+    await account.close();
+  }
+);
+test('prepared continuation does not renew the review deadline', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let now = performance.now();
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  await expect(
+    continueRelay(account, f.owners, f.request, {
+      review: () => {
+        now += 29000;
+        return true;
+      },
+      onPrepared: (_offer, { window }) => {
+        const data = assertRelayWindow(window, account, f.owners);
+        expect(data.deadline - now).toBeLessThanOrEqual(1000);
+        now += 1001;
+      },
+    })
+  ).rejects.toThrow();
+  await account.close();
+});
+test.each(['constructor', 'thenable'])(
+  'unobservable prepared %s retains phase without invoking caller hooks',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      getter = jest.fn(() => {
+        throw Error('unknown');
+      });
+    const value = kind === 'constructor' ? Promise.resolve() : {};
+    Object.defineProperty(value, kind === 'constructor' ? 'constructor' : 'then', { get: getter });
+    await expect(
+      continueRelay(account, f.owners, f.request, { review: () => true, onPrepared: () => value })
+    ).rejects.toThrow();
+    await expect(account.close()).rejects.toMatchObject({
+      code: 'RAILGUN_RELAY_CONTINUATION_DRAIN_FAILED',
+    });
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    expect(getter).toHaveBeenCalledTimes(kind === 'constructor' ? 1 : 0);
+  }
+);
+test('prepared promise intrinsic observation ignores overridden then and drains late invalidation', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let release,
+    entered = false,
+    done = false;
+  const original = new Promise((resolve) => {
+    release = resolve;
+  });
+  original.then = jest.fn(() => {
+    throw Error('override');
+  });
+  const work = continueRelay(account, f.owners, f.request, {
+    review: () => true,
+    onPrepared: () => {
+      entered = true;
+      jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 30001);
+      return original;
+    },
+  });
+  work.then(
+    () => {
+      done = true;
+    },
+    () => {
+      done = true;
+    }
+  );
+  await waitRelay(() => entered);
+  expect(original.then).not.toHaveBeenCalled();
+  expect(done).toBe(false);
+  release();
+  await expect(work).rejects.toThrow();
+  await account.close();
 });

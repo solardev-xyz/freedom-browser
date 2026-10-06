@@ -4,6 +4,7 @@
  */
 const accounts = new WeakMap();
 const privateWindows = new WeakMap();
+const relayWindows = new WeakMap();
 const privateCreators = new WeakMap();
 const fs = require('fs'),
   path = require('path');
@@ -257,7 +258,8 @@ async function openAccount(
     closeWork,
     finishSetup,
     cleanupFailed = false,
-    reviewDrainUnobserved = false;
+    reviewDrainUnobserved = false,
+    continuationDrainUnobserved = false;
   const setup = new Promise((resolve) => {
     finishSetup = resolve;
   });
@@ -321,6 +323,8 @@ async function openAccount(
       // Keep filename/phase exclusion; this is not an unknown utility exit.
       if (reviewDrainUnobserved)
         throw Object.assign(fail(), { code: 'RAILGUN_RELAY_REVIEW_DRAIN_FAILED' });
+      if (continuationDrainUnobserved)
+        throw Object.assign(fail(), { code: 'RAILGUN_RELAY_CONTINUATION_DRAIN_FAILED' });
       phase.release();
       if (cleanupFailed) throw fail();
     })().then(resolve, reject);
@@ -829,7 +833,8 @@ async function openAccount(
         busy = false;
       }
     }
-    async function prepareRelayIntent(request, review) {
+    async function prepareRelayIntent(request, review, onPrepared) {
+      const continuing = onPrepared !== undefined;
       const reviewed = review !== undefined;
       const assert = require('assert/strict');
       const {
@@ -906,6 +911,8 @@ async function openAccount(
       const relayController = new AbortController();
       const relaySignal = AbortSignal.any([lifetime, request.signal, relayController.signal]);
       const handoff = phase.reserveHandoff();
+      const callbacks = new Set();
+      let relayWindow;
       let entered = false,
         unknown = false,
         snapshotWindow = null,
@@ -975,6 +982,22 @@ async function openAccount(
         }
         return false;
       };
+      const snapshotCallback = (use) => {
+        if (!continuing) return use;
+        return (snapshot) => {
+          // The coordinator may lose its cancellation race before this original
+          // callback settles. Register it before invocation and retain it in the
+          // account restoration promise independently of coordinator settlement.
+          const original = Promise.resolve().then(() => use(snapshot));
+          callbacks.add(original);
+          promiseThen.call(
+            original,
+            () => callbacks.delete(original),
+            () => callbacks.delete(original)
+          );
+          return original;
+        };
+      };
       // close() drains this entire promise, including quote verification and both
       // original utility/storage barriers; its own catch/close lives outside it.
       restoration = (async () => {
@@ -1014,7 +1037,7 @@ async function openAccount(
             feeCap: cap.toString(),
           });
           let firstCoverage, baselineState, draft;
-          const renewed = await coordinator.withPublicSnapshot(async (snapshot) => {
+          const prepareSnapshot = async (snapshot) => {
             // Entering the snapshot is the conservative close boundary: a
             // checkpoint/store freshness refusal can invalidate the old receipt
             // even before the first job. Do not promise borrowed-view reuse.
@@ -1073,7 +1096,11 @@ async function openAccount(
             check(Buffer.byteLength(relayDraftText) <= 65536);
             const secondStarted = performance.now();
             scan = streams.run((jobSnapshot) =>
-              runner.reconstructRelayReadOnly({ ...common, snapshot: jobSnapshot, relayDraftText })
+              runner.reconstructRelayReadOnly({
+                ...common,
+                snapshot: jobSnapshot,
+                relayDraftText,
+              })
             );
             const second = await scan;
             attest();
@@ -1085,7 +1112,8 @@ async function openAccount(
               relayData.normalizeRailgunRelayReconstruction(second.relayReconstruction, draft)
             );
             return second;
-          });
+          };
+          const renewed = await coordinator.withPublicSnapshot(snapshotCallback(prepareSnapshot));
           snapshotWindow = null;
           snapshotEvidence = renewed.evidence;
           attest();
@@ -1185,6 +1213,96 @@ async function openAccount(
             assert.deepEqual(buildRailgunRelayReviewSummary(summaryInput), reviewBinding);
             attest();
           }
+          if (continuing && decision === true) {
+            // Pre-key plumbing only. The fixed identity issuer is not connected:
+            // no handler can switch off quote checks or acquire a credential.
+            relayWindow = Object.freeze({});
+            const data = freeze({
+              started: start,
+              deadline: end,
+              checkpointHash: checkpoint,
+              selection,
+              draftDigest: draft.digest,
+              summaryDigest: reviewBinding.summaryDigest,
+              signingEnabled: false,
+              proofAuthority: false,
+              poiQueriesPermitted: false,
+              relaySendPermitted: false,
+            });
+            relayWindows.set(relayWindow, {
+              live: true,
+              account,
+              identity,
+              enrollment,
+              coordinator,
+              assertCurrent: attest,
+              data,
+            });
+            const offer = freeze({
+              preparation: draft,
+              reconstruction: { ...renewed.value.relayReconstruction },
+              review: reviewBinding,
+            });
+            const unobservable = () => {
+              continuationDrainUnobserved = true;
+              unknown = true;
+              expire();
+              throw Object.assign(fail(), { code: 'RAILGUN_RELAY_CONTINUATION_DRAIN_FAILED' });
+            };
+            let supplied;
+            try {
+              supplied = onPrepared(
+                offer,
+                Object.freeze({ signal: relaySignal, window: relayWindow })
+              );
+            } catch {
+              throw fail();
+            }
+            if (types.isPromise(supplied) && !types.isProxy(supplied)) {
+              let resolve;
+              const settlement = new Promise((yes) => {
+                resolve = yes;
+              });
+              try {
+                promiseThen.call(
+                  supplied,
+                  (value) => resolve({ fulfilled: true, value }),
+                  () => resolve({ fulfilled: false })
+                );
+              } catch {
+                unobservable();
+              }
+              let invalid = false;
+              try {
+                attest();
+              } catch {
+                invalid = true;
+                relayController.abort();
+              }
+              const settled = await settlement;
+              check(!invalid && settled.fulfilled && settled.value === undefined);
+            } else {
+              // Unknown objects may hide then accessors or unobservable work.
+              // Do not inspect/invoke them or release the admitted owner.
+              if (supplied !== null && ['object', 'function'].includes(typeof supplied))
+                unobservable();
+              check(supplied === undefined);
+            }
+            attest();
+            const continuedState = await walletSession.inspectWalletState();
+            attest();
+            walletSession.assertFresh(continuedState);
+            assert.deepEqual(continuedState, baselineState);
+            await journal.revalidate({
+              snapshot: renewed.evidence,
+              coverage: finalCoverage,
+              state: continuedState,
+              receipt: renewed.value.receipt,
+            });
+            attest();
+            sameOwned(runner.readOwned(renewed.value.receipt, journal));
+            relayWindows.get(relayWindow).live = false;
+          }
           const nextView = createRailgunKohakuRead({
             runner,
             journal,
@@ -1208,7 +1326,9 @@ async function openAccount(
               relaySendPermitted: false,
             });
           return Object.freeze({
-            ...(reviewed ? { status: 'accepted', review: reviewBinding } : {}),
+            ...(reviewed
+              ? { status: continuing ? 'continued-pre-key' : 'accepted', review: reviewBinding }
+              : {}),
             view,
             preparation: draft,
             reconstruction: Object.freeze({ ...renewed.value.relayReconstruction }),
@@ -1227,8 +1347,12 @@ async function openAccount(
           }
           throw error;
         } finally {
+          if (relayWindow) relayWindows.get(relayWindow).live = false;
           clearTimeout(timer);
           relayController.abort();
+          // The original snapshot callback, not its cancellation-race result,
+          // is the account's settlement boundary.
+          await Promise.allSettled([...callbacks]);
           if (!unknown) handoff.release();
         }
       })();
@@ -1238,7 +1362,7 @@ async function openAccount(
         if (entered || unknown || lifetime.aborted) await close();
         throw fail();
       } finally {
-        if (!reviewDrainUnobserved) {
+        if (!reviewDrainUnobserved && !continuationDrainUnobserved) {
           restoration = null;
           busy = false;
         }
@@ -1344,6 +1468,41 @@ function reviewRailgunAccountRelayIntent(account, owners, request, review) {
   require('./railgun-relay-quote-data').shape(owners, ['identity', 'enrollment', 'coordinator']);
   return owned(account, owners).prepareRelayIntent(request, review);
 }
+/** Inactive pre-key continuation. A reviewed handler is still only trusted
+ * host plumbing: no key, signing transition, durable hold or proof admission is
+ * exposed. Its original work must settle before the account owner can release.
+ */
+function operateRailgunAccountRelayIntent(account, owners, request, operation) {
+  const { shape } = require('./railgun-relay-quote-data');
+  shape(owners, ['identity', 'enrollment', 'coordinator']);
+  shape(operation, ['review', 'onPrepared']);
+  const { review, onPrepared } = operation;
+  check(
+    [review, onPrepared].every((value) => typeof value === 'function' && !types.isProxy(value))
+  );
+  return owned(account, owners).prepareRelayIntent(request, review, onPrepared);
+}
+function assertRailgunAccountRelayWindow(window, account, owners, minimumRemainingMs = 0) {
+  require('./railgun-relay-quote-data').shape(owners, ['identity', 'enrollment', 'coordinator']);
+  const entry = relayWindows.get(window);
+  check(
+    entry &&
+      entry.live &&
+      entry.account === account &&
+      entry.identity === owners.identity &&
+      entry.enrollment === owners.enrollment &&
+      entry.coordinator === owners.coordinator
+  );
+  check(
+    Number.isSafeInteger(minimumRemainingMs) &&
+      minimumRemainingMs >= 0 &&
+      minimumRemainingMs < 120000
+  );
+  entry.assertCurrent(minimumRemainingMs);
+  const now = performance.now();
+  check(now >= entry.data.started && now + minimumRemainingMs < entry.data.deadline);
+  return entry.data;
+}
 function prepareRailgunAccountPrivateIntent(account, owners, request) {
   check(request !== undefined);
   return owned(account, owners).restoreCurrent(request);
@@ -1408,6 +1567,8 @@ module.exports = {
   prepareRailgunAccountPrivateIntent,
   prepareRailgunAccountRelayIntent,
   reviewRailgunAccountRelayIntent,
+  operateRailgunAccountRelayIntent,
+  assertRailgunAccountRelayWindow,
   operateRailgunAccountPrivateIntent,
   assertRailgunAccountPrivateWindow,
   readRailgunAccountPrivateCreator,
