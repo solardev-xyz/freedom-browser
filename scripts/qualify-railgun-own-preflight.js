@@ -40,6 +40,7 @@ const sources = [
   'src/main/wallet/railgun-wallet-policy.js',
   'src/main/wallet/railgun-account-store.js',
   'src/main/wallet/railgun-account-enrollment.js',
+  'src/main/wallet/railgun-account-fence.js',
   'src/main/wallet/railgun-account-phase.js',
   'src/main/wallet/railgun-private-reservations.js',
   'src/main/wallet/railgun-private-witness.js',

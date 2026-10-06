@@ -23,6 +23,7 @@ async function main() {
   const sources = [
     'scripts/qualify-railgun-enrollment.js',
     'src/main/wallet/railgun-account-enrollment.js',
+    'src/main/wallet/railgun-account-fence.js',
     'src/main/wallet/railgun-account-store.js',
     'src/main/wallet/railgun-source-ledger.js',
     'src/main/wallet/railgun-scan-journal.js',

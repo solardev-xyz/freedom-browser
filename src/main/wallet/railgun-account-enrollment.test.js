@@ -4,6 +4,47 @@ const fs = require('fs'),
 const { createHash } = require('crypto');
 let mockProfile, mockParent, mockIdentity, mockVault, mockMnemonic, mockPoiFactoryHook;
 let mockCapsuleFactoryHook;
+let mockFenceOwners, mockFenceHistory, mockFenceOpenHook, mockFenceFailure;
+// Only marked-account tests use the explicit simulated main boundary below.
+// Legacy storage tests never call this fake. It is NOT OS-lock/drain evidence. The real
+// primitive registry suite proves same-process retention; it is never reset here.
+jest.mock('./railgun-account-fence', () => ({
+  openRailgunAccountFence: jest.fn(({ directory, create }) => {
+    const fs = require('fs'),
+      path = require('path');
+    if (mockFenceFailure) throw mockFenceFailure;
+    if (mockFenceOwners.has(directory)) throw Error('simulated main still owns fence');
+    const filename = path.join(directory, 'writer-fence.sqlite');
+    if (create) {
+      if (fs.readdirSync(directory).length !== 0) throw Error('not fresh');
+      fs.writeFileSync(filename, 'simulated-cooperative-fence-v1', { flag: 'wx' });
+    } else if (fs.readFileSync(filename, 'utf8') !== 'simulated-cooperative-fence-v1')
+      throw Error('unknown fence');
+    const original = fs.lstatSync(filename),
+      controller = new AbortController();
+    const fence = {
+      signal: controller.signal,
+      assertCurrent: jest.fn(() => {
+        const stat = fs.lstatSync(filename);
+        if (
+          controller.signal.aborted ||
+          stat.isSymbolicLink() ||
+          stat.ino !== original.ino ||
+          stat.dev !== original.dev
+        )
+          throw Error('stale fence');
+      }),
+      retainUntilExit: jest.fn(() => controller.abort()),
+      close: jest.fn(() => {
+        throw Error('enrollment must not release fence');
+      }),
+    };
+    mockFenceOwners.set(directory, fence);
+    mockFenceHistory.push({ directory, create, fence });
+    mockFenceOpenHook?.({ directory, create, fence });
+    return fence;
+  }),
+}));
 jest.mock('./railgun-private-capsule-store', () => {
   const actual = jest.requireActual('./railgun-private-capsule-store');
   return {
@@ -23,6 +64,7 @@ jest.mock('./railgun-poi-intent-store', () => {
         : actual.createRailgunPoiIntentStore(options),
   };
 });
+
 const mockCoordinators = new WeakSet();
 jest.mock('./railgun-scan-coordinator', () => ({
   assertRailgunScanCoordinator: (v) => {
@@ -47,7 +89,11 @@ jest.mock('./railgun-identity', () => ({
   },
 }));
 const { createPrivacyScope } = require('../networks/privacy-context');
-const { openRailgunAccountEnrollment } = require('./railgun-account-enrollment');
+const {
+  openRailgunAccountEnrollment,
+  openRailgunCooperativeAccountEnrollment,
+  assertRailgunFencedAccountEnrollment,
+} = require('./railgun-account-enrollment');
 let enrollments;
 function bind(index = 0) {
   mockVault = new AbortController();
@@ -68,6 +114,9 @@ function bind(index = 0) {
 }
 beforeEach(() => {
   enrollments = [];
+  mockFenceOwners = new Map();
+  mockFenceHistory = [];
+  mockFenceOpenHook = mockFenceFailure = undefined;
   mockPoiFactoryHook = undefined;
   mockCapsuleFactoryHook = undefined;
   mockProfile = {
@@ -333,7 +382,7 @@ test.each(['descriptor', 'seed'])(
   }
 );
 test.each(['directory', 'activation'])(
-  'pending enrollment resumes after interrupted %s creation without deleting files',
+  'interrupted legacy %s creation preserves files and its supported recovery path',
   async (phase) => {
     const originalMkdir = fs.mkdirSync,
       originalRename = fs.renameSync;
@@ -356,7 +405,11 @@ test.each(['directory', 'activation'])(
     });
     await expect(open(true)).rejects.toThrow();
     jest.restoreAllMocks();
-    const restored = await open();
+    if (phase === 'directory') {
+      await expect(open()).rejects.toThrow();
+      expect(inventory()).toEqual([]);
+    }
+    const restored = await open(phase === 'directory');
     expect((await restored.catalog.inspect()).active).toBeNull();
     expect(inventory()).toHaveLength(2);
     restored.close();
@@ -1210,4 +1263,263 @@ test('existing-only initialization refuses concurrent opens and wipes borrowed k
     release.resolve();
     await settled;
   }
+});
+
+// Synthetic process boundary is used ONLY for marked storage-policy tests.
+// It never resets the real primitive's registry or proves OS/utility drainage.
+function simulateMarkedMainExit() {
+  expect([...mockFenceOwners.values()].every((fence) => fence.signal.aborted)).toBe(true);
+  mockFenceOwners.clear();
+}
+async function cooperativeOpen(create = false) {
+  const result = await openRailgunCooperativeAccountEnrollment({ identity: mockIdentity, create });
+  enrollments.push(result);
+  return result;
+}
+function syntheticManifest(entry) {
+  // Existing public unit mnemonic only, never an owned profile/runtime payload.
+  const { createHmac } = require('crypto');
+  const { mnemonicToSeedSync } = require('@scure/bip39');
+  const { createPrivacyStorage } = require('./privacy-storage');
+  const { getPrivacyContext } = require('../networks/privacy-context');
+  const handle = entry.getContext('storage', 'railgun-account-enrollment-v1');
+  const context = getPrivacyContext(handle),
+    seed = mnemonicToSeedSync(mockMnemonic);
+  const root = createHmac('sha256', seed)
+    .update('Freedom Railgun account storage v1\0')
+    .update(JSON.stringify([context.profileId, entry.descriptor.accountIndex, 11155111, 'sepolia']))
+    .digest();
+  const key = createHmac('sha256', root)
+    .update(JSON.stringify([1, 'account-manifest', null]))
+    .digest();
+  try {
+    return createPrivacyStorage({
+      handle,
+      directory: path.dirname(entry.directory),
+      key,
+      profileGuard: entry.profileGuard,
+    });
+  } finally {
+    seed.fill(0);
+    root.fill(0);
+    key.fill(0);
+  }
+}
+const enrollmentRecord = 'railgun-account-enrollment-v1';
+test('legacy create/reopen never acquires fence and cannot grant fenced provenance', async () => {
+  const first = await open(true);
+  expect(() => assertRailgunFencedAccountEnrollment(first)).toThrow();
+  first.close();
+  const second = await open();
+  expect(second.directory).toBe(first.directory);
+  expect(mockFenceHistory).toEqual([]);
+  expect(() => assertRailgunFencedAccountEnrollment(second)).toThrow();
+});
+test('cooperative fresh bootstrap precedes fence and all account writes follow acquisition', async () => {
+  const renamed = [],
+    rename = fs.renameSync;
+  mockFenceOpenHook = ({ directory, create, fence }) => {
+    expect(create).toBe(true);
+    expect(inventory()).toEqual([]);
+    expect(fs.readdirSync(directory)).toEqual(['writer-fence.sqlite']);
+    expect(fence.signal.aborted).toBe(false);
+  };
+  jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    if (to.includes('/wallet-railgun-accounts/')) {
+      expect(mockFenceHistory).toHaveLength(1);
+      expect(mockFenceHistory[0].fence.signal.aborted).toBe(false);
+      renamed.push(to);
+    }
+    return rename(from, to);
+  });
+  const entry = await cooperativeOpen(true),
+    value = JSON.parse(await syntheticManifest(entry).get(enrollmentRecord));
+  expect(renamed).toHaveLength(3);
+  expect(value.writerFence).toBe('main-sqlite-v1');
+  expect(value.status).toBe('active');
+  expect(Object.keys(value).sort().join(',')).toBe('account,status,writerFence');
+  // This exact additional field refuses the previous account,status-only parser.
+  expect(Object.keys(value).sort().join(',') === 'account,status').toBe(false);
+  expect(inventory().some((name) => name.includes('writer-fence'))).toBe(false);
+  expect(() => assertRailgunFencedAccountEnrollment(entry)).not.toThrow();
+});
+test.each(['active', 'pending'])(
+  'cooperative opener refuses unmarked %s adoption without account writes',
+  async (status) => {
+    const entry = await open(true);
+    if (status === 'pending')
+      await syntheticManifest(entry).update(enrollmentRecord, (text) =>
+        JSON.stringify({ ...JSON.parse(text), status })
+      );
+    entry.close();
+    const rename = jest.spyOn(fs, 'renameSync');
+    await expect(cooperativeOpen()).rejects.toThrow();
+    expect(rename).not.toHaveBeenCalled();
+    expect(mockFenceHistory).toEqual([]);
+    const legacy = await open();
+    expect(legacy.directory).toBe(entry.directory);
+  }
+);
+test.each(['generic', 'cooperative'])(
+  '%s opener cannot bypass retained marked ownership',
+  async (kind) => {
+    const entry = await cooperativeOpen(true),
+      fence = mockFenceHistory[0].fence;
+    entry.close();
+    expect(fence.retainUntilExit).toHaveBeenCalledTimes(1);
+    expect(fence.close).not.toHaveBeenCalled();
+    await expect(kind === 'generic' ? open() : cooperativeOpen()).rejects.toThrow();
+    simulateMarkedMainExit();
+    const restored = await (kind === 'generic' ? open() : cooperativeOpen());
+    expect(mockFenceHistory.at(-1).create).toBe(false);
+    expect(() => assertRailgunFencedAccountEnrollment(restored)).not.toThrow();
+  }
+);
+test('fenced assertion rejects copies, proxies, forged fields, revoked and closed owners', async () => {
+  const entry = await cooperativeOpen(true);
+  let getters = 0;
+  for (const value of [
+    { ...entry },
+    new Proxy(entry, {}),
+    {
+      get writerFence() {
+        getters++;
+        return 'main-sqlite-v1';
+      },
+    },
+    null,
+  ])
+    expect(() => assertRailgunFencedAccountEnrollment(value)).toThrow();
+  expect(getters).toBe(0);
+  mockFenceHistory[0].fence.retainUntilExit();
+  expect(() => assertRailgunFencedAccountEnrollment(entry)).toThrow();
+  entry.close();
+  expect(() => assertRailgunFencedAccountEnrollment(entry)).toThrow();
+});
+test.each(['generic', 'cooperative'])(
+  '%s fresh creator loses an atomic namespace race before manifest mutation',
+  async (kind) => {
+    const mkdir = fs.mkdirSync,
+      rename = fs.renameSync;
+    const accountWrites = [];
+    jest.spyOn(fs, 'mkdirSync').mockImplementation((target, ...args) => {
+      if (/\/account-[0-9a-f]{64}$/.test(target)) mkdir(target, ...args); // other current-build winner
+      return mkdir(target, ...args);
+    });
+    jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (to.includes('/wallet-railgun-accounts/')) accountWrites.push(to);
+      return rename(from, to);
+    });
+    await expect(kind === 'generic' ? open(true) : cooperativeOpen(true)).rejects.toThrow();
+    expect(accountWrites).toEqual([]);
+    expect(mockFenceHistory).toEqual([]);
+    expect(inventory()).toEqual([]);
+  }
+);
+test('failed fence acquisition preserves incomplete namespace and no account record', async () => {
+  mockFenceFailure = Error('busy');
+  await expect(cooperativeOpen(true)).rejects.toThrow();
+  expect(inventory()).toEqual([]);
+  mockFenceFailure = undefined;
+  await expect(cooperativeOpen()).rejects.toThrow();
+  await expect(cooperativeOpen(true)).rejects.toThrow();
+  await expect(open(true)).rejects.toThrow();
+});
+test('revocation during acquisition retains returned fence without publishing account record', async () => {
+  mockFenceOpenHook = () => mockVault.abort();
+  await expect(cooperativeOpen(true)).rejects.toThrow();
+  expect(mockFenceHistory[0].fence.retainUntilExit).toHaveBeenCalled();
+  expect(mockFenceHistory[0].fence.close).not.toHaveBeenCalled();
+  expect(inventory()).toEqual([]);
+});
+test.each(['missing', 'invalid', 'dangling'])(
+  'marked %s fence refuses generic and cooperative paths without fallback writes',
+  async (kind) => {
+    const entry = await cooperativeOpen(true),
+      file = path.join(entry.directory, 'writer-fence.sqlite');
+    entry.close();
+    simulateMarkedMainExit();
+    fs.renameSync(file, file + '.preserved');
+    if (kind === 'invalid') fs.writeFileSync(file, 'wrong protocol');
+    if (kind === 'dangling') fs.symlinkSync(file + '.missing', file);
+    const rename = jest.spyOn(fs, 'renameSync');
+    await expect(open()).rejects.toThrow();
+    await expect(cooperativeOpen()).rejects.toThrow();
+    expect(rename).not.toHaveBeenCalled();
+  }
+);
+test.each(['file', 'dangling'])(
+  'unmarked record with remaining %s fence cannot downgrade to legacy writer',
+  async (kind) => {
+    const entry = await cooperativeOpen(true),
+      file = path.join(entry.directory, 'writer-fence.sqlite');
+    await syntheticManifest(entry).update(enrollmentRecord, (text) => {
+      const v = JSON.parse(text);
+      delete v.writerFence;
+      return JSON.stringify(v);
+    });
+    entry.close();
+    simulateMarkedMainExit();
+    if (kind === 'dangling') {
+      fs.renameSync(file, file + '.preserved');
+      fs.symlinkSync(file + '.missing', file);
+    }
+    const rename = jest.spyOn(fs, 'renameSync');
+    await expect(open()).rejects.toThrow();
+    expect(rename).not.toHaveBeenCalled();
+  }
+);
+test('pre-acquisition marked record is reauthenticated before catalog or floor writes', async () => {
+  const entry = await cooperativeOpen(true),
+    store = syntheticManifest(entry);
+  const file = path.join(
+    mockProfile.userDataDir,
+    inventory().find((name) => !name.includes('/account-'))
+  );
+  const original = fs.readFileSync(file);
+  await store.update(enrollmentRecord, (text) =>
+    JSON.stringify({ ...JSON.parse(text), status: 'pending' })
+  );
+  const changed = fs.readFileSync(file);
+  fs.writeFileSync(file, original);
+  entry.close();
+  simulateMarkedMainExit();
+  mockFenceOpenHook = () => fs.writeFileSync(file, changed);
+  const rename = jest.spyOn(fs, 'renameSync');
+  await expect(open()).rejects.toThrow();
+  expect(rename).not.toHaveBeenCalled();
+  expect(mockFenceHistory.at(-1).fence.retainUntilExit).toHaveBeenCalled();
+});
+test('marked store-only recovery reopens under the same live enrollment and fence', async () => {
+  const entry = await cooperativeOpen(true);
+  await entry.openPrivateCapsules();
+  const first = await entry.openPrivateRecoveryStores();
+  first.capsules.close();
+  first.reservations.close();
+  const second = await entry.openPrivateRecoveryStores();
+  expect(second.capsules).not.toBe(first.capsules);
+  expect(await second.capsules.inspect()).toEqual({
+    records: 0,
+    signatures: 0,
+    proofs: 0,
+    capacity: 32,
+  });
+  expect(mockFenceHistory).toHaveLength(1);
+  expect(() => assertRailgunFencedAccountEnrollment(entry)).not.toThrow();
+});
+test('marked activation failure retains fence and neither factory repairs pending marked state', async () => {
+  const rename = fs.renameSync;
+  let accountWrites = 0;
+  jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    if (/wallet-railgun-accounts\/[0-9a-f]{64}\.json$/.test(to) && ++accountWrites === 2)
+      throw Error('activation failure');
+    return rename(from, to);
+  });
+  await expect(cooperativeOpen(true)).rejects.toThrow();
+  jest.restoreAllMocks();
+  expect(mockFenceHistory[0].fence.retainUntilExit).toHaveBeenCalled();
+  simulateMarkedMainExit();
+  await expect(open()).rejects.toThrow();
+  simulateMarkedMainExit();
+  await expect(cooperativeOpen()).rejects.toThrow();
 });

@@ -18,8 +18,10 @@ const { isRailgunPublicCatalog } = require('./railgun-public-catalog');
 const { createRailgunPrivateReservations } = require('./railgun-private-reservations');
 const { createRailgunPrivateCapsuleStore } = require('./railgun-private-capsule-store');
 const { createRailgunPoiIntentStore } = require('./railgun-poi-intent-store');
+const { openRailgunAccountFence } = require('./railgun-account-fence');
 const owners = new Set(),
   instances = new WeakSet(),
+  fencedInstances = new WeakMap(),
   RECORD = 'railgun-account-enrollment-v1';
 const fail = () =>
   Object.assign(new Error('Railgun account requires recovery'), {
@@ -55,7 +57,7 @@ function regularFileIfPresent(target) {
     return false;
   }
 }
-async function openRailgunAccountEnrollment({ identity, create = false }) {
+async function openAccountEnrollment({ identity, create = false }, cooperative) {
   check(typeof create === 'boolean');
   const descriptor = assertRailgunIdentity(identity),
     parent = openPrivacySession(),
@@ -77,11 +79,13 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
   // A moved or aliased profile must be deliberately recovered; don't redirect
   // persistent account state through symlinks or silently change its identity.
   directory(profile.userDataDir);
+  let fence;
   const scope = createPrivacyScope({
     profileId: context.profileId,
     signal: AbortSignal.any([parent.signal, identity.signal, vaultSignal]),
     isCurrent: () => {
       assertRailgunIdentity(identity, parentHandle);
+      fence?.assertCurrent();
       return vaultSignal === vault.getSessionSignal();
     },
   });
@@ -115,6 +119,9 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
   function close() {
     if (closed) return;
     closed = true;
+    // A synchronous enrollment close cannot establish original-work drainage.
+    // Marked accounts retain their main connection until this process exits.
+    fence?.retainUntilExit();
     rootKey?.fill(0);
     borrowed.forEach((key) => key.fill(0));
     catalog?.close();
@@ -129,6 +136,8 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     check(!closed);
     assertRailgunIdentity(identity, handle);
     check(vaultSignal === vault.getSessionSignal());
+    fence?.assertCurrent();
+    check(!closed);
   }
   function derive(purpose, generation = null) {
     active();
@@ -148,7 +157,9 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     const v = JSON.parse(text);
     check(
       v &&
-        Object.keys(v).sort().join(',') === 'account,status' &&
+        (Object.keys(v).sort().join(',') === 'account,status' ||
+          (Object.keys(v).sort().join(',') === 'account,status,writerFence' &&
+            v.writerFence === 'main-sqlite-v1')) &&
         v.account === expected &&
         ['pending', 'active'].includes(v.status)
     );
@@ -162,6 +173,8 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
         .update('Freedom Railgun account storage v1\0')
         .update(JSON.stringify([context.profileId, descriptor.accountIndex, 11155111, 'sepolia']))
         .digest();
+      // Shared profile inventory bootstraps before account namespace creation.
+      // The account fence does not serialize other profiles/accounts/protocols.
       guard = createPrivacyProfileGuard({ handle, profile, seed });
       directory(base, !fs.existsSync(base));
       regularFileIfPresent(file);
@@ -175,15 +188,45 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     active();
     if (create) {
       check(current === null && !fs.existsSync(accountDirectory));
+      // Both current-build creation paths claim the same absent namespace before
+      // writing pending state. Never adopt/recreate an interrupted empty slot.
+      directory(accountDirectory, true);
+      if (cooperative) {
+        fence = openRailgunAccountFence({ directory: accountDirectory, create: true });
+        if (closed) fence.retainUntilExit();
+        active();
+      }
       await manifest.update(RECORD, (text) => {
         active();
         check(text === null);
-        return JSON.stringify({ account: expected, status: 'pending' });
+        return JSON.stringify({
+          account: expected,
+          status: 'pending',
+          ...(cooperative ? { writerFence: 'main-sqlite-v1' } : {}),
+        });
       });
       current = await manifest.get(RECORD);
     }
     check(current !== null);
     const enrolled = state(current);
+    const marked = Object.hasOwn(enrolled, 'writerFence');
+    check(!cooperative || marked);
+    // A downgraded marker must not select an unfenced path while the cooperative
+    // file remains, including malformed or dangling-link substitutions.
+    if (!marked) check(!regularFileIfPresent(path.join(accountDirectory, 'writer-fence.sqlite')));
+    if (marked && !fence) {
+      directory(accountDirectory);
+      fence = openRailgunAccountFence({ directory: accountDirectory, create: false });
+      if (closed) fence.retainUntilExit();
+      active();
+      const locked = await manifest.get(RECORD);
+      active();
+      check(locked === current);
+      state(locked);
+    }
+    // Marked interrupted creation requires explicit recovery, not an implicit
+    // catalog/lease repair. Legacy pending enrollment keeps its prior behavior.
+    check(!marked || create || enrolled.status === 'active');
     directory(accountDirectory, enrolled.status === 'pending' && !fs.existsSync(accountDirectory));
     const catalogHandle = scope.getContext({
       ...subject,
@@ -212,7 +255,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       await manifest.update(RECORD, (text) => {
         active();
         check(text === current);
-        return JSON.stringify({ account: expected, status: 'active' });
+        return JSON.stringify({ ...enrolled, status: 'active' });
       });
     active();
   } catch (error) {
@@ -580,9 +623,23 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     },
   });
   instances.add(instance);
+  if (fence) fencedInstances.set(instance, active);
   return instance;
+}
+function openRailgunAccountEnrollment(options) {
+  return openAccountEnrollment(options, false);
+}
+function openRailgunCooperativeAccountEnrollment(options) {
+  return openAccountEnrollment(options, true);
+}
+function assertRailgunFencedAccountEnrollment(value) {
+  const current = fencedInstances.get(value);
+  check(current);
+  current();
 }
 module.exports = {
   openRailgunAccountEnrollment,
+  openRailgunCooperativeAccountEnrollment,
+  assertRailgunFencedAccountEnrollment,
   isRailgunAccountEnrollment: (value) => instances.has(value),
 };
