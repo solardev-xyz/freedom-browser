@@ -156,8 +156,10 @@ so an existing account needs a fresh wallet generation.
    proving and original-signature recovery of a transfer to account 1, the
    receiver gate on the real intent, and wallet scans by A, B and an
    unrelated account 2 enrolled in the same profile, against synthetic chain
-   data. It does not cover A's POI submission, review callbacks or B spending
-   the note.
+   data. With its own owners only, B attributes the note to A's Transact,
+   prepares a full unshield and reconstructs its POI input. It does not cover
+   A's POI submission, review callbacks, POI eligibility (synthetic and not
+   queried) or B signing, proving or submitting a spend.
 2. Main derives the review relationship from exact strings. An other-chain
    encoding of A's own address is reviewed as foreign and then refused before
    signing. Decoding before review would need a new or extended utility job.
