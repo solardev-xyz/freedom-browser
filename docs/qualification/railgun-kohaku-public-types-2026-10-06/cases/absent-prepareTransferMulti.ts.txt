@@ -1,0 +1,3 @@
+import type {PinnedPublicTarget} from 'freedom-public-contract';
+declare const target: PinnedPublicTarget;
+target.prepareTransferMulti;

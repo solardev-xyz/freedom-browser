@@ -1,0 +1,37 @@
+import {createRailgunKohakuPublicAdapter, createRailgunKohakuPublicAdapterSubmitter, type RestrictedPublicHost, type PublicAdapter, type PublicCapabilities, type PublicShieldInput, type PublicShieldOperation, type PublicShieldAcknowledgement, type PublicAdapterSubmitter, type PinnedPublicTarget, type ReadAmount} from 'freedom-public-contract';
+import type {PICapCfg, PICapabilities, PluginInstance} from 'kohaku-plugin-base';
+declare const host: RestrictedPublicHost;
+declare const signal: AbortSignal;
+const adapter: PublicAdapter = createRailgunKohakuPublicAdapter({host,signal});
+const target: PluginInstance<string, PublicCapabilities> = adapter;
+const declared: PinnedPublicTarget = target;
+const caps: PICapCfg<PublicCapabilities> extends PICapabilities ? true : false = true;
+const submitter: PublicAdapterSubmitter = createRailgunKohakuPublicAdapterSubmitter(adapter);
+const exactSubmit: (operation:PublicShieldOperation)=>Promise<PublicShieldAcknowledgement> = submitter.submit;
+type PreparationKeys = Extract<keyof PinnedPublicTarget, `prepare${string}`>;
+const onlyShield: Exclude<PreparationKeys,'prepareShield'> extends never ? true : false = true;
+const value: PublicShieldInput = {asset:{__type:'native'},amount:1n};
+async function consume() {
+ const id: string = await adapter.instanceId();
+ const amounts: ReadAmount[] = await target.balance(undefined);
+ amounts.push({asset:{__type:'native'},amount:1n,tag:'unverified'});
+ const notes = await adapter.notes(undefined,true);
+ notes.push(...notes);
+ const operation: PublicShieldOperation = await target.prepareShield(value);
+ const explicitRecipient: PublicShieldOperation = await adapter.prepareShield(value,id);
+ // Structural typed copies compile; runtime identity must still refuse them.
+ const copied: PublicShieldOperation = {...operation};
+ const result: PublicShieldAcknowledgement = await submitter.submit(operation);
+ const hash: `0x${string}` = result.hash;
+ const from: `0x${string}` = result.from;
+ const to: `0x${string}` = result.to;
+ const amount: string = result.value;
+ const nonce: number = result.nonce;
+ const chain: 11155111 = result.chainId;
+ const source: 'direct' = result.broadcastSource;
+ const explorer: string|null = result.explorerUrl;
+ // TypeScript does not encode a Promise rejection reason: catch stays unknown.
+ try { await submitter.submit(explicitRecipient); } catch(reason) { const failure: unknown = reason; return {failure}; }
+ return {hash,from,to,amount,nonce,chain,source,explorer,copied};
+}
+export {adapter,target,declared,caps,submitter,exactSubmit,onlyShield,consume};

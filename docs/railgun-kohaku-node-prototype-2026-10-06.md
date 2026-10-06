@@ -4,6 +4,8 @@ A standalone Node prototype now packages the restricted Kohaku snapshot and priv
 
 The source checkpoint is `f84da57a8ef9234d63447774c240ce4dfeb92f6b`. The [audit archive](qualification/railgun-kohaku-node-prototype-2026-10-06/README.md) preserves the reviewed artifact and verification evidence, distinguishing exact payloads from explicitly normalized publication copies. An exact local package is retained under `tmp/privacy-build/railgun-kohaku-node-prototype-oct6`; that ignored build directory is not a checked-in package or an npm publication.
 
+This is the historical three-factory artifact. The [later five-factory prototype](railgun-kohaku-public-node-prototype-2026-10-06.md) adds public Shield preparation/submission and the private Promise-observation correction. Its evidence and local artifact have separate locations; nothing below is relabeled as a run of the newer source.
+
 ## What an application receives
 
 The package exports three factories: `createRailgunKohakuSnapshotPlugin`, `createRailgunKohakuPrivateAdapter`, and `createRailgunKohakuPrivateAdapterBroadcaster`. The snapshot factory accepts a host-supplied snapshot host. The private adapter accepts a transaction-capable host with explicit lifecycle and preparation/broadcast methods. Public Shield/deposit submission remains in the existing Freedom integration and is not exported by this package.

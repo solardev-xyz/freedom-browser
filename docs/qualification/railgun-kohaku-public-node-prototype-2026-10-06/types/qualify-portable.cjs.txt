@@ -1,0 +1,89 @@
+const assert = require('assert/strict');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const base = __dirname;
+const discoveryPath = '<COMPILER_DISCOVERY>/REPORT.json';
+const sha = (filename) => crypto.createHash('sha256').update(fs.readFileSync(filename)).digest('hex');
+assert.equal(sha(discoveryPath), '2a2aa287f97fcee5e73b53f35fb64f3e8dd6294ac8b1de45f27d640c33eb77dd');
+const discovery = JSON.parse(fs.readFileSync(discoveryPath, 'utf8'));
+const compiler = discovery.discoveredCompiler.path;
+const compilerRoot = path.dirname(path.dirname(compiler));
+assert.equal(sha(compiler), discovery.discoveredCompiler.entrySha256);
+assert.equal(sha(path.join(compilerRoot, 'package.json')), discovery.discoveredCompiler.packageJsonSha256);
+assert.equal(sha(process.execPath), discovery.node.sha256);
+for (const [relative, digest] of Object.entries(discovery.loadedDeclarationHashes)) assert.equal(sha(path.join(compilerRoot, relative)), digest);
+const ts = require(compiler);
+assert.equal(ts.version, '6.0.3');
+const spec = JSON.parse(fs.readFileSync(path.join(base, 'CASE-SPEC.json'), 'utf8'));
+const options = {
+  strict: true, noEmit: true, noEmitOnError: true, skipLibCheck: false,
+  skipDefaultLibCheck: false, allowJs: false, checkJs: false, types: [],
+  target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext,
+  moduleResolution: ts.ModuleResolutionKind.NodeNext,
+  noImplicitOverride: true, noPropertyAccessFromIndexSignature: true,
+  noFallthroughCasesInSwitch: true, noUncheckedIndexedAccess: true,
+  useDefineForClassFields: true, forceConsistentCasingInFileNames: true,
+  esModuleInterop: true, verbatimModuleSyntax: false,
+  lib: ['lib.es2022.d.ts', 'lib.dom.d.ts'], traceResolution: true,
+};
+const allReads = {};
+function label(filename) {
+  if (filename.startsWith(base + path.sep)) return path.relative(base, filename);
+  if (filename.startsWith(compilerRoot + path.sep)) return 'compiler/' + path.relative(compilerRoot, filename);
+  throw Error('Outside allowed package/compiler graph: ' + filename);
+}
+function compile(relative) {
+  const input = path.join(base, relative);
+  const consumer = path.join(base, relative.split('/')[0]);
+  const host = ts.createCompilerHost(options);
+  host.getCurrentDirectory = () => consumer;
+  const read = host.readFile.bind(host);
+  const reads = {}, trace = [];
+  host.readFile = (filename) => {
+    const text = read(filename);
+    if (text !== undefined) {
+      assert.ok(filename.startsWith(consumer + path.sep) || filename.startsWith(compilerRoot + path.sep), filename);
+      const name = label(filename), digest = sha(filename);
+      if (allReads[name]) assert.equal(allReads[name].sha256, digest);
+      reads[name] = digest; allReads[name] = {path: filename, sha256: digest};
+    }
+    return text;
+  };
+  host.trace = (line) => trace.push(line);
+  let writes = 0;
+  host.writeFile = () => { writes++; throw Error('Unexpected emit'); };
+  const program = ts.createProgram([input], options, host);
+  const diagnostics = ts.getPreEmitDiagnostics(program).map((d) => {
+    const pos = d.file && d.start !== undefined ? d.file.getLineAndCharacterOfPosition(d.start) : null;
+    return {code:d.code,file:d.file ? label(d.file.fileName) : null,line:pos ? pos.line+1 : null,character:pos ? pos.character+1 : null,message:ts.flattenDiagnosticMessageText(d.messageText,'\n')};
+  });
+  program.emit(); assert.equal(writes, 0);
+  const sourceFiles = program.getSourceFiles().map((file) => label(file.fileName));
+  const declarations = sourceFiles.filter((name) => name.startsWith(relative.split('/')[0] + '/node_modules/'));
+  const prefix = relative.split('/')[0]+'/node_modules/@freedom/restricted-railgun-node-prototype/';
+  const expected = [prefix+'index.d.cts'];
+  if (!relative.startsWith('consumer-cjs/')) expected.push(prefix+'index.d.mts');
+  assert.deepEqual(declarations.sort(), expected.sort());
+  assert.ok(trace.some((line) => line.includes("Module name '@freedom/restricted-railgun-node-prototype' was successfully resolved")));
+  const out = {input:relative,diagnostics,writes,sourceFiles,reads,resolutionTrace:trace};
+  const resultFile=path.join(base,'portable-details',relative.replaceAll('/','--')+'.json');
+  fs.mkdirSync(path.dirname(resultFile),{recursive:true});fs.writeFileSync(resultFile,JSON.stringify(out,null,2)+'\n');
+  return {input:relative,diagnostics,writes,sourceFileCount:sourceFiles.length,declarations,detailSha256:sha(resultFile)};
+}
+const results = [];
+for (const relative of spec.positives) {
+  const result = compile(relative); assert.deepEqual(result.diagnostics, [], relative); results.push({...result,expected:'positive',matched:true});
+}
+for (const expected of spec.negatives) {
+  const result = compile(expected.file);
+  assert.deepEqual(result.diagnostics.map((d)=>d.code),expected.expectedCodes,expected.file);
+  assert.deepEqual(result.diagnostics.map((d)=>({line:d.line,character:d.character})),expected.expectedPositions,expected.file);
+  assert.ok(result.diagnostics.every((d)=>d.file===expected.file));
+  assert.ok(result.diagnostics.some((d)=>d.message.includes(expected.messageIncludes)),expected.file);
+  results.push({...result,expected:'negative',matched:true});
+}
+for (const {path: filename,sha256} of Object.values(allReads)) assert.equal(sha(filename),sha256);
+const report = {schema:1,compilerVersion:ts.version,compilerSha256:sha(compiler),nodeSha256:sha(process.execPath),options,prepareReportSha256:sha(path.join(base,'PREPARE-REPORT.json')),harnessSha256:sha(__filename),caseSpecSha256:sha(path.join(base,'CASE-SPEC.json')),sourceGraphExecuted:false,customModuleResolver:false,pathsAliases:false,repositoryReadByCompiler:false,positiveCases:spec.positives.length,negativeCases:spec.negatives.length,results,readHashes:Object.fromEntries(Object.entries(allReads).map(([name,v])=>[name,v.sha256]))};
+const output=path.join(base,'PORTABLE-REPORT.json');assert.ok(!fs.existsSync(output));fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n');
+console.log(JSON.stringify({positiveCases:report.positiveCases,negativeCases:report.negativeCases,reportSha256:sha(output),compilerWrites:0}));

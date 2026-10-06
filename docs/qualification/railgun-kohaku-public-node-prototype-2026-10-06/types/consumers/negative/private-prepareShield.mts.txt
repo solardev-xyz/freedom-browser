@@ -1,0 +1,3 @@
+import type { PrivateAdapter } from '@freedom/restricted-railgun-node-prototype';
+declare const adapter: PrivateAdapter;
+adapter.prepareShield;

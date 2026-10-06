@@ -1,0 +1,80 @@
+/** Restricted public Shield host extension; trusted hosts own policy/authority.
+ * Native Promise, bounds and one-use identity are runtime contracts. These
+ * draft types have not yet been qualified against the pinned upstream graph.
+ */
+import type { PluginInstance } from '../../tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base';
+import type { ReadAsset, ReadAmount, ReadNote } from './railgun-kohaku-snapshot-contract';
+export type { ReadAsset, ReadAmount, ReadNote } from './railgun-kohaku-snapshot-contract';
+export interface PublicShieldInput {
+  asset: { __type: 'native' };
+  amount: bigint;
+}
+// Phantom type-only brand; runtime token owns only the frozen __type field.
+declare const publicOperation: unique symbol;
+export interface PublicShieldOperation {
+  readonly __type: 'publicOperation';
+  readonly [publicOperation]: true;
+}
+export interface PublicShieldAcknowledgement {
+  hash: `0x${string}`;
+  nonce: number;
+  from: `0x${string}`;
+  to: `0x${string}`;
+  value: string;
+  chainId: 11155111;
+  broadcastSource: 'direct';
+  explorerUrl: string | null;
+}
+export type PublicHostHandle = Readonly<Record<string, never>>;
+export interface RestrictedPublicHost {
+  readonly signal: AbortSignal;
+  readonly closed: Promise<void>;
+  instanceId(): Promise<string>;
+  balance(assets?: ReadonlyArray<ReadAsset>): Promise<ReadonlyArray<ReadAmount>>;
+  notes(
+    assets?: ReadonlyArray<ReadAsset>,
+    includeSpent?: boolean
+  ): Promise<ReadonlyArray<ReadNote>>;
+  prepareShield(value: PublicShieldInput, to?: string): Promise<{ handle: PublicHostHandle }>;
+  submit(handle: PublicHostHandle): Promise<PublicShieldAcknowledgement>;
+  close(): undefined;
+}
+export type PublicAdapterExtras = {
+  readonly provenance: 'host-supplied';
+  readonly signal: AbortSignal;
+  readonly closed: Promise<void>;
+  close(): undefined;
+};
+export type PublicAdapter = PublicAdapterExtras & {
+  instanceId(): Promise<string>;
+  balance(assets?: ReadAsset[]): Promise<ReadAmount[]>;
+  notes(assets?: ReadAsset[], includeSpent?: boolean): Promise<ReadNote[]>;
+  prepareShield(value: PublicShieldInput, to?: string): Promise<PublicShieldOperation>;
+};
+export type PublicCapabilities = {
+  features: { prepareShield: true };
+  publicOp: PublicShieldOperation;
+  assetAmounts: {
+    input: PublicShieldInput;
+    internal: ReadAmount;
+    output: ReadAmount;
+    read: ReadAmount;
+  };
+  note: ReadNote;
+  extras: PublicAdapterExtras;
+};
+export type PinnedPublicTarget = PluginInstance<string, PublicCapabilities>;
+/** Public submission rejects original trusted-host reasons, including journal
+ * uncertainty/unresolved errors. Promise rejection is not expressed by this
+ * result type and must be handled separately; no private outcome union.
+ */
+export type PublicAdapterSubmitter = {
+  submit(operation: PublicShieldOperation): Promise<PublicShieldAcknowledgement>;
+};
+export declare function createRailgunKohakuPublicAdapter(options: {
+  host: RestrictedPublicHost;
+  signal: AbortSignal;
+}): PublicAdapter;
+export declare function createRailgunKohakuPublicAdapterSubmitter(
+  adapter: PublicAdapter
+): PublicAdapterSubmitter;

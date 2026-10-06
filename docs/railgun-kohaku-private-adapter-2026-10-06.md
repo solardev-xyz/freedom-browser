@@ -4,6 +4,8 @@ The wallet now has a restricted private-operation adapter with a separate, fixed
 
 Core source checkpoint: `3e24dc906852fc17b07a51ed3cbf98236bdc2628`; corrected runtime/native-fixture checkpoint: `f84da57a8ef9234d63447774c240ce4dfeb92f6b`. The adapter is restricted to the existing Sepolia/direct WETH integration and its 10^16 base-unit input ceiling. That ceiling is an integration restriction, not Railgun's protocol limit. The fixed host checks the entire selected input, including when only a smaller amount is withdrawn. No chain-independent package, generic Kohaku Host or arbitrary-recipient support is claimed.
 
+The later [public-adapter checkpoint](railgun-kohaku-public-adapter-2026-10-06.md) at `deb34394` also corrects native Promise-observation failure in this private adapter. An unobservable promise now closes admission and causes closure to reject while other observable work remains retained. Nine distinguishing private regressions pass in the combined 823-test run. The five native reports below remain evidence for `f84da57a`; they are not refreshed private-native qualification for this correction. The [five-factory Node prototype](railgun-kohaku-public-node-prototype-2026-10-06.md) includes the corrected private source and its independent runtime checks.
+
 ## Contract and ownership
 
 The adapter exposes asynchronous instance ID, balance and note reads while ready. Results are detached mutable copies with explicit host-supplied provenance; data alone confers no spending or eligibility authority. Preparation refuses while admitted reads are pending. A session allows one preparation attempt, and a denied attempt closes it.

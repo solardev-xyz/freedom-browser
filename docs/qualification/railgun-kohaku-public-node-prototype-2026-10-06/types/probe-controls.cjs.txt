@@ -1,0 +1,17 @@
+const assert=require('assert/strict'),fs=require('fs'),path=require('path'),crypto=require('crypto');
+const base=__dirname, controls=path.join(base,'controls'),sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+const compiler='<TYPESCRIPT_INSTALLATION>/lib/typescript.js';assert.equal(sha(compiler),'569177652966bd528c319171c7dd22860dbf72bde116cbc4f644f1d02bb12e39');assert.equal(sha(process.execPath),'f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5');
+const ts=require(compiler),compilerRoot=path.dirname(path.dirname(compiler));
+const options=JSON.parse(fs.readFileSync(path.join(base,'PORTABLE-REPORT.json'),'utf8')).options;
+const specs=JSON.parse(fs.readFileSync(path.join(controls,'SPEC.json'),'utf8')),results=[];
+for(const spec of specs){
+ const c=path.join(controls,spec.name),host=ts.createCompilerHost(options),read=host.readFile.bind(host),reads={},trace=[];
+ host.getCurrentDirectory=()=>c;host.trace=line=>trace.push(line);
+ host.readFile=filename=>{const text=read(filename);if(text!==undefined){assert.ok(filename.startsWith(c+path.sep)||filename.startsWith(compilerRoot+path.sep),filename);reads[filename.startsWith(c+path.sep)?'consumer/'+path.relative(c,filename):'compiler/'+path.relative(compilerRoot,filename)]=sha(filename);}return text;};
+ let writes=0;host.writeFile=()=>{writes++;throw Error('Unexpected emit');};
+ const program=ts.createProgram([path.join(c,spec.input)],options,host);
+ const diagnostics=ts.getPreEmitDiagnostics(program).map(d=>{const p=d.file&&d.start!==undefined?d.file.getLineAndCharacterOfPosition(d.start):null;return {code:d.code,file:d.file?path.relative(c,d.file.fileName):null,line:p?p.line+1:null,character:p?p.character+1:null,message:ts.flattenDiagnosticMessageText(d.messageText,'\n')};});program.emit();assert.equal(writes,0);
+ const declarations=program.getSourceFiles().map(f=>f.fileName).filter(n=>n.startsWith(path.join(c,'node_modules')+path.sep)).map(n=>path.relative(c,n));
+ results.push({...spec,diagnostics,declarations,reads,trace,writes});
+}
+const target=path.join(base,'CONTROL-PROBE.json');assert.ok(!fs.existsSync(target));fs.writeFileSync(target,JSON.stringify({compilerSha256:sha(compiler),harnessSha256:sha(__filename),options,results},null,2)+'\n');console.log(JSON.stringify(results.map(r=>({name:r.name,diagnostics:r.diagnostics,declarations:r.declarations})),null,2));

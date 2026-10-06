@@ -1,0 +1,2 @@
+import type {PublicShieldInput} from 'freedom-public-contract';
+const value: PublicShieldInput = {asset:{__type:'native'},amount:1};

@@ -1,0 +1,35 @@
+import pathlib,json,hashlib,re
+b=pathlib.Path(__file__).parent
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+probe=json.loads((b/'CONTROL-PROBE.json').read_text())
+expected=[('duplicate-brands',[2741,2741,2345,2345,2741,2741,2345,2345],[(10,9),(12,9),(13,99),(14,107),(26,8),(28,8),(29,94),(30,102)]),('missing-public-submitter',[2724],[(47,42)]),('broadened-public-outcome',[2322],[(62,8)]),('misrouted-esm-types',[],[])]
+compiler=pathlib.Path('<TYPESCRIPT_INSTALLATION>')
+checks=[]
+for result,(name,codes,positions)in zip(probe['results'],expected,strict=True):
+ assert result['name']==name and [d['code']for d in result['diagnostics']]==codes
+ assert [(d['line'],d['character'])for d in result['diagnostics']]==positions
+ assert all(d['file']==result['input']for d in result['diagnostics'])
+ if name=='duplicate-brands':
+  assert all('privateOperation'in d['message']for d in result['diagnostics'][:4]);assert all('publicOperation'in d['message']for d in result['diagnostics'][4:])
+ if name=='missing-public-submitter':assert 'createRailgunKohakuPublicAdapterSubmitter'in result['diagnostics'][0]['message']
+ if name=='broadened-public-outcome':assert 'submissionStatus'in result['diagnostics'][0]['message']
+ declarations=result['declarations'];assert len(declarations)==(1 if name=='misrouted-esm-types'else 2)
+ assert all(p.endswith('index.d.cts')or p.endswith('index.d.mts')for p in declarations)
+ if name=='misrouted-esm-types':assert declarations[0].endswith('index.d.cts')
+ for label,h in result['reads'].items():
+  kind,relative=label.split('/',1);p=(compiler if kind=='compiler'else b/'controls'/name)/relative;assert sha(p)==h
+ assert result['writes']==0
+ checks.append({'name':name,'diagnosticCodes':codes,'diagnosticPositions':positions,'matched':True,'distinction':'compiler accepts but required ESM forwarding entry is absent'if name=='misrouted-esm-types'else'compiler rejects mutated package'})
+inventory=json.loads((b/'ARTIFACT-INVENTORY.json').read_text())
+locations=['artifact']+[name+'/node_modules/@freedom/restricted-railgun-node-prototype'for name in ['consumer-cjs','consumer-esm','consumer-mixed','consumer-upstream']]
+for location in locations:
+ p=b/location;actual={str(f.relative_to(p)):sha(f)for f in p.rglob('*')if f.is_file()};assert actual==inventory
+runtime=pathlib.Path('<RUNTIME_BUILD>');freeze=json.loads((runtime/'FREEZE.json').read_text())
+for n,v in freeze['files'].items():
+ p=runtime/n;assert sha(p)==(v['sha256']if isinstance(v,dict)else v)
+ if isinstance(v,dict):assert p.stat().st_size==v['bytes']
+old=pathlib.Path('<SCRATCH_ROOT>/railgun-node-distribution-types-oct6/artifact/index.d.cts').read_bytes();new=(b/'artifact/index.d.cts').read_bytes();assert new.startswith(old)
+assert new.count(b'declare const privateOperation: unique symbol;')==1 and new.count(b'declare const publicOperation: unique symbol;')==1
+assert sorted(re.findall(r'export declare function (\w+)',new.decode()))==sorted(re.findall(r'export const (\w+)',(b/'artifact/index.mjs').read_text()))
+report={'controls':checks,'probeSha256':sha(b/'CONTROL-PROBE.json'),'verifierSha256':sha(pathlib.Path(__file__)),'artifactInventorySha256':sha(b/'ARTIFACT-INVENTORY.json'),'artifactFiles':len(inventory),'unchangedArtifactLocations':locations,'originalRuntimeFreezeVerified':sha(runtime/'FREEZE.json'),'originalRuntimeFreezeFiles':len(freeze['files']),'oldCanonicalPrefixExact':True,'singleCanonicalPrivateBrand':True,'singleCanonicalPublicBrand':True,'fiveFactoryDeclarationsMatchWrapper':True,'allControlReadsStillMatch':True}
+p=b/'VERIFICATION-REPORT.json';assert not p.exists();p.write_text(json.dumps(report,indent=2)+'\n');print(json.dumps({'controls':4,'artifactFiles':len(inventory),'unchangedCopies':len(locations),'reportSha256':sha(p)}))

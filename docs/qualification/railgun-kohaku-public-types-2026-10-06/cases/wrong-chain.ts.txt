@@ -1,0 +1,3 @@
+import type {PublicShieldAcknowledgement} from 'freedom-public-contract';
+declare const result: PublicShieldAcknowledgement;
+result.chainId = 1;

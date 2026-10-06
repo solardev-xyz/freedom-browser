@@ -1,0 +1,2 @@
+import type {PublicShieldAcknowledgement} from '@freedom/restricted-railgun-node-prototype';
+const result: PublicShieldAcknowledgement = {hash:'0x01'};

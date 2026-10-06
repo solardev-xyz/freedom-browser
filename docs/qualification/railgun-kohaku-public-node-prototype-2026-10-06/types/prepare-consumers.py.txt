@@ -1,0 +1,59 @@
+import pathlib,json,hashlib,shutil
+b=pathlib.Path(__file__).parent;prior=pathlib.Path('<SCRATCH_ROOT>/railgun-node-distribution-types-oct6');public=pathlib.Path('<SCRATCH_ROOT>/railgun-public-strict-conformance-oct6');pkg='@freedom/restricted-railgun-node-prototype';sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+assert sha(prior/'FREEZE.json')=='b0521e9e2cd30a86ffd366ede1b19ec9a0f06434ac5aca4b73d7611f1f7e4e91';assert sha(public/'FREEZE.json')=='49b3c3cb1ae82b47f50315ffee6c5551a5aa481f14c1539bfd85d30687b1793e'
+for kind,filename in [('cjs','positive.cts'),('esm','positive.mts'),('mixed','mixed.mts')]:
+ c=b/('consumer-'+kind);c.mkdir();shutil.copytree(b/'artifact',c/'node_modules'/pkg);shutil.copyfile(prior/('consumer-'+kind)/'package.json',c/'package.json');s=(prior/('consumer-'+kind)/filename).read_text()
+ if kind!='mixed':
+  s+=("\nconst {createRailgunKohakuPublicAdapter,createRailgunKohakuPublicAdapterSubmitter} = api;\n"if kind=='cjs'else"\nimport {createRailgunKohakuPublicAdapter,createRailgunKohakuPublicAdapterSubmitter} from '"+pkg+"';\n")
+  s+="import type {RestrictedPublicHost,PublicAdapter,PublicShieldInput,PublicShieldOperation,PublicShieldAcknowledgement,PublicAdapterSubmitter} from '"+pkg+"';\n"+'''declare const publicHost: RestrictedPublicHost;
+const publicAdapter: PublicAdapter = createRailgunKohakuPublicAdapter({host:publicHost,signal});
+const publicSubmitter: PublicAdapterSubmitter = createRailgunKohakuPublicAdapterSubmitter(publicAdapter);
+const publicValue: PublicShieldInput = {asset:{__type:'native'},amount:1n};
+async function publicConsume() {
+ const id: string = await publicAdapter.instanceId();
+ const balances: ReadAmount[] = await publicAdapter.balance();
+ balances.push({asset:{__type:'native'},amount:1n,tag:'unverified'});
+ const publicNotes: ReadNote[] = await publicAdapter.notes(undefined,true);
+ publicNotes.push(...publicNotes);
+ const operation: PublicShieldOperation = await publicAdapter.prepareShield(publicValue);
+ const addressed: PublicShieldOperation = await publicAdapter.prepareShield(publicValue,id);
+ const copiedPublic: PublicShieldOperation = {...operation};
+ const acknowledgement: PublicShieldAcknowledgement = await publicSubmitter.submit(operation);
+ const hash: `0x${string}` = acknowledgement.hash;
+ const from: `0x${string}` = acknowledgement.from;
+ const to: `0x${string}` = acknowledgement.to;
+ const value: string = acknowledgement.value;
+ const chain: 11155111 = acknowledgement.chainId;
+ const source: 'direct' = acknowledgement.broadcastSource;
+ const nonce: number = acknowledgement.nonce;
+ const explorer: string|null = acknowledgement.explorerUrl;
+ try { await publicSubmitter.submit(addressed); } catch(reason) { const failure: unknown = reason; return {failure}; }
+ return {hash,from,to,value,chain,source,nonce,explorer,copiedPublic};
+}
+export {publicAdapter,publicSubmitter,publicConsume};
+'''
+ else:
+  s+="\nimport {createRailgunKohakuPublicAdapter,createRailgunKohakuPublicAdapterSubmitter,type PublicShieldOperation,type PublicShieldAcknowledgement} from '"+pkg+"';\n"+'''declare const publicHost: cjs.RestrictedPublicHost;
+declare const publicInput: cjs.PublicShieldInput;
+const publicCjs = cjs.createRailgunKohakuPublicAdapter({host:publicHost,signal});
+const publicEsm = createRailgunKohakuPublicAdapter({host:publicHost,signal});
+async function publicExchange() {
+ const fromCjs = await publicCjs.prepareShield(publicInput);
+ const esmOperation: PublicShieldOperation = fromCjs;
+ const fromEsm = await publicEsm.prepareShield(publicInput);
+ const cjsOperation: cjs.PublicShieldOperation = fromEsm;
+ const esmAck: PublicShieldAcknowledgement = await createRailgunKohakuPublicAdapterSubmitter(publicCjs).submit(esmOperation);
+ const cjsAck: cjs.PublicShieldAcknowledgement = await cjs.createRailgunKohakuPublicAdapterSubmitter(publicEsm).submit(cjsOperation);
+ const copied: PublicShieldOperation = {...esmOperation};
+ return {esmAck,cjsAck,copied};
+}
+export {publicExchange};
+'''
+ (c/filename).write_text(s)
+(b/'consumer-esm/cases').mkdir();specs=[];old=json.loads((public/'CASE-SPEC.json').read_text())
+for name in ['number-amount.ts','wrong-asset.ts','forged-operation.ts','private-to-public.ts','public-to-private.ts','absent-prepareUnshield.ts','private-unknown-result.ts','private-recovery-result.ts','incomplete-ack.ts']:
+ e=next(x for x in old['negatives']if x['file']==name);s=(public/'cases'/name).read_text().replace('freedom-public-contract',pkg).replace('freedom-private-contract',pkg).replace('PinnedPublicTarget','PublicAdapter');filename=name.replace('.ts','.mts');(b/'consumer-esm/cases'/filename).write_text(s);specs.append({**e,'file':'consumer-esm/cases/'+filename})
+old_private=json.loads((prior/'CASE-SPEC.json').read_text());e=next(x for x in old_private['negatives']if x['file']=='consumer-esm/cases/absent-prepareShield.mts');s=(prior/e['file']).read_text();name='private-prepareShield.mts';(b/'consumer-esm/cases'/name).write_text(s);specs.append({**e,'file':'consumer-esm/cases/'+name})
+s="import type {PublicShieldAcknowledgement,PrivateSubmissionOutcome} from '"+pkg+"';\ndeclare const publicAck: PublicShieldAcknowledgement;\nconst privateResult: PrivateSubmissionOutcome = publicAck;\n";name='public-value-as-private.mts';(b/'consumer-esm/cases'/name).write_text(s);specs.append({'file':'consumer-esm/cases/'+name,'expectedCodes':[2322],'expectedPositions':[{'line':3,'character':7}],'messageIncludes':'value'})
+(b/'CASE-SPEC.json').write_text(json.dumps({'positives':['consumer-cjs/positive.cts','consumer-esm/positive.mts','consumer-mixed/mixed.mts'],'negatives':specs},indent=2)+'\n');shutil.copyfile(prior/'qualify-portable.cjs',b/'qualify-portable.cjs')
+prep={'artifactInventorySha256':sha(b/'ARTIFACT-INVENTORY.json'),'artifactInventory':json.loads((b/'ARTIFACT-INVENTORY.json').read_text()),'runtimeSha256':sha(b/'artifact/runtime.cjs'),'runtimeExecuted':False,'harnessReusedSha256':sha(b/'qualify-portable.cjs'),'consumerPreparationSha256':sha(pathlib.Path(__file__)),'originalThreeFactoryTypeFreeze':sha(prior/'FREEZE.json'),'originalPublicTypeFreeze':sha(public/'FREEZE.json'),'positiveCases':3,'negativeCases':len(specs)};(b/'PREPARE-REPORT.json').write_text(json.dumps(prep,indent=2)+'\n');print('Prepared three consumers and',len(specs),'negatives')

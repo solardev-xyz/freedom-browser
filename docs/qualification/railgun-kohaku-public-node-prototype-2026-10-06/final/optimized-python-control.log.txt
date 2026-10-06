@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "<FINAL>/verify_artifact.py", line 8, in <module>
+    raise RuntimeError('Optimized Python forbidden')
+RuntimeError: Optimized Python forbidden

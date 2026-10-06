@@ -1,0 +1,62 @@
+"""Prepare fresh standalone consumers only; never starts Node or executes artifacts."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+
+if not __debug__:
+    raise RuntimeError('Optimized Python is unsupported')
+root = Path(__file__).resolve().parent
+lane = Path('<RUNTIME_BUILD>')
+expected_freeze = '4f9419c9df1c5cd9d10829606389c3defce9e7d9405061a979d9e2990215480e'
+
+def sha(path):
+    assert path.is_file() and not path.is_symlink()
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def inventory(directory):
+    result = {}
+    for path in sorted(directory.rglob('*')):
+        assert not path.is_symlink()
+        if path.is_file():
+            result[str(path.relative_to(directory))] = sha(path)
+        else:
+            assert path.is_dir()
+    return result
+
+assert sha(lane / 'FREEZE.json') == expected_freeze
+frozen = json.loads((lane / 'FREEZE.json').read_text())['files']
+source = lane / 'build-a/artifact'
+expected = {name[len('build-a/artifact/'):]: digest for name, digest in frozen.items() if name.startswith('build-a/artifact/')}
+assert inventory(source) == expected
+helpers = ['consumer.cjs', 'matrix.cjs', 'independent-host.cjs', 'public-host.cjs', 'pins.json']
+inputs = {name: sha(root / name) for name in helpers}
+modes = ['cjs', 'esm', 'mixed', 'trap-network', 'trap-process', 'trap-root']
+for mode in modes:
+    assert not os.path.lexists(root / ('consumer-' + mode))
+for mode in modes:
+    destination = root / ('consumer-' + mode)
+    destination.mkdir()
+    for name in helpers:
+        shutil.copyfile(root / name, destination / name)
+    (destination / 'package.json').write_text('{"private":true}\n')
+    namespace = destination / 'node_modules/@freedom'
+    namespace.mkdir(parents=True)
+    shutil.copytree(source, namespace / 'restricted-railgun-node-prototype')
+    assert inventory(namespace / 'restricted-railgun-node-prototype') == expected
+    if mode == 'mixed':
+        shutil.copytree(source, namespace / 'restricted-railgun-node-copy')
+        assert inventory(namespace / 'restricted-railgun-node-copy') == expected
+assert inventory(source) == expected
+assert {name: sha(root / name) for name in helpers} == inputs
+(root / 'PREPARED.json').write_text(json.dumps({
+    'artifactFreezeSha256': expected_freeze,
+    'artifactInventory': expected,
+    'consumerInputs': inputs,
+    'modes': modes,
+    'expectedExits': {mode: 1 if mode.startswith('trap-') else 0 for mode in modes},
+    'consumersExecuted': False,
+    'qualification': 'Requires graph-review clearance and original command exit observations',
+}, indent=2) + '\n')
+print(json.dumps({'preparedModes': modes, 'consumersExecuted': False}))

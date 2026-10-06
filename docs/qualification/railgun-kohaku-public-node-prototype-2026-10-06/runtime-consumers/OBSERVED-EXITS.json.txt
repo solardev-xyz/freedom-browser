@@ -1,0 +1,82 @@
+{
+  "schema": "restricted-node-public-runtime-original-exits-v1",
+  "graphClearance": "Parent reported independent external graph approval before prepare and all six consumers",
+  "commands": [
+    {
+      "mode": "prepare",
+      "command": "python3 prepare.py",
+      "exitCode": 0,
+      "originalCompletionChunk": "fd26bf",
+      "originalCommandObserved": true,
+      "log": "prepare.log",
+      "logSha256": "1b2967f5e1b11ff37d9405da589538f3c0c1e94754f8987d74fb372afef7ddd7"
+    },
+    {
+      "mode": "cjs",
+      "command": "node consumer.cjs cjs",
+      "exitCode": 0,
+      "originalCompletionChunk": "4e626a",
+      "originalCommandObserved": true,
+      "log": "consumer-cjs/consumer.log",
+      "logSha256": "c71103ffb46ed395f204cb25247da490c29c69054757c83a1a60c1ca317760f2"
+    },
+    {
+      "mode": "esm",
+      "command": "node consumer.cjs esm",
+      "exitCode": 0,
+      "originalCompletionChunk": "8da089",
+      "originalCommandObserved": true,
+      "log": "consumer-esm/consumer.log",
+      "logSha256": "6b9166d00ab2b778d4db79435b7e5d2d81ebaea95ebe7cb0b2f89654269dfbf6"
+    },
+    {
+      "mode": "mixed",
+      "command": "node consumer.cjs mixed",
+      "exitCode": 0,
+      "originalCompletionChunk": "62a262",
+      "originalCommandObserved": true,
+      "log": "consumer-mixed/consumer.log",
+      "logSha256": "ec388c23734af68e3a0b7f25e30ac63314d59eab7bd455f7e9d468f26231fbb2"
+    },
+    {
+      "mode": "trap-network",
+      "command": "node consumer.cjs trap-network",
+      "exitCode": 1,
+      "originalCompletionChunk": "d13e86",
+      "originalCommandObserved": true,
+      "log": "consumer-trap-network/consumer.log",
+      "logSha256": "cb656e812c4433663bcb5648bc1ba28b00d62c11cfc2d694da01371a5c001bcb"
+    },
+    {
+      "mode": "trap-process",
+      "command": "node consumer.cjs trap-process",
+      "exitCode": 1,
+      "originalCompletionChunk": "ab9c9d",
+      "originalCommandObserved": true,
+      "log": "consumer-trap-process/consumer.log",
+      "logSha256": "24898adb096c1150b296bdae53ad50b7413202fcba34617e9542ed33ea716bda"
+    },
+    {
+      "mode": "trap-root",
+      "command": "node consumer.cjs trap-root",
+      "exitCode": 1,
+      "originalCompletionChunk": "8c6aaa",
+      "originalCommandObserved": true,
+      "log": "consumer-trap-root/consumer.log",
+      "logSha256": "73e16769ee4709f8a0161245c9263d828fe5b909cc8e417209d773226314e0b6"
+    },
+    {
+      "mode": "verify-results",
+      "command": "python3 verify-results.py",
+      "exitCode": 0,
+      "originalCompletionChunk": "1f10d8",
+      "originalCommandObserved": true,
+      "log": "verify-results.log",
+      "logSha256": "fc488402691bd08537d431ccbce1e4670fe7243475a6ad0cb3a466d70352515a"
+    }
+  ],
+  "forceExit": false,
+  "processKill": false,
+  "walletNativeExecuted": false,
+  "networkRequestsQualified": false
+}

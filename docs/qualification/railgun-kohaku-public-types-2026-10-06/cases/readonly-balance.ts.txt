@@ -1,0 +1,4 @@
+import type {PublicAdapter,PinnedPublicTarget,ReadAmount} from 'freedom-public-contract';
+declare const adapter: PublicAdapter;
+declare const amounts: readonly ReadAmount[];
+const target: PinnedPublicTarget = {...adapter,balance:async()=>amounts};

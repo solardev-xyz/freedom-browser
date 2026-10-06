@@ -1,0 +1,3 @@
+import type {PublicShieldOperation} from 'freedom-public-contract';
+import type {Broadcaster} from 'kohaku-broadcaster-base';
+type Invalid = Broadcaster<PublicShieldOperation>;

@@ -1,0 +1,2 @@
+import type {PublicShieldAcknowledgement} from 'freedom-public-contract';
+const result: PublicShieldAcknowledgement = {status:'recovery-required',stage:'submission'};

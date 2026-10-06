@@ -1,0 +1,4 @@
+import type {PublicAdapterSubmitter} from 'freedom-public-contract';
+import type {Broadcaster} from 'kohaku-broadcaster-base';
+declare const submitter: PublicAdapterSubmitter;
+const broadcaster: Broadcaster = submitter;

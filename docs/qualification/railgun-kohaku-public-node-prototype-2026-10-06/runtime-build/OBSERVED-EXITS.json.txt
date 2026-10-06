@@ -1,0 +1,33 @@
+{
+  "scope": "Direct tool command completion observations, no native wallet/runtime consumer execution",
+  "commands": [
+    {
+      "command": "node build.cjs ROOT build-a SOURCE-BASIS.json",
+      "exitCode": 0,
+      "completionChunk": "352bbe",
+      "log": "build-a.log"
+    },
+    {
+      "command": "node build.cjs ROOT build-b SOURCE-BASIS.json",
+      "exitCode": 0,
+      "completionChunk": "e92574",
+      "log": "build-b.log"
+    },
+    {
+      "command": "npm run lint",
+      "exitCode": 0,
+      "completionChunk": "66775e",
+      "log": "lint.log"
+    },
+    {
+      "command": "python3 compare.py; explicit no-ignore Prettier check",
+      "exitCode": 0,
+      "completionChunk": "af59cd",
+      "logs": [
+        "compare.log",
+        "format-check.log"
+      ]
+    }
+  ],
+  "forceExit": false
+}

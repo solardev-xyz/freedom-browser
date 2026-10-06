@@ -1,0 +1,3 @@
+import {createRailgunKohakuPublicAdapter, type PublicAdapter} from 'freedom-public-contract';
+import type {CreatePluginFn} from 'kohaku-plugin-base';
+const generic: CreatePluginFn<PublicAdapter,{signal:AbortSignal}> = createRailgunKohakuPublicAdapter;

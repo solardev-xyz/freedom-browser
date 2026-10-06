@@ -1,0 +1,48 @@
+{
+  "artifactFreezeSha256": "4f9419c9df1c5cd9d10829606389c3defce9e7d9405061a979d9e2990215480e",
+  "allOriginalBuildFreezeEntriesUnchanged": true,
+  "allSevenPhysicalPackageCopiesUnchanged": true,
+  "allConsumerInputsUnchanged": true,
+  "positiveRuntimeModes": 3,
+  "matrixCaseExecutions": 137,
+  "expectedTrapFailures": 3,
+  "scope": "Result/report verification; actual original command exit observations are separate",
+  "cases": [
+    {
+      "mode": "cjs",
+      "logSha256": "c71103ffb46ed395f204cb25247da490c29c69054757c83a1a60c1ca317760f2",
+      "reportSha256": "0fc46c84d648d9126e9eed6ea5ca70fff9e38b04cbfd554b4d303f43d88d3870",
+      "pid": 73885,
+      "matrixCases": 45
+    },
+    {
+      "mode": "esm",
+      "logSha256": "6b9166d00ab2b778d4db79435b7e5d2d81ebaea95ebe7cb0b2f89654269dfbf6",
+      "reportSha256": "d672f3b9f14721a6326973a0cb5f9ec47bd2168c1f573cd6f14b698bd97e38e2",
+      "pid": 73887,
+      "matrixCases": 45
+    },
+    {
+      "mode": "mixed",
+      "logSha256": "ec388c23734af68e3a0b7f25e30ac63314d59eab7bd455f7e9d468f26231fbb2",
+      "reportSha256": "9236aae5eb3144567b12f2543b1ad0f230d418c1b994f67305308672c6748766",
+      "pid": 73889,
+      "matrixCases": 47
+    },
+    {
+      "mode": "trap-network",
+      "logSha256": "cb656e812c4433663bcb5648bc1ba28b00d62c11cfc2d694da01371a5c001bcb",
+      "expectedTrap": "global.fetch"
+    },
+    {
+      "mode": "trap-process",
+      "logSha256": "24898adb096c1150b296bdae53ad50b7413202fcba34617e9542ed33ea716bda",
+      "expectedTrap": "module:child_process"
+    },
+    {
+      "mode": "trap-root",
+      "logSha256": "73e16769ee4709f8a0161245c9263d828fe5b909cc8e417209d773226314e0b6",
+      "expectedTrap": "outside-artifact-module"
+    }
+  ]
+}

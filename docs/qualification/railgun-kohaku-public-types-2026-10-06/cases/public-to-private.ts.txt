@@ -1,0 +1,5 @@
+import type {PublicShieldOperation} from 'freedom-public-contract';
+import type {PrivateAdapterBroadcaster} from 'freedom-private-contract';
+declare const broadcaster: PrivateAdapterBroadcaster;
+declare const operation: PublicShieldOperation;
+broadcaster.broadcast(operation);

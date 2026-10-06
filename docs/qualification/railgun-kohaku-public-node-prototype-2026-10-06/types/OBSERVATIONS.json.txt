@@ -1,0 +1,47 @@
+{
+  "originalProcesses": [
+    {
+      "operation": "portable strict campaign",
+      "sessionId": 99398,
+      "initialChunk": "prior turn; session preserved",
+      "completionChunk": "9b0574",
+      "exitCode": 0,
+      "observedAndDrained": true
+    },
+    {
+      "operation": "four-control diagnostic probe",
+      "sessionId": 94219,
+      "initialChunk": "44b07c",
+      "completionChunk": "3422bb",
+      "exitCode": 0,
+      "observedAndDrained": true
+    },
+    {
+      "operation": "focused actual-upstream positive",
+      "sessionId": 27762,
+      "initialChunk": "6c5311",
+      "completionChunk": "978dc8",
+      "exitCode": 0,
+      "observedAndDrained": true
+    },
+    {
+      "operation": "read-only evidence verification",
+      "chunk": "cf3227",
+      "exitCode": 0
+    },
+    {
+      "operation": "scratch npm run lint",
+      "chunk": "ceb768",
+      "exitCode": 0
+    }
+  ],
+  "compilerCampaignReruns": 0,
+  "runtimeExecuted": false,
+  "nativeWalletExecuted": false,
+  "reports": {
+    "PORTABLE-REPORT.json": "a341d179c889f5e34b2ab9f9d1b76b9555c26e45b89c567e743f07d2816847f8",
+    "CONTROL-PROBE.json": "3a8d0a5fc2c3accb4581c1560110bb26bba94b04d3cc5c01d58d3111e9a15074",
+    "UPSTREAM-REPORT.json": "1264995c54628cdf854ff20192ef5c4f55d18ee3e4e1dbcb0bdbc6e06044aa61",
+    "VERIFICATION-REPORT.json": "ecdba8cc70d4a6141356e6a397cdff54f15a19b2a135ad4b4f3143525d6ae463"
+  }
+}

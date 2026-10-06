@@ -1,0 +1,22 @@
+{
+  "beforeSpecSha256": "4cc4e58d9dcaab12724ce4ef3b033c7ef686ae112509a88330730dc83d85e409",
+  "afterSpecSha256": "f3d49ec324b2b17099035f7eb4eec6fb82a86fe31e9863d3ff3ba67a8586f8fe",
+  "caseProgramsUnchanged": true,
+  "declarationUnchanged": true,
+  "changes": [
+    {
+      "file": "absent-prepareUnshield.ts",
+      "beforeCode": 2339,
+      "afterCode": 2551,
+      "reason": "Suggested existing prepareShield member changes TypeScript diagnostic code."
+    },
+    {
+      "file": "readonly-balance.ts",
+      "afterPosition": {
+        "line": 4,
+        "character": 65
+      },
+      "reason": "Compiler points at the returned amounts expression."
+    }
+  ]
+}

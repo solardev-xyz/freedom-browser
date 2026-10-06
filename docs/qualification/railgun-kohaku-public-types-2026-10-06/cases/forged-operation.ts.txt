@@ -1,0 +1,2 @@
+import type {PublicShieldOperation} from 'freedom-public-contract';
+const token: PublicShieldOperation = {__type:'publicOperation'};

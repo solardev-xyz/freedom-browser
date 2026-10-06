@@ -7,6 +7,40 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+The [restricted public Shield adapter and fixed Freedom host](railgun-kohaku-public-adapter-2026-10-06.md)
+now pass three fresh native cases at `0645ab59`: acknowledgement, lost response
+and cancellation during held final review. Original results/errors and one-use
+admission are preserved; cancellation signs and sends nothing. All original
+children and the driver exit 0. Combined root checks pass 823 tests in 24 suites,
+strict lint and changed-source formatting. The same implementation corrects
+malformed Promise observation in both transaction adapters. Earlier private
+native reports remain pinned to their old source; these public runs do not
+refresh them. External services remain synthetic.
+
+The [five-factory Node prototype](railgun-kohaku-public-node-prototype-2026-10-06.md)
+adds public preparation/submission and the private correction to the portable
+snapshot/private runtime. Its exact 29-file final package passes fresh bare-package
+CJS/ESM/mixed smokes. Runtime evidence has 137 case executions and three
+forbidden-work controls; separate declarations have 3 positives/11 negatives,
+four distinguishing controls and one actual-upstream specialization check.
+This is an unpublished restricted trusted-host prototype, not generic Host support.
+
+The [private-RPC/transport composition](railgun-private-rpc-transport-2026-10-06.md)
+adds ten tests using genuine destination constraints and actual loopback SOCKS,
+TLS and HTTP. All 153 tests in four suites pass with natural exit, strict lint
+and formatting. Four detached controls distinguish URL binding, queued
+cancellation, direct dialing and target DNS. Existing clients keep their reviewed
+pinned URL; new derivations cannot silently follow a changed registry destination.
+This is Node loopback coverage, not live Tor circuit-isolation qualification.
+
+Next is a separately reviewed recovery companion with bounded authenticated
+history summaries, original-signature proof recovery and fresh cold-submission authority. A hold ID is a selector,
+never a reconstructed operation token or permission to retry. Live disclosures,
+private spending, uncertain-hold release, broader assets/recipients, release/platform
+qualification and UI/product decisions retain their separate gates.
+
+## Earlier private-adapter and package checkpoint
+
 The [restricted private adapter and fixed Freedom host](railgun-kohaku-private-adapter-2026-10-06.md)
 now pass five fresh native cases at `f84da57a`: acknowledged self-transfer, full
 withdrawal with a lost response, partial withdrawal, cancellation during held
@@ -354,7 +388,9 @@ Later checkpoints above supersede those restrictions within their stated scope.
    a fresh second Kohaku instance spending scanned change now pass separate
    controlled native campaigns. Pinned runtime contract checks now pass for
    private/public/read instances and their original settlement forwarding.
-   Reusable transaction preparation remains next. The restricted snapshot
+   Restricted transaction preparation is implemented. Bounded authenticated history
+   summaries and explicit recovery actions are next, followed by the remaining
+   platform, release and live-service gates. The restricted snapshot
    host/read adapter now has genuine native and strict declaration qualification;
    its separate evidence does not type-check the current transaction facade or
    implement generic upstream Host. The transaction facade remains Freedom-owned.
@@ -468,9 +504,10 @@ broadcaster shapes does not establish a generic `createPlugin(host, params)` pac
 Restricted snapshot and private-operation adapters now have separate host contracts,
 fixed Freedom bridges and native/type evidence. The standalone Node prototype
 packages their trusted-host interfaces without exporting genuine Freedom authority.
-Public Shield extraction is next: it uses a distinct public-operation lane and
-must not be passed to the private broadcaster. A recovery companion must retain
-fresh authorization and durable ownership rather than recreate in-memory tokens.
+The reusable public Shield adapter now has its own qualified public-operation
+lane and separate submitter; it must not be passed to the private broadcaster.
+Next, authenticated bounded history summaries and explicit recovery actions must
+retain fresh authorization and durable ownership rather than recreate in-memory tokens.
 
 ## Live permission and shared product gates
 

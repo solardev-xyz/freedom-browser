@@ -1,0 +1,154 @@
+{
+  "positives": [
+    "consumer-cjs/positive.cts",
+    "consumer-esm/positive.mts",
+    "consumer-mixed/mixed.mts"
+  ],
+  "negatives": [
+    {
+      "file": "consumer-esm/cases/number-amount.mts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "bigint",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 59
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/wrong-asset.mts",
+      "expectedCodes": [
+        2322
+      ],
+      "messageIncludes": "native",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 42
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/forged-operation.mts",
+      "expectedCodes": [
+        2741
+      ],
+      "messageIncludes": "[publicOperation]",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 7
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/private-to-public.mts",
+      "expectedCodes": [
+        2345
+      ],
+      "messageIncludes": "PublicShieldOperation",
+      "expectedPositions": [
+        {
+          "line": 5,
+          "character": 18
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/public-to-private.mts",
+      "expectedCodes": [
+        2345
+      ],
+      "messageIncludes": "PrivateOperation",
+      "expectedPositions": [
+        {
+          "line": 5,
+          "character": 23
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/absent-prepareUnshield.mts",
+      "expectedCodes": [
+        2551
+      ],
+      "messageIncludes": "prepareUnshield",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 8
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/private-unknown-result.mts",
+      "expectedCodes": [
+        2353
+      ],
+      "messageIncludes": "transactionHash",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 46
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/private-recovery-result.mts",
+      "expectedCodes": [
+        2353
+      ],
+      "messageIncludes": "status",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 46
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/incomplete-ack.mts",
+      "expectedCodes": [
+        2740
+      ],
+      "messageIncludes": "missing",
+      "expectedPositions": [
+        {
+          "line": 2,
+          "character": 7
+        }
+      ]
+    },
+    {
+      "file": "consumer-esm/cases/private-prepareShield.mts",
+      "expectedCodes": [
+        2551
+      ],
+      "messageIncludes": "prepareShield",
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 9
+        }
+      ],
+      "category": "portable-negative",
+      "expectedLine": 3
+    },
+    {
+      "file": "consumer-esm/cases/public-value-as-private.mts",
+      "expectedCodes": [
+        2322
+      ],
+      "expectedPositions": [
+        {
+          "line": 3,
+          "character": 7
+        }
+      ],
+      "messageIncludes": "value"
+    }
+  ]
+}

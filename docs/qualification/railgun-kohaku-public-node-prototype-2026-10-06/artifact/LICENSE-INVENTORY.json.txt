@@ -1,0 +1,38 @@
+[
+  {
+    "package": "freedom-browser",
+    "version": "0.8.7-dev",
+    "packageRoot": ".",
+    "declaredLicense": "MPL-2.0",
+    "emittedContributor": true,
+    "file": "licenses/freedom/LICENSE",
+    "sha256": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae"
+  },
+  {
+    "package": "@noble/curves",
+    "version": "1.2.0",
+    "packageRoot": "node_modules/ethers/node_modules/@noble/curves",
+    "declaredLicense": "MIT",
+    "emittedContributor": false,
+    "file": "licenses/node_modules__ethers__node_modules__@noble__curves/LICENSE",
+    "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+  },
+  {
+    "package": "@noble/hashes",
+    "version": "1.3.2",
+    "packageRoot": "node_modules/ethers/node_modules/@noble/hashes",
+    "declaredLicense": "MIT",
+    "emittedContributor": true,
+    "file": "licenses/node_modules__ethers__node_modules__@noble__hashes/LICENSE",
+    "sha256": "4f221aee6e072336700c408c68ab3b96a3fc09f6aebe6f48f1bd99e5ef13faec"
+  },
+  {
+    "package": "ethers",
+    "version": "6.17.0",
+    "packageRoot": "node_modules/ethers",
+    "declaredLicense": "MIT",
+    "emittedContributor": true,
+    "file": "licenses/node_modules__ethers/LICENSE.md",
+    "sha256": "44eea86637405118248327fbe9d9fa95d04c7a57221c7e8c155f736db9f1b612"
+  }
+]

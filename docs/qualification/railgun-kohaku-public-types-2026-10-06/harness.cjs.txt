@@ -1,0 +1,45 @@
+const assert=require('assert/strict'),fs=require('fs'),path=require('path'),crypto=require('crypto');
+const {execFileSync}=require('child_process');
+const base=__dirname,root='<REPOSITORY>';
+const upstream=path.join(root,'tmp/privacy-build/pinned-inputs/kohaku'),revision='6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e';
+const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+const discoveryPath='<COMPILER_DISCOVERY>/REPORT.json';
+assert.equal(sha(discoveryPath),'2a2aa287f97fcee5e73b53f35fb64f3e8dd6294ac8b1de45f27d640c33eb77dd');
+const discovery=JSON.parse(fs.readFileSync(discoveryPath,'utf8')),compiler=discovery.discoveredCompiler.path,compilerRoot=path.dirname(path.dirname(compiler));
+assert.equal(sha(compiler),discovery.discoveredCompiler.entrySha256);assert.equal(sha(process.execPath),discovery.node.sha256);assert.equal(sha(path.join(compilerRoot,'package.json')),discovery.discoveredCompiler.packageJsonSha256);
+for(const [n,h]of Object.entries(discovery.loadedDeclarationHashes))assert.equal(sha(path.join(compilerRoot,n)),h);
+const ts=require(compiler);assert.equal(ts.version,'6.0.3');
+const basis=JSON.parse(fs.readFileSync(path.join(base,'BASIS.json'),'utf8'));
+const declaration=path.join(base,'input/railgun-kohaku-public-contract.d.ts');
+assert.equal(sha(declaration),basis.declarationSha256);assert.equal(sha(basis.originalDeclarationPath),basis.declarationSha256);
+assert.equal(execFileSync('git',['-C',upstream,'rev-parse','HEAD'],{encoding:'utf8'}).trim(),revision);
+const options={strict:true,noEmit:true,noEmitOnError:true,skipLibCheck:false,skipDefaultLibCheck:false,allowJs:false,checkJs:false,types:[],target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,moduleResolution:ts.ModuleResolutionKind.Bundler,noImplicitOverride:true,noPropertyAccessFromIndexSignature:true,noFallthroughCasesInSwitch:true,noUncheckedIndexedAccess:true,useDefineForClassFields:true,forceConsistentCasingInFileNames:true,esModuleInterop:true,resolveJsonModule:true,verbatimModuleSyntax:false,lib:['lib.es2022.d.ts','lib.dom.d.ts'],paths:{'freedom-public-contract':[declaration],'freedom-private-contract':[path.join(root,'scripts/fixtures/railgun-kohaku-private-contract.d.ts')],'kohaku-plugin-base':[path.join(upstream,'packages/plugins/src/base.ts')],'kohaku-plugin-host':[path.join(upstream,'packages/plugins/src/host/index.ts')],'kohaku-broadcaster-base':[path.join(upstream,'packages/plugins/src/broadcaster/base.ts')],'~/*':[path.join(upstream,'packages/plugins/src/*')],'@kohaku-eth/provider':[path.join(upstream,'packages/provider/src/index.ts')]}};
+const inputPaths=[__filename,path.join(base,'CASE-SPEC.json'),path.join(base,'BASIS.json'),path.join(base,'bridge.ts'),declaration,basis.originalDeclarationPath,path.join(root,'scripts/fixtures/railgun-kohaku-private-contract.d.ts'),path.join(root,'scripts/fixtures/railgun-kohaku-snapshot-contract.d.ts')];
+const initialPins=Object.fromEntries(inputPaths.map(p=>[p,sha(p)])),reads={};
+function label(filename){if(filename.startsWith(base+path.sep))return 'harness/'+path.relative(base,filename);if(filename.startsWith(compilerRoot+path.sep))return 'compiler/'+path.relative(compilerRoot,filename);if(filename.startsWith(root+path.sep))return 'repo/'+path.relative(root,filename);throw Error('Unexpected compiler boundary '+filename);}
+function alias(name,filename){if(name.startsWith('~/'))assert.ok(filename.startsWith(path.join(upstream,'packages/plugins/src')+path.sep));}
+assert.doesNotThrow(()=>alias('~/shared',path.join(upstream,'packages/plugins/src/base.ts')));assert.throws(()=>alias('~/shared',path.join(upstream,'packages/provider/src/provider.ts')));assert.throws(()=>alias('~/shared',path.join(upstream,'packages/plugins/src-other/base.ts')));
+let commonSources;
+function compile(name){
+ const host=ts.createCompilerHost(options),read=host.readFile.bind(host),aliases=[];
+ host.readFile=p=>{const text=read(p);if(text!==undefined){const n=label(p),h=sha(p);if(reads[n])assert.equal(reads[n].sha256,h);reads[n]={path:p,sha256:h};}return text;};
+ host.resolveModuleNameLiterals=(literals,containingFile)=>literals.map(literal=>{alias(literal.text,containingFile);const from=containingFile===declaration&&literal.text.startsWith('.')?path.join(root,basis.intendedRepositoryPath):containingFile;const result=ts.resolveModuleName(literal.text,from,options,host);if(literal.text.startsWith('~/')){assert.ok(result.resolvedModule);aliases.push({from:label(containingFile),name:literal.text,to:label(result.resolvedModule.resolvedFileName)});}return result;});
+ let writes=0;host.writeFile=()=>{writes++;throw Error('Unexpected compiler emit');};
+ const program=ts.createProgram([path.join(base,'cases',name),path.join(base,'bridge.ts')],options,host);
+ const diagnostics=ts.getPreEmitDiagnostics(program).map(d=>{const p=d.file&&d.start!==undefined?d.file.getLineAndCharacterOfPosition(d.start):null;return {code:d.code,file:d.file?label(d.file.fileName):null,line:p?p.line+1:null,character:p?p.character+1:null,message:ts.flattenDiagnosticMessageText(d.messageText,'\n')};});program.emit();assert.equal(writes,0);
+ const sources=Object.fromEntries(program.getSourceFiles().map(s=>[label(s.fileName),sha(s.fileName)]));
+ const actualUpstream=Object.entries(sources).filter(([n])=>n.startsWith('repo/tmp/privacy-build/pinned-inputs/kohaku/'));assert.equal(actualUpstream.length,9);
+ for(const [n,h]of actualUpstream){const bytes=execFileSync('git',['-C',upstream,'show',revision+':'+n.slice('repo/tmp/privacy-build/pinned-inputs/kohaku/'.length)]);assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),h);}
+ const common=Object.fromEntries(Object.entries(sources).filter(([n])=>!n.startsWith('harness/cases/')));if(commonSources)assert.deepEqual(common,commonSources);else commonSources=common;
+ return {input:name,diagnostics,writes,sourceFileCount:Object.keys(sources).length,aliases};
+}
+const mode=process.argv[2];assert.ok(['probe','run'].includes(mode));
+const spec=JSON.parse(fs.readFileSync(path.join(base,'CASE-SPEC.json'),'utf8'));
+assert.deepEqual(fs.readdirSync(path.join(base,'cases')).sort(),[spec.positive,...spec.negatives.map(n=>n.file)].sort());
+for(const name of fs.readdirSync(path.join(base,'cases'))){const text=fs.readFileSync(path.join(base,'cases',name),'utf8');assert.ok(!/@ts-(?:ignore|expect-error|nocheck)|\bas\s+(?:any|unknown)\b|declare\s+module/.test(text));}
+const results=[];const positive=compile(spec.positive);results.push({...positive,matched:positive.diagnostics.length===0});
+for(const e of spec.negatives){const r=compile(e.file);const matched=JSON.stringify(r.diagnostics.map(d=>d.code))===JSON.stringify(e.expectedCodes)&&JSON.stringify(r.diagnostics.map(d=>({line:d.line,character:d.character})))===JSON.stringify(e.expectedPositions)&&r.diagnostics.every(d=>d.file==='harness/cases/'+e.file)&&r.diagnostics.some(d=>d.message.includes(e.messageIncludes));results.push({...r,matched});}
+for(const [p,h]of Object.entries(initialPins))assert.equal(sha(p),h);for(const {path:p,sha256:h}of Object.values(reads))assert.equal(sha(p),h);
+const packages=['ox','@scure/bip32','@scure/bip39'].map(n=>{const p=path.join(root,'node_modules',n,'package.json'),v=JSON.parse(fs.readFileSync(p,'utf8'));return {name:n,version:v.version,manifestSha256:sha(p)};});
+const report={schema:1,mode,basis,compilerVersion:ts.version,compilerSha256:sha(compiler),nodeSha256:sha(process.execPath),options,sourceGraphExecuted:false,jsImplementationTypechecked:false,standaloneDistributionQualified:false,genericHostSupported:false,declarationCandidateSha256:sha(declaration),harnessSha256:sha(__filename),specSha256:sha(path.join(base,'CASE-SPEC.json')),revision,packages,upstreamProviderOxRange:JSON.parse(fs.readFileSync(path.join(upstream,'packages/provider/package.json'),'utf8')).dependencies.ox,aliasOriginControls:{pluginAccepted:true,providerRefused:true,siblingPrefixRefused:true},positiveCases:1,negativeCases:spec.negatives.length,allMatched:results.every(r=>r.matched),results,commonSourceHashes:commonSources,readHashes:Object.fromEntries(Object.entries(reads).map(([n,v])=>[n,v.sha256])),inputPins:initialPins};
+const output=path.join(base,mode==='probe'?'PROBE.json':'REPORT.json');assert.ok(!fs.existsSync(output));fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({reportSha256:sha(output),positivePassed:positive.diagnostics.length===0,negativeCases:spec.negatives.length,unmatched:results.filter(r=>!r.matched).map(r=>({input:r.input,diagnostics:r.diagnostics}))},null,2));if(mode==='run')assert.ok(report.allMatched,'Exact intended diagnostics');

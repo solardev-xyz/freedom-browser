@@ -1,0 +1,4 @@
+import type {RestrictedPublicHost} from 'freedom-public-contract';
+import type {Host} from 'kohaku-plugin-host';
+declare const restricted: RestrictedPublicHost;
+const host: Host = restricted;

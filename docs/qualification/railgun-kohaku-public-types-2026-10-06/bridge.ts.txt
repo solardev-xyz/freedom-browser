@@ -1,0 +1,2 @@
+export type { PrivateOperation, PrivateAdapterBroadcaster } from 'freedom-private-contract';
+export type { PublicShieldOperation, PublicCapabilities } from 'freedom-public-contract';

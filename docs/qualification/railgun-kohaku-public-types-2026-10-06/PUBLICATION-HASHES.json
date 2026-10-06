@@ -1,0 +1,153 @@
+{
+  "schema": 1,
+  "files": {
+    "ARCHIVE-MAP.json": {
+      "bytes": 16308,
+      "sha256": "53a1f7e2e2db5266cb3d488bfd9df4529ab5ede9e7a3bad8d48917cd409d5f96"
+    },
+    "BASIS.json.txt": {
+      "bytes": 423,
+      "sha256": "c27adc5088114a620ae272c8130d2ba59d2749cdee9fb05468024daee30ece38"
+    },
+    "CASE-SPEC.json.txt": {
+      "bytes": 5234,
+      "sha256": "f3d49ec324b2b17099035f7eb4eec6fb82a86fe31e9863d3ff3ba67a8586f8fe"
+    },
+    "FREEZE.json.txt": {
+      "bytes": 6132,
+      "sha256": "49b3c3cb1ae82b47f50315ffee6c5551a5aa481f14c1539bfd85d30687b1793e"
+    },
+    "OBSERVATIONS.json.txt": {
+      "bytes": 419,
+      "sha256": "c35ba5a1d8fdba667741d876adda40cfd3d958c92ba3c6c2dfab8717c7289a12"
+    },
+    "README.md": {
+      "bytes": 5333,
+      "sha256": "e82ae03b69e2330c233bf05b6642a5c3b64ccb983499917619b0c94d48e1d71d"
+    },
+    "REPORT.json.txt": {
+      "bytes": 93336,
+      "sha256": "d2a3327965a53da70ed790d79b888d2bb22aab4e4c906bf5dfe534f17f9a33e1"
+    },
+    "SPEC-CORRECTION.json.txt": {
+      "bytes": 664,
+      "sha256": "86c371c32f280aa7cc355e35bad16d9b418a872719e223f75ef17bc229828f39"
+    },
+    "bridge.ts.txt": {
+      "bytes": 183,
+      "sha256": "24b1d4f25decb307d6e4e2016acc5971381a407529f26e926dd19b3e1cc66163"
+    },
+    "cases/absent-prepareShieldMulti.ts.txt": {
+      "bytes": 134,
+      "sha256": "2da24e17a6886a8160ae077f93c6a4af29b45cda46f52f4c19e894524cd8fdc1"
+    },
+    "cases/absent-prepareTransfer.ts.txt": {
+      "bytes": 131,
+      "sha256": "ec9b2410a41ff4756d34f7fe9ec6f8acbab3034143e8f68779ec33b8f668a2df"
+    },
+    "cases/absent-prepareTransferMulti.ts.txt": {
+      "bytes": 136,
+      "sha256": "891f584095269df6cfa9e94852f9b7a4711feffc22b6be5137d69f095dc2b967"
+    },
+    "cases/absent-prepareUnshield.ts.txt": {
+      "bytes": 131,
+      "sha256": "0faabebc2b2f98458973230606e5af920997120c5e1432447f0ea4edfd4b8d3b"
+    },
+    "cases/absent-prepareUnshieldMulti.ts.txt": {
+      "bytes": 136,
+      "sha256": "3bcf69bdec4631b5ef5aba29d706ede7c0bba9173baee16d80564b8ac7b9fb61"
+    },
+    "cases/forged-operation.ts.txt": {
+      "bytes": 133,
+      "sha256": "d3cbe9006f8a850d71396b8751d525b1b7ae5391e661bbf61509e984f720e1cb"
+    },
+    "cases/incomplete-ack.ts.txt": {
+      "bytes": 133,
+      "sha256": "f19fab104a601025c1cc90f6f63917aaba7814320129c67ed511c697617c8dcc"
+    },
+    "cases/not-generic-factory.ts.txt": {
+      "bytes": 252,
+      "sha256": "bc1ebd929d8b0030927be3b54b958e0062e0084cd39c9383b7ed0bddf615c712"
+    },
+    "cases/not-generic-host.ts.txt": {
+      "bytes": 192,
+      "sha256": "e6da16280ac1bcd3a789a39ecd809dde494a733426650c166b3330e298a05016"
+    },
+    "cases/number-amount.ts.txt": {
+      "bytes": 133,
+      "sha256": "07ad0b92c8941b0baa9a6aaa4ff3579bfbae26ff01a0100bea2bc6cadc0de6ce"
+    },
+    "cases/positive.ts.txt": {
+      "bytes": 2584,
+      "sha256": "e0b73833fea27c68a6953dc295db03fc0b145fc04e387d658dd31295f1d4d2e0"
+    },
+    "cases/private-recovery-result.ts.txt": {
+      "bytes": 167,
+      "sha256": "be90b25bbe5783b9369883d75fe6ea76fb2c4523420f1c40b438d4a0429a6e29"
+    },
+    "cases/private-to-public.ts.txt": {
+      "bytes": 254,
+      "sha256": "fc52815ff692d3a8de455b476c360a8aa79da977994917129ce5af704de2f6b2"
+    },
+    "cases/private-unknown-result.ts.txt": {
+      "bytes": 171,
+      "sha256": "b2d0e72bc075ed4891ae27810a8c801c0d32d2b39addbe1172a75704f49ddbe4"
+    },
+    "cases/public-not-upstream-private-op.ts.txt": {
+      "bytes": 177,
+      "sha256": "2d35ab186dcfa9583eb797c9264512551fcc400ff8082a34350c89211577bc32"
+    },
+    "cases/public-to-private.ts.txt": {
+      "bytes": 277,
+      "sha256": "fced3e0a62960c3e5492bbd7405ecdd9095799df6d8a05ed8cc169c42111b017"
+    },
+    "cases/readonly-balance.ts.txt": {
+      "bytes": 248,
+      "sha256": "7459e80441ed6d8a15fea379ddb30101faf590fd2b393c508eb0366fc0b94702"
+    },
+    "cases/submitter-not-broadcaster.ts.txt": {
+      "bytes": 220,
+      "sha256": "b0227b0919ab11019cfc1e7d0139d246a5ee9fe6ac504433ee6dae0c5c07ed61"
+    },
+    "cases/upstream-number-amount.ts.txt": {
+      "bytes": 427,
+      "sha256": "cd0cc5802eb7627a9a11462cb459df1a9b773a9d1e5a3fd65382e92a06e1de61"
+    },
+    "cases/wrong-asset.ts.txt": {
+      "bytes": 133,
+      "sha256": "0cae44e89fa0be963fd227617a1c5f5be6a4a6dd059b6000072602ed6ec7da2b"
+    },
+    "cases/wrong-chain.ts.txt": {
+      "bytes": 145,
+      "sha256": "3d83f9c44e747271c2252825def7c681981cc8e7125624f4de6b16796c784c1d"
+    },
+    "cases/wrong-recipient.ts.txt": {
+      "bytes": 188,
+      "sha256": "72219b36687e4f949e8510f2c29737297e9844a4f0d249fcffbef913972dbda8"
+    },
+    "compiler-discovery/REPORT.json.txt": {
+      "bytes": 7760,
+      "sha256": "a32a0e525f9e271769be8523e5439bfc5e3e8a259d4c42b56cf3d364c4f7dd33"
+    },
+    "harness.cjs.txt": {
+      "bytes": 8633,
+      "sha256": "ea449aaa8e01d760141bb3a92c731d5d1b88a96d98f254e04fb61d99f8da22e7"
+    },
+    "input/railgun-kohaku-public-contract.d.ts.txt": {
+      "bytes": 3133,
+      "sha256": "04d6a865e641ea70cb84c489068886340bffc6a0122bbaf1a810c6ba14da4269"
+    },
+    "licenses/Freedom-MPL-2.0.txt": {
+      "bytes": 16725,
+      "sha256": "86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae"
+    },
+    "probe.log.txt": {
+      "bytes": 974,
+      "sha256": "a5c898305b19d217fc7dcb56d1ace2e2fe54021dcda5fb13d87a07b2aad5f424"
+    },
+    "run.log.txt": {
+      "bytes": 157,
+      "sha256": "45c8829fa6a65f36d9553bf072c9dc90379b278609154435527d9aa90407a7f6"
+    }
+  }
+}

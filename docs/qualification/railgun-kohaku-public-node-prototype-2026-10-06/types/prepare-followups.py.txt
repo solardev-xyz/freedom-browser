@@ -1,0 +1,42 @@
+import pathlib,shutil,json
+b=pathlib.Path(__file__).parent
+old=pathlib.Path('<SCRATCH_ROOT>/railgun-node-distribution-types-oct6')
+out=b/'controls';out.mkdir()
+configs=[('duplicate-brands','consumer-mixed','mixed.mts'),('missing-public-submitter','consumer-esm','positive.mts'),('broadened-public-outcome','consumer-esm','positive.mts'),('misrouted-esm-types','consumer-esm','positive.mts')]
+for name,source,case in configs:
+ c=out/name;c.mkdir();p=c/'node_modules/@freedom/restricted-railgun-node-prototype';shutil.copytree(b/'artifact',p);shutil.copyfile(b/source/case,c/case);shutil.copyfile(b/source/'package.json',c/'package.json')
+ if name=='misrouted-esm-types':
+  m=json.loads((p/'package.json').read_text());m['exports']['.']['import']['types']='./index.d.cts';(p/'package.json').write_text(json.dumps(m,indent=2)+'\n')
+ elif name=='duplicate-brands':shutil.copyfile(p/'index.d.cts',p/'index.d.mts')
+ elif name=='missing-public-submitter':
+  p=p/'index.d.mts';s=p.read_text();oldline='  createRailgunKohakuPublicAdapterSubmitter,\n';assert s.count(oldline)==1;p.write_text(s.replace(oldline,''))
+ elif name=='broadened-public-outcome':
+  p=p/'index.d.cts';s=p.read_text();before='submit(operation: PublicShieldOperation): Promise<PublicShieldAcknowledgement>';assert s.count(before)==1;p.write_text(s.replace(before,'submit(operation: PublicShieldOperation): Promise<PublicShieldAcknowledgement | PrivateSubmissionOutcome>'))
+(out/'SPEC.json').write_text(json.dumps([{'name':n,'input':case,'mutation':n}for n,_s,case in configs],indent=2)+'\n')
+shutil.copyfile(old/'probe-controls.cjs',b/'probe-controls.cjs')
+c=b/'consumer-upstream';c.mkdir();shutil.copytree(b/'artifact',c/'node_modules/@freedom/restricted-railgun-node-prototype');shutil.copyfile(b/'consumer-esm/package.json',c/'package.json')
+for name in ['bridge.ts','positive.ts']:shutil.copyfile(old/'consumer-upstream'/name,c/name)
+with (c/'bridge.ts').open('a') as f:f.write("\nimport type {PublicCapabilities} from '@freedom/restricted-railgun-node-prototype';\nexport type PinnedPublicTarget = PluginInstance<string, PublicCapabilities>;\n")
+with (c/'positive.ts').open('a') as f:f.write('''
+import type {PinnedPublicTarget} from './bridge';
+import {createRailgunKohakuPublicAdapter, createRailgunKohakuPublicAdapterSubmitter,
+ type RestrictedPublicHost, type PublicAdapter, type PublicCapabilities,
+ type PublicShieldOperation, type PublicShieldAcknowledgement,
+ type PublicAdapterSubmitter} from '@freedom/restricted-railgun-node-prototype';
+declare const publicHost: RestrictedPublicHost;
+const publicAdapter: PublicAdapter = createRailgunKohakuPublicAdapter({host:publicHost,signal});
+const publicCapabilitiesValid: PICapCfg<PublicCapabilities> extends PICapabilities ? true : false = true;
+const publicTarget: PinnedPublicTarget = publicAdapter;
+const publicSubmitter: PublicAdapterSubmitter = createRailgunKohakuPublicAdapterSubmitter(publicAdapter);
+async function consumePublic() {
+ const operation: PublicShieldOperation = await publicTarget.prepareShield({asset:{__type:'native'},amount:1n});
+ const acknowledgement: PublicShieldAcknowledgement = await publicSubmitter.submit(operation);
+ const value: string = acknowledgement.value;
+ const chain: 11155111 = acknowledgement.chainId;
+ return {acknowledgement,value,chain};
+}
+export {publicAdapter,publicTarget,publicCapabilitiesValid,publicSubmitter,consumePublic};
+''')
+shutil.copyfile(old/'qualify-upstream-r2.cjs',b/'qualify-upstream.cjs')
+(b/'UPSTREAM-SPEC.json').write_text(json.dumps({'positive':'positive.ts','negatives':[]},indent=2)+'\n')
+print('Prepared four controls and focused actual-upstream positive')

@@ -1,0 +1,63 @@
+{
+  "schema": "restricted-node-public-final-package-smoke-v1",
+  "mode": "mixed",
+  "exports": [
+    "createRailgunKohakuPrivateAdapter",
+    "createRailgunKohakuPrivateAdapterBroadcaster",
+    "createRailgunKohakuPublicAdapter",
+    "createRailgunKohakuPublicAdapterSubmitter",
+    "createRailgunKohakuSnapshotPlugin"
+  ],
+  "independentHost": true,
+  "hostAuthorityQualified": false,
+  "snapshotReads": 4,
+  "publicBaseline": {
+    "reads": 4,
+    "preparation": 1,
+    "submission": 1,
+    "close": 1,
+    "authority": false
+  },
+  "publicCopiedAndRepeatedTokensRefused": true,
+  "publicOriginalErrorIdentity": true,
+  "publicCrossEntryIdentity": true,
+  "unchangedRuntimeMatrixRepeated": false,
+  "detachedMutationIsolation": true,
+  "privateOperations": [
+    {
+      "kind": "transfer",
+      "reads": 3,
+      "preparation": 1,
+      "broadcast": 1,
+      "close": 1,
+      "authority": false
+    },
+    {
+      "kind": "unshield",
+      "reads": 3,
+      "preparation": 1,
+      "broadcast": 1,
+      "close": 1,
+      "authority": false
+    },
+    {
+      "kind": "partial",
+      "reads": 3,
+      "preparation": 1,
+      "broadcast": 1,
+      "close": 1,
+      "authority": false
+    }
+  ],
+  "sharedCjsEsmIdentity": true,
+  "stickyForbiddenWork": [],
+  "loadedArtifactModules": [
+    "index.cjs",
+    "runtime.cjs"
+  ],
+  "genuineFreedomHostIncluded": false,
+  "nativeCryptoQualified": false,
+  "osEgressQualified": false,
+  "node": "v24.18.1",
+  "pid": 78858
+}

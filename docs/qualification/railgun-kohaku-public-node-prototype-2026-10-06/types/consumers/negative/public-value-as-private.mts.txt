@@ -1,0 +1,3 @@
+import type {PublicShieldAcknowledgement,PrivateSubmissionOutcome} from '@freedom/restricted-railgun-node-prototype';
+declare const publicAck: PublicShieldAcknowledgement;
+const privateResult: PrivateSubmissionOutcome = publicAck;

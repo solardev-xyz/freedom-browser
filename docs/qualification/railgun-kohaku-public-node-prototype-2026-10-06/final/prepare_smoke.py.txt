@@ -1,0 +1,36 @@
+"""Copy exact reviewed artifact and smoke inputs; run only after parent type clearance."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import runpy
+import shutil
+
+if not __debug__:
+    raise RuntimeError('Optimized Python forbidden')
+HERE = Path(__file__).resolve().parent
+verified = runpy.run_path(str(HERE/'verify_artifact.py'))
+source = verified['artifact']
+expected = verified['expected']
+inventory = verified['inventory']
+sha = verified['sha']
+paths = [HERE/'artifact'] + [HERE/('consumer-'+mode) for mode in ['cjs','esm','mixed']]
+for path in paths:
+    assert not os.path.lexists(path)
+helpers=['consumer.cjs','independent-host.cjs','public-host.cjs','pins.json']
+inputs={name:sha(HERE/name) for name in helpers}
+shutil.copytree(source,HERE/'artifact')
+assert inventory(HERE/'artifact')==expected
+for mode in ['cjs','esm','mixed']:
+    directory=HERE/('consumer-'+mode)
+    directory.mkdir()
+    for name in helpers:shutil.copyfile(HERE/name,directory/name)
+    (directory/'package.json').write_text('{"private":true}\n')
+    namespace=directory/'node_modules/@freedom'
+    namespace.mkdir(parents=True)
+    shutil.copytree(source,namespace/'restricted-railgun-node-prototype')
+    assert inventory(namespace/'restricted-railgun-node-prototype')==expected
+assert inventory(source)==expected
+(HERE/'SMOKE-INPUTS.json').write_text(json.dumps({'typeFreezeSha256':verified['TYPE_SHA'],
+    'artifactInventory':expected,'helpers':inputs,'artifactCopiedExactly':True,'runtimeConsumersExecuted':False},indent=2)+'\n')
+print(json.dumps({'copiedArtifactFiles':29,'freshConsumerProjects':3,'runtimeConsumersExecuted':False}))
