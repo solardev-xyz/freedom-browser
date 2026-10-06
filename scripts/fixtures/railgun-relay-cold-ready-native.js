@@ -25,9 +25,17 @@ const ROLES = [
 // A retained signed record resumes with its original signature: proof A runs
 // inside the completed snapshot before the same independent verifier.
 const SIGNED_ROLES = [...ROLES.slice(0, -1), 'proof-A', 'dual-proof-C'];
+// A Transact first run leaves a ready-local record over the derived Transact
+// history; its cold mode is the ready-record verifier route (C only).
 const MODES = Object.freeze({
   'railgun-relay-positive-native-v1': 'ready',
   'railgun-relay-signed-stop-native-v1': 'signed',
+  'railgun-relay-transact-native-v1': 'transact',
+});
+const SCENARIO = Object.freeze({
+  ready: 'synthetic-list',
+  signed: 'synthetic-list-signed-stop',
+  transact: 'synthetic-list-transact',
 });
 const roles = (mode) => (mode === 'signed' ? SIGNED_ROLES : ROLES);
 const shape = (v, keys) => assert.deepEqual(Object.keys(v).sort(), [...keys].sort());
@@ -99,7 +107,11 @@ function admission(config, outcome, first) {
   assert.notEqual(outcome.originalDriver.pid, outcome.originalMain.pid);
   assert.ok(Object.hasOwn(MODES, first.schema));
   const mode = MODES[first.schema];
-  assert.equal(first.scenario, mode === 'signed' ? 'synthetic-list-signed-stop' : 'synthetic-list');
+  assert.equal(first.scenario, SCENARIO[mode]);
+  if (mode === 'transact') {
+    assert.equal(first.selectedInputType, 'Transact');
+    assert.match(first.translatedTxidRowSha256, /^[0-9a-f]{64}$/);
+  }
   assert.equal(first.syntheticList, LIST);
   assert.equal(first.rpcOwner, 'genuine-private-rpc');
   assert.equal(first.syntheticProviderHost, 'synthetic.invalid');
@@ -182,11 +194,13 @@ function rpcReply(method, params, logs) {
         toBlock: tag(TO),
       },
     ]);
+    // Original transaction/log indexes (all zero except the derived Transact
+    // history's second log in its block-30 transaction).
     return logs.map((v) => ({
       ...v,
       blockNumber: tag(v.blockNumber),
-      transactionIndex: '0x0',
-      logIndex: '0x0',
+      transactionIndex: tag(v.transactionIndex),
+      logIndex: tag(v.logIndex),
     }));
   }
   assert.equal(method, 'eth_getBlockByNumber');
@@ -771,7 +785,10 @@ async function execute(admitted) {
   const signed = mode === 'signed';
   const retained = require('./railgun-relay-retained-run');
   const source = bounded(config.sourceFilename, 8466, SOURCE_SHA),
-    logs = translate(source),
+    logs =
+      mode === 'transact'
+        ? require('./railgun-relay-positive-native').translateTransact(source).logs
+        : translate(source),
     before = sourceSnapshot();
   assert.deepEqual(before, first.sourceSha256);
   const pins = () => ({
@@ -919,7 +936,10 @@ async function execute(admitted) {
       {
         schema: signed
           ? 'railgun-relay-signed-cold-native-v1'
-          : 'railgun-relay-cold-ready-native-v1',
+          : mode === 'transact'
+            ? 'railgun-relay-transact-cold-native-v1'
+            : 'railgun-relay-cold-ready-native-v1',
+        ...(mode === 'transact' ? { selectedInputType: 'Transact' } : {}),
         ...report,
         firstReportSha256: config.firstReportSha256,
         firstOutcomeSha256: config.firstOutcomeSha256,

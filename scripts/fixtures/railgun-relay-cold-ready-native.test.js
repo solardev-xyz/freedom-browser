@@ -844,3 +844,46 @@ test('signed resume shares the exact ready RPC map', () => {
   expect(f.assertRpc(rows)).toBeTruthy();
   expect(() => f.assertRpc([...rows, rows.find((v) => v.method === 'eth_getLogs')])).toThrow();
 });
+test('Transact first report admits the ready-record verifier mode only', () => {
+  const v = admissionInput();
+  v.first = {
+    ...v.first,
+    schema: 'railgun-relay-transact-native-v1',
+    scenario: 'synthetic-list-transact',
+    selectedInputType: 'Transact',
+    translatedTxidRowSha256: digest,
+  };
+  expect(load().admission(v.config, v.outcome, v.first)).toBe('transact');
+  for (const change of [
+    (x) => (x.first.scenario = 'synthetic-list'),
+    (x) => (x.first.selectedInputType = 'Shield'),
+    (x) => delete x.first.translatedTxidRowSha256,
+    (x) => (x.first.result.status = 'recovery-required'),
+  ]) {
+    const bad = structuredClone(v);
+    change(bad);
+    expect(() => load().admission(bad.config, bad.outcome, bad.first)).toThrow();
+  }
+});
+test('cold log replies keep original transaction and log indexes', () => {
+  const f = load();
+  const logs = [
+    { blockNumber: 5944730, transactionIndex: 0, logIndex: 0, data: '0x' },
+    { blockNumber: 5944730, transactionIndex: 0, logIndex: 1, data: '0x' },
+  ];
+  const reply = f.rpcReply(
+    'eth_getLogs',
+    [
+      {
+        address: '0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea',
+        fromBlock: tag(5900000),
+        toBlock: tag(5944730),
+      },
+    ],
+    logs
+  );
+  expect(reply.map((v) => [v.transactionIndex, v.logIndex])).toEqual([
+    ['0x0', '0x0'],
+    ['0x0', '0x1'],
+  ]);
+});
