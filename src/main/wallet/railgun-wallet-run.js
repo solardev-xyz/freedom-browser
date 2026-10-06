@@ -37,8 +37,24 @@ async function runRailgunWalletSnapshot({
   privateIntent,
   privateOperation,
   privateRecovery,
+  relayRequest,
+  relayDraftText,
+  relaySignal,
 }) {
   if (privateIntent !== undefined) assert.equal(restore, true);
+  let relayInput, relayDraft;
+  const relay = relayRequest !== undefined || relayDraftText !== undefined;
+  if (relay) {
+    assert.equal(restore, true);
+    for (const value of [privateIntent, privateOperation, privateRecovery])
+      assert.equal(value, undefined);
+    const data = require('./railgun-relay-wallet-data');
+    data.assertRailgunRelaySignal(relaySignal);
+    if (relayRequest !== undefined) {
+      assert.equal(relayDraftText, undefined);
+      relayInput = data.normalizeRailgunRelayRequest(relayRequest, walletId);
+    } else relayDraft = data.parseRailgunRelayDraft(relayDraftText, walletId);
+  } else assert.equal(relaySignal, undefined);
   let operationInput, onIntent, recoveryInput;
   if (privateRecovery !== undefined) {
     assert.equal(restore, true);
@@ -72,13 +88,17 @@ async function runRailgunWalletSnapshot({
       artifactDirectory: privateOperation.artifactDirectory,
     });
   }
-  const purpose = recoveryInput
-    ? 'private-recover'
-    : operationInput
-      ? 'private-operate'
-      : privateIntent === undefined
-        ? 'wallet-viewing'
-        : 'private-prepare';
+  const purpose = relay
+    ? relayInput
+      ? 'relay-prepare'
+      : 'relay-reconstruct'
+    : recoveryInput
+      ? 'private-recover'
+      : operationInput
+        ? 'private-operate'
+        : privateIntent === undefined
+          ? 'wallet-viewing'
+          : 'private-prepare';
   if (unobservedExits.has(identity)) throw exitUnobserved();
   const descriptor = assertRailgunIdentity(identity, handle);
   assert.equal(walletId, descriptor.walletId);
@@ -86,7 +106,7 @@ async function runRailgunWalletSnapshot({
   const context = getPrivacyContext(handle);
   const scope = createPrivacyScope({
     profileId: context.profileId,
-    signal: AbortSignal.any([context.signal, identity.signal]),
+    signal: AbortSignal.any([context.signal, identity.signal, ...(relay ? [relaySignal] : [])]),
     isCurrent: () => {
       assertRailgunIdentity(identity, handle);
       return true;
@@ -190,6 +210,31 @@ async function runRailgunWalletSnapshot({
         assert.equal(pending.size, 0);
         assert.ok(!operationInput || operationReplied);
         assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+        if (relay) {
+          assert.ok(message.value && typeof message.value === 'object');
+          for (const name of ['privatePreparation', 'privateOperation', 'privateRecovery'])
+            assert.equal(message.value[name], undefined);
+          if (relayInput) {
+            assert.equal(message.value.relayReconstruction, undefined);
+            const draft = require('./railgun-relay-capsule').normalizeRailgunRelayDraftCapsule(
+              message.value.relayDraft
+            );
+            assert.equal(draft.data.walletId, walletId);
+            assert.deepEqual(draft.data.selection, relayInput.selection);
+            assert.deepEqual(draft.data.intent.context, relayInput.context);
+            message.value.relayDraft = draft.data;
+          } else {
+            assert.equal(message.value.relayDraft, undefined);
+            message.value.relayReconstruction =
+              require('./railgun-relay-wallet-data').normalizeRailgunRelayReconstruction(
+                message.value.relayReconstruction,
+                relayDraft
+              );
+          }
+        } else {
+          assert.equal(message.value?.relayDraft, undefined);
+          assert.equal(message.value?.relayReconstruction, undefined);
+        }
         if (recoveryInput) {
           assert.ok(message.value && typeof message.value === 'object');
           assert.equal(message.value.privatePreparation, undefined);
@@ -286,15 +331,17 @@ async function runRailgunWalletSnapshot({
     task = startRailgunProcess({
       handle: scope.getContext({ ...context.subject, role: 'engine', operation: purpose }),
       binaryKey: true,
-      startupMs: 120000,
-      lifetimeMs: 180000,
-      filename: recoveryInput
-        ? require.resolve('./railgun-private-recover-job')
-        : operationInput
-          ? require.resolve('./railgun-private-operate-job')
-          : privateIntent === undefined
-            ? require.resolve('./railgun-wallet-job')
-            : require.resolve('./railgun-private-prepare-job'),
+      startupMs: relay ? 30000 : 120000,
+      lifetimeMs: relay ? 30000 : 180000,
+      filename: relay
+        ? require.resolve('./railgun-relay-wallet-job')
+        : recoveryInput
+          ? require.resolve('./railgun-private-recover-job')
+          : operationInput
+            ? require.resolve('./railgun-private-operate-job')
+            : privateIntent === undefined
+              ? require.resolve('./railgun-wallet-job')
+              : require.resolve('./railgun-private-prepare-job'),
       input: JSON.stringify({
         archive,
         descriptor,
@@ -304,6 +351,8 @@ async function runRailgunWalletSnapshot({
         ...(privateIntent === undefined ? {} : { privateIntent }),
         ...(operationInput ? { privateOperation: operationInput } : {}),
         ...(recoveryInput ? { privateRecovery: recoveryInput } : {}),
+        ...(relayInput ? { relayRequest: relayInput } : {}),
+        ...(relayDraft ? { relayDraftText } : {}),
         prefixes: router.prefixes,
       }),
       broker: {
@@ -327,6 +376,11 @@ async function runRailgunWalletSnapshot({
     closeTask();
     closed = await observeExit();
     assert.equal(closed.code, 'RAILGUN_PROCESS_CLOSED');
+    if (relay) {
+      assert.equal(closed.exitCode, 15);
+      assert.equal(closed.escalated, false);
+      assert.equal(closed.peerDisconnected, false);
+    }
     assert.ok(!failed && !lifetime.aborted);
     assert.ok(result);
     assertRailgunIdentity(identity, handle);

@@ -9,6 +9,13 @@ const engine = require('./railgun-engine-manifest.json');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const sources = [
   'railgun-wallet-job',
+  'railgun-relay-wallet-job',
+  'railgun-relay-wallet-data',
+  'railgun-relay-witness',
+  'railgun-relay-reconstruct',
+  'railgun-relay-intent',
+  'railgun-relay-capsule',
+  'railgun-relay-quote-data',
   'railgun-private-prepare-job',
   'railgun-private-operate-job',
   'railgun-private-recover-job',

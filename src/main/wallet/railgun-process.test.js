@@ -478,6 +478,8 @@ test.each([
   ['engine', 'poi-transact-selector', './railgun-poi-transact-selector-job'],
   ['engine', 'private-operate', './railgun-private-operate-job'],
   ['engine', 'private-recover', './railgun-private-recover-job'],
+  ['engine', 'relay-prepare', './railgun-relay-wallet-job'],
+  ['engine', 'relay-reconstruct', './railgun-relay-wallet-job'],
   ['engine', 'private-receive', './railgun-private-receive-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
 ])(
@@ -580,6 +582,14 @@ test.each([
   ['spending-sign', './railgun-poi-output-recover-job'],
   ['private-operate', './railgun-spend-sign-job', 'engine'],
   ['spending-sign', './railgun-private-operate-job'],
+  ['relay-prepare', './railgun-private-prepare-job', 'engine'],
+  ['relay-reconstruct', './railgun-private-recover-job', 'engine'],
+  ['relay-prepare', './railgun-wallet-job', 'engine'],
+  ['relay-reconstruct', './railgun-spend-sign-job', 'engine'],
+  ['private-prepare', './railgun-relay-wallet-job', 'engine'],
+  ['private-recover', './railgun-relay-wallet-job', 'engine'],
+  ['wallet-viewing', './railgun-relay-wallet-job', 'engine'],
+  ['spending-sign', './railgun-relay-wallet-job'],
 ])('refuses binary-key job cross-pairing %s/%s', (operation, filename, role = 'keystore') => {
   const handle = scope.getContext({
     kind: 'private-account',
@@ -717,3 +727,70 @@ test.each(['service', 'public-address'])(
     expect(mockFork).not.toHaveBeenCalled();
   }
 );
+
+for (const operation of ['relay-prepare', 'relay-reconstruct']) {
+  test.each([
+    ['kind', 'service'],
+    ['kind', 'public-address'],
+    ['role', 'prover'],
+    ['role', 'keystore'],
+    ['protocol', 'ppv2'],
+    ['deployment', 'mainnet'],
+    ['chainId', 1],
+  ])(`${operation} binary admission refuses wrong %s=%s`, (field, value) => {
+    const subject = {
+      kind: 'private-account',
+      principal: 'railgun:0',
+      protocol: 'railgun',
+      deployment: 'sepolia',
+      chainId: 11155111,
+      role: 'engine',
+      operation,
+      [field]: value,
+    };
+    if (subject.kind === 'public-address') subject.principal = '0x' + '12'.repeat(20);
+    expect(() =>
+      startRailgunProcess({
+        handle: scope.getContext(subject),
+        filename: require.resolve('./railgun-relay-wallet-job'),
+        input: '{}',
+        binaryKey: true,
+        broker: { signal: scope.signal, dispatch: async () => new Uint8Array(32) },
+      })
+    ).toThrow(expect.objectContaining({ code: 'RAILGUN_PROCESS_INVALID' }));
+    expect(mockFork).not.toHaveBeenCalled();
+  });
+
+  test(`${operation} refuses the other relay operation's key request and wipes its reply`, async () => {
+    const bytes = new Uint8Array(32).fill(7);
+    task = startRailgunProcess({
+      handle: scope.getContext({
+        kind: 'private-account',
+        principal: 'railgun:0',
+        protocol: 'railgun',
+        deployment: 'sepolia',
+        chainId: 11155111,
+        role: 'engine',
+        operation,
+      }),
+      filename: require.resolve('./railgun-relay-wallet-job'),
+      input: '{}',
+      binaryKey: true,
+      broker: { signal: scope.signal, dispatch: async () => bytes },
+    });
+    child.emit('spawn');
+    message({
+      type: 'command',
+      wire: JSON.stringify({
+        id: 1,
+        method: 'key',
+        purpose: operation === 'relay-prepare' ? 'relay-reconstruct' : 'relay-prepare',
+      }),
+    });
+    await Promise.resolve();
+    expect(mockPort.postMessage).not.toHaveBeenCalled();
+    expect([...bytes]).toEqual(Array(32).fill(0));
+    child.emit('exit', 1);
+    expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
+  });
+}

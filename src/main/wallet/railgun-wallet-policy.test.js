@@ -8,32 +8,39 @@ afterEach(() => {
   jest.restoreAllMocks();
   jest.clearAllMocks();
 });
-test.each(['railgun-wallet-records', 'railgun-kohaku-read-data'])(
-  'policy is location-independent but binds the engine and %s bytes',
-  (validator) => {
-    const first = getRailgunWalletPolicy('/first/engine.asar');
-    expect(first).toMatch(/^[0-9a-f]{64}$/);
-    expect(getRailgunWalletPolicy('/other/engine.asar')).toBe(first);
-    const original = fs.readFileSync;
-    const read = jest
-      .spyOn(fs, 'readFileSync')
-      .mockImplementation((name, ...args) =>
-        String(name).endsWith('/' + validator + '.js')
-          ? Buffer.from('changed validation')
-          : original(name, ...args)
-      );
+test.each([
+  'railgun-wallet-records',
+  'railgun-kohaku-read-data',
+  'railgun-relay-wallet-job',
+  'railgun-relay-wallet-data',
+  'railgun-relay-witness',
+  'railgun-relay-reconstruct',
+  'railgun-relay-intent',
+  'railgun-relay-capsule',
+  'railgun-relay-quote-data',
+])('policy is location-independent but binds the engine and %s bytes', (validator) => {
+  const first = getRailgunWalletPolicy('/first/engine.asar');
+  expect(first).toMatch(/^[0-9a-f]{64}$/);
+  expect(getRailgunWalletPolicy('/other/engine.asar')).toBe(first);
+  const original = fs.readFileSync;
+  const read = jest
+    .spyOn(fs, 'readFileSync')
+    .mockImplementation((name, ...args) =>
+      String(name).endsWith('/' + validator + '.js')
+        ? Buffer.from('changed validation')
+        : original(name, ...args)
+    );
+  expect(getRailgunWalletPolicy('/first/engine.asar')).not.toBe(first);
+  read.mockRestore();
+  const saved = engine.sha256;
+  try {
+    engine.sha256 = 'f'.repeat(64);
     expect(getRailgunWalletPolicy('/first/engine.asar')).not.toBe(first);
-    read.mockRestore();
-    const saved = engine.sha256;
-    try {
-      engine.sha256 = 'f'.repeat(64);
-      expect(getRailgunWalletPolicy('/first/engine.asar')).not.toBe(first);
-    } finally {
-      engine.sha256 = saved;
-    }
-    expect(getRailgunWalletPolicy('/first/engine.asar')).toBe(first);
+  } finally {
+    engine.sha256 = saved;
   }
-);
+  expect(getRailgunWalletPolicy('/first/engine.asar')).toBe(first);
+});
 test('an unauthenticated archive cannot obtain a wallet policy', () => {
   verifyRailgunEngineRuntime.mockImplementationOnce(() => {
     throw Error('archive');
@@ -74,6 +81,7 @@ test('local wallet job and host validation dependencies are pinned or cross expl
   }
   for (const root of [
     'railgun-wallet-job',
+    'railgun-relay-wallet-job',
     'railgun-private-prepare-job',
     'railgun-private-operate-job',
     'railgun-private-recover-job',
@@ -85,5 +93,5 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-kohaku-read',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(33);
+  expect(visited.size).toBe(40);
 });

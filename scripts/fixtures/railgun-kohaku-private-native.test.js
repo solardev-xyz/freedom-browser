@@ -319,6 +319,7 @@ test('native key deltas follow actual job purposes and count requests before dis
   const context = vm.createContext({
     messages: 0,
     snapshotProbe: undefined,
+    localReviewProbe: undefined,
     stagingGuard: false,
     failReadOnlyRestore: false,
     privateViewingKeys: 0,

@@ -2284,3 +2284,673 @@ test('completed input cannot read through an in-flight restore, then works after
     await account.close();
   }
 });
+
+// Mock account-owner orchestration only. No engine, native process, real quote
+// signature, account enrollment/profile or wallet decryption runs in this suite.
+const { prepareRailgunAccountRelayIntent } = require('./railgun-account-wallet');
+function relayFixture() {
+  // Jest's native structuredClone returns foreign-realm prototypes. These owner
+  // mocks contain plain acyclic data/BigInts; keep their copies in this realm.
+  const clone = (value) =>
+    Array.isArray(value)
+      ? value.map(clone)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, clone(v)]))
+        : value;
+  jest.spyOn(global, 'structuredClone').mockImplementation(clone);
+  const f = preparationFixture();
+  const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+  Object.assign(mockIdentity.descriptor, {
+    instanceId: '0zk1' + 'q'.repeat(123),
+    masterPublicKey: hex(7).slice(2),
+    viewingPublicKey: '02'.repeat(32),
+  });
+  f.owned.checkpointHash = '{}';
+  f.owned.read.instanceId = mockIdentity.descriptor.instanceId;
+  Object.assign(f.owned.read.received[0], { hash: hex(12), txid: '0x' + '44'.repeat(32) });
+  Object.assign(f.owned.ownedPoi[0], {
+    hash: hex(12),
+    nullifier: hex(8),
+    txid: '0x' + '44'.repeat(32),
+    type: 'Shield',
+  });
+  f.owned.trees[0].root = hex(7);
+  const fields = {
+    fees: { [require('./railgun-shield-pins.json').wrappedNative]: '0xde0b6b3a7640000' },
+    feeExpiration: Date.now() + 240000,
+    feesID: 'owner-only-test',
+    railgunAddress: '0zk1' + 'p'.repeat(123),
+    availableWallets: 1,
+    version: '8.0.0',
+    relayAdapt: require('./railgun-shield-pins.json').relayAdapt,
+    requiredPOIListKeys: [],
+    reliability: -1,
+  };
+  const abort = new AbortController();
+  const request = {
+    noteId: '0:1',
+    quote: {
+      data: Buffer.from(JSON.stringify(fields)).toString('hex'),
+      signature: '04'.repeat(64),
+    },
+    gas: { transactionType: 0, gasEstimate: '84', gasPrice: '1', minGasPrice: '1' },
+    maxFee: '100',
+    signal: abort.signal,
+  };
+  const verify = jest
+    .spyOn(require('./railgun-relay-quote-verify'), 'verifyRailgunRelayQuote')
+    .mockImplementation(async ({ quote, gas }) => ({
+      signatureVerified: true,
+      quoteSha256: require('./railgun-relay-quote-data').normalizeRailgunRelayQuote(quote, gas)
+        .quoteSha256,
+      masterPublicKey: '8',
+      viewingPublicKey: '03'.repeat(32),
+    }));
+  mockSession.inspectWalletState.mockImplementation(async () => ({
+    storeId: generation.storeId,
+    state: true,
+  }));
+  const owners = {
+    identity: mockIdentity,
+    enrollment: mockEnrollment,
+    coordinator: options.coordinator,
+  };
+  const receipts = { first: {}, second: {} };
+  const coverage = { checkpoint: {}, coverage: {}, summary: {} };
+  const { AbiCoder, Interface, keccak256 } = require('ethers');
+  const { TRANSACT_ABI, BOUND_PARAMS } = require('./railgun-private-policy');
+  const pins = require('./railgun-shield-pins.json');
+  const zero = '0x' + '0'.repeat(40);
+  const cipher = (n) => ({
+    ciphertext: [hex(n), hex(n + 1), hex(n + 2), hex(n + 3)],
+    blindedSenderViewingKey: hex(n + 4),
+    blindedReceiverViewingKey: hex(n + 5),
+    annotationData: '0x1122',
+    memo: '0x',
+  });
+  let draft;
+  mockRunner.prepareRelayReadOnly = jest.fn(async ({ relayRequest }) => {
+    events.push('relay-construct');
+    const bound = {
+      treeNumber: 0,
+      minGasPrice: 1,
+      unshield: 0,
+      chainID: pins.chainId,
+      adaptContract: zero,
+      adaptParams: hex(0),
+      commitmentCiphertext: [cipher(10), cipher(20)],
+    };
+    const tx = {
+      proof: { a: { x: 0, y: 0 }, b: { x: [0, 0], y: [0, 0] }, c: { x: 0, y: 0 } },
+      merkleRoot: hex(7),
+      nullifiers: [hex(8)],
+      commitments: [hex(9), hex(10)],
+      boundParams: bound,
+      unshieldPreimage: {
+        npk: hex(0),
+        token: { tokenType: 0, tokenAddress: zero, tokenSubID: 0 },
+        value: 0,
+      },
+    };
+    const intent = {
+      transaction: {
+        chainId: pins.chainId,
+        to: pins.proxy,
+        value: '0',
+        data: new Interface([TRANSACT_ABI]).encodeFunctionData('transact', [[tx]]),
+      },
+      expected: {
+        kind: 'railgun-relay-self-transfer',
+        tree: 0,
+        merkleRoot: hex(7),
+        nullifier: hex(8),
+        feeCommitment: hex(9),
+        selfCommitment: hex(10),
+        boundParamsHash: hex(
+          BigInt(keccak256(AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [bound]))) %
+            21888242871839275222246405745257275088548364400416034343698204186575808495617n
+        ),
+      },
+      expectedHash: hex(11),
+      context: relayRequest.context,
+    };
+    draft = require('./railgun-relay-capsule').normalizeRailgunRelayDraftCapsule({
+      schema: 'railgun-relay-unsigned-draft-v1',
+      walletId: mockIdentity.descriptor.walletId,
+      engineSha256: require('./railgun-engine-manifest.json').sha256,
+      selection: relayRequest.selection,
+      noteHash: hex(12),
+      pathElements: Array.from({ length: 16 }, (_, i) => hex(i + 1)),
+      intent,
+    });
+    return {
+      receipt: receipts.first,
+      coverage: coverage.coverage,
+      relayOwned: structuredClone(f.owned),
+      readOnly: { readOnly: true, writeAttempts: 0 },
+      relayDraft: draft,
+    };
+  });
+  mockRunner.reconstructRelayReadOnly = jest.fn(async ({ relayDraftText }) => {
+    events.push('relay-reconstruct');
+    expect(relayDraftText).toBe(JSON.stringify(draft.data));
+    const parsed = require('./railgun-relay-capsule').normalizeRailgunRelayDraftCapsule(
+      JSON.parse(relayDraftText)
+    );
+    return {
+      receipt: receipts.second,
+      coverage: coverage.coverage,
+      relayOwned: structuredClone(f.owned),
+      readOnly: { readOnly: true, writeAttempts: 0 },
+      relayReconstruction: {
+        draftDigest: parsed.digest,
+        expectedHash: parsed.data.intent.expectedHash,
+        recoveredOutputs: 2,
+      },
+    };
+  });
+  const opened = async () => {
+    const account = await openRailgunAccountWallet(options);
+    mockCoverage.read.mockImplementation(async (receipt) => {
+      events.push(receipt === receipts.first ? 'consume-first' : 'consume-second');
+      return coverage;
+    });
+    const previous = mockRunner.readOwned.getMockImplementation();
+    mockRunner.readOwned.mockImplementation((receipt) => {
+      expect(receipt).not.toBe(receipts.first);
+      if (receipt === receipts.second) expect(events.at(-1)).toBe('revalidate');
+      return previous();
+    });
+    mockJournal.revalidate.mockClear();
+    return account;
+  };
+  return { ...f, owners, request, fields, abort, verify, receipts, coverage, opened };
+}
+const waitRelay = async (predicate) => {
+  for (let i = 0; i < 100 && !predicate(); i++) await Promise.resolve();
+  expect(predicate()).toBe(true);
+};
+test('relay preparation holds one owner window, consumes first receipt, reconstructs serialized data, then revalidates once', async () => {
+  const f = relayFixture(),
+    account = await f.opened(),
+    old = account.view;
+  mockRead.mockImplementation(() => ({}));
+  const result = await prepareRailgunAccountRelayIntent(account, f.owners, f.request);
+  expect(result.view).toBe(account.view);
+  expect(account.view).not.toBe(old);
+  expect(result.preparation.data.intent.context).toMatchObject({
+    inputAmount: '1000',
+    feeAmount: '100',
+    selfAmount: '900',
+    feeCap: '100',
+  });
+  for (const name of [
+    'reviewedPreparation',
+    'reservationsChecked',
+    'capsulePersisted',
+    'signingEnabled',
+    'proofAuthority',
+    'poiQueriesPermitted',
+    'relaySendPermitted',
+  ])
+    expect(result[name]).toBe(false);
+  expect(mockJournal.revalidate).toHaveBeenCalledTimes(1);
+  expect(mockJournal.revalidate.mock.calls[0][0].receipt).toBe(f.receipts.second);
+  expect(events.indexOf('consume-first')).toBeLessThan(events.indexOf('relay-reconstruct'));
+  expect(mockRunner.prepareReadOnly).not.toHaveBeenCalled();
+  expect(mockCoverage.write).not.toHaveBeenCalled();
+  for (const call of [
+    mockRunner.prepareRelayReadOnly.mock.calls[0][0],
+    mockRunner.reconstructRelayReadOnly.mock.calls[0][0],
+  ]) {
+    expect(call.relaySignal).toBeInstanceOf(AbortSignal);
+    for (const name of ['privateIntent', 'privateOperation', 'privateRecovery'])
+      expect(call[name]).toBeUndefined();
+  }
+  expect(mockRunner.prepareRelayReadOnly.mock.calls[0][0].snapshot).toBe(
+    mockRunner.reconstructRelayReadOnly.mock.calls[0][0].snapshot
+  );
+  await account.close();
+});
+test('relay quote verification holds busy/handoff, rejects ordinary restore and forged owners, and detaches caller fields', async () => {
+  const f = relayFixture(),
+    account = await f.opened();
+  let release;
+  const original = f.verify.getMockImplementation();
+  f.verify.mockImplementation(async (input) => {
+    await new Promise((r) => {
+      release = r;
+    });
+    return original(input);
+  });
+  const work = prepareRailgunAccountRelayIntent(account, f.owners, f.request);
+  work.catch(() => {});
+  await waitRelay(() => !!release);
+  await expect(restoreRailgunAccountWallet(account, f.owners)).rejects.toThrow();
+  expect(() =>
+    require('./railgun-account-wallet').reserveRailgunAccountWalletHandoff(account, f.owners)
+  ).toThrow();
+  expect(() => prepareRailgunAccountRelayIntent({ ...account }, f.owners, f.request)).toThrow();
+  for (const key of ['identity', 'enrollment', 'coordinator'])
+    expect(() =>
+      prepareRailgunAccountRelayIntent(account, { ...f.owners, [key]: {} }, f.request)
+    ).toThrow();
+  f.request.quote.data = '00';
+  f.request.gas.gasPrice = '2';
+  f.request.maxFee = '1';
+  release();
+  const result = await work;
+  expect(result.preparation.data.intent.context.gas.gasPrice).toBe('1');
+  expect(result.preparation.data.intent.context.feeCap).toBe('100');
+  await account.close();
+});
+test('clean quote refusal releases handoff after original work and leaves borrowed account usable', async () => {
+  const f = relayFixture(),
+    account = await f.opened();
+  f.verify.mockRejectedValue(Error('signature refusal'));
+  await expect(prepareRailgunAccountRelayIntent(account, f.owners, f.request)).rejects.toThrow();
+  expect(account.signal.aborted).toBe(false);
+  expect(mockRunner.prepareRelayReadOnly).not.toHaveBeenCalled();
+  const handoff = require('./railgun-account-wallet').reserveRailgunAccountWalletHandoff(
+    account,
+    f.owners
+  );
+  handoff.release();
+  expect(readRailgunAccountOwnedNotes(account, f.owners)).toBe(f.owned);
+  await account.close();
+});
+test.each([
+  'owned',
+  'checkpoint',
+  'generation',
+  'public-generation',
+  'identity',
+  'wall-rollback',
+  'expired',
+  'monotonic-rollback',
+  'quote-timeout',
+])('relay %s change during quote refuses before wallet job', async (kind) => {
+  const f = relayFixture(),
+    account = await f.opened();
+  let mono = 1000,
+    wall = Date.now();
+  jest.spyOn(performance, 'now').mockImplementation(() => mono);
+  jest.spyOn(Date, 'now').mockImplementation(() => wall);
+  const original = f.verify.getMockImplementation();
+  f.verify.mockImplementation(async (input) => {
+    const verified = await original(input);
+    if (kind === 'owned') f.owned.read.received[0].amount = 999n;
+    if (kind === 'checkpoint') options.coordinator.assertSnapshot = () => ({ changed: true });
+    if (kind === 'generation') generation.id = 'a'.repeat(64);
+    if (kind === 'public-generation')
+      mockAssertPublic.mockReturnValue({ generationId: 'b'.repeat(64) });
+    if (kind === 'identity') mockIdentity.descriptor.viewingPublicKey = '04'.repeat(32);
+    if (kind === 'wall-rollback') wall--;
+    if (kind === 'expired') wall += 240001;
+    if (kind === 'monotonic-rollback') mono--;
+    if (kind === 'quote-timeout') mono += 15000;
+    return verified;
+  });
+  await expect(prepareRailgunAccountRelayIntent(account, f.owners, f.request)).rejects.toThrow();
+  expect(mockRunner.prepareRelayReadOnly).not.toHaveBeenCalled();
+  await account.close();
+});
+test.each([
+  'first-owned',
+  'coverage',
+  'state',
+  'second-owned',
+  'reconstruction',
+  'first-timeout',
+  'second-timeout',
+])('relay %s mismatch cannot publish intermediate or final view', async (kind) => {
+  const f = relayFixture(),
+    account = await f.opened(),
+    old = account.view;
+  let mono = 1000;
+  jest.spyOn(performance, 'now').mockImplementation(() => mono);
+  const first = mockRunner.prepareRelayReadOnly.getMockImplementation();
+  mockRunner.prepareRelayReadOnly.mockImplementation(async (input) => {
+    const result = await first(input);
+    if (kind === 'first-owned') result.relayOwned.read.received[0].amount = 999n;
+    if (kind === 'coverage') f.coverage.checkpoint = { bad: true };
+    if (kind === 'state')
+      mockSession.inspectWalletState.mockResolvedValue({
+        storeId: generation.storeId,
+        state: false,
+      });
+    if (kind === 'first-timeout') mono += 30000;
+    return result;
+  });
+  const second = mockRunner.reconstructRelayReadOnly.getMockImplementation();
+  mockRunner.reconstructRelayReadOnly.mockImplementation(async (input) => {
+    const result = await second(input);
+    if (kind === 'second-owned') result.relayOwned.read.received[0].amount = 999n;
+    if (kind === 'reconstruction') result.relayReconstruction.draftDigest = 'f'.repeat(64);
+    if (kind === 'second-timeout') mono += 30000;
+    return result;
+  });
+  await expect(prepareRailgunAccountRelayIntent(account, f.owners, f.request)).rejects.toThrow();
+  expect(account.view).toBe(old);
+  expect(mockJournal.revalidate).not.toHaveBeenCalled();
+  await account.close();
+});
+test.each(['quote', 'first', 'second'])(
+  'account.close drains held relay %s work before releasing original phase',
+  async (stage) => {
+    const f = relayFixture(),
+      account = await f.opened();
+    let release;
+    const target =
+      stage === 'quote'
+        ? f.verify
+        : stage === 'first'
+          ? mockRunner.prepareRelayReadOnly
+          : mockRunner.reconstructRelayReadOnly;
+    const original = target.getMockImplementation();
+    target.mockImplementation(async (input) => {
+      await new Promise((r) => {
+        release = r;
+      });
+      return original(input);
+    });
+    const work = prepareRailgunAccountRelayIntent(account, f.owners, f.request);
+    work.catch(() => {});
+    await waitRelay(() => !!release);
+    let closed = false;
+    const closing = account.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+    release();
+    await expect(work).rejects.toThrow();
+    await closing;
+    const phase = claimRailgunAccountPhase(mockEnrollment, 'txid');
+    phase.release();
+  }
+);
+test.each(['quote', 'first', 'second'])(
+  'unknown relay %s exit quarantines identity and refuses a fresh account open',
+  async (stage) => {
+    const f = relayFixture(),
+      account = await f.opened();
+    const target =
+      stage === 'quote'
+        ? f.verify
+        : stage === 'first'
+          ? mockRunner.prepareRelayReadOnly
+          : mockRunner.reconstructRelayReadOnly;
+    target.mockRejectedValue(
+      Object.assign(Error('unknown'), {
+        code:
+          stage === 'quote' ? 'RAILGUN_RELAY_QUOTE_DRAIN_FAILED' : 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+      })
+    );
+    await expect(
+      prepareRailgunAccountRelayIntent(account, f.owners, f.request)
+    ).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    await expect(account.close()).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+    expect(account.signal.aborted).toBe(true);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+    const starts = mockOpenStore.mock.calls.length;
+    await expect(openRailgunAccountWallet(options)).rejects.toThrow();
+    expect(mockOpenStore).toHaveBeenCalledTimes(starts);
+    // Replacing JavaScript handles must not bypass process-wide phase exclusion.
+    mockEnrollment = { ...mockEnrollment };
+    mockIdentity = { descriptor: { ...mockIdentity.descriptor } };
+    await expect(
+      openRailgunAccountWallet({ ...options, identity: mockIdentity, enrollment: mockEnrollment })
+    ).rejects.toThrow();
+    expect(mockOpenStore).toHaveBeenCalledTimes(starts);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+  }
+);
+
+test('relay snapshot entry refusal closes the borrowed account even before the first job', async () => {
+  const f = relayFixture(),
+    account = await f.opened(),
+    old = account.view;
+  mockSession.inspectWalletState.mockRejectedValueOnce(Error('freshness unavailable'));
+  await expect(prepareRailgunAccountRelayIntent(account, f.owners, f.request)).rejects.toThrow();
+  expect(f.verify).toHaveBeenCalledTimes(1);
+  expect(mockRunner.prepareRelayReadOnly).not.toHaveBeenCalled();
+  expect(mockRunner.reconstructRelayReadOnly).not.toHaveBeenCalled();
+  expect(account.signal.aborted).toBe(true);
+  expect(account.view).toBe(old);
+  expect(() => readRailgunAccountOwnedNotes(account, f.owners)).toThrow();
+  expect(mockJournal.revalidate).not.toHaveBeenCalled();
+  await account.close();
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'wallet');
+  phase.release();
+});
+
+test('completed-only account refuses relay before quote or viewing preparation', async () => {
+  const input = completedOptions(),
+    account = await openRailgunCompletedAccountWallet(input);
+  const verify = jest.spyOn(require('./railgun-relay-quote-verify'), 'verifyRailgunRelayQuote');
+  await expect(
+    prepareRailgunAccountRelayIntent(
+      account,
+      { identity: mockIdentity, enrollment: mockEnrollment, coordinator: options.coordinator },
+      {}
+    )
+  ).rejects.toThrow();
+  expect(verify).not.toHaveBeenCalled();
+  await account.close();
+});
+test.each([
+  'missing-signal',
+  'aborted-signal',
+  'extra-callback',
+  'request-proxy',
+  'request-getter',
+  'signal-proxy',
+  'signal-forged-getter',
+  'signal-own-getter',
+])('relay request %s refuses without caller getter execution or admission', async (kind) => {
+  const f = relayFixture(),
+    account = await f.opened(),
+    hook = jest.fn(() => {
+      throw Error('caller hook');
+    });
+  let request = f.request;
+  if (kind === 'missing-signal') delete request.signal;
+  if (kind === 'aborted-signal') f.abort.abort();
+  if (kind === 'extra-callback') request.onIntent = hook;
+  if (kind === 'request-proxy')
+    request = new Proxy(request, { ownKeys: hook, getPrototypeOf: hook });
+  if (kind === 'request-getter')
+    Object.defineProperty(request, 'quote', { enumerable: true, get: hook });
+  if (kind === 'signal-proxy')
+    request.signal = new Proxy(request.signal, { get: hook, getPrototypeOf: hook });
+  if (kind === 'signal-forged-getter')
+    request.signal = Object.create(AbortSignal.prototype, { aborted: { get: hook } });
+  if (kind === 'signal-own-getter') Object.defineProperty(request.signal, 'aborted', { get: hook });
+  await expect(prepareRailgunAccountRelayIntent(account, f.owners, request)).rejects.toThrow();
+  expect(hook).not.toHaveBeenCalled();
+  expect(f.verify).not.toHaveBeenCalled();
+  expect(mockRunner.prepareRelayReadOnly).not.toHaveBeenCalled();
+  const handoff = require('./railgun-account-wallet').reserveRailgunAccountWalletHandoff(
+    account,
+    f.owners
+  );
+  handoff.release();
+  await account.close();
+});
+test.each([89999, 300001])(
+  'relay quote remaining margin %s refuses before verification',
+  async (margin) => {
+    const f = relayFixture(),
+      account = await f.opened(),
+      now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    f.fields.feeExpiration = now + margin;
+    f.request.quote.data = Buffer.from(JSON.stringify(f.fields)).toString('hex');
+    await expect(prepareRailgunAccountRelayIntent(account, f.owners, f.request)).rejects.toThrow();
+    expect(f.verify).not.toHaveBeenCalled();
+    await account.close();
+  }
+);
+test.each(['deadline', 'wall-rollback'])(
+  'relay final journal %s cannot publish a view',
+  async (kind) => {
+    const f = relayFixture(),
+      account = await f.opened(),
+      old = account.view;
+    let mono = 1000,
+      wall = Date.now();
+    jest.spyOn(performance, 'now').mockImplementation(() => mono);
+    jest.spyOn(Date, 'now').mockImplementation(() => wall);
+    mockJournal.revalidate.mockImplementation(async () => {
+      events.push('revalidate');
+      if (kind === 'deadline') mono += 90000;
+      else wall--;
+    });
+    await expect(prepareRailgunAccountRelayIntent(account, f.owners, f.request)).rejects.toThrow();
+    expect(account.view).toBe(old);
+    await account.close();
+  }
+);
+test('relay first receipt consumption is a real barrier and cancellation drains it', async () => {
+  const f = relayFixture(),
+    account = await f.opened(),
+    old = account.view;
+  let release;
+  mockCoverage.read.mockImplementation(async (receipt) => {
+    if (receipt === f.receipts.first)
+      await new Promise((r) => {
+        release = r;
+      });
+    return f.coverage;
+  });
+  const work = prepareRailgunAccountRelayIntent(account, f.owners, f.request);
+  work.catch(() => {});
+  await waitRelay(() => !!release);
+  expect(mockRunner.reconstructRelayReadOnly).not.toHaveBeenCalled();
+  expect(mockJournal.revalidate).not.toHaveBeenCalled();
+  expect(account.view).toBe(old);
+  let closed = false;
+  const closing = account.close().then(() => {
+    closed = true;
+  });
+  await Promise.resolve();
+  expect(closed).toBe(false);
+  release();
+  await expect(work).rejects.toThrow();
+  await closing;
+});
+
+test.each(['quote', 'first', 'second'])(
+  'caller abort retains relay %s ownership until original work settles',
+  async (stage) => {
+    const f = relayFixture(),
+      account = await f.opened();
+    let release;
+    const target =
+      stage === 'quote'
+        ? f.verify
+        : stage === 'first'
+          ? mockRunner.prepareRelayReadOnly
+          : mockRunner.reconstructRelayReadOnly;
+    const original = target.getMockImplementation();
+    target.mockImplementation(async (input) => {
+      await new Promise((r) => {
+        release = r;
+      });
+      return original(input);
+    });
+    let finished = false;
+    const work = prepareRailgunAccountRelayIntent(account, f.owners, f.request).finally(() => {
+      finished = true;
+    });
+    work.catch(() => {});
+    await waitRelay(() => !!release);
+    f.abort.abort();
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    expect(() =>
+      require('./railgun-account-wallet').reserveRailgunAccountWalletHandoff(account, f.owners)
+    ).toThrow();
+    release();
+    await expect(work).rejects.toThrow();
+    expect(account.signal.aborted).toBe(stage !== 'quote');
+    await account.close();
+  }
+);
+test.each(['prepare', 'operate'])(
+  'legacy account %s route refuses the relay kind before any callback or runner work',
+  async (route) => {
+    const f = relayFixture(),
+      account = await f.opened(),
+      callback = jest.fn();
+    const request = {
+      kind: 'railgun-relay-self-transfer',
+      noteId: f.request.noteId,
+      recipient: f.owned.read.instanceId,
+    };
+    const pending =
+      route === 'prepare'
+        ? prepareRailgunAccountPrivateIntent(account, f.owners, request)
+        : operateRailgunAccountPrivateIntent(account, f.owners, request, {
+            onIntent: callback,
+            proverArchive: '/unused',
+            artifactDirectory: '/unused',
+          });
+    await expect(pending).rejects.toThrow();
+    expect(callback).not.toHaveBeenCalled();
+    expect(f.verify).not.toHaveBeenCalled();
+    expect(mockRunner.prepareReadOnly).not.toHaveBeenCalled();
+    expect(mockRunner.prepareRelayReadOnly).not.toHaveBeenCalled();
+    await account.close();
+  }
+);
+
+// Source model of railgun-scan-coordinator.withPublicSnapshot/assertSnapshot:
+// busy rejects all tokens, prior evidence is invalidated before callback, and
+// callback signal aborts before the fresh evidence token is returned.
+test('relay coordinator rotates evidence across busy callback and aborted completed window', async () => {
+  const f = relayFixture();
+  let busy = false,
+    token,
+    windows = 0,
+    successfulAssertions = 0;
+  const callbackSignals = [];
+  options.coordinator.assertSnapshot = (candidate) => {
+    if (busy) throw Error('coordinator busy');
+    if (!token || candidate !== token) throw Error('stale snapshot evidence');
+    successfulAssertions++;
+    return {};
+  };
+  options.coordinator.withPublicSnapshot = async (run) => {
+    if (busy) throw Error('coordinator busy');
+    busy = true;
+    token = undefined;
+    const window = new AbortController();
+    callbackSignals.push(window.signal);
+    let value;
+    try {
+      value = await run({ checkpoint: {}, signal: window.signal });
+    } finally {
+      window.abort();
+      busy = false;
+    }
+    token = Object.freeze({ window: ++windows });
+    return { value, evidence: token };
+  };
+  const account = await f.opened();
+  const priorToken = token,
+    before = successfulAssertions;
+  const result = await prepareRailgunAccountRelayIntent(account, f.owners, f.request);
+  expect(windows).toBe(2);
+  expect(mockRunner.prepareRelayReadOnly).toHaveBeenCalledTimes(1);
+  expect(mockRunner.reconstructRelayReadOnly).toHaveBeenCalledTimes(1);
+  expect(callbackSignals.every((signal) => signal.aborted)).toBe(true);
+  expect(() => options.coordinator.assertSnapshot(priorToken)).toThrow('stale');
+  expect(options.coordinator.assertSnapshot(token)).toEqual({});
+  expect(successfulAssertions).toBeGreaterThan(before);
+  expect(result.view).toBe(account.view);
+  await account.close();
+});

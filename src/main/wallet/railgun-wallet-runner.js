@@ -34,8 +34,35 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
   async function run(
     { snapshot, walletSession, coverageStore, walletId, restore, ...options },
     readOnly = false,
-    recoveryMode = false
+    recoveryMode = false,
+    relayMode
   ) {
+    const relayData = relayMode === undefined ? undefined : require('./railgun-relay-wallet-data');
+    let relayRequest, relayDraft;
+    if (relayMode !== undefined) {
+      assert.ok(readOnly && restore && !recoveryMode);
+      for (const name of ['privateIntent', 'privateOperation', 'privateRecovery'])
+        assert.equal(options[name], undefined);
+      relayData.assertRailgunRelaySignal(options.relaySignal);
+      if (relayMode === 'construct') {
+        assert.equal(options.relayDraftText, undefined);
+        relayRequest = relayData.normalizeRailgunRelayRequest(options.relayRequest, walletId);
+        options.relayRequest = relayRequest;
+      } else {
+        assert.equal(relayMode, 'reconstruct');
+        assert.equal(options.relayRequest, undefined);
+        relayDraft = relayData.parseRailgunRelayDraft(options.relayDraftText, walletId);
+      }
+    } else {
+      for (const name of ['relayRequest', 'relayDraftText', 'relaySignal'])
+        assert.equal(options[name], undefined);
+    }
+    const relayCurrent = () => {
+      if (relayMode !== undefined) {
+        relayData.assertRailgunRelaySignal(options.relaySignal);
+        assert.ok(!snapshot.signal.aborted && !walletSession.signal.aborted);
+      }
+    };
     if (recoveryMode) {
       assert.ok(readOnly && options.privateRecovery);
       assert.equal(options.privateIntent, undefined);
@@ -52,9 +79,14 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
     assert.ok(!readOnly || restore);
     assert.equal(coverageStore.session, walletSession);
     const before = await walletSession.inspectWalletState();
+    relayCurrent();
     walletSession.assertFresh(before);
     const grant = readOnly
-      ? coverageStore.beginRestore(snapshot.signal)
+      ? coverageStore.beginRestore(
+          relayMode === undefined
+            ? snapshot.signal
+            : AbortSignal.any([snapshot.signal, options.relaySignal])
+        )
       : coverageStore.beginEngine();
     try {
       const result = await runJob({
@@ -65,7 +97,13 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         walletId,
         restore,
       });
+      relayCurrent();
       assert.equal(result.closed?.code, 'RAILGUN_PROCESS_CLOSED');
+      if (relayMode !== undefined) {
+        assert.equal(result.closed.exitCode, 15);
+        assert.equal(result.closed.escalated, false);
+        assert.equal(result.closed.peerDisconnected, false);
+      }
       assert.equal(result.inventory, inventory);
       assert.equal(result.spendableGranted, false);
       assert.equal(result.poiCalls, 0);
@@ -80,6 +118,42 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       );
       const read = normalizeRailgunWalletRead(result, coverage);
       const ownedPoi = normalizeRailgunOwnedPoiRecords(result.ownedPoi, read, snapshot.checkpoint);
+      const relayOwned =
+        relayMode === undefined
+          ? undefined
+          : Object.freeze({
+              read,
+              ownedPoi,
+              trees: Object.freeze(
+                snapshot.checkpoint.state.trees.map((tree) => Object.freeze({ ...tree }))
+              ),
+              checkpointHash: checkpointHash(snapshot.checkpoint),
+            });
+      let preparedRelay, reconstructedRelay;
+      if (relayMode === 'construct') {
+        assert.equal(result.relayReconstruction, undefined);
+        preparedRelay = relayData.bindRailgunRelayDraft(result.relayDraft, relayRequest, {
+          walletId,
+          ...relayOwned,
+        });
+      } else if (relayMode === 'reconstruct') {
+        assert.equal(result.relayDraft, undefined);
+        relayData.bindRailgunRelayDraft(
+          relayDraft.data,
+          {
+            selection: relayDraft.data.selection,
+            context: relayDraft.data.intent.context,
+          },
+          { walletId, ...relayOwned }
+        );
+        reconstructedRelay = relayData.normalizeRailgunRelayReconstruction(
+          result.relayReconstruction,
+          relayDraft
+        );
+      } else {
+        assert.equal(result.relayDraft, undefined);
+        assert.equal(result.relayReconstruction, undefined);
+      }
       const preparation =
         options.privateIntent === undefined
           ? undefined
@@ -119,6 +193,8 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         currentIdentity();
       }
       const state = await walletSession.inspectWalletState();
+      relayCurrent();
+      if (relayMode !== undefined) currentIdentity();
       walletSession.assertFresh(state);
       if (restore) assert.deepEqual(state, before);
       const readOnlyStatus = readOnly ? grant.getStatus() : null;
@@ -147,6 +223,9 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         ...(preparation ? { preparation } : {}),
         ...(operation ? { operation } : {}),
         ...(recovery ? { recovery } : {}),
+        ...(relayOwned ? { relayOwned } : {}),
+        ...(preparedRelay ? { relayDraft: preparedRelay } : {}),
+        ...(reconstructedRelay ? { relayReconstruction: reconstructedRelay } : {}),
       };
     } catch (error) {
       coverageStore.close();
@@ -186,6 +265,9 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       return run({ ...options, restore: true }, true);
     },
     recoverReadOnly: (options) => run({ ...options, restore: true }, true, true),
+    prepareRelayReadOnly: (options) => run({ ...options, restore: true }, true, false, 'construct'),
+    reconstructRelayReadOnly: (options) =>
+      run({ ...options, restore: true }, true, false, 'reconstruct'),
     assertScan,
     read,
     readOwned,

@@ -823,6 +823,310 @@ async function openAccount(
         busy = false;
       }
     }
+    async function prepareRelayIntent(request) {
+      const assert = require('assert/strict');
+      const {
+        shape,
+        freeze,
+        decimal,
+        normalizeRailgunRelayQuote,
+        assertQuoteCurrent,
+      } = require('./railgun-relay-quote-data');
+      check(!completedOnly);
+      shape(request, ['noteId', 'quote', 'gas', 'maxFee', 'signal']);
+      const relayData = require('./railgun-relay-wallet-data');
+      relayData.assertRailgunRelaySignal(request.signal);
+      check(
+        typeof request.noteId === 'string' &&
+          request.noteId.length > 0 &&
+          request.noteId.length <= 160
+      );
+      const noteId = request.noteId;
+      const binding = normalizeRailgunRelayQuote(request.quote, request.gas);
+      const cap = decimal(
+        request.maxFee,
+        BigInt(require('./railgun-shield-pins.json').maxQualificationAmount)
+      );
+      check(cap > 0n && BigInt(binding.feeAmount) <= cap);
+      const before = current();
+      const selected = require('./railgun-private-preparation').selectRailgunPrivatePreparation(
+        before,
+        {
+          kind: 'railgun-private-transfer',
+          noteId,
+          recipient: descriptor.instanceId,
+        }
+      );
+      const notes = before.read.received.filter((n) => n.id === noteId);
+      const records = before.ownedPoi.filter((n) => n.id === noteId);
+      check(notes.length === 1 && records.length === 1);
+      check(['Shield', 'Transact'].includes(records[0].type));
+      check(notes[0].hash === records[0].hash && notes[0].txid === records[0].txid);
+      check(BigInt(binding.feeAmount) < notes[0].amount);
+      const selection = Object.freeze({ tree: selected.tree, position: selected.position });
+      const captured = freeze(
+        structuredClone({
+          read: { instanceId: before.read.instanceId, received: before.read.received },
+          ownedPoi: before.ownedPoi,
+          trees: before.trees,
+          checkpointHash: before.checkpointHash,
+        })
+      );
+      const publicIdentity = freeze(
+        structuredClone(getRailgunAccountPublicIdentity(coordinator, enrollment))
+      );
+      const generationBefore = freeze(structuredClone(generation));
+      const activeGeneration = freeze(structuredClone(enrollment.catalog.activeFor(policy)));
+      check(
+        activeGeneration.id === generation.id &&
+          activeGeneration.policy === policy &&
+          activeGeneration.directory === generation.directory
+      );
+      const identityBefore = freeze(structuredClone(descriptor));
+      const initialView = view;
+      const checkpoint = checkpointHash(coordinator.assertSnapshot(checked.evidence));
+      check(checkpoint === captured.checkpointHash);
+      const start = performance.now(),
+        end = start + 90000;
+      let wall = Date.now(),
+        monotonic = start;
+      assertQuoteCurrent(binding, wall, wall);
+      check(
+        binding.fields.feeExpiration - wall >= 90000 &&
+          binding.fields.feeExpiration - wall <= 300000
+      );
+      const relayController = new AbortController();
+      const relaySignal = AbortSignal.any([lifetime, request.signal, relayController.signal]);
+      const handoff = phase.reserveHandoff();
+      let entered = false,
+        unknown = false,
+        snapshotWindow = null,
+        snapshotEvidence = checked.evidence;
+      busy = true;
+      const timer = setTimeout(() => {
+        relayController.abort();
+        if (entered) void close().catch(() => {});
+      }, 90000);
+      timer.unref?.();
+      const attest = (remaining = 0) => {
+        const now = performance.now(),
+          date = Date.now();
+        check(!relaySignal.aborted && now >= monotonic && now < end);
+        assertQuoteCurrent(binding, date, wall);
+        wall = date;
+        check(binding.fields.feeExpiration - date >= remaining);
+        phase.assertCurrent();
+        handoff.assertCurrent();
+        openingCurrent();
+        assert.deepEqual(assertRailgunIdentity(identity, handle), identityBefore);
+        assert.deepEqual(generation, generationBefore);
+        assert.deepEqual(enrollment.catalog.activeFor(policy), activeGeneration);
+        assert.deepEqual(getRailgunAccountPublicIdentity(coordinator, enrollment), publicIdentity);
+        check(view === initialView);
+        // Coordinator evidence is deliberately unusable while its snapshot is
+        // busy. The callback owns the live window; afterward only its new token
+        // is valid (the window signal has then been aborted by the coordinator).
+        if (snapshotWindow) {
+          check(!snapshotWindow.signal.aborted);
+          check(checkpointHash(snapshotWindow.checkpoint) === checkpoint);
+        } else check(checkpointHash(coordinator.assertSnapshot(snapshotEvidence)) === checkpoint);
+        const after = performance.now(),
+          afterWall = Date.now();
+        check(!relaySignal.aborted && after >= now && after < end);
+        assertQuoteCurrent(binding, afterWall, wall);
+        wall = afterWall;
+        monotonic = after;
+        check(binding.fields.feeExpiration - wall >= remaining);
+        sameOwned(before);
+      };
+      const sameOwned = (value) => {
+        shape(value, ['read', 'ownedPoi', 'trees', 'checkpointHash']);
+        assert.deepEqual(
+          {
+            read: { instanceId: value.read.instanceId, received: value.read.received },
+            ownedPoi: value.ownedPoi,
+            trees: value.trees,
+            checkpointHash: value.checkpointHash,
+          },
+          captured
+        );
+      };
+      const unobserved = (error) => {
+        const seen = new Set();
+        while (error && typeof error === 'object' && !seen.has(error)) {
+          seen.add(error);
+          if (
+            ['RAILGUN_RELAY_QUOTE_DRAIN_FAILED', 'RAILGUN_WALLET_EXIT_UNOBSERVED'].includes(
+              error.code
+            )
+          )
+            return true;
+          error = error.cause;
+        }
+        return false;
+      };
+      // close() drains this entire promise, including quote verification and both
+      // original utility/storage barriers; its own catch/close lives outside it.
+      restoration = (async () => {
+        try {
+          attest(75000);
+          const quoteStarted = performance.now();
+          const verified = await require('./railgun-relay-quote-verify').verifyRailgunRelayQuote({
+            enrollment,
+            archive,
+            quote: binding.quote,
+            gas: binding.gas,
+            signal: relaySignal,
+          });
+          attest(60000);
+          check(performance.now() >= quoteStarted && performance.now() - quoteStarted < 15000);
+          check(
+            verified.signatureVerified === true && verified.quoteSha256 === binding.quoteSha256
+          );
+          const capturedNote = captured.read.received.find((n) => n.id === noteId);
+          const context = require('./railgun-relay-intent').normalizeRailgunRelayUnsignedContext({
+            walletId,
+            self: {
+              address: descriptor.instanceId,
+              masterPublicKey: BigInt('0x' + descriptor.masterPublicKey).toString(),
+              viewingPublicKey: descriptor.viewingPublicKey,
+            },
+            peer: {
+              address: binding.fields.railgunAddress,
+              masterPublicKey: verified.masterPublicKey,
+              viewingPublicKey: verified.viewingPublicKey,
+            },
+            quote: binding.quote,
+            gas: binding.gas,
+            inputAmount: capturedNote.amount.toString(),
+            feeAmount: binding.feeAmount,
+            selfAmount: (capturedNote.amount - BigInt(binding.feeAmount)).toString(),
+            feeCap: cap.toString(),
+          });
+          let firstCoverage, baselineState, draft;
+          const renewed = await coordinator.withPublicSnapshot(async (snapshot) => {
+            // Entering the snapshot is the conservative close boundary: a
+            // checkpoint/store freshness refusal can invalidate the old receipt
+            // even before the first job. Do not promise borrowed-view reuse.
+            entered = true;
+            snapshotWindow = snapshot;
+            attest(60000);
+            check(checkpointHash(snapshot.checkpoint) === checkpoint && !snapshot.signal.aborted);
+            const signal = AbortSignal.any([relaySignal, snapshot.signal]);
+            baselineState = await walletSession.inspectWalletState();
+            attest(60000);
+            walletSession.assertFresh(baselineState);
+            check(baselineState.storeId === activeGeneration.storeId);
+            const common = {
+              handle,
+              snapshot,
+              walletSession,
+              coverageStore,
+              walletId,
+              relaySignal: signal,
+            };
+            const firstStarted = performance.now();
+            scan = runner.prepareRelayReadOnly({ ...common, relayRequest: { selection, context } });
+            const first = await scan;
+            attest(30000);
+            check(performance.now() >= firstStarted && performance.now() - firstStarted < 30000);
+            sameOwned(first.relayOwned);
+            assert.deepEqual(first.readOnly, { readOnly: true, writeAttempts: 0 });
+            draft = relayData.bindRailgunRelayDraft(
+              first.relayDraft.data,
+              { selection, context },
+              { walletId, ...captured }
+            );
+            assert.deepEqual(first.relayDraft, draft);
+            // Consume the first opaque receipt before beginRestore can be called
+            // again. It is not journal-qualified and must not reach readOwned.
+            firstCoverage = await coverageStore.read(first.receipt);
+            attest(30000);
+            assert.deepEqual(firstCoverage.checkpoint, snapshot.checkpoint);
+            assert.deepEqual(firstCoverage.coverage, first.coverage);
+            const afterFirst = await walletSession.inspectWalletState();
+            attest(30000);
+            walletSession.assertFresh(afterFirst);
+            assert.deepEqual(afterFirst, baselineState);
+            const relayDraftText = JSON.stringify(draft.data);
+            check(Buffer.byteLength(relayDraftText) <= 65536);
+            const secondStarted = performance.now();
+            scan = runner.reconstructRelayReadOnly({ ...common, relayDraftText });
+            const second = await scan;
+            attest();
+            check(performance.now() >= secondStarted && performance.now() - secondStarted < 30000);
+            sameOwned(second.relayOwned);
+            assert.deepEqual(second.readOnly, { readOnly: true, writeAttempts: 0 });
+            assert.deepEqual(
+              second.relayReconstruction,
+              relayData.normalizeRailgunRelayReconstruction(second.relayReconstruction, draft)
+            );
+            return second;
+          });
+          snapshotWindow = null;
+          snapshotEvidence = renewed.evidence;
+          attest();
+          const finalCoverage = await coverageStore.read(renewed.value.receipt);
+          attest();
+          assert.deepEqual(finalCoverage, firstCoverage);
+          assert.deepEqual(finalCoverage.coverage, renewed.value.coverage);
+          const finalState = await walletSession.inspectWalletState();
+          attest();
+          walletSession.assertFresh(finalState);
+          assert.deepEqual(finalState, baselineState);
+          await journal.revalidate({
+            snapshot: renewed.evidence,
+            coverage: finalCoverage,
+            state: finalState,
+            receipt: renewed.value.receipt,
+          });
+          attest();
+          const after = runner.readOwned(renewed.value.receipt, journal);
+          sameOwned(after);
+          const nextView = createRailgunKohakuRead({
+            runner,
+            journal,
+            receipt: renewed.value.receipt,
+          });
+          attest();
+          // Publish only after the independently parsed second process and final
+          // journal validation, with no suspension between view/receipt swaps.
+          checked = renewed;
+          view = nextView;
+          return Object.freeze({
+            view,
+            preparation: draft,
+            reconstruction: Object.freeze({ ...renewed.value.relayReconstruction }),
+            reviewedPreparation: false,
+            reservationsChecked: false,
+            capsulePersisted: false,
+            signingEnabled: false,
+            proofAuthority: false,
+            poiQueriesPermitted: false,
+            relaySendPermitted: false,
+          });
+        } catch (error) {
+          if (unobserved(error)) {
+            unknown = true;
+            throw Object.assign(fail(), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED', cause: error });
+          }
+          throw error;
+        } finally {
+          clearTimeout(timer);
+          relayController.abort();
+          if (!unknown) handoff.release();
+        }
+      })();
+      try {
+        return await restoration;
+      } catch {
+        if (entered || unknown || lifetime.aborted) await close();
+        throw fail();
+      } finally {
+        restoration = null;
+        busy = false;
+      }
+    }
     const account = Object.freeze({
       get view() {
         return view;
@@ -837,6 +1141,7 @@ async function openAccount(
       coordinator,
       current,
       restoreCurrent,
+      prepareRelayIntent,
       readCompletedPrivateInput(input) {
         check(completedOnly);
         const capsule = completedInputCapsule(input);
@@ -912,6 +1217,10 @@ function recoverRailgunAccountPrivateProof(account, owners, recovery) {
 function reserveRailgunAccountWalletHandoff(account, owners) {
   return owned(account, owners).reserveHandoff();
 }
+function prepareRailgunAccountRelayIntent(account, owners, request) {
+  require('./railgun-relay-quote-data').shape(owners, ['identity', 'enrollment', 'coordinator']);
+  return owned(account, owners).prepareRelayIntent(request);
+}
 function prepareRailgunAccountPrivateIntent(account, owners, request) {
   check(request !== undefined);
   return owned(account, owners).restoreCurrent(request);
@@ -974,6 +1283,7 @@ module.exports = {
   recoverRailgunAccountPrivateProof,
   reserveRailgunAccountWalletHandoff,
   prepareRailgunAccountPrivateIntent,
+  prepareRailgunAccountRelayIntent,
   operateRailgunAccountPrivateIntent,
   assertRailgunAccountPrivateWindow,
   readRailgunAccountPrivateCreator,
