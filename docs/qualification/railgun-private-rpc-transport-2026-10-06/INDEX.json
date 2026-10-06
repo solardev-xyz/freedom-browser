@@ -1,0 +1,43 @@
+{
+  "schema": "railgun-private-rpc-transport-composition-evidence-v1",
+  "date": "2026-10-06",
+  "authorFreezeSha256": "ae21c07c75e7342f030d1fecafec76528ae163e0c6edefa6f9cee4932a84c192",
+  "rootHeadAtImportChecks": "0645ab59fb43f5373441fed2c06951aa7eb45ed4",
+  "candidate": {
+    "path": "src/main/networks/private-rpc-transport.test.js",
+    "sha256": "0c85fb420dce036aed173b2f6b2e08546c72c6b30359b12900368c249ffc8feb",
+    "bytes": 13506,
+    "archiveDuplicatesCandidateBody": false
+  },
+  "newCases": 10,
+  "rootFocusedTests": 153,
+  "rootFocusedSuites": 4,
+  "distinguishingControls": 4,
+  "mutantsArchivedAs": "four exact-reconstructible derived patches, not duplicated complete production files",
+  "sourceDependencies": "DEPENDENCIES.json",
+  "archiveMap": "ARCHIVE-MAP.json",
+  "originalRootObservations": "ROOT-OBSERVATIONS.json",
+  "scope": {
+    "nodeLoopbackSocketsTlsHttp": true,
+    "genuinePrivateRpcAndTransportComposition": true,
+    "registrySettingsEndpointSelectionMocked": true,
+    "existingCaAndEndpointOptionsInjected": true,
+    "existingClientRegistryEditRevokesClient": false,
+    "existingClientKeepsPinnedReviewedUrl": true,
+    "replacedManagedEndpointObjectRefusesAdmission": true,
+    "constraintScopeEndpointCancellationChecked": true,
+    "occupiedSockets": 2,
+    "queuedAgentRequests": 6,
+    "allEightRpcPromisesReject": true,
+    "allAssignedRequestsAndTransportSocketsCloseEventsObserved": true,
+    "allClientRequestsDestroyed": true,
+    "unassignedAgentRequestsCloseEventsRequired": false,
+    "javascriptApiTripwiresNotOsEgressEnforcement": true,
+    "torDaemonOrCircuitQualified": false,
+    "electronNativeExecuted": false,
+    "liveRpcOrFundedProfilesUsed": false,
+    "productionBugEstablished": false,
+    "productionBehaviorChanged": false,
+    "fullRepositoryRegressionClaimed": false
+  }
+}

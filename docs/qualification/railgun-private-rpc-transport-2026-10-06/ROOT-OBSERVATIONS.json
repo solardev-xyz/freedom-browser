@@ -1,0 +1,36 @@
+{
+  "attribution": "Original parent process observations; exporter did not rerun tests",
+  "focused": {
+    "originalSessionId": 76494,
+    "originalCompletionChunk": "16dcc6",
+    "exitCode": 0,
+    "originalExitObserved": true,
+    "naturalExitObserved": true,
+    "tests": 153,
+    "suites": 4,
+    "elapsedSeconds": 0.905,
+    "log": "root-tests.log",
+    "logSha256": "46b78e98a63e01dc962823d2397c470de09ad6774c9cb87f90879bf5e850a51f",
+    "runInBandPassedToJest": false,
+    "npmArgumentWarningsPreserved": true
+  },
+  "lint": {
+    "originalSessionId": 13672,
+    "originalCompletionChunk": "d62883",
+    "exitCode": 0,
+    "originalExitObserved": true,
+    "warnings": 0,
+    "log": "root-lint.log",
+    "logSha256": "70be715d8628432cbdbd618d756c397769e3155725002cdd27f48c4990f34cd7"
+  },
+  "format": {
+    "originalCompletionChunk": "54bb9b",
+    "exitCode": 0,
+    "originalExitObserved": true,
+    "scope": "Explicit root Prettier check; no separate raw log supplied"
+  },
+  "fullRepositoryRegressionClaimed": false,
+  "sourceSha256": {
+    "src/main/networks/private-rpc-transport.test.js": "0c85fb420dce036aed173b2f6b2e08546c72c6b30359b12900368c249ffc8feb"
+  }
+}

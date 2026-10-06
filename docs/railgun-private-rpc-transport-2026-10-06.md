@@ -1,0 +1,24 @@
+# Private RPC transport composition — 2026-10-06
+
+The new [composition test](../src/main/networks/private-rpc-transport.test.js) connects genuine private-RPC destination constraints to Freedom’s actual SOCKS/TLS transport using disposable Node loopback servers. Ten cases now exercise the boundary as a whole. Production behavior is unchanged; this does not establish a production bug or qualify a Tor circuit.
+
+The test uses real privacy scopes, constrained RPC clients, `createWalletTorTransport`, SOCKS authentication, TLS certificate verification and HTTP requests. Registry/settings/managed-endpoint selection are controlled fixture seams. A transparent factory supplies the existing test CA and loopback endpoint through existing options. The SOCKS fixture forwards only to its fixed local TLS server; no live RPC endpoint or DNS target is contacted.
+
+A successful derived client sends one hidden chain-ID request followed by the requested methods to the exact reviewed path. The logical hostname is carried in SOCKS negotiation, the opaque isolation token stays out of HTTP, and results remain explicitly unverified with circuit isolation unqualified. Wrong-path or wrong-host derivation refuses before transport creation. An already-derived client keeps its pinned reviewed URL after a registry edit; that edit is **not** universal revocation. Replacing the managed endpoint object separately prevents further admission through constraint currentness.
+
+Constraint, scope and endpoint cancellation each start with two occupied sockets and six requests in the actual Node Agent queue. All eight original RPC promises reject, and a later call adds no HTTP. Closing the transport observes its stable logical barrier, all assigned ClientRequests and transport-owned socket close events, and every ClientRequest being destroyed. Never-assigned queued requests are not required to emit nonexistent close events. DNS/direct-connect tripwires refuse target attempts before delegation; Node’s literal loopback listener lookup and the fixture’s loopback forwarding remain allowed. These are JavaScript API observations, not OS-wide egress enforcement.
+
+Four detached mutations distinguish the protections:
+
+| Mutation                                          | Observed failure                                                          |
+| ------------------------------------------------- | ------------------------------------------------------------------------- |
+| Remove exact reviewed URL comparison              | Both changed path/host derivations are wrongly admitted; assertions fail. |
+| Remove destination-constraint cancellation signal | Queued cancellation fails the named drain watchdog.                       |
+| Dial the target instead of the SOCKS endpoint     | Direct-socket tripwire causes request failure before target connection.   |
+| Resolve the logical target locally                | DNS tripwire causes request failure before target lookup.                 |
+
+The author’s focused run passed 153 tests across four suites in 0.812s; the independent root run passed the same 153 tests/four suites in 0.905s, both with observed natural exit zero. Root lint and the explicit Prettier check passed. The root test command produced npm argument warnings: its requested `--runInBand` was not passed to Jest. The exact log is preserved; no in-band execution is claimed for that run. The four mutation tests each exited one at their intended assertion; the control driver exited zero after checking those failures and restoring each detached source copy. No tests were rerun during publication preparation.
+
+The [compact evidence index](qualification/railgun-private-rpc-transport-2026-10-06/INDEX.json) links exact logs, observations and source hashes. Its [archive map](qualification/railgun-private-rpc-transport-2026-10-06/ARCHIVE-MAP.json) distinguishes original bytes from normalized runtime/check metadata and four derived mutant patches. The candidate body stays in repository source rather than being duplicated. [Replay instructions](qualification/railgun-private-rpc-transport-2026-10-06/REPRODUCE.md) require a separate disposable source copy and existing dependencies.
+
+This qualifies Node loopback socket/TLS/HTTP composition only. It does not use Electron native qualifiers, a Tor daemon, live services, funded profiles, wallet credentials, signing, broadcast or owned POI. It establishes neither Tor anonymity nor physical network drainage beyond the specified Node events. Existing live-disclosure and operational boundaries remain unchanged.

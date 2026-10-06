@@ -1,0 +1,21 @@
+"""Detached mutants; edits only test-tree copies and always restores originals."""
+from pathlib import Path
+import json,subprocess,hashlib
+p=Path(__file__).parent;t=p/'test-tree';records=[]
+cases=[
+ ('wrong-path','src/main/networks/private-rpc.js','    (url !== undefined && state.entry.details.url !== new URL(url).href)','    false','new constrained client refuses registry replacement','Received function did not throw'),
+ ('missing-constraint-signal','src/main/networks/private-rpc.js','    ...(restriction ? [restriction.signal] : []),','    ...[],','constraint revocation cancels','RPC_REVOCATION_DID_NOT_DRAIN'),
+ ('direct-target-dial','src/main/networks/isolated-socks.js','      socket.connect(endpoint.port, endpoint.host);','      socket.connect(port, hostname);','genuine reviewed path crosses','Private HTTP request failed'),
+ ('local-target-dns','src/main/networks/isolated-socks.js','      socket.connect(endpoint.port, endpoint.host);',"      require('dns').lookup(hostname, () => {});\n      socket.connect(endpoint.port, endpoint.host);",'genuine reviewed path crosses','Private HTTP request failed'),
+]
+for label,name,before,after,pattern,fragment in cases:
+ f=t/name;original=f.read_bytes();source=original.decode();assert source.count(before)==1,(label,source.count(before));mutation=source.replace(before,after);archive=p/'mutants'/label/name;archive.parent.mkdir(parents=True,exist_ok=True);archive.write_text(mutation)
+ try:
+  f.write_text(mutation)
+  with (p/('control-'+label+'.log')).open('w') as log:r=subprocess.run(['npm','test','--','--','--runInBand','--runTestsByPath','src/main/networks/private-rpc-transport.test.js','--testNamePattern',pattern],cwd=t,stdout=log,stderr=subprocess.STDOUT,timeout=30)
+  output=(p/('control-'+label+'.log')).read_text();assert r.returncode==1,(label,r.returncode);assert fragment in output,(label,'wrong failure')
+  records.append({'control':label,'exitCode':r.returncode,'expectedFailure':fragment,'originalProcessObserved':True,'mutatedFile':name})
+ finally:
+  f.write_bytes(original);assert hashlib.sha256(f.read_bytes()).digest()==hashlib.sha256(original).digest()
+(p/'CONTROL-RESULTS.json').write_text(json.dumps({'loopbackOnly':True,'nativeElectronExecuted':False,'productionSourceEdited':False,'controls':records},indent=2)+'\n')
+print(json.dumps(records,indent=2))

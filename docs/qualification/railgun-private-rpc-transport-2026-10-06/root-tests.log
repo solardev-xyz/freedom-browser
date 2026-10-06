@@ -1,0 +1,16 @@
+
+> freedom-browser@0.8.7-dev test
+> npm run test:unit --runInBand src/main/networks/private-rpc-transport.test.js src/main/networks/private-rpc.test.js src/main/networks/wallet-tor-transport.test.js src/main/networks/isolated-socks.test.js
+
+npm warn "src/main/networks/private-rpc-transport.test.js" is being parsed as a normal command line argument.
+npm warn Unknown cli config "--runInBand". This will stop working in the next major version of npm.
+
+> freedom-browser@0.8.7-dev test:unit
+> jest src/main/networks/private-rpc-transport.test.js src/main/networks/private-rpc.test.js src/main/networks/wallet-tor-transport.test.js src/main/networks/isolated-socks.test.js
+
+
+Test Suites: 4 passed, 4 total
+Tests:       153 passed, 153 total
+Snapshots:   0 total
+Time:        0.905 s, estimated 1 s
+Ran all test suites matching src/main/networks/private-rpc-transport.test.js|src/main/networks/private-rpc.test.js|src/main/networks/wallet-tor-transport.test.js|src/main/networks/isolated-socks.test.js.

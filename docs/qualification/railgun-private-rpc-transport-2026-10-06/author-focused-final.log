@@ -1,0 +1,14 @@
+
+> freedom-browser@0.8.7-dev test
+> npm run test:unit -- --runInBand --runTestsByPath src/main/networks/private-rpc-transport.test.js src/main/networks/private-rpc.test.js src/main/networks/wallet-tor-transport.test.js src/main/networks/isolated-socks.test.js
+
+
+> freedom-browser@0.8.7-dev test:unit
+> jest --runInBand --runTestsByPath src/main/networks/private-rpc-transport.test.js src/main/networks/private-rpc.test.js src/main/networks/wallet-tor-transport.test.js src/main/networks/isolated-socks.test.js
+
+
+Test Suites: 4 passed, 4 total
+Tests:       153 passed, 153 total
+Snapshots:   0 total
+Time:        0.812 s, estimated 1 s
+Ran all test suites within paths "src/main/networks/private-rpc-transport.test.js", "src/main/networks/private-rpc.test.js", "src/main/networks/wallet-tor-transport.test.js", "src/main/networks/isolated-socks.test.js".

@@ -1,0 +1,6 @@
+{
+  "node": "v24.18.1",
+  "openssl": "3.5.7",
+  "modules": "137",
+  "execPath": "<NODE_EXECUTABLE>"
+}
