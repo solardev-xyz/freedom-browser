@@ -1,7 +1,7 @@
 # Railgun full-value transfer to another account — October 6, 2026
 
 Phase 1 of the approved contract: a private transfer from enrolled account A to a
-different controlled Railgun account B, with one input, one output, the full input
+different Railgun account B, with one input, one output, the full input
 value and no change. It reuses the direct enrolled-EOA submission path. There is
 no relayer, partial A-to-B transfer, renderer or IPC path. Tests run under Jest
 with mocked engines and the local fixture engine. This is not a native Electron,
@@ -69,8 +69,14 @@ marker or recipient.
 The capsule `version` stays 1, because it names the on-chain shape. A foreign
 record adds only the explicit marker to its selection. Records without it keep the
 historical self meaning, so existing records stay readable and their bytes and
-digests are unchanged (the existing goldens pass). Older readers refuse a marked
-record through their exact-key checks. No `self` value is ever persisted.
+digests are unchanged (the existing goldens pass). No `self` value is ever
+persisted. An older build cannot misread a marked record: its exact-key checks
+refuse it. Because the capsule store decodes all of an account's entries
+together, one foreign hold makes that account's whole capsule store unreadable
+to an older build, which then cannot recover any of that account's holds. A
+capsule version bump would have the same effect. Treat it as a downgrade hazard
+for native campaigns: do not open a profile holding a foreign record with an
+older build.
 
 - The signing authorization digest covers the capsule digest, which includes the
   destination and marker, and the verified receiver result, which includes both
@@ -126,8 +132,9 @@ so an existing account needs a fresh wallet generation.
 - `scripts/fixtures/railgun-foreign-transfer-engine.test.js` uses the pinned
   fixture engine, like the existing relay vector test, and needs its local
   install. Real address decoding, note encryption and key agreement pass through
-  the production witness, receiver job, cold reconstruction and B's POI
-  reconstruction. B decrypts the output as an ordinary hidden-sender note; A and
+  the production witness, receiver job, cold reconstruction, A's POI
+  reconstruction (whose output NPK is B's decrypted NPK, and whose output hash is
+  the reviewed commitment) and B's POI reconstruction. B decrypts the output as an ordinary hidden-sender note; A and
   an unrelated account cannot. With the real engine, the sent-output check
   refuses another account, altered ciphertext, a wrong value, a revealed sender, a
   Change type and a memo. Swapping the shared-key direction or dropping
@@ -163,3 +170,7 @@ so an existing account needs a fresh wallet generation.
    witness, receiver job or reconstruction should add it. Those scripts were not
    edited or run here.
 7. No changelog fragment: this is internal, unshipped work with no UI or IPC.
+8. The destination is any canonical address that is not A's. Nothing checks that
+   B is enrolled in the same vault, as with Kohaku's `prepareTransfer(value, to)`.
+   Live qualification uses a controlled B; whether the product restricts
+   destinations is a separate decision for the lead.

@@ -217,6 +217,40 @@ async function decryptAsReceiver(owner, bundle) {
   }
 }
 
+// The engine's own V2 commitment ciphertext for a note sent by `sender`.
+async function encryptFrom(sender, note) {
+  const { getNoteBlindingKeys, getSharedSymmetricKey } = imp('utils/keys-utils');
+  const { ByteUtils } = imp('utils/bytes');
+  const pair = sender.viewOnly.viewingKeyPair;
+  const blinded = await getNoteBlindingKeys(
+    pair.pubkey,
+    note.receiverAddressData.viewingPublicKey,
+    note.random,
+    note.senderRandom
+  );
+  const symmetric = await getSharedSymmetricKey(pair.privateKey, blinded.blindedReceiverViewingKey);
+  try {
+    const { noteCiphertext, noteMemo, annotationData } = note.encryptV2(
+      'V2_PoseidonMerkle',
+      symmetric,
+      sender.keys.masterPublicKey,
+      note.senderRandom,
+      pair.privateKey
+    );
+    return {
+      ciphertext: [`${noteCiphertext.iv}${noteCiphertext.tag}`, ...noteCiphertext.data].map((v) =>
+        ByteUtils.hexlify(v, true)
+      ),
+      blindedSenderViewingKey: ByteUtils.hexlify(blinded.blindedSenderViewingKey, true),
+      blindedReceiverViewingKey: ByteUtils.hexlify(blinded.blindedReceiverViewingKey, true),
+      memo: ByteUtils.hexlify(noteMemo, true),
+      annotationData: ByteUtils.hexlify(annotationData, true),
+    };
+  } finally {
+    symmetric.fill(0);
+  }
+}
+
 test('real decode accepts only canonical all-chain or Sepolia addresses of another account', () => {
   const { decodeRailgunForeignDestination } = wallet('railgun-private-destination');
   const { encodeAddress } = imp('key-derivation/bech32');
@@ -346,6 +380,36 @@ test("B receives an ordinary hidden-sender Transact note; A's POI blinds that sa
   expect(BlindedCommitment.getForShieldOrTransact(hex(commitment), asB.inputNpk, position)).toBe(
     BlindedCommitment.getForShieldOrTransact(hex(commitment), output.notePublicKey, position)
   );
+});
+test("A's POI reconstruction recovers B's real output from the foreign calldata", async () => {
+  const { capsule } = await prepare();
+  const creator = {
+    type: 'Transact',
+    tree: 0,
+    position: POSITION,
+    hash: hex(received.hash),
+    ciphertext: await encryptFrom(C, received),
+  };
+  const { reconstructRailgunPoiNotes } = wallet('railgun-poi-reconstruct');
+  const asA = await reconstructRailgunPoiNotes({
+    archive: ARCHIVE,
+    descriptor: A.descriptor,
+    viewingKey: Buffer.from(A.viewingKey),
+    capsule: JSON.parse(JSON.stringify(capsule)),
+    creator,
+    signal: controller.signal,
+  });
+  const output = await decryptAsReceiver(B, bundleOf(capsule.preparation.transaction.data));
+  expect(asA.inputNpk).toBe(received.notePublicKey);
+  expect(asA.npksOut).toEqual([output.notePublicKey]);
+  expect(asA.valuesOut).toEqual([1000n]);
+  expect(asA.npksOut[0]).not.toBe(
+    imp('note/shield-note').ShieldNote.getNotePublicKey(A.keys.masterPublicKey, output.random)
+  );
+  // The output A's POI blinds is the commitment B receives.
+  expect(
+    imp('note/transact-note').TransactNote.getHash(asA.npksOut[0], output.tokenHash, 1000n)
+  ).toBe(BigInt(capsule.preparation.expected.commitment));
 });
 test('real sent-output check refuses the wrong account, altered ciphertext and unsafe outputs', async () => {
   const { verifyRailgunForeignOutput, decodeRailgunForeignDestination } = wallet(
