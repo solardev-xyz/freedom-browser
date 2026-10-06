@@ -4464,3 +4464,406 @@ test.each(['RAILGUN_WALLET_EXIT_UNOBSERVED', 'RAILGUN_RESERVATIONS_DRAIN_UNOBSER
     expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
   }
 );
+
+// Composition check: real account/controller permits and paired encrypted
+// reservation/recovery stores. Identity issuance, public services, coordinator,
+// wallet SQLite and cryptographic jobs remain explicit synthetic seams.
+let compositionSignatureVerify;
+async function actualRelayComposition() {
+  const f = reviewedRelayFixture();
+  f.owned.read.readiness = { to: { number: 30 } };
+  f.owned.ownedPoi[0].blindedCommitment =
+    require('../../../scripts/fixtures/railgun-relay-main-proof-data').createRailgunRelayMainProofData().record.history.note.blindedCommitment;
+  mockIdentity.signal = scope.signal;
+  mockEnrollment.profileGuard = { assert: jest.fn(), remember: jest.fn() };
+  const enrollmentApi = require('./railgun-account-enrollment');
+  enrollmentApi.assertRailgunFencedAccountEnrollment = (value) => {
+    if (value !== mockEnrollment || scope.signal.aborted) throw Error('fixture enrollment');
+  };
+  const { createPrivacyStorage } = require('./privacy-storage');
+  const { createRailgunPrivateReservations } = require('./railgun-private-reservations');
+  const { createRailgunRelayRecoveryStore } = require('./railgun-relay-recovery-store');
+  const walletId = mockIdentity.descriptor.walletId;
+  const floors = createPrivacyStorage({
+    handle: mockEnrollment.getContext('storage', 'connected-test-floors'),
+    directory,
+    key: Buffer.alloc(32, 91),
+  });
+  const storeOptions = (record, key) => ({
+    enrollment: mockEnrollment,
+    handle: mockEnrollment.getContext('storage', record + ':' + walletId),
+    directory,
+    key: Buffer.alloc(32, key),
+    binding: mockEnrollment.binding,
+    walletId,
+    profileGuard: mockEnrollment.profileGuard,
+    create: true,
+    readFloor: async () => {
+      const text = await floors.get(record);
+      return text === null ? null : JSON.parse(text);
+    },
+    advanceFloor: async (value) => floors.set(record, JSON.stringify(value)),
+  });
+  let ledger = await createRailgunPrivateReservations({
+    ...storeOptions('railgun-private-reservations-v1', 92),
+    claimRecovery: () => {
+      throw Error('unexpected recovery phase');
+    },
+    authorizeSigning: () => {
+      throw Error('unexpected private signer');
+    },
+  });
+  let recovery = await createRailgunRelayRecoveryStore(
+    storeOptions('railgun-relay-local-recovery-v4', 93)
+  );
+  mockEnrollment.openReservations = async () => ledger;
+  mockEnrollment.openRelayRecoveryStore = async () => recovery;
+  let captured,
+    signedRecord,
+    activeSigner,
+    issued = false;
+  const originalPrepare = mockRunner.prepareRelayReadOnly.getMockImplementation();
+  mockRunner.prepareRelayReadOnly.mockImplementation(async (input) => {
+    const result = await originalPrepare(input);
+    captured = connectedData({
+      preparation: result.relayDraft,
+      review: { summary: { state: { checkpointHash: f.owned.checkpointHash } } },
+    });
+    captured.row = JSON.parse(JSON.stringify(captured.row));
+    captured.row.history.note.type = 'Shield';
+    captured.row.history.event.signedPOIEvent.type = 'Shield';
+    captured.proof.historyDigest =
+      require('./railgun-relay-poi-history').normalizeRailgunRelayPoiHistory(
+        captured.row.history
+      ).digest;
+    return result;
+  });
+  mockRunner.prepareRelayPrePoiReadOnly = jest.fn(async () => ({
+    receipt: {},
+    coverage: f.coverage.coverage,
+    relayOwned: structuredClone(f.owned),
+    readOnly: { readOnly: true, writeAttempts: 0 },
+    relayPrePoiBinding: {
+      binding: captured.row.prePoiBinding,
+      historyDigest: captured.proof.historyDigest,
+      draftDigest: captured.proof.draftDigest,
+      expectedHash: captured.row.draft.intent.expectedHash,
+    },
+  }));
+  mockRunner.proveRelayReadOnly = jest.fn(async (input) => {
+    signedRecord = JSON.parse(input.relayProof.recordText);
+    events.push('composition-producer');
+    return {
+      receipt: {},
+      coverage: f.coverage.coverage,
+      relayOwned: structuredClone(f.owned),
+      readOnly: { readOnly: true, writeAttempts: 0 },
+      relayProof: {
+        ...captured.proof,
+        recordDigest: require('./railgun-relay-recovery-data').digestRailgunRelayLocalIntent(
+          input.relayProof.recordText
+        ),
+      },
+    };
+  });
+  const proofApi = require('./railgun-relay-proof');
+  const verified = { receipt: {}, close: jest.fn() };
+  jest.spyOn(proofApi, 'verifyRailgunRelayProof').mockImplementation(async () => {
+    events.push('composition-proof-verifier');
+    return verified;
+  });
+  jest.spyOn(proofApi, 'assertRailgunRelayProof').mockImplementation(() => {});
+  const signatureVerify = (compositionSignatureVerify ??= jest.spyOn(
+    require('./railgun-relay-signature-verify'),
+    'verifyRailgunRelaySignature'
+  )).mockImplementation(async (input) => ({
+    recordDigest: input.recordDigest,
+    intentDigest: require('./railgun-relay-intent').normalizeRailgunRelayUnsignedIntent(
+      input.intent
+    ).digest,
+    message: input.intent.expectedHash,
+    signatureDigest: require('crypto')
+      .createHash('sha256')
+      .update(JSON.stringify(input.signature))
+      .digest('hex'),
+    signatureVerified: true,
+  }));
+  const controller = jest.requireActual('./railgun-relay-operation');
+  mockConsumeIssuance.mockImplementation(controller.consumeRailgunRelayIssuancePermit);
+  mockConsumeProof.mockImplementation(controller.consumeRailgunRelayProofPermit);
+  const identityApi = require('./railgun-identity');
+  identityApi.assertRailgunRelaySigner = (token) => {
+    if (token !== activeSigner) throw Error('fixture signer');
+  };
+  mockAssertIssuance.mockImplementation((token) => {
+    if (token !== activeSigner || !issued) throw Error('fixture issuance');
+  });
+  identityApi.signRailgunRelayIntent = jest.fn(async (input) => {
+    activeSigner = Object.freeze({});
+    const intentDigest = require('./railgun-relay-intent').normalizeRailgunRelayUnsignedIntent(
+      input.intent
+    ).digest;
+    const permit = await input.onKeyRequest(
+      { recordDigest: input.recordDigest, intentDigest, expectedHash: input.intent.expectedHash },
+      activeSigner
+    );
+    const gate = controller.consumeRailgunRelaySigningPermit(permit, mockIdentity, activeSigner);
+    await gate.assertCurrent();
+    issued = true;
+    expect(gate.issued()).toBeUndefined();
+    issued = false;
+    events.push('composition-signature');
+    return {
+      recordDigest: input.recordDigest,
+      intentDigest,
+      message: input.intent.expectedHash,
+      signature: captured.row.signature,
+    };
+  });
+  const poiApi = require('./railgun-account-poi');
+  const sourceByWindow = new WeakMap();
+  poiApi.openRailgunRelayWindowPoi = ({ wallet: account, window, disclosure }) => {
+    controller.consumeRailgunRelayDisclosurePermit(disclosure, account, f.owners, window);
+    const drain = completedDeferred();
+    const value = {
+      input: {
+        id: f.request.noteId,
+        type: 'Shield',
+        noteHash: f.owned.ownedPoi[0].hash,
+        nullifier: f.owned.ownedPoi[0].nullifier,
+        checkpointHash: f.owned.checkpointHash,
+      },
+    };
+    const operation = {
+      closed: drain.promise,
+      close: () => drain.resolve(),
+      acquire: async () => ({ status: 'verified', receipt: {} }),
+    };
+    sourceByWindow.set(window, { operation, value });
+    mockRelayPoiLifetime.mockImplementation((source) => {
+      expect(source).toBe(operation);
+      return Object.freeze({ close: operation.close, closed: operation.closed });
+    });
+    return operation;
+  };
+  poiApi.assertRailgunRelayWindowPoi = (_operation, _receipt, _account, _owners, window) =>
+    sourceByWindow.get(window).value;
+  poiApi.readRailgunRelayWindowPoiHistory = () =>
+    require('./railgun-relay-poi-history').normalizeRailgunRelayPoiHistory(captured.row.history);
+  const preflightApi = require('./railgun-private-preflight');
+  const preflights = new WeakMap();
+  jest.spyOn(preflightApi, 'createRailgunRelayPreflight').mockImplementation(({ input }) => {
+    const op = { close: () => {}, acquire: async () => ({ receipt: {} }) };
+    preflights.set(op, { input });
+    return op;
+  });
+  jest
+    .spyOn(preflightApi, 'assertRailgunRelayPreflight')
+    .mockImplementation((op) => preflights.get(op));
+  const account = await f.opened();
+  return {
+    f,
+    account,
+    ledger,
+    recovery,
+    signatureVerify,
+    controller,
+    identityApi,
+    reopenStores: async () => {
+      ledger.close();
+      recovery.close();
+      ledger = await createRailgunPrivateReservations({
+        ...storeOptions('railgun-private-reservations-v1', 92),
+        create: false,
+        claimRecovery: () => {
+          throw Error('unexpected recovery phase');
+        },
+        authorizeSigning: () => {
+          throw Error('unexpected private signer');
+        },
+      });
+      recovery = await createRailgunRelayRecoveryStore({
+        ...storeOptions('railgun-relay-local-recovery-v4', 93),
+        create: false,
+      });
+      return { ledger, recovery };
+    },
+    run: (changes = {}) =>
+      controller.proveRailgunAccountRelayOperation({
+        account,
+        owners: f.owners,
+        request: f.request,
+        archive: options.archive,
+        proverArchive: '/synthetic-prover.asar',
+        artifactDirectory: '/synthetic-artifacts',
+        review: () => true,
+        reviewDisclosure: () => true,
+        ...changes,
+      }),
+    signed: () => signedRecord,
+    close: async () => {
+      ledger.close();
+      recovery.close();
+      await account.close();
+    },
+  };
+}
+test('actual relay controller/account permits persist one original signature through paired encrypted custody', async () => {
+  const c = await actualRelayComposition();
+  try {
+    const result = await c.run();
+    expect(result).toEqual({ status: 'ready-local', operationId: expect.any(String) });
+    const pair = await c.ledger.readRelay(c.recovery, result.operationId);
+    expect(pair.interruptedStep).toBeNull();
+    expect(pair.record.state).toBe('ready-local');
+    expect(pair.entry.state).toBe('signing-local');
+    expect(pair.record.signature).toEqual(c.signed().signature);
+    expect(c.identityApi.signRailgunRelayIntent).toHaveBeenCalledTimes(1);
+    expect(c.signatureVerify).toHaveBeenCalledTimes(1);
+    expect(events.indexOf('composition-signature')).toBeLessThan(
+      events.indexOf('composition-producer')
+    );
+    expect(events.indexOf('composition-producer')).toBeLessThan(
+      events.indexOf('composition-proof-verifier')
+    );
+  } finally {
+    await c.close();
+  }
+});
+test.each(['signature', 'proof'])(
+  'actual relay composition retains durable custody when independent %s verification refuses',
+  async (stage) => {
+    const c = await actualRelayComposition();
+    try {
+      if (stage === 'signature')
+        c.signatureVerify.mockRejectedValue(Error('synthetic signature denial'));
+      else
+        require('./railgun-relay-proof').verifyRailgunRelayProof.mockRejectedValue(
+          Error('synthetic proof denial')
+        );
+      const result = await c.run();
+      expect(result.status).toBe('recovery-required');
+      expect(result.stage).toBe(stage === 'signature' ? 'signature-verification' : 'proof');
+      const reopened = await c.reopenStores();
+      const pair = await reopened.ledger.readRelay(reopened.recovery, result.operationId);
+      expect(pair.entry.state).toBe('signing-local');
+      expect(pair.record.state).toBe(stage === 'signature' ? 'signing-local' : 'signed');
+      expect(pair.record.proved).toBeNull();
+      expect(c.identityApi.signRailgunRelayIntent).toHaveBeenCalledTimes(1);
+      if (stage === 'signature') {
+        expect(pair.record.signature).toBeNull();
+        expect(mockRunner.proveRelayReadOnly).not.toHaveBeenCalled();
+      } else expect(pair.record.signature).toEqual(c.signed().signature);
+    } finally {
+      await c.close();
+    }
+  }
+);
+test('actual relay composition rejects selected disclosure before a durable hold or signing', async () => {
+  const c = await actualRelayComposition();
+  try {
+    expect(await c.run({ reviewDisclosure: () => false })).toEqual({
+      status: 'refused',
+      stage: 'disclosure',
+    });
+    expect(await c.ledger.listRelay(c.recovery)).toEqual([]);
+    expect(c.identityApi.signRailgunRelayIntent).not.toHaveBeenCalled();
+    expect(mockRunner.prepareRelayPrePoiReadOnly).not.toHaveBeenCalled();
+  } finally {
+    await c.close();
+  }
+});
+test.each(['signed', 'ready-local'])(
+  'actual cold relay controller and completed account resume original %s custody without another signer',
+  async (kind) => {
+    const c = await actualRelayComposition();
+    let cold;
+    try {
+      const proofVerifier = require('./railgun-relay-proof').verifyRailgunRelayProof;
+      if (kind === 'signed')
+        proofVerifier.mockRejectedValueOnce(Error('synthetic interrupted proof'));
+      const warm = await c.run();
+      expect(warm.status).toBe(kind === 'signed' ? 'recovery-required' : 'ready-local');
+      const original = await c.recovery.read(warm.operationId);
+      await c.account.close();
+      const stores = await c.reopenStores();
+      const coldSignal = new AbortController();
+      mockSession.signal = coldSignal.signal;
+      mockSession.closed = Promise.resolve({ exitCode: 0 });
+      mockSession.close.mockImplementation(() => coldSignal.abort());
+      const input = completedOptions();
+      const snapshot = options.coordinator.withCompletedPublicSnapshot.getMockImplementation();
+      options.coordinator.withCompletedPublicSnapshot.mockImplementation((input, run) =>
+        snapshot(input, (value) =>
+          run({
+            ...value,
+            dispatch: async () => {
+              throw Error('unexpected dispatch');
+            },
+          })
+        )
+      );
+      state.checkpoint.target.hash = mockCheckpointHash({});
+      state.checkpoint.wallet = { storeId: generation.storeId, state: true };
+      cold = await openRailgunCompletedAccountWallet(input);
+      const proofs = mockRunner.proveRelayReadOnly.mock.calls.length;
+      const verifications = proofVerifier.mock.calls.length;
+      const signed = c.identityApi.signRailgunRelayIntent.mock.calls.length;
+      const quoteChecks = c.f.verify.mock.calls.length;
+      const result = await c.controller.resumeRailgunAccountRelayOperation({
+        account: cold,
+        owners: c.f.owners,
+        operationId: warm.operationId,
+        archive: options.archive,
+        proverArchive: '/synthetic-prover.asar',
+        artifactDirectory: '/synthetic-artifacts',
+        signal: c.f.request.signal,
+      });
+      expect(result).toEqual({ status: 'ready-local', operationId: warm.operationId });
+      const current = await stores.recovery.read(warm.operationId);
+      expect(proofVerifier).toHaveBeenCalledTimes(verifications + 1);
+      expect(current.signature).toEqual(original.signature);
+      expect(current.draft).toEqual(original.draft);
+      expect(current.history).toEqual(original.history);
+      expect(c.identityApi.signRailgunRelayIntent).toHaveBeenCalledTimes(signed);
+      expect(c.f.verify).toHaveBeenCalledTimes(quoteChecks);
+      expect(mockRunner.proveRelayReadOnly).toHaveBeenCalledTimes(
+        proofs + (kind === 'signed' ? 1 : 0)
+      );
+      if (kind === 'ready-local') expect(current).toEqual(original);
+      expect(
+        await c.controller.listRailgunAccountRelayOperations({
+          account: cold,
+          owners: c.f.owners,
+          signal: c.f.request.signal,
+          after: null,
+        })
+      ).toEqual({
+        records: [
+          {
+            operationId: warm.operationId,
+            reservationState: 'signing-local',
+            localState: 'ready-local',
+            interruptedStep: null,
+          },
+        ],
+        nextAfter: null,
+      });
+      expect(
+        await c.controller.discardRailgunAccountRelayOperation({
+          account: cold,
+          owners: c.f.owners,
+          signal: c.f.request.signal,
+          operationId: warm.operationId,
+        })
+      ).toEqual({ status: 'discarded-signed', operationId: warm.operationId });
+      const discarded = await stores.ledger.readRelay(stores.recovery, warm.operationId);
+      expect(discarded.entry.state).toBe('discarded-signed');
+      expect(discarded.record.signature).toEqual(original.signature);
+      expect(discarded.record.proved).toEqual(current.proved);
+    } finally {
+      await cold?.close();
+      await c.close();
+    }
+  }
+);
