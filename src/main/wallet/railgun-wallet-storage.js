@@ -133,4 +133,95 @@ function createRailgunWalletStorage({ publicSnapshot, walletSession, walletId, w
     },
   });
 }
-module.exports = { createRailgunWalletStorage, getRailgunWalletPrefixes };
+/** Trusted main-only serial scopes for fresh utility clients sharing one snapshot.
+ * All dispatches in this window must use this family, never the original directly.
+ * Abort revokes admission; original callback and dispatch settlement still drain.
+ */
+function createRailgunWalletSnapshotStreams(snapshot) {
+  assert.ok(snapshot && typeof snapshot.dispatch === 'function');
+  assert.ok(snapshot.signal instanceof AbortSignal);
+  const family = new AbortController();
+  const lifetime = AbortSignal.any([snapshot.signal, family.signal]);
+  const fail = () =>
+    Object.assign(new Error('Railgun wallet snapshot stream unavailable'), {
+      code: 'RAILGUN_WALLET_STORAGE_REFUSED',
+    });
+  let sharedSequence = 0,
+    busy = false;
+  async function run(use) {
+    // Invalid/overlapping admission has no effect on the original active run.
+    if (busy || lifetime.aborted || typeof use !== 'function') throw fail();
+    busy = true;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([lifetime, controller.signal]);
+    const pending = new Set();
+    let localSequence = 0,
+      accepting = true,
+      failure,
+      callbackError,
+      callbackFailed = false,
+      value;
+    const rejectFamily = (error) => {
+      failure ??= error;
+      family.abort();
+    };
+    const dispatch = (wire) => {
+      // A retained completed stream never reaches the shared dispatcher.
+      if (!accepting) return Promise.reject(fail());
+      const work = (async () => {
+        try {
+          if (signal.aborted) throw fail();
+          assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 2 * 1024 * 1024);
+          const message = JSON.parse(wire);
+          assert.ok(message && typeof message === 'object' && !Array.isArray(message));
+          const localId = message.id;
+          assert.ok(Number.isSafeInteger(localId) && localId === localSequence + 1);
+          assert.ok(Number.isSafeInteger(sharedSequence + 1));
+          localSequence = localId;
+          const sharedId = ++sharedSequence;
+          const reply = await snapshot.dispatch(JSON.stringify({ ...message, id: sharedId }));
+          if (signal.aborted) throw fail();
+          assert.ok(typeof reply === 'string' && Buffer.byteLength(reply) <= 2 * 1024 * 1024);
+          const response = JSON.parse(reply);
+          assert.ok(response && typeof response === 'object' && !Array.isArray(response));
+          assert.equal(response.id, sharedId);
+          return JSON.stringify({ ...response, id: localId });
+        } catch (error) {
+          rejectFamily(error);
+          throw error;
+        }
+      })();
+      pending.add(work);
+      work.then(
+        () => pending.delete(work),
+        () => pending.delete(work)
+      );
+      return work;
+    };
+    const stream = Object.freeze({ checkpoint: snapshot.checkpoint, signal, dispatch });
+    try {
+      value = await use(stream);
+    } catch (error) {
+      callbackFailed = true;
+      callbackError = error;
+      rejectFamily(error);
+    } finally {
+      accepting = false;
+      // A runner must not finish while an admitted storage call is outstanding.
+      // Refuse that result, but keep ownership until the original calls settle.
+      if (pending.size) rejectFamily(fail());
+      controller.abort();
+      await Promise.allSettled([...pending]);
+      busy = false;
+    }
+    if (callbackFailed) throw callbackError;
+    if (failure || lifetime.aborted) throw failure ?? fail();
+    return value;
+  }
+  return Object.freeze({ run });
+}
+module.exports = {
+  createRailgunWalletStorage,
+  getRailgunWalletPrefixes,
+  createRailgunWalletSnapshotStreams,
+};

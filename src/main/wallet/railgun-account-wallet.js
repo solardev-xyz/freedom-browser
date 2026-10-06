@@ -1019,14 +1019,25 @@ async function openAccount(
             check(baselineState.storeId === activeGeneration.storeId);
             const common = {
               handle,
-              snapshot,
               walletSession,
               coverageStore,
               walletId,
               relaySignal: signal,
             };
+            // Each fresh utility starts its public request IDs at one. Keep
+            // those local streams separate while retaining the coordinator's
+            // single ordered stream and original snapshot ownership.
+            const streams = require('./railgun-wallet-storage').createRailgunWalletSnapshotStreams(
+              snapshot
+            );
             const firstStarted = performance.now();
-            scan = runner.prepareRelayReadOnly({ ...common, relayRequest: { selection, context } });
+            scan = streams.run((jobSnapshot) =>
+              runner.prepareRelayReadOnly({
+                ...common,
+                snapshot: jobSnapshot,
+                relayRequest: { selection, context },
+              })
+            );
             const first = await scan;
             attest(30000);
             check(performance.now() >= firstStarted && performance.now() - firstStarted < 30000);
@@ -1051,7 +1062,9 @@ async function openAccount(
             const relayDraftText = JSON.stringify(draft.data);
             check(Buffer.byteLength(relayDraftText) <= 65536);
             const secondStarted = performance.now();
-            scan = runner.reconstructRelayReadOnly({ ...common, relayDraftText });
+            scan = streams.run((jobSnapshot) =>
+              runner.reconstructRelayReadOnly({ ...common, snapshot: jobSnapshot, relayDraftText })
+            );
             const second = await scan;
             attest();
             check(performance.now() >= secondStarted && performance.now() - secondStarted < 30000);

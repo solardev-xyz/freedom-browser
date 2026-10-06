@@ -122,6 +122,30 @@ is retained separately from the successful rerun.
 
 ## Remaining work
 
+The first native attempt at `30a14f22` failed during the reconstruction job's
+broker exchange. Electron exited naturally with code 1, without timeout or
+termination; the launcher's source/runtime/installed-SQLite post-check passed.
+This is a failed qualification, not evidence that reconstruction succeeded or
+that its cryptography failed. The retained log contains a sanitized broker
+rejection and the fixture's missing-result assertion.
+
+Source inspection identified a deterministic stream mismatch: both fresh jobs
+used one public snapshot dispatcher, which retains a contiguous request counter,
+while each job's public remote starts its local IDs at one. The correction gives
+each job a separate local stream and translates its IDs into the shared snapshot
+sequence, checking replies before translating them back. It preserves the
+coordinator's ordering checks, snapshot and original job-exit barriers. Closed
+streams cannot admit more work, and outstanding callbacks and dispatches must
+settle before another stream can begin. A fresh native run is still required;
+the failed attempt remains separate evidence.
+
+The correction passed 667 tests in 12 affected account, storage, coordinator,
+policy and native-fixture suites, plus strict repository lint and changed-file
+formatting.
+Its helper tests include real wallet routers sharing a strict upstream sequence,
+revoked and overlapping streams, outstanding-work drain and preservation of an
+unknown-worker-exit error. A reset-sequence mutation fails the regression.
+
 First qualify the complete flow with a disposable enrolled account, real engine,
 separate observed utility exits and unchanged authenticated storage. Then add a
 fresh review bound to the exact prepared transaction, broadcaster, fee cap/net

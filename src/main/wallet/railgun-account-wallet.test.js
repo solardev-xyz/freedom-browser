@@ -2289,6 +2289,19 @@ test('completed input cannot read through an in-flight restore, then works after
 // signature, account enrollment/profile or wallet decryption runs in this suite.
 const { prepareRailgunAccountRelayIntent } = require('./railgun-account-wallet');
 function relayFixture() {
+  const originalSnapshot = options.coordinator.withPublicSnapshot;
+  options.coordinator.withPublicSnapshot = (run) =>
+    originalSnapshot((snapshot) => {
+      let id = 0;
+      return run({
+        ...snapshot,
+        dispatch: async (wire) => {
+          const message = JSON.parse(wire);
+          expect(message.id).toBe(++id);
+          return JSON.stringify({ id: message.id, value: null });
+        },
+      });
+    });
   // Jest's native structuredClone returns foreign-realm prototypes. These owner
   // mocks contain plain acyclic data/BigInts; keep their copies in this realm.
   const clone = (value) =>
@@ -2507,9 +2520,12 @@ test('relay preparation holds one owner window, consumes first receipt, reconstr
     for (const name of ['privateIntent', 'privateOperation', 'privateRecovery'])
       expect(call[name]).toBeUndefined();
   }
-  expect(mockRunner.prepareRelayReadOnly.mock.calls[0][0].snapshot).toBe(
-    mockRunner.reconstructRelayReadOnly.mock.calls[0][0].snapshot
-  );
+  const firstSnapshot = mockRunner.prepareRelayReadOnly.mock.calls[0][0].snapshot,
+    secondSnapshot = mockRunner.reconstructRelayReadOnly.mock.calls[0][0].snapshot;
+  expect(firstSnapshot).not.toBe(secondSnapshot);
+  expect(firstSnapshot.checkpoint).toBe(secondSnapshot.checkpoint);
+  expect(firstSnapshot.signal.aborted).toBe(true);
+  expect(secondSnapshot.signal.aborted).toBe(true);
   await account.close();
 });
 test('relay quote verification holds busy/handoff, rejects ordinary restore and forged owners, and detaches caller fields', async () => {
@@ -2542,6 +2558,58 @@ test('relay quote verification holds busy/handoff, rejects ordinary restore and 
   const result = await work;
   expect(result.preparation.data.intent.context.gas.gasPrice).toBe('1');
   expect(result.preparation.data.intent.context.feeCap).toBe('100');
+  await account.close();
+});
+
+test('fresh relay utilities each start at one through real routers on one ordered public snapshot', async () => {
+  const f = relayFixture(),
+    account = await f.opened();
+  const { createRailgunWalletStorage } = require('./railgun-wallet-storage');
+  const key = Buffer.from(require('./railgun-frontier').paths.metadata().toString()).toString(
+    'base64'
+  );
+  const snapshots = [];
+  for (const name of ['prepareRelayReadOnly', 'reconstructRelayReadOnly']) {
+    const original = mockRunner[name].getMockImplementation();
+    mockRunner[name].mockImplementation(async (input) => {
+      const snapshot = input.snapshot;
+      snapshots.push(snapshot);
+      const router = createRailgunWalletStorage({
+        publicSnapshot: snapshot,
+        walletSession: { signal: scope.signal },
+        walletId: mockIdentity.descriptor.walletId,
+        walletGrant: {
+          dispatch: async () => {
+            throw Error('unexpected wallet access');
+          },
+        },
+      });
+      try {
+        for (const id of [1, 2]) {
+          const reply = JSON.parse(
+            await router.dispatch(
+              JSON.stringify({
+                id,
+                channel: 'public',
+                wire: JSON.stringify({ id, method: 'get', args: { key } }),
+              })
+            )
+          );
+          expect(reply.id).toBe(id);
+          expect(JSON.parse(reply.value)).toEqual({ id, value: null });
+        }
+        router.assertIdle();
+        return await original(input);
+      } finally {
+        router.close();
+      }
+    });
+  }
+  const result = await prepareRailgunAccountRelayIntent(account, f.owners, f.request);
+  expect(result.reconstruction.recoveredOutputs).toBe(2);
+  expect(snapshots).toHaveLength(2);
+  expect(snapshots.every((snapshot) => snapshot.signal.aborted)).toBe(true);
+  expect(result.view).toBe(account.view);
   await account.close();
 });
 test('clean quote refusal releases handoff after original work and leaves borrowed account usable', async () => {
@@ -2932,7 +3000,13 @@ test('relay coordinator rotates evidence across busy callback and aborted comple
     callbackSignals.push(window.signal);
     let value;
     try {
-      value = await run({ checkpoint: {}, signal: window.signal });
+      value = await run({
+        checkpoint: {},
+        signal: window.signal,
+        dispatch: async () => {
+          throw Error('unexpected read in token-only test');
+        },
+      });
     } finally {
       window.abort();
       busy = false;
