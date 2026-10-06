@@ -7,6 +7,13 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+A separate [mathematical key-admission candidate](railgun-relay-key-admission-2026-10-06.md)
+passes 17 offline checks, including a genuine key outside the earlier fixture
+registry, torsion/mixed-torsion refusals, separate signature R/S checks and actual
+shared-key exchange. Its hardened R policy deliberately rejects one mathematically
+valid zero-nonce signature. This is a qualified experimental predicate, not
+operator trust or integration into production relay admission.
+
 The [offline wire checkpoint](railgun-relay-wire-2026-10-06.md) now passes 39
 checks against selected pinned upstream functions: original-byte signatures,
 encrypted COMMON messages, expiry, context snapshots and per-operation replies.

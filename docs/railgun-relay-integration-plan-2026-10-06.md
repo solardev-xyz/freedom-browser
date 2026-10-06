@@ -6,6 +6,8 @@ The current recovery milestone is documented in [authenticated recovery](railgun
 
 The [offline wire experiment](railgun-relay-wire-2026-10-06.md) now passes 39 checks against selected upstream functions. Its genuine test-key registry, dummy calldata and excluded module initialization limit this evidence: arbitrary peer admission, actual fee/proof composition and transport remain open. The immediate work is a repository reproduction recipe, strict public-key validation and the real transaction-to-wire join.
 
+The [key-admission candidate](railgun-relay-key-admission-2026-10-06.md) separately passes 17 offline checks. It replaces a fixed fixture-key allowlist with canonical prime-subgroup point validation and a documented stricter R/S policy. Production integration, operator trust and wire binding remain open; the candidate deliberately excludes a mathematically valid zero-nonce signature.
+
 ## Upstream sources and compatibility
 
 The official [broadcaster guide](https://docs.railgun.org/developer-guide/wallet/broadcasters) identifies the [client](https://github.com/Railgun-Community/waku-broadcaster-client/tree/ef8d2b68720f6b51dd411e94eaf367d473844391). Client 9.1.1 declares wallet ^10.9.0 and shared-models ^8.0.1 peers, matching our pinned wallet 10.9.0 / engine 9.6.0 generation. Its supported broadcaster-service version range, 8.0.0–8.999.0, is a different version domain. No source-indicated engine downgrade is needed. This establishes declared compatibility, not an installed build or deployed-service test.

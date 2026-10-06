@@ -1,0 +1,129 @@
+{
+  "schema": "railgun-key-admission-offline-v1",
+  "scope": "Actual pinned Noble point/math helpers and Node differential checks; public synthetic keys only; no production activation",
+  "node": "v24.18.1",
+  "openssl": "3.5.7",
+  "nodeExecutableSha256": "f480e325ee0ca9cb9eef00b5ca6057a2a104807a1b073f1bc373a55c67facff5",
+  "campaignSha256": "db9308dc1ef6d044fce1fc04753338fff763f7e0f7cf2b36d12d9d1e4d102d62",
+  "admissionSha256": "5d967038f144cc93be7ecd41f6dd8b24bc68c987c1819d564337087314b8b800",
+  "counts": {
+    "positive": 3,
+    "negative": 6,
+    "control": 6,
+    "limitation": 2
+  },
+  "cryptoCalls": {
+    "signatureCalls": 10,
+    "ecdhCalls": 6,
+    "walletEncryptCalls": 4
+  },
+  "results": [
+    {
+      "id": "genuine-three-keys",
+      "kind": "positive",
+      "passed": true
+    },
+    {
+      "id": "genuine-node-noble-signatures",
+      "kind": "positive",
+      "passed": true
+    },
+    {
+      "id": "canonical-and-length-refusals",
+      "kind": "negative",
+      "passed": true
+    },
+    {
+      "id": "eight-torsion-A-refusals",
+      "kind": "negative",
+      "passed": true
+    },
+    {
+      "id": "mixed-torsion-A-distinguishes",
+      "kind": "control",
+      "passed": true
+    },
+    {
+      "id": "identity-torsionfree-insufficient",
+      "kind": "control",
+      "passed": true
+    },
+    {
+      "id": "R-independent-gate",
+      "kind": "negative",
+      "passed": true
+    },
+    {
+      "id": "S-range-and-equation",
+      "kind": "negative",
+      "passed": true
+    },
+    {
+      "id": "valid-identity-R-limitation",
+      "kind": "limitation",
+      "passed": true
+    },
+    {
+      "id": "wrong-message-and-key",
+      "kind": "negative",
+      "passed": true
+    },
+    {
+      "id": "signature-await-snapshot",
+      "kind": "control",
+      "passed": true
+    },
+    {
+      "id": "immutable-token-bytes",
+      "kind": "control",
+      "passed": true
+    },
+    {
+      "id": "actual-ECDH-two-roles",
+      "kind": "positive",
+      "passed": true
+    },
+    {
+      "id": "ECDH-invalid-peers-before-call",
+      "kind": "negative",
+      "passed": true
+    },
+    {
+      "id": "wallet-recipient-await-snapshot",
+      "kind": "control",
+      "passed": true
+    },
+    {
+      "id": "ECDH-await-snapshot",
+      "kind": "control",
+      "passed": true
+    },
+    {
+      "id": "no-trust-or-chain-upgrade",
+      "kind": "limitation",
+      "passed": true
+    }
+  ],
+  "diagnostics": {
+    "identityR": {
+      "rawNode": true,
+      "rawNoble": true,
+      "localHardenedSubset": "refused",
+      "mathematicallyInvalidOrForged": false,
+      "equation": "R=0, S=k*a modulo ell",
+      "compatibility": "Intentional application subset, not RFC or ZIP validity claim"
+    },
+    "scope": {
+      "arbitraryCanonicalPrimeSubgroupKeysAcceptedMathematically": true,
+      "operatorIdentityEstablished": false,
+      "wakuPeerBound": false,
+      "topicSigned": false,
+      "transactionAuthority": false,
+      "finality": false,
+      "RPolicyIsHardenedSubset": true,
+      "curveMathIndependentlyImplemented": false,
+      "offCurveAdversarialVectorQualified": false
+    }
+  },
+  "liveServiceContacted": false
+}
