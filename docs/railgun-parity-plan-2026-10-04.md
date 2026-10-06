@@ -1,5 +1,7 @@
 # Railgun parity and remaining integration work — October 4, 2026
 
+The [local fee/peer review](railgun-local-relay-review-2026-10-06.md) at `2c2a343f` adds genuine-account source binding, a guarded public quote job and bounded local approval with no spending or disclosure permission. All 177 focused tests, strict lint and source reviews pass. Native job and genuine account/controller qualification remain pending; this is not live relay parity.
+
 This is the continuation plan after `ba507f73`. It compares Railgun with the
 implemented PPv2 backend, rather than treating either protocol as a finished
 wallet product. Historical qualification reports remain evidence for their
