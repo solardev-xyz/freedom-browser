@@ -1,0 +1,700 @@
+{
+  "originalDriverObservation": {
+    "schema": "railgun-recovery-companion-native-root-observation-v1",
+    "originalDriverSession": 93295,
+    "observedDriverExitCode": 0,
+    "drained": true,
+    "naturalExit": true,
+    "driverCompletionChunk": "fd1901",
+    "head": "cf25d54c0f074b9e6f6a3ff1f0631888e7856870",
+    "freezeSha256": "aa53a98617d83917bf49561fe6c50ccff5f5a1ef2cc4f53ce42152b979cf3f55",
+    "attestationSha256": "7d322bbe4796b78dcb6851e525cbefd78cd2f921a300e642a049492fc306fc18",
+    "scope": "Four original processes, one fresh disposable Shield chain, synthetic services; no live/private funded or physical drainage qualification"
+  },
+  "driverLog": {
+    "originalBasename": "railgun-recovery-companion-native-driver-oct6-a.log",
+    "sha256": "8e4809306a4f48b6f1c98e9aca340d34f2abd241307302877279bf68e9601de2"
+  },
+  "stages": [
+    {
+      "originalProcess": {
+        "phase": "setup",
+        "mode": "restart-setup",
+        "state": "finished",
+        "expectedExitCode": 0,
+        "pid": 97957,
+        "exitObserved": true,
+        "exitCode": 0,
+        "logSha256": "1b562adfc1e1f2e0d1219891b8af2a997ef5f5f60081ba628cd1482a8930975a",
+        "reportSha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154",
+        "qualified": true,
+        "originalReportBasename": "report.json",
+        "originalLogBasename": "setup.log"
+      },
+      "validation": {
+        "phase": "setup",
+        "completeReportMatched": true,
+        "originalProcessAndHandoffJoined": true,
+        "semanticStorageRoleAuthority": "source-pinned-observer",
+        "physicalNetworkDrainClaim": false,
+        "plaintextDecrypted": false
+      },
+      "rawOutputInventory": {
+        "report.json": {
+          "bytes": 255609,
+          "sha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154"
+        },
+        "restart-wire.json": {
+          "bytes": 19665,
+          "sha256": "26f579bdc191fb4cbf600cc019ef309bddb671a629331808c6b8a7a86474d2b3"
+        },
+        "restart-handoff.json": {
+          "bytes": 121469,
+          "sha256": "70a0ef3d821d26a24b378188635d17eb373a5e4050801129575a6d7df12b1c5d"
+        }
+      },
+      "measuredMetadata": {
+        "files": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": "75223d2e1161bbd79a36f8c5cce9c8a078dccac5a3b57f11622125c126adee07",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": "e4adb4dede27ca667703d3fb87b0bd6d98dbec8f9f5b1345a6d1df7d97e3eaf5",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": "ee0dec596c98f5846035dfa2d318974b48c3a27061604fb9edfa84e0aa1eb677",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": "77d9891b9457e5a8d0465f6c3aeb671a3cdb2344f52225b5c9e0d1b63f22eb1a",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": "29492f06e79094aa558789de2eee2127bd3a7449f3ef9a2e9e62edf55bb52f9c",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": "d9a86430f65c3b5a080eb7b1436aed784e16cf923058cdf55c55e0e782a7dd0e",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": "8a5c41c9169d74acdcc0bd7536e639cde57bc501562eb98335f406cfe794efef",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": "b28af4eee0ae5bae3f38fe08c6b710e94a15d9677fafc288530b69ed3571cd4a",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": "64de959f9e2b86eea3b54e2b8fad13ffb6d4bff1ba029d2d7aac219a39abc7a3",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": "0cb2278208f7e746ab682e5d6a92a3a29b89713ef01e5ffe07c81781753dc6f7",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": "c4358a4765ff67aff59f2f3c6897e596190dc0dee745245c39a5d8b184a1258f",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": "1f940ea7fc81e7c6aa10da8f78fa653052bea812c4fa50d4b0f75a5fe7f82793",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": "3d76930824fadc1f4913da0d29b310b046902a7474ca5ac8fd9651b5a6ca422b"
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": "87679bcef15ea62393f5c0e23a13a9bf8c39edf7baaf5ece7f62d2c93a4713a4"
+          },
+          "inventory": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb",
+          "encryptedVault": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1",
+          "publicVaultMetadata": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+        },
+        "details": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": {
+              "bytes": 1814,
+              "sha256": "75223d2e1161bbd79a36f8c5cce9c8a078dccac5a3b57f11622125c126adee07"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": {
+              "bytes": 1014,
+              "sha256": "e4adb4dede27ca667703d3fb87b0bd6d98dbec8f9f5b1345a6d1df7d97e3eaf5"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": {
+              "bytes": 986,
+              "sha256": "ee0dec596c98f5846035dfa2d318974b48c3a27061604fb9edfa84e0aa1eb677"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": {
+              "bytes": 1650,
+              "sha256": "77d9891b9457e5a8d0465f6c3aeb671a3cdb2344f52225b5c9e0d1b63f22eb1a"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": {
+              "bytes": 12898,
+              "sha256": "29492f06e79094aa558789de2eee2127bd3a7449f3ef9a2e9e62edf55bb52f9c"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": {
+              "bytes": 6990,
+              "sha256": "d9a86430f65c3b5a080eb7b1436aed784e16cf923058cdf55c55e0e782a7dd0e"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": {
+              "bytes": 3578,
+              "sha256": "8a5c41c9169d74acdcc0bd7536e639cde57bc501562eb98335f406cfe794efef"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": {
+              "bytes": 36864,
+              "sha256": "b28af4eee0ae5bae3f38fe08c6b710e94a15d9677fafc288530b69ed3571cd4a"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": {
+              "bytes": 3810,
+              "sha256": "64de959f9e2b86eea3b54e2b8fad13ffb6d4bff1ba029d2d7aac219a39abc7a3"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": {
+              "bytes": 2518,
+              "sha256": "0cb2278208f7e746ab682e5d6a92a3a29b89713ef01e5ffe07c81781753dc6f7"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": {
+              "bytes": 45056,
+              "sha256": "c4358a4765ff67aff59f2f3c6897e596190dc0dee745245c39a5d8b184a1258f"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": {
+              "bytes": 172032,
+              "sha256": "1f940ea7fc81e7c6aa10da8f78fa653052bea812c4fa50d4b0f75a5fe7f82793"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": {
+              "bytes": 16384,
+              "sha256": "3d76930824fadc1f4913da0d29b310b046902a7474ca5ac8fd9651b5a6ca422b"
+            }
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": {
+              "bytes": 4122,
+              "sha256": "87679bcef15ea62393f5c0e23a13a9bf8c39edf7baaf5ece7f62d2c93a4713a4"
+            }
+          },
+          "inventory": {
+            "bytes": 2805,
+            "sha256": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb"
+          },
+          "encryptedVault": {
+            "bytes": 435,
+            "sha256": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1"
+          },
+          "publicVaultMetadata": {
+            "bytes": 234,
+            "sha256": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+          }
+        },
+        "scope": "five source-defined profile components; no plaintext authentication or atomic global snapshot claim"
+      },
+      "physicalChangesFromPreviousStage": null,
+      "handoffHashLineage": {
+        "originalBasename": "restart-handoff.json",
+        "rawSha256": "70a0ef3d821d26a24b378188635d17eb373a5e4050801129575a6d7df12b1c5d",
+        "rawBytes": 121469,
+        "publicWireCanonicalSha256": "0b7b049539313ebb1fb1022ba32767642691386c984e67e41c228454baf00f91",
+        "setupReportSha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154",
+        "predecessorSha256": null,
+        "currentReportSha256": null,
+        "records": null,
+        "retained": null,
+        "sourceRuntimeAndOriginalPidJoinsValidated": true,
+        "plaintextPayloadPublished": false
+      },
+      "prePostSourceRuntimeChecks": "original pinned driver checked before and after original child exit; archive replay verifies frozen joins only"
+    },
+    {
+      "originalProcess": {
+        "phase": "sign-stop",
+        "mode": "restart-sign-stop",
+        "state": "finished",
+        "expectedExitCode": 0,
+        "pid": 98379,
+        "exitObserved": true,
+        "exitCode": 0,
+        "logSha256": "1b562adfc1e1f2e0d1219891b8af2a997ef5f5f60081ba628cd1482a8930975a",
+        "reportSha256": "daeb2abf33714b7566abcf40598dc4d10c6a15d742aaf4ad1fadbf97dd2104e3",
+        "qualified": true,
+        "originalReportBasename": "second-sign-report.json",
+        "originalLogBasename": "sign-stop.log"
+      },
+      "validation": {
+        "phase": "sign-stop",
+        "completeReportMatched": true,
+        "originalProcessAndHandoffJoined": true,
+        "semanticStorageRoleAuthority": "source-pinned-observer",
+        "physicalNetworkDrainClaim": false,
+        "plaintextDecrypted": false
+      },
+      "rawOutputInventory": {
+        "second-sign-report.json": {
+          "bytes": 142065,
+          "sha256": "daeb2abf33714b7566abcf40598dc4d10c6a15d742aaf4ad1fadbf97dd2104e3"
+        },
+        "second-signed-handoff.json": {
+          "bytes": 123126,
+          "sha256": "a35f0cf45540a9fb0c0c25352a25ae603ecb8570bc3f3132b5eeed7082a68bcf"
+        }
+      },
+      "measuredMetadata": {
+        "files": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": "195def1f86394aba712cad3322e4c3ea7d144655df53b95f4a96da29b164e655",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": "dada67f4d48eb495af697999e631a9858309e00cd86b68aa6aa325314a4cd407",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": "52c7781fc37923cceb9484d3197a7fb0c6c5d4be448af4221b1d7b56fe968530",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": "8f99d7915cb8e9be1f34ffebc21eb0106a15e9cfce76fc9391f96dde52958879",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": "92bdadffcd3201c46e94d6a5a3c4abd67041717782d0435a0ea2e0716424bb60",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": "999fd20cf6f0d3182203a044b450ed0772ca55e97f7dc0f1d6f587017d19f376",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": "9a4c71a5f8b8b83fc5a3d3b8cd0d7b3fdf1f99788f7497a1933473bff5b1c7e3",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": "b28af4eee0ae5bae3f38fe08c6b710e94a15d9677fafc288530b69ed3571cd4a",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": "5e4bb04326683d1a1f1ce01ac862888c2402d011aa48ee366555ee9432ae4b1b",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": "60b43ed47acfef668c9d362425a48d2a13b67e3d8e5fff2ce9828b42c452d6d9",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": "c4358a4765ff67aff59f2f3c6897e596190dc0dee745245c39a5d8b184a1258f",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": "1f940ea7fc81e7c6aa10da8f78fa653052bea812c4fa50d4b0f75a5fe7f82793",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": "3d76930824fadc1f4913da0d29b310b046902a7474ca5ac8fd9651b5a6ca422b"
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": "b33bf80173fca79b9c577b8d1be2e871206c8c92babf536c8e3ab5813ea856aa"
+          },
+          "inventory": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb",
+          "encryptedVault": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1",
+          "publicVaultMetadata": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+        },
+        "details": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": {
+              "bytes": 1814,
+              "sha256": "195def1f86394aba712cad3322e4c3ea7d144655df53b95f4a96da29b164e655"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": {
+              "bytes": 1014,
+              "sha256": "dada67f4d48eb495af697999e631a9858309e00cd86b68aa6aa325314a4cd407"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": {
+              "bytes": 986,
+              "sha256": "52c7781fc37923cceb9484d3197a7fb0c6c5d4be448af4221b1d7b56fe968530"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": {
+              "bytes": 2782,
+              "sha256": "8f99d7915cb8e9be1f34ffebc21eb0106a15e9cfce76fc9391f96dde52958879"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": {
+              "bytes": 19750,
+              "sha256": "92bdadffcd3201c46e94d6a5a3c4abd67041717782d0435a0ea2e0716424bb60"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": {
+              "bytes": 6990,
+              "sha256": "999fd20cf6f0d3182203a044b450ed0772ca55e97f7dc0f1d6f587017d19f376"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": {
+              "bytes": 3582,
+              "sha256": "9a4c71a5f8b8b83fc5a3d3b8cd0d7b3fdf1f99788f7497a1933473bff5b1c7e3"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": {
+              "bytes": 36864,
+              "sha256": "b28af4eee0ae5bae3f38fe08c6b710e94a15d9677fafc288530b69ed3571cd4a"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": {
+              "bytes": 3810,
+              "sha256": "5e4bb04326683d1a1f1ce01ac862888c2402d011aa48ee366555ee9432ae4b1b"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": {
+              "bytes": 2518,
+              "sha256": "60b43ed47acfef668c9d362425a48d2a13b67e3d8e5fff2ce9828b42c452d6d9"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": {
+              "bytes": 45056,
+              "sha256": "c4358a4765ff67aff59f2f3c6897e596190dc0dee745245c39a5d8b184a1258f"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": {
+              "bytes": 172032,
+              "sha256": "1f940ea7fc81e7c6aa10da8f78fa653052bea812c4fa50d4b0f75a5fe7f82793"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": {
+              "bytes": 16384,
+              "sha256": "3d76930824fadc1f4913da0d29b310b046902a7474ca5ac8fd9651b5a6ca422b"
+            }
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": {
+              "bytes": 4122,
+              "sha256": "b33bf80173fca79b9c577b8d1be2e871206c8c92babf536c8e3ab5813ea856aa"
+            }
+          },
+          "inventory": {
+            "bytes": 2805,
+            "sha256": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb"
+          },
+          "encryptedVault": {
+            "bytes": 435,
+            "sha256": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1"
+          },
+          "publicVaultMetadata": {
+            "bytes": 234,
+            "sha256": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+          }
+        },
+        "scope": "five source-defined profile components; no plaintext authentication or atomic global snapshot claim"
+      },
+      "physicalChangesFromPreviousStage": {
+        "added": [],
+        "removed": [],
+        "changed": [
+          "profile/wallet-private-submissions/5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json",
+          "profile/wallet-railgun-accounts/27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json"
+        ]
+      },
+      "handoffHashLineage": {
+        "originalBasename": "second-signed-handoff.json",
+        "rawSha256": "a35f0cf45540a9fb0c0c25352a25ae603ecb8570bc3f3132b5eeed7082a68bcf",
+        "rawBytes": 123126,
+        "publicWireCanonicalSha256": "0b7b049539313ebb1fb1022ba32767642691386c984e67e41c228454baf00f91",
+        "setupReportSha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154",
+        "predecessorSha256": "70a0ef3d821d26a24b378188635d17eb373a5e4050801129575a6d7df12b1c5d",
+        "currentReportSha256": "daeb2abf33714b7566abcf40598dc4d10c6a15d742aaf4ad1fadbf97dd2104e3",
+        "records": {
+          "first": {
+            "holdId": "9c20ca623d56b4f182f1ea5bb9eb459218be64c78c2df77f1f870ee6dc560625",
+            "entry": "0ae303f97d0c297e4f5c027b3f7b91f80d9643d75469c5eb42f5d03b3bd96778",
+            "stored": "8d9531c49f65abf29de4551f5cfc755ef6fe78b3d8512a697eb7396b3e40970a",
+            "capsule": "32b71da00eb046d797a5cd323f6c8eebe6dd840fe049e6b75d566daf30cf6901",
+            "signature": "ab2be1590c3696016dca44bb622c40a9cc06a88125ffc14ac2b2552f610ab267",
+            "provedTransaction": "107b9135ad481db94fe7c941008d2c353e2364c28dd839adcd3a335114b4383c"
+          },
+          "second": {
+            "holdId": "2242da13e47ffad21e37b8231f79683af993f16b87e0823c2ff4fae47d19dee7",
+            "entry": "c6f1f018789232ff3bc220e917631710b9bbff5fb6b5471e77e3ea298928a682",
+            "stored": "5a959615ed2dac6c47056da6ecfc3a82b3234671b8fb2e4fb683103cdca7c79c",
+            "capsule": "4c1c19bfef440aae4a200129132c369ecc950cc14d6508f68525338895ac5ade",
+            "signature": "5d154f5a4452cadbe474ad58b39943ebc79b6faefcc128cb60ef4b4adc062c58",
+            "provedTransaction": null
+          },
+          "record": "85dc22b776ea609ae1042d2a58e3f7b7ec3fa86b896cfb34ae4611c3d8f0e089",
+          "immutableRecord": "ea05bba4560cdd20c94f29239bb81e83d59e3aaf4054cad422800454ae7548ee"
+        },
+        "retained": {
+          "entrySha256": "0f704186c3ca7ee52c2f094223f3f8a1d52ee48f7f557eb6033d1fa7638c0a67",
+          "inspectSha256": "32fe9ce00b573e61aaa47178724179bbe88e6ecc0388ccd377a3cb52955ce93f"
+        },
+        "sourceRuntimeAndOriginalPidJoinsValidated": true,
+        "plaintextPayloadPublished": false
+      },
+      "prePostSourceRuntimeChecks": "original pinned driver checked before and after original child exit; archive replay verifies frozen joins only"
+    },
+    {
+      "originalProcess": {
+        "phase": "recover-stop",
+        "mode": "restart-recover-stop",
+        "state": "finished",
+        "expectedExitCode": 0,
+        "pid": 98404,
+        "exitObserved": true,
+        "exitCode": 0,
+        "logSha256": "1b562adfc1e1f2e0d1219891b8af2a997ef5f5f60081ba628cd1482a8930975a",
+        "reportSha256": "7afdb4cde22327414aa5be1a5283731772cd4c8aad4d13b077aa2d1c7561bb33",
+        "qualified": true,
+        "originalReportBasename": "second-recover-report.json",
+        "originalLogBasename": "recover-stop.log"
+      },
+      "validation": {
+        "phase": "recover-stop",
+        "completeReportMatched": true,
+        "originalProcessAndHandoffJoined": true,
+        "semanticStorageRoleAuthority": "source-pinned-observer",
+        "physicalNetworkDrainClaim": false,
+        "plaintextDecrypted": false
+      },
+      "rawOutputInventory": {
+        "second-recover-report.json": {
+          "bytes": 136534,
+          "sha256": "7afdb4cde22327414aa5be1a5283731772cd4c8aad4d13b077aa2d1c7561bb33"
+        },
+        "second-recovered-handoff.json": {
+          "bytes": 123184,
+          "sha256": "4ccfc48998d4590d64d4986b7dbbf5afe40a552529a9ba86b98ad4a08a6a0afa"
+        }
+      },
+      "measuredMetadata": {
+        "files": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": "486176ea1fcdef53c5aa8232598e05348b4f1a38108ffc2dca5c1c323add7864",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": "9fdc8391b2b23491ed1c547a70c7367377655ceccb624e63e80d5bb1b74245b1",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": "171c68dd63524ba5a6d24a861d572dc219a7c6cbb32690f7190c37b7819a4da4",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": "de000b11a405e49aca51b381394d16e668d7e6b24d8765299a0484b17d1b2fcc",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": "af894e782454d99b60283d9a77392fb28d4b22e16ee113aa1c58d2149229dd70",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": "27af3bddf401fdb93d30a717dd4b44987eafcfc80b8a641db16a6de8bcd672cc",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": "9a4c71a5f8b8b83fc5a3d3b8cd0d7b3fdf1f99788f7497a1933473bff5b1c7e3",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": "b28af4eee0ae5bae3f38fe08c6b710e94a15d9677fafc288530b69ed3571cd4a",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": "5e4bb04326683d1a1f1ce01ac862888c2402d011aa48ee366555ee9432ae4b1b",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": "f3ffb22bec3d2bbcb3edab77e76f6bce9c2da3a4723728e3f92be4a826517f77",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": "c4358a4765ff67aff59f2f3c6897e596190dc0dee745245c39a5d8b184a1258f",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": "1f940ea7fc81e7c6aa10da8f78fa653052bea812c4fa50d4b0f75a5fe7f82793",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": "3d76930824fadc1f4913da0d29b310b046902a7474ca5ac8fd9651b5a6ca422b"
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": "b33bf80173fca79b9c577b8d1be2e871206c8c92babf536c8e3ab5813ea856aa"
+          },
+          "inventory": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb",
+          "encryptedVault": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1",
+          "publicVaultMetadata": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+        },
+        "details": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": {
+              "bytes": 1814,
+              "sha256": "486176ea1fcdef53c5aa8232598e05348b4f1a38108ffc2dca5c1c323add7864"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": {
+              "bytes": 1014,
+              "sha256": "9fdc8391b2b23491ed1c547a70c7367377655ceccb624e63e80d5bb1b74245b1"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": {
+              "bytes": 986,
+              "sha256": "171c68dd63524ba5a6d24a861d572dc219a7c6cbb32690f7190c37b7819a4da4"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": {
+              "bytes": 2782,
+              "sha256": "de000b11a405e49aca51b381394d16e668d7e6b24d8765299a0484b17d1b2fcc"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": {
+              "bytes": 22630,
+              "sha256": "af894e782454d99b60283d9a77392fb28d4b22e16ee113aa1c58d2149229dd70"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": {
+              "bytes": 6990,
+              "sha256": "27af3bddf401fdb93d30a717dd4b44987eafcfc80b8a641db16a6de8bcd672cc"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": {
+              "bytes": 3582,
+              "sha256": "9a4c71a5f8b8b83fc5a3d3b8cd0d7b3fdf1f99788f7497a1933473bff5b1c7e3"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": {
+              "bytes": 36864,
+              "sha256": "b28af4eee0ae5bae3f38fe08c6b710e94a15d9677fafc288530b69ed3571cd4a"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": {
+              "bytes": 3810,
+              "sha256": "5e4bb04326683d1a1f1ce01ac862888c2402d011aa48ee366555ee9432ae4b1b"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": {
+              "bytes": 2518,
+              "sha256": "f3ffb22bec3d2bbcb3edab77e76f6bce9c2da3a4723728e3f92be4a826517f77"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": {
+              "bytes": 45056,
+              "sha256": "c4358a4765ff67aff59f2f3c6897e596190dc0dee745245c39a5d8b184a1258f"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": {
+              "bytes": 172032,
+              "sha256": "1f940ea7fc81e7c6aa10da8f78fa653052bea812c4fa50d4b0f75a5fe7f82793"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": {
+              "bytes": 16384,
+              "sha256": "3d76930824fadc1f4913da0d29b310b046902a7474ca5ac8fd9651b5a6ca422b"
+            }
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": {
+              "bytes": 4122,
+              "sha256": "b33bf80173fca79b9c577b8d1be2e871206c8c92babf536c8e3ab5813ea856aa"
+            }
+          },
+          "inventory": {
+            "bytes": 2805,
+            "sha256": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb"
+          },
+          "encryptedVault": {
+            "bytes": 435,
+            "sha256": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1"
+          },
+          "publicVaultMetadata": {
+            "bytes": 234,
+            "sha256": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+          }
+        },
+        "scope": "five source-defined profile components; no plaintext authentication or atomic global snapshot claim"
+      },
+      "physicalChangesFromPreviousStage": {
+        "added": [],
+        "removed": [],
+        "changed": [
+          "profile/wallet-railgun-accounts/27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json"
+        ]
+      },
+      "handoffHashLineage": {
+        "originalBasename": "second-recovered-handoff.json",
+        "rawSha256": "4ccfc48998d4590d64d4986b7dbbf5afe40a552529a9ba86b98ad4a08a6a0afa",
+        "rawBytes": 123184,
+        "publicWireCanonicalSha256": "0b7b049539313ebb1fb1022ba32767642691386c984e67e41c228454baf00f91",
+        "setupReportSha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154",
+        "predecessorSha256": "a35f0cf45540a9fb0c0c25352a25ae603ecb8570bc3f3132b5eeed7082a68bcf",
+        "currentReportSha256": "7afdb4cde22327414aa5be1a5283731772cd4c8aad4d13b077aa2d1c7561bb33",
+        "records": {
+          "first": {
+            "holdId": "9c20ca623d56b4f182f1ea5bb9eb459218be64c78c2df77f1f870ee6dc560625",
+            "entry": "0ae303f97d0c297e4f5c027b3f7b91f80d9643d75469c5eb42f5d03b3bd96778",
+            "stored": "8d9531c49f65abf29de4551f5cfc755ef6fe78b3d8512a697eb7396b3e40970a",
+            "capsule": "32b71da00eb046d797a5cd323f6c8eebe6dd840fe049e6b75d566daf30cf6901",
+            "signature": "ab2be1590c3696016dca44bb622c40a9cc06a88125ffc14ac2b2552f610ab267",
+            "provedTransaction": "107b9135ad481db94fe7c941008d2c353e2364c28dd839adcd3a335114b4383c"
+          },
+          "second": {
+            "holdId": "2242da13e47ffad21e37b8231f79683af993f16b87e0823c2ff4fae47d19dee7",
+            "entry": "c6f1f018789232ff3bc220e917631710b9bbff5fb6b5471e77e3ea298928a682",
+            "stored": "1d1425fad18b549eabc2930a719688ed61984480490e6aa959961d152f0ee08b",
+            "capsule": "4c1c19bfef440aae4a200129132c369ecc950cc14d6508f68525338895ac5ade",
+            "signature": "5d154f5a4452cadbe474ad58b39943ebc79b6faefcc128cb60ef4b4adc062c58",
+            "provedTransaction": "7d5b1d1c19164dc11666e73c22bb91056bf884b9492d0da21e89b4386bd4b631"
+          },
+          "record": "85dc22b776ea609ae1042d2a58e3f7b7ec3fa86b896cfb34ae4611c3d8f0e089",
+          "immutableRecord": "ea05bba4560cdd20c94f29239bb81e83d59e3aaf4054cad422800454ae7548ee"
+        },
+        "retained": {
+          "entrySha256": "0f704186c3ca7ee52c2f094223f3f8a1d52ee48f7f557eb6033d1fa7638c0a67",
+          "inspectSha256": "32fe9ce00b573e61aaa47178724179bbe88e6ecc0388ccd377a3cb52955ce93f"
+        },
+        "sourceRuntimeAndOriginalPidJoinsValidated": true,
+        "plaintextPayloadPublished": false
+      },
+      "prePostSourceRuntimeChecks": "original pinned driver checked before and after original child exit; archive replay verifies frozen joins only"
+    },
+    {
+      "originalProcess": {
+        "phase": "submit",
+        "mode": "restart-recovered-submit",
+        "state": "finished",
+        "expectedExitCode": 0,
+        "pid": 98431,
+        "exitObserved": true,
+        "exitCode": 0,
+        "logSha256": "5e6f1be980d4db0bdc3bbcad7721e9da23f863ffb34399f741a2ef84d575b17e",
+        "reportSha256": "e4d76653a00f6fa3764d81b833cf354864bf9540d4fb45889bae1ff0a3533116",
+        "qualified": true,
+        "originalReportBasename": "second-submit-report.json",
+        "originalLogBasename": "submit.log"
+      },
+      "validation": {
+        "phase": "submit",
+        "completeReportMatched": true,
+        "originalProcessAndHandoffJoined": true,
+        "semanticStorageRoleAuthority": "source-pinned-observer",
+        "physicalNetworkDrainClaim": false,
+        "plaintextDecrypted": false
+      },
+      "rawOutputInventory": {
+        "second-submit-report.json": {
+          "bytes": 145257,
+          "sha256": "e4d76653a00f6fa3764d81b833cf354864bf9540d4fb45889bae1ff0a3533116"
+        }
+      },
+      "measuredMetadata": {
+        "files": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": "265805bae4d47cd829fc25350f9bae2f1055df2504d51623f25073760416b17d",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": "ef1d7b731830cd4bb4cb88bc11fdbdbd4462884debc82e875ffe0a5c50f7fe4f",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": "0c765bfb23d3a1b59530f73a72db4b1b832c6cbe48d0091779447eed8e34c84c",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": "cb52221fb41b45c000dfcf9e20d3ec3294bbc08c76e2b8b561144d9c050f8b5a",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": "79cdc96da5913ca0e6eaf4a150a15a664104d73d162df1ee18748c102726d6c1",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": "a1a22619df5614f17226c934903eb4730f4fc32ff30c4bed04075ed6f06c46b4",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": "4312c024cea8926f6e219ace112f777c0b9c11e5516d166f049c0063316b8d19",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": "3b0f582ac7b1b7b20a190dada6be2bf0c920ff20db435bdf3190717b6edeedef",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": "eb809fe1c451fce6ad5cbb2f23226ebe38c243d585053307c7c751c79ea52c97",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": "8075fe02b3810325b577ba019d9795c35281e9637291e81a05d842fa0548fc1e",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": "c5e5447a67ab4e901f993b486742ba48a86ff9a33fafc8c1dfa1d69f05963f25",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": "0b7b322a3c24aa55ab8f39c5c095db1b109b26341395596b5b5aa2c9934e56b6",
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": "ca91135af439794bcbd1b2425ab0cc649b0cbebbfd635bc1f110d63a1cccd2be"
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": "65cad563b4ff5c61db762907e9c6f6ac06435b71ef0eca9e26e8313b96e5cdce"
+          },
+          "inventory": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb",
+          "encryptedVault": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1",
+          "publicVaultMetadata": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+        },
+        "details": {
+          "accounts": {
+            "27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json": {
+              "bytes": 1814,
+              "sha256": "265805bae4d47cd829fc25350f9bae2f1055df2504d51623f25073760416b17d"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json": {
+              "bytes": 1014,
+              "sha256": "ef1d7b731830cd4bb4cb88bc11fdbdbd4462884debc82e875ffe0a5c50f7fe4f"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json": {
+              "bytes": 986,
+              "sha256": "0c765bfb23d3a1b59530f73a72db4b1b832c6cbe48d0091779447eed8e34c84c"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json": {
+              "bytes": 2782,
+              "sha256": "cb52221fb41b45c000dfcf9e20d3ec3294bbc08c76e2b8b561144d9c050f8b5a"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json": {
+              "bytes": 22630,
+              "sha256": "79cdc96da5913ca0e6eaf4a150a15a664104d73d162df1ee18748c102726d6c1"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json": {
+              "bytes": 6990,
+              "sha256": "a1a22619df5614f17226c934903eb4730f4fc32ff30c4bed04075ed6f06c46b4"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json": {
+              "bytes": 3582,
+              "sha256": "4312c024cea8926f6e219ace112f777c0b9c11e5516d166f049c0063316b8d19"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite": {
+              "bytes": 36864,
+              "sha256": "3b0f582ac7b1b7b20a190dada6be2bf0c920ff20db435bdf3190717b6edeedef"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json": {
+              "bytes": 3810,
+              "sha256": "eb809fe1c451fce6ad5cbb2f23226ebe38c243d585053307c7c751c79ea52c97"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json": {
+              "bytes": 2518,
+              "sha256": "8075fe02b3810325b577ba019d9795c35281e9637291e81a05d842fa0548fc1e"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite": {
+              "bytes": 53248,
+              "sha256": "c5e5447a67ab4e901f993b486742ba48a86ff9a33fafc8c1dfa1d69f05963f25"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite": {
+              "bytes": 176128,
+              "sha256": "0b7b322a3c24aa55ab8f39c5c095db1b109b26341395596b5b5aa2c9934e56b6"
+            },
+            "account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite": {
+              "bytes": 20480,
+              "sha256": "ca91135af439794bcbd1b2425ab0cc649b0cbebbfd635bc1f110d63a1cccd2be"
+            }
+          },
+          "submissions": {
+            "5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json": {
+              "bytes": 7318,
+              "sha256": "65cad563b4ff5c61db762907e9c6f6ac06435b71ef0eca9e26e8313b96e5cdce"
+            }
+          },
+          "inventory": {
+            "bytes": 2805,
+            "sha256": "d1d1c3004e2d247ca2ab3188d9c37f5a1bbf8b670542e95970edeb43673336cb"
+          },
+          "encryptedVault": {
+            "bytes": 435,
+            "sha256": "814f1636b85141aba352e68de6efa1fe88e27d1b69c5cde6c5bb0a71cb6efbd1"
+          },
+          "publicVaultMetadata": {
+            "bytes": 234,
+            "sha256": "0890884e1bb66d7a489ccc44ea11b477259354b971fc3f629c28ac04a73ecc7e"
+          }
+        },
+        "scope": "five source-defined profile components; no plaintext authentication or atomic global snapshot claim"
+      },
+      "physicalChangesFromPreviousStage": {
+        "added": [],
+        "removed": [],
+        "changed": [
+          "profile/wallet-private-submissions/5bcc995ab1788934c7982330eba2d083c26c954fe7f7be9574f9e682728b2dc8.json",
+          "profile/wallet-railgun-accounts/27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9913f7f1ec51c51a898fa1ab7458f5784c8f104d17aeb28a6b5ff15137264617.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/9ff638178d05091463c6870910e3a383e397ecf84458a57dc9bd9667c2bcbadd.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/f67585ca3b083a2c83c3af9fb570019028322883e5da96ac70508456391279a5.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/4363ab8467e6c538c36872dc7f9496399a7035fe47f72d06c93b39f7bdc26400.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-cache-00e2b35ac1b0205996bffe431043a3b88726ba90e7250a05dc43faf759f2674c/wallet.sqlite",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/7e42297061c8d51a99b44ec42a69b9be1bd166d8f7a511aa0891042e749274c4.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/8e51cbbe4efa833ca309218b8773cef012791c04c35b8930da745abd458f1304.json",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/public.sqlite",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/source.sqlite",
+          "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/railgun-public-ee9caf5a87f304dfa088de3dcf310f54effd37ff9b22bc826d2149e13aedebf8/txid-03a45fd173ed2c639b314abde9547f469ac25ef255a12e4e974a935bef1c73c7.sqlite"
+        ]
+      },
+      "handoffHashLineage": null,
+      "prePostSourceRuntimeChecks": "original pinned driver checked before and after original child exit; archive replay verifies frozen joins only"
+    }
+  ],
+  "storageScope": "Filesystem hash/size observations made by original runner after natural exits; exporter reads only archived metadata, never live profiles. Ciphertext cannot authenticate semantic roles; those rely on source-pinned genuine authenticated observers. Shared floor roles overlap.",
+  "P1ToP2ExpectedUniqueChangedFiles": 7,
+  "P1ToP2ObservedUniqueChangedFiles": 7,
+  "reopenUniqueSubset": 3,
+  "proofUniqueSubset": 2,
+  "subsetsAreNotAdditive": true
+}

@@ -1,0 +1,514 @@
+{
+  "expectedBeforeRun": {
+    "baselineFreezeSha256": "e4a47fadcc55fa4f215096de793b28ca10a787bb89582ab6ac29f23a00227de5",
+    "fixtureFreezeSha256": "80570fd7d2becdc9219bc9f2ae15f191edc208aedbaf44b7a2aae52684475d54",
+    "expectedDeltaSha256": "492d03c2a34a7600bd12302694c650acf25ef5a4394b0960b1485867a4e39bd0",
+    "changes": {
+      "scope": "Pre-native source-derived changes to frozen historical schema; NOT observed qualification",
+      "flag": {
+        "name": "FREEDOM_RAILGUN_RECOVERY_COMPANION",
+        "value": "1",
+        "creator": "Shield",
+        "modes": [
+          "restart-setup",
+          "restart-sign-stop",
+          "restart-recover-stop",
+          "restart-recovered-submit"
+        ]
+      },
+      "processes": {
+        "setup": {
+          "utilityCount": 296,
+          "workerCount": 28,
+          "brokerLoans": 18,
+          "changedMeasuredCounters": false
+        },
+        "sign-stop": {
+          "utilityCount": 16,
+          "workerCount": 6,
+          "brokerLoans": 6,
+          "changedMeasuredCounters": false
+        },
+        "recover-stop": {
+          "utilityCount": 12,
+          "workerCount": 4,
+          "brokerLoans": 6,
+          "extraUtilityCount": 5,
+          "extraWorkerCount": 1,
+          "extraBrokerLoans": 2,
+          "jobs": {
+            "railgun-identity-job.js": 2,
+            "railgun-public-job.js": 4,
+            "railgun-wallet-job.js": 2,
+            "railgun-private-recover-job.js": 2,
+            "railgun-private-verify-job.js": 2
+          },
+          "keys": {
+            "spending-public": 1,
+            "viewing-identity": 1,
+            "wallet-viewing": 2,
+            "private-recover": 2
+          },
+          "roleMethods": {
+            "private-account:protocol-rpc:eth_chainId": 1,
+            "private-account:protocol-rpc:eth_getBlockByNumber": 68,
+            "private-account:protocol-rpc:eth_getLogs": 4
+          },
+          "successfulAttemptMethods": {
+            "private-account:protocol-rpc:eth_getBlockByNumber": 34,
+            "private-account:protocol-rpc:eth_getLogs": 2
+          },
+          "successfulAttemptJobs": {
+            "railgun-public-job.js": 2,
+            "railgun-wallet-job.js": 1,
+            "railgun-private-recover-job.js": 1,
+            "railgun-private-verify-job.js": 1
+          },
+          "newConnectedRecoveryCompanion": {
+            "schema": "railgun-recovery-companion-cancellation-v1",
+            "reservationScopeLiveAfterCompanionAbort": true,
+            "sourceDerivedCancellationCause": true,
+            "admissionToReleaseBelow120Seconds": true,
+            "holdBelow5Seconds": true,
+            "verifierSignalAborted": true,
+            "historyDiscoveredOriginalSelector": true,
+            "originalPromiseAndOutcomeIdentity": true,
+            "competingHistoryPhaseRefused": true,
+            "competingProofBusyRefused": true,
+            "refusedCompetitionPreservedHeldStores": true,
+            "closeWaitedForOriginalSettlement": true,
+            "cancellationPreservedOriginalSignatureAndEmptyProofSlot": true,
+            "borrowedOwnersReopenedAndReused": true,
+            "verifierExitedBeforeHold": true,
+            "directPhaseSignalObserved": false,
+            "liveChildCancellationQualified": false,
+            "genericHostQualified": false,
+            "cancellationCounts": {
+              "jobs": {
+                "railgun-public-job.js": 2,
+                "railgun-wallet-job.js": 1,
+                "railgun-private-recover-job.js": 1,
+                "railgun-private-verify-job.js": 1
+              },
+              "methods": {
+                "private-account:protocol-rpc:eth_chainId": 1,
+                "private-account:protocol-rpc:eth_getBlockByNumber": 34,
+                "private-account:protocol-rpc:eth_getLogs": 2
+              },
+              "storageWorkers": 1
+            },
+            "observer": {
+              "heldResults": 1,
+              "originalCalls": 4,
+              "originalSettlements": 4
+            }
+          },
+          "reopenWrites": {
+            "orderedRecords": [
+              "railgun-private-reservations-v1",
+              "railgun-private-reservations-floor-v1",
+              "railgun-private-capsules-v1",
+              "railgun-private-capsules-floor-v1"
+            ],
+            "mutables": [
+              [
+                "lease"
+              ],
+              [],
+              [
+                "lease"
+              ],
+              []
+            ],
+            "uniqueAccountFiles": 3,
+            "newFiles": 0,
+            "sequencesChanged": false,
+            "proofWrites": 0,
+            "sameFloorValues": true
+          },
+          "healthyProofWrites": {
+            "proofWrites": 1,
+            "floorWrites": 1,
+            "files": 2
+          },
+          "utilityPhases": {
+            "restart-bootstrap": 2,
+            "second-recovery-companion-cancel": 5,
+            "second-proof-recovery": 5
+          },
+          "workerReadOnlyModes": [
+            true,
+            true,
+            false,
+            false
+          ],
+          "unchanged": [
+            "storageKeyObservation copies1/unwiped0 (POI-only observer)",
+            "all services counters incl transportCreates/closes/releases1 each afterfinalcleanup",
+            "bootstrap",
+            "EOA counters",
+            "retained POI entry/inspect",
+            "first EOA record",
+            "nonvolatile fixedflags"
+          ],
+          "fullP1ToP2ChangedFiles": {
+            "exactUniqueCount": 7,
+            "bootstrapRecordUpdates": 9,
+            "addedFiles": 0,
+            "removedFiles": 0,
+            "roles": [
+              "wallet-catalog",
+              "public-catalog",
+              "host-scan-journal",
+              "private-reservations",
+              "private-capsules",
+              "retained-poi",
+              "shared-enrollment-manifest"
+            ],
+            "reopenSubsetUniqueCount": 3,
+            "successProofSubsetUniqueCount": 2,
+            "allFloorRecordsShareEnrollmentManifest": true,
+            "nonmemberBytesIdentical": true,
+            "vaultAndPublicMetadataAndRootInventoryAndSubmissionBytesIdentical": true
+          }
+        },
+        "submit": {
+          "utilityCount": 23,
+          "workerCount": 7,
+          "brokerLoans": 5,
+          "changedMeasuredCounters": false,
+          "newConnectedRecoveryCompanion": {
+            "schema": "railgun-recovery-companion-submit-v1",
+            "historyDiscoveredOriginalSelector": true,
+            "originalPromiseAndOutcomeIdentity": true,
+            "acknowledgedOriginalSubmission": true,
+            "explicitPriorAttemptRefusals": 2,
+            "genericHostQualified": false,
+            "observer": {
+              "heldResults": 0,
+              "originalCalls": 3,
+              "originalSettlements": 3
+            }
+          }
+        }
+      },
+      "derivationNotes": [
+        "P0/P1/P3 counts carry historical unchanged recipe; fixture adds only local diagnostic calls there.",
+        "P2 bootstrap2+cancel5+healthy5; workers2+1+1; broker loans2+2+2. Reopen storage derivation is separate from broker loans.",
+        "Per-restore H17 independently derived in HEADER-DERIVATION.json from current source constants, final advance window and pinned public vector; healthy successful source omits only the already-completed eth_chainId handshake.",
+        "All original source/runtime/process/report joins must be re-bound to fresh freeze; old reports do not qualify new bytes.",
+        "Do not accept arbitrary new report keys, guessed counts or any copied historical receipt/profile. Source keys and generated relative storage filenames need full consistent role joins."
+      ],
+      "headerDerivation": {
+        "file": "HEADER-DERIVATION.json",
+        "sha256": "25af6e33bc5b991cb8252d5fa88851ddabbfdd62fdbdc3b1e2f07814a3b38d66",
+        "inputs": "Current qualifier AST and pinned public vector; no historical report used for H17"
+      }
+    },
+    "scope": "Exact source-reviewed pre-native expectations, not qualification; unchanged values inherited under explicit recipe/source/runtime review"
+  },
+  "headerDerivation": {
+    "schema": 1,
+    "scope": "Source AST + pinned public vector only; no profile/handoff/report input",
+    "qualifierSha256": "0ac2c1d4e6df9772b1dc72005775419a4538629643d87f534a3adf46f9e0fc52",
+    "counterHelperSha256": "10d757589f07788f2ec0f7e24ddcabbf0da1d8b704437fe6ebcd5f63faa7f613",
+    "vectorSha256": "bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc1e41",
+    "offset": 5944700,
+    "initialAnchor": 5944800,
+    "inclusion": 11834600,
+    "finalized": 11834610,
+    "checkpoint": {
+      "from": 11744801,
+      "to": {
+        "number": 11834610
+      },
+      "anchor": {
+        "number": 11834610
+      }
+    },
+    "baselineEventBlocks": [
+      5944710,
+      5944720,
+      5944730
+    ],
+    "canonicalBoundaries": [
+      11744800,
+      11744801,
+      11834610
+    ],
+    "eventBlocksInFinalWindow": [
+      11834600
+    ],
+    "proxyEventsAtInclusion": [
+      "Nullified",
+      "Unshield",
+      "Transact"
+    ],
+    "distinctBoundaryCount": 3,
+    "distinctEventBlockCount": 1,
+    "headersPerRestore": 17,
+    "headersPerRecovery": 34,
+    "headersAcrossTwoRecoveries": 68,
+    "wholeProcessChainChecks": 1,
+    "wholeProcessLogRequests": 4
+  },
+  "observedFromExactReports": {
+    "setup": {
+      "utilityCount": 296,
+      "workerCount": 28,
+      "brokerLoans": 18,
+      "jobs": {
+        "railgun-identity-job.js": 2,
+        "railgun-public-job.js": 189,
+        "railgun-wallet-job.js": 4,
+        "railgun-partial-controller-poi-input-job.js": 1,
+        "railgun-private-operate-job.js": 1,
+        "railgun-private-receive-job.js": 1,
+        "railgun-poi-job.js": 3,
+        "railgun-spend-sign-job.js": 1,
+        "railgun-private-verify-job.js": 2,
+        "railgun-combined-poi-row-job.js": 1,
+        "railgun-txid-job.js": 51,
+        "railgun-own-selector-job.js": 13,
+        "railgun-own-txid-job.js": 10,
+        "railgun-poi-shield-selector-job.js": 1,
+        "railgun-own-poi-prove-job.js": 1,
+        "railgun-poi-verify-job.js": 6,
+        "railgun-poi-output-recover-job.js": 8,
+        "railgun-combined-poi-list-job.js": 1
+      },
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 4,
+        "private-operate": 1,
+        "private-receive": 1,
+        "spending-sign": 1,
+        "poi-prove": 1,
+        "poi-output-recover": 8
+      },
+      "roleMethods": {
+        "private-account:protocol-rpc:eth_chainId": 7,
+        "private-account:protocol-rpc:eth_getBlockByNumber": 2600,
+        "private-account:protocol-rpc:eth_getLogs": 129,
+        "public-address:transaction-rpc:eth_chainId": 13,
+        "public-address:transaction-rpc:eth_getCode": 2,
+        "public-address:transaction-rpc:eth_getBalance": 2,
+        "private-account:poi:ppoi_pois_per_list": 4,
+        "private-account:poi:ppoi_merkle_proofs": 3,
+        "private-account:poi:ppoi_poi_events": 3,
+        "private-account:poi:ppoi_validate_poi_merkleroots": 5,
+        "private-account:protocol-rpc:eth_getCode": 8,
+        "private-account:protocol-rpc:eth_getStorageAt": 4,
+        "private-account:protocol-rpc:eth_call": 16,
+        "public-address:transaction-rpc:eth_estimateGas": 1,
+        "public-address:transaction-rpc:eth_call": 1,
+        "public-address:transaction-rpc:eth_gasPrice": 1,
+        "public-address:transaction-rpc:eth_getTransactionCount": 3,
+        "public-address:transaction-rpc:eth_sendRawTransaction": 1,
+        "public-address:transaction-rpc:eth_getTransactionReceipt": 21,
+        "public-address:transaction-rpc:eth_getBlockByNumber": 124,
+        "public-address:transaction-rpc:eth_blockNumber": 29,
+        "public-address:transaction-rpc:eth_getTransactionByHash": 14,
+        "service:poi:ppoi_validated_txid": 42,
+        "service:indexer:page": 1,
+        "service:poi:ppoi_validate_txid_merkleroot": 41,
+        "private-account:poi:ppoi_validate_txid_merkleroot": 2,
+        "private-account:poi:ppoi_submit_transact_proof": 1
+      },
+      "recoveryCompanion": null
+    },
+    "sign-stop": {
+      "utilityCount": 16,
+      "workerCount": 6,
+      "brokerLoans": 6,
+      "jobs": {
+        "railgun-identity-job.js": 2,
+        "railgun-public-job.js": 1,
+        "railgun-combined-poi-row-job.js": 1,
+        "railgun-txid-job.js": 6,
+        "railgun-wallet-job.js": 2,
+        "railgun-private-operate-job.js": 1,
+        "railgun-note-provenance-job.js": 1,
+        "railgun-poi-job.js": 1,
+        "railgun-spend-sign-job.js": 1
+      },
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 2,
+        "private-operate": 1,
+        "spending-sign": 1
+      },
+      "roleMethods": {
+        "private-account:protocol-rpc:eth_chainId": 3,
+        "private-account:protocol-rpc:eth_getBlockByNumber": 40,
+        "private-account:protocol-rpc:eth_getLogs": 1,
+        "service:poi:ppoi_validated_txid": 5,
+        "service:poi:ppoi_validate_txid_merkleroot": 5,
+        "public-address:transaction-rpc:eth_chainId": 1,
+        "public-address:transaction-rpc:eth_blockNumber": 1,
+        "public-address:transaction-rpc:eth_getBlockByNumber": 1,
+        "public-address:transaction-rpc:eth_getCode": 1,
+        "public-address:transaction-rpc:eth_getBalance": 1,
+        "private-account:poi:ppoi_pois_per_list": 1,
+        "private-account:poi:ppoi_merkle_proofs": 1,
+        "private-account:poi:ppoi_poi_events": 1,
+        "private-account:poi:ppoi_validate_poi_merkleroots": 1,
+        "private-account:protocol-rpc:eth_getCode": 4,
+        "private-account:protocol-rpc:eth_getStorageAt": 2,
+        "private-account:protocol-rpc:eth_call": 8
+      },
+      "recoveryCompanion": null
+    },
+    "recover-stop": {
+      "utilityCount": 12,
+      "workerCount": 4,
+      "brokerLoans": 6,
+      "jobs": {
+        "railgun-identity-job.js": 2,
+        "railgun-public-job.js": 4,
+        "railgun-wallet-job.js": 2,
+        "railgun-private-recover-job.js": 2,
+        "railgun-private-verify-job.js": 2
+      },
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 2,
+        "private-recover": 2
+      },
+      "roleMethods": {
+        "private-account:protocol-rpc:eth_chainId": 1,
+        "private-account:protocol-rpc:eth_getBlockByNumber": 68,
+        "private-account:protocol-rpc:eth_getLogs": 4
+      },
+      "recoveryCompanion": {
+        "schema": "railgun-recovery-companion-cancellation-v1",
+        "reservationScopeLiveAfterCompanionAbort": true,
+        "sourceDerivedCancellationCause": true,
+        "directPhaseSignalObserved": false,
+        "admissionToReleaseBelow120Seconds": true,
+        "holdBelow5Seconds": true,
+        "verifierSignalAborted": true,
+        "historyDiscoveredOriginalSelector": true,
+        "originalPromiseAndOutcomeIdentity": true,
+        "competingHistoryPhaseRefused": true,
+        "competingProofBusyRefused": true,
+        "refusedCompetitionPreservedHeldStores": true,
+        "closeWaitedForOriginalSettlement": true,
+        "cancellationPreservedOriginalSignatureAndEmptyProofSlot": true,
+        "borrowedOwnersReopenedAndReused": true,
+        "verifierExitedBeforeHold": true,
+        "liveChildCancellationQualified": false,
+        "genericHostQualified": false,
+        "cancellationCounts": {
+          "jobs": {
+            "railgun-public-job.js": 2,
+            "railgun-wallet-job.js": 1,
+            "railgun-private-recover-job.js": 1,
+            "railgun-private-verify-job.js": 1
+          },
+          "methods": {
+            "private-account:protocol-rpc:eth_chainId": 1,
+            "private-account:protocol-rpc:eth_getBlockByNumber": 34,
+            "private-account:protocol-rpc:eth_getLogs": 2
+          },
+          "storageWorkers": 1
+        },
+        "reopenWrites": [
+          {
+            "file": "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/ddc9f8f0bab4c1133af377f1db1ff8d26d6cc8818f5d29f9b5dafdf8b29fa48a.json",
+            "record": "railgun-private-reservations-v1",
+            "mutable": [
+              "lease"
+            ]
+          },
+          {
+            "file": "profile/wallet-railgun-accounts/27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json",
+            "record": "railgun-private-reservations-floor-v1",
+            "mutable": []
+          },
+          {
+            "file": "profile/wallet-railgun-accounts/account-27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a/de9bd40a665bbf00ddd2fe87cb9565b68edb29cb897be481493db38c2a9f971e.json",
+            "record": "railgun-private-capsules-v1",
+            "mutable": [
+              "lease"
+            ]
+          },
+          {
+            "file": "profile/wallet-railgun-accounts/27d6daeab7f8bc437c057b2cbc1fbc9b02bce505edaa62760640bf6a11a0003a.json",
+            "record": "railgun-private-capsules-floor-v1",
+            "mutable": []
+          }
+        ],
+        "observer": {
+          "heldResults": 1,
+          "originalCalls": 4,
+          "originalSettlements": 4
+        }
+      }
+    },
+    "submit": {
+      "utilityCount": 23,
+      "workerCount": 7,
+      "brokerLoans": 5,
+      "jobs": {
+        "railgun-identity-job.js": 2,
+        "railgun-public-job.js": 5,
+        "railgun-wallet-job.js": 3,
+        "railgun-txid-job.js": 9,
+        "railgun-note-provenance-job.js": 1,
+        "railgun-private-verify-job.js": 1,
+        "railgun-poi-job.js": 1,
+        "railgun-combined-poi-row-job.js": 1
+      },
+      "keys": {
+        "spending-public": 1,
+        "viewing-identity": 1,
+        "wallet-viewing": 3
+      },
+      "roleMethods": {
+        "private-account:protocol-rpc:eth_chainId": 3,
+        "private-account:protocol-rpc:eth_getBlockByNumber": 79,
+        "private-account:protocol-rpc:eth_getLogs": 4,
+        "service:poi:ppoi_validated_txid": 7,
+        "service:poi:ppoi_validate_txid_merkleroot": 6,
+        "private-account:poi:ppoi_pois_per_list": 1,
+        "private-account:poi:ppoi_merkle_proofs": 1,
+        "private-account:poi:ppoi_poi_events": 1,
+        "private-account:poi:ppoi_validate_poi_merkleroots": 1,
+        "private-account:protocol-rpc:eth_getCode": 4,
+        "private-account:protocol-rpc:eth_getStorageAt": 2,
+        "private-account:protocol-rpc:eth_call": 8,
+        "public-address:transaction-rpc:eth_chainId": 2,
+        "public-address:transaction-rpc:eth_blockNumber": 10,
+        "public-address:transaction-rpc:eth_getBlockByNumber": 15,
+        "public-address:transaction-rpc:eth_getCode": 1,
+        "public-address:transaction-rpc:eth_estimateGas": 1,
+        "public-address:transaction-rpc:eth_call": 1,
+        "public-address:transaction-rpc:eth_gasPrice": 1,
+        "public-address:transaction-rpc:eth_getTransactionCount": 3,
+        "public-address:transaction-rpc:eth_getBalance": 1,
+        "public-address:transaction-rpc:eth_sendRawTransaction": 1,
+        "public-address:transaction-rpc:eth_getTransactionReceipt": 8,
+        "public-address:transaction-rpc:eth_getTransactionByHash": 3,
+        "service:indexer:page": 1
+      },
+      "recoveryCompanion": {
+        "schema": "railgun-recovery-companion-submit-v1",
+        "historyDiscoveredOriginalSelector": true,
+        "originalPromiseAndOutcomeIdentity": true,
+        "acknowledgedOriginalSubmission": true,
+        "explicitPriorAttemptRefusals": 2,
+        "genericHostQualified": false,
+        "observer": {
+          "heldResults": 0,
+          "originalCalls": 3,
+          "originalSettlements": 3
+        }
+      }
+    }
+  },
+  "scope": "Expected and observed kept separate. Original strict full-report validator, not these selected summaries, qualified stages."
+}

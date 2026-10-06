@@ -7,6 +7,33 @@ recorded sources; a later passing unit suite does not refresh their native runs.
 
 ## Latest checkpoint
 
+[Authenticated history and the fixed recovery companion](railgun-recovery-companion-2026-10-06.md)
+now pass one fresh four-process Shield chain at `cf25d54c`: setup, signature stop,
+recovery stop and recovered submission. Recovery cancels held delivery of an
+exited verifier's result, preserves the original signature and empty proof slot,
+authentically reopens stores and explicitly recovers. A separate process submits
+once and refuses two prior attempts. All original processes and the driver exit 0.
+The recovery process uses twelve utilities, four workers and six key loans.
+Only the signature-stop to recovery-stop boundary adds a new semantic physical
+storage check: seven changed account files among seventeen tracked files, with
+no additions or removals. Other stage boundaries are hash-only observations.
+
+Two focused root runs pass 506 tests in ten suites and 113 tests in six suites,
+with natural exits, strict lint and explicit formatting. Their 619-test sum is
+not a full regression. Independent engineering review revalidated all four
+archived stages and a flipped-flag refusal control; it is not an external security
+audit. External services remain synthetic. This qualifies callback cancellation
+after verifier exit, not live-child cancellation or physical transport drainage.
+The standalone trusted-host package does not export this recovery authority.
+
+Next is source-pinned Railgun gas-relay feasibility and design: the existing
+broadcaster delegates to EOA self-broadcast. Production relay implementation
+requires exact quote, transport and service contracts. Specifically authorized
+live private/service qualification, return-to-origin spending policy, generic
+Host support, platform/release work and product UX remain separate gates.
+
+## Earlier public adapter, package and transport checkpoint
+
 The [restricted public Shield adapter and fixed Freedom host](railgun-kohaku-public-adapter-2026-10-06.md)
 now pass three fresh native cases at `0645ab59`: acknowledgement, lost response
 and cancellation during held final review. Original results/errors and one-use
@@ -388,9 +415,15 @@ Later checkpoints above supersede those restrictions within their stated scope.
    a fresh second Kohaku instance spending scanned change now pass separate
    controlled native campaigns. Pinned runtime contract checks now pass for
    private/public/read instances and their original settlement forwarding.
-   Restricted transaction preparation is implemented. Bounded authenticated history
-   summaries and explicit recovery actions are next, followed by the remaining
-   platform, release and live-service gates. The restricted snapshot
+   Restricted transaction preparation and fixed authenticated recovery access
+   are implemented. The recovery companion discovers bounded retained-operation
+   summaries and delegates explicit proof recovery and cold submission without
+   recreating operation tokens. Its fresh four-process Shield campaign qualifies
+   held post-verifier callback cancellation, genuine phase exclusion, authentic
+   store reopening, original-signature preservation and later submission with
+   prior-attempt refusal. Services remain synthetic; live-child cancellation is
+   not qualified. Platform, release and live-service gates remain open. The
+   restricted snapshot
    host/read adapter now has genuine native and strict declaration qualification;
    its separate evidence does not type-check the current transaction facade or
    implement generic upstream Host. The transaction facade remains Freedom-owned.
@@ -506,8 +539,11 @@ fixed Freedom bridges and native/type evidence. The standalone Node prototype
 packages their trusted-host interfaces without exporting genuine Freedom authority.
 The reusable public Shield adapter now has its own qualified public-operation
 lane and separate submitter; it must not be passed to the private broadcaster.
-Next, authenticated bounded history summaries and explicit recovery actions must
-retain fresh authorization and durable ownership rather than recreate in-memory tokens.
+Authenticated bounded history and explicit recovery actions now have a fixed
+main-owned companion and controlled native evidence. The standalone trusted-host
+package does not export that recovery authority; a history selector is not a
+submission grant. Generic recovery-host portability requires a separate contract
+and ownership review.
 
 ## Live permission and shared product gates
 

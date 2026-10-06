@@ -1,0 +1,817 @@
+{
+  "inputs": {
+    "rootObservation": {
+      "originalBasename": "railgun-recovery-companion-native-observation-oct6-a.json",
+      "originalBytes": 3682,
+      "originalSha256": "c4bea7ec4369cf538e331562fa95f333fe31992a7e44b468a373bdceda5b76b8",
+      "copiedOriginal": false
+    },
+    "rootDriverLog": {
+      "originalBasename": "railgun-recovery-companion-native-driver-oct6-a.log",
+      "originalBytes": 3223,
+      "originalSha256": "8e4809306a4f48b6f1c98e9aca340d34f2abd241307302877279bf68e9601de2",
+      "copiedOriginal": false
+    },
+    "rootFreeze": {
+      "originalBasename": "railgun-recovery-companion-native-root-freeze-oct6-a.json",
+      "originalBytes": 1891550,
+      "originalSha256": "aa53a98617d83917bf49561fe6c50ccff5f5a1ef2cc4f53ce42152b979cf3f55",
+      "copiedOriginal": false
+    },
+    "rootCoreChecks": {
+      "originalBasename": "railgun-recovery-core-root-checks-oct6.json",
+      "originalBytes": 1664,
+      "originalSha256": "be5ce81bb72926693e398bf7680902498e58f967753a3d2205fa46866e4a66d5",
+      "copiedOriginal": false
+    },
+    "rootFixtureChecks": {
+      "originalBasename": "railgun-recovery-fixture-root-checks-oct6.json",
+      "originalBytes": 3274,
+      "originalSha256": "166cd5342e04c9a1775e4516b6c12ca5edc3164e49bffa2d7a19e974c5091193",
+      "copiedOriginal": false
+    },
+    "coreFreeze": {
+      "originalBasename": "FREEZE.json",
+      "originalBytes": 3299,
+      "originalSha256": "7bf9f564b3e67beb7d13ef0c32bde1ebbd3c023c09cbf9e13bb51f236c40fa15",
+      "copiedOriginal": false
+    },
+    "coreAuthorChecks": {
+      "originalBasename": "CHECKS.json",
+      "originalBytes": 1376,
+      "originalSha256": "94b21dc9b0c0b59e1009c44b1840eb7745ac12a70bb1fd236d16a8372f0a2b2a",
+      "copiedOriginal": false
+    },
+    "coreControls": {
+      "originalBasename": "CONTROLS.json",
+      "originalBytes": 2336,
+      "originalSha256": "6a9201575959403535c6a956258d205e6e1f12c41fa10632859f86dd3d272717",
+      "copiedOriginal": false
+    },
+    "coreDependencies": {
+      "originalBasename": "DEPENDENCIES.json",
+      "originalBytes": 26656,
+      "originalSha256": "f72003105e47ff3e9d7dcb915f4f00a08767fd60c09559a7f1b0c30d39e77d09",
+      "copiedOriginal": false
+    },
+    "fixtureFreeze": {
+      "originalBasename": "FREEZE.json",
+      "originalBytes": 6746,
+      "originalSha256": "80570fd7d2becdc9219bc9f2ae15f191edc208aedbaf44b7a2aae52684475d54",
+      "copiedOriginal": false
+    },
+    "fixtureAuthorChecks": {
+      "originalBasename": "OBSERVATIONS.json",
+      "originalBytes": 1111,
+      "originalSha256": "9039956e460f39b4206595c909b758ddae3ccde2f61e008af015b4f631fa1f85",
+      "copiedOriginal": false
+    },
+    "fixtureControls": {
+      "originalBasename": "RESULTS.json",
+      "originalBytes": 1547,
+      "originalSha256": "76a937e006d4f4d30158c3cfe13b066fc67c352617a9619ddf193d1175f9e596",
+      "copiedOriginal": false
+    },
+    "fixtureAstControls": {
+      "originalBasename": "default-controls-final.json",
+      "originalBytes": 708,
+      "originalSha256": "86cb4c09e0bc8a7544301dff3d443f6eff7f5718b7b8c6a945c577fc4569f381",
+      "copiedOriginal": false
+    },
+    "fixtureDependencies": {
+      "originalBasename": "DEPENDENCIES.json",
+      "originalBytes": 2341,
+      "originalSha256": "34707435fb085c79f015b4aaf48e7772847d9831af11e061502df10967493b8b",
+      "copiedOriginal": false
+    },
+    "expectationFreeze": {
+      "originalBasename": "FREEZE.json",
+      "originalBytes": 3290,
+      "originalSha256": "13d64e32375b3dc551c2b23af8f76635c9d8dd3e2c127560574ec8edf5b52f09",
+      "copiedOriginal": false
+    },
+    "expectationChecks": {
+      "originalBasename": "CHECKS.json",
+      "originalBytes": 735,
+      "originalSha256": "6a6421e7f991db772fc247d4214c0d3719187bbc769c904324166201c1cfb33d",
+      "copiedOriginal": false
+    },
+    "expectationControls": {
+      "originalBasename": "CONTROLS.json",
+      "originalBytes": 48528,
+      "originalSha256": "9da85aed4dc619bc9a3333436d5c18a8b122c33a6c19b216c4aacb038074a216",
+      "copiedOriginal": false
+    },
+    "runnerFreeze": {
+      "originalBasename": "FREEZE.json",
+      "originalBytes": 3321,
+      "originalSha256": "58dca0d2d70adf99186e46dda05a9ec1904778eb7784529fce2de9be00bab54b",
+      "copiedOriginal": false
+    },
+    "runner:COMBINATION-CONTROL-REPORT.json": {
+      "originalBasename": "COMBINATION-CONTROL-REPORT.json",
+      "originalBytes": 416,
+      "originalSha256": "086276c8e96b16c5f36ffcf1cff13564c87c9be7f53dd784a02fd104bc970213",
+      "copiedOriginal": false
+    },
+    "runner:COMPOSITION.json": {
+      "originalBasename": "COMPOSITION.json",
+      "originalBytes": 2185,
+      "originalSha256": "dd31c315d1d87e61240ffb64df8363c00fd6ba0a103aa911976f9e36045ed612",
+      "copiedOriginal": false
+    },
+    "runner:DERIVATION.json": {
+      "originalBasename": "DERIVATION.json",
+      "originalBytes": 7771,
+      "originalSha256": "8de3b4452497f98df9915521f8cdd77aa9da5a195440126872b47c915dff41a6",
+      "copiedOriginal": false
+    },
+    "runner:EXPECTATIONS.json": {
+      "originalBasename": "EXPECTATIONS.json",
+      "originalBytes": 1243,
+      "originalSha256": "a33e0fc48906e25bbe56771de29c7546a3c80e1c4befc1db37e6f03a331e01b4",
+      "copiedOriginal": false
+    },
+    "runner:FIXTURE-PINS.json": {
+      "originalBasename": "FIXTURE-PINS.json",
+      "originalBytes": 11834,
+      "originalSha256": "85153af6cf3daa8db45e4a58ef9f1d397ae03130a5cd982cb07f27dfde6d238e",
+      "copiedOriginal": false
+    },
+    "runner:HEADER-DERIVATION.json": {
+      "originalBasename": "HEADER-DERIVATION.json",
+      "originalBytes": 1100,
+      "originalSha256": "25af6e33bc5b991cb8252d5fa88851ddabbfdd62fdbdc3b1e2f07814a3b38d66",
+      "copiedOriginal": false
+    },
+    "runner:INHERITANCE.json": {
+      "originalBasename": "INHERITANCE.json",
+      "originalBytes": 625,
+      "originalSha256": "38d1ab850c3a9e316c0b12bfbb4155c226a116517663e697f91b7db8ff656b3f",
+      "copiedOriginal": false
+    },
+    "runner:OBSERVATIONS.json": {
+      "originalBasename": "OBSERVATIONS.json",
+      "originalBytes": 861,
+      "originalSha256": "b957bc4c600de796f90584735bf4de1526030cb1e92c436eefb11bdab5ae240b",
+      "copiedOriginal": false
+    },
+    "runner:PACKAGE.json": {
+      "originalBasename": "PACKAGE.json",
+      "originalBytes": 1642,
+      "originalSha256": "e4670cda7fe797330512a12f2da1f95d4706dcefdfaf7eb371064030c564b7ea",
+      "copiedOriginal": false
+    },
+    "runner:PREPARATION-INPUTS.json": {
+      "originalBasename": "PREPARATION-INPUTS.json",
+      "originalBytes": 2954,
+      "originalSha256": "271701ae49846506974ddb9075432d44b2a76d08349655a7beb5fe681bb2b3b6",
+      "copiedOriginal": false
+    },
+    "runner:README.md": {
+      "originalBasename": "README.md",
+      "originalBytes": 3515,
+      "originalSha256": "60c907ed35902110004c04d4f7f93679b85c59a3c0eaf5b93ca641daf3af306a",
+      "copiedOriginal": false
+    },
+    "runner:RUNTIME-BASIS.json": {
+      "originalBasename": "RUNTIME-BASIS.json",
+      "originalBytes": 5793,
+      "originalSha256": "4613fae75a666038564a606aa265b24447bd0d35b98bd505f768abac6faf5e27",
+      "copiedOriginal": false
+    },
+    "runner:WHOLE-REPORTS.json": {
+      "originalBasename": "WHOLE-REPORTS.json",
+      "originalBytes": 356867,
+      "originalSha256": "b6b2eeb6d42f35cb5f4343c00cb4dd2b4e0d808160cb58eeaa7686a543aeb3d4",
+      "copiedOriginal": false
+    },
+    "runner:combination_controls.py": {
+      "originalBasename": "combination_controls.py",
+      "originalBytes": 2934,
+      "originalSha256": "886a400631de17ed1a2387cfd7035e86d5d826f7d2e290b8b687fda680c3b138",
+      "copiedOriginal": false
+    },
+    "runner:common.py": {
+      "originalBasename": "common.py",
+      "originalBytes": 7803,
+      "originalSha256": "ee6e141d1da3300390557d8c5acc502f1b46c933143dafefe4b7898a6a88c5af",
+      "copiedOriginal": false
+    },
+    "runner:derived_inputs.py": {
+      "originalBasename": "derived_inputs.py",
+      "originalBytes": 2103,
+      "originalSha256": "9d03ef4306572930b3ae7a9443b8eb82d2225dafa87a1de379ebedf17568c290",
+      "copiedOriginal": false
+    },
+    "runner:driver.py": {
+      "originalBasename": "driver.py",
+      "originalBytes": 12204,
+      "originalSha256": "6e1cd9e1bf94f9f7fdedd97bffd7a3cba0d5cbef8a37b39d6a77e0c1d18569a2",
+      "copiedOriginal": false
+    },
+    "runner:expectations.py": {
+      "originalBasename": "expectations.py",
+      "originalBytes": 18928,
+      "originalSha256": "90f9872563db5e0de9ba8e4e25f280adbed0d00ced365a768e83eac4fc1c2fac",
+      "copiedOriginal": false
+    },
+    "runner:launch.py": {
+      "originalBasename": "launch.py",
+      "originalBytes": 8633,
+      "originalSha256": "ec21ad3008b4671c9b8823809b17ec35f97603be37fa21c3f66fd947bdb00b15",
+      "copiedOriginal": false
+    },
+    "runner:metadata.py": {
+      "originalBasename": "metadata.py",
+      "originalBytes": 7378,
+      "originalSha256": "a31a4ae6f96376b2bdb507112f1d2fb27d0fc14fe7ad7ca4c928ab9eddf5a72d",
+      "copiedOriginal": false
+    },
+    "runner:prepare_freeze.py": {
+      "originalBasename": "prepare_freeze.py",
+      "originalBytes": 3470,
+      "originalSha256": "ffeac02565d10589d6721f0f730e9a04d7b96c6442137dbdc39fe3c0fafd4f53",
+      "copiedOriginal": false
+    },
+    "runner:report-specs.json": {
+      "originalBasename": "report-specs.json",
+      "originalBytes": 760691,
+      "originalSha256": "1d1335731de8efd8223951434e35aeb66b5336ac2355051e12bea89bdb4410d9",
+      "copiedOriginal": false
+    },
+    "runner:report_validation.py": {
+      "originalBasename": "report_validation.py",
+      "originalBytes": 8632,
+      "originalSha256": "0dd517ee6d4b5db3079a0dad380ec03331243b98482cdcddac3664091f378400",
+      "copiedOriginal": false
+    },
+    "evidence:recover-stop.log": {
+      "originalBasename": "recover-stop.log",
+      "originalBytes": 48,
+      "originalSha256": "1b562adfc1e1f2e0d1219891b8af2a997ef5f5f60081ba628cd1482a8930975a",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00007.json": {
+      "originalBasename": "progress-00007.json",
+      "originalBytes": 1508,
+      "originalSha256": "1eee857887c9b41711e3d7f669c93f1cd9cfa47107b738e4d27a15c150429a0b",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00011.json": {
+      "originalBasename": "progress-00011.json",
+      "originalBytes": 2188,
+      "originalSha256": "87bcfb951fa1fa4d53e739cce3a1f4e0ccc1d26b5a95465e2fd510b16e3aaf4e",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00010.json": {
+      "originalBasename": "progress-00010.json",
+      "originalBytes": 2073,
+      "originalSha256": "24fb54fa6a7a572f7361669ed36f9a7501c8fb7459811d2f4cb24fc225ec2ed6",
+      "copiedOriginal": false
+    },
+    "evidence:sign-stop.log": {
+      "originalBasename": "sign-stop.log",
+      "originalBytes": 48,
+      "originalSha256": "1b562adfc1e1f2e0d1219891b8af2a997ef5f5f60081ba628cd1482a8930975a",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00006.json": {
+      "originalBasename": "progress-00006.json",
+      "originalBytes": 1393,
+      "originalSha256": "1820154f5b2d02d13c63a81d84dc53d0a632e4b4fcf02aaaa5f58161b3dff595",
+      "copiedOriginal": false
+    },
+    "evidence:ATTESTATION-INPUT.json": {
+      "originalBasename": "ATTESTATION-INPUT.json",
+      "originalBytes": 494,
+      "originalSha256": "7d322bbe4796b78dcb6851e525cbefd78cd2f921a300e642a049492fc306fc18",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00001.json": {
+      "originalBasename": "progress-00001.json",
+      "originalBytes": 638,
+      "originalSha256": "e7f9742129dc022d4031e39763857c2c933be205132d802a9b9f2282e0f10155",
+      "copiedOriginal": false
+    },
+    "evidence:submit.log": {
+      "originalBasename": "submit.log",
+      "originalBytes": 40,
+      "originalSha256": "5e6f1be980d4db0bdc3bbcad7721e9da23f863ffb34399f741a2ef84d575b17e",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00000.json": {
+      "originalBasename": "progress-00000.json",
+      "originalBytes": 617,
+      "originalSha256": "a740c29c6e91f164ec91076853f6ccb9681509c867706e5538d79e729341abee",
+      "copiedOriginal": false
+    },
+    "evidence:setup.log": {
+      "originalBasename": "setup.log",
+      "originalBytes": 48,
+      "originalSha256": "1b562adfc1e1f2e0d1219891b8af2a997ef5f5f60081ba628cd1482a8930975a",
+      "copiedOriginal": false
+    },
+    "evidence:FREEZE-INPUT.json": {
+      "originalBasename": "FREEZE-INPUT.json",
+      "originalBytes": 1891550,
+      "originalSha256": "aa53a98617d83917bf49561fe6c50ccff5f5a1ef2cc4f53ce42152b979cf3f55",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00015.json": {
+      "originalBasename": "progress-00015.json",
+      "originalBytes": 2859,
+      "originalSha256": "db0d426fa35942606b58561b3608b80c8b7c7316dd27e14ec5fbb9383bcffe38",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00003.json": {
+      "originalBasename": "progress-00003.json",
+      "originalBytes": 840,
+      "originalSha256": "4fc4b8fd1effe20c6fe6cf5105b51f8618643f2f3ce8f15c05ec6c7a3c8b5484",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00002.json": {
+      "originalBasename": "progress-00002.json",
+      "originalBytes": 725,
+      "originalSha256": "6871dca2415c6bf57f23648e4ce42b31a12db1d6f47435968d36421e6e36dcba",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00014.json": {
+      "originalBasename": "progress-00014.json",
+      "originalBytes": 2744,
+      "originalSha256": "c192b199cb1f9b953fa971e88d2947854495c2fa059db9622c4cbbb073bdf06f",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00009.json": {
+      "originalBasename": "progress-00009.json",
+      "originalBytes": 1986,
+      "originalSha256": "6e61d56b392cde62dfcfc9feadcd123ccfc9782aff180f475656e5c47cc010ed",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00013.json": {
+      "originalBasename": "progress-00013.json",
+      "originalBytes": 2657,
+      "originalSha256": "ffbd4b8e72fbe41cb54c1723287675d7088c03fe444fac2425769966f0eee153",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00005.json": {
+      "originalBasename": "progress-00005.json",
+      "originalBytes": 1306,
+      "originalSha256": "f34d0984dc34ee2a2ec893528ec4f4c3ec34a0fb43ebd50b03b6d8b3355b5a7c",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00004.json": {
+      "originalBasename": "progress-00004.json",
+      "originalBytes": 1285,
+      "originalSha256": "0d11d5f1b26b3554570bc7cb317956911c0314aee2a97200d491060a73753567",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00012.json": {
+      "originalBasename": "progress-00012.json",
+      "originalBytes": 2636,
+      "originalSha256": "2d6b76f17e231e92c680e37b221da2c128e703eb495e062c3df49101a2e85c39",
+      "copiedOriginal": false
+    },
+    "evidence:progress-00008.json": {
+      "originalBasename": "progress-00008.json",
+      "originalBytes": 1965,
+      "originalSha256": "685fce53f405c158d4acfce87b2ddca2fcb3c8ce5a32f3b9bbcf57a37c53ff18",
+      "copiedOriginal": false
+    },
+    "evidence:recover-stop/second-recover-report.json": {
+      "originalBasename": "second-recover-report.json",
+      "originalBytes": 136534,
+      "originalSha256": "7afdb4cde22327414aa5be1a5283731772cd4c8aad4d13b077aa2d1c7561bb33",
+      "copiedOriginal": true
+    },
+    "evidence:recover-stop/FILES.json": {
+      "originalBasename": "FILES.json",
+      "originalBytes": 8309,
+      "originalSha256": "358bf90b1c0b14b599e51f0159c3870ef962e1c1e028154dce7ed0778b115388",
+      "copiedOriginal": false
+    },
+    "evidence:recover-stop/CHANGES.json": {
+      "originalBasename": "CHANGES.json",
+      "originalBytes": 1335,
+      "originalSha256": "8837262ffe32a3ba52ddbf65bf3d1281abc15236c48f45aec04bf6900eb8f049",
+      "copiedOriginal": false
+    },
+    "evidence:recover-stop/RAW-INVENTORY.json": {
+      "originalBasename": "RAW-INVENTORY.json",
+      "originalBytes": 288,
+      "originalSha256": "90ac09540e1928729c535e93af713db97b318f6c23a62bc6d4a09746ee8fcce7",
+      "copiedOriginal": false
+    },
+    "evidence:recover-stop/second-recovered-handoff.json": {
+      "originalBasename": "second-recovered-handoff.json",
+      "originalBytes": 123184,
+      "originalSha256": "4ccfc48998d4590d64d4986b7dbbf5afe40a552529a9ba86b98ad4a08a6a0afa",
+      "copiedOriginal": false
+    },
+    "evidence:submit/FILES.json": {
+      "originalBasename": "FILES.json",
+      "originalBytes": 8309,
+      "originalSha256": "b586665deefb27a591663f98e5ecc2f3c29b6d78bc3f2e8ff210064474927ce4",
+      "copiedOriginal": false
+    },
+    "evidence:submit/second-submit-report.json": {
+      "originalBasename": "second-submit-report.json",
+      "originalBytes": 145257,
+      "originalSha256": "e4d76653a00f6fa3764d81b833cf354864bf9540d4fb45889bae1ff0a3533116",
+      "copiedOriginal": true
+    },
+    "evidence:submit/CHANGES.json": {
+      "originalBasename": "CHANGES.json",
+      "originalBytes": 2856,
+      "originalSha256": "a674872b82260d3816b08f9f8840d6c5500b0f36b730df97b024ef7caa9921fe",
+      "copiedOriginal": false
+    },
+    "evidence:submit/RAW-INVENTORY.json": {
+      "originalBasename": "RAW-INVENTORY.json",
+      "originalBytes": 143,
+      "originalSha256": "0975fc58975c6fa7b6d21a5a547308b88efc374fe5eb4c97f304b05d0549de43",
+      "copiedOriginal": false
+    },
+    "evidence:sign-stop/FILES.json": {
+      "originalBasename": "FILES.json",
+      "originalBytes": 8309,
+      "originalSha256": "0aadd164aa8f69f1000db80ef92e3076032bc8951c941a1cc0afa2fe0074758b",
+      "copiedOriginal": false
+    },
+    "evidence:sign-stop/CHANGES.json": {
+      "originalBasename": "CHANGES.json",
+      "originalBytes": 1970,
+      "originalSha256": "403d532a5a48eb18e1d57087a2bc8409507ca0c0d3791a7e3be347d233339275",
+      "copiedOriginal": false
+    },
+    "evidence:sign-stop/second-sign-report.json": {
+      "originalBasename": "second-sign-report.json",
+      "originalBytes": 142065,
+      "originalSha256": "daeb2abf33714b7566abcf40598dc4d10c6a15d742aaf4ad1fadbf97dd2104e3",
+      "copiedOriginal": true
+    },
+    "evidence:sign-stop/second-signed-handoff.json": {
+      "originalBasename": "second-signed-handoff.json",
+      "originalBytes": 123126,
+      "originalSha256": "a35f0cf45540a9fb0c0c25352a25ae603ecb8570bc3f3132b5eeed7082a68bcf",
+      "copiedOriginal": false
+    },
+    "evidence:sign-stop/RAW-INVENTORY.json": {
+      "originalBasename": "RAW-INVENTORY.json",
+      "originalBytes": 282,
+      "originalSha256": "1708fc161c952d991085010b9241476a7a3f4ef6d6df7c725e81f66881038b30",
+      "copiedOriginal": false
+    },
+    "evidence:setup/report.json": {
+      "originalBasename": "report.json",
+      "originalBytes": 255609,
+      "originalSha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154",
+      "copiedOriginal": true
+    },
+    "evidence:setup/restart-wire.json": {
+      "originalBasename": "restart-wire.json",
+      "originalBytes": 19665,
+      "originalSha256": "26f579bdc191fb4cbf600cc019ef309bddb671a629331808c6b8a7a86474d2b3",
+      "copiedOriginal": false
+    },
+    "evidence:setup/FILES.json": {
+      "originalBasename": "FILES.json",
+      "originalBytes": 8309,
+      "originalSha256": "de02d6e54f9137fc9993a11567d1e13f838f12421845d604b98199492bb28824",
+      "copiedOriginal": false
+    },
+    "evidence:setup/restart-handoff.json": {
+      "originalBasename": "restart-handoff.json",
+      "originalBytes": 121469,
+      "originalSha256": "70a0ef3d821d26a24b378188635d17eb373a5e4050801129575a6d7df12b1c5d",
+      "copiedOriginal": false
+    },
+    "evidence:setup/RAW-INVENTORY.json": {
+      "originalBasename": "RAW-INVENTORY.json",
+      "originalBytes": 395,
+      "originalSha256": "6c753896877dc1db22343a5b00b483ed14d70acd55886552c0bd94fd281735cb",
+      "copiedOriginal": false
+    },
+    "rootCoreChecks:testsLog": {
+      "originalBasename": "railgun-recovery-core-root-tests-oct6.log",
+      "originalBytes": 1868,
+      "originalSha256": "a1c32d79ee8d96905af1f5335ab90658f1bae822cddf4793c15fd0674a20597c",
+      "copiedOriginal": false
+    },
+    "rootCoreChecks:lintLog": {
+      "originalBasename": "railgun-recovery-core-root-lint-oct6.log",
+      "originalBytes": 63,
+      "originalSha256": "70be715d8628432cbdbd618d756c397769e3155725002cdd27f48c4990f34cd7",
+      "copiedOriginal": false
+    },
+    "rootFixtureChecks:testsLog": {
+      "originalBasename": "railgun-recovery-fixture-root-tests-oct6.log",
+      "originalBytes": 1354,
+      "originalSha256": "9868da2f23db176159509d4951482a31cec540f90d6c1427f7ba55ab0f8601fe",
+      "copiedOriginal": false
+    },
+    "rootFixtureChecks:lintLog": {
+      "originalBasename": "railgun-recovery-fixture-root-lint-oct6.log",
+      "originalBytes": 63,
+      "originalSha256": "70be715d8628432cbdbd618d756c397769e3155725002cdd27f48c4990f34cd7",
+      "copiedOriginal": false
+    },
+    "rootFixtureChecks:formatLog": {
+      "originalBasename": "railgun-recovery-fixture-root-format-oct6.log",
+      "originalBytes": 66,
+      "originalSha256": "17aa973d3f004560237d9a95171210b0671deff23d61628eecf7322ff5938f20",
+      "copiedOriginal": false
+    },
+    "coreControlLog:unauthenticated-get": {
+      "originalBasename": "unauthenticated-get-control.log",
+      "originalBytes": 1656,
+      "originalSha256": "57be9784e8f791a0d7b7539cb91245a9d7addf8cfc701e94c8d67232a7e1c2f6",
+      "copiedOriginal": false
+    },
+    "coreControlLog:delayed-busy": {
+      "originalBasename": "delayed-busy-control.log",
+      "originalBytes": 2234,
+      "originalSha256": "15f1e6a9910fb89d3d19a2e48e04e5b33e951055d4a44692a87b305ee053bd3e",
+      "copiedOriginal": false
+    },
+    "coreControlLog:swallow-corruption": {
+      "originalBasename": "swallow-corruption-control.log",
+      "originalBytes": 1686,
+      "originalSha256": "c6107af6c4b0eb85bde538e8bf731b015e4c3b7b8d404cdaa15d640455bd9633",
+      "copiedOriginal": false
+    },
+    "coreControlLog:early-close": {
+      "originalBasename": "early-close-control.log",
+      "originalBytes": 2280,
+      "originalSha256": "2353fa8253232ac02b109c22642d480416c39beac2ca70ccef3779c79d2c72d9",
+      "copiedOriginal": false
+    },
+    "coreControlLog:wrapped-promise": {
+      "originalBasename": "wrapped-promise-control.log",
+      "originalBytes": 1320,
+      "originalSha256": "bad27780721f16c08f3353d92fca3e5b1a47a33bc54ea1fdecf30c6daaf926c5",
+      "copiedOriginal": false
+    },
+    "coreControlLog:auto-submit": {
+      "originalBasename": "auto-submit-control.log",
+      "originalBytes": 1257,
+      "originalSha256": "fa6ba183dd6ab4f1ce3624aab49ba97478b561835957282224d520ccae8572a6",
+      "copiedOriginal": false
+    },
+    "fixtureControlLog:early-close": {
+      "originalBasename": "early-close.log",
+      "originalBytes": 2628,
+      "originalSha256": "7d86926820110597e6f06749d07285cc3489da973e03c866d0b9071149998ac4",
+      "copiedOriginal": false
+    },
+    "fixtureControlLog:history-phase": {
+      "originalBasename": "history-phase.log",
+      "originalBytes": 2635,
+      "originalSha256": "51293f7e5c25f00728a67ad370a0d6a33299c105ccfdb9bc7ecd047d9a2a2523",
+      "copiedOriginal": false
+    },
+    "fixtureControlLog:signature-conservation": {
+      "originalBasename": "signature-conservation.log",
+      "originalBytes": 2638,
+      "originalSha256": "d937f669621b33671b9592855896cedd4ef10eb3249bab5d8ee18bd54c0e01c4",
+      "copiedOriginal": false
+    },
+    "fixtureControlLog:abandoned-sticky-race": {
+      "originalBasename": "abandoned-sticky-race.log",
+      "originalBytes": 1221,
+      "originalSha256": "7eb471482b8c30c283afe45fe2d495a394cbd57fc4200de9749940ba29e406b8",
+      "copiedOriginal": false
+    },
+    "coreLog:focused-hardened.log": {
+      "originalBasename": "focused-hardened.log",
+      "originalBytes": 1868,
+      "originalSha256": "3eec95a28379120df16b75d5d0286c5b6b32b8af591dcf091d303cd18dcf9f88",
+      "copiedOriginal": false
+    },
+    "coreLog:lint-final.log": {
+      "originalBasename": "lint-final.log",
+      "originalBytes": 63,
+      "originalSha256": "70be715d8628432cbdbd618d756c397769e3155725002cdd27f48c4990f34cd7",
+      "copiedOriginal": false
+    },
+    "coreLog:format-final-check.log": {
+      "originalBasename": "format-final-check.log",
+      "originalBytes": 66,
+      "originalSha256": "17aa973d3f004560237d9a95171210b0671deff23d61628eecf7322ff5938f20",
+      "copiedOriginal": false
+    },
+    "coreLog:controls-run.log": {
+      "originalBasename": "controls-run.log",
+      "originalBytes": 2336,
+      "originalSha256": "6a9201575959403535c6a956258d205e6e1f12c41fa10632859f86dd3d272717",
+      "copiedOriginal": false
+    },
+    "coreLog:focused-initial.log": {
+      "originalBasename": "focused-initial.log",
+      "originalBytes": 7736,
+      "originalSha256": "45037cbff05addb6dfaf9b4499b4a56c635d98f86a993c7203d9f07ab7d82df9",
+      "copiedOriginal": false
+    },
+    "coreLog:focused-second.log": {
+      "originalBasename": "focused-second.log",
+      "originalBytes": 582,
+      "originalSha256": "216fe8d25cc32debddbdcb52cda523f9cd38ab03b9dcc630070eb09f466754b9",
+      "copiedOriginal": false
+    },
+    "coreLog:focused-final.log": {
+      "originalBasename": "focused-final.log",
+      "originalBytes": 1868,
+      "originalSha256": "bcf7334d66c339181351148c932b096f10b151d8eb609f8dfdaa4703d3d2c06b",
+      "copiedOriginal": false
+    },
+    "fixtureLog:tests-final-c.log": {
+      "originalBasename": "tests-final-c.log",
+      "originalBytes": 1354,
+      "originalSha256": "7370752f9ede2028b52e5f850bbb87c9a74ba64cff69051b1477db90df67d12f",
+      "copiedOriginal": false
+    },
+    "fixtureLog:controls-r3.log": {
+      "originalBasename": "controls-r3.log",
+      "originalBytes": 1547,
+      "originalSha256": "76a937e006d4f4d30158c3cfe13b066fc67c352617a9619ddf193d1175f9e596",
+      "copiedOriginal": false
+    }
+  },
+  "outputs": {
+    "setup.json": {
+      "kind": "byte-exact renamed public aggregate report",
+      "inputIds": [
+        "evidence:setup/report.json"
+      ],
+      "originalBasename": "report.json",
+      "originalSha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154",
+      "originalBytes": 255609,
+      "publishedSha256": "0c1cff7cf105e342c50ce565cfbe57d5e5e58a0a1c154657bbcc91b8a632b154",
+      "publishedBytes": 255609
+    },
+    "sign-stop.json": {
+      "kind": "byte-exact renamed public aggregate report",
+      "inputIds": [
+        "evidence:sign-stop/second-sign-report.json"
+      ],
+      "originalBasename": "second-sign-report.json",
+      "originalSha256": "daeb2abf33714b7566abcf40598dc4d10c6a15d742aaf4ad1fadbf97dd2104e3",
+      "originalBytes": 142065,
+      "publishedSha256": "daeb2abf33714b7566abcf40598dc4d10c6a15d742aaf4ad1fadbf97dd2104e3",
+      "publishedBytes": 142065
+    },
+    "recover-stop.json": {
+      "kind": "byte-exact renamed public aggregate report",
+      "inputIds": [
+        "evidence:recover-stop/second-recover-report.json"
+      ],
+      "originalBasename": "second-recover-report.json",
+      "originalSha256": "7afdb4cde22327414aa5be1a5283731772cd4c8aad4d13b077aa2d1c7561bb33",
+      "originalBytes": 136534,
+      "publishedSha256": "7afdb4cde22327414aa5be1a5283731772cd4c8aad4d13b077aa2d1c7561bb33",
+      "publishedBytes": 136534
+    },
+    "submit.json": {
+      "kind": "byte-exact renamed public aggregate report",
+      "inputIds": [
+        "evidence:submit/second-submit-report.json"
+      ],
+      "originalBasename": "second-submit-report.json",
+      "originalSha256": "e4d76653a00f6fa3764d81b833cf354864bf9540d4fb45889bae1ff0a3533116",
+      "originalBytes": 145257,
+      "publishedSha256": "e4d76653a00f6fa3764d81b833cf354864bf9540d4fb45889bae1ff0a3533116",
+      "publishedBytes": 145257
+    },
+    "SOURCE-HASHES.json": {
+      "kind": "derived",
+      "inputIds": [
+        "rootFreeze",
+        "rootCoreChecks",
+        "rootFixtureChecks",
+        "runner:FIXTURE-PINS.json",
+        "runner:RUNTIME-BASIS.json"
+      ],
+      "recipe": "Select source maps and inventory counts; retain exact runtime digest map",
+      "machinePathTransformations": [],
+      "publishedSha256": "674db1e72e8aa3830d45d3bdf89b9c7195c4565921a54cf10c51bec901e39d64",
+      "publishedBytes": 6261
+    },
+    "CHECKS-AND-CONTROLS.json": {
+      "kind": "derived",
+      "inputIds": [
+        "rootCoreChecks",
+        "rootFixtureChecks",
+        "coreAuthorChecks",
+        "coreControls",
+        "fixtureAuthorChecks",
+        "fixtureControls",
+        "fixtureAstControls",
+        "expectationChecks"
+      ],
+      "recipe": "Preserve check and control records; normalize local log paths; append explicit scope and diagnostic hashes",
+      "machinePathTransformations": [
+        {
+          "pointer": "/rootCoreChecks/tests/log",
+          "replacement": "railgun-recovery-core-root-tests-oct6.log",
+          "rule": "absolute machine-local string replaced by basename"
+        },
+        {
+          "pointer": "/rootCoreChecks/lint/log",
+          "replacement": "railgun-recovery-core-root-lint-oct6.log",
+          "rule": "absolute machine-local string replaced by basename"
+        },
+        {
+          "pointer": "/rootFixtureChecks/tests/log",
+          "replacement": "railgun-recovery-fixture-root-tests-oct6.log",
+          "rule": "absolute machine-local string replaced by basename"
+        },
+        {
+          "pointer": "/rootFixtureChecks/lint/log",
+          "replacement": "railgun-recovery-fixture-root-lint-oct6.log",
+          "rule": "absolute machine-local string replaced by basename"
+        },
+        {
+          "pointer": "/rootFixtureChecks/format/log",
+          "replacement": "railgun-recovery-fixture-root-format-oct6.log",
+          "rule": "absolute machine-local string replaced by basename"
+        }
+      ],
+      "publishedSha256": "abdb46e8ac43bfcad8b5396a77b51a8e9d53e38608508498884b17255c303f47",
+      "publishedBytes": 14585
+    },
+    "SOURCE-EXPECTATIONS.json": {
+      "kind": "derived",
+      "inputIds": [
+        "runner:DERIVATION.json",
+        "runner:HEADER-DERIVATION.json",
+        "evidence:setup/report.json",
+        "evidence:sign-stop/second-sign-report.json",
+        "evidence:recover-stop/second-recover-report.json",
+        "evidence:submit/second-submit-report.json"
+      ],
+      "recipe": "Retain source derivation; separately extract counts and companion result fields from reports",
+      "machinePathTransformations": [],
+      "publishedSha256": "57211010cc1041e9103fb44c2fa89002655dc630861aeecb1c65f66070921d45",
+      "publishedBytes": 19974
+    },
+    "STAGES-AND-LINEAGE.json": {
+      "kind": "derived",
+      "inputIds": [
+        "rootObservation",
+        "evidence:recover-stop.log",
+        "evidence:progress-00007.json",
+        "evidence:progress-00011.json",
+        "evidence:progress-00010.json",
+        "evidence:sign-stop.log",
+        "evidence:progress-00006.json",
+        "evidence:ATTESTATION-INPUT.json",
+        "evidence:progress-00001.json",
+        "evidence:submit.log",
+        "evidence:progress-00000.json",
+        "evidence:setup.log",
+        "evidence:FREEZE-INPUT.json",
+        "evidence:progress-00015.json",
+        "evidence:progress-00003.json",
+        "evidence:progress-00002.json",
+        "evidence:progress-00014.json",
+        "evidence:progress-00009.json",
+        "evidence:progress-00013.json",
+        "evidence:progress-00005.json",
+        "evidence:progress-00004.json",
+        "evidence:progress-00012.json",
+        "evidence:progress-00008.json",
+        "evidence:recover-stop/second-recover-report.json",
+        "evidence:recover-stop/FILES.json",
+        "evidence:recover-stop/CHANGES.json",
+        "evidence:recover-stop/RAW-INVENTORY.json",
+        "evidence:recover-stop/second-recovered-handoff.json",
+        "evidence:submit/FILES.json",
+        "evidence:submit/second-submit-report.json",
+        "evidence:submit/CHANGES.json",
+        "evidence:submit/RAW-INVENTORY.json",
+        "evidence:sign-stop/FILES.json",
+        "evidence:sign-stop/CHANGES.json",
+        "evidence:sign-stop/second-sign-report.json",
+        "evidence:sign-stop/second-signed-handoff.json",
+        "evidence:sign-stop/RAW-INVENTORY.json",
+        "evidence:setup/report.json",
+        "evidence:setup/restart-wire.json",
+        "evidence:setup/FILES.json",
+        "evidence:setup/restart-handoff.json",
+        "evidence:setup/RAW-INVENTORY.json"
+      ],
+      "recipe": "Extract bounded original process fields; include independent metadata snapshots/deltas and handoff digest-only lineage; omit raw handoff/wire bodies and absolute profile paths",
+      "machinePathTransformations": [],
+      "publishedSha256": "406485d9959dbaa63c300b84f61ebe3e67b25d61978c731070282d60b60a86bc",
+      "publishedBytes": 54385
+    },
+    "AUDIT.md": {
+      "kind": "authored audit",
+      "inputIds": [],
+      "recipe": "Human-readable bounded interpretation of the validated archive; no byte-exact upstream claim",
+      "publishedSha256": "fb10b69cb4a102c876e2285fd1d17c661f9569eeeb62f73cbcceab41d805410a",
+      "publishedBytes": 4299
+    }
+  },
+  "scope": "Input hashes identify preserved originals. Derived output hashes identify these actual bytes; original freezes do not validate normalized copies. No raw private handoff or profile payload is distributed."
+}
