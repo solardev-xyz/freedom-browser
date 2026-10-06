@@ -1,10 +1,23 @@
 let mockSignJob,
   mockPermitConsume,
+  mockRelayPermitConsume,
+  mockSignTask,
+  mockScopeClose,
   mockDerived,
   mockViewingDerived,
   mockDeferViewing,
   mockDeferSpending;
 let mockVault, mockParent, mockOnJob, mockInputs, mockClosed, mockCurrent;
+jest.mock('../networks/privacy-context', () => {
+  const actual = jest.requireActual('../networks/privacy-context');
+  return {
+    ...actual,
+    createPrivacyScope: (...args) => {
+      const scope = actual.createPrivacyScope(...args);
+      return mockScopeClose ? { ...scope, close: mockScopeClose(scope.close) } : scope;
+    },
+  };
+});
 jest.mock('../identity/vault', () => ({
   getMnemonic: () =>
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
@@ -13,6 +26,13 @@ jest.mock('../identity/vault', () => ({
 jest.mock('./railgun-private-operation', () => ({
   consumeRailgunPrivateSigningPermit: (...args) => mockPermitConsume(...args),
 }));
+jest.mock(
+  './railgun-relay-operation',
+  () => ({
+    consumeRailgunRelaySigningPermit: (...args) => mockRelayPermitConsume(...args),
+  }),
+  { virtual: true }
+);
 jest.mock('../identity/privacy-keys', () => {
   const actual = jest.requireActual('../identity/privacy-keys');
   return {
@@ -69,12 +89,14 @@ jest.mock('./railgun-process', () => ({
         stopped(Error('closed'));
       };
       options.broker.signal.addEventListener('abort', close, { once: true });
-      return {
+      const task = {
         closed,
         close,
         signal: controller.signal,
         ready: Promise.race([Promise.resolve().then(() => mockSignJob(options)), end]),
       };
+      mockSignTask?.(task, options);
+      return task;
     }
 
     let finish;
@@ -126,6 +148,9 @@ const {
   withRailgunViewingCredential,
   signRailgunPrivateIntent,
   assertRailgunPrivateSigner,
+  signRailgunRelayIntent,
+  assertRailgunRelaySigner,
+  assertRailgunRelayCredentialIssuance,
 } = require('./railgun-identity');
 let identity;
 beforeEach(() => {
@@ -135,6 +160,11 @@ beforeEach(() => {
   mockPermitConsume = () => {
     throw Error('no permit');
   };
+  mockRelayPermitConsume = () => {
+    throw Error('no relay permit');
+  };
+  mockSignTask = undefined;
+  mockScopeClose = undefined;
   mockSignJob = null;
   mockVault = new AbortController();
   mockOnJob = null;
@@ -689,3 +719,562 @@ describe('process-lifetime credential quarantine', () => {
     expect(attest).toHaveBeenCalledTimes(1);
   });
 });
+
+async function relaySigningFixture() {
+  identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+  mockDerived = [];
+  const fixture =
+    require('../../../scripts/fixtures/railgun-relay-unsigned-data').createRailgunRelayUnsignedData();
+  const options = {
+    identity,
+    archive: '/fixture.asar',
+    intent: fixture.draft.intent,
+    recordDigest: '12'.repeat(32),
+    signal: new AbortController().signal,
+    onKeyRequest: async () => ({}),
+  };
+  const checked = require('./railgun-relay-intent').normalizeRailgunRelayUnsignedIntent(
+    options.intent
+  );
+  const request = {
+    id: 1,
+    method: 'key',
+    purpose: 'relay-sign',
+    recordDigest: options.recordDigest,
+    intentDigest: checked.digest,
+    expectedHash: checked.data.expectedHash,
+  };
+  const result = {
+    signature: {
+      R8: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
+      S: '0x' + '0'.repeat(63) + '3',
+    },
+    message: checked.data.expectedHash,
+    recordDigest: options.recordDigest,
+    intentDigest: checked.digest,
+    guards: { attempts: 0, canaries: 1, hooks: ['fixture.guard'] },
+    inventory: require('./railgun-engine-manifest.json').inventory.sha256,
+  };
+  mockSignJob = async (job) => {
+    expect(job.filename).toBe(require.resolve('./railgun-relay-sign-job'));
+    expect(job.binaryKey).toBe(true);
+    expect(JSON.parse(job.input)).toEqual({
+      archive: '/fixture.asar',
+      intent: checked.data,
+      recordDigest: options.recordDigest,
+      spendingPublicKey: identity.descriptor.spendingPublicKey.map((v) => '0x' + v),
+    });
+    const key = await job.broker.dispatch(JSON.stringify(request));
+    expect(key.some((v) => v !== 0)).toBe(true);
+    key.fill(0);
+    await job.broker.dispatch(JSON.stringify({ id: 2, method: 'result', value: result }));
+  };
+  return { options, request, result };
+}
+const relayGate = () => ({ assertCurrent: async () => {}, issued() {} });
+const relayRefused = { code: 'RAILGUN_RELAY_SIGNING_REFUSED' };
+
+test('relay signer binds live token and exact intent; issuance exists only in synchronous issued extent', async () => {
+  const { options, request, result } = await relaySigningFixture();
+  let token,
+    checks = 0,
+    issued = 0,
+    later;
+  options.spendingPublicKey = ['caller cannot replace descriptor'];
+  options.onKeyRequest = async (bound, value) => {
+    token = value;
+    expect(bound).toEqual({
+      recordDigest: request.recordDigest,
+      intentDigest: request.intentDigest,
+      expectedHash: request.expectedHash,
+    });
+    expect(Object.isFrozen(bound)).toBe(true);
+    expect(assertRailgunRelaySigner(token, identity, options)).toBeInstanceOf(AbortSignal);
+    expect(() => assertRailgunRelayCredentialIssuance(token, identity, options)).toThrow();
+    expect(() => assertRailgunPrivateSigner(token, identity, options)).toThrow();
+    expect(() => assertRailgunRelaySigner({}, identity, options)).toThrow();
+    expect(() => assertRailgunRelaySigner(token, {}, options)).toThrow();
+    expect(() =>
+      assertRailgunRelaySigner(token, identity, { ...options, recordDigest: '13'.repeat(32) })
+    ).toThrow();
+    const changed = JSON.parse(JSON.stringify(options.intent));
+    changed.expectedHash = '0x' + '0'.repeat(63) + 'c';
+    expect(() =>
+      assertRailgunRelaySigner(token, identity, { ...options, intent: changed })
+    ).toThrow();
+    return { fixedPermit: true };
+  };
+  mockRelayPermitConsume = (permit, who, signer) => {
+    expect(permit).toEqual({ fixedPermit: true });
+    expect(who).toBe(identity);
+    expect(signer).toBe(token);
+    return {
+      assertCurrent: async () => {
+        checks++;
+        expect(mockDerived).toHaveLength(checks - 1);
+        expect(() => assertRailgunRelayCredentialIssuance(token, identity, options)).toThrow();
+      },
+      issued() {
+        issued++;
+        expect(checks).toBe(2);
+        expect(mockDerived).toHaveLength(1);
+        expect(assertRailgunRelayCredentialIssuance(token, identity, options)).toBeInstanceOf(
+          AbortSignal
+        );
+        later = Promise.resolve().then(() =>
+          expect(() => assertRailgunRelayCredentialIssuance(token, identity, options)).toThrow()
+        );
+      },
+    };
+  };
+  const value = await signRailgunRelayIntent(options);
+  await later;
+  expect(value).toEqual({
+    signature: result.signature,
+    message: result.message,
+    recordDigest: result.recordDigest,
+    intentDigest: result.intentDigest,
+  });
+  expect(Object.isFrozen(value.signature.R8)).toBe(true);
+  expect(issued).toBe(1);
+  expect(checks).toBe(2);
+  expect(mockDerived).toHaveLength(1);
+  expect(mockDerived[0].path).toBe("m/44'/1984'/0'/0'/0'");
+  expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+  expect(() => assertRailgunRelaySigner(token, identity, options)).toThrow();
+  expect(() => assertRailgunRelayCredentialIssuance(token, identity, options)).toThrow();
+});
+test('absent fixed production consumer fails before derivation', async () => {
+  const { options } = await relaySigningFixture();
+  mockRelayPermitConsume = () =>
+    jest.requireActual('./railgun-relay-operation').consumeRailgunRelaySigningPermit();
+  await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+  expect(mockDerived).toHaveLength(0);
+});
+test.each(['purpose', 'recordDigest', 'intentDigest', 'expectedHash', 'extra', 'id'])(
+  'relay key request %s mismatch refuses before permit callback',
+  async (field) => {
+    const { options, request } = await relaySigningFixture();
+    options.onKeyRequest = jest.fn(async () => ({}));
+    request[field] = field === 'id' ? 2 : 'changed';
+    await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+    expect(options.onKeyRequest).not.toHaveBeenCalled();
+    expect(mockDerived).toHaveLength(0);
+  }
+);
+test.each(['signature', 'message', 'recordDigest', 'intentDigest', 'guards', 'inventory', 'extra'])(
+  'untrusted relay signature result %s mismatch refuses',
+  async (field) => {
+    const { options, result } = await relaySigningFixture();
+    mockRelayPermitConsume = relayGate;
+    result[field] = 'changed';
+    await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+    expect(mockDerived).toHaveLength(1);
+    expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+  }
+);
+test.each([
+  'missing issued',
+  'first gate',
+  'second gate',
+  'issued throws',
+  'issued return',
+  'issued async',
+  'issued closes',
+])('relay %s fails closed and never makes a second loan', async (mode) => {
+  const { options } = await relaySigningFixture();
+  let checks = 0,
+    issued = 0;
+  mockRelayPermitConsume = () => {
+    const gate = {
+      assertCurrent: async () => {
+        checks++;
+        if ((mode === 'first gate' && checks === 1) || (mode === 'second gate' && checks === 2))
+          throw Error('expired');
+      },
+      issued() {
+        issued++;
+        if (mode === 'issued throws') throw Error('marker');
+        if (mode === 'issued return') return true;
+        if (mode === 'issued async') return Promise.resolve();
+        if (mode === 'issued closes') identity.close();
+      },
+    };
+    if (mode === 'missing issued') delete gate.issued;
+    return gate;
+  };
+  await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+  expect(mockDerived).toHaveLength(['missing issued', 'first gate'].includes(mode) ? 0 : 1);
+  if (mockDerived.length) expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+  expect(issued).toBe(mode.startsWith('issued') ? 1 : 0);
+});
+test('relay callback remains original pending after child closure and excludes private and relay signing', async () => {
+  const { options } = await relaySigningFixture();
+  const entered = quarantineDeferred(),
+    release = quarantineDeferred(),
+    caller = new AbortController();
+  options.signal = caller.signal;
+  options.onKeyRequest = async () => {
+    entered.resolve();
+    await release.promise;
+    return {};
+  };
+  let settled = false;
+  const work = signRailgunRelayIntent(options).catch((error) => {
+    settled = true;
+    return error;
+  });
+  await entered.promise;
+  caller.abort();
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  const jobs = mockInputs.length;
+  const competingRelay = signRailgunRelayIntent({
+    ...options,
+    signal: new AbortController().signal,
+  }).catch((error) => error);
+  const privateOptions = require('../../../scripts/fixtures/railgun-capsule-data').capsule(
+    identity.descriptor.walletId
+  ).preparation;
+  const competingPrivate = signRailgunPrivateIntent({
+    ...options,
+    ...privateOptions,
+    signal: new AbortController().signal,
+  }).catch((error) => error);
+  try {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(mockDerived).toHaveLength(0);
+    expect(mockInputs).toHaveLength(jobs);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([work, competingRelay, competingPrivate]);
+  }
+  expect(await competingRelay).toMatchObject(relayRefused);
+  expect(await competingPrivate).toMatchObject({ code: 'RAILGUN_PRIVATE_SIGNING_REFUSED' });
+  expect(await work).toMatchObject(relayRefused);
+});
+test('pending private signer excludes relay and private token cannot impersonate relay', async () => {
+  const options = await signingFixture(),
+    entered = quarantineDeferred(),
+    release = quarantineDeferred();
+  const relayIntent =
+    require('../../../scripts/fixtures/railgun-relay-unsigned-data').createRailgunRelayUnsignedData()
+      .draft.intent;
+  options.onKeyRequest = async (_request, token) => {
+    expect(() =>
+      assertRailgunRelaySigner(token, identity, {
+        intent: relayIntent,
+        recordDigest: '12'.repeat(32),
+      })
+    ).toThrow();
+    entered.resolve();
+    await release.promise;
+    return {};
+  };
+  const work = signRailgunPrivateIntent(options).catch((error) => error);
+  await entered.promise;
+  const jobs = mockInputs.length;
+  await expect(
+    signRailgunRelayIntent({ ...options, intent: relayIntent, recordDigest: '12'.repeat(32) })
+  ).rejects.toMatchObject(relayRefused);
+  expect(mockInputs).toHaveLength(jobs);
+  release.resolve();
+  await work;
+  expect(mockDerived).toHaveLength(0);
+});
+test.each(['derive', 'second gate'])(
+  'relay revocation during pending original %s waits and wipes before issuance',
+  async (stage) => {
+    const { options } = await relaySigningFixture();
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred(),
+      caller = new AbortController();
+    options.signal = caller.signal;
+    let checks = 0,
+      issued = 0,
+      settled = false;
+    if (stage === 'derive')
+      mockDeferSpending = async () => {
+        entered.resolve();
+        await release.promise;
+      };
+    mockRelayPermitConsume = () => ({
+      assertCurrent: async () => {
+        if (++checks === 2 && stage === 'second gate') {
+          entered.resolve();
+          await release.promise;
+        }
+      },
+      issued() {
+        issued++;
+      },
+    });
+    const work = signRailgunRelayIntent(options).catch((error) => {
+      settled = true;
+      return error;
+    });
+    await entered.promise;
+    caller.abort();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    if (stage === 'second gate') expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+    release.resolve();
+    expect(await work).toMatchObject(relayRefused);
+    expect(issued).toBe(0);
+    expect(mockDerived).toHaveLength(1);
+    expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+  }
+);
+test('relay success waits for the original child closure', async () => {
+  const { options } = await relaySigningFixture();
+  const closed = quarantineDeferred(),
+    closing = quarantineDeferred();
+  mockRelayPermitConsume = relayGate;
+  mockSignTask = (task) => {
+    const close = task.close;
+    task.close = () => {
+      close();
+      closing.resolve();
+    };
+    task.closed = closed.promise;
+  };
+  let settled = false;
+  const work = signRailgunRelayIntent(options).then((value) => {
+    settled = true;
+    return value;
+  });
+  await closing.promise;
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  closed.resolve({ code: 'RAILGUN_PROCESS_CLOSED' });
+  await work;
+  expect(settled).toBe(true);
+});
+test('relay duplicate key request cannot obtain another loan', async () => {
+  const { options, request } = await relaySigningFixture();
+  mockRelayPermitConsume = relayGate;
+  mockSignJob = async (job) => {
+    const bytes = await job.broker.dispatch(JSON.stringify(request));
+    bytes.fill(0);
+    await job.broker.dispatch(JSON.stringify(request));
+  };
+  await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+  expect(mockDerived).toHaveLength(1);
+});
+
+test.each([undefined, null, new Error('declined')])(
+  'ordinary rejected relay callback %p settles without quarantining a healthy identity',
+  async (error) => {
+    const { options } = await relaySigningFixture();
+    options.onKeyRequest = async () => {
+      throw error;
+    };
+    await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+    expect(mockDerived).toHaveLength(0);
+    expect(() => assertRailgunIdentity(identity)).not.toThrow();
+    options.onKeyRequest = async () => ({});
+    mockRelayPermitConsume = relayGate;
+    await expect(signRailgunRelayIntent(options)).resolves.toHaveProperty('signature');
+    expect(mockDerived).toHaveLength(1);
+  }
+);
+test('non-native relay callback thenable is not invoked and cannot grant a permit', async () => {
+  const { options } = await relaySigningFixture();
+  const then = jest.fn();
+  options.onKeyRequest = () => ({ then });
+  await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+  expect(then).not.toHaveBeenCalled();
+  expect(mockDerived).toHaveLength(0);
+  expect(() => assertRailgunIdentity(identity)).not.toThrow();
+});
+test('invalid asynchronous issued hook is drained without returning credential bytes', async () => {
+  const { options } = await relaySigningFixture();
+  const entered = quarantineDeferred(),
+    release = quarantineDeferred();
+  mockRelayPermitConsume = () => ({
+    assertCurrent: async () => {},
+    issued() {
+      entered.resolve();
+      return release.promise;
+    },
+  });
+  let settled = false;
+  const work = signRailgunRelayIntent(options).catch((error) => {
+    settled = true;
+    return error;
+  });
+  await entered.promise;
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+  release.resolve();
+  expect(await work).toMatchObject(relayRefused);
+});
+describe('relay unknown-original quarantine', () => {
+  let serial = 0;
+  beforeEach(() => {
+    mockParent.close();
+    mockParent = createPrivacyScope({
+      profileId: `relay-unknown-${serial++}`,
+      signal: mockVault.signal,
+    });
+  });
+  test('rejected original child closure quarantines identity and cannot enable a replacement', async () => {
+    const { options } = await relaySigningFixture();
+    mockSignTask = (task) => {
+      task.closed = Promise.reject(Error('unobserved child exit'));
+    };
+    await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+    expect(mockDerived).toHaveLength(0);
+    expect(() => assertRailgunIdentity(identity)).toThrow();
+    identity.close();
+    await expect(openRailgunIdentity({ archive: '/fixture.asar' })).rejects.toMatchObject({
+      code: 'RAILGUN_IDENTITY_REFUSED',
+    });
+  });
+  test.each(['constructor', 'species'])(
+    'unobservable original callback %s retains exclusion and quarantines without derivation',
+    async (kind) => {
+      const { options } = await relaySigningFixture();
+      const original = quarantineDeferred();
+      if (kind === 'constructor')
+        Object.defineProperty(original.promise, 'constructor', {
+          get() {
+            throw Error('constructor');
+          },
+        });
+      else
+        Object.defineProperty(original.promise, 'constructor', {
+          value: {
+            get [Symbol.species]() {
+              throw Error('species');
+            },
+          },
+        });
+      options.onKeyRequest = () => original.promise;
+      await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+      expect(mockDerived).toHaveLength(0);
+      expect(() => assertRailgunIdentity(identity)).toThrow();
+      original.resolve({});
+      await expect(signRailgunRelayIntent(options)).rejects.toMatchObject(relayRefused);
+      expect(mockDerived).toHaveLength(0);
+      identity.close();
+      await expect(openRailgunIdentity({ archive: '/fixture.asar' })).rejects.toMatchObject({
+        code: 'RAILGUN_IDENTITY_REFUSED',
+      });
+    }
+  );
+});
+
+test.each(['resolve', 'reject'])(
+  'early relay result synchronously revokes while original callback held, then %s cannot repair it',
+  async (settlement) => {
+    const { options, request, result } = await relaySigningFixture();
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred(),
+      sent = quarantineDeferred();
+    let keyRequest,
+      resultRequest,
+      brokerSignal,
+      synchronouslyRevoked,
+      settled = false;
+    options.onKeyRequest = async () => {
+      entered.resolve();
+      await release.promise;
+      if (settlement === 'reject') throw Error('late original rejection');
+      return {};
+    };
+    mockRelayPermitConsume = relayGate;
+    mockSignJob = async (job) => {
+      brokerSignal = job.broker.signal;
+      keyRequest = job.broker.dispatch(JSON.stringify(request)).catch((error) => error);
+      await entered.promise;
+      resultRequest = job.broker
+        .dispatch(JSON.stringify({ id: 2, method: 'result', value: result }))
+        .catch((error) => error);
+      synchronouslyRevoked = brokerSignal.aborted;
+      sent.resolve();
+      // Deliberately report ready without awaiting the original broker work.
+    };
+    const original = signRailgunRelayIntent(options).catch((error) => {
+      settled = true;
+      return error;
+    });
+    await sent.promise;
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    try {
+      expect(synchronouslyRevoked).toBe(true);
+      expect(settled).toBe(false);
+      expect(mockDerived).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([original, resultRequest, keyRequest]);
+    }
+    expect(await original).toMatchObject(relayRefused);
+    expect(require('util').types.isNativeError(await resultRequest)).toBe(true);
+    expect(require('util').types.isNativeError(await keyRequest)).toBe(true);
+    expect(mockDerived).toHaveLength(0);
+  }
+);
+test.each(['scope', 'task', 'both'])(
+  'throwing %s close cannot skip original callback, child barrier or loan cleanup',
+  async (kind) => {
+    const { options } = await relaySigningFixture();
+    const entered = quarantineDeferred(),
+      release = quarantineDeferred(),
+      child = quarantineDeferred();
+    let checks = 0,
+      settled = false,
+      taskCloseCalls = 0,
+      scopeCloseCalls = 0;
+    const caller = new AbortController();
+    options.signal = caller.signal;
+    mockRelayPermitConsume = () => ({
+      assertCurrent: async () => {
+        if (++checks === 2) {
+          entered.resolve();
+          await release.promise;
+        }
+      },
+      issued() {},
+    });
+    if (kind === 'scope' || kind === 'both')
+      mockScopeClose = (close) => () => {
+        scopeCloseCalls++;
+        close();
+        throw Error('scope close failure');
+      };
+    mockSignTask = (task) => {
+      task.closed = child.promise;
+      const close = task.close;
+      task.close = () => {
+        taskCloseCalls++;
+        close();
+        if (kind === 'task' || kind === 'both') throw Error('task close failure');
+      };
+    };
+    const original = signRailgunRelayIntent(options).catch((error) => {
+      settled = true;
+      return error;
+    });
+    await entered.promise;
+    caller.abort();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(mockDerived).toHaveLength(1);
+    expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+    expect(taskCloseCalls).toBeGreaterThan(0);
+    if (kind !== 'task') expect(scopeCloseCalls).toBeGreaterThan(0);
+    child.resolve({ code: 'RAILGUN_PROCESS_CLOSED' });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+    const jobs = mockInputs.length;
+    await expect(
+      signRailgunRelayIntent({ ...options, signal: new AbortController().signal })
+    ).rejects.toMatchObject(relayRefused);
+    expect(mockInputs).toHaveLength(jobs);
+    release.resolve();
+    expect(await original).toMatchObject(relayRefused);
+    expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+  }
+);

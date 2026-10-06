@@ -50,6 +50,10 @@ function startRailgunProcess({
           (context.subject.role === 'keystore' &&
             context.subject.operation === 'spending-sign' &&
             filename === require.resolve('./railgun-spend-sign-job')) ||
+          (context.subject.kind === 'private-account' &&
+            context.subject.role === 'keystore' &&
+            context.subject.operation === 'relay-sign' &&
+            filename === require.resolve('./railgun-relay-sign-job')) ||
           (context.subject.role === 'engine' &&
             context.subject.operation === 'private-receive' &&
             filename === require.resolve('./railgun-private-receive-job')) ||

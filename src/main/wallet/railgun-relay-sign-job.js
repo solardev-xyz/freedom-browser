@@ -1,5 +1,6 @@
-/** Inactive fixed relay signature job. Host process/identity admission does not
- * allow this purpose yet. A future one-use controller permit must authenticate
+/** Fixed relay signature job. Exact binary-key process/identity admission is
+ * available, but the connected controller permit consumer is not installed.
+ * That fixed one-use controller permit must authenticate
  * both durable signing markers, ownership, review and fresh disclosure gates.
  * Public intent checks and an echoed record digest are not that authority.
  * No viewing credential, storage, note decryption or network is available here.

@@ -13,6 +13,8 @@ const vault = require('../identity/vault');
 const identities = new WeakMap(),
   owners = new Set(),
   signers = new WeakMap(),
+  relaySigners = new WeakMap(),
+  unobservedRelayWork = new Set(),
   signing = new WeakSet();
 // Process-lifetime quarantine deliberately survives identity/vault replacement.
 // The key is the same stable owner used for identity opening, not a caller ID.
@@ -412,6 +414,300 @@ function assertRailgunPrivateSigner(token, identity, { transaction, expected, ex
   assert.equal(value.payload.expectedHash, expectedHash);
   return value.signal;
 }
+// Relay signing has a separate permit/token domain but shares identity signing
+// exclusion. The fixed controller consumer is intentionally absent until the
+// connected durable operation exists; a missing consumer fails before a loan.
+async function signRelayIntent({
+  identity,
+  archive,
+  intent,
+  recordDigest,
+  signal,
+  onKeyRequest,
+  timeoutMs = 60000,
+}) {
+  assertRailgunIdentity(identity);
+  assert.ok(signal instanceof AbortSignal && !signal.aborted);
+  assert.equal(typeof onKeyRequest, 'function');
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 60000);
+  assert.ok(!signing.has(identity));
+  assert.match(recordDigest, /^[0-9a-f]{64}$/);
+  const checked = require('./railgun-relay-intent').normalizeRailgunRelayUnsignedIntent(intent);
+  const payload = Object.freeze({
+    archive: verifyRailgunEngineRuntime(archive),
+    intent: checked.data,
+    recordDigest,
+    spendingPublicKey: Object.freeze(identity.descriptor.spendingPublicKey.map((v) => '0x' + v)),
+  });
+  const saved = identities.get(identity),
+    context = getPrivacyContext(saved.handle),
+    revocation = new AbortController(),
+    scope = createPrivacyScope({
+      profileId: context.profileId,
+      signal: AbortSignal.any([identity.signal, signal, revocation.signal]),
+      isCurrent: () => {
+        assertRailgunIdentity(identity);
+        return true;
+      },
+    });
+  let handle;
+  try {
+    handle = scope.getContext({ ...context.subject, operation: 'relay-sign' });
+  } catch (error) {
+    scope.close();
+    throw error;
+  }
+  const token = Object.freeze({});
+  let task,
+    sequence = 0,
+    value,
+    taskClosed,
+    outcomeError,
+    outcomeFailed = false,
+    closureError,
+    issued = false,
+    brokerFailed = false,
+    cleanupFailed = false,
+    unobserved = false;
+  const current = () => {
+    assertRailgunIdentity(identity);
+    assert.ok(!brokerFailed && !scope.signal.aborted && task && !task.signal.aborted);
+    getPrivacyContext(handle);
+  };
+  const state = { identity, payload, current, signal: scope.signal, issuing: false },
+    requests = new Set(),
+    loans = new Set(),
+    originals = new Set();
+  function observe(original, closure = false) {
+    const unknown = () => {
+      unobserved = true;
+      unobservedRelayWork.add(original);
+      quarantineRailgunIdentityCredentials(identity);
+    };
+    if (!require('util').types.isPromise(original)) {
+      if (closure) unknown();
+      throw fail();
+    }
+    const observed = new Promise((resolve, reject) => {
+      try {
+        Promise.prototype.then.call(original, resolve, (error) => {
+          if (closure) unknown();
+          reject(error);
+        });
+      } catch (error) {
+        unknown();
+        reject(error);
+      }
+    });
+    originals.add(observed);
+    observed.then(
+      () => originals.delete(observed),
+      () => originals.delete(observed)
+    );
+    return observed;
+  }
+  function refuseBroker() {
+    brokerFailed = true;
+    revocation.abort();
+  }
+  function cleanup(callback) {
+    try {
+      callback();
+    } catch {
+      cleanupFailed = true;
+    }
+  }
+  async function dispatch(wire) {
+    try {
+      current();
+      assert.equal(typeof wire, 'string');
+      assert.ok(Buffer.byteLength(wire) <= 16384);
+      const message = JSON.parse(wire);
+      assert.equal(message.id, ++sequence);
+      const { shape } = require('./railgun-relay-quote-data');
+      if (sequence === 1) {
+        shape(message, ['id', 'method', 'purpose', 'recordDigest', 'intentDigest', 'expectedHash']);
+        assert.equal(message.method, 'key');
+        assert.equal(message.purpose, 'relay-sign');
+        assert.equal(message.recordDigest, recordDigest);
+        assert.equal(message.intentDigest, checked.digest);
+        assert.equal(message.expectedHash, checked.data.expectedHash);
+        const request = Object.freeze({
+          recordDigest,
+          intentDigest: checked.digest,
+          expectedHash: checked.data.expectedHash,
+        });
+        const permit = await observe(onKeyRequest(request, token));
+        current();
+        const gate = require('./railgun-relay-operation').consumeRailgunRelaySigningPermit(
+          permit,
+          identity,
+          token
+        );
+        shape(gate, ['assertCurrent', 'issued']);
+        assert.equal(typeof gate.assertCurrent, 'function');
+        assert.equal(typeof gate.issued, 'function');
+        current();
+        await observe(gate.assertCurrent());
+        current();
+        const bytes = await observe(
+          saved.keystore.deriveBytesAt(`m/44'/1984'/0'/0'/${saved.accountIndex}'`)
+        );
+        const releaseLoan = retainLoan(saved.owner, bytes);
+        loans.add(releaseLoan);
+        const wipe = () => bytes.fill(0);
+        scope.signal.addEventListener('abort', wipe, { once: true });
+        try {
+          current();
+          await observe(gate.assertCurrent());
+          current();
+          // Only this synchronous extent can mark account-window credential
+          // issuance. No await or caller-settable flag bridges it to the reply.
+          state.issuing = true;
+          try {
+            const returned = gate.issued();
+            // A malformed async hook still owns its original work; observe it
+            // before refusal, never await it on the credential-return path.
+            if (require('util').types.isPromise(returned)) observe(returned);
+            assert.equal(returned, undefined);
+          } finally {
+            state.issuing = false;
+          }
+          current();
+          issued = true;
+          return bytes;
+        } catch (error) {
+          wipe();
+          throw error;
+        } finally {
+          scope.signal.removeEventListener('abort', wipe);
+        }
+      }
+      assert.equal(sequence, 2);
+      assert.equal(issued, true);
+      shape(message, ['id', 'method', 'value']);
+      assert.equal(message.method, 'result');
+      const result = message.value;
+      shape(result, [
+        'signature',
+        'message',
+        'recordDigest',
+        'intentDigest',
+        'guards',
+        'inventory',
+      ]);
+      assert.equal(result.message, checked.data.expectedHash);
+      assert.equal(result.recordDigest, recordDigest);
+      assert.equal(result.intentDigest, checked.digest);
+      assert.equal(result.inventory, require('./railgun-engine-manifest.json').inventory.sha256);
+      shape(result.guards, ['attempts', 'canaries', 'hooks']);
+      assert.equal(result.guards.attempts, 0);
+      assert.ok(
+        Array.isArray(result.guards.hooks) &&
+          result.guards.hooks.length > 0 &&
+          result.guards.hooks.length <= 256 &&
+          result.guards.hooks.every(
+            (hook) => typeof hook === 'string' && /^[a-zA-Z0-9_.]{1,128}$/.test(hook)
+          )
+      );
+      assert.equal(new Set(result.guards.hooks).size, result.guards.hooks.length);
+      assert.equal(result.guards.canaries, result.guards.hooks.length);
+      value = Object.freeze({
+        signature: require('./railgun-private-signature').normalizeRailgunSignature(
+          result.signature
+        ),
+        message: result.message,
+        recordDigest,
+        intentDigest: checked.digest,
+      });
+      return JSON.stringify({ id: 2, value: null });
+    } catch (error) {
+      refuseBroker();
+      throw error;
+    }
+  }
+  signing.add(identity);
+  relaySigners.set(token, state);
+  try {
+    task = startRailgunProcess({
+      handle,
+      filename: require.resolve('./railgun-relay-sign-job'),
+      input: JSON.stringify(payload),
+      binaryKey: true,
+      startupMs: Math.min(30000, timeoutMs),
+      lifetimeMs: timeoutMs,
+      heapMb: 128,
+      rssMb: 512,
+      broker: {
+        signal: scope.signal,
+        dispatch(wire) {
+          const pending = dispatch(wire);
+          requests.add(pending);
+          pending.then(
+            () => requests.delete(pending),
+            () => requests.delete(pending)
+          );
+          return pending;
+        },
+      },
+    });
+    taskClosed = observe(task.closed, true);
+    await observe(task.ready);
+    current();
+    assert.ok(value && sequence === 2 && issued && !brokerFailed);
+    task.close();
+    assert.equal((await taskClosed).code, 'RAILGUN_PROCESS_CLOSED');
+    assertRailgunIdentity(identity);
+    assert.ok(!scope.signal.aborted);
+  } catch (error) {
+    outcomeFailed = true;
+    outcomeError = error;
+  } finally {
+    relaySigners.delete(token);
+    cleanup(() => revocation.abort());
+    cleanup(() => scope.close());
+    cleanup(() => task?.close());
+    if (taskClosed) {
+      try {
+        await taskClosed;
+      } catch (error) {
+        closureError = error;
+      }
+    }
+    // Ordinary rejected callback work is settled; an unobservable original or
+    // rejected child closure quarantines this owner instead of claiming drain.
+    await Promise.allSettled([...requests, ...originals]);
+    for (const releaseLoan of loans) cleanup(releaseLoan);
+    if (!unobserved) signing.delete(identity);
+  }
+  if (closureError) throw closureError;
+  if (unobserved || brokerFailed || cleanupFailed) throw fail();
+  if (outcomeFailed) throw outcomeError;
+  return value;
+}
+async function signRailgunRelayIntent(options) {
+  try {
+    return await signRelayIntent(options);
+  } catch {
+    throw Object.assign(new Error('Railgun relay signing unavailable'), {
+      code: 'RAILGUN_RELAY_SIGNING_REFUSED',
+    });
+  }
+}
+function assertRailgunRelaySigner(token, identity, { intent, recordDigest }) {
+  const value = relaySigners.get(token);
+  assert.ok(value && value.identity === identity);
+  value.current();
+  assert.equal(value.payload.recordDigest, recordDigest);
+  const checked = require('./railgun-relay-intent').normalizeRailgunRelayUnsignedIntent(intent);
+  assert.deepEqual(value.payload.intent, checked.data);
+  return value.signal;
+}
+function assertRailgunRelayCredentialIssuance(token, identity, options) {
+  const signal = assertRailgunRelaySigner(token, identity, options);
+  assert.equal(relaySigners.get(token).issuing, true);
+  return signal;
+}
 module.exports = {
   openRailgunIdentity,
   assertRailgunIdentity,
@@ -419,4 +715,7 @@ module.exports = {
   withRailgunViewingCredential,
   signRailgunPrivateIntent,
   assertRailgunPrivateSigner,
+  signRailgunRelayIntent,
+  assertRailgunRelaySigner,
+  assertRailgunRelayCredentialIssuance,
 };

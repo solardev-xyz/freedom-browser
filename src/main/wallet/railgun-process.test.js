@@ -471,6 +471,7 @@ test.each(['storage', 'provider', 'worker', 'no-signal', 'no-dispatch'])(
 test.each([
   ['keystore', 'spending-public', './railgun-identity-job'],
   ['keystore', 'spending-sign', './railgun-spend-sign-job'],
+  ['keystore', 'relay-sign', './railgun-relay-sign-job'],
   ['engine', 'wallet-viewing', './railgun-wallet-job'],
   ['engine', 'private-prepare', './railgun-private-prepare-job'],
   ['engine', 'poi-prove', './railgun-own-poi-prove-job'],
@@ -552,6 +553,12 @@ test('late binary replies are wiped without crossing a stopped channel', async (
 });
 
 test.each([
+  ['relay-sign', './railgun-spend-sign-job'],
+  ['spending-sign', './railgun-relay-sign-job'],
+  ['spending-public', './railgun-relay-sign-job'],
+  ['relay-sign', './railgun-identity-job'],
+  ['relay-sign', './railgun-relay-wallet-job'],
+  ['relay-sign', './railgun-relay-sign-job', 'engine'],
   ['spending-sign', './railgun-identity-job'],
   ['spending-public', './railgun-spend-sign-job'],
   ['spending-sign', './railgun-wallet-job'],
@@ -794,3 +801,63 @@ for (const operation of ['relay-prepare', 'relay-reconstruct']) {
     expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
   });
 }
+
+test.each([
+  ['kind', 'service'],
+  ['kind', 'public-address'],
+  ['role', 'engine'],
+  ['role', 'prover'],
+  ['protocol', 'ppv2'],
+  ['deployment', 'mainnet'],
+  ['chainId', 1],
+])('relay-sign binary admission refuses wrong %s=%s', (field, value) => {
+  const subject = {
+    kind: 'private-account',
+    principal: 'railgun:0',
+    protocol: 'railgun',
+    deployment: 'sepolia',
+    chainId: 11155111,
+    role: 'keystore',
+    operation: 'relay-sign',
+    [field]: value,
+  };
+  if (subject.kind === 'public-address') subject.principal = '0x' + '12'.repeat(20);
+  expect(() =>
+    startRailgunProcess({
+      handle: scope.getContext(subject),
+      filename: require.resolve('./railgun-relay-sign-job'),
+      input: '{}',
+      binaryKey: true,
+      broker: { signal: scope.signal, dispatch: async () => new Uint8Array(32) },
+    })
+  ).toThrow(expect.objectContaining({ code: 'RAILGUN_PROCESS_INVALID' }));
+  expect(mockFork).not.toHaveBeenCalled();
+});
+test('relay-sign supervisor refuses old spending-sign purpose and wipes the returned key', async () => {
+  const bytes = new Uint8Array(32).fill(7);
+  task = startRailgunProcess({
+    handle: scope.getContext({
+      kind: 'private-account',
+      principal: 'railgun:0',
+      protocol: 'railgun',
+      deployment: 'sepolia',
+      chainId: 11155111,
+      role: 'keystore',
+      operation: 'relay-sign',
+    }),
+    filename: require.resolve('./railgun-relay-sign-job'),
+    input: '{}',
+    binaryKey: true,
+    broker: { signal: scope.signal, dispatch: async () => bytes },
+  });
+  child.emit('spawn');
+  message({
+    type: 'command',
+    wire: JSON.stringify({ id: 1, method: 'key', purpose: 'spending-sign' }),
+  });
+  await Promise.resolve();
+  expect(mockPort.postMessage).not.toHaveBeenCalled();
+  expect([...bytes]).toEqual(Array(32).fill(0));
+  child.emit('exit', 1);
+  expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
+});
