@@ -252,6 +252,7 @@ describe('what counts as a popover comes from the sheets, not a hand-kept list',
     // to write down is still in it, because its own CSS rule put it there.
     expect([...POPOVER_CLASSES].sort()).toEqual([
       'agent-page-actions-hint',
+      'agent-privacy-panel',
       'agent-workspace-popover',
       'autocomplete-dropdown',
       'bee-dropdown',

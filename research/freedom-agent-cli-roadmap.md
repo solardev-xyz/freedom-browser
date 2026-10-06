@@ -1,14 +1,33 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-02
+Last updated: 2026-10-06
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-10-04
+## Current working status — 2026-10-06
+
+### Session privacy verification — experimental, 2026-10-06
+
+The user selected a new work package on `experiment/agent-privacy-verification`:
+a per-conversation privacy shield that distinguishes provider claims from checks
+Freedom actually performs. See the [implementation plan and live findings](../docs/agent-session-privacy.md).
+Implemented: the approved `@phala/dcap-qvl@0.6.5` verifier checks CPU evidence
+in a bounded worker; the header shield shows its results, actual request-attempt
+roles/destinations and bounded persistent history. Main, helper and permission
+requests are covered by the instrumentation. Real API probes and synthetic Pi
+requests found model-specific Intel TCB advisories, which remain visible rather
+than earning an unqualified green shield.
+
+Still open: GPU evidence, approved software/configuration and image provenance,
+inference-connection and response binding, verified-only enforcement, and
+Agent-compatible E2EE. Current hardware checks are independent historical endpoint
+checks, not proof of inference privacy; the UI states that explicitly. Linux/Windows
+and packaged-worker qualification also remain open. Numeric trust scores and
+blanket "private" claims are not the baseline.
 
 ### Pi 1.0.2 qualification and PR refresh — 2026-10-04
 
@@ -4480,3 +4499,48 @@ feature branch. Live-provider qualification remains separate.
 ## Final target statement
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.
+
+
+### Session privacy: request-bound evidence follow-up (2026-10-06)
+
+On `experiment/agent-privacy-verification`: the shield now uses plain language,
+groups routes by provider/model, and keeps technical evidence collapsed. NEAR
+chat completions verify fresh CPU evidence before each request, bind the actual
+inference TLS socket, and check gateway/model signatures over the exact wire
+exchange. Live real-Pi test passed connection + gateway signature checks; Intel
+hardware advisories remain visible. Per-role history preserves partial coverage.
+
+Venice's sampled proxy receipt signs different upstream bytes with a different
+signer from the model attestation, so it cannot yet verify Freedom's exchange.
+Remaining: documented Venice proxy binding, GPU evidence, measured/approved
+software, stricter hardware/software acceptance policy, and packaged
+cross-platform qualification. No fully-private inference claim is made.
+See [the implementation and protocol notes](../docs/agent-session-privacy.md).
+
+
+### Session privacy: active protections (2026-10-06)
+
+Implemented on the same privacy experiment: per-conversation OpenRouter ZDR on
+by default, switchable in the shield, persisted and enforced for every runtime
+role with historical requirements preserved. NEAR ECDSA E2EE covers messages,
+tool schemas/calls/results and assistant history; live real-Pi text and tool
+round trips passed, with model signatures checked over ciphertext exchanges.
+Venice encrypts ordinary text conversations and assistant history, even when
+optional Agent tools are available. An encrypted answering step can hand actual
+tool work back to the native workflow. Actual tool requests/history, attachments
+and non-streaming requests retain the disclosed HTTPS fallback. Stale encryption
+capability metadata refreshes automatically before model resolution. Plain-text
+content-part arrays from Pi are normalized before checking E2EE eligibility;
+full AgentSession regression coverage includes browser tools, skills and codemode.
+Invalid
+encryption evidence never triggers plaintext retry. Both
+providers' hardware update advisories remain visible independently of encryption.
+No new dependency. UI checked in dark/light and a small window.
+
+Picker and connection overview now use compact privacy symbols with per-symbol
+tooltips and screen-reader descriptions.
+
+Remaining: live OpenRouter endpoint-level
+ZDR availability/pricing previews; NEAR Ed25519/v2 support; GPU and approved
+software verification; Venice response/proxy binding; stricter hardware policy;
+packaged and cross-platform verification. See the privacy implementation notes.

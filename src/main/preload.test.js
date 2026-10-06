@@ -336,6 +336,7 @@ describe('preload', () => {
         IPC.AGENT_APPROVAL_MODE_SET,
         [{ conversationId: 'conversation_123', approvalMode: 'allow_website_interactions' }],
       ],
+      [exposures.electronAPI, 'setAgentPrivacySettings', ['conversation_123', { requireZeroRetention: false }], IPC.AGENT_PRIVACY_SETTINGS_SET, [{ conversationId: 'conversation_123', settings: { requireZeroRetention: false } }]],
       [exposures.electronAPI, 'claimAgentTab', [7], IPC.AGENT_TAB_CLAIM, [{ rendererTabId: 7 }]],
       [exposures.electronAPI, 'agentWorkspaceHistory', ['conversation_one', 'exclude', { path: 'customer.csv', reason: 'Private input' }], IPC.AGENT_WORKSPACE_HISTORY,
         [{ conversationId: 'conversation_one', action: 'exclude', path: 'customer.csv', reason: 'Private input' }]],

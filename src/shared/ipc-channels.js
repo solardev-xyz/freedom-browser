@@ -206,6 +206,7 @@ module.exports = {
   AGENT_ATTACHMENTS_REMOVE: 'agent:attachments:remove',
   AGENT_ATTACHMENTS_REVOKE: 'agent:attachments:revoke',
   AGENT_ATTACHMENTS_PREVIEW: 'agent:attachments:preview',
+  AGENT_PRIVACY_SETTINGS_SET: 'agent:privacy-settings:set',
   AGENT_APPROVAL_MODE_SET: 'agent:approval-mode:set',
   AGENT_TAB_CLAIM: 'agent:tab:claim',
   AGENT_WORKSPACE_HISTORY: 'agent:workspace:history',

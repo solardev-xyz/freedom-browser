@@ -151,6 +151,8 @@ function validateStartPayload(payload) {
     prompt: payload.prompt,
     approvalMode,
     attachmentIds: [...new Set(attachmentIds)],
+    ...(typeof payload.privacySettings?.requireZeroRetention === 'boolean' &&
+      { privacySettings: { requireZeroRetention: payload.privacySettings.requireZeroRetention } }),
   };
 }
 
@@ -371,7 +373,7 @@ function registerFreedomAgentIpc(options = {}) {
           'The sender is not trusted browser chrome'
         );
       }
-      const { rendererTabId, prompt, approvalMode, attachmentIds } =
+      const { rendererTabId, prompt, approvalMode, attachmentIds, privacySettings } =
         validateStartPayload(rawPayload);
       const continuing = Boolean(owner);
       if (continuing && owner.sender !== event?.sender) {
@@ -445,6 +447,7 @@ function registerFreedomAgentIpc(options = {}) {
         started = await service.start({
           prompt,
           approvalMode,
+          ...(privacySettings && { privacySettings }),
           ...(attachmentIds.length && {
             attachmentIds,
             attachmentOwnerId: String(event.sender.id),
@@ -1294,6 +1297,15 @@ function registerFreedomAgentIpc(options = {}) {
       return safeServiceError(error);
     }
   };
+  const handleSetPrivacySettings = async (event, payload = {}) => {
+    if (!isTrustedSender(event?.sender) || !owner || owner.sender !== event?.sender ||
+      payload.conversationId !== owner.conversationId ||
+      !/^conversation_[a-f0-9]{16}$/.test(payload.conversationId || '')) {
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender does not own that Agent conversation');
+    }
+    try { return { ok: true, ...await service.updatePrivacySettings(payload.conversationId, payload.settings) }; }
+    catch (error) { return safeServiceError(error); }
+  };
   const handleSetApprovalMode = async (event, payload = {}) => {
     if (
       !owner ||
@@ -1387,6 +1399,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PREVIEW, handleAttachmentPreview);
+  ipcMain.handle(IPC.AGENT_PRIVACY_SETTINGS_SET, handleSetPrivacySettings);
   ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
   ipcMain.handle(IPC.AGENT_WORKSPACE_HISTORY, handleWorkspaceHistory);
@@ -1434,6 +1447,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REVOKE);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PREVIEW);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_MODE_SET);
+    ipcMain.removeHandler?.(IPC.AGENT_PRIVACY_SETTINGS_SET);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
     ipcMain.removeHandler?.(IPC.AGENT_WORKSPACE_HISTORY);
     ipcMain.removeHandler?.(IPC.AGENT_WORKSPACE_INSPECT);

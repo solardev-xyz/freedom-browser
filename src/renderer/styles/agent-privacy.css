@@ -1,0 +1,29 @@
+.agent-privacy-panel {
+  position: fixed;
+  margin: 0;
+  width: min(360px, calc(100vw - 16px));
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--menu-bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  z-index: 10050;
+}
+
+.agent-privacy-panel h3 { margin: 0; font-size: 16px; }
+.agent-privacy-panel p { margin: 8px 0; }
+.agent-privacy-status { font-weight: 600; }
+.agent-privacy-detail-note, .agent-privacy-origin { color: var(--muted); }
+.agent-privacy-warning, #agent-session-privacy[data-state='advisory'] { color: var(--warning-fg); }
+.agent-privacy-route { border-top: 1px solid var(--border); padding: 12px 0 4px; }
+.agent-privacy-panel:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+
+.agent-privacy-panel details { margin-top: 10px; color: var(--muted); }
+.agent-privacy-panel summary { cursor: pointer; color: var(--text); }
+.agent-privacy-panel summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.agent-privacy-control { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.agent-privacy-control input { accent-color: var(--accent); }

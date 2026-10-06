@@ -199,3 +199,14 @@ test('subscription discovery uses its own catalog, strips remote instructions an
   await expect(catalog.refresh('openai-codex', 'token')).rejects.toMatchObject({ code: 'AGENT_CATALOG_AUTH_FAILED' });
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+test('retains advertised E2EE capability without treating a model name as encryption or enabling it', async () => {
+  const payload = venice('private', { supportsE2EE: true });
+  const { catalog, dataDir } = createCatalog(async () => new Response(JSON.stringify(payload)));
+  await catalog.refresh('venice', 'test-key');
+  expect(catalog.get('venice').models[0]).toMatchObject({ e2ee: true, available: true, privacy: 'private' });
+  expect(new ProviderCatalog({ dataDir }).get('venice').models[0].e2ee).toBe(true);
+  const plain = venice(); plain.data[0].id = 'e2ee-model-name';
+  expect(normalizeModels('venice', plain)[0].e2ee).toBe(false);
+  expect(normalizeModels('venice', venice('private', { supportsE2EE: 'true' }))[0].e2ee).toBe(false);
+});

@@ -1,5 +1,6 @@
 'use strict';
 
+const { normalizePrivacy } = require('./session-privacy');
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
@@ -19,7 +20,7 @@ const {
 } = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const MAX_TITLE_LENGTH = 120;
 const MAX_MODEL_FIELD_LENGTH = 240;
 const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', 'cancelled']);
@@ -162,7 +163,7 @@ function normalizeAttachments(attachments) {
     .filter(Boolean);
 }
 
-function rowToSession(row) {
+function rowToSession(row, includePrivacy = false) {
   if (!row) return null;
   return {
     conversationId: row.id,
@@ -175,6 +176,7 @@ function rowToSession(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     turnCount: row.turn_count || 0,
+    ...(includePrivacy === true && { privacy: normalizePrivacy(safeJsonParse(row.privacy_json, null)) }),
   };
 }
 
@@ -343,9 +345,21 @@ class AgentSessionHistoryStore {
           }
           cursor = rows.at(-1).id;
         }
+        this.db.pragma('user_version = 5');
+      })();
+    }
+    if (version < 6) {
+      this.db.transaction(() => {
+        this.db.exec('ALTER TABLE agent_sessions ADD COLUMN privacy_json TEXT');
         this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
       })();
     }
+  }
+
+  updatePrivacy({ conversationId, privacy }) {
+    const id = requiredString(conversationId, 'Agent conversation ID', 160);
+    this.getDb().prepare('UPDATE agent_sessions SET privacy_json = ? WHERE id = ?')
+      .run(JSON.stringify(normalizePrivacy(privacy)), id);
   }
 
   // Reports belong to conversation history, but not to its eagerly loaded JSON.
@@ -608,7 +622,7 @@ class AgentSessionHistoryStore {
 
   getSession(conversationId) {
     const id = requiredString(conversationId, 'Agent conversation ID', 160);
-    const session = rowToSession(this.#getStatements().getSession.get(id));
+    const session = rowToSession(this.#getStatements().getSession.get(id), true);
     if (!session) return null;
     return {
       ...session,

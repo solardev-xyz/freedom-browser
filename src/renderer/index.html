@@ -1538,6 +1538,13 @@
               <span id="agent-float-title" class="agent-float-title">New task</span>
             </div>
             <div class="agent-sidebar-header-actions">
+              <button type="button" class="agent-icon-btn" id="agent-session-privacy"
+                aria-label="Conversation privacy" aria-expanded="false" aria-controls="agent-session-privacy-panel" hidden>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z" />
+                  <path d="M12 8v5m0 3h.01" />
+                </svg>
+              </button>
               <button
                 type="button"
                 class="agent-icon-btn"
@@ -1660,6 +1667,7 @@
                     <button id="agent-model-refresh" class="agent-provider-models-refresh" type="button" aria-label="Refresh available models" title="Refresh available models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
                   </div>
                   <ul id="agent-provider-models-list" class="agent-provider-models-list" aria-labelledby="agent-provider-models-heading" tabindex="0" hidden></ul>
+                  <p class="agent-catalog-status">Hover over privacy symbols for details. Hardware checks run when used.</p>
                   <p id="agent-provider-models-empty" class="agent-provider-models-empty">Connect to discover available models</p>
                 </section>
                 <details id="agent-provider-advanced" class="agent-provider-advanced">
@@ -2064,6 +2072,7 @@
               <div id="agent-model-menu" class="agent-popover agent-model-menu" role="menu" hidden>
                 <input id="agent-model-menu-search" class="agent-model-menu-search" type="search" placeholder="Search all connected models…" aria-label="Search connected models" autocomplete="off" />
                 <div id="agent-model-menu-list"></div>
+                <p class="agent-catalog-status">Hover over privacy symbols for details</p>
                 <div class="agent-popover-divider"></div>
                 <button id="agent-manage-providers" class="agent-popover-action" type="button">
                   Manage models…
@@ -5581,5 +5590,6 @@
     <script src="./vendor/marked.min.js"></script>
     <script src="./vendor/purify.min.js"></script>
     <script type="module" src="./index.js"></script>
+    <section id="agent-session-privacy-panel" class="agent-privacy-panel chrome-popover" popover="manual" role="region" aria-label="Conversation privacy details" tabindex="-1" hidden></section>
   </body>
 </html>

@@ -1,3 +1,4 @@
+import { createAgentPrivacy, modelPrivacyInfo, createModelPrivacySymbols } from './agent-privacy.js';
 import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
@@ -6,6 +7,8 @@ import { homeUrl } from './page-urls.js';
 import { matchesShortcut } from './shortcuts.js';
 import { close as closeWalletSidebar, isVisible as isWalletSidebarVisible } from './sidebar.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
+
+let sessionPrivacy;
 
 const PROVIDER_NAMES = Object.freeze({
   anthropic: 'Anthropic',
@@ -662,6 +665,8 @@ function configuredModels() {
       providerId: connection.providerId,
       modelId: model.id,
       name: model.name || model.id,
+      privacyInfo: modelPrivacyInfo(connection.providerId, model, connection.baseUrl,
+        currentConversationId && connection.providerId === providerStatus?.providerId ? sessionPrivacy?.settings() : undefined),
     }));
   });
 }
@@ -745,6 +750,7 @@ async function selectApprovalMode(nextMode) {
 }
 
 function setAgentView(nextView) {
+  sessionPrivacy?.close();
   setModeMenuOpen(false);
   setScopeHelpOpen(false);
   if (nextView !== 'workspace' && agentFirstMode) setAgentFirstMode(false);
@@ -1484,6 +1490,7 @@ function showProviderSetup() {
 }
 
 function setPanelOpen(nextOpen) {
+  if (!nextOpen) sessionPrivacy?.close();
   if (!nextOpen) {
     setModeMenuOpen(false);
     setScopeHelpOpen(false);
@@ -1799,7 +1806,7 @@ function renderProviderFields() {
   elements.testProvider.hidden = !connection;
   elements.providerDisconnect.hidden = !connection;
   elements.testProviderNote.hidden = !connection;
-  const policies = descriptor?.policies || [];
+  const policies = providerId === 'openrouter' ? [] : descriptor?.policies || [];
   elements.privacyControls.hidden = policies.length === 0;
   elements.privacyPolicy.replaceChildren(...policies.map(([value, label]) => {
     const option = document.createElement('option');
@@ -1841,8 +1848,13 @@ function renderProviderModelPreview(providerId) {
     ? `Available models · ${available.length}` : 'Available models';
   elements.providerModelsList.replaceChildren(...available.map((model) => {
     const row = document.createElement('li');
-    row.textContent = model.name || model.id;
-    row.title = model.id;
+    const name = document.createElement('span');
+    name.textContent = model.name || model.id;
+    const info = modelPrivacyInfo(providerId, model, connection?.baseUrl);
+    const privacy = createModelPrivacySymbols(info);
+    row.appendChild(name);
+    row.appendChild(privacy);
+    row.title = `${model.id}\n${info.detail}`;
     return row;
   }));
   elements.providerModelsList.scrollTop = 0;
@@ -2049,11 +2061,15 @@ function renderModelDetails() {
     if (model.vision) parts.push('Images');
     if (model.reasoning) parts.push('Reasoning');
     parts.push(model.tools === true ? 'Tool calling' : model.tools === false ? 'No tool calling' : 'Tool support not reported');
-    if (model.privacy && !['standard', 'routing'].includes(model.privacy)) parts.push(`${model.privacy.toUpperCase()} · provider reported`);
     if (model.inputPrice != null && model.outputPrice != null) parts.push(`$${model.inputPrice} input / $${model.outputPrice} output per 1M tokens`);
   }
   elements.modelDetails.textContent = parts.join(' · ') || 'No matching models. Try another search or refresh the catalog.';
-
+  if (model) {
+    const info = modelPrivacyInfo(providerId, model, providerConnection(providerId)?.baseUrl);
+    const privacy = createModelPrivacySymbols(info);
+    privacy.classList.add('agent-model-privacy-detail');
+    elements.modelDetails.appendChild(privacy);
+  }
 }
 
 async function saveProviderPreferences(preferences, providerId = elements.provider.value) {
@@ -2187,9 +2203,14 @@ function renderModelMenu() {
       const name = document.createElement('span');
       name.textContent = model.name;
       const check = document.createElement('span');
+      check.className = 'agent-model-check';
       check.textContent = active ? '✓' : '';
       option.appendChild(name);
       option.appendChild(check);
+      const privacy = createModelPrivacySymbols(model.privacyInfo);
+      option.appendChild(privacy);
+      option.title = model.privacyInfo.detail;
+      option.setAttribute('aria-label', `${model.name}. ${model.privacyInfo.label}. ${model.privacyInfo.detail}`);
       option.addEventListener('click', () => selectModel(model.providerId, model.modelId));
       const row = document.createElement('div');
       row.className = 'agent-model-row';
@@ -2208,6 +2229,7 @@ function renderModelMenu() {
 }
 
 function renderActiveModel() {
+  sessionPrivacy?.setProvider(providerStatus?.providerId);
   const configured = providerStatus?.configured === true;
   elements.activeModelLabel.textContent = configured
     ? modelName(providerStatus.providerId, providerStatus.modelId)
@@ -2504,6 +2526,7 @@ function updateSendAvailability() {
 }
 
 function resetConversationUi() {
+  sessionPrivacy?.update(null);
   attachmentSelectionGeneration += 1;
   resetComposerDrop();
   toolRows.clear();
@@ -4133,6 +4156,7 @@ function applyReadyConversationState(state) {
   conversationResources = Array.isArray(state.resources) ? state.resources : [];
   setConversationTitle(state.title || transcript[0]?.userText || 'Current task');
   restoreTranscript(transcript);
+  sessionPrivacy?.update(state.privacy || { version: 1, earlierUnknown: true, routes: [] });
   setAgentControlledTab(null);
   setRunState('idle', 'Ready');
   setScopeNotice(scopeNoticeForConversation());
@@ -4315,6 +4339,10 @@ function handleAgentEvent(event) {
 }
 
 function applyAgentEvent(event) {
+  if (event?.type === 'conversation_privacy_changed') {
+    if (event.conversationId === currentConversationId) sessionPrivacy?.update(event.privacy);
+    return;
+  }
   if (event?.type === 'conversation_cleared') {
     if (!currentConversationId || event.conversationId === currentConversationId) {
       applyConversationCleared();
@@ -4615,7 +4643,10 @@ async function startRun(options = {}) {
     const attachmentIds = explicitPrompt
       ? []
       : pendingAttachments.map((attachment) => attachment.selectionId);
-    const response = attachmentIds.length
+    const privacySettings = sessionPrivacy?.settings();
+    const response = privacySettings?.requireZeroRetention === false
+      ? await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode, attachmentIds, privacySettings)
+      : attachmentIds.length
       ? await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode, attachmentIds)
       : await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode);
     if (!response?.ok) {
@@ -5081,6 +5112,13 @@ export function initAgentUi(options = {}) {
   panelHeader = elements.panel.querySelector?.('.agent-sidebar-header') || null;
   runHeader = elements.panel.querySelector?.('.agent-run-header') || null;
   runHeaderHome = runHeader?.parentNode || null;
+  sessionPrivacy = createAgentPrivacy(byId('agent-session-privacy'), byId('agent-session-privacy-panel'), async settings => {
+    if (!currentConversationId) return;
+    const response = await window.electronAPI.setAgentPrivacySettings(currentConversationId, settings);
+    if (!response?.ok) throw new Error('Could not save privacy settings');
+    sessionPrivacy.update(response.privacy);
+    renderModelMenu();
+  });
   floatTitle = byId('agent-float-title');
   scopeHelpButton = byId('agent-scope-help');
   scopeHelpText = byId('agent-scope-help-text');
@@ -5389,6 +5427,7 @@ export function initAgentUi(options = {}) {
       closeSessionContextMenu(true);
       return;
     }
+    if (sessionPrivacy?.escape()) { event.preventDefault(); event.stopPropagation(); return; }
     if (scopeHelpText && !scopeHelpText.hidden) {
       event.preventDefault();
       setScopeHelpOpen(false);
