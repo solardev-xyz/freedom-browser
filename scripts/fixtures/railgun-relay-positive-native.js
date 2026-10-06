@@ -14,7 +14,19 @@ const THROUGH = OFFSET + 30;
 const ANCHOR = OFFSET + 100;
 const SIGNED_STOP = 'synthetic-list-signed-stop';
 const TRANSACT = 'synthetic-list-transact';
-const SCENARIOS = ['synthetic-list', SIGNED_STOP, TRANSACT];
+const SIGNING_STOP = 'synthetic-list-signing-stop';
+const SCENARIOS = ['synthetic-list', SIGNED_STOP, TRANSACT, SIGNING_STOP];
+// Signing stop: the request is aborted when the relay-sign key reply is
+// observed, before the signature exists. Only that one utility may then close
+// through cancellation, with these source-observed causes (railgun-process.js
+// stop(): context/session revocation or close), SIGTERM exit 15, no
+// escalation or disconnection and no result.
+const SIGNING_CANCEL_CAUSES = [
+  'PRIVACY_CONTEXT_REVOKED',
+  'RAILGUN_SESSION_REVOKED',
+  'RAILGUN_PROCESS_CLOSED',
+];
+let signingReplyStop = null;
 const TXID_CONTEXT = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
 // Local failure diagnostics only: the last reached fixture step.
 let progress = 'start';
@@ -438,6 +450,8 @@ function installServices(logs, expectedNote, scenario, protocol) {
   };
 }
 function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expectedRoles()) {
+  // Only a signing-stop role list ends at relay-sign; that row is cancelled.
+  const cancelled = (role) => role === 'relay-sign' && roles.at(-1) === 'relay-sign';
   for (const name of [
     'railgun-identity',
     'railgun-public-run',
@@ -602,8 +616,13 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
         // below reject it. Sticky native assertions still prevent qualification.
         row.closed = structuredClone(value);
         row.closedObserved = true;
-        assert.equal(row.results, 1);
-        assert.equal(value.code, 'RAILGUN_PROCESS_CLOSED');
+        if (cancelled(role)) {
+          assert.equal(row.results, 0);
+          assert.ok(SIGNING_CANCEL_CAUSES.includes(value.code));
+        } else {
+          assert.equal(row.results, 1);
+          assert.equal(value.code, 'RAILGUN_PROCESS_CLOSED');
+        }
         assert.equal(value.exitCode, 15);
         assert.equal(value.escalated, false);
         assert.equal(value.peerDisconnected, false);
@@ -623,6 +642,14 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
       );
       for (const row of rows) {
         assert.equal(row.closedObserved, true);
+        if (cancelled(row.role)) {
+          // One delivered signing loan, no result and therefore no guard report.
+          assert.equal(row.results, 0);
+          assert.equal(row.keyRequests, 1);
+          assert.equal(row.keyReplies, 1);
+          assert.deepEqual(row.methods, { key: 1 });
+          continue;
+        }
         assert.equal(row.results, 1);
         // Every utility, including keyless TXID/staging ones, reports the same guards.
         assert.deepEqual(row.guards, require(wallet + 'railgun-relay-quote-data').EXPECTED_GUARDS);
@@ -683,6 +710,10 @@ const TXID_ROLES = new Set([
 // before the unchanged relay roles (observed in discovery run b, now exact).
 function expectedRoles(scenario = 'synthetic-list') {
   assert.ok(SCENARIOS.includes(scenario));
+  if (scenario === SIGNING_STOP) {
+    const positive = expectedRoles();
+    return positive.slice(0, positive.indexOf('relay-sign') + 1);
+  }
   if (scenario === TRANSACT) {
     const positive = expectedRoles();
     const head = positive.slice(0, -14),
@@ -1324,6 +1355,119 @@ async function probeSameInput(reservations, recovery, owned, selected, after) {
   );
   return { refusedCode: code, durableChange: false };
 }
+// Controlled signing-reply cancellation: the hold and signing marker remain,
+// no signature exists, and the same input stays unavailable.
+async function finishSigningStop({
+  result,
+  helper,
+  margins,
+  operationStart,
+  services,
+  rpcBefore,
+  reservations,
+  recovery,
+  before,
+  jobs,
+  custody,
+  account,
+  owned,
+  selected,
+  control,
+}) {
+  assert.equal(control.signal.aborted, true);
+  assert.equal(signingReplyStop, null);
+  assert.deepEqual(Object.keys(result).sort(), [
+    'operationId',
+    'signatureSaved',
+    'signingAttempted',
+    'stage',
+    'status',
+  ]);
+  assert.equal(result.status, 'recovery-required');
+  assert.equal(result.signingAttempted, true);
+  assert.equal(result.signatureSaved, false);
+  assert.match(result.operationId, /^[0-9a-f]{64}$/);
+  assert.ok(performance.now() - operationStart < 180000);
+  services.assertClosed();
+  const operationRequests = services.requests.slice(rpcBefore);
+  const stopped = await reservations.readRelay(recovery, result.operationId);
+  assert.equal(stopped.record.state, 'signing-local');
+  assert.equal(stopped.entry.state, 'signing-local');
+  assert.equal(stopped.interruptedStep, null);
+  assert.equal(stopped.record.signature, null);
+  assert.equal(stopped.record.proved, null);
+  assert.deepEqual(stopped.record.history.note, helper.note);
+  const after = {
+    private: await reservations.inspect(),
+    relay: await reservations.listRelay(recovery),
+    recovery: await recovery.inspect(),
+  };
+  const [tree, position] = selected.id.split(':').map(Number);
+  let code = null;
+  try {
+    await reservations.assertAvailable({
+      tree,
+      position,
+      nullifier: owned.nullifier,
+      noteHash: owned.hash,
+    });
+  } catch (error) {
+    code = error?.code ?? null;
+  }
+  assert.equal(code, 'RAILGUN_PRIVATE_INPUT_RESERVED');
+  assert.deepEqual(after.private, before.private);
+  assert.deepEqual(after.relay, [{ id: result.operationId, state: 'signing-local' }]);
+  assert.equal(after.recovery.records, 1);
+  assert.equal(after.recovery.sequence - before.recovery.sequence, 2);
+  assert.deepEqual(after.recovery.states, [{ id: result.operationId, state: 'signing-local' }]);
+  custody.finish(['held', 'signing-local']);
+  const roles = expectedRoles(SIGNING_STOP);
+  assert.equal(jobs.rows.length, roles.length);
+  assert.equal(
+    jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0),
+    8
+  );
+  const recordText = JSON.stringify(stopped.record);
+  await account.close();
+  return {
+    schema: 'railgun-relay-signing-stop-native-v1',
+    scenario: SIGNING_STOP,
+    result,
+    selectedInputType: 'Shield',
+    inputAmount: '2000',
+    feeAmount: '100',
+    selfAmount: '1900',
+    syntheticList: TEST_LIST,
+    productionServiceAuthority: false,
+    liveServiceContact: false,
+    relaySendPermitted: false,
+    quoteListEqualityIsFixturePolicy: true,
+    exactReviewCallbacks: 1,
+    disclosureCallbacks: 1,
+    quoteMargins: [
+      ...margins,
+      { stage: 'credential-reply-observed', remainingMs: custody.credentialMargin() },
+    ],
+    membershipControls: helper.controls,
+    selectedServiceMethods: [...services.poiMethods],
+    syntheticOperationRequests: operationRequests.length,
+    recoverySequenceDelta: 2,
+    stopKind: 'controlled-signing-reply-cancellation',
+    crashOrNetworkInterruption: false,
+    unknownExitClaimed: false,
+    sameInputAvailability: { refusedCode: code, durableChange: false },
+    cancelledSigner: jobs.rows.at(-1).closed,
+    custodyOrdering: custody.rows,
+    recordDigest: stopped.recordDigest,
+    publicFixtureRecordSha256: sha(recordText),
+    publicFixtureEntrySha256: sha(JSON.stringify(stopped.entry)),
+    signatureSaved: false,
+    proofProduced: false,
+    transportAttempted: false,
+    coldRestartQualified: false,
+    actualProductionListQualified: false,
+  };
+}
 async function finishSignedStop({
   result,
   hold,
@@ -1647,6 +1791,12 @@ async function qualify({
           };
         })
       : null;
+  if (scenario === SIGNING_STOP) {
+    signingReplyStop = () => {
+      signingReplyStop = null;
+      control.abort();
+    };
+  }
   let result;
   step('qualify-operation');
   try {
@@ -1712,6 +1862,24 @@ async function qualify({
   assert.equal(disclosed, 1);
   assert.equal(stagingReviews, transact ? 1 : 0);
   assert.equal(rootReviews, transact ? 1 : 0);
+  if (scenario === SIGNING_STOP)
+    return finishSigningStop({
+      result,
+      helper,
+      margins,
+      operationStart,
+      services,
+      rpcBefore,
+      reservations,
+      recovery,
+      before,
+      jobs,
+      custody,
+      account,
+      owned,
+      selected,
+      control,
+    });
   if (scenario === SIGNED_STOP)
     return finishSignedStop({
       result,
@@ -2156,7 +2324,14 @@ async function execute(config) {
     selected = Object.freeze({ ...v });
   };
   const custody = installCustody();
-  const jobs = installJobs(protocol.draft, () => custody.issued(), expectedRoles(config.scenario));
+  const jobs = installJobs(
+    protocol.draft,
+    () => {
+      custody.issued();
+      signingReplyStop?.();
+    },
+    expectedRoles(config.scenario)
+  );
   custody.jobs(jobs);
   const vault = require('../../src/main/identity/vault');
   const started = performance.now();
@@ -2280,7 +2455,9 @@ async function execute(config) {
     } else {
       assert.equal(
         services.requests.length,
-        config.scenario === SIGNED_STOP ? 1283 + report.syntheticOperationRequests : 1322
+        [SIGNED_STOP, SIGNING_STOP].includes(config.scenario)
+          ? 1283 + report.syntheticOperationRequests
+          : 1322
       );
       assert.equal(services.requests.filter((v) => v.method === 'eth_chainId').length, 3);
     }
@@ -2370,6 +2547,8 @@ async function execute(config) {
 }
 module.exports = {
   SIGNED_STOP,
+  SIGNING_STOP,
+  finishSigningStop,
   TRANSACT,
   translateTransact,
   indexerRow,
