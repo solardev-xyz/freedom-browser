@@ -13,7 +13,9 @@ const OFFSET = 5944700;
 const THROUGH = OFFSET + 30;
 const ANCHOR = OFFSET + 100;
 const SIGNED_STOP = 'synthetic-list-signed-stop';
-const SCENARIOS = ['synthetic-list', SIGNED_STOP];
+const TRANSACT = 'synthetic-list-transact';
+const SCENARIOS = ['synthetic-list', SIGNED_STOP, TRANSACT];
+const TXID_CONTEXT = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
 const TEST_LIST = '43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c';
 const AUDIT_CASES = ['unmodified', 'signature', 'transaction-proof', 'pre-poi-proof'];
 const hex = (v) => '0x' + v.toString(16).padStart(64, '0');
@@ -44,6 +46,58 @@ function translate(bytes) {
     transactionHash: hex(OFFSET + v.blockNumber + 1000),
   }));
   return { logs, originalSha256: sha(bytes), translatedSha256: sha(JSON.stringify(logs)) };
+}
+// Transact input: the reviewed staging derivation inserts one unrelated
+// Nullified log before the block-30 Transact in the same transaction. Logs keep
+// their original transaction/log indexes; the same block offset applies to logs
+// and to the public TXID row derived from them.
+function translateTransact(bytes) {
+  assert.equal(sha(bytes), SOURCE_SHA);
+  const derived = require('./railgun-transact-staging-source').derive(JSON.parse(bytes));
+  assert.equal(
+    JSON.stringify(derived.source.logs.map((v) => [v.blockNumber, v.transactionIndex, v.logIndex])),
+    '[[10,0,0],[20,0,0],[30,0,0],[30,0,1]]'
+  );
+  const logs = derived.source.logs.map((v) => ({
+    ...v,
+    blockNumber: OFFSET + v.blockNumber,
+    blockHash: hex(OFFSET + v.blockNumber + 1),
+    transactionHash: hex(OFFSET + v.blockNumber + 1000),
+  }));
+  assert.equal(derived.row.blockNumber, 30);
+  const row = {
+    ...derived.row,
+    graphID: hex(OFFSET + 30) + '0'.repeat(128),
+    blockNumber: OFFSET + 30,
+    txid: hex(OFFSET + 30 + 1000).slice(2),
+  };
+  assert.equal(row.txid, logs[3].transactionHash.slice(2));
+  return {
+    logs,
+    row,
+    originalSha256: sha(bytes),
+    translatedSha256: sha(JSON.stringify(logs)),
+    rowSha256: sha(JSON.stringify(row)),
+  };
+}
+function indexerRow(row) {
+  return {
+    id: row.graphID,
+    nullifiers: row.nullifiers,
+    commitments: row.commitments,
+    transactionHash: '0x' + row.txid,
+    boundParamsHash: row.boundParamsHash,
+    blockNumber: String(row.blockNumber),
+    utxoTreeIn: String(row.utxoTreeIn),
+    utxoTreeOut: String(row.utxoTreeOut),
+    utxoBatchStartPositionOut: String(row.utxoBatchStartPositionOut),
+    hasUnshield: false,
+    unshieldToken: { tokenType: 'ERC20', tokenSubID: '0x00', tokenAddress: '0x' + '00'.repeat(20) },
+    unshieldToAddress: '0x' + '00'.repeat(20),
+    unshieldValue: '0',
+    blockTimestamp: String(row.timestamp),
+    verificationHash: row.verificationHash,
+  };
 }
 function ranges() {
   const values = [];
@@ -84,8 +138,10 @@ function installServices(logs, expectedNote, scenario, protocol) {
   const rpcUrl = 'https://synthetic.invalid/railgun';
   const requests = [],
     poiMethods = [],
-    clients = [];
+    clients = [],
+    timeline = [];
   let fixture,
+    txid,
     stopped = false;
   const header = (n) => ({ number: '0x' + n.toString(16), hash: hex(n + 1), parentHash: hex(n) });
   function rpcRead(subject, method, params) {
@@ -118,8 +174,8 @@ function installServices(logs, expectedNote, scenario, protocol) {
         .map((v) => ({
           ...v,
           blockNumber: '0x' + v.blockNumber.toString(16),
-          transactionIndex: '0x0',
-          logIndex: '0x0',
+          transactionIndex: '0x' + v.transactionIndex.toString(16),
+          logIndex: '0x' + v.logIndex.toString(16),
         }));
     } else {
       assert.equal(method, 'eth_getBlockByNumber');
@@ -135,7 +191,7 @@ function installServices(logs, expectedNote, scenario, protocol) {
   function poiRead(v) {
     assert.ok(fixture);
     const note = expectedNote();
-    assert.ok(note && note.type === 'Shield');
+    assert.ok(note && note.type === (scenario === TRANSACT ? 'Transact' : 'Shield'));
     const context = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
     let result;
     if (poiMethods.length === 0) {
@@ -176,9 +232,41 @@ function installServices(logs, expectedNote, scenario, protocol) {
     poiMethods.push(v.method);
     return result;
   }
+  // Public TXID services keep the genuine service module and wire schemas.
+  function txidRead(role, url, body) {
+    assert.equal(scenario, TRANSACT);
+    assert.ok(txid);
+    const count = txid.state.count;
+    if (role === 'indexer') {
+      assert.equal(url, require(wallet + 'railgun-public-services').INDEXER_URL);
+      assert.deepEqual(Object.keys(body).sort(), ['query', 'variables']);
+      assert.ok(typeof body.query === 'string' && body.query.includes('transactions('));
+      assert.deepEqual(Object.keys(body.variables), ['after']);
+      const after = body.variables.after;
+      assert.ok(after === '0x00' || after === txid.row.graphID);
+      timeline.push({ kind: 'service', role, method: 'txidPage', after });
+      return { data: { transactions: after === '0x00' ? [indexerRow(txid.row)] : [] } };
+    }
+    assert.equal(role, 'poi');
+    assert.equal(url, 'https://ppoi.fdi.network');
+    assert.deepEqual(Object.keys(body).sort(), ['id', 'jsonrpc', 'method', 'params']);
+    timeline.push({ kind: 'service', role, method: body.method });
+    if (body.method === 'ppoi_validated_txid') {
+      assert.deepEqual(body.params, TXID_CONTEXT);
+      return { validatedTxidIndex: count - 1, validatedMerkleroot: txid.state.root };
+    }
+    assert.equal(body.method, 'ppoi_validate_txid_merkleroot');
+    assert.deepEqual(body.params, {
+      ...TXID_CONTEXT,
+      tree: 0,
+      index: count - 1,
+      merkleroot: txid.state.root,
+    });
+    return true;
+  }
   const transportFactory = () => {
     assert.equal(stopped, false);
-    assert.ok(clients.length < 2);
+    assert.ok(clients.length < (scenario === TRANSACT ? 8 : 2));
     let closed = false,
       pending = 0,
       resolve;
@@ -207,12 +295,23 @@ function installServices(logs, expectedNote, scenario, protocol) {
           assert.equal(options.method, 'POST');
           assert.equal(options.signal.aborted, false);
           const v = JSON.parse(options.body);
+          const kind =
+            subject.kind === 'service' ? 'service' : subject.role === 'poi' ? 'poi' : 'rpc';
+          state.kind ??= kind;
+          assert.equal(state.kind, kind);
+          if (kind === 'service') {
+            assert.equal(subject.principal, 'railgun-public-sync');
+            assert.ok(['poi', 'indexer'].includes(subject.role));
+            const value = txidRead(subject.role, url, v);
+            const reply =
+              subject.role === 'indexer' ? value : { jsonrpc: '2.0', id: v.id, result: value };
+            assert.equal(options.signal.aborted, false);
+            return { status: 200, body: Buffer.from(JSON.stringify(reply)) };
+          }
           assert.deepEqual(Object.keys(v).sort(), ['id', 'jsonrpc', 'method', 'params']);
           assert.equal(v.jsonrpc, '2.0');
           assert.equal(typeof v.id, 'string');
-          const kind = subject.role === 'poi' ? 'poi' : 'rpc';
-          state.kind ??= kind;
-          assert.equal(state.kind, kind);
+          if (kind === 'poi') timeline.push({ kind: 'poi', method: v.method });
           assert.equal(url, kind === 'poi' ? 'https://ppoi.fdi.network' : rpcUrl);
           const result = kind === 'poi' ? poiRead(v) : rpcRead(subject, v.method, v.params);
           assert.equal(options.signal.aborted, false);
@@ -256,11 +355,37 @@ function installServices(logs, expectedNote, scenario, protocol) {
   return {
     requests,
     poiMethods,
+    timeline,
+    clientKinds: () => clients.map(({ state }) => ({ ...state })),
+    mark(label) {
+      timeline.push({ kind: 'mark', label });
+    },
+    txid(value) {
+      assert.equal(scenario, TRANSACT);
+      assert.equal(txid, undefined);
+      assert.ok(value.state.count === 1 && /^[0-9a-f]{64}$/.test(value.state.root));
+      txid = structuredClone(value);
+    },
     fixture(value) {
       assert.equal(fixture, undefined);
       fixture = structuredClone(value);
     },
     assertClosed() {
+      if (scenario === TRANSACT) {
+        // Service clients are opened per TXID/staging/root owner and are
+        // observed, not derived; the rpc client stays open for later reads.
+        const states = clients.map(({ state }) => state);
+        assert.deepEqual(states[0], { kind: 'rpc', closed: false });
+        assert.equal(states.filter((v) => v.kind === 'poi').length, 1);
+        assert.ok(states.slice(1).every((v) => v.closed && ['poi', 'service'].includes(v.kind)));
+        assert.deepEqual(poiMethods, [
+          'ppoi_pois_per_list',
+          'ppoi_merkle_proofs',
+          'ppoi_poi_events',
+          'ppoi_validate_poi_merkleroots',
+        ]);
+        return;
+      }
       assert.equal(clients.length, 2);
       assert.deepEqual(
         clients.map(({ state }) => state),
@@ -333,6 +458,13 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
       role = 'membership-fixture';
     else if (options.filename === require.resolve('./railgun-relay-positive-audit-job'))
       role = 'audit-' + input.auditCase;
+    else if (options.filename === require.resolve('./railgun-transact-staging-row'))
+      role = 'txid-row-fixture';
+    else if (options.filename === require.resolve(wallet + 'railgun-txid-job')) {
+      assert.match(input.mode, /^[a-z-]{1,32}$/);
+      role = 'txid-' + input.mode;
+    } else if (options.filename === require.resolve(wallet + 'railgun-note-provenance-job'))
+      role = 'note-provenance';
     else {
       const fixed = {
         'railgun-poi-job.js': 'membership',
@@ -346,7 +478,14 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
       assert.ok(role);
       assert.equal(options.filename, require.resolve(wallet + path.basename(options.filename)));
     }
-    assert.ok(roles[rows.length] === role, 'Unexpected original utility order: ' + role);
+    // Transact staging/TXID utilities are observed before their order is pinned;
+    // relay roles must still keep the exact positive order (checked at finish).
+    if (roles === null)
+      assert.ok(
+        TRANSACT_ROLES.has(role) || role.startsWith('txid-'),
+        'Unexpected Transact utility: ' + role
+      );
+    else assert.ok(roles[rows.length] === role, 'Unexpected original utility order: ' + role);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);
     const row = {
       role,
@@ -420,8 +559,11 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
           'proof-A': 'relay-prove-local',
           'relay-sign': 'relay-sign',
         }[role];
-        assert.ok(purpose);
-        assert.equal(message.purpose, purpose);
+        if (roles === null && purpose === undefined) row.observedKeyPurpose = message.purpose;
+        else {
+          assert.ok(purpose);
+          assert.equal(message.purpose, purpose);
+        }
       }
       const returned = Reflect.apply(options.broker.dispatch, this, args);
       if (message.method === 'key' || ['result', 'jobResult'].includes(message.method)) {
@@ -475,13 +617,33 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
     rows,
     async finish() {
       await Promise.all([...pending]);
-      assert.deepEqual(
-        rows.map((r) => r.role),
-        roles
-      );
+      if (roles === null) {
+        // Unchanged bootstrap prefix, then the exact relay/audit order; staging
+        // and TXID utilities may interleave only between them (observed).
+        const positive = expectedRoles(),
+          relay = positive.slice(-14);
+        assert.deepEqual(
+          rows.slice(0, positive.length - 14).map((r) => r.role),
+          positive.slice(0, -14)
+        );
+        assert.deepEqual(
+          rows.map((r) => r.role).filter((role) => relay.includes(role)),
+          relay
+        );
+      } else
+        assert.deepEqual(
+          rows.map((r) => r.role),
+          roles
+        );
       for (const row of rows) {
         assert.equal(row.closedObserved, true);
         assert.equal(row.results, 1);
+        if (roles === null && !expectedRoles().includes(row.role)) {
+          // Observed staging/TXID utilities: no fixed key or guard contract yet.
+          assert.equal(row.keyReplies, row.keyRequests);
+          assert.ok(row.keyRequests <= 1);
+          continue;
+        }
         assert.deepEqual(row.guards, require(wallet + 'railgun-relay-quote-data').EXPECTED_GUARDS);
         assert.equal(
           row.keyRequests,
@@ -525,9 +687,37 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
     },
   };
 }
+// Utility roles a Transact run may add around the relay roles. Their exact
+// order is recorded by the first observed run, then pinned.
+const TRANSACT_ROLES = new Set([
+  'spending-public',
+  'viewing-identity',
+  'public-plan',
+  'public-apply',
+  'wallet-scan',
+  'wallet-restore',
+  'txid-row-fixture',
+  'note-provenance',
+  'membership-fixture',
+  'quote',
+  'construct',
+  'reconstruct',
+  'membership',
+  'pre-poi-binding',
+  'relay-sign',
+  'signature-C',
+  'proof-A',
+  'dual-proof-C',
+  'audit-unmodified',
+  'audit-signature',
+  'audit-transaction-proof',
+  'audit-pre-poi-proof',
+]);
 // A signed stop ends after the held dual verifier; it runs no audit utility.
+// A Transact run returns null: its staging/TXID roles are observed first.
 function expectedRoles(scenario = 'synthetic-list') {
   assert.ok(SCENARIOS.includes(scenario));
+  if (scenario === TRANSACT) return null;
   return [
     'spending-public',
     'viewing-identity',
@@ -872,7 +1062,9 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
   assert.deepEqual(Object.keys(headers).sort(), [...keys].sort());
   // A signed stop refuses before the final canonical refresh: three uniform
   // source reads, first observed in signed-stop run a and now exact.
-  const reads = scenario === SIGNED_STOP ? 3 : 4;
+  // A Transact run's operation slice follows staging; it is observed first.
+  const reads = scenario === SIGNED_STOP ? 3 : scenario === TRANSACT ? headers.finalized : 4;
+  assert.ok(Number.isSafeInteger(reads) && reads >= 1 && reads <= 6);
   assert.deepEqual(headers, Object.fromEntries(keys.map((key) => [key, reads])));
   // Preflight completes before signing, so its protocol requests are unchanged.
   assert.deepEqual(protocol, {
@@ -883,7 +1075,7 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
     eth_call: 8,
   });
   assert.equal(requests.length, 19 + 5 * reads);
-  assert.equal(requests.length, scenario === SIGNED_STOP ? 34 : 39);
+  if (scenario !== TRANSACT) assert.equal(requests.length, scenario === SIGNED_STOP ? 34 : 39);
   return { headers, protocol };
 }
 function assertAudit(value, auditCase, recordText, pair) {
@@ -1007,6 +1199,68 @@ function assertReadyLocal(result, jobs, custody) {
   assert.equal(diagnostic.result.status, 'ready-local', JSON.stringify(diagnostic));
 }
 
+// Transact consent ordering: setup TXID service reads happen only inside the
+// fixture's setup window; staging queries only after staging consent; the
+// operation's root queries only after root consent and after membership POI.
+function assertTransactTimeline(timeline) {
+  const at = (label) => {
+    const found = timeline.flatMap((v, i) => (v.kind === 'mark' && v.label === label ? [i] : []));
+    assert.equal(found.length, 1, label);
+    return found[0];
+  };
+  const marks = [
+    'txid-setup',
+    'txid-setup-complete',
+    'staging-call',
+    'staging-consent',
+    'staging-complete',
+    'root-consent',
+    'input-disclosure',
+    'operation-complete',
+  ].map(at);
+  marks.reduce((previous, index) => {
+    assert.ok(previous < index);
+    return index;
+  });
+  const [setup, setupDone, call, consent, stagedAt, root, input, done] = marks;
+  const between = (a, b) => timeline.slice(a + 1, b).filter((v) => v.kind !== 'mark');
+  assert.deepEqual(between(-1, setup), []);
+  const setupCalls = between(setup, setupDone);
+  assert.ok(setupCalls.length > 0 && setupCalls.every((v) => v.kind === 'service'));
+  assert.deepEqual(between(setupDone, call), []);
+  assert.deepEqual(between(call, consent), []);
+  const stagingCalls = between(consent, stagedAt);
+  assert.ok(stagingCalls.length > 0);
+  assert.ok(stagingCalls.every((v) => v.kind === 'service' && v.role === 'poi'));
+  assert.deepEqual(between(stagedAt, root), []);
+  assert.deepEqual(between(root, input), []);
+  const operationCalls = between(input, done);
+  assert.deepEqual(
+    operationCalls.filter((v) => v.kind === 'poi').map((v) => v.method),
+    ['ppoi_pois_per_list', 'ppoi_merkle_proofs', 'ppoi_poi_events', 'ppoi_validate_poi_merkleroots']
+  );
+  const rootCalls = operationCalls.filter((v) => v.kind === 'service');
+  assert.deepEqual(
+    rootCalls.map((v) => [v.role, v.method]),
+    [
+      ['poi', 'ppoi_validated_txid'],
+      ['poi', 'ppoi_validate_txid_merkleroot'],
+    ]
+  );
+  assert.ok(
+    operationCalls.findIndex((v) => v.kind === 'service') >
+      operationCalls.findLastIndex((v) => v.kind === 'poi')
+  );
+  assert.deepEqual(between(done, timeline.length), []);
+  const project = (rows) => rows.map((v) => [v.kind, v.role ?? null, v.method]);
+  return {
+    setupServiceCalls: project(setupCalls),
+    stagingServiceCalls: project(stagingCalls),
+    operationCalls: project(operationCalls),
+    stagingQueriesAfterConsent: true,
+    rootQueriesAfterConsentAndMembership: true,
+  };
+}
 // Signed stop: production returns its genuine dual verifier result only after
 // observing that utility's exit. Hold that result, probe a second admission,
 // then abort the caller's own request signal before production continues. No
@@ -1206,15 +1460,22 @@ async function qualify({
   custody,
 }) {
   assert.ok(SCENARIOS.includes(scenario));
+  const transact = scenario === TRANSACT;
+  // Shield: the 2,000 note at block +10. Transact: the 700 self-transfer output
+  // at block +30, created in the same transaction as the derived nullifier.
+  const input = transact
+    ? { type: 'Transact', amount: '700', fee: '100', self: '600', block: OFFSET + 30 }
+    : { type: 'Shield', amount: '2000', fee: '100', self: '1900', block: OFFSET + 10 };
   const api = require(wallet + 'railgun-account-wallet');
   const baseline = api.readRailgunAccountOwnedNotes(account, owners);
   const candidates = baseline.read.received.filter(
-    (v) => v.spentTxid === false && v.amount === 2000n
+    (v) => v.spentTxid === false && v.amount === BigInt(input.amount)
   );
   assert.equal(candidates.length, 1);
   const selected = candidates[0],
     owned = baseline.ownedPoi.find((v) => v.id === selected.id);
-  assert.ok(owned && owned.type === 'Shield' && owned.blockNumber === OFFSET + 10);
+  assert.ok(owned && owned.type === input.type && owned.blockNumber === input.block);
+  if (transact) assert.equal(selected.id, '0:2');
   const reservations = await owners.enrollment.openReservations(),
     recovery = await owners.enrollment.openRelayRecoveryStore();
   const before = {
@@ -1231,8 +1492,8 @@ async function qualify({
     tree: Number(selected.id.split(':')[0]),
     position: Number(selected.id.split(':')[1]),
     blindedCommitment: owned.blindedCommitment,
-    type: 'Shield',
-    amount: '2000',
+    type: input.type,
+    amount: input.amount,
   };
   const helperInput = { archive, createdAt, selected: publicSelected };
   const helper = await runFixtureJob(
@@ -1256,7 +1517,10 @@ async function qualify({
       ]);
       assert.equal(value.inputSha256, sha(JSON.stringify(helperInput)));
       assert.equal(value.selectedSha256, sha(JSON.stringify(publicSelected)));
-      assert.deepEqual(value.note, { blindedCommitment: owned.blindedCommitment, type: 'Shield' });
+      assert.deepEqual(value.note, {
+        blindedCommitment: owned.blindedCommitment,
+        type: input.type,
+      });
       assert.equal(value.proof.leaf, owned.blindedCommitment.slice(2));
       assert.equal(value.createdAt, createdAt);
       assert.equal(value.syntheticList, TEST_LIST);
@@ -1298,9 +1562,10 @@ async function qualify({
     margins.push({ stage, remainingMs });
   };
   margin('admission', 120000);
-  const rpcBefore = services.requests.length;
   let reviewed = 0,
-    disclosed = 0;
+    disclosed = 0,
+    stagingReviews = 0,
+    rootReviews = 0;
   const control = new AbortController();
   const operation = require(wallet + 'railgun-relay-operation');
   const request = () => ({
@@ -1310,6 +1575,41 @@ async function qualify({
     maxFee: '100',
     signal: control.signal,
   });
+  let operationAccount = account,
+    staged = null;
+  const stagingLifetime = new AbortController(),
+    stagingRpcBefore = services.requests.length;
+  if (transact) {
+    services.mark('staging-call');
+    staged = await require(
+      wallet + 'railgun-relay-transact-staging'
+    ).stageRailgunRelayTransactInput({
+      account,
+      owners,
+      request: request(),
+      archive,
+      signal: stagingLifetime.signal,
+      reviewStagingDisclosure(summary) {
+        stagingReviews++;
+        assert.equal(summary.purpose, 'railgun-relay-transact-staging-disclosure-v1');
+        assert.deepEqual(summary.publicCreatorSelection, {
+          transactionHash: owned.txid,
+          blockNumber: OFFSET + 30,
+        });
+        assert.equal(summary.selectedMembershipPermitted, false);
+        assert.equal(summary.signingEnabled, false);
+        margin('staging-disclosure', 120000);
+        services.mark('staging-consent');
+        return true;
+      },
+    });
+    assert.equal(staged.status, 'staged', JSON.stringify(staged));
+    services.mark('staging-complete');
+    margin('staged', 115000);
+    operationAccount = staged.account;
+  }
+  const stagingRequests = services.requests.length - stagingRpcBefore;
+  const rpcBefore = services.requests.length;
   const hold =
     scenario === SIGNED_STOP
       ? installSignedStop(control, jobs, async () => {
@@ -1351,16 +1651,39 @@ async function qualify({
   let result;
   try {
     result = await operation.proveRailgunAccountRelayOperation({
-      account,
+      account: operationAccount,
       owners,
       archive,
       proverArchive,
       artifactDirectory,
       request: request(),
+      ...(transact
+        ? {
+            stagingReceipt: staged.receipt,
+            reviewRootDisclosure(summary) {
+              rootReviews++;
+              assert.equal(summary.purpose, 'railgun-relay-selected-root-disclosure-v1');
+              assert.equal(summary.service, 'sepolia-ppoi-fdi');
+              assert.deepEqual(
+                summary.queries.map((v) => v.method),
+                ['latestTxid', 'validateTxidRoot']
+              );
+              assert.equal(summary.signingEnabled, false);
+              margin('root-disclosure', 90000);
+              services.mark('root-consent');
+              return true;
+            },
+          }
+        : {}),
       review(summary) {
         reviewed++;
         assert.equal(summary.selection.noteId, selected.id);
-        assert.deepEqual(summary.amounts, { input: '2000', fee: '100', self: '1900', cap: '100' });
+        assert.deepEqual(summary.amounts, {
+          input: input.amount,
+          fee: input.fee,
+          self: input.self,
+          cap: '100',
+        });
         assert.deepEqual(summary.quote.requiredPOIListKeys, [TEST_LIST]);
         assert.equal(summary.quote.quoteSha256, quote.quoteSha256);
         assert.equal(summary.quote.signedBytesSha256, quote.signedBytesSha256);
@@ -1372,18 +1695,22 @@ async function qualify({
         disclosed++;
         assert.equal(summary.listKey, TEST_LIST);
         assert.equal(summary.input.id, selected.id);
-        assert.equal(summary.input.type, 'Shield');
+        assert.equal(summary.input.type, input.type);
         assert.equal(summary.input.blindedCommitment, owned.blindedCommitment);
-        services.selected({ blindedCommitment: owned.blindedCommitment, type: 'Shield' });
+        services.selected({ blindedCommitment: owned.blindedCommitment, type: input.type });
         margin('disclosure', 90000);
+        services.mark('input-disclosure');
         return true;
       },
     });
   } finally {
     hold?.restore();
   }
+  services.mark('operation-complete');
   assert.equal(reviewed, 1);
   assert.equal(disclosed, 1);
+  assert.equal(stagingReviews, transact ? 1 : 0);
+  assert.equal(rootReviews, transact ? 1 : 0);
   if (scenario === SIGNED_STOP)
     return finishSignedStop({
       result,
@@ -1406,7 +1733,8 @@ async function qualify({
   assert.match(result.operationId, /^[0-9a-f]{64}$/);
   assert.ok(performance.now() - operationStart < 180000);
   services.assertClosed();
-  const rpc = assertOperationRpc(services.requests.slice(rpcBefore));
+  const rpc = assertOperationRpc(services.requests.slice(rpcBefore), scenario);
+  const ordering = transact ? assertTransactTimeline(services.timeline) : null;
   const ready = await reservations.readRelay(recovery, result.operationId);
   assert.equal(ready.record.state, 'ready-local');
   assert.equal(ready.entry.state, 'signing-local');
@@ -1459,21 +1787,38 @@ async function qualify({
   assert.equal(JSON.stringify(unchanged.record), recordText);
   assert.deepEqual(unchanged.entry, ready.entry);
   assert.deepEqual(await recovery.inspect(), after.recovery);
-  assert.equal(services.requests.length - rpcBefore, 39);
-  assert.equal(jobs.rows.length, 79);
-  assert.equal(
-    jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0),
-    9
-  );
-  await account.close();
+  const operationRequests = services.requests.length - rpcBefore,
+    keyLoans = jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0);
+  if (!transact) {
+    assert.equal(operationRequests, 39);
+    assert.equal(jobs.rows.length, 79);
+    assert.equal(keyLoans, 9);
+  }
+  await operationAccount.close();
+  staged?.close();
+  stagingLifetime.abort();
   return {
-    schema: 'railgun-relay-positive-native-v1',
+    schema: transact ? 'railgun-relay-transact-native-v1' : 'railgun-relay-positive-native-v1',
     scenario,
     result,
-    selectedInputType: 'Shield',
-    inputAmount: '2000',
-    feeAmount: '100',
-    selfAmount: '1900',
+    selectedInputType: input.type,
+    inputAmount: input.amount,
+    feeAmount: input.fee,
+    selfAmount: input.self,
+    ...(transact
+      ? {
+          stagingDisclosureCallbacks: stagingReviews,
+          rootDisclosureCallbacks: rootReviews,
+          stagingObservation: staged.observation,
+          serviceOrdering: ordering,
+          serviceClients: services.clientKinds(),
+          stagingRpcRequests: stagingRequests,
+          syntheticOperationRequests: operationRequests,
+          originalUtilities: jobs.rows.length,
+          originalKeyLoans: keyLoans,
+          stagingAndCountsObservedNotPinned: true,
+        }
+      : {}),
     syntheticList: TEST_LIST,
     productionServiceAuthority: false,
     liveServiceContact: false,
@@ -1647,6 +1992,40 @@ function inspectMainModuleCache() {
   });
 }
 
+// Keyless pinned-engine construction of the derived public TXID row, as in the
+// reviewed enrolled-staging fixture; the result seeds only synthetic services.
+async function runTxidRow(archive, row, enrollment) {
+  let payload;
+  const task = require(wallet + 'railgun-process').startRailgunProcess({
+    handle: enrollment.getContext('engine', 'note-provenance'),
+    filename: require.resolve('./railgun-transact-staging-row'),
+    input: JSON.stringify({ archive, row }),
+    lifetimeMs: 60000,
+    broker: {
+      signal: enrollment.signal,
+      async dispatch(wire) {
+        assert.ok(typeof wire === 'string' && Buffer.byteLength(wire) <= 65536);
+        const message = JSON.parse(wire);
+        assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+        assert.equal(message.id, 1);
+        assert.equal(message.method, 'result');
+        assert.equal(payload, undefined);
+        assert.deepEqual(Object.keys(message.value).sort(), ['guards', 'row', 'state']);
+        assert.equal(message.value.guards.attempts, 0);
+        payload = message.value;
+        return JSON.stringify({ id: 1, value: null });
+      },
+    },
+  });
+  await task.ready;
+  task.close();
+  assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
+  assert.ok(payload && payload.state.count === 1);
+  const { verificationHash, ...rest } = payload.row;
+  assert.deepEqual(rest, row);
+  assert.match(verificationHash, /^0x[0-9a-f]{64}$/);
+  return payload;
+}
 async function execute(config) {
   const { app } = require('electron');
   const retained = require('./railgun-relay-retained-run');
@@ -1654,7 +2033,7 @@ async function execute(config) {
     bytes: 8466,
     sha256: SOURCE_SHA,
   });
-  const derived = translate(bytes);
+  const derived = config.scenario === TRANSACT ? translateTransact(bytes) : translate(bytes);
   const archive = require(wallet + 'railgun-engine-runtime').verifyRailgunEngineRuntime(
     config.archive
   );
@@ -1795,6 +2174,38 @@ async function execute(config) {
     // refreshes, 60 log reads, 3 event headers, first publication (8 headers),
     // two wallet snapshots (20 headers), and one genuine chain handshake.
     assert.equal(services.requests.length, 1283);
+    let setupRequests = 0;
+    if (config.scenario === TRANSACT) {
+      services.mark('txid-setup');
+      const setupBefore = services.requests.length;
+      await account.close();
+      const state = await runTxidRow(archive, derived.row, enrollment);
+      services.txid(state);
+      const txidApi = require(wallet + 'railgun-account-txid');
+      const txid = await txidApi.openRailgunAccountTxid({
+        enrollment,
+        coordinator,
+        archive,
+        create: true,
+      });
+      try {
+        await txid.advance();
+        assert.deepEqual((await txid.inspect()).checkpoint.state, state.state);
+      } finally {
+        await txid.close();
+      }
+      account = await api.openRailgunAccountWallet({
+        identity,
+        enrollment,
+        archive,
+        coordinator,
+        policy,
+        mode: 'active',
+      });
+      setupRequests = services.requests.length - setupBefore;
+      services.mark('txid-setup-complete');
+      current();
+    }
     report = await qualify({
       account,
       owners: { identity, enrollment, coordinator },
@@ -1807,11 +2218,22 @@ async function execute(config) {
       custody,
     });
     await jobs.finish();
-    assert.equal(
-      services.requests.length,
-      config.scenario === SIGNED_STOP ? 1283 + report.syntheticOperationRequests : 1322
-    );
-    assert.equal(services.requests.filter((v) => v.method === 'eth_chainId').length, 3);
+    if (config.scenario === TRANSACT) {
+      assert.equal(
+        services.requests.length,
+        1283 + setupRequests + report.stagingRpcRequests + report.syntheticOperationRequests
+      );
+      report.txidSetupRpcRequests = setupRequests;
+      report.chainIdChecksObserved = services.requests.filter(
+        (v) => v.method === 'eth_chainId'
+      ).length;
+    } else {
+      assert.equal(
+        services.requests.length,
+        config.scenario === SIGNED_STOP ? 1283 + report.syntheticOperationRequests : 1322
+      );
+      assert.equal(services.requests.filter((v) => v.method === 'eth_chainId').length, 3);
+    }
     current();
   } catch (error) {
     failure = error;
@@ -1873,6 +2295,7 @@ async function execute(config) {
         },
         originalSourceSha256: derived.originalSha256,
         translatedLogsSha256: derived.translatedSha256,
+        ...(config.scenario === TRANSACT ? { translatedTxidRowSha256: derived.rowSha256 } : {}),
         blockOffset: OFFSET,
         setupRanges: ranges(),
         originalJobs: jobs.rows,
@@ -1894,6 +2317,10 @@ async function execute(config) {
 }
 module.exports = {
   SIGNED_STOP,
+  TRANSACT,
+  translateTransact,
+  indexerRow,
+  assertTransactTimeline,
   probeSameInput,
   assertReadyLocal,
   collectMainModuleCache,

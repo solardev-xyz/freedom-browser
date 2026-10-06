@@ -27,8 +27,8 @@ exports.run = async (text, { request, signal, guardReport }) => {
   assert.ok(Date.now() >= input.createdAt && Date.now() - input.createdAt < 15000);
   const selected = input.selected;
   shape(selected, ['hash', 'npk', 'tree', 'position', 'blindedCommitment', 'type', 'amount']);
-  assert.equal(selected.type, 'Shield');
-  assert.equal(selected.amount, '2000');
+  // Fixed public fixture inputs: the 2,000 Shield note or the 700 Transact note.
+  assert.equal(selected.amount, { Shield: '2000', Transact: '700' }[selected.type]);
   for (const key of ['hash', 'npk', 'blindedCommitment']) {
     assert.match(selected[key], /^0x[0-9a-f]{64}$/);
     assert.ok(BigInt(selected[key]) < FIELD);
@@ -53,7 +53,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
   const noteHash = imp('note/transact-note').TransactNote.getHash(
     BigInt(selected.npk),
     tokenHash,
-    2000n
+    BigInt(selected.amount)
   );
   assert.equal('0x' + hex(noteHash), selected.hash);
   const position = BigInt(selected.tree) * 65536n + BigInt(selected.position);
@@ -83,7 +83,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
     '302a300506032b6570032100' + TEST_LIST
   );
   const signEvent = (note, proof) => {
-    const value = { index: 0, blindedCommitment: note.blindedCommitment, type: 'Shield' };
+    const value = { index: 0, blindedCommitment: note.blindedCommitment, type: note.type };
     return {
       signedPOIEvent: {
         ...value,
@@ -92,7 +92,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
       validatedMerkleroot: proof.root,
     };
   };
-  const note = { blindedCommitment: blinded, type: 'Shield' },
+  const note = { blindedCommitment: blinded, type: selected.type },
     proof = makePath(blinded),
     event = signEvent(note, proof);
   const hashPair = (a, b) => poseidonHex([a, b]);
@@ -102,7 +102,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
   badEvent.signedPOIEvent.signature = '00'.repeat(64);
   assert.throws(() => records.verifyPoiEvent([badEvent], note, proof));
   const originalMessage = Buffer.from(
-    JSON.stringify({ index: 0, blindedCommitment: blinded, type: 'Shield' })
+    JSON.stringify({ index: 0, blindedCommitment: blinded, type: selected.type })
   );
   const productionKey = crypto.createPublicKey({
     key: Buffer.from('302a300506032b6570032100' + PRODUCTION_LIST, 'hex'),
@@ -123,7 +123,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
   assert.throws(() => records.verifyPoiMembership([badPath], [note], hashPair));
   const otherNote = {
     blindedCommitment: '0x' + hex((BigInt(blinded) + 1n) % FIELD),
-    type: 'Shield',
+    type: selected.type,
   };
   const otherProof = makePath(otherNote.blindedCommitment),
     otherEvent = signEvent(otherNote, otherProof);

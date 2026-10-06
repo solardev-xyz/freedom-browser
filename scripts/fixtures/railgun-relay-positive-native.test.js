@@ -265,7 +265,7 @@ test('39 request contract distinguishes four source refreshes and all preflight 
   bad[20].method = 'eth_sendRawTransaction';
   expect(() => f.assertOperationRpc(bad)).toThrow();
 });
-function serviceFixture(genuine = false) {
+function serviceFixture(genuine = false, scenario = 'synthetic-list') {
   const transport = { createWalletTorTransport: jest.fn() },
     settings = { isWalletTorExperimentAvailable: jest.fn() },
     tor = { getWalletSocksEndpoint: jest.fn() },
@@ -283,7 +283,7 @@ function serviceFixture(genuine = false) {
     [w + 'railgun-poi-records']: { REQUIRED_LIST: list },
   });
   const protocol = jest.fn(() => true),
-    adapter = f.installServices([], () => note, 'synthetic-list', protocol);
+    adapter = f.installServices([], () => note, scenario, protocol);
   const handle = {
     signal: new AbortController().signal,
     subject: { role: 'poi', chainId: 11155111 },
@@ -608,6 +608,8 @@ function composed(mutation) {
       fixture: jest.fn(),
       selected: jest.fn(),
       assertClosed: jest.fn(),
+      mark: jest.fn(),
+      timeline: [],
     };
   const custody = { quote: jest.fn(), finish: jest.fn(), rows: [], credentialMargin: () => 180000 };
   const launched = [];
@@ -1513,4 +1515,184 @@ test.each([
   'other-code',
 ])('signed stop refuses %s outcome', async (mutation) => {
   await expect(stopped(mutation).run()).rejects.toThrow();
+});
+
+const publicSource = fs.readFileSync(
+  path.join(
+    __dirname,
+    '../../docs/qualification/railgun-unsigned-relay-preparation-2026-10-06/public-source.json'
+  )
+);
+test('Transact translation keeps original log indexes and offsets logs and TXID row together', () => {
+  const f = load(),
+    t = f.translateTransact(publicSource);
+  expect(t.logs.map((v) => [v.blockNumber - 5944700, v.transactionIndex, v.logIndex])).toEqual([
+    [10, 0, 0],
+    [20, 0, 0],
+    [30, 0, 0],
+    [30, 0, 1],
+  ]);
+  expect(t.logs[2].transactionHash).toBe(t.logs[3].transactionHash);
+  expect(t.row.blockNumber).toBe(5944730);
+  expect(BigInt('0x' + t.row.graphID.slice(2, 66))).toBe(5944730n);
+  expect('0x' + t.row.txid).toBe(t.logs[3].transactionHash);
+  expect(t.row.nullifiers).toEqual(['0x' + (888).toString(16).padStart(64, '0')]);
+  expect(f.translate(publicSource).logs.map((v) => v.logIndex)).toEqual([0, 0, 0]);
+  expect(() => f.translateTransact(Buffer.concat([publicSource, Buffer.from(' ')]))).toThrow();
+});
+test('indexer row round-trips through the genuine public TXID page normalizer', () => {
+  const f = load(),
+    t = f.translateTransact(publicSource);
+  const row = { ...t.row, verificationHash: '0x' + '0c'.repeat(32) };
+  const page = require(w + 'railgun-public-services').normalizeTxidPage(
+    [f.indexerRow(row)],
+    '0x00'
+  );
+  expect(page.transactions).toEqual([row]);
+  expect(page.exhausted).toBe(true);
+});
+test('Transact services answer only exact TXID wire requests from service contexts', async () => {
+  const x = serviceFixture(false, 'synthetic-list-transact');
+  const f = x.f,
+    t = f.translateTransact(publicSource);
+  const row = { ...t.row, verificationHash: '0x' + '0c'.repeat(32) };
+  const state = { count: 1, root: '0d'.repeat(32) };
+  const handle = (role) => ({
+    signal: new AbortController().signal,
+    subject: { kind: 'service', principal: 'railgun-public-sync', role, chainId: 11155111 },
+  });
+  const client = x.transport.createWalletTorTransport();
+  const send = (role, url, body) =>
+    client.request(handle(role), url, {
+      method: 'POST',
+      signal: new AbortController().signal,
+      body: JSON.stringify(body),
+    });
+  const indexer = require(w + 'railgun-public-services').INDEXER_URL;
+  await expect(
+    send('indexer', indexer, { query: 'q transactions(', variables: { after: '0x00' } })
+  ).rejects.toThrow();
+  x.adapter.txid({ row, state });
+  const page = JSON.parse(
+    (await send('indexer', indexer, { query: 'q transactions(', variables: { after: '0x00' } }))
+      .body
+  );
+  expect(page.data.transactions).toEqual([f.indexerRow(row)]);
+  const empty = JSON.parse(
+    (
+      await send('indexer', indexer, {
+        query: 'q transactions(',
+        variables: { after: row.graphID },
+      })
+    ).body
+  );
+  expect(empty).toEqual({ data: { transactions: [] } });
+  const context = { chainType: '0', chainID: '11155111', txidVersion: 'V2_PoseidonMerkle' };
+  const rpc = (method, params) => ({ jsonrpc: '2.0', id: 'i', method, params });
+  expect(
+    JSON.parse(
+      (await send('poi', 'https://ppoi.fdi.network', rpc('ppoi_validated_txid', context))).body
+    ).result
+  ).toEqual({ validatedTxidIndex: 0, validatedMerkleroot: state.root });
+  const valid = rpc('ppoi_validate_txid_merkleroot', {
+    ...context,
+    tree: 0,
+    index: 0,
+    merkleroot: state.root,
+  });
+  expect(JSON.parse((await send('poi', 'https://ppoi.fdi.network', valid)).body).result).toBe(true);
+  await expect(
+    send('poi', 'https://ppoi.fdi.network', { ...valid, params: { ...valid.params, index: 1 } })
+  ).rejects.toThrow();
+  await expect(send('poi', indexer, valid)).rejects.toThrow();
+  await expect(
+    send('indexer', indexer, { query: 'q transactions(', variables: { after: '0x01' } })
+  ).rejects.toThrow();
+  // Attempts are logged before validation: a refused early query still counts.
+  expect(x.adapter.timeline.map((v) => v.method)).toEqual([
+    'txidPage',
+    'txidPage',
+    'ppoi_validated_txid',
+    'ppoi_validate_txid_merkleroot',
+    'ppoi_validate_txid_merkleroot',
+  ]);
+});
+test('Shield scenarios refuse TXID service traffic', async () => {
+  const x = serviceFixture();
+  expect(() => x.adapter.txid({ row: {}, state: { count: 1, root: '0d'.repeat(32) } })).toThrow();
+  const client = x.transport.createWalletTorTransport();
+  await expect(
+    client.request(
+      {
+        signal: new AbortController().signal,
+        subject: {
+          kind: 'service',
+          principal: 'railgun-public-sync',
+          role: 'poi',
+          chainId: 11155111,
+        },
+      },
+      'https://ppoi.fdi.network',
+      {
+        method: 'POST',
+        signal: new AbortController().signal,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'i',
+          method: 'ppoi_validated_txid',
+          params: {},
+        }),
+      }
+    )
+  ).rejects.toThrow();
+});
+function transactTimeline() {
+  const mark = (label) => ({ kind: 'mark', label });
+  const service = (method) => ({ kind: 'service', role: 'poi', method });
+  const poi = (method) => ({ kind: 'poi', method });
+  return [
+    mark('txid-setup'),
+    service('ppoi_validated_txid'),
+    { kind: 'service', role: 'indexer', method: 'txidPage', after: '0x00' },
+    service('ppoi_validate_txid_merkleroot'),
+    mark('txid-setup-complete'),
+    mark('staging-call'),
+    mark('staging-consent'),
+    service('ppoi_validated_txid'),
+    service('ppoi_validate_txid_merkleroot'),
+    mark('staging-complete'),
+    mark('root-consent'),
+    mark('input-disclosure'),
+    poi('ppoi_pois_per_list'),
+    poi('ppoi_merkle_proofs'),
+    poi('ppoi_poi_events'),
+    poi('ppoi_validate_poi_merkleroots'),
+    service('ppoi_validated_txid'),
+    service('ppoi_validate_txid_merkleroot'),
+    mark('operation-complete'),
+  ];
+}
+test('Transact ordering admits TXID queries only after their own consent', () => {
+  const f = load();
+  const value = f.assertTransactTimeline(transactTimeline());
+  expect(value.stagingServiceCalls).toHaveLength(2);
+  expect(value.operationCalls).toHaveLength(6);
+  const move = (from, to) => {
+    const rows = transactTimeline();
+    const [row] = rows.splice(from, 1);
+    rows.splice(to, 0, row);
+    return rows;
+  };
+  // staging query before staging consent; root query before membership;
+  // root query between root consent and input disclosure; missing mark.
+  for (const rows of [move(7, 6), move(16, 12), move(16, 11), transactTimeline().slice(1)])
+    expect(() => f.assertTransactTimeline(rows)).toThrow();
+  const late = transactTimeline();
+  late.push({ kind: 'service', role: 'poi', method: 'ppoi_validated_txid' });
+  expect(() => f.assertTransactTimeline(late)).toThrow();
+});
+test('Transact roles are observed while relay roles keep their exact order', () => {
+  const f = load();
+  expect(f.expectedRoles(f.TRANSACT)).toBeNull();
+  expect(f.select(f.TRANSACT, args, {}).scenario).toBe('synthetic-list-transact');
 });
