@@ -624,14 +624,9 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
       for (const row of rows) {
         assert.equal(row.closedObserved, true);
         assert.equal(row.results, 1);
-        if (TXID_ROLES.has(row.role)) {
-          // Keyless; their own guard reports are recorded, with no attempts.
-          assert.equal(row.keyRequests, 0);
-          assert.equal(row.keyReplies, 0);
-          if (row.guards !== undefined) assert.equal(row.guards.attempts, 0);
-          continue;
-        }
+        // Every utility, including keyless TXID/staging ones, reports the same guards.
         assert.deepEqual(row.guards, require(wallet + 'railgun-relay-quote-data').EXPECTED_GUARDS);
+        if (TXID_ROLES.has(row.role)) assert.equal(row.keyRequests, 0);
         assert.equal(
           row.keyRequests,
           [
@@ -1055,9 +1050,9 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
   assert.deepEqual(Object.keys(headers).sort(), [...keys].sort());
   // A signed stop refuses before the final canonical refresh: three uniform
   // source reads, first observed in signed-stop run a and now exact.
-  // A Transact run's operation slice follows staging; it is observed first.
-  const reads = scenario === SIGNED_STOP ? 3 : scenario === TRANSACT ? headers.finalized : 4;
-  assert.ok(Number.isSafeInteger(reads) && reads >= 1 && reads <= 6);
+  // A Transact operation follows staging but repeats the Shield operation's
+  // four source passes (observed in Transact run d, now exact).
+  const reads = scenario === SIGNED_STOP ? 3 : 4;
   assert.deepEqual(headers, Object.fromEntries(keys.map((key) => [key, reads])));
   // Preflight completes before signing, so its protocol requests are unchanged.
   assert.deepEqual(protocol, {
@@ -1068,7 +1063,7 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
     eth_call: 8,
   });
   assert.equal(requests.length, 19 + 5 * reads);
-  if (scenario !== TRANSACT) assert.equal(requests.length, scenario === SIGNED_STOP ? 34 : 39);
+  assert.equal(requests.length, scenario === SIGNED_STOP ? 34 : 39);
   return { headers, protocol };
 }
 function assertAudit(value, auditCase, recordText, pair) {
@@ -1796,7 +1791,9 @@ async function qualify({
   assert.deepEqual(await recovery.inspect(), after.recovery);
   const operationRequests = services.requests.length - rpcBefore,
     keyLoans = jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0);
-  if (!transact) assert.equal(operationRequests, 39);
+  assert.equal(operationRequests, 39);
+  // Staging: canonical refresh, creator source and reopened wallet (run d).
+  assert.equal(stagingRequests, transact ? 20 : 0);
   assert.equal(jobs.rows.length, expectedRoles(scenario).length);
   assert.equal(jobs.rows.length, transact ? 92 : 79);
   // Transact adds two keyed wallet reopenings (TXID setup and staging).
@@ -1823,7 +1820,7 @@ async function qualify({
           syntheticOperationRequests: operationRequests,
           originalUtilities: jobs.rows.length,
           originalKeyLoans: keyLoans,
-          rpcCountsObservedNotPinned: true,
+          txidSetupRpcRequestsExpected: 10,
         }
       : {}),
     syntheticList: TEST_LIST,
@@ -2274,14 +2271,12 @@ async function execute(config) {
     step('finish');
     await jobs.finish();
     if (config.scenario === TRANSACT) {
-      assert.equal(
-        services.requests.length,
-        1283 + setupRequests + report.stagingRpcRequests + report.syntheticOperationRequests
-      );
+      // TXID setup reads (10) and staging (20) join the unchanged bootstrap and
+      // operation; observed in Transact run d, now exact.
+      assert.equal(setupRequests, 10);
+      assert.equal(services.requests.length, 1283 + 10 + 20 + 39);
+      assert.equal(services.requests.filter((v) => v.method === 'eth_chainId').length, 3);
       report.txidSetupRpcRequests = setupRequests;
-      report.chainIdChecksObserved = services.requests.filter(
-        (v) => v.method === 'eth_chainId'
-      ).length;
     } else {
       assert.equal(
         services.requests.length,
