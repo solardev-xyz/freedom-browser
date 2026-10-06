@@ -1,0 +1,55 @@
+{
+  "schema": "railgun-unsigned-preparation-root-observation-v1",
+  "qualified": false,
+  "head": "30a14f221503a315c34ecc5952a34738f8f78736",
+  "prepare": {
+    "originalSession": 20337,
+    "completionChunk": "c8010a",
+    "naturalExit": true,
+    "exitCode": 0
+  },
+  "launch": {
+    "originalSession": 68621,
+    "completionChunk": "e418a9",
+    "naturalExit": true,
+    "exitCode": 1
+  },
+  "sourceFreezeSha256": "79fdacadfe98d1d3a2276cff55bec41d9c79fdfbbe5da62c6c7cb96efa42fc14",
+  "electron": {
+    "state": "finished",
+    "pid": 22184,
+    "exitObserved": true,
+    "exitCode": 1,
+    "timedOut": false,
+    "interrupted": false,
+    "terminateRequested": false,
+    "killRequested": false
+  },
+  "postCheck": {
+    "unchanged": true
+  },
+  "files": {
+    "process-000.json": {
+      "bytes": 188,
+      "sha256": "e3da186a28314802814c9aceb3193e5fbc08a6e1fe9a362d3f23a7ca1a083f5c"
+    },
+    "process-001.json": {
+      "bytes": 185,
+      "sha256": "18a6a4be56890802ee96bc3b6ed0e3bb76c5f01652b346488919e5721152a990"
+    },
+    "POST-CHECK.json": {
+      "bytes": 24,
+      "sha256": "1ae748d5796cc995906ddf0fba5e5626f9c1c6ac79cec8fb465106e92254a77b"
+    },
+    "child.log": {
+      "bytes": 4624,
+      "sha256": "a3663f259e8725440705296f9b5d8b0bc079330fbebcd53f38da2d237b905a7d"
+    },
+    "LAUNCHER-ERROR.txt": {
+      "bytes": 1238,
+      "sha256": "a16d9fa079d95d63234ce629f25761e02b22148cf1e0f350c9b789d5ede84d3a"
+    }
+  },
+  "failure": "Sticky fixture recorded broker rejection during reconstruct, then missing accepted result on original task close; cause not diagnosed yet.",
+  "profileContentsRead": false
+}

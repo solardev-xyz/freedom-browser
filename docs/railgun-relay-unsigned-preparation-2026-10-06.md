@@ -2,9 +2,14 @@
 
 The internal wallet can now construct a fee/self relay draft from a genuine live
 account, then reconstruct the serialized result in a second viewing-only utility
-process. This is a source and unit-test milestone. Native qualification of this
-new composition is the next step; prior public-vector and local-review runs do
-not qualify it.
+process. A disposable enrolled-account native run now qualifies this composition
+at `67612a75`, following the failed first attempt and stream correction recorded
+below. It uses actual engine cryptography with synthetic chain data and a public
+fixture quote; it does not qualify a live broadcaster or private spending.
+
+The [retained native evidence](qualification/railgun-unsigned-relay-preparation-2026-10-06/OVERVIEW.md)
+includes the exact report, public synthetic input and separate failed-attempt
+record, with source and runtime provenance.
 
 The result is deliberately unreviewed and kept in memory. It grants no signing,
 proving, POI-query, reservation, durable-capsule or relay-send authority. The
@@ -94,8 +99,7 @@ admission, alias resistance, close/drain behavior and original-receipt ordering.
 Distinguishing controls cover widened job budgets, premature exit observation,
 request aliasing, missing input binding and identity revocation during the final
 awaited state inspection. Coordinator tests also enforce its busy window, token rotation and snapshot-signal
-revocation. These are unit/source checks, not native cryptographic evidence for
-the new account flow.
+revocation. These unit/source checks are separate from the native evidence below.
 
 The explicit wallet policy now covers all 40 local dependencies in the job and
 host-validation closure, including the seven relay modules. Source changes rotate
@@ -120,7 +124,7 @@ probe variable in an extracted-function VM context. Both declarations were
 corrected; no runtime behavior changed for those repairs. The failed first run
 is retained separately from the successful rerun.
 
-## Remaining work
+## Native qualification and corrected first attempt
 
 The first native attempt at `30a14f22` failed during the reconstruction job's
 broker exchange. Electron exited naturally with code 1, without timeout or
@@ -136,8 +140,8 @@ each job a separate local stream and translates its IDs into the shared snapshot
 sequence, checking replies before translating them back. It preserves the
 coordinator's ordering checks, snapshot and original job-exit barriers. Closed
 streams cannot admit more work, and outstanding callbacks and dispatches must
-settle before another stream can begin. A fresh native run is still required;
-the failed attempt remains separate evidence.
+settle before another stream can begin. The failed attempt remains separate
+evidence and is not reclassified by the successful retry.
 
 The correction passed 667 tests in 12 affected account, storage, coordinator,
 policy and native-fixture suites, plus strict repository lint and changed-file
@@ -146,10 +150,36 @@ Its helper tests include real wallet routers sharing a strict upstream sequence,
 revoked and overlapping streams, outstanding-work drain and preservation of an
 unknown-worker-exit error. A reset-sequence mutation fails the regression.
 
-First qualify the complete flow with a disposable enrolled account, real engine,
-separate observed utility exits and unchanged authenticated storage. Then add a
-fresh review bound to the exact prepared transaction, broadcaster, fee cap/net
-amount, quote and draft digest before any private operation authority.
+The fresh retry at `67612a75` passes the complete enrolled-account recipe. The
+quote verifier, constructor and reconstructor each finish with one accepted
+result and an observed utility exit 15, without escalation or peer disconnect.
+The original Electron process and launcher exit naturally with zero. The
+launcher checks the full inherited report, not only the new probe, and its
+source/runtime/installed-SQLite pre/post comparison remains unchanged.
+
+The selected input contains 700 synthetic WETH base units. Construction allocates
+100 to the quoted peer and 600 back to self; a separate restored viewing process
+recovers both outputs from the exact serialized draft. The probe checks original
+job ordering, two viewing-key loans, 84 broker messages, three pre-admission and
+three competing-admission refusals, invalidation of the old view, continued
+account usability and unchanged owned projections/generations. All three utility
+guard reports record 91 canaries and zero attempts. The two public snapshot
+refreshes make ten synthetic header requests; this is not a zero-RPC operation.
+
+The protected encrypted files and names stay unchanged within the fixture's
+inventory. This is not whole-profile byte identity. There is no live-child
+cancellation qualification, operator-trust decision, verified real gas estimate,
+signature, proof, selected-note POI query or relay transmission in this flow.
+Fixture quote creation occurs outside the guarded utility jobs. The retained
+report contains digests and diagnostics, not a standalone encrypted-output
+transcript; independent reproduction runs the checked-in fixture again.
+
+## Remaining work
+
+Add fresh review bound to the exact prepared transaction, broadcaster, fee
+cap/net amount, quote and draft digest while the original account ownership
+window remains held. This is separate from the older fee-only review and must
+precede any future private-operation authority.
 
 Shared input reservations, authenticated durable relay recovery and uncertain
 attempt handling come next, using the existing tree/nullifier reservation ledger.
