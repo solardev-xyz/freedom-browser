@@ -1,0 +1,20 @@
+{
+  "schema": "railgun-retained-public-fixture-basis-v1",
+  "publicViewingKeyHex": "43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+  "independentPublicKeyBasisSha256": "4bdcd85ceb8d0b48c486c6126a718fe39bbb797e0c862727a4e04eb11aa4039e",
+  "feePublicCoordinates": [
+    "12413163600793827339124387033787304747178281335716960105995444885879464409721",
+    "8010389973639104762288114662299334843185477277610438054266062296539834190376"
+  ],
+  "publicNullifyingValue": "456",
+  "feeNoteRandomHex": "02020202020202020202020202020202",
+  "feeAmount": "100",
+  "selfAmount": "900",
+  "gasEstimate": "84",
+  "gasPrice": "1",
+  "maximumFee": "100",
+  "feesID": "PUBLIC-PROOF-WIRE-1",
+  "identifier": "PUBLIC FIXTURE ONLY",
+  "version": "8.0.0",
+  "scope": "Public fixed fixture identity; no private-key derivation, operator identity or service authority."
+}
