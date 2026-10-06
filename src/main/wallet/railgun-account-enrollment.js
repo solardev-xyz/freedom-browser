@@ -679,7 +679,20 @@ async function openAccountEnrollment({ identity, create = false }, cooperative) 
     profileGuard: guard,
     signal: scope.signal,
     close,
-    openReservations: () => openReservations(),
+    openReservations: (...args) => {
+      try {
+        check(args.length <= 1);
+        if (args.length) {
+          require('./railgun-relay-quote-data').shape(args[0], ['existingOnly']);
+          check(args[0].existingOnly === true);
+        }
+        // No arguments retain the old fresh/lazy behavior. The fixed cold
+        // controller can require existing registered history before any opener.
+        return openReservations(args.length === 1);
+      } catch {
+        return Promise.reject(fail());
+      }
+    },
     openPrivateCapsules: () => openPrivateCapsules(),
     openPrivateRecoveryStores,
     openRelayRecoveryStore,

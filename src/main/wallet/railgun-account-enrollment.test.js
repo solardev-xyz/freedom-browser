@@ -1717,3 +1717,70 @@ test('credential quarantine accepts only original enrolled instances, including 
   expect(mockQuarantine).toHaveBeenCalledTimes(1);
   expect(mockQuarantine).toHaveBeenCalledWith(originalIdentity);
 });
+
+test.each([false, true])(
+  'reservation existing-only arguments refuse before cached=%s opener',
+  async (cached) => {
+    const entry = await open(true);
+    if (cached) await entry.openReservations();
+    const priorInventory = inventory(),
+      names = fs.readdirSync(entry.directory).sort();
+    const getter = jest.fn(() => true),
+      trap = jest.fn();
+    const accessor = Object.defineProperty({}, 'existingOnly', { enumerable: true, get: getter });
+    const proxy = new Proxy({}, { getPrototypeOf: trap, ownKeys: trap, get: trap });
+    for (const value of [
+      undefined,
+      null,
+      false,
+      {},
+      [],
+      { existingOnly: false },
+      { existingOnly: 1 },
+      { existingOnly: true, extra: true },
+      { existingOnly: true, [Symbol('extra')]: true },
+      accessor,
+      proxy,
+    ])
+      await expect(entry.openReservations(value)).rejects.toMatchObject({
+        code: 'RAILGUN_ACCOUNT_ENROLLMENT_REFUSED',
+      });
+    await expect(entry.openReservations({ existingOnly: true }, {})).rejects.toThrow();
+    expect(getter).not.toHaveBeenCalled();
+    expect(trap).not.toHaveBeenCalled();
+    expect(inventory()).toEqual(priorInventory);
+    expect(fs.readdirSync(entry.directory).sort()).toEqual(names);
+  }
+);
+test('reservation existing-only missing history cannot initialize while no-argument creation still works', async () => {
+  const entry = await open(true),
+    previous = inventory(),
+    names = fs.readdirSync(entry.directory).sort();
+  await expect(entry.openReservations({ existingOnly: true })).rejects.toThrow();
+  expect(inventory()).toEqual(previous);
+  expect(fs.readdirSync(entry.directory).sort()).toEqual(names);
+  expect(fs.existsSync(reservationFile(entry))).toBe(false);
+  const store = await entry.openReservations();
+  expect(await entry.openReservations({ existingOnly: true })).toBe(store);
+});
+test('reservation existing-only validates physical presence even before returning cached owner', async () => {
+  const entry = await open(true),
+    store = await entry.openReservations(),
+    filename = reservationFile(entry);
+  fs.renameSync(filename, filename + '.retained');
+  const previous = inventory();
+  await expect(entry.openReservations({ existingOnly: true })).rejects.toThrow();
+  expect(fs.existsSync(filename)).toBe(false);
+  expect(inventory()).toEqual(previous);
+  fs.renameSync(filename + '.retained', filename);
+  expect(await entry.openReservations({ existingOnly: true })).toBe(store);
+});
+test('reservation existing-only authenticates retained private state on a real legacy cold reopen', async () => {
+  const entry = await open(true),
+    store = await entry.openReservations();
+  await store.reserve(reservationInput());
+  entry.close();
+  const cold = await open(),
+    restored = await cold.openReservations({ existingOnly: true });
+  expect((await restored.inspect()).held).toBe(1);
+});
