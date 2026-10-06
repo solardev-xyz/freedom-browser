@@ -132,6 +132,13 @@ function reader(options, method, state) {
   }
 }
 module.exports = {
+  normalizeRailgunRelayRecordStreamManifest(value) {
+    try {
+      return checkedManifest(value);
+    } catch {
+      throw refusal();
+    }
+  },
   createRailgunRelayProofRecordSender: (text, signal) =>
     sender(text, signal, 'relay-proof-record', 'signed'),
   createRailgunRelayVerifyRecordSender: (text, signal) =>

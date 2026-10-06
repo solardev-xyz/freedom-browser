@@ -15,8 +15,11 @@ async function withWallet(
     inventory = require('./railgun-engine-manifest.json').inventory;
   const { initPoseidonPromise } = require(path.join(root, 'utils/poseidon'));
   await initPoseidonPromise;
+  if (purpose === 'relay-prove-local')
+    require('./railgun-relay-wallet-data').assertRailgunRelaySignal(signal);
   let sequence = 1,
-    poiCalls = 0;
+    poiCalls = 0,
+    relayRecordRead = false;
   const remote = (channel) =>
     require('./railgun-remote').createRailgunRemote({
       ...r('abstract-leveldown'),
@@ -121,6 +124,34 @@ async function withWallet(
           checkpoint: input.checkpoint,
           scan: result,
           signal,
+          ...(purpose === 'relay-prove-local'
+            ? {
+                async readRelayProofRecord() {
+                  assert.equal(relayRecordRead, false);
+                  relayRecordRead = true;
+                  const {
+                    createRailgunRelayProofRecordReader,
+                  } = require('./railgun-relay-record-stream');
+                  return createRailgunRelayProofRecordReader({
+                    manifest: input.recordStream,
+                    signal,
+                    request: async (message) => {
+                      assert.ok(!signal.aborted);
+                      const id = ++sequence;
+                      const wire = JSON.stringify({ id, ...message });
+                      assert.ok(Buffer.byteLength(wire) < 65536);
+                      const reply = await request(wire);
+                      assert.ok(!signal.aborted);
+                      assert.ok(typeof reply === 'string' && Buffer.byteLength(reply) < 65536);
+                      const response = JSON.parse(reply);
+                      require('./railgun-relay-quote-data').shape(response, ['id', 'value']);
+                      assert.equal(response.id, id);
+                      return response.value;
+                    },
+                  }).read();
+                },
+              }
+            : {}),
           ...(purpose === 'private-operate'
             ? {
                 async exchangePrivateIntent(value) {
@@ -139,6 +170,8 @@ async function withWallet(
             : {}),
         })
       : {};
+    if (purpose === 'relay-prove-local')
+      require('./railgun-relay-wallet-data').assertRailgunRelaySignal(signal);
     assert.equal(poiCalls, 0);
     assert.equal(guardReport().attempts, 0);
     const messageId = ++sequence;
@@ -161,6 +194,8 @@ async function withWallet(
       ),
       { id: messageId, value: null }
     );
+    if (purpose === 'relay-prove-local')
+      require('./railgun-relay-wallet-data').assertRailgunRelaySignal(signal);
   } finally {
     viewingKey.fill(0);
     publicRemote.close();
