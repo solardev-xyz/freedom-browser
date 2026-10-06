@@ -1,0 +1,21 @@
+{
+  "schema": "railgun-relay-publication-index-v1",
+  "files": {
+    "positive-report.json": {
+      "sha256": "b69bb8478614a0be4ba0b28f44e73be6db84a446ba6168ebce4ded8f8df53497",
+      "bytes": 513511
+    },
+    "cold-report.json": {
+      "sha256": "c54ac46dbecdf5e4a08c6881b2fbf4f335ff39636fc5b7ea4c91433746d13df6",
+      "bytes": 208067
+    },
+    "provenance.json": {
+      "sha256": "38fa69a1cd9e36a8c86cba3555ff23921cfb0400f7d9c7c40ddfb2983249373b",
+      "bytes": 7612
+    },
+    "README.md": {
+      "sha256": "4973241426328b09711eec2e93ddf9f320f9c705045bc8536ba1ecf30bf3cb2c",
+      "bytes": 3302
+    }
+  }
+}

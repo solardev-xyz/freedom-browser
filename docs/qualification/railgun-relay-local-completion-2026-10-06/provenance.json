@@ -1,0 +1,210 @@
+{
+  "schema": "railgun-relay-publication-provenance-v1",
+  "sourceCommit": "a7a5cff83d9db47e2108fcc7d3a8f53cd189ba9c",
+  "cases": {
+    "positive": {
+      "originalPins": {
+        "report": {
+          "sha256": "b69bb8478614a0be4ba0b28f44e73be6db84a446ba6168ebce4ded8f8df53497",
+          "bytes": 513511
+        },
+        "result": {
+          "sha256": "0955b884e4ffa353a166af1247c77d38476169783fa7f0eb1839924258796333",
+          "bytes": 895
+        },
+        "post": {
+          "sha256": "1ae748d5796cc995906ddf0fba5e5626f9c1c6ac79cec8fb465106e92254a77b",
+          "bytes": 24
+        },
+        "process": {
+          "sha256": "5b97dc9c5391ffabe267f4ddac8c9ebc24190eeb580b5649d6c8feda45f285c5",
+          "bytes": 185
+        },
+        "sourceFreeze": {
+          "sha256": "0fc141fa2edf7068757dc21e45af29943073f8a85a916f30e87edcd822b2eed8",
+          "bytes": 8718694
+        },
+        "request": {
+          "sha256": "7830c2a6e69ef94480c297867579711fd940b6033558e8aa56468a96417cb264",
+          "bytes": 486
+        },
+        "childLog": {
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      },
+      "launcherResult": {
+        "schema": "railgun-relay-positive-result-v1",
+        "qualified": true,
+        "originalChild": {
+          "state": "finished",
+          "pid": 26371,
+          "exitObserved": true,
+          "exitCode": 0,
+          "timedOut": false,
+          "interrupted": false,
+          "terminateRequested": false,
+          "killRequested": false
+        },
+        "reportSha256": "b69bb8478614a0be4ba0b28f44e73be6db84a446ba6168ebce4ded8f8df53497",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "sourceFreezeSha256": "0fc141fa2edf7068757dc21e45af29943073f8a85a916f30e87edcd822b2eed8",
+        "head": "a7a5cff83d9db47e2108fcc7d3a8f53cd189ba9c",
+        "createdWindow": [
+          1791304219043,
+          1791304246453
+        ],
+        "syntheticTrustDomain": true,
+        "productionServiceAuthority": false,
+        "osNetworkConfinementQualified": false,
+        "driverPid": 26342,
+        "parentOriginalObservationRequired": true,
+        "profilePayloadReadsByLauncher": false
+      },
+      "postCheck": {
+        "unchanged": true
+      },
+      "originalMain": {
+        "state": "finished",
+        "pid": 26371,
+        "exitObserved": true,
+        "exitCode": 0,
+        "timedOut": false,
+        "interrupted": false,
+        "terminateRequested": false,
+        "killRequested": false
+      },
+      "rootObservedOriginalDriver": {
+        "pid": 26342,
+        "originalHandle": "80413",
+        "completionChunk": "468139",
+        "natural": true,
+        "exitCode": 0,
+        "signal": null
+      }
+    },
+    "cold": {
+      "originalPins": {
+        "report": {
+          "sha256": "c54ac46dbecdf5e4a08c6881b2fbf4f335ff39636fc5b7ea4c91433746d13df6",
+          "bytes": 208067
+        },
+        "result": {
+          "sha256": "4094d1f0100da9ca38205db05328406d54949c95afb446fa707362e30d216a9e",
+          "bytes": 1079
+        },
+        "post": {
+          "sha256": "1ae748d5796cc995906ddf0fba5e5626f9c1c6ac79cec8fb465106e92254a77b",
+          "bytes": 24
+        },
+        "process": {
+          "sha256": "3aa08d145b19dd1d3cd8f881b0ae40d15db14c6d0366d11a778aad476738bd2b",
+          "bytes": 185
+        },
+        "sourceFreeze": {
+          "sha256": "4a3a24a42cdbcd2da3e7111e3573bd68b3605969f857f8861f0079b30d5d0ed4",
+          "bytes": 9752444
+        },
+        "request": {
+          "sha256": "4d601eafb68033665f735289bef616fdd04ad3b8dba8d3d9c90e4d593fbeb31c",
+          "bytes": 639
+        },
+        "childLog": {
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      },
+      "launcherResult": {
+        "schema": "railgun-relay-cold-result-v1",
+        "qualified": true,
+        "originalChild": {
+          "state": "finished",
+          "pid": 28891,
+          "exitObserved": true,
+          "exitCode": 0,
+          "timedOut": false,
+          "interrupted": false,
+          "terminateRequested": false,
+          "killRequested": false
+        },
+        "driverPid": 28866,
+        "parentOriginalObservationRequired": true,
+        "reportSha256": "c54ac46dbecdf5e4a08c6881b2fbf4f335ff39636fc5b7ea4c91433746d13df6",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "sourceFreezeSha256": "4a3a24a42cdbcd2da3e7111e3573bd68b3605969f857f8861f0079b30d5d0ed4",
+        "firstReportSha256": "b69bb8478614a0be4ba0b28f44e73be6db84a446ba6168ebce4ded8f8df53497",
+        "firstOutcomeSha256": "3fd043851c76c0a3453c6eb0bd51d96424313299a8c2a41c9796c176e4ffd336",
+        "sourceBuildSha256": "1f2fa1115296c0e0d8a281110a0d86050bb3220dfc0b8e189514354031d99fee",
+        "createdWindow": [
+          1791304593969,
+          1791304601111
+        ],
+        "profilePayloadReadsByLauncher": false,
+        "productionServiceAuthority": false,
+        "osNetworkConfinementQualified": false
+      },
+      "postCheck": {
+        "unchanged": true
+      },
+      "originalMain": {
+        "state": "finished",
+        "pid": 28891,
+        "exitObserved": true,
+        "exitCode": 0,
+        "timedOut": false,
+        "interrupted": false,
+        "terminateRequested": false,
+        "killRequested": false
+      },
+      "rootObservedOriginalDriver": {
+        "pid": 28866,
+        "originalHandle": "50742",
+        "completionChunk": "f57dd6",
+        "natural": true,
+        "exitCode": 0,
+        "signal": null
+      }
+    }
+  },
+  "sharedOriginalPins": {
+    "sourceBuild": {
+      "sha256": "1f2fa1115296c0e0d8a281110a0d86050bb3220dfc0b8e189514354031d99fee",
+      "bytes": 5049759
+    },
+    "positiveLauncherFreeze": {
+      "sha256": "2153540249f04cf829702b9061fbc2fecff6d526121858df9f81d326b54b4c84",
+      "bytes": 11556
+    },
+    "coldLauncherFreeze": {
+      "sha256": "8e289708fb9a8555baf17714590eebfaf05d57502595c2bfb917b89ceaef4878",
+      "bytes": 6916
+    },
+    "coldConfig": {
+      "sha256": "fc7a2a4093c325344f0217871a9c159f267c9a00ad847e0ee60dcb6420fc2399",
+      "bytes": 1063
+    },
+    "firstOutcome": {
+      "sha256": "3fd043851c76c0a3453c6eb0bd51d96424313299a8c2a41c9796c176e4ffd336",
+      "bytes": 471
+    },
+    "sourceChecks": {
+      "sha256": "b41a7b1de1a99a02240871d4c3c5c06fbc8c27c3e37b2604acbb9d888251b224",
+      "bytes": 1786
+    }
+  },
+  "rootObservationPin": {
+    "sha256": "6f21c624d792423fc95eed577b4d0b03eb71da3a8bd52c55ec99cbad5d18e072",
+    "bytes": 1488
+  },
+  "review": {
+    "authority": "Claude w6:p2; original outcome review tool 6dd72d",
+    "scope": "Real cryptography and durable local custody for a public synthetic Shield input, followed by natural second-main C-only verification of the unchanged ready record. No live service or relay authority, crash or signed-only recovery, Transact native, whole-profile invariance, or OS network confinement claim. Original parent exits are root-attested.",
+    "recordSha256": "913dee27fb1e913988b1c852ed5c755ad4830a2ff226e644bb916900f11c94fb"
+  },
+  "selectedSourceCount": 650,
+  "selectedSourceMapSha256": "1b758c7b9555c5e59712701d14e5502b51fde22e97127839b2d7813d29d66eb6",
+  "fullSourceAndDependencyInventoriesIncluded": false,
+  "rawMetadataReconstructible": false,
+  "cryptoReverifiedByExporter": false,
+  "scope": "Synthetic Shield local v4 custody and second-main ready-local C-only continuation; no live transport, Transact native or crash recovery qualification."
+}

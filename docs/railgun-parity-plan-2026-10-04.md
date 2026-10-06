@@ -1,19 +1,30 @@
 # Railgun parity and remaining integration work — October 4, 2026
 
+Current status after the receipt fix at `a7a5cff8`: the fixed local relay controller connects genuine account review, selected disclosure, paired durable custody, one-use signing, independent signature verification and original-signature proof production/verification. Shield and Transact paths are implemented and source-reviewed. Transact additionally requires consent before staging queries/creator reads and separate exact-root consent. Existing-only cold discovery, original-signature resume, ready-proof verification and local discard are connected. These implementation claims rest on controlled source tests, including six cases crossing the real account/controller and encrypted-store boundaries with explicitly mocked runtime, service and enrollment layers; they are not native cryptographic success claims. See [local custody](railgun-local-relay-storage-2026-10-06.md) and [witness/recovery](railgun-relay-witness-recovery-2026-10-06.md).
+
+Native evidence for the connected controller includes [two unchanged-policy refusals](qualification/railgun-relay-refusal-2026-10-06/README.md) at `7564aaa9`: declined disclosure and unrelated history stop before signing without a durable relay row. The history mismatch is rejected before membership cryptography.
+
+The receipt-lifetime correction at `a7a5cff8` passes 615 root tests across seven suites; the updated qualification fixture separately passes 303 tests across eight suites. These overlapping source-test campaigns are not native success evidence. Failed isolated native attempts a and b remain diagnostics: a returned recovery-required without a success report; b saved the signature and completed the producer and independent verifier utilities, but refused before ready-local persistence. Source review traced a second consumption of a one-use coverage receipt after canonical refresh, with the same defect in cold recovery. The reviewed fix carries the latest authenticated coverage observation forward and reasserts its exact receipt and epoch; it does not relax consumption, journal or freshness checks. Fresh, signed-cold and ready-cold regressions fail against the pre-fix source.
+
+The [connected local completion and cold-reopen campaign](qualification/railgun-relay-local-completion-2026-10-06/README.md) now passes using source `a7a5cff8`, the exact qualification fixture overlay and one isolated public test-list replacement. The fresh Shield case selects 2,000 synthetic WETH base units, allocates 100 to the fee and 1,900 to self, independently verifies the signature and both proofs, and authenticates ready-local readback. Its 79 original utilities use nine key loans and 1,322 simulated RPC requests. Four separate audit jobs accept the unmodified record and reject signature, transaction-proof and pre-transaction-POI mutations through actual primitive failures and production refusal.
+
+A separate main process reopens the exact first disposable account and verifies the original ready record with the independent verifier only. Its six utilities, three key loans and 49 simulated RPC requests add no signing, proof production or quote/POI queries. Authenticated paired custody stays unchanged and recovery sequence remains 4 → 4. Both original drivers and Electron mains exit naturally with zero; qualified launcher results and source/runtime postchecks pass. These process observations are root-attributed. Lease/floor writes remain permitted, so this is not whole-profile byte identity.
+
+This establishes local completion and ready-record cold verification in the declared synthetic trust domain, not authentic production-list acceptance or a live relay send. The unchanged-production-list refusal cases retain their separate evidence. Transact-input native qualification and broader failure/recovery cases remain distinct. Shared v4 custody is local-only; the planned incompatible v5 external-attempt boundary, uncertainty reconciliation and confined transport must precede handoff. Ten retained operations per account, no pruning, platform/release qualification and product UX remain explicit limits or follow-up work.
+
+This plan compares Railgun with the implemented PPv2 backend. Historical reports remain evidence for their recorded sources; later source tests and engineering reviews do not refresh their native runs. Earlier diagnostic and fee-review receipts are not signing permits. Source-policy rotation may re-derive caches but must preserve the interpretation of reservation, capsule and journal records.
+
+## Earlier local preparation and review evidence
+
+The following checkpoints retain their historical scope. Statements about what was next apply to those checkpoints, not the current implementation status above.
+
 The [unsigned relay preparation slice](railgun-relay-unsigned-preparation-2026-10-06.md) now passes native qualification at `67612a75`: a genuine disposable account constructs a fee-100/self-600 draft from a 700-unit input, then a separate restored viewing process reconstructs its exact serialized bytes. All three utilities close as expected; original parent/launcher exits are natural zero, and protected storage stays unchanged. The first failed attempt exposed a shared-snapshot request sequence bug, corrected with 667 passing affected tests and independent source review. The result remains unreviewed and unpersisted, with no signing, proof, POI-query or relay-send grant. Exact transaction review, shared durable holds/recovery, confined transport and live parity remain open.
 
 The [genuine-account local review](qualification/railgun-local-relay-review-native-2026-10-06/OVERVIEW.md) now passes approval, explicit refusal and held-callback close at `c5f0a544`. Real enrolled owners over a disposable synthetic account preserve the handoff until the original callback settles and remain usable afterward. Three quote jobs and the original parent/launcher close as expected; 239 focused tests, strict lint and formatting pass. The failed pre-main startup is preserved separately. This qualifies callback ownership, with no signing, POI-query or relay-send grant.
 
 The [sender-only retained-output test](qualification/railgun-relay-sender-recovery-2026-10-06/OVERVIEW.md) at `e5b4b1f9` recovers both fee-100 and self-900 outputs through the actual engine using only the public fixture sender viewing key. Ciphertext, annotation and recipient controls refuse at their specified stages; the empty-unblind fallback is checked separately. One guarded utility closes with exit 15 and original parent/launcher exit naturally with zero. All 58 focused tests, strict lint and formatting pass. This does not yet qualify genuine account or persisted capsule recovery.
 
-Genuine-account unsigned preparation and independent serialized reconstruction now have controlled native evidence. The result remains explicitly unreviewed and unpersisted. A future signing gate must freshly review and bind the exact prepared intent; the old fee-review receipt grants nothing. Shared input reservations and authenticated durable recovery/uncertainty, operation-local confined transport, live relay parity and UX follow. Any source-policy rotation must only re-derive caches; reservation, capsule and journal records retain their original interpretation.
-
-This is the continuation plan after `ba507f73`. It compares Railgun with the
-implemented PPv2 backend, rather than treating either protocol as a finished
-wallet product. Historical qualification reports remain evidence for their
-recorded sources; a later passing unit suite does not refresh their native runs.
-
-## Latest checkpoint
+## Earlier relay prerequisites and recovery evidence
 
 The [public proof-to-wire composition](qualification/railgun-relay-proof-wire-2026-10-06/OVERVIEW.md) now passes one native four-utility run at `41472ed4`: synthetic quote admission precedes proving, actual fee/pre-transaction POI data travels through selected upstream COMMON encryption, and a separate verifier checks reconstructed decrypted input. Exact public proof/calldata and quote bytes are retained. Root checks pass 276 tests in eight suites and strict lint; no full regression or live relay qualification follows. The [standalone public reverifier](qualification/railgun-relay-retained-reverify-2026-10-06/OVERVIEW.md) now passes a separate two-utility replay at `71e7c27f`: the original quote, fee commitment and both retained proofs verify, with thirteen altered-signal refusals. No producer or private-key path runs. Its historical evaluation grants no current quote or service authority; 51 focused tests and strict lint pass.
 
@@ -69,12 +80,7 @@ audit. External services remain synthetic. This qualifies callback cancellation
 after verifier exit, not live-child cancellation or physical transport drainage.
 The standalone trusted-host package does not export this recovery authority.
 
-Next are production key and fee admission, pre-transaction POI authority,
-durable uncertainty and confined transport. The local composition above supplies
-the earlier missing proof-to-wire prerequisite. The existing
-broadcaster still delegates to EOA self-broadcast. Specifically authorized
-live private/service qualification, return-to-origin spending policy, generic
-Host support, platform/release work and product UX remain separate gates.
+At these earlier checkpoints, production key/fee admission and local custody were still upcoming. The fixed local controller described above now implements those boundaries; the Shield local-completion and ready-record cold campaign above now passes within its synthetic-service scope. The existing broadcaster still delegates to EOA self-broadcast. External relay attempts and confined transport remain unimplemented, while live private/service qualification, return-to-origin spending policy, generic Host support, platform/release work and product UX remain separate gates.
 
 ## Earlier public adapter, package and transport checkpoint
 
@@ -373,9 +379,7 @@ The [partial submission and capture checkpoint](railgun-partial-submission-2026-
 
 ## Established baseline
 
-The detailed checkpoints below describe their recorded versions. The latest
-checkpoint and next-work section distinguish the current partial-withdrawal
-support from these earlier integration restrictions.
+The detailed checkpoints below describe their recorded versions. The current status and next-work section distinguish implemented partial-withdrawal and local relay support from these earlier integration restrictions.
 
 PPv2 has a funded native Sepolia journey through registration, deposits, a
 finalized relayed withdrawal, restart/change recovery and exits. Controlled
@@ -438,7 +442,8 @@ Later checkpoints above supersede those restrictions within their stated scope.
 
 ## Next technical work
 
-1. **Public Shield lane — implemented with controlled native qualification.**
+1. **Extend the qualified local relay lifecycle without turning local completion into send authority.** The isolated synthetic-list Shield case now reaches authenticated ready-local custody and passes separate-main verification of its original record. Preserve that evidence and the unchanged-production-list refusals. Qualify Transact-input and remaining interruption/recovery cases separately. External handoff requires the planned incompatible v5 attempt format, durable uncertain-outcome handling and original-attempt reconciliation before any send; current shared v4 custody remains local-only. Then connect confined relay transport and qualify authentic services. The [handoff model](railgun-relay-handoff-model-2026-10-06.md) and [integration plan](railgun-relay-integration-plan-2026-10-06.md) describe those separate boundaries. Ten retained operations per account and no pruning remain unchanged.
+2. **Preserve the qualified public Shield lane.**
    The [public instance and separate submitter](railgun-kohaku-public-integration-2026-10-04.md)
    issue genuine one-use public tokens, review simulation disclosure before keys
    or RPC admission, and retain reviewed destination restrictions. Acknowledged,
@@ -449,7 +454,7 @@ Later checkpoints above supersede those restrictions within their stated scope.
    scan credit and another completed restore. This controlled composition now passes
    both response outcomes in the [cold-credit checkpoint](railgun-public-facade-cold-credit-2026-10-05.md).
    Live public-facade qualification remains separate.
-2. **Finish the remaining partial-withdrawal composition boundaries.**
+3. **Preserve qualified partial-withdrawal and recovery boundaries.**
    The actual Kohaku adapter now supports partial withdrawal with immutable
    input/withdrawal/change review. Genuine change scanning, disposable-list
    acceptance, second spending, terminal ingestion, two-process restart and
@@ -477,7 +482,7 @@ Later checkpoints above supersede those restrictions within their stated scope.
    [bounded partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md)
    records the creator shapes and combined output/unshield POI requirements;
    the latest checkpoints above distinguish implemented and still-open work.
-3. **Local origin diagnostics qualified; spending policy remains separate.**
+4. **Local origin diagnostics qualified; spending policy remains separate.**
    The existing-only journal reader and main-only genuine-account host now pass
    the [fresh native recovery campaign](railgun-shield-origin-2026-10-05.md).
    They authenticate local evidence only, grant no ownership or chain authority,
@@ -495,7 +500,7 @@ Later checkpoints above supersede those restrictions within their stated scope.
    resulting public linkage. It would still query the selected nullifier and
    simulate the unshield at the RPC; it does not avoid disclosure review. This
    follows partial withdrawal in priority. No POI bypass is enabled.
-4. **Complete live private qualification.** Refresh the funded profile under
+5. **Complete live private qualification.** Refresh the funded profile under
    current policies before spending, then qualify a private transfer, its output
    recovery/POI and a subsequent spend or unshield. Review external disclosures
    before the first query. A self-broadcast consumes public EOA gas and does not
@@ -503,9 +508,7 @@ Later checkpoints above supersede those restrictions within their stated scope.
    Railgun broadcaster remains part of the intended integration, subject to
    availability on the supported network.
 
-The order above starts with work that does not require funded-profile access.
-Partial withdrawal and return-to-origin need their own bounded designs and
-qualification; they are not claimed by the current milestone.
+The next local qualification work does not require funded-profile access. Controlled partial-withdrawal evidence is established at its recorded sources; return-to-origin spending policy, authentic live service/private-spend qualification and product activation remain separate decisions and gates.
 
 ## Historical spend lifecycle refresh at `ba507f73`
 
