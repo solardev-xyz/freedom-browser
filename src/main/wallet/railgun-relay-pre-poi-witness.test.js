@@ -242,6 +242,8 @@ test.each([0, 7, 65535])(
     const f = fixture(tree),
       input = request(f),
       result = await prepare(input);
+    expect(result.witness).toEqual(mockCore.witness);
+    expect(Object.isFrozen(result.witness.publicInputs.nullifiers)).toBe(true);
     expect(result.binding).toEqual(f.binding);
     expect(result.publicSignals).toEqual(f.publicSignals);
     expect(result.inputs).toMatchObject({

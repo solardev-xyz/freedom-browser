@@ -156,7 +156,7 @@ async function assemble(options, local) {
       zero,
     ];
     active();
-    return freeze({ inputs, binding, publicSignals, historyDigest: history.digest });
+    return freeze({ witness, inputs, binding, publicSignals, historyDigest: history.digest });
   } catch {
     throw Object.assign(new Error('Railgun relay pre-transaction witness refused'), {
       code: 'RAILGUN_RELAY_PRE_POI_WITNESS_REFUSED',
