@@ -55,7 +55,7 @@ function selection(input) {
     minimumBlock: input.minimumBlock,
   });
 }
-function createRailgunPrivatePreflight(options) {
+function createPreflight(options, relay = false) {
   check(options && !isProxy(options) && Object.getPrototypeOf(options) === Object.prototype);
   const descriptors = Object.getOwnPropertyDescriptors(options);
   const required = ['enrollment', 'input', 'artifactDirectory'];
@@ -67,22 +67,28 @@ function createRailgunPrivatePreflight(options) {
   const { enrollment, input, artifactDirectory, destinationConstraint, intentKind } = options;
   check(
     !Object.hasOwn(descriptors, 'intentKind') ||
-      ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
-        intentKind
-      )
+      (!relay &&
+        ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+          intentKind
+        ))
   );
   // Snapshot one closed circuit choice before any asynchronous deployment or
   // artifact work; the same tuple selects local artifacts and the chain getter.
   const partial = intentKind === 'railgun-partial-unshield';
   const circuit = Object.freeze({
-    variant: partial ? '01x02' : '01x01',
+    variant: partial || relay ? '01x02' : '01x01',
     inputs: 1,
-    outputs: partial ? 2 : 1,
+    outputs: partial || relay ? 2 : 1,
   });
   check(isRailgunAccountEnrollment(enrollment) && !enrollment.signal.aborted);
+  if (relay)
+    require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
   const selected = selection(input);
   check(typeof artifactDirectory === 'string' && require('path').isAbsolute(artifactDirectory));
-  const parent = enrollment.getContext('protocol-rpc', 'private-preflight');
+  const parent = enrollment.getContext(
+    'protocol-rpc',
+    relay ? 'relay-preflight' : 'private-preflight'
+  );
   const context = getPrivacyContext(parent);
   const scope = createPrivacyScope({
     profileId: context.profileId,
@@ -127,6 +133,8 @@ function createRailgunPrivatePreflight(options) {
   }
   const active = () => {
     check(!closed && !enrollment.signal.aborted && !deployment.signal.aborted, 'inactive');
+    if (relay)
+      require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
     getPrivacyContext(handle);
     rpc.assertActive();
   };
@@ -240,6 +248,7 @@ function createRailgunPrivatePreflight(options) {
         ownershipVerified: false,
         signingEnabled: false,
         ...(partial ? { intentKind: 'railgun-partial-unshield' } : {}),
+        ...(relay ? { intentKind: 'railgun-relay-self-transfer' } : {}),
       });
       const receipt = Object.freeze({});
       receipts.set(receipt, { serial, started, base: base.receipt, value });
@@ -286,11 +295,24 @@ function createRailgunPrivatePreflight(options) {
     return entry.value;
   };
   const source = Object.freeze({ acquire, assertResult, close, signal: scope.signal });
-  sources.set(source, enrollment);
+  sources.set(source, { enrollment, relay });
   return source;
 }
 function assertRailgunPrivatePreflight(source, receipt, enrollment, minimumRemainingMs = 0) {
-  check(isRailgunAccountEnrollment(enrollment) && sources.get(source) === enrollment);
+  const entry = sources.get(source);
+  check(isRailgunAccountEnrollment(enrollment) && entry?.enrollment === enrollment && !entry.relay);
   return source.assertResult(receipt, minimumRemainingMs);
 }
-module.exports = { createRailgunPrivatePreflight, assertRailgunPrivatePreflight, MAX_AGE_MS };
+function assertRailgunRelayPreflight(source, receipt, enrollment, minimumRemainingMs = 0) {
+  const entry = sources.get(source);
+  check(isRailgunAccountEnrollment(enrollment) && entry?.enrollment === enrollment && entry.relay);
+  require('./railgun-account-enrollment').assertRailgunFencedAccountEnrollment(enrollment);
+  return source.assertResult(receipt, minimumRemainingMs);
+}
+module.exports = {
+  createRailgunPrivatePreflight: (options) => createPreflight(options),
+  assertRailgunPrivatePreflight,
+  createRailgunRelayPreflight: (options) => createPreflight(options, true),
+  assertRailgunRelayPreflight,
+  MAX_AGE_MS,
+};

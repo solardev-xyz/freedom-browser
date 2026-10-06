@@ -1,6 +1,13 @@
 // Real preflight receipts, privacy contexts and ABI; deployment, artifact
 // verification and RPC replies are simulated boundary dependencies.
-let mockEnrollment, mockEndpoint, mockDeployment, mockBase, mockMode, mockOutputs;
+let mockEnrollment,
+  mockEndpoint,
+  mockDeployment,
+  mockBase,
+  mockMode,
+  mockOutputs,
+  mockRelay,
+  mockFenced;
 const mockRpcOptions = jest.fn(),
   mockDeploymentOptions = jest.fn(),
   mockRequest = jest.fn(),
@@ -9,6 +16,9 @@ const mockRpcOptions = jest.fn(),
   mockVerifier = jest.fn();
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
+  assertRailgunFencedAccountEnrollment: (v) => {
+    if (v !== mockEnrollment || !mockFenced || v.signal.aborted) throw Error('fence');
+  },
 }));
 jest.mock('./railgun-shield-preflight', () => ({
   MAX_AGE_MS: 60000,
@@ -37,7 +47,7 @@ jest.mock('../networks/private-rpc', () => ({
     const { getPrivacyContext } = require('../networks/privacy-context');
     const context = getPrivacyContext(handle);
     expect(role).toBe('protocol-rpc');
-    expect(context.subject.operation).toBe('private-preflight');
+    expect(context.subject.operation).toBe(mockRelay ? 'relay-preflight' : 'private-preflight');
     return {
       request: mockRequest,
       release: mockRelease,
@@ -55,6 +65,8 @@ const { createHash } = require('crypto');
 const {
   createRailgunPrivatePreflight,
   assertRailgunPrivatePreflight,
+  createRailgunRelayPreflight,
+  assertRailgunRelayPreflight,
   MAX_AGE_MS,
 } = require('./railgun-private-preflight');
 const pins = require('./railgun-shield-pins.json');
@@ -96,6 +108,8 @@ beforeEach(() => {
   jest.resetAllMocks();
   mockMode = null;
   mockOutputs = 1;
+  mockRelay = false;
+  mockFenced = true;
   scope = createPrivacyScope({
     profileId: 'private-preflight',
     signal: new AbortController().signal,
@@ -533,4 +547,61 @@ test('one protocol restriction reaches both deployment and selected-nullifier cl
     destinationConstraint: constraint,
   });
   expect(mockRpcOptions).toHaveBeenLastCalledWith({ destinationConstraint: constraint });
+});
+
+function openRelay(options = {}) {
+  source.close();
+  refreshDeployment();
+  mockRelay = true;
+  mockOutputs = 2;
+  return createRailgunRelayPreflight({
+    enrollment: mockEnrollment,
+    input: input(),
+    artifactDirectory: '/fixture/artifacts',
+    ...options,
+  });
+}
+test('relay preflight selects 01x02 and cannot be consumed as a private receipt', async () => {
+  source = openRelay();
+  const { receipt } = await source.acquire();
+  const observation = assertRailgunRelayPreflight(source, receipt, mockEnrollment);
+  expect(observation.intentKind).toBe('railgun-relay-self-transfer');
+  expect(observation.signingEnabled).toBe(false);
+  expect(mockLoad).toHaveBeenLastCalledWith(expect.objectContaining({ variant: '01x02' }));
+  expect(() => assertRailgunPrivatePreflight(source, receipt, mockEnrollment)).toThrow();
+});
+test('private preflight cannot be consumed as relay evidence', async () => {
+  const { receipt } = await source.acquire();
+  expect(() => assertRailgunRelayPreflight(source, receipt, mockEnrollment)).toThrow();
+});
+test('relay preflight refuses an unfenced account before RPC construction', () => {
+  mockFenced = false;
+  mockRpcOptions.mockClear();
+  expect(() => openRelay()).toThrow();
+  expect(mockRpcOptions).not.toHaveBeenCalled();
+});
+test('relay preflight rechecks its fence after artifact verification before nullifier disclosure', async () => {
+  source = openRelay();
+  mockVerifier.mockImplementation(() => {
+    mockFenced = false;
+  });
+  await expect(source.acquire()).rejects.toThrow();
+  expect(
+    mockRequest.mock.calls.some(
+      ([method, params]) =>
+        method === 'eth_call' && params[0].data.startsWith(abi.getFunction('nullifiers').selector)
+    )
+  ).toBe(false);
+});
+test.each(['railgun-private-transfer', 'railgun-partial-unshield', 'railgun-relay-self-transfer'])(
+  'relay wrapper refuses a caller-selected circuit kind %s',
+  (intentKind) => {
+    expect(() => openRelay({ intentKind })).toThrow();
+  }
+);
+test('relay receipt revokes when its fence is lost after successful acquisition', async () => {
+  source = openRelay();
+  const { receipt } = await source.acquire();
+  mockFenced = false;
+  expect(() => assertRailgunRelayPreflight(source, receipt, mockEnrollment)).toThrow();
 });
