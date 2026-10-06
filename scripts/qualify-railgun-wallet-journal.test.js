@@ -101,15 +101,18 @@ test.each([
   expect(() => select({ FREEDOM_RAILGUN_KOHAKU_PUBLIC_ADAPTER: '1', ...env }, inputs)).toThrow();
 });
 function inventory(publicAdapterMode, publicShield = true) {
-  return vm.runInNewContext(section('  const sources = [', '\n  ];') + '\n]; sources;', {
+  return vm.runInNewContext(section('  const sources = [', '  const hashes =') + '\nsources;', {
     kohaku: {},
     publicShield,
     publicAdapterMode,
     privateAdapterMode: false,
     snapshotProbe: null,
     require: (name) => {
-      expect(name).toBe('../docs/qualification/railgun-shield-prerequisites-2026-10-04.json');
-      return { sourceSha256: { 'fixture/legacy-policy.js': 'unused' } };
+      expect([
+        '../docs/qualification/railgun-shield-prerequisites-2026-10-04.json',
+        '../src/main/wallet/railgun-txid-policy',
+      ]).toContain(name);
+      return require(name);
     },
   });
 }
@@ -128,6 +131,17 @@ test('public adapter inventory adds exact evidence paths only when selected', ()
     'scripts/qualify-railgun-wallet-journal.test.js',
   ]);
   expect(selected.filter((name) => !additions.includes(name))).toEqual(baseline);
+  expect(new Set(baseline).size).toBe(180);
+  expect(new Set(selected).size).toBe(188);
+  expect(baseline).toEqual(
+    expect.arrayContaining([
+      'scripts/fixtures/railgun-transact-staging-source.js',
+      'scripts/fixtures/railgun-enrolled-transact-staging.js',
+      'src/main/wallet/railgun-note-provenance-job.js',
+      'src/main/wallet/railgun-txid-note-witness.js',
+      'src/main/wallet/railgun-txid-root.js',
+    ])
+  );
   expect(baseline).toContain('scripts/fixtures/railgun-kohaku-contract-observer.js');
   expect(baseline).toContain('scripts/fixtures/railgun-kohaku-contract-observer.test.js');
   expect(baseline).toContain('src/main/wallet/railgun-kohaku-read-data.js');
