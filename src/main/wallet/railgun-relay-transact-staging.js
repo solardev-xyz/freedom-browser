@@ -2,6 +2,7 @@
  * Creator/TXID evidence is immutable data, never disclosure or signing authority.
  */
 const assert = require('assert/strict');
+const { types } = require('util');
 const { createHash } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const {
@@ -35,6 +36,7 @@ const {
 } = require('./railgun-relay-quote-data');
 const pins = require('./railgun-shield-pins.json');
 const receipts = new WeakMap();
+const disclosureBusy = new WeakSet();
 const fail = () =>
   Object.assign(new Error('Railgun relay Transact staging unavailable'), {
     code: 'RAILGUN_RELAY_TRANSACT_STAGING_REFUSED',
@@ -107,10 +109,14 @@ async function stage(
     request: suppliedRequest,
     archive,
     signal,
+    reviewStagingDisclosure,
     timeoutMs = 240000,
   },
   outcome
 ) {
+  assert.ok(
+    typeof reviewStagingDisclosure === 'function' && !types.isProxy(reviewStagingDisclosure)
+  );
   assertRailgunRelaySignal(signal);
   assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 240000);
   const request = captureRequest(suppliedRequest);
@@ -184,7 +190,9 @@ async function stage(
     succeeded = false,
     oldClosed = false,
     drainUncertain = false,
-    failure;
+    failure,
+    disclosureTimer,
+    disclosureAdmitted = false;
   const time = () => {
     const now = performance.now(),
       date = Date.now();
@@ -236,6 +244,64 @@ async function stage(
       request.binding.fields.feeExpiration - wall >= 120000 &&
         request.binding.fields.feeExpiration - wall <= 300000
     );
+    assert.ok(!disclosureBusy.has(enrollment));
+    disclosureBusy.add(enrollment);
+    disclosureAdmitted = true;
+    outcome.stage = 'staging-disclosure';
+    const summary = freeze({
+      purpose: 'railgun-relay-transact-staging-disclosure-v1',
+      service: 'sepolia-ppoi-fdi',
+      queries: [
+        { method: 'latestTxid' },
+        {
+          method: 'validateTxidRoot',
+          tree: 0,
+          pointSource: 'authenticated-existing-txid-checkpoint',
+          exactPointAvailableBeforeOpen: false,
+        },
+      ],
+      publicCreatorSelection: { transactionHash: note.txid, blockNumber: note.blockNumber },
+      canonicalPublicSnapshotRefresh: true,
+      publicCreatorSourceVisit: true,
+      selectedMembershipPermitted: false,
+      selectedNullifierQueryPermitted: false,
+      signingEnabled: false,
+      relaySendPermitted: false,
+    });
+    const disclosureStarted = performance.now();
+    const disclosureDeadline = Math.min(disclosureStarted + 30000, deadline);
+    disclosureTimer = setTimeout(closeScope, Math.max(1, disclosureDeadline - performance.now()));
+    disclosureTimer.unref?.();
+    let decision = reviewStagingDisclosure(summary, Object.freeze({ signal: scope.signal }));
+    if (types.isPromise(decision) && !types.isProxy(decision)) {
+      const observed = decision;
+      decision = (
+        await new Promise((resolve, reject) => {
+          try {
+            Promise.prototype.then.call(
+              observed,
+              (value) => resolve(Object.freeze({ __proto__: null, value })),
+              reject
+            );
+          } catch {
+            reject(Object.assign(drainFailed(), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' }));
+          }
+        })
+      ).value;
+    } else if (decision !== null && ['object', 'function'].includes(typeof decision)) {
+      throw Object.assign(drainFailed(), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+    }
+    clearTimeout(disclosureTimer);
+    disclosureTimer = undefined;
+    const disclosureSettled = performance.now();
+    assert.ok(disclosureSettled >= disclosureStarted && disclosureSettled < disclosureDeadline);
+    active();
+    assert.equal(decision, true);
+    assert.deepEqual(
+      selectionSnapshot(readRailgunAccountOwnedNotes(account, owners), request, descriptor),
+      baseline
+    );
+    assert.ok(request.binding.fields.feeExpiration - wall >= 120000);
     handoff = reserveRailgunAccountWalletHandoff(account, owners);
     outcome.stage = 'closing-wallet';
     outcome.originalAccountReusable = false;
@@ -420,6 +486,7 @@ async function stage(
     }
     throw error;
   } finally {
+    clearTimeout(disclosureTimer);
     if (!succeeded) {
       clearTimeout(timer);
       closeScope();
@@ -434,6 +501,8 @@ async function stage(
       // Preserve a typed verifier failure over unrelated failed cleanup.
       assert.ok(!drainUncertain || unknownExit(failure), drainFailed());
     }
+    if (disclosureAdmitted && !unknownExit(failure) && !drainUncertain)
+      disclosureBusy.delete(enrollment);
   }
 }
 exports.stageRailgunRelayTransactInput = async (options) => {

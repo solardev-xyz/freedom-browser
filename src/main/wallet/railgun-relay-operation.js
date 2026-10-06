@@ -1,4 +1,4 @@
-/** Fixed fresh Shield-input local relay operation. No transport or export path.
+/** Fixed fresh Shield/explicitly staged Transact local relay operation. No transport or export path.
  * WeakMap permits bind genuine live owners; persisted data is never a permit.
  * All original work settles before return. Ambiguous work retains exclusion.
  */
@@ -9,6 +9,8 @@ const wallet = require('./railgun-account-wallet');
 const identityApi = require('./railgun-identity');
 const enrollmentApi = require('./railgun-account-enrollment');
 const poiApi = require('./railgun-account-poi');
+const stagingApi = require('./railgun-relay-transact-staging');
+const provenanceApi = require('./railgun-relay-transact-provenance');
 const preflightApi = require('./railgun-private-preflight');
 const { shape, freeze, normalizeRailgunRelayQuote } = require('./railgun-relay-quote-data');
 const { normalizeRailgunRelayDraftCapsule } = require('./railgun-relay-capsule');
@@ -23,6 +25,7 @@ const { verifyRailgunRelaySignature } = require('./railgun-relay-signature-verif
 const { REQUIRED_LIST } = require('./railgun-poi-records');
 const busy = new WeakSet();
 const disclosures = new WeakMap(),
+  rootDisclosures = new WeakMap(),
   signings = new WeakMap(),
   issuances = new WeakMap(),
   proofs = new WeakMap(),
@@ -43,6 +46,7 @@ const isUnknown = (error) =>
     'RAILGUN_RELAY_CONTINUATION_DRAIN_FAILED',
     'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED',
     'RAILGUN_RESERVATIONS_DRAIN_UNOBSERVED',
+    'RAILGUN_RELAY_TRANSACT_STAGING_DRAIN_FAILED',
   ].includes(error?.code);
 function sameOwners(a, b) {
   shape(b, ['identity', 'enrollment', 'coordinator']);
@@ -60,6 +64,14 @@ function consume(map, token, account, owners, window) {
 }
 function consumeRailgunRelayDisclosurePermit(token, account, owners, window) {
   consume(disclosures, token, account, owners, window);
+}
+function consumeRailgunRelayRootDisclosurePermit(token, operation, account, owners, window) {
+  const entry = consume(rootDisclosures, token, account, owners, window);
+  assert.equal(entry.operation, operation);
+  assert.equal(
+    provenanceApi.assertRailgunRelayTransactProvenanceOperation(operation, account, owners, window),
+    entry.rootBinding
+  );
 }
 function consumeRailgunRelaySigningPermit(token, identity, signer) {
   const entry = signings.get(token);
@@ -81,11 +93,17 @@ function consumeRailgunRelayProofPermit(token, account, owners, window) {
   return consume(window === undefined ? coldProofs : proofs, token, account, owners, window).value;
 }
 // Observe only a native original, never a caller thenable/species return.
+// Null-prototype envelopes preserve the original fulfillment without assimilating
+// a then property added after the native promise was already fulfilled.
 function original(value) {
   if (!types.isPromise(value) || types.isProxy(value)) throw unknown();
   return new Promise((resolve, reject) => {
     try {
-      Promise.prototype.then.call(value, resolve, reject);
+      Promise.prototype.then.call(
+        value,
+        (settled) => resolve(Object.freeze({ __proto__: null, value: settled })),
+        reject
+      );
     } catch {
       reject(unknown());
     }
@@ -101,7 +119,15 @@ async function proveRailgunAccountRelayOperation(options) {
   let signingAttempted = false,
     signatureSaved = false;
   const tokens = [];
+  const evidenceListeners = [];
+  const stopEvidence = () => {
+    for (const [source, listener] of evidenceListeners.splice(0))
+      source.removeEventListener('abort', listener);
+  };
   try {
+    assert.ok(
+      options && !types.isProxy(options) && Object.getPrototypeOf(options) === Object.prototype
+    );
     shape(options, [
       'account',
       'owners',
@@ -111,6 +137,8 @@ async function proveRailgunAccountRelayOperation(options) {
       'artifactDirectory',
       'review',
       'reviewDisclosure',
+      ...(Object.hasOwn(options, 'stagingReceipt') ? ['stagingReceipt'] : []),
+      ...(Object.hasOwn(options, 'reviewRootDisclosure') ? ['reviewRootDisclosure'] : []),
     ]);
     shape(options.owners, ['identity', 'enrollment', 'coordinator']);
     shape(options.request, ['noteId', 'quote', 'gas', 'maxFee', 'signal']);
@@ -129,13 +157,14 @@ async function proveRailgunAccountRelayOperation(options) {
     assert.match(options.request.maxFee, /^(?:0|[1-9][0-9]*)$/);
     const cancellation = new AbortController();
     const signal = AbortSignal.any([options.request.signal, cancellation.signal]);
-    const request = Object.freeze({
+    const stagingRequest = Object.freeze({
       noteId: options.request.noteId,
       quote: quote.quote,
       gas: quote.gas,
       maxFee: options.request.maxFee,
-      signal,
+      signal: options.request.signal,
     });
+    const request = Object.freeze({ ...stagingRequest, signal });
     const { archive, proverArchive, artifactDirectory, review, reviewDisclosure } = options;
     for (const callback of [review, reviewDisclosure])
       assert.ok(typeof callback === 'function' && !types.isProxy(callback));
@@ -143,18 +172,48 @@ async function proveRailgunAccountRelayOperation(options) {
       assert.ok(typeof value === 'string' && require('path').isAbsolute(value));
     const selected = baseline.ownedPoi.filter((note) => note.id === request.noteId);
     assert.equal(selected.length, 1);
-    assert.equal(selected[0].type, 'Shield');
+    assert.ok(['Shield', 'Transact'].includes(selected[0].type));
+    const transact = selected[0].type === 'Transact';
+    const { stagingReceipt, reviewRootDisclosure } = options;
+    if (transact) {
+      assert.ok(stagingReceipt);
+      assert.ok(typeof reviewRootDisclosure === 'function' && !types.isProxy(reviewRootDisclosure));
+    } else {
+      assert.ok(!Object.hasOwn(options, 'stagingReceipt'));
+      assert.ok(!Object.hasOwn(options, 'reviewRootDisclosure'));
+    }
+    const watchEvidence = (source) => {
+      assertRailgunRelaySignal(source);
+      const listener = () => cancellation.abort();
+      source.addEventListener('abort', listener, { once: true });
+      evidenceListeners.push([source, listener]);
+      if (source.aborted) listener();
+    };
+    if (transact) {
+      const available = stagingApi.assertRailgunRelayTransactStagingAvailable(
+        stagingReceipt,
+        account,
+        owners,
+        stagingRequest
+      );
+      watchEvidence(available.signal);
+    }
     const input = freeze({ ...selected[0] });
     busy.add(owner);
     admitted = true;
     let reservations, recoveryStore;
-    const result = await original(
+    const { value: result } = await original(
       wallet.operateRailgunAccountRelayIntent(account, owners, request, {
         review,
         async onPrepared(offer, { window, signal: windowSignal }) {
           let poi,
             poiDrain,
             preflight,
+            provenance,
+            provenanceDrain,
+            rootBinding,
+            rootResult,
+            rootValue,
             timer,
             localCurrent,
             keyRequested = false,
@@ -209,6 +268,76 @@ async function proveRailgunAccountRelayOperation(options) {
           };
           try {
             current(115000);
+            if (transact) {
+              stage = 'root-disclosure';
+              provenance = provenanceApi.openRailgunRelayTransactProvenance({
+                stagingReceipt,
+                account,
+                owners,
+                request: stagingRequest,
+                window,
+                signal: windowSignal,
+                timeoutMs: budget(150000, 15000),
+              });
+              watchEvidence(provenance.signal);
+              rootBinding = provenanceApi.assertRailgunRelayTransactProvenanceOperation(
+                provenance,
+                account,
+                owners,
+                window
+              );
+              assert.equal(rootBinding.stagingReceipt, stagingReceipt);
+              assert.equal(rootBinding.draftDigest, draft.digest);
+              assert.equal(rootBinding.summaryDigest, data.summaryDigest);
+              assert.equal(rootBinding.checkpointHash, baseline.checkpointHash);
+              const rootSummary = freeze({
+                purpose: 'railgun-relay-selected-root-disclosure-v1',
+                draftDigest: rootBinding.draftDigest,
+                summaryDigest: rootBinding.summaryDigest,
+                checkpointHash: rootBinding.checkpointHash,
+                creatorEvidenceSha256: rootBinding.creatorEvidenceSha256,
+                witnessInputSha256: rootBinding.witnessInputSha256,
+                service: 'sepolia-ppoi-fdi',
+                queries: [
+                  { method: 'latestTxid' },
+                  { method: 'validateTxidRoot', params: { tree: 0, ...rootBinding.point } },
+                ],
+                signingEnabled: false,
+                relaySendPermitted: false,
+              });
+              const rootConsentStarted = performance.now();
+              const rootConsentDeadline = rootConsentStarted + budget(30000, 115000);
+              timer = setTimeout(
+                () => cancellation.abort(),
+                Math.max(1, rootConsentDeadline - performance.now())
+              );
+              timer.unref?.();
+              let decision = reviewRootDisclosure(
+                rootSummary,
+                Object.freeze({ signal: windowSignal })
+              );
+              if (types.isPromise(decision) && !types.isProxy(decision))
+                decision = (await original(decision)).value;
+              else if (decision !== null && ['object', 'function'].includes(typeof decision))
+                throw unknown();
+              clearTimeout(timer);
+              timer = undefined;
+              const rootConsentSettled = performance.now();
+              assert.ok(
+                rootConsentSettled >= rootConsentStarted && rootConsentSettled < rootConsentDeadline
+              );
+              current(115000);
+              assert.equal(decision, true);
+              assert.equal(
+                provenanceApi.assertRailgunRelayTransactProvenanceOperation(
+                  provenance,
+                  account,
+                  owners,
+                  window
+                ),
+                rootBinding
+              );
+            }
             stage = 'disclosure';
             const disclosureSummary = freeze({
               purpose: 'railgun-relay-selected-input-disclosure-v1',
@@ -220,24 +349,34 @@ async function proveRailgunAccountRelayOperation(options) {
                 noteHash: input.hash,
                 nullifier: input.nullifier,
                 blindedCommitment: input.blindedCommitment,
-                type: 'Shield',
+                type: input.type,
               },
               disclosures: ['selected-poi-membership', 'selected-nullifier-status'],
               signingEnabled: false,
               relaySendPermitted: false,
             });
-            timer = setTimeout(() => cancellation.abort(), budget(30000, 115000));
+            const membershipConsentStarted = performance.now();
+            const membershipConsentDeadline = membershipConsentStarted + budget(30000, 115000);
+            timer = setTimeout(
+              () => cancellation.abort(),
+              Math.max(1, membershipConsentDeadline - performance.now())
+            );
             timer.unref?.();
             let decision = reviewDisclosure(
               disclosureSummary,
               Object.freeze({ signal: windowSignal })
             );
             if (types.isPromise(decision) && !types.isProxy(decision))
-              decision = await original(decision);
+              decision = (await original(decision)).value;
             else if (decision !== null && ['object', 'function'].includes(typeof decision))
               throw unknown();
             clearTimeout(timer);
             timer = undefined;
+            const membershipConsentSettled = performance.now();
+            assert.ok(
+              membershipConsentSettled >= membershipConsentStarted &&
+                membershipConsentSettled < membershipConsentDeadline
+            );
             current(115000);
             assert.equal(decision, true);
             stage = 'membership';
@@ -252,7 +391,8 @@ async function proveRailgunAccountRelayOperation(options) {
             wallet.retainRailgunRelayWindowPoi(window, account, owners, poi);
             poiDrain = original(poi.closed);
             poiDrain.catch(() => {});
-            const acquired = await original(poi.acquire({ timeoutMs: budget(45000, 115000) }));
+            const acquired = (await original(poi.acquire({ timeoutMs: budget(45000, 115000) })))
+              .value;
             current(115000);
             assert.equal(acquired.status, 'verified');
             const poiValue = poiApi.assertRailgunRelayWindowPoi(
@@ -264,7 +404,7 @@ async function proveRailgunAccountRelayOperation(options) {
             );
             for (const [key, expected] of Object.entries({
               id: input.id,
-              type: 'Shield',
+              type: input.type,
               noteHash: input.hash,
               nullifier: input.nullifier,
               checkpointHash: baseline.checkpointHash,
@@ -278,12 +418,14 @@ async function proveRailgunAccountRelayOperation(options) {
               window
             );
             stage = 'binding';
-            const binding = await original(
-              wallet.prepareRailgunAccountRelayPrePoi(window, account, owners, {
-                draftText: JSON.stringify(draft.data),
-                history: history.data,
-              })
-            );
+            const binding = (
+              await original(
+                wallet.prepareRailgunAccountRelayPrePoi(window, account, owners, {
+                  draftText: JSON.stringify(draft.data),
+                  history: history.data,
+                })
+              )
+            ).value;
             current(90000);
             assert.equal(binding.draftDigest, draft.digest);
             assert.equal(
@@ -304,9 +446,9 @@ async function proveRailgunAccountRelayOperation(options) {
               artifactDirectory,
               input: preflightInput,
             });
-            timer = setTimeout(() => preflight.close(), budget(15000, 90000));
+            timer = setTimeout(() => preflight.close(), budget(15000, transact ? 110000 : 90000));
             timer.unref?.();
-            const checked = await original(preflight.acquire());
+            const checked = (await original(preflight.acquire())).value;
             clearTimeout(timer);
             timer = undefined;
             current(90000);
@@ -316,6 +458,28 @@ async function proveRailgunAccountRelayOperation(options) {
               enrollment
             );
             assert.deepEqual(preflightValue.input, preflightInput);
+            if (transact) {
+              stage = 'root-acquisition';
+              const permit = mint(rootDisclosures, { operation: provenance, rootBinding });
+              rootResult = (
+                await original(
+                  provenance.acquireRoot({
+                    permit,
+                    timeoutMs: budget(20000, 90000),
+                  })
+                )
+              ).value;
+              current(90000);
+              rootValue = provenanceApi.assertRailgunRelayTransactProvenance(
+                provenance,
+                rootResult.receipt,
+                account,
+                owners,
+                window,
+                5000
+              );
+              assert.equal(rootValue, rootResult.observation);
+            }
             const gates = () => {
               current(90000);
               assert.equal(
@@ -329,6 +493,18 @@ async function proveRailgunAccountRelayOperation(options) {
                 ),
                 poiValue
               );
+              if (transact)
+                assert.equal(
+                  provenanceApi.assertRailgunRelayTransactProvenance(
+                    provenance,
+                    rootResult.receipt,
+                    account,
+                    owners,
+                    window,
+                    5000
+                  ),
+                  rootValue
+                );
               assert.equal(
                 preflightApi.assertRailgunRelayPreflight(
                   preflight,
@@ -340,9 +516,9 @@ async function proveRailgunAccountRelayOperation(options) {
               );
             };
             gates();
-            reservations = await original(enrollment.openReservations());
+            reservations = (await original(enrollment.openReservations())).value;
             gates();
-            recoveryStore = await original(enrollment.openRelayRecoveryStore());
+            recoveryStore = (await original(enrollment.openRelayRecoveryStore())).value;
             gates();
             const authorizationDigest = hash({
               draftDigest: draft.digest,
@@ -351,6 +527,7 @@ async function proveRailgunAccountRelayOperation(options) {
               binding: binding.binding,
               poi: poiValue,
               preflight: preflightValue,
+              ...(transact ? { provenance: rootValue } : {}),
             });
             operationId = randomBytes(32).toString('hex');
             const row = decodeRailgunRelayLocalRecord(
@@ -373,9 +550,9 @@ async function proveRailgunAccountRelayOperation(options) {
             const recordDigest = digestRailgunRelayLocalIntent(JSON.stringify(row));
             const signerBinding = Object.freeze({ intent: intent.data, recordDigest });
             stage = 'reserve';
-            const held = await original(
-              reservations.reserveRelay(recoveryStore, JSON.stringify(row))
-            );
+            const held = (
+              await original(reservations.reserveRelay(recoveryStore, JSON.stringify(row)))
+            ).value;
             gates();
             assert.equal(held.recordDigest, recordDigest);
             assert.equal(held.interruptedStep, null);
@@ -386,7 +563,8 @@ async function proveRailgunAccountRelayOperation(options) {
             gates();
             const pair = async (state) => {
               current();
-              const value = await original(reservations.readRelay(recoveryStore, operationId));
+              const value = (await original(reservations.readRelay(recoveryStore, operationId)))
+                .value;
               current();
               assert.equal(value.interruptedStep, null);
               assert.equal(value.recordDigest, recordDigest);
@@ -399,79 +577,84 @@ async function proveRailgunAccountRelayOperation(options) {
             await pair('signing-local');
             gates();
             stage = 'signer';
-            const signed = await original(
-              identityApi.signRailgunRelayIntent({
-                identity,
-                archive,
-                intent: intent.data,
-                recordDigest,
-                signal: windowSignal,
-                timeoutMs: budget(15000, 75000),
-                async onKeyRequest(validated, signer) {
-                  assert.ok(!keyRequested);
-                  keyRequested = true;
-                  gates();
-                  identityApi.assertRailgunRelaySigner(signer, identity, signerBinding);
-                  assert.deepEqual(validated, {
-                    recordDigest,
-                    intentDigest: intent.digest,
-                    expectedHash: intent.data.expectedHash,
-                  });
-                  const assertKeyCurrent = async () => {
+            const signed = (
+              await original(
+                identityApi.signRailgunRelayIntent({
+                  identity,
+                  archive,
+                  intent: intent.data,
+                  recordDigest,
+                  signal: windowSignal,
+                  timeoutMs: budget(15000, 75000),
+                  async onKeyRequest(validated, signer) {
+                    assert.ok(!keyRequested);
+                    keyRequested = true;
                     gates();
                     identityApi.assertRailgunRelaySigner(signer, identity, signerBinding);
-                    await pair('signing-local');
-                    gates();
-                    identityApi.assertRailgunRelaySigner(signer, identity, signerBinding);
-                  };
-                  await assertKeyCurrent();
-                  return mint(signings, {
-                    signer,
-                    binding: signerBinding,
-                    assertKeyCurrent,
-                    issued() {
-                      assert.ok(!localCurrent);
+                    assert.deepEqual(validated, {
+                      recordDigest,
+                      intentDigest: intent.digest,
+                      expectedHash: intent.data.expectedHash,
+                    });
+                    const assertKeyCurrent = async () => {
                       gates();
-                      identityApi.assertRailgunRelayCredentialIssuance(
-                        signer,
-                        identity,
-                        signerBinding
-                      );
-                      const permit = mint(issuances, { signer, binding: signerBinding });
-                      const local = wallet.recordRailgunAccountRelayCredentialIssuance(
-                        window,
-                        account,
-                        owners,
-                        signer,
-                        permit
-                      );
-                      shape(local, ['assertCurrent']);
-                      assert.equal(typeof local.assertCurrent, 'function');
-                      localCurrent = local.assertCurrent;
-                      current();
-                    },
-                  });
-                },
-              })
-            );
+                      identityApi.assertRailgunRelaySigner(signer, identity, signerBinding);
+                      await pair('signing-local');
+                      gates();
+                      identityApi.assertRailgunRelaySigner(signer, identity, signerBinding);
+                    };
+                    await assertKeyCurrent();
+                    return mint(signings, {
+                      signer,
+                      binding: signerBinding,
+                      assertKeyCurrent,
+                      issued() {
+                        assert.ok(!localCurrent);
+                        gates();
+                        identityApi.assertRailgunRelayCredentialIssuance(
+                          signer,
+                          identity,
+                          signerBinding
+                        );
+                        const permit = mint(issuances, { signer, binding: signerBinding });
+                        const local = wallet.recordRailgunAccountRelayCredentialIssuance(
+                          window,
+                          account,
+                          owners,
+                          signer,
+                          permit
+                        );
+                        shape(local, ['assertCurrent']);
+                        assert.equal(typeof local.assertCurrent, 'function');
+                        localCurrent = local.assertCurrent;
+                        stopEvidence();
+                        current();
+                      },
+                    });
+                  },
+                })
+              )
+            ).value;
             current();
             assert.ok(localCurrent);
             assert.equal(signed.recordDigest, recordDigest);
             assert.equal(signed.intentDigest, intent.digest);
             assert.equal(signed.message, intent.data.expectedHash);
             stage = 'signature-verification';
-            const signatureCheck = await original(
-              verifyRailgunRelaySignature({
-                enrollment,
-                identity,
-                archive,
-                intent: intent.data,
-                recordDigest,
-                signature: signed.signature,
-                signal: windowSignal,
-                timeoutMs: budget(15000, 60000),
-              })
-            );
+            const signatureCheck = (
+              await original(
+                verifyRailgunRelaySignature({
+                  enrollment,
+                  identity,
+                  archive,
+                  intent: intent.data,
+                  recordDigest,
+                  signature: signed.signature,
+                  signal: windowSignal,
+                  timeoutMs: budget(15000, 60000),
+                })
+              )
+            ).value;
             current();
             assert.deepEqual(signatureCheck, {
               recordDigest,
@@ -502,9 +685,11 @@ async function proveRailgunAccountRelayOperation(options) {
             });
             const permit = mint(proofs, { value });
             stage = 'proof';
-            const staged = await original(
-              wallet.completeRailgunAccountRelayProof(account, owners, { window, permit })
-            );
+            const staged = (
+              await original(
+                wallet.completeRailgunAccountRelayProof(account, owners, { window, permit })
+              )
+            ).value;
             current();
             assert.deepEqual(staged, { status: 'proof-staged', operationId });
           } catch (error) {
@@ -512,6 +697,16 @@ async function proveRailgunAccountRelayOperation(options) {
             operationError = error;
           } finally {
             clearTimeout(timer);
+            stopEvidence();
+            // Start both original source barriers before awaiting either one.
+            try {
+              if (provenance) {
+                provenanceDrain = original(provenance.close());
+                provenanceDrain.catch(() => {});
+              }
+            } catch {
+              closeFailed = true;
+            }
             // Keep the account window live through original source closure.
             try {
               preflight?.close();
@@ -530,6 +725,13 @@ async function proveRailgunAccountRelayOperation(options) {
                 closeFailed = true;
               }
             } else if (poi) closeFailed = true;
+            if (provenanceDrain) {
+              try {
+                await provenanceDrain;
+              } catch {
+                closeFailed = true;
+              }
+            } else if (provenance) closeFailed = true;
           }
           if (closeFailed) throw unknown();
           if (operationFailed) throw operationError;
@@ -549,6 +751,7 @@ async function proveRailgunAccountRelayOperation(options) {
       ...(operationId ? { operationId, signingAttempted, signatureSaved } : {}),
     });
   } finally {
+    stopEvidence();
     operationLive = false;
     for (const [map, token, entry] of tokens) {
       entry.live = false;
@@ -628,9 +831,12 @@ async function coldOperation(options, action) {
     // Existing-only opens may rotate an authenticated lease/repair a lagging
     // floor. They neither create absent history nor adopt unregistered files.
     stage = 'cold-stores';
-    const reservations = await original(enrollment.openReservations({ existingOnly: true }));
+    const reservations = (await original(enrollment.openReservations({ existingOnly: true })))
+      .value;
     current();
-    const recoveryStore = await original(enrollment.openRelayRecoveryStore({ existingOnly: true }));
+    const recoveryStore = (
+      await original(enrollment.openRelayRecoveryStore({ existingOnly: true }))
+    ).value;
     current();
     const storesCurrent = () => {
       current();
@@ -654,7 +860,7 @@ async function coldOperation(options, action) {
     storesCurrent();
     const read = async (id) => {
       storesCurrent();
-      const pair = await original(reservations.readRelay(recoveryStore, id));
+      const pair = (await original(reservations.readRelay(recoveryStore, id))).value;
       storesCurrent();
       assert.equal(pair.entry.id, id);
       assert.equal(pair.entry.origin, 'relay-local-v4');
@@ -667,7 +873,7 @@ async function coldOperation(options, action) {
     };
     if (action === 'list') {
       stage = 'history';
-      const entries = await original(reservations.listRelay(recoveryStore));
+      const entries = (await original(reservations.listRelay(recoveryStore))).value;
       storesCurrent();
       assert.ok(Array.isArray(entries) && entries.length <= 512);
       const ids = new Set();
@@ -725,7 +931,7 @@ async function coldOperation(options, action) {
         ['signed', 'ready-local'].includes(paired.record.state) &&
         paired.record.signature
     );
-    assert.equal(paired.record.history.note.type, 'Shield');
+    assert.ok(['Shield', 'Transact'].includes(paired.record.history.note.type));
     const recordText = JSON.stringify(paired.record);
     assert.equal(paired.recordDigest, digestRailgunRelayLocalIntent(recordText));
     // Pure ownership projection only; actual custody/permit keeps original bytes.
@@ -757,9 +963,9 @@ async function coldOperation(options, action) {
       }),
     };
     coldProofs.set(permit, permitEntry);
-    const result = await original(
-      wallet.completeRailgunAccountRelayProof(account, owners, { permit, signal })
-    );
+    const result = (
+      await original(wallet.completeRailgunAccountRelayProof(account, owners, { permit, signal }))
+    ).value;
     storesCurrent();
     assert.deepEqual(result, { status: 'ready-local', operationId });
     const ready = await read(operationId);
@@ -801,6 +1007,7 @@ module.exports = {
   discardRailgunAccountRelayOperation,
   proveRailgunAccountRelayOperation,
   consumeRailgunRelayDisclosurePermit,
+  consumeRailgunRelayRootDisclosurePermit,
   consumeRailgunRelaySigningPermit,
   consumeRailgunRelayIssuancePermit,
   consumeRailgunRelayProofPermit,

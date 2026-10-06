@@ -243,6 +243,7 @@ beforeEach(async () => {
     return mockNew;
   });
   options = {
+    reviewStagingDisclosure: jest.fn(async () => true),
     account: mockOld,
     owners: { identity: mockIdentity, enrollment: mockEnrollment, coordinator: mockCoordinator },
     request: {
@@ -655,4 +656,178 @@ test('closing staging revokes evidence without closing the returned account or b
   expect(mockNew.close).not.toHaveBeenCalled();
   expect(mockNew.signal.aborted).toBe(false);
   expect(mockEnrollment.signal.aborted).toBe(false);
+});
+
+test('pre-staging disclosure identifies prior public-root queries before old account close', async () => {
+  options.reviewStagingDisclosure.mockImplementation((summary) => {
+    expect(mockOld.close).not.toHaveBeenCalled();
+    expect(mockOpenTxid).not.toHaveBeenCalled();
+    expect(mockSnapshot.visitSource).not.toHaveBeenCalled();
+    expect(summary).toEqual({
+      purpose: 'railgun-relay-transact-staging-disclosure-v1',
+      service: 'sepolia-ppoi-fdi',
+      queries: [
+        { method: 'latestTxid' },
+        {
+          method: 'validateTxidRoot',
+          tree: 0,
+          pointSource: 'authenticated-existing-txid-checkpoint',
+          exactPointAvailableBeforeOpen: false,
+        },
+      ],
+      publicCreatorSelection: {
+        transactionHash: mockOwned.ownedPoi[0].txid,
+        blockNumber: mockOwned.ownedPoi[0].blockNumber,
+      },
+      canonicalPublicSnapshotRefresh: true,
+      publicCreatorSourceVisit: true,
+      selectedMembershipPermitted: false,
+      selectedNullifierQueryPermitted: false,
+      signingEnabled: false,
+      relaySendPermitted: false,
+    });
+    expect(Object.isFrozen(summary.queries[1])).toBe(true);
+    expect(Object.isFrozen(summary.publicCreatorSelection)).toBe(true);
+    expect(JSON.stringify(summary)).not.toContain(mockOwned.ownedPoi[0].nullifier);
+    return true;
+  });
+  expect((await stage()).status).toBe('staged');
+  expect(options.reviewStagingDisclosure).toHaveBeenCalledTimes(1);
+});
+test.each(['missing', 'false', 'throw'])(
+  'staging disclosure %s leaves old wallet open without public queries',
+  async (mode) => {
+    if (mode === 'missing') delete options.reviewStagingDisclosure;
+    else
+      options.reviewStagingDisclosure.mockImplementation(() => {
+        if (mode === 'throw') throw Error('declined');
+        return false;
+      });
+    expect(await stage()).toMatchObject({ status: 'refused', originalAccountReusable: true });
+    expect(mockOld.close).not.toHaveBeenCalled();
+    expect(mockOpenTxid).not.toHaveBeenCalled();
+    expect(mockSnapshot.visitSource).not.toHaveBeenCalled();
+  }
+);
+test('held staging disclosure cancellation drains its original before reusable refusal', async () => {
+  const held = deferred();
+  options.reviewStagingDisclosure.mockReturnValue(held.promise);
+  let ended = false;
+  const work = stage().then((v) => {
+    ended = true;
+    return v;
+  });
+  await turn();
+  caller.abort();
+  await turn();
+  expect(ended).toBe(false);
+  expect(mockOld.close).not.toHaveBeenCalled();
+  expect(mockOpenTxid).not.toHaveBeenCalled();
+  held.resolve(true);
+  expect(await work).toMatchObject({ status: 'refused', originalAccountReusable: true });
+});
+test('thirty-second staging consent cap observes held original and admits no query', async () => {
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  const held = deferred();
+  options.reviewStagingDisclosure.mockReturnValue(held.promise);
+  let ended = false;
+  const work = stage().then((v) => {
+    ended = true;
+    return v;
+  });
+  await Promise.resolve();
+  jest.advanceTimersByTime(30001);
+  await Promise.resolve();
+  expect(ended).toBe(false);
+  expect(mockOld.close).not.toHaveBeenCalled();
+  held.resolve(true);
+  expect(await work).toMatchObject({ status: 'refused', originalAccountReusable: true });
+  expect(mockOpenTxid).not.toHaveBeenCalled();
+});
+test('staging callback native species cannot return a false original as fake acceptance', async () => {
+  const held = deferred(),
+    then = jest.fn();
+  Object.defineProperty(held.promise, 'constructor', {
+    value: {
+      [Symbol.species]: class {
+        constructor(executor) {
+          executor(
+            () => {},
+            () => {}
+          );
+          this.then = then;
+        }
+      },
+    },
+  });
+  options.reviewStagingDisclosure.mockReturnValue(held.promise);
+  let ended = false;
+  const work = stage().then((v) => {
+    ended = true;
+    return v;
+  });
+  await turn();
+  expect(ended).toBe(false);
+  expect(then).not.toHaveBeenCalled();
+  expect(mockOld.close).not.toHaveBeenCalled();
+  held.resolve(false);
+  expect((await work).status).toBe('refused');
+  expect(then).not.toHaveBeenCalled();
+});
+test('unobservable staging callback quarantines and retains staging exclusion without source work', async () => {
+  const then = jest.fn();
+  options.reviewStagingDisclosure.mockReturnValue({ then });
+  await expect(stage()).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect(then).not.toHaveBeenCalled();
+  expect(mockQuarantine).toHaveBeenCalledWith(mockIdentity);
+  expect(mockOld.close).not.toHaveBeenCalled();
+  expect(mockOpenTxid).not.toHaveBeenCalled();
+  options.reviewStagingDisclosure.mockReturnValue(true);
+  expect((await stage()).status).toBe('refused');
+  expect(options.reviewStagingDisclosure).toHaveBeenCalledTimes(1);
+});
+test('concurrent staging while original consent is held refuses without borrowing its callback', async () => {
+  const held = deferred();
+  options.reviewStagingDisclosure.mockReturnValue(held.promise);
+  const first = stage();
+  await turn();
+  expect((await stage()).status).toBe('refused');
+  expect(options.reviewStagingDisclosure).toHaveBeenCalledTimes(1);
+  expect(mockOld.close).not.toHaveBeenCalled();
+  held.resolve(false);
+  expect((await first).status).toBe('refused');
+});
+test('selected note changed during staging consent refuses before handoff or closure', async () => {
+  options.reviewStagingDisclosure.mockImplementation(() => {
+    mockOwned.ownedPoi[0].hash = '0x' + '78'.repeat(32);
+    return true;
+  });
+  expect((await stage()).status).toBe('refused');
+  expect(mockOld.close).not.toHaveBeenCalled();
+  expect(mockOpenTxid).not.toHaveBeenCalled();
+});
+
+test('staging consent refuses fulfilled-native value with later-added then without assimilation', async () => {
+  const value = {},
+    then = jest.fn((resolve) => resolve(true));
+  const supplied = Promise.resolve(value);
+  value.then = then;
+  options.reviewStagingDisclosure.mockReturnValue(supplied);
+  expect(await stage()).toMatchObject({ status: 'refused', originalAccountReusable: true });
+  expect(then).not.toHaveBeenCalled();
+  expect(mockOld.close).not.toHaveBeenCalled();
+  expect(mockOpenTxid).not.toHaveBeenCalled();
+});
+test('staging consent checks actual 30s deadline when timer delivery is delayed', async () => {
+  let now = performance.now();
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  jest.spyOn(global, 'setTimeout').mockImplementation(() => ({ unref() {} }));
+  options.reviewStagingDisclosure.mockImplementation(() => {
+    now += 30001;
+    return Promise.resolve(true);
+  });
+  expect(await stage()).toMatchObject({ status: 'refused', originalAccountReusable: true });
+  expect(caller.signal.aborted).toBe(false);
+  expect(mockOld.close).not.toHaveBeenCalled();
+  expect(mockOpenTxid).not.toHaveBeenCalled();
 });

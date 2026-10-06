@@ -44,6 +44,14 @@ jest.mock('./railgun-private-preflight', () => ({
 jest.mock('./railgun-relay-signature-verify', () => ({
   verifyRailgunRelaySignature: (...args) => mock.verify(...args),
 }));
+jest.mock('./railgun-relay-transact-staging', () => ({
+  assertRailgunRelayTransactStagingAvailable: (...args) => mock.available(...args),
+}));
+jest.mock('./railgun-relay-transact-provenance', () => ({
+  openRailgunRelayTransactProvenance: (...args) => mock.openProvenance(...args),
+  assertRailgunRelayTransactProvenanceOperation: (...args) => mock.provenanceOperation(...args),
+  assertRailgunRelayTransactProvenance: (...args) => mock.provenanceResult(...args),
+}));
 const api = require('./railgun-relay-operation');
 const { createHash } = require('crypto');
 const {
@@ -67,10 +75,10 @@ const deferred = () => {
 };
 const unknown = () => Object.assign(Error('unknown'), { code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
 let f;
-function setup() {
+function setup(type = 'Shield') {
   const original = createRailgunRelayMainProofData().record;
-  original.history.note.type = 'Shield';
-  original.history.event.signedPOIEvent.type = 'Shield';
+  original.history.note.type = type;
+  original.history.event.signedPOIEvent.type = type;
   const draft = normalizeRailgunRelayDraftCapsule(original.draft),
     intent = normalizeRailgunRelayUnsignedIntent(draft.data.intent),
     history = normalizeRailgunRelayPoiHistory(original.history);
@@ -81,7 +89,7 @@ function setup() {
   const events = [];
   const selected = {
     id: `${draft.data.selection.tree}:${draft.data.selection.position}`,
-    type: 'Shield',
+    type,
     hash: draft.data.noteHash,
     nullifier: intent.data.expected.nullifier,
     blindedCommitment: history.data.note.blindedCommitment,
@@ -819,3 +827,445 @@ test.each(['reserveRelay', 'markRelaySigning', 'readRelay'])(
     expect(mock.sign).not.toHaveBeenCalled();
   }
 );
+
+// Transact staging/provenance issuers below are explicit structural seams.
+// A's separate suites exercise actual creator parsing and root-source lifetime.
+function transact() {
+  f = setup('Transact');
+  const stageScope = new AbortController(),
+    rootScope = new AbortController();
+  const stagingReceipt = Object.freeze({}),
+    rootReceipt = Object.freeze({});
+  const binding = Object.freeze({
+    stagingReceipt,
+    draftDigest: f.draft.digest,
+    summaryDigest: f.data.summaryDigest,
+    checkpointHash: f.data.checkpointHash,
+    creatorEvidenceSha256: '23'.repeat(32),
+    witnessInputSha256: '34'.repeat(32),
+    point: Object.freeze({ index: 7, root: '45'.repeat(32) }),
+  });
+  const observation = Object.freeze({
+    creatorEvidenceSha256: binding.creatorEvidenceSha256,
+    witnessInputSha256: binding.witnessInputSha256,
+    root: binding.point,
+    pathVerified: true,
+    creatorSourceAuthenticated: true,
+    boundParamsChecked: false,
+    globalTxidCompleteness: false,
+    spendingEnabled: false,
+  });
+  let stale = false;
+  const prekey = () => {
+    expect(f.localAssert).not.toHaveBeenCalled();
+    if (stale || stageScope.signal.aborted || rootScope.signal.aborted)
+      throw Error('stale provenance');
+  };
+  const operation = {
+    signal: rootScope.signal,
+    close: jest.fn(async () => {
+      f.events.push('root-close');
+      rootScope.abort();
+    }),
+    acquireRoot: jest.fn(async ({ permit, timeoutMs }) => {
+      f.rootPermit = permit;
+      expect(timeoutMs).toBeGreaterThan(0);
+      expect(timeoutMs).toBeLessThanOrEqual(20000);
+      api.consumeRailgunRelayRootDisclosurePermit(
+        permit,
+        operation,
+        f.options.account,
+        f.options.owners,
+        f.window
+      );
+      f.events.push('root-query');
+      return { receipt: rootReceipt, observation };
+    }),
+  };
+  f.options.stagingReceipt = stagingReceipt;
+  f.options.reviewRootDisclosure = jest.fn(async () => {
+    f.events.push('root-consent');
+    return true;
+  });
+  mock.available = jest.fn((receipt, a, o, r) => {
+    expect(receipt).toBe(stagingReceipt);
+    expect(a).toBe(f.options.account);
+    expect(o).toEqual(f.options.owners);
+    expect(r.signal).toBe(f.options.request.signal);
+    expect(r).toEqual(f.options.request);
+    prekey();
+    return { evidence: {}, signal: stageScope.signal };
+  });
+  mock.openProvenance = jest.fn((v) => {
+    expect(v.stagingReceipt).toBe(stagingReceipt);
+    expect(v.window).toBe(f.window);
+    expect(v.request.signal).toBe(f.options.request.signal);
+    expect(v.request).toEqual(f.options.request);
+    prekey();
+    return operation;
+  });
+  mock.provenanceOperation = jest.fn((op, a, o, w) => {
+    expect(op).toBe(operation);
+    expect(a).toBe(f.options.account);
+    expect(o).toEqual(f.options.owners);
+    expect(w).toBe(f.window);
+    prekey();
+    return binding;
+  });
+  mock.provenanceResult = jest.fn((op, receipt, a, o, w, margin) => {
+    expect(receipt).toBe(rootReceipt);
+    expect(margin).toBe(5000);
+    mock.provenanceOperation(op, a, o, w);
+    return observation;
+  });
+  Object.assign(f, {
+    stageScope,
+    rootScope,
+    operation,
+    rootBinding: binding,
+    rootObservation: observation,
+    stale: () => {
+      stale = true;
+    },
+  });
+}
+
+test('staged Transact retains original request signal and distinct exact root consent before late one-use query', async () => {
+  transact();
+  expect(await run()).toEqual({ status: 'ready-local', operationId: f.row.id });
+  expect(f.row.history.note.type).toBe('Transact');
+  const summary = f.options.reviewRootDisclosure.mock.calls[0][0];
+  expect(summary).toEqual({
+    purpose: 'railgun-relay-selected-root-disclosure-v1',
+    draftDigest: f.draft.digest,
+    summaryDigest: f.data.summaryDigest,
+    checkpointHash: f.data.checkpointHash,
+    creatorEvidenceSha256: f.rootBinding.creatorEvidenceSha256,
+    witnessInputSha256: f.rootBinding.witnessInputSha256,
+    service: 'sepolia-ppoi-fdi',
+    queries: [
+      { method: 'latestTxid' },
+      { method: 'validateTxidRoot', params: { tree: 0, ...f.rootBinding.point } },
+    ],
+    signingEnabled: false,
+    relaySendPermitted: false,
+  });
+  expect(Object.isFrozen(summary.queries[1].params)).toBe(true);
+  expect(summary).not.toHaveProperty('stagingReceipt');
+  expect(f.events.indexOf('root-consent')).toBeLessThan(f.events.indexOf('disclosure'));
+  expect(f.events.indexOf('root-query')).toBeGreaterThan(f.events.indexOf('preflight'));
+  expect(f.events.indexOf('root-query')).toBeLessThan(f.events.indexOf('reserve'));
+  expect(f.operation.acquireRoot).toHaveBeenCalledTimes(1);
+  expect(f.operation.close).toHaveBeenCalledTimes(1);
+  expect(f.options.request.signal.aborted).toBe(false);
+});
+test.each(['stagingReceipt', 'reviewRootDisclosure'])(
+  'Shield refuses optional Transact %s before callbacks',
+  async (key) => {
+    f.options[key] = key === 'stagingReceipt' ? {} : jest.fn();
+    expect((await run()).status).toBe('refused');
+    expect(f.options.review).not.toHaveBeenCalled();
+  }
+);
+test.each(['stagingReceipt', 'reviewRootDisclosure'])('Transact requires %s', async (key) => {
+  transact();
+  delete f.options[key];
+  expect((await run()).status).toBe('refused');
+  expect(f.options.review).not.toHaveBeenCalled();
+});
+test('unavailable/foreign staged receipt refuses before account review', async () => {
+  transact();
+  mock.available.mockImplementation(() => {
+    throw Error('foreign');
+  });
+  expect((await run()).status).toBe('refused');
+  expect(f.options.review).not.toHaveBeenCalled();
+});
+test.each(['draftDigest', 'summaryDigest', 'checkpointHash', 'stagingReceipt'])(
+  'claimed root binding wrong %s refuses before disclosure',
+  async (key) => {
+    transact();
+    mock.provenanceOperation.mockReturnValue({
+      ...f.rootBinding,
+      [key]: key === 'stagingReceipt' ? {} : 'ff'.repeat(32),
+    });
+    expect((await run()).status).toBe('refused');
+    expect(f.options.reviewRootDisclosure).not.toHaveBeenCalled();
+    expect(f.operation.acquireRoot).not.toHaveBeenCalled();
+    expect(f.reservations.reserveRelay).not.toHaveBeenCalled();
+  }
+);
+test.each(['false', 'throw'])(
+  'root disclosure %s refuses without root queries or holds',
+  async (mode) => {
+    transact();
+    f.options.reviewRootDisclosure.mockImplementation(() => {
+      if (mode === 'throw') throw Error('no');
+      return false;
+    });
+    expect((await run()).status).toBe('refused');
+    expect(f.operation.acquireRoot).not.toHaveBeenCalled();
+    expect(f.reservations.reserveRelay).not.toHaveBeenCalled();
+    expect(mock.sign).not.toHaveBeenCalled();
+    expect(f.operation.close).toHaveBeenCalledTimes(1);
+  }
+);
+test('aborted held original root consent drains before refusal and closes sources', async () => {
+  transact();
+  const held = deferred(),
+    entered = deferred();
+  f.options.reviewRootDisclosure.mockImplementation(() => {
+    entered.resolve();
+    return held.promise;
+  });
+  let settled = false;
+  const work = run().then((v) => {
+    settled = true;
+    return v;
+  });
+  await entered.promise;
+  f.controller.abort();
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  held.resolve(true);
+  expect((await work).status).toBe('refused');
+  expect(f.operation.acquireRoot).not.toHaveBeenCalled();
+});
+test('native root callback species return cannot manufacture an early true decision', async () => {
+  transact();
+  const held = deferred(),
+    entered = deferred(),
+    then = jest.fn();
+  Object.defineProperty(held.promise, 'constructor', {
+    value: {
+      [Symbol.species]: class {
+        constructor(executor) {
+          executor(
+            () => {},
+            () => {}
+          );
+          this.then = then;
+        }
+      },
+    },
+  });
+  f.options.reviewRootDisclosure.mockImplementation(() => {
+    entered.resolve();
+    return held.promise;
+  });
+  let settled = false;
+  const work = run().then((v) => {
+    settled = true;
+    return v;
+  });
+  await entered.promise;
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(then).not.toHaveBeenCalled();
+  expect(f.operation.acquireRoot).not.toHaveBeenCalled();
+  held.resolve(false);
+  expect((await work).status).toBe('refused');
+  expect(then).not.toHaveBeenCalled();
+});
+test('cross-domain root permit refuses membership token and replay/wrong operation', async () => {
+  transact();
+  const acquire = f.operation.acquireRoot.getMockImplementation();
+  f.operation.acquireRoot.mockImplementation(async (options) => {
+    const membership = mock.poi.openRailgunRelayWindowPoi.mock.calls[0][0].disclosure;
+    expect(() =>
+      api.consumeRailgunRelayRootDisclosurePermit(
+        membership,
+        f.operation,
+        f.options.account,
+        f.options.owners,
+        f.window
+      )
+    ).toThrow();
+    const result = await acquire(options);
+    expect(() =>
+      api.consumeRailgunRelayRootDisclosurePermit(
+        options.permit,
+        f.operation,
+        f.options.account,
+        f.options.owners,
+        f.window
+      )
+    ).toThrow();
+    return result;
+  });
+  expect((await run()).status).toBe('ready-local');
+  expect(() =>
+    api.consumeRailgunRelayRootDisclosurePermit(
+      f.rootPermit,
+      {},
+      f.options.account,
+      f.options.owners,
+      f.window
+    )
+  ).toThrow();
+});
+test('root rejection prevents reservation and original close is drained', async () => {
+  transact();
+  f.operation.acquireRoot.mockRejectedValue(Error('root denied'));
+  const close = deferred(),
+    entered = deferred();
+  f.operation.close.mockImplementation(() => {
+    entered.resolve();
+    return close.promise;
+  });
+  let settled = false;
+  const work = run().then((v) => {
+    settled = true;
+    return v;
+  });
+  await entered.promise;
+  expect(settled).toBe(false);
+  expect(f.source.close).toHaveBeenCalled();
+  close.resolve();
+  expect((await work).status).toBe('refused');
+  expect(f.reservations.reserveRelay).not.toHaveBeenCalled();
+});
+test('late stale root gate after reserve refuses before signing, preserving held record', async () => {
+  transact();
+  const reserve = f.reservations.reserveRelay.getMockImplementation();
+  f.reservations.reserveRelay.mockImplementation(async (...args) => {
+    const value = await reserve(...args);
+    f.stale();
+    return value;
+  });
+  expect((await run()).status).toBe('recovery-required');
+  expect(f.row.state).toBe('held');
+  expect(mock.sign).not.toHaveBeenCalled();
+});
+test('pre-key staging abort prevents key while post-issuance stage/root abort cannot revoke local proof', async () => {
+  transact();
+  const verify = mock.verify.getMockImplementation();
+  mock.verify.mockImplementation(async (options) => {
+    f.stageScope.abort();
+    f.rootScope.abort();
+    return verify(options);
+  });
+  expect((await run()).status).toBe('ready-local');
+  expect(f.localAssert).toHaveBeenCalled();
+});
+test('pre-key evidence abort after consent prevents membership and keys', async () => {
+  transact();
+  f.options.reviewRootDisclosure.mockImplementation(() => {
+    f.stageScope.abort();
+    return true;
+  });
+  expect((await run()).status).toBe('refused');
+  expect(f.source.acquire).not.toHaveBeenCalled();
+  expect(mock.sign).not.toHaveBeenCalled();
+});
+test('unknown original root cleanup retains controller exclusion', async () => {
+  transact();
+  f.operation.close.mockRejectedValue(unknown());
+  await expect(run()).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect((await run()).status).toBe('refused');
+});
+
+test('Transact immutable authorization digest binds exact historical provenance observation', async () => {
+  transact();
+  expect((await run()).status).toBe('ready-local');
+  const expected = {
+    draftDigest: f.draft.digest,
+    summaryDigest: f.data.summaryDigest,
+    history: f.history.data,
+    binding: f.original.prePoiBinding,
+    poi: mock.poi.assertRailgunRelayWindowPoi.mock.results[0].value,
+    preflight: mock.preflightAssert.mock.results[0].value,
+    provenance: f.rootObservation,
+  };
+  expect(f.row.authorizationDigest).toBe(
+    createHash('sha256')
+      .update('freedom:railgun:relay-local-gates-v4\0')
+      .update(JSON.stringify(expected))
+      .digest('hex')
+  );
+});
+test('cancelled root query retains original callback until late unknown settlement and keeps exclusion', async () => {
+  transact();
+  const held = deferred(),
+    entered = deferred();
+  f.operation.acquireRoot.mockImplementation(() => {
+    entered.resolve();
+    return held.promise;
+  });
+  let ended = false;
+  const work = run().finally(() => {
+    ended = true;
+  });
+  work.catch(() => {});
+  await entered.promise;
+  f.controller.abort();
+  await Promise.resolve();
+  expect(ended).toBe(false);
+  expect(f.operation.close).not.toHaveBeenCalled();
+  held.reject(unknown());
+  await expect(work).rejects.toMatchObject({ code: 'RAILGUN_WALLET_EXIT_UNOBSERVED' });
+  expect(f.reservations.reserveRelay).not.toHaveBeenCalled();
+  expect((await run()).status).toBe('refused');
+});
+
+test.each(['membership', 'root'])(
+  '%s consent refuses fulfilled-native value with later-added then without assimilation',
+  async (kind) => {
+    if (kind === 'root') transact();
+    const value = {},
+      then = jest.fn((resolve) => resolve(true));
+    const supplied = Promise.resolve(value);
+    value.then = then;
+    f.options[kind === 'root' ? 'reviewRootDisclosure' : 'reviewDisclosure'].mockReturnValue(
+      supplied
+    );
+    expect((await run()).status).toBe('refused');
+    expect(then).not.toHaveBeenCalled();
+    expect(f.reservations.reserveRelay).not.toHaveBeenCalled();
+    expect(mock.sign).not.toHaveBeenCalled();
+    expect(f.source.acquire).not.toHaveBeenCalled();
+    if (kind === 'root') expect(f.operation.acquireRoot).not.toHaveBeenCalled();
+  }
+);
+test.each(['membership', 'root'])(
+  '%s consent checks actual 30s deadline when timer delivery is delayed',
+  async (kind) => {
+    if (kind === 'root') transact();
+    let now = performance.now();
+    f.data.deadline = now + 180000;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const delivered = jest.fn();
+    jest.spyOn(global, 'setTimeout').mockImplementation(() => ({ unref: delivered }));
+    f.options[kind === 'root' ? 'reviewRootDisclosure' : 'reviewDisclosure'].mockImplementation(
+      () => {
+        now += 30001;
+        return Promise.resolve(true);
+      }
+    );
+    expect((await run()).status).toBe('refused');
+    expect(f.data.deadline - now).toBeGreaterThan(115000);
+    expect(f.controller.signal.aborted).toBe(false);
+    expect(f.source.acquire).not.toHaveBeenCalled();
+    expect(f.reservations.reserveRelay).not.toHaveBeenCalled();
+    if (kind === 'root') expect(f.operation.acquireRoot).not.toHaveBeenCalled();
+  }
+);
+test('non-consent signature owner fulfillment is boxed without invoking a later-added then', async () => {
+  const then = jest.fn((resolve) => resolve({ signatureVerified: true }));
+  mock.verify.mockImplementation((opts) => {
+    const value = {
+      recordDigest: opts.recordDigest,
+      intentDigest: f.intent.digest,
+      message: f.intent.data.expectedHash,
+      signatureDigest: createHash('sha256').update(JSON.stringify(opts.signature)).digest('hex'),
+      signatureVerified: true,
+    };
+    const supplied = Promise.resolve(value);
+    value.then = then;
+    return supplied;
+  });
+  expect((await run()).status).toBe('recovery-required');
+  expect(then).not.toHaveBeenCalled();
+  expect(f.recoveryStore.saveSignature).not.toHaveBeenCalled();
+  expect(f.row.state).toBe('signing-local');
+});

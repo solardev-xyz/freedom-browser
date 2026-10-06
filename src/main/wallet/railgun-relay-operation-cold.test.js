@@ -40,11 +40,11 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 let f;
-async function setup() {
+async function setup(type = 'Shield') {
   const supplied = createRailgunRelayMainProofData();
   const row = { ...supplied.record, state: 'held', signature: null, proved: null };
-  row.history.note.type = 'Shield';
-  row.history.event.signedPOIEvent.type = 'Shield';
+  row.history.note.type = type;
+  row.history.event.signedPOIEvent.type = type;
   const directory = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'relay-cold-controller-'))
   );
@@ -162,7 +162,7 @@ async function setup() {
         txid: '0x' + hex(1000),
         nullifier: row.draft.intent.expected.nullifier,
         blindedCommitment: row.history.note.blindedCommitment,
-        type: 'Shield',
+        type,
       },
     ],
     trees: [{ tree: row.draft.selection.tree, length: row.draft.selection.position + 1 }],
@@ -620,4 +620,49 @@ test('sixteen-row page boundary and nextAfter authenticate seventeen genuine enc
   expect(next.records[0].operationId).toBe(hex(17));
   expect(next.nextAfter).toBeNull();
   expect((await list(hex(17))).records).toEqual([]);
+});
+
+test.each(['signed', 'ready-local'])(
+  'genuine encrypted Transact %s resumes only original custody, no fresh disclosure',
+  async (state) => {
+    f.stores.forEach((s) => s.close());
+    f.scope.close();
+    f.controller.abort();
+    f = await setup('Transact');
+    await f.seed(state);
+    await f.reopen();
+    const before = await f.recovery.read(f.row.id),
+      bytes = f.files().map((p) => fs.readFileSync(p));
+    expect((await resume()).status).toBe('ready-local');
+    const after = await f.recovery.read(f.row.id);
+    expect(after.signature).toEqual(before.signature);
+    expect(after.history).toEqual(before.history);
+    expect(after.history.note.type).toBe('Transact');
+    expect(digestRailgunRelayLocalIntent(JSON.stringify(after))).toBe(
+      digestRailgunRelayLocalIntent(JSON.stringify(before))
+    );
+    if (state === 'ready-local') {
+      expect(f.events).toEqual(['C-original-closed', 'canonical-refresh']);
+      expect(f.files().map((p) => fs.readFileSync(p))).toEqual(bytes);
+    } else
+      expect(f.events).toEqual([
+        'A-original-closed',
+        'C-original-closed',
+        'canonical-refresh',
+        'save-proof',
+      ]);
+  }
+);
+test('Transact original custody refuses a different current owned-note type without relabeling or write', async () => {
+  f.stores.forEach((s) => s.close());
+  f.scope.close();
+  f.controller.abort();
+  f = await setup('Transact');
+  await f.seed();
+  await f.reopen();
+  f.owned.ownedPoi[0].type = 'Shield';
+  const before = f.files().map((p) => fs.readFileSync(p));
+  expect((await resume()).status).toBe('refused');
+  expect(mock.complete).not.toHaveBeenCalled();
+  expect(f.files().map((p) => fs.readFileSync(p))).toEqual(before);
 });
