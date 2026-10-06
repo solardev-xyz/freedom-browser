@@ -685,3 +685,171 @@ test.each([
       : module.exports.installServices([])
   ).toThrow();
 });
+function signedAdmission() {
+  const v = admissionInput();
+  v.first = {
+    ...v.first,
+    schema: 'railgun-relay-signed-stop-native-v1',
+    scenario: 'synthetic-list-signed-stop',
+    result: {
+      status: 'recovery-required',
+      stage: 'proof',
+      operationId: digest,
+      signingAttempted: true,
+      signatureSaved: true,
+    },
+    signatureSha256: digest,
+    proofPersisted: false,
+    recoverySequenceDelta: 3,
+  };
+  delete v.first.authenticatedReadyReadback;
+  delete v.first.auditCustodyUnchanged;
+  return v;
+}
+test('signed-stop first report admits only the signed resume mode', () => {
+  const f = load();
+  expect(f.admission(...Object.values(admissionInput()))).toBe('ready');
+  const v = signedAdmission();
+  expect(f.admission(v.config, v.outcome, v.first)).toBe('signed');
+  expect(f.SIGNED_ROLES).toEqual([...f.ROLES.slice(0, -1), 'proof-A', 'dual-proof-C']);
+});
+test.each([
+  ['ready scenario', (v) => (v.first.scenario = 'synthetic-list')],
+  ['unsaved signature', (v) => (v.first.result.signatureSaved = false)],
+  ['refused', (v) => (v.first.result.status = 'refused')],
+  ['other stage', (v) => (v.first.result.stage = 'signature-storage')],
+  ['persisted proof', (v) => (v.first.proofPersisted = true)],
+  ['ready sequence', (v) => (v.first.recoverySequenceDelta = 4)],
+  ['missing signature hash', (v) => delete v.first.signatureSha256],
+  ['unknown schema', (v) => (v.first.schema = 'railgun-relay-signed-native-v1')],
+])('signed admission refuses %s', (_, change) => {
+  const v = signedAdmission();
+  change(v);
+  expect(() => load().admission(v.config, v.outcome, v.first)).toThrow();
+});
+function signedCustody() {
+  const entry = { id: digest, origin: 'relay-local-v4', state: 'signing-local' },
+    signature = { R8: ['one', 'two'], S: 'three' },
+    record = { state: 'signed', signature, intent: { i: 1 }, proved: null };
+  let state = 'signed';
+  const ready = {
+    ...record,
+    state: 'ready-local',
+    proved: { transaction: { t: 1 }, payload: { p: 1 } },
+  };
+  const read = () => ({
+    entry,
+    record: structuredClone(state === 'signed' ? record : ready),
+    recordDigest: digest,
+    interruptedStep: null,
+  });
+  const rec = {
+    inspect: jest.fn(async () => ({
+      records: 1,
+      sequence: state === 'signed' ? 3 : 4,
+      capacity: 10,
+      states: [{ id: digest, state: state === 'signed' ? 'signed' : 'ready-local' }],
+    })),
+  };
+  const res = {
+    inspect: jest.fn(async () => ({ held: 0, signing: 0, abandoned: 0, legacy: 0 })),
+    listRelay: jest.fn(async () => [{ id: digest, state: 'signing-local' }]),
+    readRelay: jest.fn(async () => read()),
+  };
+  const owners = {
+    enrollment: {
+      openReservations: jest.fn(async () => res),
+      openRelayRecoveryStore: jest.fn(async () => rec),
+    },
+  };
+  const first = {
+    result: { operationId: digest },
+    recordDigest: digest,
+    publicFixtureRecordSha256: sha(JSON.stringify(record)),
+    publicFixtureEntrySha256: sha(JSON.stringify(entry)),
+    signatureSha256: sha(JSON.stringify(signature)),
+  };
+  const config = { archive: '/e', proverArchive: '/p', artifactDirectory: '/a' };
+  return {
+    owners,
+    first,
+    config,
+    ready,
+    advance: () => (state = 'ready'),
+    mutate: (fn) => fn({ ready, record, entry }),
+  };
+}
+test('signed resume reuses the original signature and changes only proof and state', async () => {
+  const c = signedCustody(),
+    run = jest.fn(async () => {
+      c.advance();
+      return { status: 'ready-local', operationId: digest };
+    });
+  jest.doMock(wallet + 'railgun-relay-operation', () => ({
+    resumeRailgunAccountRelayOperation: run,
+  }));
+  const report = await load().qualify(
+    {},
+    c.owners,
+    c.config,
+    c.first,
+    new AbortController().signal,
+    'signed'
+  );
+  expect(report).toMatchObject({
+    originalSignaturePreserved: true,
+    entryUnchanged: true,
+    recoverySequenceBefore: 3,
+    recoverySequenceAfter: 4,
+    signatureSha256: c.first.signatureSha256,
+    recordSha256: sha(JSON.stringify(c.ready)),
+  });
+});
+test.each([
+  ['re-signed', (x) => (x.ready.signature = { R8: ['x', 'y'], S: 'z' })],
+  ['changed intent', (x) => (x.ready.intent = { i: 2 })],
+  ['unproved', (x) => (x.ready.proved = null)],
+])('signed resume refuses %s ready record', async (_, change) => {
+  const c = signedCustody();
+  c.mutate(change);
+  jest.doMock(wallet + 'railgun-relay-operation', () => ({
+    resumeRailgunAccountRelayOperation: async () => {
+      c.advance();
+      return { status: 'ready-local', operationId: digest };
+    },
+  }));
+  await expect(
+    load().qualify({}, c.owners, c.config, c.first, new AbortController().signal, 'signed')
+  ).rejects.toThrow();
+});
+test('signed resume refuses a ready first record and an unadvanced store', async () => {
+  const c = signedCustody();
+  jest.doMock(wallet + 'railgun-relay-operation', () => ({
+    resumeRailgunAccountRelayOperation: async () => ({
+      status: 'ready-local',
+      operationId: digest,
+    }),
+  }));
+  await expect(
+    load().qualify({}, c.owners, c.config, c.first, new AbortController().signal, 'signed')
+  ).rejects.toThrow();
+  const r = custody();
+  await expect(
+    load().qualify({}, r.owners, r.config, r.first, new AbortController().signal, 'signed')
+  ).rejects.toThrow();
+});
+test('signed RPC keeps ready request kinds but reports observed counts', () => {
+  const f = load(),
+    rows = rpcRows();
+  expect(f.assertRpc(rows, 'signed')).toEqual(f.assertRpc(rows));
+  const extra = [...rows, rows.find((v) => v.method === 'eth_getLogs')];
+  expect(() => f.assertRpc(extra)).toThrow();
+  expect(f.assertRpc(extra, 'signed').eth_getLogs).toBe(3);
+  expect(() => f.assertRpc([...rows, { method: 'eth_call', params: [] }], 'signed')).toThrow();
+  expect(() =>
+    f.assertRpc(
+      rows.filter((v) => v.method !== 'eth_chainId'),
+      'signed'
+    )
+  ).toThrow();
+});

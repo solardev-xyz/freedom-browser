@@ -22,6 +22,14 @@ const ROLES = [
   'public-plan',
   'dual-proof-C',
 ];
+// A retained signed record resumes with its original signature: proof A runs
+// inside the completed snapshot before the same independent verifier.
+const SIGNED_ROLES = [...ROLES.slice(0, -1), 'proof-A', 'dual-proof-C'];
+const MODES = Object.freeze({
+  'railgun-relay-positive-native-v1': 'ready',
+  'railgun-relay-signed-stop-native-v1': 'signed',
+});
+const roles = (mode) => (mode === 'signed' ? SIGNED_ROLES : ROLES);
 const shape = (v, keys) => assert.deepEqual(Object.keys(v).sort(), [...keys].sort());
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 const tag = (n) => '0x' + n.toString(16);
@@ -89,23 +97,37 @@ function admission(config, outcome, first) {
     assert.equal(outcome[name].natural, true);
   }
   assert.notEqual(outcome.originalDriver.pid, outcome.originalMain.pid);
-  assert.equal(first.schema, 'railgun-relay-positive-native-v1');
-  assert.equal(first.scenario, 'synthetic-list');
+  assert.ok(Object.hasOwn(MODES, first.schema));
+  const mode = MODES[first.schema];
+  assert.equal(first.scenario, mode === 'signed' ? 'synthetic-list-signed-stop' : 'synthetic-list');
   assert.equal(first.syntheticList, LIST);
   assert.equal(first.rpcOwner, 'genuine-private-rpc');
   assert.equal(first.syntheticProviderHost, 'synthetic.invalid');
-  assert.equal(first.result.status, 'ready-local');
+  if (mode === 'signed')
+    assert.deepEqual(first.result, {
+      status: 'recovery-required',
+      stage: 'proof',
+      operationId: first.result.operationId,
+      signingAttempted: true,
+      signatureSaved: true,
+    });
+  else assert.equal(first.result.status, 'ready-local');
   assert.match(first.result.operationId, /^[0-9a-f]{64}$/);
-  for (const name of ['recordDigest', 'publicFixtureRecordSha256', 'publicFixtureEntrySha256'])
+  for (const name of [
+    'recordDigest',
+    'publicFixtureRecordSha256',
+    'publicFixtureEntrySha256',
+    ...(mode === 'signed' ? ['signatureSha256'] : []),
+  ])
     assert.match(first[name], /^[0-9a-f]{64}$/);
   for (const name of [
-    'authenticatedReadyReadback',
-    'auditCustodyUnchanged',
+    ...(mode === 'signed' ? [] : ['authenticatedReadyReadback', 'auditCustodyUnchanged']),
     'proofProduced',
     'signatureIndependentlyVerified',
     'proofsIndependentlyVerified',
   ])
     assert.equal(first[name], true);
+  if (mode === 'signed') assert.equal(first.proofPersisted, false);
   for (const name of [
     'productionServiceAuthority',
     'liveServiceContact',
@@ -114,8 +136,9 @@ function admission(config, outcome, first) {
     'actualProductionListQualified',
   ])
     assert.equal(first[name], false);
-  assert.equal(first.recoverySequenceDelta, 4);
+  assert.equal(first.recoverySequenceDelta, mode === 'signed' ? 3 : 4);
   assert.equal(first.originalSourceSha256, SOURCE_SHA);
+  return mode;
 }
 function readAdmission(filename) {
   const bytes = bounded(filename, 8192),
@@ -129,8 +152,8 @@ function readAdmission(filename) {
   const outcomeBytes = bounded(config.firstOutcomeFilename, 16384, config.firstOutcomeSha256);
   const first = JSON.parse(firstBytes),
     outcome = JSON.parse(outcomeBytes);
-  admission(config, outcome, first);
-  return { config, first, outcome, configSha256: sha(bytes) };
+  const mode = admission(config, outcome, first);
+  return { config, first, outcome, configSha256: sha(bytes), mode };
 }
 function translate(bytes) {
   assert.equal(sha(bytes), SOURCE_SHA);
@@ -174,14 +197,14 @@ function rpcReply(method, params, logs) {
   );
   return { number: tag(n), hash: hex(n + 1), parentHash: hex(n) };
 }
-function assertRpc(rows) {
+function assertRpc(rows, mode = 'ready') {
   const counts = {};
   for (const row of rows) {
     const key =
       row.method === 'eth_getBlockByNumber' ? row.method + ':' + row.params[0] : row.method;
     counts[key] = (counts[key] || 0) + 1;
   }
-  assert.deepEqual(counts, {
+  const expected = {
     eth_chainId: 1,
     eth_getLogs: 2,
     ...Object.fromEntries(
@@ -193,7 +216,15 @@ function assertRpc(rows) {
     ['eth_getBlockByNumber:' + tag(TO)]: 10,
     ['eth_getBlockByNumber:' + tag(5944710)]: 2,
     ['eth_getBlockByNumber:' + tag(5944720)]: 2,
-  });
+  };
+  if (mode === 'signed') {
+    // Proof A reads snapshot storage, not RPC. The signed resume keeps the
+    // ready request kinds; its counts are observed rather than source-derived.
+    assert.deepEqual(Object.keys(counts).sort(), Object.keys(expected).sort());
+    assert.equal(counts.eth_chainId, 1);
+    return counts;
+  }
+  assert.deepEqual(counts, expected);
   assert.equal(rows.length, 49);
   return counts;
 }
@@ -354,8 +385,10 @@ function observe(promise, use, pending) {
   });
   pending.push(settlement);
 }
-function installJobs(firstRecordSha256) {
+function installJobs(firstRecordSha256, mode = 'ready') {
   assert.match(firstRecordSha256, /^[0-9a-f]{64}$/);
+  assert.ok(Object.values(MODES).includes(mode));
+  const expectedRoles = roles(mode);
   for (const name of [
     'railgun-identity',
     'railgun-public-run',
@@ -391,22 +424,32 @@ function installJobs(firstRecordSha256) {
       assert.equal(input.privateIntent, undefined);
       assert.equal(input.privateOperation, undefined);
       role = 'wallet-restore';
+    } else if (
+      mode === 'signed' &&
+      filename === require.resolve(wallet + 'railgun-relay-prove-job')
+    ) {
+      role = 'proof-A';
     } else {
       assert.equal(filename, require.resolve(wallet + 'railgun-relay-verify-job'));
       role = 'dual-proof-C';
     }
-    assert.equal(role, ROLES[rows.length]);
+    assert.equal(role, expectedRoles[rows.length]);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);
     const expectedKey = {
       'spending-public': 'spending-public',
       'viewing-identity': 'viewing-identity',
       'wallet-restore': 'wallet-viewing',
+      'proof-A': 'relay-prove-local',
     }[role];
     assert.equal(options.binaryKey === true, !!expectedKey);
     if (role === 'dual-proof-C') {
       assert.ok(Number.isFinite(deadline) && deadline - performance.now() > 15000);
       assert.ok(options.startupMs > 0 && options.startupMs <= 60000);
       assert.equal(options.lifetimeMs, options.startupMs);
+    }
+    if (role === 'proof-A') {
+      assert.ok(Number.isFinite(deadline) && deadline - performance.now() > 45000);
+      assert.ok(options.startupMs > 0 && options.startupMs <= 110000);
     }
     const row = {
       role,
@@ -420,12 +463,15 @@ function installJobs(firstRecordSha256) {
       readyObserved: false,
     };
     rows.push(row);
-    if (role === 'dual-proof-C') {
+    if (role === 'dual-proof-C' || role === 'proof-A') {
       row.completedRemainingMs = deadline - performance.now();
       row.recordStream = require(
         wallet + 'railgun-relay-record-stream'
       ).normalizeRailgunRelayRecordStreamManifest(input.recordStream);
-      assert.equal(row.recordStream.sha256, firstRecordSha256);
+      // Proof A streams the retained signed record. The verifier streams the
+      // ready candidate, which equals the retained record only when it was ready.
+      if (role === (mode === 'signed' ? 'proof-A' : 'dual-proof-C'))
+        assert.equal(row.recordStream.sha256, firstRecordSha256);
     }
     const broker = options.broker;
     const dispatch = function (wire) {
@@ -468,8 +514,11 @@ function installJobs(firstRecordSha256) {
         assert.equal(message.method, 'relay-verify-record');
         assert.equal(message.index, row.methods['relay-verify-record'] - 1);
         assert.ok(message.index < row.recordStream.chunks);
+      } else if (role === 'proof-A' && message.method === 'relay-proof-record') {
+        assert.equal(message.index, row.methods['relay-proof-record'] - 1);
+        assert.ok(message.index < row.recordStream.chunks);
       } else {
-        assert.equal(role, 'wallet-restore');
+        assert.ok(['wallet-restore', 'proof-A'].includes(role));
         assert.ok(['public', 'wallet'].includes(message.channel));
         const inner = JSON.parse(message.wire);
         assert.ok(
@@ -551,9 +600,9 @@ function installJobs(firstRecordSha256) {
       native.assertEmpty();
       assert.deepEqual(
         rows.map((v) => v.role),
-        ROLES
+        expectedRoles
       );
-      assert.equal(loans.length, 3);
+      assert.equal(loans.length, mode === 'signed' ? 4 : 3);
       assert.ok(loans.every((b) => b.every((v) => v === 0)));
       for (const row of rows) {
         assert.equal(row.closedObserved, true);
@@ -567,12 +616,19 @@ function installJobs(firstRecordSha256) {
             'relay-verify-record': row.recordStream.chunks,
             result: 1,
           });
+        if (row.role === 'proof-A') {
+          assert.equal(row.methods.key, 1);
+          assert.equal(row.methods.result, 1);
+          assert.equal(row.methods['relay-proof-record'], row.recordStream.chunks);
+        }
       }
-      assert.deepEqual(
-        workers.map((v) => v.readOnly),
-        [false, false, true]
-      );
-      assert.ok(workers.every((v) => v.closedObserved));
+      // Signed resume worker use is observed; every worker must still close.
+      if (mode !== 'signed')
+        assert.deepEqual(
+          workers.map((v) => v.readOnly),
+          [false, false, true]
+        );
+      assert.ok(workers.length > 0 && workers.every((v) => v.closedObserved));
     },
     restore() {
       assert.deepEqual(
@@ -591,7 +647,8 @@ function installJobs(firstRecordSha256) {
     },
   };
 }
-async function qualify(account, owners, config, first, signal) {
+async function qualify(account, owners, config, first, signal, mode = 'ready') {
+  const signed = mode === 'signed';
   const operation = require(wallet + 'railgun-relay-operation');
   const reservations = await owners.enrollment.openReservations({ existingOnly: true });
   const recovery = await owners.enrollment.openRelayRecoveryStore({ existingOnly: true });
@@ -607,14 +664,18 @@ async function qualify(account, owners, config, first, signal) {
   assert.deepEqual(before.relay, [{ id, state: 'signing-local' }]);
   assert.deepEqual(before.recovery, {
     records: 1,
-    sequence: 4,
+    sequence: signed ? 3 : 4,
     capacity: 10,
-    states: [{ id, state: 'ready-local' }],
+    states: [{ id, state: signed ? 'signed' : 'ready-local' }],
   });
   assert.equal(pair.interruptedStep, null);
   assert.equal(pair.entry.origin, 'relay-local-v4');
   assert.equal(pair.entry.state, 'signing-local');
-  assert.equal(pair.record.state, 'ready-local');
+  assert.equal(pair.record.state, signed ? 'signed' : 'ready-local');
+  if (signed) {
+    assert.equal(pair.record.proved, null);
+    assert.equal(sha(JSON.stringify(pair.record.signature)), first.signatureSha256);
+  }
   const recordText = JSON.stringify(pair.record),
     entryText = JSON.stringify(pair.entry);
   assert.equal(sha(recordText), first.publicFixtureRecordSha256);
@@ -632,6 +693,7 @@ async function qualify(account, owners, config, first, signal) {
   assert.deepEqual(result, { status: 'ready-local', operationId: id });
   const after = await inventory(),
     final = await reservations.readRelay(recovery, id);
+  if (signed) return signedResume({ before, after, pair, final, first, id, recordText, entryText });
   assert.deepEqual(after, before);
   assert.equal(final.interruptedStep, null);
   assert.equal(JSON.stringify(final.entry), entryText);
@@ -654,6 +716,43 @@ async function qualify(account, owners, config, first, signal) {
     ledgerAdditionalTransitionsSourceDerived: 0,
   };
 }
+// The original signature and every immutable field survive; only the proof
+// slot and state advance. The ledger entry is byte-identical.
+function signedResume({ before, after, pair, final, first, id, recordText, entryText }) {
+  assert.deepEqual(after.privateCounts, before.privateCounts);
+  assert.deepEqual(after.relay, before.relay);
+  assert.deepEqual(after.recovery, {
+    ...before.recovery,
+    sequence: 4,
+    states: [{ id, state: 'ready-local' }],
+  });
+  assert.equal(final.interruptedStep, null);
+  assert.equal(JSON.stringify(final.entry), entryText);
+  assert.equal(final.record.state, 'ready-local');
+  assert.ok(final.record.proved && typeof final.record.proved === 'object');
+  assert.deepEqual(final.record.signature, pair.record.signature);
+  assert.equal(sha(JSON.stringify(final.record.signature)), first.signatureSha256);
+  assert.equal(JSON.stringify({ ...final.record, state: 'signed', proved: null }), recordText);
+  assert.equal(final.recordDigest, first.recordDigest);
+  const finalText = JSON.stringify(final.record);
+  return {
+    result: { status: 'ready-local', operationId: id },
+    recordDigest: final.recordDigest,
+    signedRecordSha256: sha(recordText),
+    recordSha256: sha(finalText),
+    entrySha256: sha(entryText),
+    signatureSha256: first.signatureSha256,
+    transactionSha256: sha(JSON.stringify(final.record.proved.transaction)),
+    payloadSha256: sha(JSON.stringify(final.record.proved.payload)),
+    originalSignaturePreserved: true,
+    entryUnchanged: true,
+    recoverySequenceBefore: 3,
+    recoverySequenceAfter: 4,
+    privateCountsUnchanged: true,
+    relayOperations: 1,
+    ledgerAdditionalTransitionsSourceDerived: 0,
+  };
+}
 function sourceSnapshot() {
   const map = require('./railgun-relay-retained-run').sourceHashes();
   for (const name of [
@@ -673,8 +772,9 @@ function sourceSnapshot() {
   return map;
 }
 async function execute(admitted) {
-  const { config, first, outcome, configSha256 } = admitted;
-  admission(config, outcome, first);
+  const { config, first, outcome, configSha256, mode } = admitted;
+  assert.equal(admission(config, outcome, first), mode);
+  const signed = mode === 'signed';
   const retained = require('./railgun-relay-retained-run');
   const source = bounded(config.sourceFilename, 8466, SOURCE_SHA),
     logs = translate(source),
@@ -713,7 +813,7 @@ async function execute(admitted) {
   app.dock?.hide();
   await app.whenReady();
   const services = installServices(logs),
-    jobs = installJobs(first.publicFixtureRecordSha256),
+    jobs = installJobs(first.publicFixtureRecordSha256, mode),
     vault = require('../../src/main/identity/vault');
   const controller = new AbortController(),
     start = performance.now(),
@@ -763,7 +863,7 @@ async function execute(admitted) {
         owners
       ).deadline
     );
-    report = await qualify(account, owners, config, first, controller.signal);
+    report = await qualify(account, owners, config, first, controller.signal, mode);
     current();
   } catch (error) {
     failure = error;
@@ -807,7 +907,8 @@ async function execute(admitted) {
     transactionDigest: report.transactionSha256,
     payloadDigest: report.payloadSha256,
   });
-  const rpc = assertRpc(services.rows);
+  if (signed) assert.equal(jobs.rows.at(-1).recordStream.sha256, report.recordSha256);
+  const rpc = assertRpc(services.rows, mode);
   assert.deepEqual(sourceSnapshot(), before);
   verify();
   bounded(
@@ -822,7 +923,9 @@ async function execute(admitted) {
     path.join(config.directory, 'report.json'),
     JSON.stringify(
       {
-        schema: 'railgun-relay-cold-ready-native-v1',
+        schema: signed
+          ? 'railgun-relay-signed-cold-native-v1'
+          : 'railgun-relay-cold-ready-native-v1',
         ...report,
         firstReportSha256: config.firstReportSha256,
         firstOutcomeSha256: config.firstOutcomeSha256,
@@ -833,10 +936,11 @@ async function execute(admitted) {
         originalJobs: jobs.rows,
         originalStorageWorkers: jobs.workers,
         syntheticRpc: rpc,
-        syntheticRpcRequests: 49,
+        syntheticRpcRequests: services.rows.length,
+        ...(signed ? { syntheticRpcCountsObserved: true } : {}),
         syntheticRefusedAttempts: services.refusedAttempts,
         relaySigningOperations: 0,
-        proofProducerOperations: 0,
+        proofProducerOperations: signed ? 1 : 0,
         quoteOrPoiRequests: 0,
         originalCompletedDeadlineMs: 180000,
         leaseAndFloorWritesPermitted: true,
@@ -845,7 +949,7 @@ async function execute(admitted) {
         transportAttempted: false,
         productionServiceAuthority: false,
         liveServiceContact: false,
-        coldReadyLocalQualified: true,
+        ...(signed ? { coldSignedResumeQualified: true } : { coldReadyLocalQualified: true }),
         mainModuleCache: require('./railgun-relay-positive-native').inspectMainModuleCache(),
       },
       null,
@@ -864,7 +968,9 @@ module.exports = {
   observe,
   installJobs,
   qualify,
+  signedResume,
   sourceSnapshot,
   execute,
   ROLES,
+  SIGNED_ROLES,
 };
