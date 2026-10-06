@@ -16,7 +16,7 @@ const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
 const seedPins = require('./seed-pins');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
-const MYOTIS_VERSION = '0.1.12';
+const MYOTIS_VERSION = '0.1.13';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -672,14 +672,34 @@ async function ethCall({ from = '', to, data = '0x', value = '0', block = 'lates
   return verifiedRequest(instance, 'call', [from, to, data, value, block]);
 }
 
+// ABI 35: the whole JSON-RPC transaction object. The engine applies every
+// field (gas, fees, nonce, accessList, authorizationList, chainId, type) or
+// refuses the request as a permanent -32602; nothing is dropped on the way.
+async function ethCallTx({ tx, block = 'latest', chainId = 1 }) {
+  const instance = runningInstance(chainId);
+  return verifiedRequest(instance, 'callTx', [JSON.stringify(tx), block, '']);
+}
+
 async function getAccount(address, chainId = 1) {
   const instance = runningInstance(chainId);
   return verifiedRequest(instance, 'account', [address]);
 }
 
-async function estimateGas({ from = '', to, data = '0x', value = '0', chainId = 1 }) {
+async function getCode(address, chainId = 1) {
   const instance = runningInstance(chainId);
-  return verifiedRequest(instance, 'gas', [from, to, data, value]);
+  return verifiedRequest(instance, 'code', [address, 'latest']);
+}
+
+async function getStorageAt(address, position, chainId = 1) {
+  const instance = runningInstance(chainId);
+  return verifiedRequest(instance, 'storage', [address, position, 'latest']);
+}
+
+// ABI 34: same transaction object as ethCallTx. The older from/to/data/value
+// estimate under-estimates anything carrying an access or authorization list.
+async function estimateGas({ tx, block = 'latest', chainId = 1 }) {
+  const instance = runningInstance(chainId);
+  return verifiedRequest(instance, 'estimateTx', [JSON.stringify(tx), block, '']);
 }
 
 async function feeEstimate(chainId = 1) {
@@ -687,9 +707,25 @@ async function feeEstimate(chainId = 1) {
   return verifiedRequest(instance, 'fee');
 }
 
+const MAX_REJECTION_REASON = 300;
+
+// ABI 36: the engine judged the transaction on freshly verified state (sender
+// cannot pay, or its nonce is used) and did NOT broadcast it. That is a
+// definite answer, not an uncertain outcome: geth's txpool verdict under -32000.
+function broadcastRejected(result) {
+  const reason = typeof result.reason === 'string' && result.reason.trim()
+    ? result.reason.trim().replace(/\s+/g, ' ').slice(0, MAX_REJECTION_REASON)
+    : 'transaction rejected before broadcast';
+  const error = new Error(reason);
+  error.code = -32000;
+  error.myotisRefusal = 'rejected';
+  return error;
+}
+
 async function sendRawTransaction(rawTransaction, chainId = 1) {
   const instance = runningInstance(chainId);
   const result = await instance.client.request('broadcast', [rawTransaction]);
+  if (result && !result.error && result.status === 'rejected') throw broadcastRejected(result);
   if (!result || result.error || ['error', 'unavailable'].includes(result.status) || !(result.txHash || result.result)) {
     const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
     error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
@@ -760,7 +796,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
-    abi: 32,
+    abi: 36,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,
@@ -919,6 +955,9 @@ module.exports = {
   resolveAddress,
   resolveReverse,
   ethCall,
+  ethCallTx,
+  getCode,
+  getStorageAt,
   getAccount,
   estimateGas,
   feeEstimate,

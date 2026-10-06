@@ -87,7 +87,7 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet', 'initial'), path.join(dataDir, 'gnosis', 'initial'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.12', abi: 32, snapPeers: 2, snapServingPeers: 1 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.13', abi: 36, snapPeers: 2, snapServingPeers: 1 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
@@ -200,18 +200,50 @@ describe('myotis-manager', () => {
     await expect(ipcMain.invoke(IPC.MYOTIS_GET_STATUS)).resolves.toMatchObject({ state: 'off' });
   });
 
+  // ABI 36: the engine refused the transaction before broadcasting it. Nothing
+  // was sent, so this is a definite -32000 (geth's txpool wording), never the
+  // "outcome uncertain" a wallet would have to reconcile.
+  test('maps a rejected send to a definite -32000 refusal, not an uncertain broadcast', async () => {
+    const { mod, clients } = loadManager();
+    await mod.startMyotis({ chainId: 100 });
+    clients[0].request.mockImplementation(async (op) => op === 'broadcast'
+      ? { status: 'rejected', reason: 'nonce too low: next nonce 5, tx nonce 4' } : { result: op });
+    await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({
+      code: -32000, message: 'nonce too low: next nonce 5, tx nonce 4', myotisRefusal: 'rejected',
+    });
+    clients[0].request.mockImplementation(async () => ({ status: 'rejected', reason: `x${'\n'.repeat(3)}${'y'.repeat(900)}` }));
+    const bounded = await mod.sendRawTransaction('0xsigned', 100).catch((error) => error);
+    expect(bounded).toMatchObject({ code: -32000, myotisRefusal: 'rejected' });
+    expect(bounded.message).toMatch(/^x y+$/);
+    expect(bounded.message.length).toBeLessThanOrEqual(300);
+    clients[0].request.mockImplementation(async () => ({ status: 'rejected' }));
+    await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({
+      code: -32000, message: 'transaction rejected before broadcast',
+    });
+    // An engine error is still uncertain: the send may have reached a peer.
+    clients[0].request.mockImplementation(async () => ({ error: 'no peer reachable' }));
+    await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({ code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+  });
+
   test('sends only operation arguments, including already-signed broadcasts', async () => {
     const { mod, clients } = loadManager();
     await mod.startMyotis({ chainId: 100 });
     await mod.getAccount('0xabc', 100);
     await mod.ethCall({ to: '0xdef', chainId: 100 });
-    await mod.estimateGas({ to: '0xdef', chainId: 100 });
+    const tx = { to: '0xdef', gas: '0x5208', maxFeePerGas: '0x2', accessList: [], authorizationList: [] };
+    await mod.ethCallTx({ tx, chainId: 100 });
+    await mod.estimateGas({ tx, chainId: 100 });
+    await mod.getCode('0xdef', 100);
+    await mod.getStorageAt('0xdef', '0x0', 100);
     await mod.feeEstimate(100);
     await mod.sendRawTransaction('0xsigned', 100);
     await mod.resolveEnsRecord({ method: 'text', name: 'alice.eth', key: 'url' }, 100);
     expect(clients[0].request.mock.calls).toEqual(expect.arrayContaining([
       ['account', ['0xabc']], ['call', ['', '0xdef', '0x', '0', 'latest']],
-      ['gas', ['', '0xdef', '0x', '0']], ['fee', []], ['broadcast', ['0xsigned']],
+      // The whole transaction object crosses to the engine, every field intact.
+      ['callTx', [JSON.stringify(tx), 'latest', '']], ['estimateTx', [JSON.stringify(tx), 'latest', '']],
+      ['code', ['0xdef', 'latest']], ['storage', ['0xdef', '0x0', 'latest']],
+      ['fee', []], ['broadcast', ['0xsigned']],
       ['ens', [JSON.stringify({ method: 'text', name: 'alice.eth', key: 'url' })]],
     ]));
   });

@@ -1,7 +1,7 @@
 # Myotis host seed pins
 
 Cold discovery can populate the execution pool with peers that cannot serve the
-beacon-anchored head. Myotis v0.1.12 / ABI 32 accepts host-supplied enodes through
+beacon-anchored head. Myotis v0.1.13 / ABI 36 (since ABI 31) accepts host-supplied enodes through
 `setBootEnodes(handle, jsonArray)` to help find serving peers sooner. These are
 discovery hints, **not checkpoint authorities**: signature, beacon and execution
 proof verification, the checkpoint quorum and Colibri checks remain required.

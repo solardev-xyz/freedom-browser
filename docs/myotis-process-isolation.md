@@ -1,6 +1,6 @@
 # Myotis process isolation
 
-Official Myotis v0.1.12 / ABI 32 is pinned. No downstream native patch is used. Every addon call, including init,
+Official Myotis v0.1.13 / ABI 36 is pinned. No downstream native patch is used. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -281,11 +281,11 @@ requirement is a release limitation.
 
 ## Build and signing
 
-`npm run myotis:download` downloads the official v0.1.12 Node addons for all
+`npm run myotis:download` downloads the official v0.1.13 Node addons for all
 five supported targets (or one `MYOTIS_DOWNLOAD_TARGET`). The release checksum
 manifest and each addon digest are pinned in `scripts/myotis-release.json`.
 Packaging checks the actual bytes against these pins before signing; runtime
-requires exactly ABI 32. No Rust build, downstream patch, or build-provenance
+requires exactly ABI 36. No Rust build, downstream patch, or build-provenance
 sidecar is required for Myotis. Other native components retain their own builds.
 
 The official API is `createWithCheckpoint(network, dataDir, root, slot)`.
@@ -294,9 +294,11 @@ resume that directory; `-3 ANCHOR_MISMATCH` is a storage failure, never a fallba
 to the embedded anchor. Freedom validates existing native markers against its
 own authenticated checkpoint record. `nativeCheckpointApi` is the persisted
 checkpoint contract, not the current engine ABI: records written by official
-ABI 26 and ABI 29 hosts remain compatible with ABI 32. New records retain the
-value 29 written by v0.1.11. Unknown values fail closed; the native loader still
-requires exactly ABI 32. Patched ABI 25 generations lacking the marker are
+ABI 26 and ABI 29 hosts remain compatible with ABI 36 (ABI 33-36 changed the
+call, estimate and send results, not `createWithCheckpoint` or the anchor marker;
+v0.1.13 still writes the v1 snapshot for mainnet and Gnosis and reads it back).
+New records retain the value 29 written by v0.1.11. Unknown values fail closed;
+the native loader still requires exactly ABI 36. Patched ABI 25 generations lacking the marker are
 preserved and replaced after checking retired ownership.
 
 Every new generation inherits only its chain's `peers[-gnosis].cache` and

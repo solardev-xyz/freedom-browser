@@ -4,8 +4,10 @@ const {
   ERC20_TRANSFER_TOPIC,
   blockscoutLogToRpcLog,
   fetchBlockscoutTransferLogs,
+  isLocalHostname,
   logIndexFilter,
   logsAgree,
+  rpcTransferLogsWellFormed,
 } = require('./blockscout-logs');
 const captured = require('./__fixtures__/blockscout-xbzz-transfers.json');
 
@@ -130,6 +132,57 @@ describe('mapping (captured from both providers, 2026-10-05)', () => {
   });
 });
 
+// The RPC's entries are what Ant receives, so they must be in the exact shape
+// Ant reads, not only agree with Blockscout once both are canonicalised.
+describe('the RPC entries must have the exact shape Ant reads', () => {
+  const mapped = () => captured.blockscout.result.map(blockscoutLogToRpcLog);
+  const first = (change) => (rpc) => [{ ...rpc[0], ...change(rpc[0]) }, ...rpc.slice(1)];
+  const WORD = `0x${'0'.repeat(63)}1`;
+
+  test('the captured RPC answer is well formed', () => {
+    expect(rpcTransferLogsWellFormed(captured.rpc)).toBe(true);
+    expect(rpcTransferLogsWellFormed([])).toBe(true);
+    expect(rpcTransferLogsWellFormed(null)).toBe(false);
+  });
+
+  test.each([
+    ['no blockHash', first(() => ({ blockHash: undefined }))],
+    ['a short blockHash', first((log) => ({ blockHash: log.blockHash.slice(0, 64) }))],
+    ['a blockHash that is not hex', first(() => ({ blockHash: `0x${'g'.repeat(64)}` }))],
+    [
+      'a short transactionHash',
+      first((log) => ({ transactionHash: log.transactionHash.slice(0, 64) })),
+    ],
+    ['removed: true', first(() => ({ removed: true }))],
+    ['a value of two words', first((log) => ({ data: `${log.data}${'0'.repeat(64)}` }))],
+    ['a value shorter than a word', first((log) => ({ data: `0x${log.data.slice(4)}` }))],
+    ['an empty value', first(() => ({ data: '0x' }))],
+    [
+      'a sender topic that is not a zero-padded address',
+      first((log) => ({ topics: [log.topics[0], `0x${'1'.repeat(64)}`, log.topics[2]] })),
+    ],
+    [
+      'a recipient topic that is not a zero-padded address',
+      first((log) => ({ topics: [log.topics[0], log.topics[1], `0x01${log.topics[2].slice(4)}`] })),
+    ],
+    ['null-padded topics', first((log) => ({ topics: [...log.topics, null] }))],
+  ])('%s: the check fails', (_label, change) => {
+    const rpc = change(captured.rpc);
+    expect(rpcTransferLogsWellFormed(rpc)).toBe(false);
+    expect(logsAgree(mapped(), rpc)).toBe(false);
+  });
+
+  // A malformed RPC value never agrees, even with a Blockscout row that is
+  // malformed the same way (Blockscout's rows are held to the same encoding
+  // when they are read: fetchBlockscoutTransferLogs).
+  test('a two-word value disagrees even when Blockscout reports the same', () => {
+    const data = `${WORD}${'0'.repeat(64)}`;
+    const indexed = mapped().map((log, i) => (i === 0 ? { ...log, data } : log));
+    const rpc = captured.rpc.map((log, i) => (i === 0 ? { ...log, data } : log));
+    expect(logsAgree(indexed, rpc)).toBe(false);
+  });
+});
+
 // A Blockscout log row, as its logs API returns one (see the fixture).
 const row = (block, logIndex = 0, { from = WALLET, to = OTHER } = {}) => ({
   address: XBZZ.toLowerCase(),
@@ -159,8 +212,11 @@ const NO_LOGS = { status: '0', message: 'No logs found', result: [] };
 
 describe('fetchBlockscoutTransferLogs', () => {
   const filter = logIndexFilter(100, antFilter({ fromBlock: '0x64', toBlock: '0x2710' }));
-  const read = (fetchImpl, toBlock = 10_000) =>
-    fetchBlockscoutTransferLogs(filter, toBlock, { timeoutMs: 1000, fetchImpl });
+  // Off-origin redirect hops are resolved before they are dialled; tests
+  // never reach the real resolver.
+  const publicLookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
+  const read = (fetchImpl, toBlock = 10_000, lookup = publicLookup) =>
+    fetchBlockscoutTransferLogs(filter, toBlock, { timeoutMs: 1000, fetchImpl, lookup });
   const queryOf = (url) => Object.fromEntries(new URL(url).searchParams);
 
   test("asks Blockscout's logs API for exactly the filter, and maps the answer", async () => {
@@ -280,6 +336,42 @@ describe('fetchBlockscoutTransferLogs', () => {
   });
 
   test.each([
+    ['a value of two words', { data: `0x${'0'.repeat(127)}1` }],
+    ['an empty value', { data: '0x' }],
+    ['a recipient topic that is not an address', { to: `0x${'1'.repeat(64)}` }],
+  ])('a Blockscout row with %s is not in the encoding Ant reads', async (_label, change) => {
+    const bad = { ...row(200, 0, change.to ? { to: change.to } : {}) };
+    if (change.data) bad.data = change.data;
+    await expect(read(() => ok([bad]))).rejects.toThrow('outside the filter');
+  });
+
+  test('a recipient scan refuses a Blockscout row whose sender topic is not an address', async () => {
+    const recipient = logIndexFilter(
+      100,
+      antFilter({
+        fromBlock: '0x64',
+        toBlock: '0x2710',
+        topics: [ERC20_TRANSFER_TOPIC, null, OTHER],
+      })
+    );
+    const bad = row(200, 0, { from: `0x${'1'.repeat(64)}` });
+    await expect(
+      fetchBlockscoutTransferLogs(recipient, 10_000, {
+        timeoutMs: 1000,
+        fetchImpl: () => ok([bad]),
+      })
+    ).rejects.toThrow('outside the filter');
+    // The same row with an address sender is read.
+    const good = row(200, 0);
+    await expect(
+      fetchBlockscoutTransferLogs(recipient, 10_000, {
+        timeoutMs: 1000,
+        fetchImpl: () => ok([good]),
+      })
+    ).resolves.toHaveLength(1);
+  });
+
+  test.each([
     ['HTTP 500', () => reply('oops', { status: 500 }), 'HTTP 500'],
     ['an answer that is not JSON', () => reply('<html>'), 'not JSON'],
     [
@@ -357,6 +449,134 @@ describe('fetchBlockscoutTransferLogs', () => {
     await expect(read(fetchImpl)).rejects.toThrow('redirected too often');
     expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(fetchImpl.mock.calls[1][0]).toBe('https://gnosis.blockscout.com/api?again=1');
+  });
+
+  test.each([
+    'https://127.0.0.1/api',
+    'https://127.1/api',
+    'https://[::1]/api',
+    'https://localhost./api',
+    'https://localhost/api',
+    'https://wallet.localhost/api',
+    'https://0.0.0.0/api',
+    'https://[::]/api',
+    'https://[::7f00:1]/api',
+    'https://10.0.0.1/api',
+    'https://172.16.5.4/api',
+    'https://192.168.1.1/api',
+    'https://169.254.169.254/api',
+    'https://100.64.0.1/api',
+    'https://[fd00::1]/api',
+    'https://[fe80::1]/api',
+    'https://[::ffff:127.0.0.1]/api',
+    'https://[::ffff:10.0.0.1]/api',
+    'https://[2002:7f00:1::1]/api',
+    'https://[2002:c0a8:101::1]/api',
+    'https://[64:ff9b::7f00:1]/api',
+    'https://[64:ff9b:1::a00:1]/api',
+    'https://[::ffff:0:7f00:1]/api',
+    'https://[fec0::1]/api',
+    'https://[ff02::1]/api',
+    'https://198.18.0.1/api',
+    'https://224.0.0.251/api',
+    'https://255.255.255.255/api',
+  ])('a redirect to %s is refused before it is dialled', async (location) => {
+    const fetchImpl = jest.fn((url) =>
+      url.startsWith('https://gnosis.blockscout.com/')
+        ? reply('', { status: 302, headers: { location } })
+        : ok([])
+    );
+    await expect(read(fetchImpl)).rejects.toThrow('redirected to a local host');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('local hosts: canonical forms are caught, public hosts are not', () => {
+    const local = (url) => isLocalHostname(new URL(url).hostname);
+    for (const url of ['https://0x7f.1', 'https://2130706433', 'https://[::127.0.0.1]']) {
+      expect(local(url)).toBe(true);
+    }
+    for (const url of [
+      'https://gnosisscan.io',
+      'https://8.8.8.8',
+      'https://172.32.0.1',
+      'https://[2001:db8::1]',
+      'https://[::ffff:8.8.8.8]',
+      'https://[2002:808:808::1]',
+      'https://[64:ff9b::808:808]',
+      'https://198.20.0.1',
+      'https://notlocalhost',
+    ]) {
+      expect(local(url)).toBe(false);
+    }
+  });
+
+  const redirectTo = (location) =>
+    jest.fn((url) =>
+      url.startsWith('https://gnosis.blockscout.com/')
+        ? reply('', { status: 302, headers: { location } })
+        : ok([row(200)])
+    );
+
+  test.each([
+    ['to loopback', [{ address: '127.0.0.1', family: 4 }]],
+    [
+      'to a LAN address among public ones',
+      [
+        { address: '104.18.12.34', family: 4 },
+        { address: '192.168.1.10', family: 4 },
+      ],
+    ],
+    ['to IPv6 loopback', [{ address: '::1', family: 6 }]],
+  ])(
+    'a redirect to a DNS name resolving %s is refused before it is dialled',
+    async (_l, answer) => {
+      const lookup = jest.fn(async () => answer);
+      const fetchImpl = redirectTo('https://127.0.0.1.nip.io/api');
+      await expect(read(fetchImpl, 10_000, lookup)).rejects.toThrow('redirected to a local host');
+      expect(lookup).toHaveBeenCalledWith('127.0.0.1.nip.io', { all: true, verbatim: true });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('a redirect to a name that does not resolve is refused before it is dialled', async () => {
+    const lookup = jest.fn(async () => {
+      throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
+    });
+    const fetchImpl = redirectTo('https://nowhere.example/api');
+    await expect(read(fetchImpl, 10_000, lookup)).rejects.toThrow('does not resolve');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('a redirect to a public name is resolved, then followed', async () => {
+    const lookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
+    const fetchImpl = redirectTo('https://gnosisscan.io/api');
+    expect(await read(fetchImpl, 10_000, lookup)).toHaveLength(1);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('a same-origin redirect is not resolved', async () => {
+    const lookup = jest.fn(async () => [{ address: '127.0.0.1', family: 4 }]);
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce(() => reply('', { status: 302, headers: { location: '/api?x=1' } }))
+      .mockImplementationOnce(() => ok([]));
+    await read(fetchImpl, 10_000, lookup);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  test('a hung lookup is bounded by the read timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const lookup = jest.fn(() => new Promise(() => {}));
+      const pending = read(redirectTo('https://slow.example/api'), 10_000, lookup).catch(
+        (err) => err
+      );
+      await jest.advanceTimersByTimeAsync(1000);
+      expect((await pending).message).toBe('no answer within 1000ms');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('a browser-style opaque redirect is refused', async () => {

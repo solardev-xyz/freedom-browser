@@ -10,7 +10,7 @@ async function recoveryState(app, phase) {
       supported: true,
       running: false,
       state: 'off',
-      version: '0.1.12',
+      version: '0.1.13',
     };
     const status = {
       ...off,

@@ -1,7 +1,7 @@
 const { EventEmitter } = require('events');
 const { runChild } = require('./myotis-child');
 
-function setup(abi = 32) {
+function setup(abi = 36, { omit = [] } = {}) {
   const host = new EventEmitter();
   host.connected = true;
   host.send = jest.fn();
@@ -9,13 +9,15 @@ function setup(abi = 32) {
   const addon = {
     init: jest.fn(() => abi), create: jest.fn(() => 7), start: jest.fn(() => true), stop: jest.fn(),
     statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2, snapServingPeers: 1 })), drainLogs: jest.fn(),
-    ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasJson: jest.fn(),
+    ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasTxJson: jest.fn(),
+    ethCallTxJson: jest.fn(), getCodeJson: jest.fn(), getStorageAtJson: jest.fn(),
     acceptStaleAnchor: jest.fn(() => true),
     createWithCheckpoint: jest.fn(() => 8),
     setBootEnodes: jest.fn(() => true),
     feeEstimateJson: jest.fn(), sendRawTransactionJson: jest.fn(),
     ethCallJson: jest.fn(async () => '{"resultHex":"0x1234"}'),
   };
+  for (const method of omit) delete addon[method];
   const load = jest.fn(() => addon);
   runChild(host, load);
   const generation = 'current';
@@ -24,13 +26,35 @@ function setup(abi = 32) {
   return { host, addon, load, send, start };
 }
 
-test.each([26, 29, 30, 31, 33, '32'])('loads and starts native code only after explicit owned start; refuses ABI %s', (abi) => {
+test.each([26, 31, 32, 33, 35, '36'])('loads and starts native code only after explicit owned start; refuses ABI %s', (abi) => {
   const ctx = setup(abi);
   expect(ctx.load).not.toHaveBeenCalled();
   ctx.start();
   expect(ctx.addon.create).not.toHaveBeenCalled();
   expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'started', ok: false }));
   expect(ctx.host.exit).toHaveBeenCalled();
+});
+
+// ABI 34/35/36 entry points the wallet path depends on. A build without one
+// must fail the handshake as `methods`, never start and serve a partial surface.
+test.each(['ethCallTxJson', 'estimateGasTxJson', 'getCodeJson', 'getStorageAtJson'])(
+  'refuses an addon without %s before init', (method) => {
+    const ctx = setup(36, { omit: [method] });
+    ctx.start();
+    expect(ctx.addon.init).not.toHaveBeenCalled();
+    expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'started', ok: false, failure: 'methods' }));
+  });
+
+test('forwards transaction-object calls to the ABI 35 entry point and passes refusals through', async () => {
+  const ctx = setup(); ctx.start();
+  ctx.addon.ethCallTxJson.mockResolvedValue('{"error":"invalid transaction object: x","code":-32602}');
+  const tx = JSON.stringify({ to: '0x' + '11'.repeat(20), gas: '0x5208' });
+  ctx.send({ type: 'request', id: 1, op: 'callTx', args: [tx, 'latest', ''] });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(ctx.addon.ethCallTxJson).toHaveBeenCalledWith(7, tx, 'latest', '');
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({
+    id: 1, op: 'callTx', ok: true, result: { error: 'invalid transaction object: x', code: -32602 },
+  }));
 });
 
 test('runs status and bounded native work in child, refusing surplus native operations', async () => {

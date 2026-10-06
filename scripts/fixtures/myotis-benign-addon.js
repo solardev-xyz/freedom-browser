@@ -20,7 +20,7 @@ function block() {
   process.exit(78);
 }
 module.exports = {
-  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 32; },
+  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 36; },
   create(network, dataDir) {
     if (network !== 'mainnet' || fs.realpathSync(dataDir) !== fs.realpathSync(path.join(__dirname, 'data'))) {
       throw new Error('Fixture path mismatch');
@@ -45,7 +45,10 @@ module.exports = {
   acceptStaleAnchor() { return false; },
   ensRecordJson() { return Promise.resolve('{}'); },
   requestAccountJson() { return Promise.resolve('{}'); },
-  estimateGasJson() { return Promise.resolve('{}'); },
+  ethCallTxJson() { return Promise.resolve('{}'); },
+  estimateGasTxJson() { return Promise.resolve('{}'); },
+  getCodeJson() { return Promise.resolve('{}'); },
+  getStorageAtJson() { return Promise.resolve('{}'); },
   feeEstimateJson() { return Promise.resolve('{}'); },
   sendRawTransactionJson() { return Promise.resolve('{}'); },
   drainLogs() { return ''; },
