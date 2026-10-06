@@ -18,6 +18,7 @@ test.each([
   'railgun-relay-intent',
   'railgun-relay-capsule',
   'railgun-relay-quote-data',
+  'railgun-relay-review-summary',
 ])('policy is location-independent but binds the engine and %s bytes', (validator) => {
   const first = getRailgunWalletPolicy('/first/engine.asar');
   expect(first).toMatch(/^[0-9a-f]{64}$/);
@@ -82,6 +83,7 @@ test('local wallet job and host validation dependencies are pinned or cross expl
   for (const root of [
     'railgun-wallet-job',
     'railgun-relay-wallet-job',
+    'railgun-relay-review-summary',
     'railgun-private-prepare-job',
     'railgun-private-operate-job',
     'railgun-private-recover-job',
@@ -93,5 +95,5 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-kohaku-read',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(40);
+  expect(visited.size).toBe(41);
 });

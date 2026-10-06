@@ -16,6 +16,7 @@ const sources = [
   'railgun-relay-intent',
   'railgun-relay-capsule',
   'railgun-relay-quote-data',
+  'railgun-relay-review-summary',
   'railgun-private-prepare-job',
   'railgun-private-operate-job',
   'railgun-private-recover-job',

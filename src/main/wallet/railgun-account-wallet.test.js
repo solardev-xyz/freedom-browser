@@ -1,4 +1,5 @@
 let mockEnrollment, mockIdentity, mockSession, mockCoverage, mockJournal, mockRunner, mockView;
+let mockCheckpointHash = (value) => JSON.stringify(value);
 const mockCompletedStore = jest.fn();
 const mockQuarantine = jest.fn();
 const mockOpenStore = jest.fn(),
@@ -21,7 +22,7 @@ jest.mock('./railgun-scan-coordinator', () => ({
 }));
 jest.mock('./railgun-wallet-policy', () => ({ getRailgunWalletPolicy: () => '2'.repeat(64) }));
 jest.mock('./railgun-wallet-coverage', () => ({
-  checkpointHash: (value) => JSON.stringify(value),
+  checkpointHash: (value) => mockCheckpointHash(value),
 }));
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
@@ -69,6 +70,7 @@ const {
 } = require('./railgun-account-wallet');
 let scope, options, directory, generation, events, state;
 beforeEach(() => {
+  mockCheckpointHash = (value) => JSON.stringify(value);
   jest.clearAllMocks();
   mockCompletedOutcome.mockImplementation(() => {
     throw Error('unknown outcome');
@@ -3027,4 +3029,343 @@ test('relay coordinator rotates evidence across busy callback and aborted comple
   expect(successfulAssertions).toBeGreaterThan(before);
   expect(result.view).toBe(account.view);
   await account.close();
+});
+
+const { reviewRailgunAccountRelayIntent: reviewRelay } = require('./railgun-account-wallet');
+function reviewedRelayFixture() {
+  const f = relayFixture();
+  mockCheckpointHash = (value) =>
+    require('crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  f.owned.checkpointHash = mockCheckpointHash({});
+  return f;
+}
+test.each([true, false, 'async-true', 'async-false'])(
+  'review %s reauthenticates state before publishing, then releases handoff before close',
+  async (value) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      old = account.view;
+    mockRead.mockImplementation(() => ({}));
+    let summary;
+    const callback = jest.fn((supplied, { signal }) => {
+      summary = supplied;
+      expect(signal.aborted).toBe(false);
+      expect(account.view).toBe(old);
+      expect(mockJournal.revalidate).toHaveBeenCalledTimes(1);
+      expect(() => readRailgunAccountOwnedNotes(account, f.owners)).toThrow();
+      expect(() =>
+        require('./railgun-account-wallet').reserveRailgunAccountWalletHandoff(account, f.owners)
+      ).toThrow();
+      return typeof value === 'boolean' ? value : Promise.resolve(value === 'async-true');
+    });
+    const result = await reviewRelay(account, f.owners, f.request, callback);
+    const accepted = value === true || value === 'async-true';
+    expect(result.status).toBe(accepted ? 'accepted' : 'declined');
+    expect(result.reviewedPreparation).toBe(accepted);
+    expect(account.view).not.toBe(old);
+    expect(mockJournal.revalidate).toHaveBeenCalledTimes(2);
+    expect(callback).toHaveBeenCalledTimes(1);
+    if (accepted) {
+      expect(result.review.summary).toBe(summary);
+      expect(result.preparation.reviewedPreparation).toBe(false);
+    } else {
+      expect(result.preparation).toBeUndefined();
+      expect(result.summaryDigest).toMatch(/^[0-9a-f]{64}$/);
+    }
+    const handoff = require('./railgun-account-wallet').reserveRailgunAccountWalletHandoff(
+      account,
+      f.owners
+    );
+    handoff.release();
+    expect(account.signal.aborted).toBe(false);
+    await account.close();
+  }
+);
+test.each(['undefined', 'boxed', 'thenable', 'throw', 'reject', 'close-true'])(
+  'review refuses %s with sanitized failure',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    const getter = jest.fn(() => {
+      throw Error('getter secret');
+    });
+    const callback = () => {
+      if (kind === 'boxed') return new Boolean(true);
+      if (kind === 'thenable') return Object.defineProperty({}, 'then', { get: getter });
+      if (kind === 'throw') throw Error('callback secret');
+      if (kind === 'reject') return Promise.reject(Error('callback secret'));
+      if (kind === 'close-true') {
+        void account.close().catch(() => {});
+        return true;
+      }
+    };
+    await expect(reviewRelay(account, f.owners, f.request, callback)).rejects.toMatchObject({
+      code: 'RAILGUN_ACCOUNT_WALLET_REFUSED',
+      message: 'Railgun wallet requires recovery',
+    });
+    expect(getter).not.toHaveBeenCalled();
+    expect(account.signal.aborted).toBe(true);
+    await account.close();
+  }
+);
+test('held callback retains operation, original close and phase; abort plus late true cannot approve', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let release,
+    entered = false,
+    settled = false,
+    closed = false;
+  const work = reviewRelay(account, f.owners, f.request, (_summary, { signal }) => {
+    entered = true;
+    expect(signal.aborted).toBe(false);
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  });
+  work.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await waitRelay(() => entered);
+  await expect(restoreRailgunAccountWallet(account, f.owners)).rejects.toThrow();
+  await expect(reviewRelay(account, f.owners, f.request, () => true)).rejects.toThrow();
+  f.abort.abort();
+  const drain = account.close().then(() => {
+    closed = true;
+  });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(closed).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  release(true);
+  await expect(work).rejects.toThrow('Railgun wallet requires recovery');
+  await drain;
+  expect(closed).toBe(true);
+  const nextPhase = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+  nextPhase.release();
+});
+test.each(['constructor', 'species'])(
+  'unobservable native promise %s retains exclusion without pretending utility failure',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened();
+    const original = new Promise(() => {});
+    const getter = jest.fn(() => {
+      throw Error('observation secret');
+    });
+    if (kind === 'constructor') Object.defineProperty(original, 'constructor', { get: getter });
+    else
+      Object.defineProperty(original, 'constructor', {
+        value: Object.defineProperty({}, Symbol.species, { get: getter }),
+      });
+    await expect(reviewRelay(account, f.owners, f.request, () => original)).rejects.toMatchObject({
+      code: 'RAILGUN_RELAY_REVIEW_DRAIN_FAILED',
+    });
+    await expect(account.close()).rejects.toMatchObject({
+      code: 'RAILGUN_RELAY_REVIEW_DRAIN_FAILED',
+    });
+    expect(getter).toHaveBeenCalledTimes(1);
+    expect(mockQuarantine).not.toHaveBeenCalled();
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+    await expect(restoreRailgunAccountWallet(account, f.owners)).rejects.toThrow();
+  }
+);
+test('native promise overridden methods are unused and fulfillment is boxed without then assimilation', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const getter = jest.fn(() => {
+    throw Error('then read');
+  });
+  const original = Promise.resolve(true);
+  Object.defineProperty(original, 'then', { get: getter });
+  Object.defineProperty(original, 'catch', { get: getter });
+  expect((await reviewRelay(account, f.owners, f.request, () => original)).status).toBe('accepted');
+  expect(getter).not.toHaveBeenCalled();
+  await account.close();
+});
+test.each(['state', 'journal', 'owned', 'generation', 'clock', 'elapsed'])(
+  'review post-callback %s drift refuses before publishing',
+  async (kind) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      old = account.view;
+    const callback = () => {
+      if (kind === 'state')
+        mockSession.inspectWalletState.mockResolvedValue({
+          storeId: generation.storeId,
+          state: 'changed',
+        });
+      if (kind === 'journal') mockJournal.revalidate.mockRejectedValue(Error('changed journal'));
+      if (kind === 'owned') f.owned.read.received[0].amount = 999n;
+      if (kind === 'generation') generation = { ...generation, id: 'f'.repeat(64) };
+      if (kind === 'clock') jest.spyOn(Date, 'now').mockReturnValue(Date.now() - 1);
+      if (kind === 'elapsed')
+        jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 30001);
+      return true;
+    };
+    await expect(reviewRelay(account, f.owners, f.request, callback)).rejects.toThrow();
+    expect(account.view).toBe(old);
+    await account.close();
+  }
+);
+test('review callback validation and tighter initial margin occur before jobs or handoff', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  expect(() => reviewRelay(account, f.owners, f.request, true)).toThrow();
+  f.fields.feeExpiration = Date.now() + 110000;
+  f.request.quote.data = Buffer.from(JSON.stringify(f.fields)).toString('hex');
+  await expect(reviewRelay(account, f.owners, f.request, () => true)).rejects.toThrow();
+  expect(f.verify).not.toHaveBeenCalled();
+  expect(account.signal.aborted).toBe(false);
+  await account.close();
+});
+
+test('fulfilled native value with a late then getter is inspected without assimilation', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const value = {},
+    original = Promise.resolve(value);
+  const getter = jest.fn(() => {
+    throw Error('late assimilation');
+  });
+  Object.defineProperty(value, 'then', { get: getter });
+  await expect(reviewRelay(account, f.owners, f.request, () => original)).rejects.toThrow();
+  expect(getter).not.toHaveBeenCalled();
+  await account.close();
+});
+test.each(['inspect', 'journal'])(
+  'review deadline includes pending final %s and drains it before close',
+  async (step) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      old = account.view;
+    let release,
+      original,
+      settled = false,
+      closed = false;
+    const work = reviewRelay(account, f.owners, f.request, () => {
+      const method = step === 'inspect' ? mockSession.inspectWalletState : mockJournal.revalidate;
+      original = method.getMockImplementation();
+      method.mockImplementationOnce(
+        (...args) =>
+          new Promise((resolve, reject) => {
+            release = () => Promise.resolve(original(...args)).then(resolve, reject);
+          })
+      );
+      return false;
+    });
+    work.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await waitRelay(() => !!release);
+    jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 30001);
+    const drain = account.close().then(() => {
+      closed = true;
+    });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(closed).toBe(false);
+    release();
+    await expect(work).rejects.toThrow();
+    await drain;
+    expect(account.view).toBe(old);
+  }
+);
+test.each(['inspect', 'journal'])(
+  'late final %s settlement checks time without relying on timer delivery',
+  async (step) => {
+    const f = reviewedRelayFixture(),
+      account = await f.opened(),
+      old = account.view;
+    const work = reviewRelay(account, f.owners, f.request, () => {
+      const method = step === 'inspect' ? mockSession.inspectWalletState : mockJournal.revalidate;
+      const original = method.getMockImplementation();
+      method.mockImplementationOnce(async (...args) => {
+        const value = await original(...args);
+        jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 30001);
+        return value;
+      });
+      return true;
+    });
+    await expect(work).rejects.toThrow();
+    expect(account.view).toBe(old);
+    await account.close();
+  }
+);
+test('review preparation still has a 90 second cap despite 120 second overall cap', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const original = mockRunner.reconstructRelayReadOnly.getMockImplementation();
+  mockRunner.reconstructRelayReadOnly.mockImplementation(async (...args) => {
+    const value = await original(...args);
+    jest.spyOn(performance, 'now').mockReturnValue(performance.now() + 90001);
+    return value;
+  });
+  const callback = jest.fn(() => true);
+  await expect(reviewRelay(account, f.owners, f.request, callback)).rejects.toThrow();
+  expect(callback).not.toHaveBeenCalled();
+  await account.close();
+});
+test('post-review reauthentication uses the renewed coordinator token', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  const originalSnapshot = options.coordinator.withPublicSnapshot;
+  let latest;
+  options.coordinator.withPublicSnapshot = async (run) => {
+    const result = await originalSnapshot(run);
+    latest = result.evidence;
+    const previous = options.coordinator.assertSnapshot;
+    options.coordinator.assertSnapshot = (token) => {
+      expect(token).toBe(latest);
+      return previous(token);
+    };
+    return result;
+  };
+  const result = await reviewRelay(account, f.owners, f.request, () => true);
+  expect(result.status).toBe('accepted');
+  expect(mockJournal.revalidate.mock.calls[1][0].snapshot).toBe(latest);
+  await account.close();
+});
+
+test('a callback that invalidates time before returning its pending promise is still drained', async () => {
+  const f = reviewedRelayFixture(),
+    account = await f.opened();
+  let release,
+    entered = false,
+    settled = false,
+    closed = false;
+  const work = reviewRelay(account, f.owners, f.request, () => {
+    entered = true;
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() - 1);
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  });
+  work.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await waitRelay(() => entered);
+  const drain = account.close().then(() => {
+    closed = true;
+  });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(closed).toBe(false);
+  release(true);
+  await expect(work).rejects.toThrow();
+  await drain;
 });

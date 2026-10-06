@@ -9,6 +9,7 @@ const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
 const { types } = require('util');
+const promiseThen = Promise.prototype.then;
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const {
   assertRailgunIdentity,
@@ -255,7 +256,8 @@ async function openAccount(
   let closing = false,
     closeWork,
     finishSetup,
-    cleanupFailed = false;
+    cleanupFailed = false,
+    reviewDrainUnobserved = false;
   const setup = new Promise((resolve) => {
     finishSetup = resolve;
   });
@@ -315,6 +317,10 @@ async function openAccount(
         // exit keeps this account unavailable until the application restarts.
         refuseUnobserved();
       }
+      // A callback whose native promise could not be observed may still run.
+      // Keep filename/phase exclusion; this is not an unknown utility exit.
+      if (reviewDrainUnobserved)
+        throw Object.assign(fail(), { code: 'RAILGUN_RELAY_REVIEW_DRAIN_FAILED' });
       phase.release();
       if (cleanupFailed) throw fail();
     })().then(resolve, reject);
@@ -823,7 +829,8 @@ async function openAccount(
         busy = false;
       }
     }
-    async function prepareRelayIntent(request) {
+    async function prepareRelayIntent(request, review) {
+      const reviewed = review !== undefined;
       const assert = require('assert/strict');
       const {
         shape,
@@ -886,13 +893,14 @@ async function openAccount(
       const initialView = view;
       const checkpoint = checkpointHash(coordinator.assertSnapshot(checked.evidence));
       check(checkpoint === captured.checkpointHash);
-      const start = performance.now(),
-        end = start + 90000;
+      const start = performance.now();
+      let end = start + 90000,
+        reviewing = false;
       let wall = Date.now(),
         monotonic = start;
       assertQuoteCurrent(binding, wall, wall);
       check(
-        binding.fields.feeExpiration - wall >= 90000 &&
+        binding.fields.feeExpiration - wall >= (reviewed ? 120000 : 90000) &&
           binding.fields.feeExpiration - wall <= 300000
       );
       const relayController = new AbortController();
@@ -903,12 +911,14 @@ async function openAccount(
         snapshotWindow = null,
         snapshotEvidence = checked.evidence;
       busy = true;
-      const timer = setTimeout(() => {
+      const expire = () => {
         relayController.abort();
         if (entered) void close().catch(() => {});
-      }, 90000);
+      };
+      let timer = setTimeout(expire, 90000);
       timer.unref?.();
       const attest = (remaining = 0) => {
+        if (reviewed && !reviewing) remaining += 30000;
         const now = performance.now(),
           date = Date.now();
         check(!relaySignal.aborted && now >= monotonic && now < end);
@@ -1096,6 +1106,85 @@ async function openAccount(
           attest();
           const after = runner.readOwned(renewed.value.receipt, journal);
           sameOwned(after);
+          let decision, reviewBinding;
+          if (reviewed) {
+            const { buildRailgunRelayReviewSummary } = require('./railgun-relay-review-summary');
+            const summaryInput = {
+              draft: draft.data,
+              reconstruction: renewed.value.relayReconstruction,
+              noteId,
+              checkpointHash: checkpoint,
+              walletGenerationId: generationBefore.id,
+              publicIdentity,
+            };
+            reviewBinding = buildRailgunRelayReviewSummary(summaryInput);
+            attest();
+            const reviewStarted = performance.now();
+            check(reviewStarted >= monotonic && reviewStarted < end);
+            end = Math.min(
+              reviewStarted + 30000,
+              start + 120000,
+              reviewStarted + binding.fields.feeExpiration - wall
+            );
+            reviewing = true;
+            clearTimeout(timer);
+            timer = setTimeout(expire, Math.max(0, end - performance.now()));
+            timer.unref?.();
+            attest();
+            let supplied;
+            try {
+              supplied = review(reviewBinding.summary, Object.freeze({ signal: relaySignal }));
+            } catch {
+              throw fail();
+            }
+            if (types.isPromise(supplied) && !types.isProxy(supplied)) {
+              // Observe the original, never caller-overridden then/catch. Box
+              // fulfillment to avoid assimilating a subsequently added then.
+              let resolve;
+              const settlement = new Promise((yes) => {
+                resolve = yes;
+              });
+              try {
+                promiseThen.call(
+                  supplied,
+                  (value) => resolve({ fulfilled: true, value }),
+                  () => resolve({ fulfilled: false })
+                );
+              } catch {
+                reviewDrainUnobserved = true;
+                unknown = true;
+                expire();
+                throw Object.assign(fail(), { code: 'RAILGUN_RELAY_REVIEW_DRAIN_FAILED' });
+              }
+              // Invalid eligibility cannot detach the admitted original.
+              let invalid = false;
+              try {
+                attest();
+              } catch {
+                invalid = true;
+                relayController.abort();
+              }
+              const settled = await settlement;
+              check(!invalid && settled.fulfilled);
+              decision = settled.value;
+            } else decision = supplied;
+            attest();
+            check(typeof decision === 'boolean');
+            const reviewedState = await walletSession.inspectWalletState();
+            attest();
+            walletSession.assertFresh(reviewedState);
+            assert.deepEqual(reviewedState, baselineState);
+            await journal.revalidate({
+              snapshot: renewed.evidence,
+              coverage: finalCoverage,
+              state: reviewedState,
+              receipt: renewed.value.receipt,
+            });
+            attest();
+            sameOwned(runner.readOwned(renewed.value.receipt, journal));
+            assert.deepEqual(buildRailgunRelayReviewSummary(summaryInput), reviewBinding);
+            attest();
+          }
           const nextView = createRailgunKohakuRead({
             runner,
             journal,
@@ -1106,11 +1195,24 @@ async function openAccount(
           // journal validation, with no suspension between view/receipt swaps.
           checked = renewed;
           view = nextView;
+          if (reviewed && decision === false)
+            return Object.freeze({
+              status: 'declined',
+              reviewedPreparation: false,
+              summaryDigest: reviewBinding.summaryDigest,
+              reservationsChecked: false,
+              capsulePersisted: false,
+              signingEnabled: false,
+              proofAuthority: false,
+              poiQueriesPermitted: false,
+              relaySendPermitted: false,
+            });
           return Object.freeze({
+            ...(reviewed ? { status: 'accepted', review: reviewBinding } : {}),
             view,
             preparation: draft,
             reconstruction: Object.freeze({ ...renewed.value.relayReconstruction }),
-            reviewedPreparation: false,
+            reviewedPreparation: reviewed,
             reservationsChecked: false,
             capsulePersisted: false,
             signingEnabled: false,
@@ -1136,8 +1238,10 @@ async function openAccount(
         if (entered || unknown || lifetime.aborted) await close();
         throw fail();
       } finally {
-        restoration = null;
-        busy = false;
+        if (!reviewDrainUnobserved) {
+          restoration = null;
+          busy = false;
+        }
       }
     }
     const account = Object.freeze({
@@ -1234,6 +1338,12 @@ function prepareRailgunAccountRelayIntent(account, owners, request) {
   require('./railgun-relay-quote-data').shape(owners, ['identity', 'enrollment', 'coordinator']);
   return owned(account, owners).prepareRelayIntent(request);
 }
+/** Local diagnostic review only. No result can authorize later signing. */
+function reviewRailgunAccountRelayIntent(account, owners, request, review) {
+  check(typeof review === 'function' && !types.isProxy(review));
+  require('./railgun-relay-quote-data').shape(owners, ['identity', 'enrollment', 'coordinator']);
+  return owned(account, owners).prepareRelayIntent(request, review);
+}
 function prepareRailgunAccountPrivateIntent(account, owners, request) {
   check(request !== undefined);
   return owned(account, owners).restoreCurrent(request);
@@ -1297,6 +1407,7 @@ module.exports = {
   reserveRailgunAccountWalletHandoff,
   prepareRailgunAccountPrivateIntent,
   prepareRailgunAccountRelayIntent,
+  reviewRailgunAccountRelayIntent,
   operateRailgunAccountPrivateIntent,
   assertRailgunAccountPrivateWindow,
   readRailgunAccountPrivateCreator,
