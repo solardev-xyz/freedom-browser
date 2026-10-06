@@ -1,0 +1,41 @@
+{
+  "schema": "railgun-retained-reverify-public-index-v1",
+  "files": {
+    "report.json": {
+      "bytes": 76182,
+      "sha256": "c9a996421711a7900e074baa27d746e68400140741b90aaf7e7cb89063be3be6",
+      "classification": "exact original bytes"
+    },
+    "provenance.json": {
+      "bytes": 9983,
+      "sha256": "124cfee382996b380bd84e0e46d646f0a0907779ebc65ca4325aea4e8ed7acb9",
+      "classification": "derived publication document"
+    },
+    "OVERVIEW.md": {
+      "bytes": 5677,
+      "sha256": "c7683c13b110691a84293b4f3baa4809c5a979aac305da29be15570954fb61c9",
+      "classification": "derived publication document"
+    }
+  },
+  "retainedInputs": {
+    "publicCase": {
+      "path": "../railgun-relay-proof-wire-2026-10-06/public-case.json",
+      "bytes": 5285,
+      "sha256": "3b415653aa2a797af98c41f7f56bb60b3dd877cca6bd0f47904633876aad3b38",
+      "copiedAgain": false
+    },
+    "signedQuote": {
+      "path": "../railgun-relay-proof-wire-2026-10-06/signed-quote.json",
+      "bytes": 1205,
+      "sha256": "48293cc1fa869217dc9138417ca116e9351386d6c03c5c0ab3bb6dfca9412a85",
+      "copiedAgain": false
+    }
+  },
+  "omissions": [
+    "No repeated public proof/quote input copies",
+    "No runtime/archive/circuit/dependency payloads",
+    "No full external launcher or source/runtime freeze",
+    "No original encrypted transcript exists in retained inputs"
+  ],
+  "scope": "Evidence and committed-entry reproduction instructions with exact local prerequisites; not a standalone runnable package"
+}
