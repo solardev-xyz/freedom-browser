@@ -1293,22 +1293,23 @@ test('signed stop admits its own opt-in and ends roles at the held dual verifier
   expect(roles.at(-1)).toBe('dual-proof-C');
   expect(() => f.expectedRoles('other')).toThrow();
 });
-test('signed stop RPC keeps exact preflight and only uniform observed header reads', () => {
+test('signed stop RPC keeps exact preflight and exactly three uniform header reads', () => {
   const f = load(),
     all = rpcRows(),
     headers = all.slice(0, 20),
     protocol = all.slice(20);
-  for (const reads of [1, 2, 3, 4]) {
-    const rows = [...headers.slice(0, 5 * reads), ...protocol];
-    expect(f.assertOperationRpc(rows, f.SIGNED_STOP).headers.finalized).toBe(reads);
-    if (reads !== 4) expect(() => f.assertOperationRpc(rows)).toThrow();
-  }
-  expect(() => f.assertOperationRpc(protocol, f.SIGNED_STOP)).toThrow();
+  const rows = [...headers.slice(0, 15), ...protocol];
+  expect(f.assertOperationRpc(rows, f.SIGNED_STOP).headers.finalized).toBe(3);
+  expect(() => f.assertOperationRpc(rows)).toThrow();
+  for (const reads of [1, 2, 4])
+    expect(() =>
+      f.assertOperationRpc([...headers.slice(0, 5 * reads), ...protocol], f.SIGNED_STOP)
+    ).toThrow();
   expect(() =>
-    f.assertOperationRpc([...headers.slice(0, 6), ...protocol], f.SIGNED_STOP)
+    f.assertOperationRpc([...headers.slice(0, 16), ...protocol], f.SIGNED_STOP)
   ).toThrow();
   expect(() =>
-    f.assertOperationRpc([...headers.slice(0, 10), ...protocol.slice(1)], f.SIGNED_STOP)
+    f.assertOperationRpc([...headers.slice(0, 15), ...protocol.slice(1)], f.SIGNED_STOP)
   ).toThrow();
 });
 function signedHold(secondAdmission) {
@@ -1386,6 +1387,15 @@ function stopped(mutation) {
       interruptedStep: null,
       recordDigest: 'ef'.repeat(32),
     }),
+    reserve: jest.fn(async () => {
+      if (mutation === 'reservable') return {};
+      throw Object.assign(new Error('reserved'), {
+        code:
+          mutation === 'other-code'
+            ? 'RAILGUN_RESERVATIONS_CAPACITY'
+            : 'RAILGUN_PRIVATE_INPUT_RESERVED',
+      });
+    }),
   };
   const custody = {
     rows: [{ state: 'held' }],
@@ -1393,7 +1403,7 @@ function stopped(mutation) {
     credentialMargin: () => 100000,
   };
   const f = load();
-  const headers = rpcRows().slice(0, 10),
+  const headers = rpcRows().slice(0, 15),
     protocol = rpcRows().slice(20);
   const services = {
     requests: [{ method: 'bootstrap' }, ...headers, ...protocol],
@@ -1409,7 +1419,13 @@ function stopped(mutation) {
     secondAdmission:
       mutation === 'admitted'
         ? { status: 'ready-local', operationId: id }
-        : { status: 'refused', stage: 'admission' },
+        : {
+            status: 'refused',
+            stage: 'admission',
+            ownedNoteReads: mutation === 'read' ? 1 : 0,
+            utilitiesStarted: 0,
+            keyLoans: 0,
+          },
     requestAbortedWhileHeld: true,
   };
   const account = { close: jest.fn(async () => {}) };
@@ -1447,7 +1463,10 @@ function stopped(mutation) {
         jobs,
         custody,
         account,
+        owned: { nullifier: '0x' + '0a'.repeat(32), hash: '0x' + '0b'.repeat(32) },
+        selected: { id: '0:1' },
       }),
+    reservations,
   };
 }
 test('signed stop report binds the retained signed record and unreleased hold', async () => {
@@ -1457,18 +1476,41 @@ test('signed stop report binds the retained signed record and unreleased hold', 
     schema: 'railgun-relay-signed-stop-native-v1',
     scenario: 'synthetic-list-signed-stop',
     recoverySequenceDelta: 3,
-    syntheticOperationRequests: 29,
+    syntheticOperationRequests: 34,
     proofPersisted: false,
     coldRestartQualified: false,
+    stopKind: 'controlled-request-abort-after-independent-verification',
+    crashOrNetworkInterruption: false,
+    sameInputPrivateReservation: {
+      refusedCode: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+      durableChange: false,
+    },
   });
-  expect(report.syntheticOperationRpc.headers.finalized).toBe(2);
+  expect(report.syntheticOperationRpc.headers.finalized).toBe(3);
+  expect(x.reservations.reserve).toHaveBeenCalledWith({
+    tree: 0,
+    position: 1,
+    nullifier: '0x' + '0a'.repeat(32),
+    noteHash: '0x' + '0b'.repeat(32),
+    kind: 'railgun-private-transfer',
+    intentDigest: '0x' + '11'.repeat(32),
+    checkpointHash: '22'.repeat(32),
+    poiDigest: '33'.repeat(32),
+  });
   expect(report.signatureSha256).toMatch(/^[0-9a-f]{64}$/);
   expect(x.custody.finish).toHaveBeenCalledWith(['held', 'signing-local', 'signed']);
   expect(x.account.close).toHaveBeenCalledTimes(1);
 });
-test.each(['ready', 'proved', 'sequence', 'released', 'admitted', 'unsaved'])(
-  'signed stop refuses %s outcome',
-  async (mutation) => {
-    await expect(stopped(mutation).run()).rejects.toThrow();
-  }
-);
+test.each([
+  'ready',
+  'proved',
+  'sequence',
+  'released',
+  'admitted',
+  'unsaved',
+  'read',
+  'reservable',
+  'other-code',
+])('signed stop refuses %s outcome', async (mutation) => {
+  await expect(stopped(mutation).run()).rejects.toThrow();
+});

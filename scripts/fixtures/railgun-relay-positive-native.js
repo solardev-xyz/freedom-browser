@@ -870,10 +870,9 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
     ...[ANCHOR, 5900000, THROUGH, 5899999].map((v) => '0x' + v.toString(16)),
   ];
   assert.deepEqual(Object.keys(headers).sort(), [...keys].sort());
-  // A signed stop refuses before canonical refresh. Its header reads are an
-  // observed, uniform count bounded by the completed run, not a derivation.
-  const reads = scenario === SIGNED_STOP ? headers.finalized : 4;
-  assert.ok(Number.isSafeInteger(reads) && reads >= 1 && reads <= 4);
+  // A signed stop refuses before the final canonical refresh: three uniform
+  // source reads, first observed in signed-stop run a and now exact.
+  const reads = scenario === SIGNED_STOP ? 3 : 4;
   assert.deepEqual(headers, Object.fromEntries(keys.map((key) => [key, reads])));
   // Preflight completes before signing, so its protocol requests are unchanged.
   assert.deepEqual(protocol, {
@@ -884,7 +883,7 @@ function assertOperationRpc(requests, scenario = 'synthetic-list') {
     eth_call: 8,
   });
   assert.equal(requests.length, 19 + 5 * reads);
-  if (scenario !== SIGNED_STOP) assert.equal(requests.length, 39);
+  assert.equal(requests.length, scenario === SIGNED_STOP ? 34 : 39);
   return { headers, protocol };
 }
 function assertAudit(value, auditCase, recordText, pair) {
@@ -1046,6 +1045,35 @@ function installSignedStop(control, jobs, secondAdmission) {
     },
   };
 }
+async function probeSameInput(reservations, recovery, owned, selected, after) {
+  const [tree, position] = selected.id.split(':').map(Number);
+  for (const value of [owned.nullifier, owned.hash]) assert.match(value, /^0x[0-9a-f]{64}$/);
+  let code = null;
+  try {
+    await reservations.reserve({
+      tree,
+      position,
+      nullifier: owned.nullifier,
+      noteHash: owned.hash,
+      kind: 'railgun-private-transfer',
+      intentDigest: '0x' + '11'.repeat(32),
+      checkpointHash: '22'.repeat(32),
+      poiDigest: '33'.repeat(32),
+    });
+  } catch (error) {
+    code = error?.code ?? null;
+  }
+  assert.equal(code, 'RAILGUN_PRIVATE_INPUT_RESERVED');
+  assert.deepEqual(
+    {
+      private: await reservations.inspect(),
+      relay: await reservations.listRelay(recovery),
+      recovery: await recovery.inspect(),
+    },
+    after
+  );
+  return { refusedCode: code, durableChange: false };
+}
 async function finishSignedStop({
   result,
   hold,
@@ -1060,6 +1088,8 @@ async function finishSignedStop({
   jobs,
   custody,
   account,
+  owned,
+  selected,
 }) {
   assert.deepEqual(Object.keys(result).sort(), [
     'operationId',
@@ -1078,7 +1108,13 @@ async function finishSignedStop({
     held: 1,
     utilityExitObserved: true,
     exitCode: 15,
-    secondAdmission: { status: 'refused', stage: 'admission' },
+    secondAdmission: {
+      status: 'refused',
+      stage: 'admission',
+      ownedNoteReads: 0,
+      utilitiesStarted: 0,
+      keyLoans: 0,
+    },
     requestAbortedWhileHeld: true,
   });
   services.assertClosed();
@@ -1098,6 +1134,9 @@ async function finishSignedStop({
     relay: await reservations.listRelay(recovery),
     recovery: await recovery.inspect(),
   };
+  // The retained relay hold refuses a private reservation of the same input
+  // for its specific ownership code, before any write.
+  const reservation = await probeSameInput(reservations, recovery, owned, selected, after);
   // The original hold and signature survive the refusal; nothing is released.
   assert.deepEqual(after.private, before.private);
   assert.deepEqual(after.relay, [{ id: result.operationId, state: 'signing-local' }]);
@@ -1135,9 +1174,12 @@ async function finishSignedStop({
     selectedServiceMethods: [...services.poiMethods],
     syntheticOperationRpc: rpc,
     syntheticOperationRequests: operationRequests.length,
-    operationHeaderReadsObserved: true,
     recoverySequenceDelta: 3,
+    stopKind: 'controlled-request-abort-after-independent-verification',
+    stopBeforeProofPersistence: true,
+    crashOrNetworkInterruption: false,
     heldVerifier: hold.observation,
+    sameInputPrivateReservation: reservation,
     custodyOrdering: custody.rows,
     recordDigest: stopped.recordDigest,
     publicFixtureRecordSha256: sha(recordText),
@@ -1270,18 +1312,41 @@ async function qualify({
   });
   const hold =
     scenario === SIGNED_STOP
-      ? installSignedStop(control, jobs, () =>
-          operation.proveRailgunAccountRelayOperation({
-            account,
-            owners,
-            archive,
-            proverArchive,
-            artifactDirectory,
-            request: { ...request(), signal: new AbortController().signal },
-            review: () => assert.fail('Second admission reached review'),
-            reviewDisclosure: () => assert.fail('Second admission reached disclosure'),
-          })
-        )
+      ? installSignedStop(control, jobs, async () => {
+          // The probe repeats the exact admitted option shape. Refusal before
+          // any owned-note read or utility start is the live ownership guard.
+          const reads = api.readRailgunAccountOwnedNotes;
+          let ownedNoteReads = 0;
+          const counted = function (...args) {
+            ownedNoteReads++;
+            return Reflect.apply(reads, this, args);
+          };
+          const utilities = jobs.rows.length,
+            loans = jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0);
+          api.readRailgunAccountOwnedNotes = counted;
+          let value;
+          try {
+            value = await operation.proveRailgunAccountRelayOperation({
+              account,
+              owners,
+              archive,
+              proverArchive,
+              artifactDirectory,
+              request: { ...request(), signal: new AbortController().signal },
+              review: () => assert.fail('Second admission reached review'),
+              reviewDisclosure: () => assert.fail('Second admission reached disclosure'),
+            });
+          } finally {
+            assert.equal(api.readRailgunAccountOwnedNotes, counted);
+            api.readRailgunAccountOwnedNotes = reads;
+          }
+          return {
+            ...value,
+            ownedNoteReads,
+            utilitiesStarted: jobs.rows.length - utilities,
+            keyLoans: jobs.rows.reduce((sum, row) => sum + row.keyReplies, 0) - loans,
+          };
+        })
       : null;
   let result;
   try {
@@ -1334,6 +1399,8 @@ async function qualify({
       jobs,
       custody,
       account,
+      owned,
+      selected,
     });
   assertReadyLocal(result, jobs, custody);
   assert.match(result.operationId, /^[0-9a-f]{64}$/);
@@ -1827,6 +1894,7 @@ async function execute(config) {
 }
 module.exports = {
   SIGNED_STOP,
+  probeSameInput,
   assertReadyLocal,
   collectMainModuleCache,
   inspectMainModuleCache,

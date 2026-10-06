@@ -197,7 +197,7 @@ function rpcReply(method, params, logs) {
   );
   return { number: tag(n), hash: hex(n + 1), parentHash: hex(n) };
 }
-function assertRpc(rows, mode = 'ready') {
+function assertRpc(rows) {
   const counts = {};
   for (const row of rows) {
     const key =
@@ -217,13 +217,8 @@ function assertRpc(rows, mode = 'ready') {
     ['eth_getBlockByNumber:' + tag(5944710)]: 2,
     ['eth_getBlockByNumber:' + tag(5944720)]: 2,
   };
-  if (mode === 'signed') {
-    // Proof A reads snapshot storage, not RPC. The signed resume keeps the
-    // ready request kinds; its counts are observed rather than source-derived.
-    assert.deepEqual(Object.keys(counts).sort(), Object.keys(expected).sort());
-    assert.equal(counts.eth_chainId, 1);
-    return counts;
-  }
+  // Proof A reads snapshot storage, not RPC: signed run a observed exactly the
+  // ready resume's requests, so both modes share this exact map.
   assert.deepEqual(counts, expected);
   assert.equal(rows.length, 49);
   return counts;
@@ -622,13 +617,12 @@ function installJobs(firstRecordSha256, mode = 'ready') {
           assert.equal(row.methods['relay-proof-record'], row.recordStream.chunks);
         }
       }
-      // Signed resume worker use is observed; every worker must still close.
-      if (mode !== 'signed')
-        assert.deepEqual(
-          workers.map((v) => v.readOnly),
-          [false, false, true]
-        );
-      assert.ok(workers.length > 0 && workers.every((v) => v.closedObserved));
+      // Proof A shares the completed snapshot's read-only worker (signed run a).
+      assert.deepEqual(
+        workers.map((v) => v.readOnly),
+        [false, false, true]
+      );
+      assert.ok(workers.every((v) => v.closedObserved));
     },
     restore() {
       assert.deepEqual(
@@ -908,7 +902,7 @@ async function execute(admitted) {
     payloadDigest: report.payloadSha256,
   });
   if (signed) assert.equal(jobs.rows.at(-1).recordStream.sha256, report.recordSha256);
-  const rpc = assertRpc(services.rows, mode);
+  const rpc = assertRpc(services.rows);
   assert.deepEqual(sourceSnapshot(), before);
   verify();
   bounded(
@@ -936,8 +930,7 @@ async function execute(admitted) {
         originalJobs: jobs.rows,
         originalStorageWorkers: jobs.workers,
         syntheticRpc: rpc,
-        syntheticRpcRequests: services.rows.length,
-        ...(signed ? { syntheticRpcCountsObserved: true } : {}),
+        syntheticRpcRequests: 49,
         syntheticRefusedAttempts: services.refusedAttempts,
         relaySigningOperations: 0,
         proofProducerOperations: signed ? 1 : 0,

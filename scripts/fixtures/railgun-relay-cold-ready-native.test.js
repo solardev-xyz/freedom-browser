@@ -838,18 +838,9 @@ test('signed resume refuses a ready first record and an unadvanced store', async
     load().qualify({}, r.owners, r.config, r.first, new AbortController().signal, 'signed')
   ).rejects.toThrow();
 });
-test('signed RPC keeps ready request kinds but reports observed counts', () => {
+test('signed resume shares the exact ready RPC map', () => {
   const f = load(),
     rows = rpcRows();
-  expect(f.assertRpc(rows, 'signed')).toEqual(f.assertRpc(rows));
-  const extra = [...rows, rows.find((v) => v.method === 'eth_getLogs')];
-  expect(() => f.assertRpc(extra)).toThrow();
-  expect(f.assertRpc(extra, 'signed').eth_getLogs).toBe(3);
-  expect(() => f.assertRpc([...rows, { method: 'eth_call', params: [] }], 'signed')).toThrow();
-  expect(() =>
-    f.assertRpc(
-      rows.filter((v) => v.method !== 'eth_chainId'),
-      'signed'
-    )
-  ).toThrow();
+  expect(f.assertRpc(rows)).toBeTruthy();
+  expect(() => f.assertRpc([...rows, rows.find((v) => v.method === 'eth_getLogs')])).toThrow();
 });
