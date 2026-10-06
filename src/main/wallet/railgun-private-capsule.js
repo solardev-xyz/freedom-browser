@@ -34,8 +34,9 @@ function normalizeRailgunPrivateCapsule(value) {
     )
   );
   assert.equal(value.version, partial ? 2 : 1);
-  // Provenance only: recovery is defined by capsule version and revalidated
-  // cryptography, so updating the runtime cannot strand an older capsule.
+  // Provenance only: recovery does not require the current engine hash, so a
+  // runtime update alone does not refuse an older capsule. This is not a broader
+  // runtime or downgrade compatibility guarantee.
   assert.match(value.engineSha256, /^[0-9a-f]{64}$/);
   assert.match(value.walletId, /^[0-9a-f]{64}$/);
   const s = value.selection;

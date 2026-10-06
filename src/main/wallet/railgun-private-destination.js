@@ -34,7 +34,9 @@ const hexKey = (value) => {
 };
 // Strict canonical decode: version 1, all chains or exactly the pinned chain, and
 // byte-identical re-encoding. Either key equal to the spending account's own key
-// refuses: such an address is not a different controlled account.
+// refuses. This establishes only a distinct key relationship, not control of the
+// destination; refusing a single shared key is a deliberate restriction of this
+// transfer, not a general Railgun address validity rule.
 function decodeRailgunForeignDestination(imp, address, own) {
   assert.equal(typeof address, 'string');
   assert.match(address, ADDRESS);
