@@ -858,6 +858,7 @@ async function main() {
     'src/main/wallet/railgun-private-proof.js',
     'src/main/wallet/railgun-private-prepare-job.js',
     'src/main/wallet/railgun-private-preparation.js',
+    'src/main/wallet/railgun-private-destination.js',
     'src/main/wallet/railgun-private-intent.js',
     'src/main/wallet/railgun-private-policy.js',
     'src/main/wallet/railgun-private-receive.js',

@@ -134,8 +134,8 @@ test('public adapter inventory adds exact evidence paths only when selected', ()
     'scripts/qualify-railgun-wallet-journal.test.js',
   ]);
   expect(selected.filter((name) => !additions.includes(name))).toEqual(baseline);
-  expect(new Set(baseline).size).toBe(181);
-  expect(new Set(selected).size).toBe(189);
+  expect(new Set(baseline).size).toBe(182);
+  expect(new Set(selected).size).toBe(190);
   expect(baseline).toEqual(
     expect.arrayContaining([
       'scripts/fixtures/railgun-transact-staging-source.js',
