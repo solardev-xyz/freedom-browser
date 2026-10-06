@@ -6,6 +6,8 @@ const CLAIMS = new Set(['private', 'tee', 'e2ee', 'anonymized', 'external', 'rou
 const ROLES = new Set(['agent', 'helper', 'permission']);
 const bounded = value => typeof value === 'string' ? value.slice(0, 240) : '';
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+const BINDING_COUNTS = ['attempts', 'pending', 'connections', 'gateway', 'model', 'failed', 'unavailable'];
+const normalizeBinding = value => Object.fromEntries(BINDING_COUNTS.map(key => [key, count(value?.[key])]));
 
 function normalizeHardware(value) {
   if (!value || !STATES.has(value.status)) return null;
@@ -38,13 +40,14 @@ function normalizePrivacy(value) {
       role: ROLES.has(route.role) ? route.role : 'agent', requests: count(route.requests),
       claim: CLAIMS.has(route.claim) ? route.claim : 'unknown',
       hardware: normalizeHardware(route.hardware),
+      binding: normalizeBinding(route.binding),
     })),
   };
 }
 
-// An endpoint check is deliberately separate from request coverage. It does not
-// bind the inference socket, GPU, approved software or the returned response.
-// Never turn these counters into a "verified conversation" flag.
+// Endpoint evidence and per-request connection/signature counters have different
+// scopes. Neither establishes approved software or GPU verification. Never turn
+// these counters into a "verified conversation" flag.
 class SessionPrivacy {
   constructor(previous, changed = () => {}) {
     this.summary = previous === undefined
@@ -52,6 +55,8 @@ class SessionPrivacy {
       : normalizePrivacy(previous);
     for (const route of this.summary.routes) {
       if (route.hardware?.status === 'pending') route.hardware = { status: 'unavailable' };
+      route.binding.unavailable += route.binding.pending;
+      route.binding.pending = 0;
     }
     this.changed = changed;
     this.checks = new Map();
@@ -89,6 +94,33 @@ class SessionPrivacy {
       this.changed(this.snapshot());
     });
   }
+
+  requestReporter(route) {
+    if (!route) return () => {};
+    route.binding = normalizeBinding(route.binding);
+    route.binding.attempts += 1;
+    route.binding.pending += 1;
+    this.changed(this.snapshot());
+    let finished = false;
+    return result => {
+      if (finished) return;
+      if (result.hardware) {
+        const incoming = normalizeHardware(result.hardware);
+        // Preserve an earlier adverse result; later success cannot erase it.
+        const severity = value => ({ failed: 3, advisory: 2 }[value?.status] || 0);
+        if (severity(incoming) >= severity(route.hardware)) route.hardware = incoming;
+      }
+      if (result.response !== 'pending') {
+        finished = true;
+        route.binding.pending -= 1;
+        if (result.connection === 'checked') route.binding.connections += 1;
+        if (['gateway', 'model'].includes(result.response)) route.binding[result.response] += 1;
+        else route.binding[result.response === 'failed' ? 'failed' : 'unavailable'] += 1;
+        if (result.connection === 'failed' && result.response !== 'failed') route.binding.failed += 1;
+      }
+      this.changed(this.snapshot());
+    };
+  }
 }
 
 function withSessionPrivacy(runtime, ledger, role, getSignal = () => undefined) {
@@ -105,6 +137,11 @@ function withSessionPrivacy(runtime, ledger, role, getSignal = () => undefined) 
           return value.call(target, model, context, { ...options, fetch: async (...args) => {
             const descriptor = target.privacyDescriptor?.(model) || {};
             const route = ledger.record(model, role, args[0]?.url || args[0], descriptor);
+            if (descriptor.attestation === true && descriptor.providerId === 'near-ai' && target.fetchPrivacyRequest) {
+              return target.fetchPrivacyRequest(model, args[0], args[1], {
+                signal: getSignal(), report: ledger.requestReporter(route), fetchImpl,
+              });
+            }
             if (descriptor.attestation === true) ledger.check(route,
               signal => target.checkPrivacyAttestation(model, signal), getSignal());
             return fetchImpl(...args);

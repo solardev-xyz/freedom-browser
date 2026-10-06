@@ -45,8 +45,14 @@ async function verifyReport(report, nonce) {
   }
   const td = checked.report.asTd10();
   if (!td) throw new Error('Unsupported report type');
-  const expected = Buffer.concat([Buffer.from(report.signing_address.slice(2), 'hex'),
-    Buffer.alloc(12), Buffer.from(nonce, 'hex')]);
+  const identity = Buffer.from(report.signing_address.slice(2), 'hex');
+  const fingerprint = report.tls_cert_fingerprint;
+  if (fingerprint !== undefined && !/^[a-f0-9]{64}$/i.test(fingerprint)) {
+    throw Object.assign(new Error('Fingerprint rejected'), { code: 'EVIDENCE_REJECTED' });
+  }
+  const boundIdentity = fingerprint === undefined ? Buffer.concat([identity, Buffer.alloc(12)])
+    : createHash('sha256').update(identity).update(Buffer.from(fingerprint, 'hex')).digest();
+  const expected = Buffer.concat([boundIdentity, Buffer.from(nonce, 'hex')]);
   const reportData = Buffer.from(td.reportData);
   if (reportData.length !== 64 || !timingSafeEqual(expected, reportData) ||
     (report.request_nonce ?? report.nonce) !== nonce ||
@@ -58,6 +64,8 @@ async function verifyReport(report, nonce) {
     tcb: checked.status,
     advisories: checked.advisory_ids,
     quoteHash: createHash('sha256').update(quote).digest('hex'),
+    signingAddress: report.signing_address.toLowerCase(),
+    ...(fingerprint && { tlsFingerprint: fingerprint.toLowerCase() }),
   };
 }
 

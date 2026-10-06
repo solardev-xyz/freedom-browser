@@ -1,7 +1,7 @@
 # Agent session privacy verification
 
 Date: 2026-10-06
-Status: experimental session shield, request accounting and independent CPU endpoint checks implemented; full inference verification and E2EE remain open
+Status: experimental session shield, CPU checks and NEAR request-bound connection/signature checks implemented; full inference verification and E2EE remain open
 Branch: `experiment/agent-privacy-verification`, from `56108147`
 
 ## Product intent
@@ -50,17 +50,76 @@ proof that the server is offline or cannot forward requests.
   Older history stays unknown; interrupted checks restore as unavailable. The
   session listing does not eagerly load privacy metadata.
 
-CPU checks are observational and run separately from inference. A historical
-endpoint check is retained per model/role in the conversation, with its timestamp;
-this is **not** a fresh preflight for every request and does not gate requests.
-Counts never become verified-request counters after an endpoint check succeeds.
-No new approval rule or provider routing fallback was introduced.
+The panel now groups the same model across Agent/helper/permission roles. Its
+main view explains provider access, request coverage and hardware warnings in
+plain language. Raw advisory IDs, labeled gateway/model reports, origins,
+role counts and timestamps are under technical details. No numeric trust score
+or green “private” verdict is derived from partial checks.
 
-Still open: GPU evidence validation; measured configuration/event-log validation
-and approved image/source policy; binding the actual inference TLS connection;
-response signatures; enforceable verified-only inference; Agent-compatible E2EE.
-The stages below remain the plan for those stronger guarantees. The shield must
-continue exposing these gaps until they are implemented and qualified.
+### Request-bound checks (2026-10-06)
+
+NEAR chat completions now obtain fresh CPU evidence **before each inference
+attempt**. A private Node HTTPS Agent observes the actual peer certificate's
+SPKI, requests nonce-bound gateway/model quotes, verifies all candidate CPU
+reports in the worker, and compares the quote-bound fingerprint with that peer.
+The inference body is sent on that exact socket. A replacement socket is
+rejected before sending the body; the ordinary same-provider transport may then
+proceed with connection coverage explicitly unavailable. No POST is retried by
+this layer after it may have been sent. These are observational checks, not a
+verified-only enforcement mode: failed/unavailable evidence does not block an
+otherwise authorized inference request.
+
+Exact UTF-8 request-body bytes and raw uncompressed response bytes are hashed.
+Responses are observed incrementally with backpressure, not cloned into an
+unbounded buffer. A bounded SSE/JSON parser extracts the completion ID; it does
+not reconstruct the signed bytes. Receipts use fixed endpoints, reject
+redirects, have a 32 KiB body limit and a 10-second overall deadline with at most
+three fetch attempts. The existing ethers dependency verifies EIP-191 signatures.
+Gateway and model signatures require distinct matching preflight signers;
+ambiguous/missing model matches, unknown scopes, altered hashes, incomplete
+streams and unavailable receipts never become verified responses. Gateway
+signatures do **not** establish that the model produced the response. Model
+signatures do not establish a particular serving instance or approved software.
+
+Per-route counts separately retain attempted checks, pending checks, matched
+connections, gateway/model signatures, failures and unavailable results. Earlier
+unverified attempts are never upgraded by later successes; adverse hardware
+results remain visible. On reopening a chat, unfinished receipt checks become
+unavailable. Only bounded counters and CPU summaries are persisted; no request
+bodies, response bodies, keys or raw receipts enter this metadata. Final SDK text
+can arrive before the receipt lookup finishes; the conversation-scoped shield
+continues updating afterward. No new IPC or package boundary was introduced:
+credentials, sockets and verification stay in the main process; the renderer
+receives allowlisted summaries.
+
+Venice retains observational CPU endpoint checks. A live synthetic test of
+`e2ee-qwen3-8-27b` returned a NEAR gateway receipt with **different exact request
+and response hashes and a different signer** from Venice's model attestation.
+Its signature response itself says to treat the hashes as provider-reported
+unless a documented canonical format lets the client recompute them. This is
+not a client-verifiable receipt for Freedom's exchange. Do not infer model
+verification from a valid signature over unrelated upstream bytes. A documented
+proxy-to-upstream binding or a compatible encrypted transport is needed.
+
+Live NEAR qualification used `Qwen/Qwen3.6-35B-A3B-FP8`: both a direct streaming
+probe and the real Pi runtime returned a checked same-connection binding and a
+valid gateway signature over the exact exchange. CPU status remained OutOfDate;
+signature validity does not remove Intel advisories. UI checked in dark/light and
+at 760×560, with Escape dismissal. Unit coverage includes replaced sockets before
+body send, no duplicate POST after transport errors, altered signers/nonces/TLS
+fingerprints/hashes, signer scope, ambiguous model evidence, stream framing,
+cancellation, history coverage and all runtime roles.
+
+Protocol sources:
+- [NEAR TLS connection binding](https://docs.near.ai/cloud/verification/cloud-api/tls)
+- [NEAR response signatures](https://docs.near.ai/cloud/verification/cloud-api/response-signatures)
+- [NEAR quote/nonce/signer contract](https://docs.near.ai/cloud/verification/reference/quote-nonce-signer)
+- [Venice TEE/E2EE guide](https://docs.venice.ai/guides/features/tee-e2ee-models)
+
+Still open: GPU evidence; measured configuration/event logs and approved
+image/source policy; Venice proxy/request binding; verified-only enforcement;
+Agent-compatible E2EE; packaged worker and cross-platform qualification.
+The stages below remain the plan for those stronger guarantees.
 
 ## Findings and live probes
 
@@ -207,5 +266,6 @@ verify the shield in both themes with keyboard and screen-reader semantics.
 - [x] Identify protocol limits and reject the vulnerable reference dependency.
 - [x] Obtain approval and install the pinned verification dependency.
 - [x] Implement CPU endpoint checks, role/destination accounting, session shield and bounded history.
-- [ ] Complete the remaining GPU/software/connection/response checks and E2EE stages; keep unsupported paths explicit.
+- [x] Simplify the shield and implement NEAR same-connection and exact-response signature checks.
+- [ ] Complete GPU/software checks, Venice proxy binding and E2EE; keep unsupported paths explicit.
 - [ ] Review claims and enforcement before integrating into the feature branch.

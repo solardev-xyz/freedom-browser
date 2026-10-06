@@ -70,3 +70,41 @@ test('forwards the original runtime receiver and does not break non-streaming me
   const runtime = { name: 'private runtime', getModel() { return this.name; } };
   expect(withSessionPrivacy(runtime, new SessionPrivacy(), 'agent').getModel()).toBe('private runtime');
 });
+
+test('request receipts retain partial coverage across roles, restarts and later successes', () => {
+  const ledger = new SessionPrivacy();
+  const route = ledger.record({ id: 'qwen', provider: 'near-ai' }, 'agent', 'https://cloud-api.near.ai');
+  const first = ledger.requestReporter(route);
+  first({ connection: 'checked', response: 'unavailable' });
+  first({ connection: 'checked', response: 'gateway' }); // A receipt finishes exactly once.
+  ledger.record({ id: 'qwen', provider: 'near-ai' }, 'agent', 'https://cloud-api.near.ai');
+  ledger.requestReporter(route)({ connection: 'checked', response: 'gateway',
+    hardware: { status: 'checked', reports: [{ signingAddress: 'private-to-main', tlsFingerprint: 'internal', tcb: 'UpToDate' }] } });
+  const pending = ledger.record({ id: 'qwen', provider: 'near-ai' }, 'helper', 'https://cloud-api.near.ai');
+  ledger.requestReporter(pending);
+  const saved = ledger.snapshot();
+  expect(saved.routes[0].binding).toEqual({ attempts: 2, pending: 0, connections: 2, gateway: 1, model: 0, failed: 0, unavailable: 1 });
+  expect(JSON.stringify(saved)).not.toMatch(/private-to-main|internal/);
+  const restored = new SessionPrivacy(saved).snapshot();
+  expect(restored.routes[1].binding.pending).toBe(0);
+  expect(restored.routes[1].binding.unavailable).toBe(1);
+  expect(restored.routes[0].binding.gateway).toBe(1);
+});
+
+test('request-bound transport covers main, helper and permission runtimes at the actual fetch boundary', async () => {
+  const ledger = new SessionPrivacy();
+  const runtime = {
+    privacyDescriptor: () => ({ providerId: 'near-ai', attestation: true }),
+    completeSimple: (_model, _context, opts) => opts.fetch('https://cloud-api.near.ai/v1/chat/completions', { method: 'POST' }),
+    fetchPrivacyRequest: jest.fn(async (_model, _input, _options, tracking) => {
+      tracking.report({ connection: 'checked', response: 'gateway' }); return 'done';
+    }),
+  };
+  for (const role of ['agent', 'helper', 'permission']) {
+    expect(await withSessionPrivacy(runtime, ledger, role).completeSimple({ id: 'qwen' }, {})).toBe('done');
+  }
+  expect(runtime.fetchPrivacyRequest).toHaveBeenCalledTimes(3);
+  expect(ledger.snapshot().routes.map(r => [r.role, r.binding.gateway])).toEqual([
+    ['agent', 1], ['helper', 1], ['permission', 1],
+  ]);
+});

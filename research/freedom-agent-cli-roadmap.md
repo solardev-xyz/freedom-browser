@@ -4499,3 +4499,20 @@ feature branch. Live-provider qualification remains separate.
 ## Final target statement
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.
+
+
+### Session privacy: request-bound evidence follow-up (2026-10-06)
+
+On `experiment/agent-privacy-verification`: the shield now uses plain language,
+groups routes by provider/model, and keeps technical evidence collapsed. NEAR
+chat completions verify fresh CPU evidence before each request, bind the actual
+inference TLS socket, and check gateway/model signatures over the exact wire
+exchange. Live real-Pi test passed connection + gateway signature checks; Intel
+hardware advisories remain visible. Per-role history preserves partial coverage.
+
+Venice's sampled proxy receipt signs different upstream bytes with a different
+signer from the model attestation, so it cannot yet verify Freedom's exchange.
+Remaining: documented Venice proxy binding, GPU evidence, measured/approved
+software, verified-only enforcement, Agent-compatible E2EE, and packaged
+cross-platform qualification. No fully-private or E2EE claim is made.
+See [the implementation and protocol notes](../docs/agent-session-privacy.md).

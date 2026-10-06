@@ -1,6 +1,7 @@
 'use strict';
 
 const { checkProviderAttestation } = require('./privacy-attestation');
+const { fetchNearWithEvidence } = require('./privacy-request');
 
 const path = require('path');
 const { loadPiSdk } = require('./pi-sdk');
@@ -550,6 +551,11 @@ class AgentProviderResolver {
       if (!current?.apiKey) return Promise.resolve({ status: 'unavailable' });
       return checkProviderAttestation({ providerId: selection.providerId, modelId: requestModel.id,
         apiKey: current.apiKey, signal, fetchImpl: this.fetch });
+    };
+    runtime.fetchPrivacyRequest = (requestModel, input, options, tracking) => {
+      const current = this.store.getSelection(selection.providerId);
+      return fetchNearWithEvidence({ input, options, modelId: requestModel.id,
+        apiKey: current?.apiKey, ...tracking });
     };
     return {
       model,

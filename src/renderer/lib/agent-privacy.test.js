@@ -3,9 +3,9 @@ jest.mock('./popover-bounds.js', () => ({ placePopoverAtPoint: jest.fn() }));
 const { createAgentPrivacy, privacyLabel } = require('./agent-privacy');
 
 test('labels hardware advisories and partial evidence without claiming verified inference', () => {
-  expect(privacyLabel({ routes: [{ hardware: { status: 'advisory' } }] })).toBe('Hardware security advisories');
-  expect(privacyLabel({ routes: [{ hardware: { status: 'checked' } }] })).toBe('Hardware checked · partial coverage');
-  expect(privacyLabel({ routes: [{ providerId: 'ollama', origin: 'http://localhost.evil.test' }] })).toBe('Provider privacy policy');
+  expect(privacyLabel({ routes: [{ hardware: { status: 'advisory' } }] })).toBe('Hardware needs security updates');
+  expect(privacyLabel({ routes: [{ hardware: { status: 'checked' } }] })).toBe('Hardware checked; privacy not proven');
+  expect(privacyLabel({ routes: [{ providerId: 'ollama', origin: 'http://localhost.evil.test' }] })).toBe('Provider privacy claims');
   expect(privacyLabel({ routes: [{ providerId: 'ollama', origin: 'http://127.0.0.1:11434' }] })).toBe('Local model endpoint');
 });
 
@@ -29,8 +29,8 @@ test('renders evidence as text, supports Escape and clears when switching conver
   expect(panel.hidden).toBe(false);
   expect(button.getAttribute('aria-expanded')).toBe('true');
   const text = node => [node.textContent, ...node.children.map(text)].join(' ');
-  expect(text(panel)).toContain('Inference is not independently verified');
-  expect(text(panel)).toContain('End-to-end encryption is not enabled');
+  expect(text(panel)).toContain('Responses are not independently verified.');
+  expect(text(panel)).toContain('End-to-end encryption is off');
   expect(text(panel)).toContain('Permission checks · 2 request attempts');
   expect(view.escape()).toBe(true);
   expect(panel.hidden).toBe(true);

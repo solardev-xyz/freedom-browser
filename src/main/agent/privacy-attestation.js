@@ -34,7 +34,7 @@ function verifyInWorker(reports, nonce, signal) {
 }
 
 async function checkProviderAttestation({ providerId, modelId, apiKey, signal,
-  fetchImpl = globalThis.fetch, verify = verifyInWorker }) {
+  fetchImpl = globalThis.fetch, verify = verifyInWorker, includeTls = false }) {
   if (!ENDPOINTS[providerId]) return { status: 'unsupported' };
   const nonce = randomBytes(32).toString('hex');
   const url = new URL(ENDPOINTS[providerId]);
@@ -42,6 +42,7 @@ async function checkProviderAttestation({ providerId, modelId, apiKey, signal,
   url.searchParams.set('nonce', nonce);
   url.searchParams.set('signing_algo', 'ecdsa');
   if (providerId === 'near-ai') url.searchParams.set('provider', 'near');
+  if (providerId === 'near-ai' && includeTls) url.searchParams.set('include_tls_fingerprint', 'true');
   try {
     const timeout = AbortSignal.timeout(15_000);
     const response = await fetchImpl(url, { redirect: 'error',
@@ -65,6 +66,8 @@ async function checkProviderAttestation({ providerId, modelId, apiKey, signal,
       intel_quote: report?.intel_quote, signing_algo: report?.signing_algo,
       signing_address: report?.signing_address, request_nonce: report?.request_nonce,
       nonce: report?.nonce, report_data: report?.report_data,
+      ...(providerId === 'near-ai' && report?.tls_cert_fingerprint !== undefined &&
+        { tls_cert_fingerprint: report.tls_cert_fingerprint }),
     }));
     return await verify(evidence, nonce, signal);
   } catch {
