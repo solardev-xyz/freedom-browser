@@ -901,6 +901,21 @@ describe('aggregate reports', () => {
     observation: { blockHash: hash('0b'), blockNumber: 1 },
     resolved: { finalizedBlockHash: hash('fb') },
     spend: { journaledHash: TRANSFER, submissionStatus: 'acknowledged' },
+    submission: {
+      status: 'refused',
+      stage: 'preflight',
+      diagnostic: {
+        stage: 'preflight',
+        substage: 'acquire',
+        code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+        reason: 'rpc',
+        step: 'deployment',
+        deploymentStep: 'getter-tokenBlocklist',
+        causeCode: 'PRIVATE_RPC_INVALID',
+      },
+      reviews: 0,
+      elapsedMs: 2410,
+    },
     recovered: { walletThrough: { number: 1, hash: hash('ac') } },
     passed: true,
   });
@@ -921,6 +936,8 @@ describe('aggregate reports', () => {
     ['a bare 32-byte value outside sha256 keys', (r) => (r.spend.other = sha('01'))],
     ['an uppercase public hash', (r) => (r.spend.journaledHash = '0x' + 'AB'.repeat(32))],
     ['a bigint', (r) => (r.spend.fee = 1n)],
+    ['a diagnostic nullifier', (r) => (r.submission.diagnostic.nullifier = hash('01'))],
+    ['a diagnostic payload', (r) => (r.submission.diagnostic.data = '0x1234')],
   ])('refuses %s and writes a minimal failure instead', (_name, change) => {
     const report = fullReport();
     change(report);
@@ -966,8 +983,18 @@ function world({
   prove = 'proved',
   classification = 'rpc-result',
   poiStore = [],
+  diagnostic,
 } = {}) {
-  const calls = { timeline: [], prove: [], submit: [], reviews: [], staging: [], poiReviews: [] };
+  const calls = {
+    timeline: [],
+    prove: [],
+    submit: [],
+    reviews: [],
+    staging: [],
+    poiReviews: [],
+    diagnosticReads: [],
+  };
+  const diagnostics = new WeakMap();
   const log = (event) => calls.timeline.push(event);
   const afterTransfer = step !== 'transfer';
   const journal = {
@@ -1142,6 +1169,12 @@ function world({
       submitRailgunPrivateTransaction: async (options) => {
         log('submit');
         calls.submit.push(options);
+        if (submit === 'preflight') {
+          // Production refuses at its preflight before any review or journal write.
+          const refusal = Object.freeze({ status: 'recovery-required', stage: 'preflight' });
+          diagnostics.set(refusal, diagnostic);
+          return refusal;
+        }
         const kind = stored.capsule.selection.kind;
         const request = {
           transaction: {
@@ -1182,6 +1215,11 @@ function world({
         if (submit === 'ack') return { hash: sent };
         if (submit === 'lost') return { transactionHash: sent, submissionStatus: 'unknown' };
         return { status: 'recovery-required', stage: 'submission' };
+      },
+      getRailgunPrivateSubmissionDiagnostic: (result) => {
+        calls.diagnosticReads.push(result);
+        if (diagnostic === 'throws') throw Error('secret diagnostic read ' + hash('01'));
+        return diagnostics.get(result) ?? null;
       },
     },
     'wallet/railgun-own-operation': {
@@ -1733,6 +1771,76 @@ const PROBES = {
     expect(none.ctx.report.liveness.state).toBe('no-hold');
     expect(none.calls.submit).toHaveLength(0);
   },
+  'spend-preflight-diagnostic': async (m) => {
+    const hostile = {
+      stage: 'preflight',
+      substage: 'acquire',
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'rpc',
+      step: 'deployment',
+      deploymentStep: 'code-proxy',
+      causeCode: 'PRIVATE_RPC_INVALID',
+      message: 'secret /Users/someone/identity-data',
+      stack: 'Error: secret\n    at /Users/someone/x.js:1:1',
+      nullifier: hash('01'),
+      payload: { data: '0xdead' },
+    };
+    const { ctx, calls } = world({ submit: 'preflight', diagnostic: hostile });
+    await m.spend(ctx, 'transfer');
+    expect(calls.reviews).toEqual([]);
+    expect(calls.diagnosticReads).toHaveLength(1);
+    expect(ctx.report.submission).toEqual({
+      status: 'refused',
+      stage: 'preflight',
+      diagnostic: {
+        stage: 'preflight',
+        substage: 'acquire',
+        code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+        reason: 'rpc',
+        step: 'deployment',
+        deploymentStep: 'code-proxy',
+        causeCode: 'PRIVATE_RPC_INVALID',
+      },
+      reviews: 0,
+      elapsedMs: expect.any(Number),
+    });
+    expect(ctx.report.spend).toMatchObject({
+      attempted: false,
+      journaled: false,
+      submissionStatus: 'not-sent',
+    });
+    expect(ctx.report.liveness.state).toBe('proved-unsent');
+    expect(m.assertAggregateReport(ctx.report)).toBe(true);
+    expect(JSON.stringify(ctx.report.submission)).not.toMatch(/secret|Users|dead|[0-9a-f]{32}/i);
+    // Identifier-shaped checks drop each malformed value on its own.
+    const shaped = world({
+      submit: 'preflight',
+      diagnostic: {
+        ...hostile,
+        code: 'not a code',
+        causeCode: 'E' + 'ABCDEF0123456789'.repeat(2),
+        step: 'x'.repeat(40),
+        reason: 'Rpc',
+      },
+    });
+    await m.spend(shaped.ctx, 'transfer');
+    expect(shaped.ctx.report.submission.diagnostic).toEqual({
+      stage: 'preflight',
+      substage: 'acquire',
+      deploymentStep: 'code-proxy',
+    });
+    // An unreadable diagnostic is null; the journal is still read back.
+    const unreadable = world({ submit: 'preflight', diagnostic: 'throws' });
+    await m.spend(unreadable.ctx, 'transfer');
+    expect(unreadable.ctx.report.submission.diagnostic).toBeNull();
+    expect(unreadable.ctx.report.spend.submissionStatus).toBe('not-sent');
+    expect(m.assertAggregateReport(unreadable.ctx.report)).toBe(true);
+    // A send is never described by a refusal diagnostic.
+    const sent = world();
+    await m.spend(sent.ctx, 'transfer');
+    expect(sent.calls.diagnosticReads).toHaveLength(0);
+    expect(sent.ctx.report.submission).not.toHaveProperty('diagnostic');
+  },
   'poi-admission': async (m) => {
     const { ctx, calls } = world({ step: 'poi', records: [settledTransfer(null)] });
     expect(await settle(m.RUNNERS['poi-submit'](ctx))).toEqual(refused('journal-unresolved'));
@@ -2089,6 +2197,30 @@ const MUTATIONS = [
     'after: await ctx.readJournal()',
     'after: before',
     'spend-readback',
+  ],
+  [
+    'diagnostic values unchecked',
+    "if (typeof item === 'string' && pattern.test(item) && !/[0-9a-fA-F]{16}/.test(item))",
+    'if (item !== undefined)',
+    'spend-preflight-diagnostic',
+  ],
+  [
+    'diagnostic keys unrestricted',
+    'for (const [key, pattern] of Object.entries(DIAGNOSTIC_KEYS)) {',
+    'for (const [key, pattern] of Object.keys(value).map((name) => [name, /[^]*/])) {',
+    'spend-preflight-diagnostic',
+  ],
+  [
+    'diagnostic read failure blocks readback',
+    "ctx.load('wallet/railgun-private-submission').getRailgunPrivateSubmissionDiagnostic(result)\n    );\n  } catch {\n    return null;\n  }",
+    "ctx.load('wallet/railgun-private-submission').getRailgunPrivateSubmissionDiagnostic(result)\n    );\n  } finally {\n    void 0;\n  }",
+    'spend-preflight-diagnostic',
+  ],
+  [
+    'diagnostic on a send',
+    "...(status === 'refused' ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),",
+    '...{ diagnostic: readSubmissionDiagnostic(ctx, result) },',
+    'spend-preflight-diagnostic',
   ],
   [
     'hold not reported',
