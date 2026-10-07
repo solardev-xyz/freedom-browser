@@ -19,6 +19,7 @@ function createRailgunSubmitterHost(...args) {
       const { getWalletRecord, WALLET_TYPES } = require('../identity-manager');
       const record = getWalletRecord(0);
       assert.ok(record && record.index === 0 && record.type === WALLET_TYPES.MNEMONIC);
+      assert.equal(typeof record.address, 'string');
       const address = require('ethers').getAddress(record.address).toLowerCase();
       assert.ok(BigInt(address) > 0n);
       return Object.freeze({ index: 0, type: record.type, address });

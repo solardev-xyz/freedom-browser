@@ -76,6 +76,17 @@ test('propagates the original metadata read failure without fallback', () => {
   expect(() => m.factory().readMetadata()).toThrow(error);
   expect(m.imports).not.toContain('ethers');
 });
+test.each([undefined, null, 42, { privateField: 'must-not-reach-ethers' }])(
+  'rejects a non-string address before ethers can include its value in an error: %p',
+  (value) => {
+    const m = load();
+    m.state.record.address = value;
+    expect(() => m.factory().readMetadata()).toThrow(
+      expect.objectContaining({ code: 'ERR_ASSERTION' })
+    );
+    expect(m.imports).not.toContain('ethers');
+  }
+);
 test.each([{ realm: 'renderer' }, { realm: 'utility' }, { mainThread: false }])(
   'refuses a foreign realm before metadata access: %p',
   (options) => {
