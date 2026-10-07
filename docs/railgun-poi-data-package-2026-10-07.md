@@ -26,13 +26,36 @@ inventories include installed implementations, package exports and the lockfile.
 Cold submission refuses historical handoffs that omit those installed pins.
 These source inventories are not execution-coverage claims.
 
-## Native qualification still required
+## Native and packaged acceptance
 
-Source checks alone do not qualify Electron jobs or packaged loading. After
-landing, use the final merged Electron/runtime and exact package installation
-for disposable POI selector, TXID projection/witness and packaged-load checks,
-plus ordinary private proof and original-signature recovery compatibility.
-Those ordinary paths retain the authentic list and need no trust-pin change.
+[Exact reports and provenance](https://github.com/solardev-xyz/railgun-kohaku-adapter/tree/a2ca2949bce7573d69176c8771446e19dca81e81/docs/qualification/poi-txid-data-0.4.0-2026-10-08)
+record ten native cases on clean Freedom `0f2616b2`, Electron 44.6.0 and the
+installed 0.4.0 package: own selector/TXID full and partial, Shield selector,
+Shield/Transact POI verification, private full/partial proof and foreign Transact
+original-signature recovery. Every parent exited naturally with code 0, and all
+92 protected inputs and 1,407 tracked source hashes matched before and after.
+These are synthetic accounts/services with real engine/prover computations;
+B's withdrawal is preparation-only. No live services or Tor were exercised.
+An earlier campaign stopped at a missing temporary public-fixture postcheck;
+the accepted campaign owned an exact copy of the retained repository fixture.
+
+A separate unsigned clean-source macOS arm64 build loaded the package inside
+app.asar: 32 POI and 21 other shared references, manifest parity and four capsule
+vectors passed. All 49 shipped files match the 59-file npm artifact except
+builder's stripped package scripts. The known platform file-pattern issue still
+includes extra public repository entries; this is package inclusion/load
+acceptance, not release packaging or a packaged proof run. An earlier active-tree
+build included ignored local directories and remains restricted and unpublished.
+
+The combined `a5b1927c` baseline passed 21,740 tests across 683 suites, with 33
+skipped, and lint. Its preceding run had five failing suites (87 tests) caused by
+stale local-module mocks, the moved POI literal and captured synthetic verifier
+cache entries. Fixes retain the genuine result checks and signature verification;
+the failed run is not relabelled as green. The runtime algorithms did not change.
+
+## Synthetic-list relay continuation
+
+The ordinary cases above retain the authentic list and need no trust-pin change.
 
 Synthetic-list relay-positive and its cold-ready continuation need a new
 external copy builder. It must copy this package physically into the isolated
