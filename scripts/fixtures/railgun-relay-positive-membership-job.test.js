@@ -62,13 +62,15 @@ beforeEach(() => {
         key.key === mockList && sign(null, message).equals(signature)
     ),
   };
-  const filename = path.join(__dirname, '../../src/main/wallet/railgun-poi-records.js');
-  const source = fs
-    .readFileSync(filename, 'utf8')
-    .replace(
-      "const REQUIRED_LIST = 'efc6ddb59c098a13fb2b618fdae94c1c3a807abc8fb1837c93620c9143ee9e88';",
-      `const REQUIRED_LIST = '${mockList}';`
-    );
+  const filename = path.join(
+    path.dirname(require.resolve('@freedom/railgun-kohaku-adapter/host/poi')),
+    'src/data/railgun-poi-records.js'
+  );
+  // Transform only authenticated installed source bytes in memory. The Freedom
+  // wrapper contains no list literal, and no installed package file is written.
+  const source = require('../qualify-railgun-relay-positive')
+    .deriveIsolatedPoiSource(fs.readFileSync(filename))
+    .toString('utf8');
   const sandbox = {
     require: (name) => {
       expect(name).toBe('crypto');

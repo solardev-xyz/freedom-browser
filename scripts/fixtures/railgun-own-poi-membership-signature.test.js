@@ -12,6 +12,8 @@ const wallet = ${JSON.stringify(wallet)};
 const originalVerify = crypto.verify;
 const listKey = 'efc6ddb59c098a13fb2b618fdae94c1c3a807abc8fb1837c93620c9143ee9e88';
 const recordsPath = require.resolve(wallet + '/railgun-poi-records');
+const packageEntry = require.resolve('@freedom/railgun-kohaku-adapter/host/poi', {paths:[wallet]});
+const packageRecords = require('path').join(require('path').dirname(packageEntry),'src/data/railgun-poi-records.js');
 const event = {index: 0, blindedCommitment: '0x' + '1'.repeat(64), type: 'Transact'};
 const proof = {leaf: event.blindedCommitment.slice(2), indices: '0'.repeat(64), elements: Array(16).fill('0'.repeat(64)), root:'2'.repeat(64)};
 const note = {blindedCommitment:event.blindedCommitment,type:event.type};
@@ -54,6 +56,8 @@ test('legacy signing keeps its behavior and exports only immutable canonical pub
     assert.throws(() => verify(options,captured));
     assert.equal(crypto.verify,originalVerify);
     assert.equal(require.cache[recordsPath],undefined);
+    assert.equal(require.cache[packageEntry],undefined);
+    assert.equal(require.cache[packageRecords],undefined);
     assert.throws(() => verify(options));
   `);
 });
@@ -78,6 +82,8 @@ test.each(['Shield', 'Transact'])(
     replay.close(); replay.close();
     assert.throws(() => verify(options,records));
     assert.equal(require.cache[recordsPath],undefined);
+    assert.equal(require.cache[packageEntry],undefined);
+    assert.equal(require.cache[packageRecords],undefined);
     assert.throws(() => verify(options));
     assert.equal(crypto.verify,originalVerify);
   `);
@@ -288,3 +294,28 @@ test('rejects an order-eight key with a signature that actual Node crypto accept
     assert.equal(require.cache[recordsPath],undefined);
   `);
 });
+
+test.each(['entry', 'implementation'])(
+  'refuses both fixture installers after actual installed %s was already imported',
+  (kind) => {
+    run(`
+      const options=evidence();
+      const filename=${kind === 'entry' ? 'packageEntry' : 'packageRecords'};
+      const actual=require(filename);
+      assert.equal(actual.REQUIRED_LIST,listKey);
+      const cached=require.cache[filename];
+      assert.throws(()=>fixture.install());
+      assert.throws(()=>fixture.installReplay(options));
+      assert.equal(require.cache[filename],cached);
+      assert.equal(crypto.verify,originalVerify);
+      delete require.cache[packageEntry];
+      delete require.cache[packageRecords];
+      const replay=fixture.installReplay(options);
+      verify(options);replay.close();
+      assert.equal(require.cache[recordsPath],undefined);
+      assert.equal(require.cache[packageEntry],undefined);
+      assert.equal(require.cache[packageRecords],undefined);
+      assert.equal(crypto.verify,originalVerify);
+    `);
+  }
+);

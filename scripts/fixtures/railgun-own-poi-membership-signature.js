@@ -4,16 +4,25 @@
  */
 const assert = require('assert/strict');
 const crypto = require('crypto');
+const path = require('path');
 exports.install = () => {
   const recordsPath = require.resolve('../../src/main/wallet/railgun-poi-records');
+  // Resolve from the wrapper importer: the installed implementation captures
+  // crypto.verify, and the eager host entry retains that function object.
+  const packageEntry = require.resolve('@freedom/railgun-kohaku-adapter/host/poi', {
+    paths: [path.dirname(recordsPath)],
+  });
   const consumerPaths = [
     recordsPath,
+    packageEntry,
+    require.resolve(path.join(path.dirname(packageEntry), 'src/data/railgun-poi-records.js')),
     require.resolve('../../src/main/wallet/railgun-poi-source'),
     require.resolve('../../src/main/wallet/railgun-poi-membership'),
     require.resolve('../../src/main/wallet/railgun-account-poi'),
     require.resolve('../../src/main/wallet/railgun-own-poi-membership'),
   ];
-  for (const filename of consumerPaths) assert.equal(require.cache[filename], undefined);
+  // Avoid formatting a whole cached module/dependency graph on refusal.
+  for (const filename of consumerPaths) assert.equal(require.cache[filename] === undefined, true);
   const originalVerify = crypto.verify;
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
   const requiredList = 'efc6ddb59c098a13fb2b618fdae94c1c3a807abc8fb1837c93620c9143ee9e88';
@@ -154,14 +163,22 @@ exports.installReplay = (options) => {
   assert.equal(originalVerify(null, message, publicKey, signed), true);
   assert.equal(originalVerify(null, message, serviceKey, signed), false);
   const recordsPath = require.resolve('../../src/main/wallet/railgun-poi-records');
+  // Resolve from the wrapper importer: the installed implementation captures
+  // crypto.verify, and the eager host entry retains that function object.
+  const packageEntry = require.resolve('@freedom/railgun-kohaku-adapter/host/poi', {
+    paths: [path.dirname(recordsPath)],
+  });
   const consumerPaths = [
     recordsPath,
+    packageEntry,
+    require.resolve(path.join(path.dirname(packageEntry), 'src/data/railgun-poi-records.js')),
     require.resolve('../../src/main/wallet/railgun-poi-source'),
     require.resolve('../../src/main/wallet/railgun-poi-membership'),
     require.resolve('../../src/main/wallet/railgun-account-poi'),
     require.resolve('../../src/main/wallet/railgun-own-poi-membership'),
   ];
-  for (const filename of consumerPaths) assert.equal(require.cache[filename], undefined);
+  // Avoid formatting a whole cached module/dependency graph on refusal.
+  for (const filename of consumerPaths) assert.equal(require.cache[filename] === undefined, true);
   let active = true,
     attempts = 0;
   try {
