@@ -1159,6 +1159,17 @@ function world({
   classification = 'rpc-result',
   poiStore = [],
   diagnostic,
+  anchor = ANCHOR,
+  hold = {
+    facts: {
+      intentDigest: 'private-digest',
+      nullifier: 'private-nullifier',
+      tree: 0,
+      position: 1,
+      noteHash: 'private-note-hash',
+    },
+    signing: { submitter: OWNER },
+  },
 } = {}) {
   const calls = {
     timeline: [],
@@ -1195,7 +1206,7 @@ function world({
   ];
   const owned = () => ({
     checkpointHash: 'checkpoint',
-    read: { readiness: { to: ANCHOR }, instanceId: INSTANCE, received: notes },
+    read: { readiness: { to: { ...anchor } }, instanceId: INSTANCE, received: notes },
     ownedPoi,
     trees: [],
   });
@@ -1219,23 +1230,7 @@ function world({
     openPrivateRecoveryStores: async () => ({
       reservations: {
         withSigningRecovery: async (use) =>
-          use(
-            [
-              {
-                entry: {
-                  facts: {
-                    intentDigest: 'private-digest',
-                    nullifier: 'private-nullifier',
-                    tree: 0,
-                    position: 1,
-                    noteHash: 'private-note-hash',
-                  },
-                  signing: { submitter: OWNER },
-                },
-              },
-            ],
-            { assertCurrent() {} }
-          ),
+          use([{ entry: JSON.parse(JSON.stringify(hold)) }], { assertCurrent() {} }),
       },
     }),
     openPoiIntents: async () => store,
@@ -1245,7 +1240,7 @@ function world({
     generationId: 'generation',
     policy: 'policy',
     coordinator: {
-      recover: async () => ({ to: { ...ANCHOR } }),
+      recover: async () => ({ to: { ...anchor } }),
       withPublicSnapshot: async () => ({ evidence: {} }),
       assertSnapshot: () => ({ state: { storeId: 'store', trees: [] } }),
     },
@@ -1504,9 +1499,9 @@ function world({
     scan: {
       generationId: 'generation',
       publicPolicy: 'policy',
-      anchor: ANCHOR,
+      anchor: { ...anchor },
       publicState: { storeId: 'store', trees: [] },
-      wallet: { to: ANCHOR },
+      wallet: { to: { ...anchor } },
     },
     previous: {},
     chain: {
@@ -1551,6 +1546,7 @@ function observeWorld({
   finalized = 120,
   output,
   previousMode = target,
+  blockNumber = 100,
 } = {}) {
   const calls = { resolve: [], network: [] };
   const sent = target === 'transfer' ? TRANSFER : UNSHIELD;
@@ -1572,7 +1568,7 @@ function observeWorld({
       record: {
         hash: txHash,
         state: 'submitted',
-        observation: { status: 'included', blockNumber: 100, blockHash: hash('0b'), confirmations },
+        observation: { status: 'included', blockNumber, blockHash: hash('0b'), confirmations },
       },
       transact: {
         status: 'matched',
@@ -1917,7 +1913,8 @@ function heldWorld({
   foreign,
   signed,
   checkpointHash = NEW_CHECKPOINT,
-  checkpointTo = NEW_ANCHOR,
+  anchor = NEW_ANCHOR,
+  checkpointTo = anchor,
   preflight = 'pass',
   echoInput,
   during,
@@ -2010,7 +2007,7 @@ function heldWorld({
     generationId: 'generation',
     policy: 'policy',
     coordinator: {
-      recover: async () => ({ to: { ...NEW_ANCHOR } }),
+      recover: async () => ({ to: { ...anchor } }),
       withPublicSnapshot: async () => ({ evidence: {} }),
       assertSnapshot: () => checkpoint,
     },
@@ -2073,7 +2070,7 @@ function heldWorld({
       readRailgunAccountOwnedNotes: () => ({
         checkpointHash: 'checkpoint',
         read: {
-          readiness: { to: { ...NEW_ANCHOR } },
+          readiness: { to: { ...anchor } },
           instanceId: INSTANCE,
           received: [{ id: '0:1', txid: SHIELD, spentTxid, asset: weth, amount: AMOUNT }],
         },
@@ -2276,9 +2273,9 @@ function heldWorld({
       observedAt: SCAN_AT,
       generationId: 'generation',
       publicPolicy: 'policy',
-      anchor: { ...NEW_ANCHOR },
+      anchor: { ...anchor },
       publicState: { storeId: 'store', trees: [] },
-      wallet: { to: { ...NEW_ANCHOR } },
+      wallet: { to: { ...anchor } },
     },
     previous,
     chain: api.nextChain(mode, previous, recovering ? probeSha : HELD_SHA),
@@ -5861,4 +5858,269 @@ describe('recovery campaign under a re-pinned held report', () => {
       expect(fs.readFileSync(file, 'utf8')).toBe(ledger);
     }
   });
+});
+
+// The authorized L-A recovery campaign, driven mode to mode with the injected
+// fakes: two probe rounds (scan, spent-read, preflight-probe), the one
+// recover-submit after the first passed probe, observe until the recovered
+// transfer resolves matched, a newer anchor A2 and rescan R2, then poi-submit,
+// recover, status (Valid), check-unshield, unshield and its observe. Between
+// modes, main()'s pinned hand-off is restated with the script's own checks
+// (scan, predecessor and its digest, sources and runtime, carried chain), and
+// each report reaches the next mode as its rendered bytes and their digest.
+// The held report itself is the pinned input (HELD_TRANSFER_REPORT_SHA256).
+describe('the authorized recovery chain, mode to mode', () => {
+  const CHAIN_SOURCES = { ...sourceMap, ...SOURCES };
+  const RUNTIME = {
+    ...heldReport().runtime,
+    dependencies: { ethersVersion: '6.15.0', adapterIntegrity: 'sha512-test' },
+  };
+  const scanAt = (number, byte) => {
+    const anchor = { number, hash: hash('ac') };
+    return {
+      sha: sha(byte),
+      anchor,
+      report: scanReport(number, {
+        sourceSha256: CHAIN_SOURCES,
+        observedAt: new Date(Date.now() - 60000).toISOString(),
+        generationId: 'generation',
+        publicPolicy: 'policy',
+        publicState: { storeId: 'store', trees: [] },
+        wallet: { assetCount: 1, to: { ...anchor } },
+      }),
+    };
+  };
+  const handoff = (mode, previous, previousSha, scan) => {
+    api.assertScanReport(scan.report);
+    api.assertPredecessor(mode, previous, { scanSha: scan.sha, scan: scan.report, previousSha });
+    const rebased = api.REBASED_MODES.includes(mode);
+    api.assertSourcesMatch(scan.report.sourceSha256, CHAIN_SOURCES, 'scan-sources');
+    if (!rebased) api.assertSameSources(previous.sourceSha256, CHAIN_SOURCES);
+    if (rebased) api.assertSameProofRuntime(previous.runtime, RUNTIME);
+    else api.assertSameRuntime(previous.runtime, RUNTIME);
+    expect(previous.owner).toBe(OWNER);
+    return {
+      journey: api.JOURNEY,
+      version: 1,
+      mode,
+      observedAt: new Date().toISOString(),
+      chainId: 11155111,
+      owner: OWNER,
+      previous: { sha256: previousSha, mode: previous.mode },
+      scan: { sha256: scan.sha, anchor: { ...scan.report.anchor } },
+      sourceSha256: { ...CHAIN_SOURCES },
+      runtime: copy(RUNTIME),
+      chain: api.nextChain(mode, previous, previousSha),
+      passed: false,
+    };
+  };
+  const drive = async (mode, { ctx }, [previous, previousSha], scan, args) => {
+    const report = handoff(mode, previous, previousSha, scan);
+    Object.assign(ctx, { report, chain: report.chain, previous, scan: scan.report });
+    if (args) ctx.args = args;
+    await api.RUNNERS[mode](ctx);
+    const text = api.renderReport(report);
+    const rendered = JSON.parse(text);
+    expect(rendered.failure).toBeUndefined();
+    expect(rendered.mode).toBe(mode);
+    return [rendered, digest(text)];
+  };
+  const held = [heldReport(), HELD_SHA];
+  const holdFacts = { facts: heldState().entry.facts, signing: { submitter: OWNER } };
+  const heldBinding = {
+    reportSha256: HELD_SHA,
+    estimate: heldPlan.estimate,
+    gasLimit: heldPlan.gasLimit,
+  };
+
+  test.each(['ack', 'revoked'])(
+    'every mode accepts its predecessor after a %s recovered submission',
+    async (submit) => {
+      // Round 1: a refused probe admits no recovered submission.
+      const r1 = scanAt(NEW_ANCHOR.number, '61');
+      const spent1 = await drive(
+        'spent-read',
+        heldWorld({ mode: 'spent-read', anchor: r1.anchor }),
+        held,
+        r1
+      );
+      expect(spent1[0]).toMatchObject({ passed: true, input: { spent: false } });
+      const probe1 = await drive(
+        'preflight-probe',
+        heldWorld({ anchor: r1.anchor, preflight: { reason: 'stale', step: 'nullifiers' } }),
+        held,
+        r1
+      );
+      expect(probe1[0]).toMatchObject({ passed: true, result: 'preflight-refused' });
+      for (const mode of ['recover-submit', 'observe'])
+        expect(() =>
+          api.assertPredecessor(mode, probe1[0], {
+            scanSha: r1.sha,
+            scan: r1.report,
+            previousSha: probe1[1],
+          })
+        ).toThrow();
+      // Round 2 on a newer scan: the first passed probe.
+      const r1b = scanAt(NEW_ANCHOR.number + 10, '62');
+      await drive('spent-read', heldWorld({ mode: 'spent-read', anchor: r1b.anchor }), held, r1b);
+      const probe2 = await drive('preflight-probe', heldWorld({ anchor: r1b.anchor }), held, r1b);
+      expect(probe2[0]).toMatchObject({ passed: true, result: 'preflight-passed' });
+      expect(probe2[0].chain.heldTransfer).toEqual(heldBinding);
+      // The one recovered submission, as main() is invoked for it.
+      const recovering = heldWorld({ mode: 'recover-submit', anchor: r1b.anchor, submit });
+      const args = api.parseArguments([
+        'recover-submit',
+        '/e',
+        '/p',
+        '/a',
+        newProfile(),
+        '/w/scan-r1b/report.json',
+        r1b.sha,
+        '/w/probe-2/report.json',
+        probe2[1],
+        '/w/recover-submit-' + probe2[1],
+      ]);
+      const recovered = await drive('recover-submit', recovering, probe2, r1b, args);
+      expect(recovered[0]).toMatchObject({
+        passed: submit === 'ack',
+        submission: { status: submit === 'ack' ? 'acknowledged' : 'unknown' },
+        spend: {
+          journaled: true,
+          journaledHash: TRANSFER,
+          hashSource: submit === 'ack' ? 'result' : 'journal-readback',
+          resendAllowed: false,
+        },
+        liveness: { state: submit === 'ack' ? 'sent' : 'journaled-uncertain' },
+        chain: { transfer: { hash: TRANSFER } },
+      });
+      expect(recovered[0].chain.heldTransfer).toEqual({
+        ...heldBinding,
+        probeReportSha256: probe2[1],
+      });
+      const records = recovering.journal.records;
+      // While it is open, nothing but observe continues: no probe, recovery
+      // or new transfer of the held input.
+      const blocked = async ({ ctx }, mode, step) =>
+        expect(await settle(api.RUNNERS[mode](ctx))).toEqual(refused(step));
+      await blocked(heldWorld({ records: copy(records) }), 'preflight-probe', 'journal-unresolved');
+      await blocked(
+        heldWorld({ mode: 'recover-submit', records: copy(records) }),
+        'recover-submit',
+        'journal-unresolved'
+      );
+      await blocked(world({ records: copy(records) }), 'check-transfer', 'journal-unresolved');
+      // Observe until the recovered transfer resolves matched.
+      const observeOn = (options) => {
+        const value = observeWorld(options);
+        value.journal.records = records;
+        return value;
+      };
+      const pending = await drive(
+        'observe',
+        observeOn({ confirmations: 3, blockNumber: r1b.anchor.number + 20 }),
+        recovered,
+        r1b
+      );
+      expect(pending[0]).toMatchObject({
+        passed: true,
+        target: 'transfer',
+        observedHash: TRANSFER,
+      });
+      expect(pending[0].resolved).toBeUndefined();
+      const settled = await drive(
+        'observe',
+        observeOn({
+          confirmations: 14,
+          blockNumber: r1b.anchor.number + 20,
+          finalized: r1b.anchor.number + 40,
+        }),
+        pending,
+        r1b
+      );
+      expect(settled[0]).toMatchObject({
+        passed: true,
+        resolved: { outcome: 'matched' },
+        transact: { operation: 'railgun-private-transfer', outputKind: 'shielded' },
+        chain: { transfer: { hash: TRANSFER, blockNumber: r1b.anchor.number + 20 } },
+      });
+      // A newer anchor A2 and rescan R2 after the transfer's block.
+      const r2 = scanAt(r1b.anchor.number + 100, '63');
+      expect(() =>
+        api.assertPredecessor('poi-submit', settled[0], { scanSha: r1b.sha, scan: r1b.report })
+      ).toThrow();
+      const after = (options = {}) =>
+        world({ step: 'poi-submit', records, anchor: r2.anchor, hold: holdFacts, ...options });
+      const poi = await drive('poi-submit', after(), settled, r2);
+      expect(poi[0]).toMatchObject({ passed: true, poiSubmission: { delivered: true } });
+      const recover = await drive('recover', after(), poi, r2);
+      expect(recover[0]).toMatchObject({ passed: true, recovered: { outputRecovered: true } });
+      const status = await drive('status', after(), recover, r2);
+      expect(status[0]).toMatchObject({
+        passed: true,
+        poi: { allValid: true, statuses: ['Valid'] },
+      });
+      const checked = await drive('check-unshield', after(), status, r2);
+      expect(checked[0]).toMatchObject({
+        passed: true,
+        chain: { outputPoi: { reportSha256: status[1], allValid: true } },
+      });
+      const unshielded = await drive('unshield', after({ step: 'unshield' }), checked, r2);
+      expect(unshielded[0]).toMatchObject({
+        passed: true,
+        spend: { journaled: true, journaledHash: UNSHIELD },
+        chain: { unshield: { hash: UNSHIELD, amount: AMOUNT.toString() } },
+      });
+      const final = await drive(
+        'observe',
+        observeOn({
+          target: 'unshield',
+          blockNumber: r2.anchor.number + 5,
+          finalized: r2.anchor.number + 30,
+        }),
+        unshielded,
+        r2
+      );
+      expect(final[0]).toMatchObject({
+        passed: true,
+        target: 'unshield',
+        observedHash: UNSHIELD,
+        resolved: { outcome: 'matched' },
+      });
+      // The held binding rides along unchanged to the end.
+      for (const [report] of [settled, poi, status, checked, unshielded, final])
+        expect(report.chain.heldTransfer).toEqual(recovered[0].chain.heldTransfer);
+      // Nothing re-opens a spend of the held input or a second send.
+      await blocked(heldWorld({ records: copy(records) }), 'preflight-probe', 'spend-attempted');
+      await blocked(
+        heldWorld({ mode: 'spent-read', records: copy(records) }),
+        'spent-read',
+        'spend-attempted'
+      );
+      await blocked(world({ records: copy(records) }), 'check-transfer', 'spend-attempted');
+      const again = heldWorld({
+        mode: 'recover-submit',
+        records: copy(records),
+        profile: args.profile,
+      });
+      Object.assign(again.ctx, {
+        args,
+        previous: probe2[0],
+        scan: r1b.report,
+        chain: api.nextChain('recover-submit', probe2[0], probe2[1]),
+      });
+      // The campaign's one allowance is spent, before unlock and in the mode.
+      expectRefusal(() => api.assertRecoveryAdmissible(again.ctx), 'recovery-attempted');
+      await blocked(again, 'recover-submit', 'recovery-attempted');
+      expect(again.calls.submit).toEqual([]);
+      await blocked(
+        world({ step: 'unshield', records: copy(records), anchor: r2.anchor }),
+        'check-unshield',
+        'spend-attempted'
+      );
+      for (const mode of ['recover-submit', 'transfer', 'unshield'])
+        expect(() =>
+          api.assertPredecessor(mode, final[0], { scanSha: r2.sha, scan: r2.report })
+        ).toThrow();
+    }
+  );
 });
