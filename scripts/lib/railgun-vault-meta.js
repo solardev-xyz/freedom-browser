@@ -45,11 +45,12 @@ function syncDirectory(fsImpl, directory) {
 // Creates the file with O_CREAT|O_EXCL, so an existing file (or a symlink in its
 // place) is never followed or replaced: EEXIST reaches the caller. Returns only
 // after the file and its directory entry are synced.
-function createVaultMetaExclusive(identityDir, text, fsImpl = fs) {
+function createVaultMetaExclusive(identityDir, text, fsImpl = fs, onCreated = () => {}) {
   const file = path.join(identityDir, VAULT_META_FILE);
   const bytes = Buffer.from(text, 'utf8');
   const fd = fsImpl.openSync(file, 'wx', 0o600);
   try {
+    onCreated();
     if (fsImpl.writeSync(fd, bytes, 0, bytes.length, 0) !== bytes.length)
       throw new Error('Vault metadata write incomplete');
     fsImpl.fsyncSync(fd);

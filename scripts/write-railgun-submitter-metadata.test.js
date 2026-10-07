@@ -93,12 +93,13 @@ test('absent: creates identity-manager’s record exclusively and reads it back 
   const vaultBytes = fs.readFileSync(path.join(identityDir, 'identity-vault.json'));
   const report = api.provisionSubmitterMetadata({ identityDir, derived, expected, now: NOW });
   const text = fs.readFileSync(metaFile(identityDir), 'utf8');
+  const vaultCreatedAt = JSON.parse(vaultBytes).createdAt;
   const keys = identity.deriveAllKeys(mnemonic);
   expect(text).toBe(
     JSON.stringify(
       {
         userKnowsPassword: false,
-        createdAt: NOW.toISOString(),
+        createdAt: vaultCreatedAt,
         addresses: { userWallet: keys.userWallet.address, beeWallet: keys.beeWallet.address },
       },
       null,
@@ -127,8 +128,13 @@ test('absent: creates identity-manager’s record exclusively and reads it back 
     submitter: 'expected-eoa',
     readback: 'production-reader',
     metadataSha256: sha(text),
+    createdAtSource: 'existing-vault',
     identityEntries: { before: 1, after: 2 },
     otherEntriesUnchanged: true,
+    written: true,
+    preservationScope: 'identity-directory-recursive-except-vault-meta',
+    profileSideEffects: 'profile-lock-and-electron-userData-not-measured',
+    verification: 'full-created-record',
   });
   // Aggregate only: no address, key, mnemonic or password.
   const rendered = JSON.stringify(report).toLowerCase();
@@ -140,6 +146,82 @@ test('absent: creates identity-manager’s record exclusively and reads it back 
     PASSWORD,
   ])
     expect(rendered).not.toContain(secret);
+});
+
+test('detects a nested recovery record changing during provisioning', async () => {
+  const { identityDir } = await vaultOnlyProfile();
+  const derived = await derive(identityDir);
+  const store = path.join(identityDir, 'recovery');
+  fs.mkdirSync(store);
+  const record = path.join(store, 'capsule.json');
+  fs.writeFileSync(record, 'original synthetic record');
+  const changing = {
+    ...fs,
+    fsyncSync: (fd) => {
+      fs.fsyncSync(fd);
+      fs.writeFileSync(record, 'changed synthetic record');
+    },
+  };
+  const failure = thrown(() =>
+    api.provisionSubmitterMetadata({
+      identityDir,
+      derived,
+      expected: derived.userWallet.address,
+      fsImpl: changing,
+    })
+  );
+  expect(failure).toEqual(refused('changed'));
+  expect(failure.written).toBe(true);
+  expect(failure.metadataSha256).toBe(sha(fs.readFileSync(metaFile(identityDir))));
+});
+
+test('persists a repair outcome and never re-enters an existing evidence directory', async () => {
+  const directory = path.join(root, 'evidence');
+  const run = jest.fn(async () => {
+    expect(JSON.parse(fs.readFileSync(path.join(directory, 'pending.json'))).state).toBe('pending');
+    return { tool: 'railgun-submitter-metadata', result: 'created', written: true };
+  });
+  const result = await api.recordRepair(directory, run);
+  expect(JSON.parse(fs.readFileSync(path.join(directory, 'metadata-report.json')))).toEqual(result);
+  await expect(api.recordRepair(directory, run)).rejects.toThrow();
+  expect(run).toHaveBeenCalledTimes(1);
+});
+
+test('a write-then-refused repair persists its write state', async () => {
+  const directory = path.join(root, 'evidence');
+  const failure = Object.assign(new Error('not logged'), {
+    step: 'readback',
+    written: true,
+    metadataSha256: sha('partial'),
+  });
+  await expect(
+    api.recordRepair(directory, async () => {
+      throw failure;
+    })
+  ).rejects.toBe(failure);
+  expect(JSON.parse(fs.readFileSync(path.join(directory, 'metadata-report.json')))).toMatchObject({
+    result: 'refused',
+    step: 'readback',
+    written: true,
+    metadataSha256: sha('partial'),
+  });
+  await expect(api.recordRepair(directory, jest.fn())).rejects.toThrow();
+});
+
+test('a symlink in an identity store refuses before creating metadata', async () => {
+  const { identityDir } = await vaultOnlyProfile();
+  const derived = await derive(identityDir);
+  fs.symlinkSync(path.join(root, 'missing'), path.join(identityDir, 'recovery'));
+  expect(
+    thrown(() =>
+      api.provisionSubmitterMetadata({
+        identityDir,
+        derived,
+        expected: derived.userWallet.address,
+      })
+    )
+  ).toEqual(refused('identity-entry'));
+  expect(fs.existsSync(metaFile(identityDir))).toBe(false);
 });
 
 test('the record matches what identity-manager itself writes for the same mnemonic', async () => {
@@ -163,7 +245,7 @@ test('the record matches what identity-manager itself writes for the same mnemon
   expect(Object.keys(ours.addresses)).toEqual(Object.keys(app.addresses));
   expect({ ...ours, createdAt: null }).toEqual({ ...app, createdAt: null });
   expect(appText).toBe(
-    fs.readFileSync(metaFile(identityDir), 'utf8').replace(NOW.toISOString(), app.createdAt)
+    fs.readFileSync(metaFile(identityDir), 'utf8').replace(ours.createdAt, app.createdAt)
   );
 });
 
@@ -314,7 +396,9 @@ test('concurrent creates: one wins, the other refuses and replaces nothing', asy
   ).toEqual(refused('metadata-raced'));
   expect(winner.result).toBe('created');
   const text = fs.readFileSync(metaFile(identityDir), 'utf8');
-  expect(JSON.parse(text).createdAt).toBe(NOW.toISOString());
+  expect(JSON.parse(text).createdAt).toBe(
+    JSON.parse(fs.readFileSync(path.join(identityDir, 'identity-vault.json'))).createdAt
+  );
   expect(sha(text)).toBe(winner.metadataSha256);
   expect(readRailgunSubmitterMetadata().address).toBe(expected.toLowerCase());
 });

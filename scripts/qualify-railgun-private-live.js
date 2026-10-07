@@ -9,6 +9,9 @@
  * FREEDOM_WALLET_TOR_EXPERIMENT=1 electron scripts/qualify-railgun-private-live.js \
  *   MODE ENGINE_ASAR PROVER_ASAR ARTIFACT_DIRECTORY PROFILE \
  *   SCAN_REPORT SCAN_SHA256 PREVIOUS_REPORT PREVIOUS_SHA256 NEW_OUTPUT
+ * recover-submit may append the literal metadata-repair-1 for the separately
+ * approved fixed continuation. It preserves the original consumed ledger and
+ * requires the pinned failed attempt, verified repair and a fresh probe.
  * MODE: check-transfer|transfer|observe|poi-submit|recover|status|check-unshield|unshield|
  *   spent-read|preflight-probe|recover-submit
  * check-transfer takes the owned-POI report of qualify-railgun-owned-poi-live.js.
@@ -218,6 +221,9 @@ const SOURCE_DIRECTORIES = Object.freeze([
 ]);
 const FIXED_SOURCES = Object.freeze([
   'scripts/qualify-railgun-private-live.js',
+  'scripts/lib/railgun-metadata-continuation.js',
+  'scripts/write-railgun-submitter-metadata.js',
+  'scripts/lib/railgun-vault-meta.js',
   'scripts/qualify-ppv2-live.js',
   'scripts/qualify-railgun-live.js',
   'scripts/qualify-railgun-owned-poi-live.js',
@@ -264,7 +270,12 @@ const lower = (value) => (typeof value === 'string' ? value.toLowerCase() : valu
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 function parseArguments(args) {
-  check(Array.isArray(args) && args.length === 10, 'arguments');
+  check(
+    Array.isArray(args) &&
+      (args.length === 10 ||
+        (args.length === 11 && args[0] === 'recover-submit' && args[10] === 'metadata-repair-1')),
+    'arguments'
+  );
   const [
     mode,
     archive,
@@ -276,6 +287,7 @@ function parseArguments(args) {
     previousFile,
     previousSha,
     output,
+    continuation,
   ] = args;
   check(MODES.includes(mode), 'mode');
   const paths = [
@@ -316,6 +328,7 @@ function parseArguments(args) {
     previousFile,
     previousSha,
     output,
+    ...(continuation === undefined ? {} : { continuation }),
   });
 }
 
@@ -1347,6 +1360,7 @@ async function main() {
   const torModule = require.resolve('../src/main/tor-manager'),
     savedTor = require.cache[torModule];
   const ctx = {
+    base,
     args,
     report,
     stage: 'preconditions',
@@ -2585,6 +2599,15 @@ function recoveryAdmission(ctx) {
   );
   const binding = recoveryAttemptBinding(ctx);
   const header = recoveryLedgerHeader(ctx);
+  if (ctx.args.continuation !== undefined) {
+    const admission = require('./lib/railgun-metadata-continuation').admitMetadataContinuation(
+      ctx,
+      header,
+      readRecoveryLedger
+    );
+    ctx.continuationHoldIdSha256 = admission.header.holdIdSha256;
+    return { ...admission, binding };
+  }
   const file = recoveryLedgerPath(profile);
   assertRecoveryUnspent(fsImpl, file, header);
   return { fsImpl, binding, header, file };
@@ -2641,6 +2664,13 @@ function finishRecoveryAttempt(ctx, reservation, failure) {
   const { report } = ctx;
   try {
     const fsImpl = ctx.fs;
+    if (reservation.header.continuation) {
+      check(
+        sha(fsImpl.readFileSync(recoveryLedgerPath(ctx.args.profile))) ===
+          reservation.header.previousLedgerSha256,
+        'metadata-continuation'
+      );
+    }
     const current = readRecoveryLedger(fsImpl, reservation.file, reservation.header);
     check(
       same(current.pending, reservation.pending) && current.finished === null,
@@ -2691,6 +2721,8 @@ async function recoverSubmit(ctx) {
   assertHeldUnjournaled(before, held);
   // Only a digest of the hold id leaves recovery, into the local ledger.
   ctx.holdIdSha256 = sha(HOLD_ID_DOMAIN + held.entry.id);
+  if (ctx.args.continuation !== undefined)
+    check(ctx.holdIdSha256 === ctx.continuationHoldIdSha256, 'metadata-continuation');
   const intent = heldJournalIntent(ctx, held);
   report.hold = { ...HELD_SUMMARY };
   ctx.stage = 'submitter';

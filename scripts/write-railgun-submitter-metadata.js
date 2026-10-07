@@ -19,8 +19,9 @@
  *   password is random and held only through safeStorage, as for Quick Setup.
  *   It is created with O_CREAT|O_EXCL, synced with its directory entry, and read
  *   back through production's readRailgunSubmitterMetadata.
- * - Nothing else changes: identity-vault.json and every other entry of the
- *   identity directory keep their bytes, compared before and after.
+ * - Identity files (including nested stores) keep their bytes except metadata.
+ *   Electron userData and profile-lock side effects outside identity/ are not
+ *   measured. Metadata is mode 0600, stricter than the app's default mode.
  * Output: one aggregate JSON line, never an address, key, mnemonic or password.
  */
 const fs = require('fs'),
@@ -86,18 +87,18 @@ async function deriveSubmitter({ identity, signers }) {
   return derived;
 }
 
-// Every other entry of the identity directory, by name: a regular file by its
-// bytes' digest, anything else by its kind. Kept in memory, never reported.
-function snapshotIdentity(fsImpl, identityDir) {
+// Recursively cover the identity stores, including nested recovery records.
+// Links and special files are refused, never followed. Kept in memory only.
+function snapshotIdentity(fsImpl, identityDir, root = true) {
   const entries = {};
   for (const name of fsImpl.readdirSync(identityDir).sort()) {
-    if (name === VAULT_META_FILE) continue;
-    const stat = fsImpl.lstatSync(path.join(identityDir, name));
+    if (root && name === VAULT_META_FILE) continue;
+    const filename = path.join(identityDir, name);
+    const stat = fsImpl.lstatSync(filename);
+    check(stat.isFile() || stat.isDirectory(), 'identity-entry');
     entries[name] = stat.isFile()
-      ? sha(fsImpl.readFileSync(path.join(identityDir, name)))
-      : stat.isDirectory()
-        ? 'directory'
-        : 'other';
+      ? sha(fsImpl.readFileSync(filename))
+      : snapshotIdentity(fsImpl, filename, false);
   }
   return entries;
 }
@@ -111,13 +112,27 @@ function readSubmitterMetadata() {
 
 // The one write, or a refusal. derived: deriveSubmitter's result for the vault
 // in identityDir, which production must resolve as its identity data directory.
-function provisionSubmitterMetadata({
-  identityDir,
-  derived,
-  expected,
-  now = new Date(),
-  fsImpl = fs,
-}) {
+function provisionSubmitterMetadata(options) {
+  const state = { written: false };
+  try {
+    return { ...provisionMetadata(options, state), written: state.written };
+  } catch (error) {
+    error.written = state.written;
+    error.metadataSha256 = null;
+    if (state.written) {
+      try {
+        const fsImpl = options.fsImpl ?? fs;
+        const file = path.join(options.identityDir, VAULT_META_FILE);
+        if (fsImpl.lstatSync(file).isFile()) error.metadataSha256 = sha(fsImpl.readFileSync(file));
+      } catch {
+        /* A failed readback cannot establish the final bytes. */
+      }
+    }
+    throw error;
+  }
+}
+
+function provisionMetadata({ identityDir, derived, expected, fsImpl = fs }, state) {
   const address = expectedAddress(expected);
   check(
     ADDRESS_ARGUMENT.test(derived?.userWallet?.address ?? '') &&
@@ -157,8 +172,12 @@ function provisionSubmitterMetadata({
     submitter: 'expected-eoa',
     readback: 'production-reader',
     metadataSha256: sha(bytes),
+    createdAtSource: result === 'created' ? 'existing-vault' : 'existing-metadata',
     identityEntries: entries,
     otherEntriesUnchanged: true,
+    preservationScope: 'identity-directory-recursive-except-vault-meta',
+    profileSideEffects: 'profile-lock-and-electron-userData-not-measured',
+    verification: result === 'created' ? 'full-created-record' : 'wallet-0-binding-only',
   });
   let present = true;
   try {
@@ -174,16 +193,35 @@ function provisionSubmitterMetadata({
       'metadata-present-different'
     );
     const bytes = fsImpl.readFileSync(file);
+    // Reject malformed JSON locally; identity-manager logs parser messages that
+    // can quote file contents. No raw file text belongs in this tool's output.
+    try {
+      JSON.parse(bytes.toString('utf8'));
+    } catch {
+      throw refusal('metadata-present-different');
+    }
     check(isDeepStrictEqual(readSubmitterMetadata(), record), 'metadata-present-different');
     check(fsImpl.readFileSync(file).equals(bytes) && unchanged(), 'changed');
     const entries = Object.keys(before).length + 1;
     return summary('already-present', bytes, { before: entries, after: entries });
   }
-  const text = renderVaultMeta(
-    vaultMetaRecord(derived, { userKnowsPassword: false, createdAt: now.toISOString() })
-  );
+  let createdAt;
   try {
-    createVaultMetaExclusive(identityDir, text, fsImpl);
+    const vault = JSON.parse(fsImpl.readFileSync(path.join(identityDir, VAULT_FILE), 'utf8'));
+    check(vault.version === 1, 'vault-created-at');
+    createdAt = vault.createdAt;
+    check(
+      typeof createdAt === 'string' && new Date(createdAt).toISOString() === createdAt,
+      'vault-created-at'
+    );
+  } catch {
+    throw refusal('vault-created-at');
+  }
+  const text = renderVaultMeta(vaultMetaRecord(derived, { userKnowsPassword: false, createdAt }));
+  try {
+    createVaultMetaExclusive(identityDir, text, fsImpl, () => {
+      state.written = true;
+    });
   } catch (error) {
     // Another writer created it since the read: never replaced, never read as ours.
     if (error?.code === 'EEXIST') throw refusal('metadata-raced');
@@ -210,6 +248,109 @@ function provisionSubmitterMetadata({
 // qualifiers open a disposable profile. Only main() runs under Electron.
 // ---------------------------------------------------------------------------
 let lock;
+
+// Read-only operator checks, before reserving repair evidence or acquiring a
+// profile lock. SafeStorage availability is checked after Electron is ready.
+function validateRepairArguments() {
+  const { app } = require('electron');
+  check(process.argv.length === 4, 'arguments');
+  const [directory, expected] = process.argv.slice(2);
+  check(
+    !app.isPackaged &&
+      !process.env.FREEDOM_IDENTITY_DATA &&
+      typeof directory === 'string' &&
+      path.isAbsolute(directory),
+    'environment'
+  );
+  expectedAddress(expected);
+  check(
+    holds(() => fs.lstatSync(directory).isDirectory() && fs.realpathSync(directory) === directory),
+    'profile'
+  );
+  const profile = require('../src/main/profile-resolver').resolveProfile(app, {
+    env: { FREEDOM_TEST_USER_DATA: directory },
+  });
+  const marker = JSON.parse(fs.readFileSync(path.join(directory, 'railgun-test-profile.json')));
+  check(
+    isDeepStrictEqual(marker, {
+      version: 1,
+      chainId: CHAIN_ID,
+      profileId: profile.id,
+      disposable: true,
+    }),
+    'profile'
+  );
+  const identityDir = path.join(directory, 'identity');
+  check(
+    holds(
+      () =>
+        fs.lstatSync(identityDir).isDirectory() &&
+        fs.realpathSync(identityDir) === identityDir &&
+        fs.lstatSync(path.join(identityDir, VAULT_FILE)).isFile()
+    ),
+    'vault'
+  );
+}
+
+// A fresh evidence directory is the operator's durable repair reservation.
+// An interruption keeps pending.json and never silently repeats the write.
+async function recordRepair(directory, run, fsImpl = fs) {
+  check(
+    fsImpl.realpathSync(path.dirname(directory)) === path.dirname(directory),
+    'report-directory'
+  );
+  fsImpl.mkdirSync(directory, { mode: 0o700 });
+  const save = (name, value) => {
+    const fd = fsImpl.openSync(path.join(directory, name), 'wx', 0o600);
+    try {
+      const bytes = Buffer.from(JSON.stringify(value, null, 2) + '\n');
+      check(fsImpl.writeSync(fd, bytes) === bytes.length, 'report-write');
+      fsImpl.fsyncSync(fd);
+    } finally {
+      fsImpl.closeSync(fd);
+    }
+    const dir = fsImpl.openSync(directory, 'r');
+    try {
+      fsImpl.fsyncSync(dir);
+    } finally {
+      fsImpl.closeSync(dir);
+    }
+  };
+  // Sync the newly created directory's entry as well as its pending record.
+  const parent = fsImpl.openSync(path.dirname(directory), 'r');
+  try {
+    fsImpl.fsyncSync(parent);
+  } finally {
+    fsImpl.closeSync(parent);
+  }
+  save('pending.json', {
+    tool: 'railgun-submitter-metadata',
+    version: 1,
+    state: 'pending',
+    observedAt: new Date().toISOString(),
+  });
+  let completed;
+  try {
+    completed = await run();
+    save('metadata-report.json', completed);
+    return completed;
+  } catch (error) {
+    const step = /^[a-z][a-z-]{0,63}$/.test(error?.step ?? '') ? error.step : null;
+    // If report persistence itself fails, keep pending as the authority: no
+    // later invocation may infer that the profile was untouched.
+    if (!fsImpl.existsSync(path.join(directory, 'metadata-report.json')))
+      save('metadata-report.json', {
+        tool: 'railgun-submitter-metadata',
+        version: 1,
+        result: 'refused',
+        step,
+        written: error.written ?? completed?.written ?? null,
+        metadataSha256: error.metadataSha256 ?? completed?.metadataSha256 ?? null,
+      });
+    throw error;
+  }
+}
+
 async function main() {
   const { app, safeStorage } = require('electron');
   check(process.argv.length === 4, 'arguments');
@@ -262,7 +403,17 @@ async function main() {
   } finally {
     identity.lockVault();
   }
-  return provisionSubmitterMetadata({ identityDir, derived, expected });
+  const result = provisionSubmitterMetadata({ identityDir, derived, expected });
+  return {
+    ...result,
+    profileId: profile.id,
+    observedAt: new Date().toISOString(),
+    sourceSha256: Object.fromEntries(
+      ['scripts/write-railgun-submitter-metadata.js', 'scripts/lib/railgun-vault-meta.js'].map(
+        (name) => [name, sha(fs.readFileSync(path.join(__dirname, '..', name)))]
+      )
+    ),
+  };
 }
 
 if (
@@ -275,19 +426,35 @@ if (
   const release = () => {
     if (lock) require('../src/main/profile-lock').releaseProfileLock(lock);
   };
-  main().then(
-    (report) => {
-      release();
-      console.log(JSON.stringify(report));
-      require('electron').app.exit(0);
-    },
-    (error) => {
-      release();
-      const step = /^[a-z][a-z-]{0,63}$/.test(error?.step ?? '') ? error.step : null;
-      console.log(JSON.stringify({ tool: 'railgun-submitter-metadata', result: 'refused', step }));
-      require('electron').app.exit(1);
-    }
+  const evidence = require('./lib/railgun-metadata-continuation').continuationDirectory(
+    path.join(__dirname, '..')
   );
+  Promise.resolve()
+    .then(() => {
+      validateRepairArguments();
+      return recordRepair(evidence, main);
+    })
+    .then(
+      (report) => {
+        release();
+        console.log(JSON.stringify(report));
+        require('electron').app.exit(0);
+      },
+      (error) => {
+        release();
+        const step = /^[a-z][a-z-]{0,63}$/.test(error?.step ?? '') ? error.step : null;
+        console.log(
+          JSON.stringify({
+            tool: 'railgun-submitter-metadata',
+            result: 'refused',
+            step,
+            written: error.written ?? null,
+            metadataSha256: error.metadataSha256 ?? null,
+          })
+        );
+        require('electron').app.exit(1);
+      }
+    );
 }
 
 module.exports = {
@@ -296,4 +463,6 @@ module.exports = {
   deriveSubmitter,
   provisionSubmitterMetadata,
   main,
+  recordRepair,
+  validateRepairArguments,
 };
