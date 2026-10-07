@@ -81,6 +81,7 @@ const sources = [
   'src/main/networks/private-rpc.js',
   'src/main/networks/network-registry.js',
   'src/main/settings-store.js',
+  'src/main/swarm/ant-cache.js',
   'src/main/tor-manager.js',
   'src/main/wallet/railgun-private-operation.js',
   'src/main/wallet/railgun-account-poi.js',

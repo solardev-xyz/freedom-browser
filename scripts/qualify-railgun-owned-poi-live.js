@@ -64,6 +64,7 @@ async function main() {
   fs.mkdirSync(output, { mode: 0o700 });
   const names = [
     ...new Set([
+      'src/main/swarm/ant-cache.js',
       ...Object.keys(scan.sourceSha256),
       ...Object.keys(
         require('../docs/qualification/railgun-live-event-coverage-2026-10-03.json').sourceSha256

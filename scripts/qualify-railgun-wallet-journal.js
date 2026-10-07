@@ -805,6 +805,7 @@ async function main() {
           'src/main/wallet/railgun-kohaku-public-submitter.js',
           'src/main/identity-manager.js',
           'src/main/profile-paths.js',
+          'src/main/swarm/ant-cache.js',
           ...Object.keys(
             require('../docs/qualification/railgun-shield-prerequisites-2026-10-04.json')
               .sourceSha256

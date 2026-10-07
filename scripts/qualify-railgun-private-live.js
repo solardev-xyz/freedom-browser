@@ -235,6 +235,7 @@ const FIXED_SOURCES = Object.freeze([
   'src/main/profile-paths.js',
   'src/main/identity-manager.js',
   'src/main/settings-store.js',
+  'src/main/swarm/ant-cache.js',
   // src/main/wallet/railgun-kohaku-*.js re-export this installed package; its
   // lockfile entry integrity is bound in dependencyIdentity.
   ...[

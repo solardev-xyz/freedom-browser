@@ -114,6 +114,7 @@ async function main() {
   }
   const sources = [
     ...new Set([
+      'src/main/swarm/ant-cache.js',
       ...Object.keys(
         require('../docs/qualification/railgun-shield-submission-2026-10-03.json').sourceSha256
       ),

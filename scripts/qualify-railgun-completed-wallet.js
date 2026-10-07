@@ -49,9 +49,13 @@ function sourceInventory() {
   const root = path.join(__dirname, '..');
   const files = [
     __filename,
-    ...['profile-lock.js', 'profile-resolver.js', 'settings-store.js', 'tor-manager.js'].map(
-      (name) => path.join(root, 'src/main', name)
-    ),
+    ...[
+      'profile-lock.js',
+      'profile-resolver.js',
+      'settings-store.js',
+      'swarm/ant-cache.js',
+      'tor-manager.js',
+    ].map((name) => path.join(root, 'src/main', name)),
     ...['scripts/fixtures', 'src/main/wallet', 'src/main/networks', 'src/main/identity'].flatMap(
       (relative) => {
         const directory = path.join(root, relative);

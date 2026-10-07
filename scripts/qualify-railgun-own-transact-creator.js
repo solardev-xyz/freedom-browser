@@ -230,6 +230,7 @@ const sources = [
   'src/main/wallet/railgun-own-selector.test.js',
   'src/main/networks/network-registry.js',
   'src/main/settings-store.js',
+  'src/main/swarm/ant-cache.js',
   'src/main/tor-manager.js',
   'src/main/wallet/railgun-own-operation.test.js',
   'scripts/qualify-railgun-poi-preflight.js',

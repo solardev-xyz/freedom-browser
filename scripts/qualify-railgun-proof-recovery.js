@@ -232,9 +232,13 @@ async function main() {
             (name) => path.join(__dirname, name)
           )
         : []),
-      ...['profile-lock.js', 'profile-resolver.js', 'settings-store.js', 'tor-manager.js'].map(
-        (name) => path.join(__dirname, '../src/main', name)
-      ),
+      ...[
+        'profile-lock.js',
+        'profile-resolver.js',
+        'settings-store.js',
+        'swarm/ant-cache.js',
+        'tor-manager.js',
+      ].map((name) => path.join(__dirname, '../src/main', name)),
       ...fs
         .readdirSync(path.join(__dirname, 'fixtures'))
         .filter((name) => name.endsWith('.js'))
