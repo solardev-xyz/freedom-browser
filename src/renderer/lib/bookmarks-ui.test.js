@@ -10,6 +10,10 @@ const originalRequestAnimationFrame = global.requestAnimationFrame;
 const originalResizeObserver = global.ResizeObserver;
 const originalHTMLElement = global.HTMLElement;
 
+// Where the real shell lives: its internal pages resolve under
+// `file:///app/src/renderer/pages/`.
+const SHELL_HREF = 'file:///app/src/renderer/index.html';
+
 const flushMicrotasks = async () => {
   await Promise.resolve();
   await Promise.resolve();
@@ -198,6 +202,7 @@ const loadBookmarksModule = async (options = {}) => {
 
   global.window = {
     electronAPI,
+    location: { href: options.shellHref ?? SHELL_HREF },
     innerWidth: 500,
     innerHeight: 400,
     addEventListener: jest.fn((event, handler) => {
@@ -464,9 +469,16 @@ describe('bookmarks-ui', () => {
     );
     expect(ctx.elements.addBookmarkBtn.classList.contains('bookmarked')).toBe(false);
 
-    ctx.elements.addressInput.value = 'file:///internal-page.html';
+    // The app's own chrome pages are file:// URLs under the shell's pages/
+    // directory; none of them is ever bookmarkable.
+    ctx.elements.addressInput.value = 'file:///app/src/renderer/pages/error.html?url=x';
     await ctx.mod.updateBookmarkButtonVisibility();
     expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(true);
+
+    // A local file the user opened is (#555).
+    ctx.elements.addressInput.value = 'file:///Users/me/Downloads/ens-website-test.html';
+    await ctx.mod.updateBookmarkButtonVisibility();
+    expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(false);
 
     // Onchain apps are bookmarkable like every other native scheme — the
     // address bar carries the standard `web3://<contract>:<chainId>` form,
@@ -633,6 +645,83 @@ describe('bookmarks-ui', () => {
     expect(ctx.electronAPI.removeBookmark).toHaveBeenCalledWith('https://renamed.example');
     expect(ctx.getStoredBookmarks()).toHaveLength(0);
     expect(ctx.menuBackdropMocks.hideMenuBackdrop).toHaveBeenCalled();
+  });
+
+  describe('file:// pages (#555)', () => {
+    const LOCAL = 'file:///Users/me/Downloads/ens-website-test.html';
+
+    test('a local file shows the star, unfilled until saved', async () => {
+      const ctx = await loadBookmarksModule({
+        addressValue: LOCAL,
+        activeTab: { id: 1, title: 'ENS test', isLoading: false },
+      });
+      ctx.mod.initBookmarks();
+
+      await ctx.mod.updateBookmarkButtonVisibility();
+      expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(false);
+      expect(ctx.elements.addBookmarkBtn.classList.contains('bookmarked')).toBe(false);
+    });
+
+    test('the star saves the file:// URL verbatim and then shows it as bookmarked', async () => {
+      const ctx = await loadBookmarksModule({
+        addressValue: LOCAL,
+        activeTab: { id: 1, title: 'ENS test', isLoading: false },
+      });
+      ctx.mod.initBookmarks();
+
+      ctx.elements.addBookmarkBtn.dispatch('click');
+      await flushMicrotasks();
+      expect(global.alert).not.toHaveBeenCalled();
+      expect(ctx.elements.addBookmarkModal.showModal).toHaveBeenCalled();
+      expect(ctx.elements.bookmarkTargetInput.value).toBe(LOCAL);
+
+      ctx.elements.addBookmarkForm.dispatch('submit', { preventDefault: jest.fn() });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.addBookmark).toHaveBeenCalledWith({
+        label: 'ENS test',
+        target: LOCAL,
+      });
+      expect(ctx.getStoredBookmarks()).toContainEqual({ label: 'ENS test', target: LOCAL });
+      await ctx.mod.updateBookmarkButtonVisibility();
+      expect(ctx.elements.addBookmarkBtn.classList.contains('bookmarked')).toBe(true);
+    });
+
+    test('a saved file:// bookmark opens unchanged in this tab, a new tab and a new window', async () => {
+      const onLoadTarget = jest.fn();
+      const ctx = await loadBookmarksModule({
+        initialBookmarks: [{ label: 'Local', target: LOCAL }],
+      });
+      ctx.mod.setOnLoadTarget(onLoadTarget);
+      ctx.mod.initBookmarks();
+      await ctx.mod.loadBookmarks();
+      await flushMicrotasks();
+      const inner = ctx.helpers.getBookmarksInner();
+      const label = inner.children[0].children[1];
+
+      inner.dispatch('click', { target: label });
+      await flushMicrotasks();
+      expect(onLoadTarget).toHaveBeenCalledWith(LOCAL);
+      expect(ctx.elements.addressInput.value).toBe(LOCAL);
+
+      inner.dispatch('click', { target: label, ctrlKey: true });
+      await flushMicrotasks();
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(LOCAL, null, {
+        background: true,
+      });
+
+      inner.dispatch('click', { target: label, shiftKey: true });
+      await flushMicrotasks();
+      expect(ctx.electronAPI.openUrlInNewWindow).toHaveBeenCalledWith(LOCAL);
+    });
+
+    test('the star stays off every file:// URL if the shell pages/ base cannot be resolved', async () => {
+      const ctx = await loadBookmarksModule({ addressValue: LOCAL, shellHref: '' });
+      ctx.mod.initBookmarks();
+
+      await ctx.mod.updateBookmarkButtonVisibility();
+      expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(true);
+    });
   });
 
   // #307: the bar handled a plain left click and nothing else. Ctrl/Cmd+click

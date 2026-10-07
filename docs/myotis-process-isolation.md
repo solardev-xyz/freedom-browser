@@ -1,6 +1,6 @@
 # Myotis process isolation
 
-Official Myotis v0.1.13 / ABI 36 is pinned. No downstream native patch is used. Every addon call, including init,
+Official Myotis v0.1.14 / ABI 38 is pinned. No downstream native patch is used. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -100,10 +100,11 @@ Proofs still come from `mainnet1.colibri-proof.tech` and
 `gnosis.colibri-proof.tech`, respectively, and Colibri proof verification is
 mandatory. There is no reduced-threshold fallback to any prover or RPC server.
 
-Freedom pins Colibri 3.0.0 and advertises the installed verifier's encoded client
+Freedom pins Colibri 3.0.1 and advertises the installed verifier's encoded client
 version when requesting proofs. Its v3 proof format is incompatible with the
 older v2 format. [V3 fixtures and qualification](audits/evidence/colibri-v3-2026-09/README.md)
-cover both chains; the WASM runtime remains mandatory.
+cover both chains (captured on 3.0.0, re-validated on 3.0.1); the WASM runtime
+remains mandatory.
 
 Each provider gets one vote for the exact requested slot/root only after an
 explicit finality endorsement. If its latest checkpoint has advanced, the
@@ -292,11 +293,11 @@ wall-clock subtraction or renderer consent substitutes for exit evidence.
 
 ## Build and signing
 
-`npm run myotis:download` downloads the official v0.1.13 Node addons for all
+`npm run myotis:download` downloads the official v0.1.14 Node addons for all
 five supported targets (or one `MYOTIS_DOWNLOAD_TARGET`). The release checksum
 manifest and each addon digest are pinned in `scripts/myotis-release.json`.
 Packaging checks the actual bytes against these pins before signing; runtime
-requires exactly ABI 36. No Rust build, downstream patch, or build-provenance
+requires exactly ABI 38. No Rust build, downstream patch, or build-provenance
 sidecar is required for Myotis. Other native components retain their own builds.
 
 The official API is `createWithCheckpoint(network, dataDir, root, slot)`.
@@ -305,11 +306,12 @@ resume that directory; `-3 ANCHOR_MISMATCH` is a storage failure, never a fallba
 to the embedded anchor. Freedom validates existing native markers against its
 own authenticated checkpoint record. `nativeCheckpointApi` is the persisted
 checkpoint contract, not the current engine ABI: records written by official
-ABI 26 and ABI 29 hosts remain compatible with ABI 36 (ABI 33-36 changed the
-call, estimate and send results, not `createWithCheckpoint` or the anchor marker;
-v0.1.13 still writes the v1 snapshot for mainnet and Gnosis and reads it back).
+ABI 26 and ABI 29 hosts remain compatible with ABI 38 (ABI 33-36 changed the
+call, estimate and send results, 37 the log-index config payload and 38 the
+status JSON, none of them `createWithCheckpoint` or the anchor marker;
+v0.1.14 still writes the v1 snapshot for mainnet and Gnosis and reads it back).
 New records retain the value 29 written by v0.1.11. Unknown values fail closed;
-the native loader still requires exactly ABI 36. Patched ABI 25 generations lacking the marker are
+the native loader still requires exactly ABI 38. Patched ABI 25 generations lacking the marker are
 preserved and replaced after checking retired ownership.
 
 Every new generation inherits only its chain's `peers[-gnosis].cache` and
@@ -324,6 +326,28 @@ Snapshots, native anchor markers and old host anchor records are never copied.
 Readiness requires beacon `SYNCED`, the EL reader available and not hunting,
 and a numeric `snapServingPeers > 0`. Missing serving counts fail closed.
 `snapPeers` remains available alongside `snapServingPeers` in renderer status.
+ABI 38's `snap2ServingPeers` (the part of `snapServingPeers` on snap/2) is not
+in the status allowlist: reads are the same on either snap version, so
+readiness keeps gating on the total.
+
+The fork watch's `upgradeAdvisory` (v0.1.14+, `null` or `{ phase,
+activationTime, forkId, observedPeers }`) is allowlisted only after strict
+validation in `myotis-process.js`: `phase` `SCHEDULED`/`ACTIVE`,
+`activationTime` a non-negative integer of seconds (0 = unknown), `forkId`
+`0x` plus 8 hex digits (`0x00000000` = unknown, a blob-parameter-only fork),
+`observedPeers` an integer from 1 to 100000. Anything else drops the whole
+advisory to `null`. `publicStatus` carries it to the Nodes menu, which shows an
+"update Freedom" notice, and to Settings' source status. It is **display-only**:
+upstream derives it from what peers announce (discv5 ENRs, libp2p Status
+digests), unverified and never read by verification, so neither readiness nor
+the chain-data router reads it. An `ACTIVE` advisory does not demote Myotis in
+routing on purpose — that would let a majority of peer networks push Freedom
+off its own verified node. The node's own state already covers the real
+failure: a post-fork call the engine's fork table cannot run is refused as a
+capability limit and falls through to the next source (#557), and a light
+client that cannot follow the fork stops being `SYNCED`, which fails readiness
+so the router skips Myotis. The notice says "this node can't verify" only in
+that not-ready case, and "verified reads may stop" while it is still ready.
 A serving count reflects announced/proven head coverage and read-bench state;
 it is not a guarantee that the next peer request succeeds. ENS continues to
 request `latest`, with existing fallbacks for transient failures. Finalized state

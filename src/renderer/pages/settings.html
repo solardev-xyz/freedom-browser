@@ -340,6 +340,13 @@
         display: none;
       }
 
+      /* Same for the Swarm cache row's result line, empty until a size is
+         picked (#579). */
+      #swarm-cache-status:empty,
+      #swarm-cache-clear-status:empty {
+        display: none;
+      }
+
       /* The row a search result jumped to (#281), marked so the eye lands on
          the control rather than on the section it is somewhere inside. The
          accent wash alone is 12% alpha and disappears under `.row.sub`'s own
@@ -1619,6 +1626,70 @@
               </div>
               <div class="row-control">
                 <button type="button" id="swarm-publishing-btn" class="btn" hidden></button>
+              </div>
+            </div>
+            <!-- #579: the Swarm node's disk cache, the one place Freedom shows it.
+                 The usage line is read from the node's /debugstore by the main
+                 process (swarm/ant-cache.js) while this section is on screen;
+                 the note under it says why a figure is missing and is hidden
+                 while there is one. The sizes come from the main process too;
+                 the running node takes a new one live (Ant v0.5.61+). -->
+            <div class="row" id="swarm-cache-row">
+              <div class="row-body">
+                <p class="row-label"><label for="swarm-cache-size">Swarm cache size</label></p>
+                <p class="row-help" id="swarm-cache-usage">
+                  In use: <span id="swarm-cache-usage-text">Unknown</span>
+                </p>
+                <p class="row-help" id="swarm-cache-usage-note" hidden></p>
+                <p class="row-help" id="swarm-cache-help">
+                  How much disk space the Swarm node keeps for pages and files you've opened, so
+                  they load faster next time. Pinned and published content doesn't count towards it.
+                </p>
+                <p class="row-help" id="swarm-cache-note">
+                  A running node takes a new size at once, and a smaller one removes the oldest
+                  cached content straight away. Picked while the node is stopped, the size applies
+                  when it next starts, and a smaller one frees space only as new content is cached.
+                  A cache made by an older Freedom may not give the storage back right away.
+                </p>
+                <p class="row-help" id="swarm-cache-status" role="status" aria-live="polite"></p>
+              </div>
+              <div class="row-control">
+                <select
+                  id="swarm-cache-size"
+                  aria-describedby="swarm-cache-usage swarm-cache-usage-note swarm-cache-help swarm-cache-note swarm-cache-status"
+                  disabled
+                ></select>
+              </div>
+            </div>
+            <!-- #579: Clear cache, POST /v0/cache/clear from the main process
+                 (swarm/ant-cache.js). Offered only while the node Freedom runs
+                 is up with a disk cache; otherwise the reason line says why.
+                 The result ("Freed 1.3 GB") lands in a polite live region. -->
+            <div class="row" id="swarm-cache-clear-row">
+              <div class="row-body">
+                <p class="row-label">Clear Swarm cache</p>
+                <p class="row-help" id="swarm-cache-clear-help">
+                  Removes the Swarm pages and files the node has kept. Pinned and published content
+                  is kept.
+                </p>
+                <p class="row-help" id="swarm-cache-clear-reason" hidden></p>
+                <p
+                  class="row-help"
+                  id="swarm-cache-clear-status"
+                  role="status"
+                  aria-live="polite"
+                ></p>
+              </div>
+              <div class="row-control">
+                <button
+                  type="button"
+                  class="btn"
+                  id="swarm-cache-clear"
+                  aria-describedby="swarm-cache-clear-help swarm-cache-clear-reason swarm-cache-clear-status"
+                  disabled
+                >
+                  Clear cache
+                </button>
               </div>
             </div>
           </div>

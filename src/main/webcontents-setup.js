@@ -13,6 +13,7 @@ const { WEBVIEW_BOOT_SWITCH, buildWebviewBootSwitch } = require('./webview-boot'
 const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
 const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
+const { attachTabSwitchKeys } = require('./tab-switch-keys');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -226,6 +227,12 @@ function registerWebContentsHandlers() {
 
     if (type === 'window') {
       lockChromeWindow(contents, tag);
+    }
+
+    // Next/Previous Tab are claimed here, before the chrome or the page sees
+    // the key, so they work wherever focus is — see tab-switch-keys.js (#556).
+    if (type === 'window' || type === 'webview') {
+      attachTabSwitchKeys(contents);
     }
 
     // For webview contents, fix dark defaults and intercept navigation

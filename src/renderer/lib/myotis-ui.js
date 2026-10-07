@@ -1,7 +1,7 @@
 // Myotis embedded Ethereum light-client controls in the Nodes menu.
 import { state } from './state.js';
 import { pushDebug } from './debug.js';
-import { countText, versionText as versionLabel } from './ui-format.js';
+import { countText, pluralize, versionText as versionLabel } from './ui-format.js';
 
 let toggleButton = null;
 let toggleSwitch = null;
@@ -61,6 +61,74 @@ const stateLabel = (status) => {
   return 'Syncing';
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Names no menu row label: update-status-ui.js relabels the hamburger row
+// with the update state (Checking…, Downloading Update…, Restart to Update /
+// Install Update and Close), and this notice stays up through all of them.
+// myotis-ui.test.js pins that no notice names one of those labels (#550 R2-M1).
+const UPDATE_PATH = 'Update from the bottom of the main menu.';
+
+// Myotis's fork watch (`upgradeAdvisory`, validated in main's
+// myotis-process.js): enough distinct peer networks say this build is missing
+// a network upgrade. Peers are unverified and this never reaches
+// verification, so the copy only claims "can't verify" when the node's own
+// state agrees — not ready — as upstream's README asks; while it is still
+// ready, an ACTIVE advisory means "update soon". `forkId` 0x00000000 (fork id
+// unknown, likely blob-parameter-only) keeps the same wording: upstream does
+// not say such a fork leaves reads working, its peering digest moves too.
+export const upgradeAdvisoryMessage = (status, now = Date.now(), locale = undefined) => {
+  const advisory = status?.upgradeAdvisory;
+  if (!advisory || !['SCHEDULED', 'ACTIVE'].includes(advisory.phase)) return null;
+  const network = status.chainId === 100 ? 'Gnosis' : 'Ethereum';
+  const peers = Number.isSafeInteger(advisory.observedPeers) ? advisory.observedPeers : 0;
+  const detail = `Reported by ${peers} peer ${pluralize(peers, 'network')}, not verified. It doesn’t change how Freedom checks answers.`;
+  if (advisory.phase === 'ACTIVE') {
+    const outcome = status.state === 'ready'
+      ? 'Verified reads may stop until you update.'
+      : `This node can’t verify until you update; Freedom uses your other ${network} sources meanwhile.`;
+    return {
+      phase: 'ACTIVE',
+      text: `The ${network} network has upgraded and this version of Freedom can’t follow it. ${outcome} ${UPDATE_PATH}`,
+      detail,
+    };
+  }
+  const at = Number.isFinite(advisory.activationTime) && advisory.activationTime > 0
+    ? advisory.activationTime * 1000
+    : null;
+  let when = 'is coming soon';
+  let deadline = 'Update Freedom soon';
+  if (at !== null) {
+    const date = new Date(at).toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' });
+    const days = Math.floor((at - now) / DAY_MS);
+    if (at <= now) {
+      when = `is due now (${date})`;
+      deadline = 'Update Freedom now';
+    } else {
+      when = `is coming ${days < 1 ? 'in less than a day' : `in ${days} ${pluralize(days, 'day')}`} (${date})`;
+      deadline = 'Update Freedom before then';
+    }
+  }
+  return {
+    phase: 'SCHEDULED',
+    text: `${network === 'Ethereum' ? 'An' : 'A'} ${network} network upgrade that this version of Freedom doesn’t know about ${when}. ${deadline} to keep verified reads. ${UPDATE_PATH}`,
+    detail,
+  };
+};
+
+const updateUpgradeNotice = (status, chainId) => {
+  const prefix = chainId === 100 ? 'myotis-gnosis-upgrade' : 'myotis-upgrade';
+  const notice = document.getElementById(`${prefix}-message`);
+  if (!notice) return;
+  // An off or profile-disabled node isn't verifying anything; nothing to update for.
+  const view = ['disabled', 'off'].includes(status?.state) ? null : upgradeAdvisoryMessage(status);
+  const text = document.getElementById(`${prefix}-text`);
+  const detail = document.getElementById(`${prefix}-detail`);
+  if (text) text.textContent = view?.text || '';
+  if (detail) detail.textContent = view?.detail || '';
+  notice.dataset.phase = view?.phase || '';
+  notice.hidden = !view;
+};
+
 const updateControls = (status) => {
   latestStatus = status || null;
   const supported = status?.supported !== false;
@@ -70,6 +138,7 @@ const updateControls = (status) => {
   const running = isEffectivelyRunning();
 
   if (divider) divider.hidden = !supported;
+  updateUpgradeNotice(status, 1);
   updateRecovery(retryCheckpointButton, status, 1);
 
   if (toggleButton) {
@@ -116,6 +185,7 @@ const updateGnosisControls = (status) => {
   const running = gnosis.desiredRunning === null ? status?.running === true : gnosis.desiredRunning;
 
   if (gnosis.divider) gnosis.divider.hidden = !supported;
+  updateUpgradeNotice(status, gnosis.chainId);
   updateRecovery(gnosis.retryCheckpointButton, status, gnosis.chainId);
 
   if (gnosis.button) {

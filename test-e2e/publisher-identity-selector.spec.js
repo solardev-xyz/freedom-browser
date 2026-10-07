@@ -89,11 +89,8 @@ test('an unavailable publisher identity renders inert and cannot be selected', a
   const list = window.locator('#e2e-identity-selector .wallet-selector-list');
   // The selector was parked over the tab's `<webview>` (`clickOverGuest`).
   await expect(list).toBeHidden();
-  await clickOverGuest(
-    window,
-    () => window.click('#e2e-identity-selector .publisher-identity-selector-btn', { timeout: 1000 }),
-    () => list.isVisible()
-  );
+  await clickOverGuest(window.locator('#e2e-identity-selector .publisher-identity-selector-btn'));
+  await expect(list).toBeVisible();
   const box = await window.locator('#e2e-identity-selector').boundingBox();
   await window.screenshot({
     path: '/tmp/publisher-identity-unavailable.png',

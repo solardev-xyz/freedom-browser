@@ -184,13 +184,8 @@ test('a card dismissed mid-download stays dismissed', async ({ window }) => {
   await expect(cards.locator('[data-test="download-cancel"]')).toBeVisible();
 
   // The card has just appeared over the tab's `<webview>` (`clickOverGuest`).
-  // Re-clicking while it is still up is safe *here*, unlike the checks below:
-  // a progressing card has no auto-dismiss timer to go green on.
-  await clickOverGuest(
-    window,
-    () => cards.locator('[data-test="download-close"]').click({ timeout: 1000 }),
-    async () => (await cardCount()) === 0
-  );
+  await clickOverGuest(cards.locator('[data-test="download-close"]'));
+  await expect.poll(cardCount).toBe(0);
 
   // The next progress ticks are ignored — this is the quarter-second the card
   // used to come back in.
@@ -247,12 +242,9 @@ test("the shelf's Full Download History action opens, then focuses, the download
       const wv = document.querySelector('webview.active, webview:not(.hidden)');
       return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
     });
-  // The row has just appeared over the tab's `<webview>` (`clickOverGuest`). A
-  // re-click after one that did land only focuses the tab it opened, and the
-  // tab count below still catches a duplicate.
-  const onDownloadsPage = async () => /pages\/downloads\.html/.test(await activeUrl());
-
-  await clickOverGuest(window, () => historyRow.click({ timeout: 1000 }), onDownloadsPage);
+  // The row has just appeared over the tab's `<webview>` (`clickOverGuest`).
+  await clickOverGuest(historyRow);
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(initialTabs + 1);
 
   // The card auto-dismisses a few seconds after completion, so re-arm the
@@ -267,6 +259,7 @@ test("the shelf's Full Download History action opens, then focuses, the download
   await window.locator(`[data-test="tab"]`).first().click();
   await expect.poll(activeUrl, { timeout: 10_000 }).not.toMatch(/pages\/downloads\.html/);
 
-  await clickOverGuest(window, () => historyRow.click({ timeout: 1000 }), onDownloadsPage);
+  await clickOverGuest(historyRow);
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(initialTabs + 1);
 });

@@ -1,0 +1,12 @@
+# Nightly real-conditions E2E (#559). Installed by scripts/nightly-vm-e2e/install-timer.sh.
+[Unit]
+Description=Freedom nightly real-conditions E2E (clean Ubuntu + Windows VMs)
+After=libvirtd.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+SupplementaryGroups=libvirt
+ExecStart=@BIN@/run-nightly.sh
+TimeoutStartSec=4h

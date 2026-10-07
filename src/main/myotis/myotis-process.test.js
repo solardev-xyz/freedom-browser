@@ -130,8 +130,17 @@ describe('MyotisProcess', () => {
       optimisticBlockNumber: 25684159, elReaderAvailable: true, elHunting: false,
     };
     const status = processClient.request('status');
-    reply(child.send.mock.calls.at(-1)[0], { ...expected, engineLogs: 'private payload' });
+    // ABI 38's snap2ServingPeers is a subset of snapServingPeers (shown
+    // upstream, never gated on): it stays out of the allowlist. A valid
+    // upgradeAdvisory passes through, minus any key upstream doesn't define.
+    const advisory = { phase: 'SCHEDULED', activationTime: 0, forkId: '0x00000000', observedPeers: 3 };
+    reply(child.send.mock.calls.at(-1)[0], { ...expected, engineLogs: 'private payload', snap2ServingPeers: 1,
+      upgradeAdvisory: { ...advisory, message: 'x'.repeat(4096) } });
     await status;
+    expect(callbacks.onStatus).toHaveBeenLastCalledWith({ ...expected, upgradeAdvisory: advisory });
+    const garbage = processClient.request('status');
+    reply(child.send.mock.calls.at(-1)[0], { ...expected, upgradeAdvisory: { ...advisory, phase: 'PANIC' } });
+    await garbage;
     expect(callbacks.onStatus).toHaveBeenLastCalledWith(expected);
     for (const value of ['25684159', Infinity, NaN]) {
       const next = processClient.request('status');
@@ -444,4 +453,59 @@ describe('MyotisProcess', () => {
     expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.any(String), 'CHECKPOINT_INSTALLATION');
   });
 
+});
+
+// The fork watch's advisory is peer-reported and unverified; main passes it to
+// the renderer only in upstream's documented shape, all or nothing.
+describe('upgradeAdvisory validation', () => {
+  const { upgradeAdvisory } = require('./myotis-process');
+  const valid = { phase: 'ACTIVE', activationTime: 1791294816, forkId: '0x6C1D9423', observedPeers: 4 };
+
+  test.each([
+    ['scheduled with a known time', { ...valid, phase: 'SCHEDULED' }],
+    ['an unknown time (0)', { ...valid, activationTime: 0 }],
+    ['a blob-parameter-only fork id', { ...valid, forkId: '0x00000000' }],
+    ['the peer bound', { ...valid, observedPeers: 100000 }],
+  ])('accepts %s', (_label, value) => {
+    expect(upgradeAdvisory(value)).toEqual({ ...value, forkId: value.forkId.toLowerCase() });
+  });
+
+  test('keeps only the four upstream keys and normalises the fork id', () => {
+    expect(upgradeAdvisory({ ...valid, message: '<img src=x>', extra: { nested: true } }))
+      .toEqual({ phase: 'ACTIVE', activationTime: 1791294816, forkId: '0x6c1d9423', observedPeers: 4 });
+  });
+
+  test.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['a string', 'ACTIVE'],
+    ['a number', 1],
+    ['an array', [valid]],
+    ['an empty object', {}],
+    ['an unknown phase', { ...valid, phase: 'IMMINENT' }],
+    ['a lower-case phase', { ...valid, phase: 'active' }],
+    ['a missing phase', { ...valid, phase: undefined }],
+    ['a negative time', { ...valid, activationTime: -1 }],
+    ['a fractional time', { ...valid, activationTime: 1.5 }],
+    ['a NaN time', { ...valid, activationTime: NaN }],
+    ['an infinite time', { ...valid, activationTime: Infinity }],
+    ['a string time', { ...valid, activationTime: '1791294816' }],
+    ['a time past year 9999', { ...valid, activationTime: 253402300800 }],
+    ['a millisecond-sized time', { ...valid, activationTime: 1791294816000000 }],
+    ['a short fork id', { ...valid, forkId: '0x1234567' }],
+    ['a long fork id', { ...valid, forkId: '0x123456789' }],
+    ['a fork id without 0x', { ...valid, forkId: '6c1d9423' }],
+    ['a non-hex fork id', { ...valid, forkId: '0x6c1d942g' }],
+    ['an oversized fork id', { ...valid, forkId: `0x${'a'.repeat(1 << 16)}` }],
+    ['a numeric fork id', { ...valid, forkId: 0x6c1d9423 }],
+    ['a fork id with a trailing newline', { ...valid, forkId: '0x6c1d9423\n' }],
+    ['zero peers', { ...valid, observedPeers: 0 }],
+    ['negative peers', { ...valid, observedPeers: -3 }],
+    ['fractional peers', { ...valid, observedPeers: 3.5 }],
+    ['oversized peers', { ...valid, observedPeers: 100001 }],
+    ['string peers', { ...valid, observedPeers: '3' }],
+    ['missing peers', { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000' }],
+  ])('drops %s', (_label, value) => {
+    expect(upgradeAdvisory(value)).toBeNull();
+  });
 });

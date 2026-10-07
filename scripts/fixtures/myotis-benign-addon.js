@@ -20,7 +20,7 @@ function block() {
   process.exit(78);
 }
 module.exports = {
-  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 36; },
+  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 38; },
   create(network, dataDir) {
     if (network !== 'mainnet' || fs.realpathSync(dataDir) !== fs.realpathSync(path.join(__dirname, 'data'))) {
       throw new Error('Fixture path mismatch');

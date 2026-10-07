@@ -7,7 +7,7 @@
 // Ctrl-modified click, which is the only way to exercise the background
 // disposition (a synthetic `element.click()` carries no modifiers).
 
-const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { test, expect, clickOverGuest, SAMPLE_BZZ_HASH } = require('./fixtures');
 
 // Both themes, as a `src/renderer/` change owes: these tests run dark (an
 // unseeded app takes theme 'system', which is light under xvfb, so the dark
@@ -143,6 +143,14 @@ const menu = (window) => window.locator('#page-context-menu');
 const searchItem = (window) =>
   window.locator('#page-context-menu [data-group="selection"] [data-action="search-selection"]');
 
+// Click the search item once, after the pointer is provably on it. The menu is
+// raised over the tab's `<webview>`, and a click the browser dispatches before
+// it has caught up with the frame that revealed the menu goes to the page
+// underneath: the guest got the whole pointerdown→click and the item never
+// saw it (#540, `clickOverGuest`). The label is written before that reveal,
+// so `toHaveText` alone lets a click arrive on the very next frame.
+const clickSearchItem = (window, options) => clickOverGuest(searchItem(window), options);
+
 // The visible rows of the selection group, in DOM order — the item has to sit
 // directly under Copy, where Chrome puts it.
 const selectionItems = (window) =>
@@ -173,7 +181,7 @@ test('offers "Search <Engine> for …" under Copy and opens the search in a new 
   await window.screenshot({ path: 'test-results/page-context-menu-search-dark.png' });
 
   expect(await tabCount(window)).toBe(1);
-  await searchItem(window).click();
+  await clickSearchItem(window);
 
   // A plain click opens the search in a new foreground tab.
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
@@ -211,7 +219,7 @@ test('a Ctrl-clicked search item opens the results behind the current tab', asyn
   await selectAndOpenMenu(window, 'short');
   await expect(searchItem(window)).toBeVisible();
 
-  await searchItem(window).click({ modifiers: ['Control'] });
+  await clickSearchItem(window, { modifiers: ['Control'] });
 
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
   // Chrome keeps you on the page you searched from.
@@ -242,7 +250,7 @@ test('elides a long selection in the label but searches for all of it', async ({
     'Search DuckDuckGo for "Freedom is a browser for the…"'
   );
 
-  await searchItem(window).click();
+  await clickSearchItem(window);
   await expect(window.locator('[data-test="address-input"]')).toHaveValue(
     `https://duckduckgo.com/?q=${encodeURIComponent(LONG_TEXT)}`
   );
@@ -259,7 +267,7 @@ test('offers the search for a selection inside an editable field', async ({ wind
     'Search DuckDuckGo for "Freedom is a browser for the…"'
   );
 
-  await searchItem(window).click();
+  await clickSearchItem(window);
   await expect(window.locator('[data-test="address-input"]')).toHaveValue(
     `https://duckduckgo.com/?q=${encodeURIComponent(LONG_TEXT)}`
   );
@@ -369,7 +377,7 @@ test('clamps a select-all sized selection to a bounded query', async ({ window, 
   await selectAndOpenMenu(window, 'huge');
 
   await expect(searchItem(window)).toBeVisible();
-  await searchItem(window).click();
+  await clickSearchItem(window);
 
   const url = await window.locator('[data-test="address-input"]').inputValue();
   expect(url.startsWith('https://duckduckgo.com/?q=')).toBe(true);
@@ -434,7 +442,7 @@ test.describe('with a custom search engine configured', () => {
     await expect(searchItem(window)).toHaveText('Search Private Search for "otters"');
     await window.screenshot({ path: 'test-results/page-context-menu-search-light.png' });
 
-    await searchItem(window).click();
+    await clickSearchItem(window);
     await expect(window.locator('[data-test="address-input"]')).toHaveValue(
       'https://search.example/?q=otters&source=freedom'
     );

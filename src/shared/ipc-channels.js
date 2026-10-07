@@ -16,6 +16,10 @@ module.exports = {
   ANT_STATUS_UPDATE: 'ant:statusUpdate',
   ANT_CHECK_BINARY: 'ant:checkBinary',
   ANT_API_GET: 'ant:api-get',
+  ANT_CACHE_STATUS: 'ant:cache-status',
+  ANT_CACHE_GET_SETTINGS: 'ant:cache-get-settings',
+  ANT_CACHE_SET_SIZE: 'ant:cache-set-size',
+  ANT_CACHE_CLEAR: 'ant:cache-clear',
 
   // IPFS node management
   IPFS_START: 'ipfs:start',
@@ -87,6 +91,9 @@ module.exports = {
   SHORTCUTS_PREVIEW_BINDING: 'shortcuts:preview-binding',
   SHORTCUTS_SET_OVERRIDE: 'shortcuts:set-override',
   SHORTCUTS_RESET: 'shortcuts:reset',
+  // Settings > Shortcuts arming/disarming a recording, so the browser-process
+  // tab-switch keys (tab-switch-keys.js) let the chord reach the page.
+  SHORTCUTS_SET_RECORDING: 'shortcuts:set-recording',
 
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',

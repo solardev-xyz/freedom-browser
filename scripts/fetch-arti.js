@@ -312,10 +312,12 @@ async function main() {
         'Arti has no clean prebuilt-binary distribution, so it is built from\n' +
         'crates.io. Install Rust (https://rustup.rs) and re-run, or set CARGO_BIN.\n'
     );
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   if (!checkRustVersion(cargoVersionOutput)) {
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const target = platformKey();
@@ -375,13 +377,16 @@ async function main() {
     }
   }
 
-  process.exit(ok ? 0 : 1);
+  // Not process.exit(): on Node 24 it can hang forever joining V8's
+  // background compiler threads — see the note at the end of
+  // scripts/fetch-ant.js's main() (#544, nodejs/node#64274).
+  process.exitCode = ok ? 0 : 1;
 }
 
 if (require.main === module) {
   main().catch((err) => {
     console.error(`\nError: ${err.message}`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
 

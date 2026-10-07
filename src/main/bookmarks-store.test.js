@@ -70,6 +70,26 @@ describe('bookmarks-store', () => {
     ).toEqual([bookmark]);
   });
 
+  test('stores, survives a restart with, and removes a file:// bookmark (#555)', async () => {
+    const bookmark = {
+      label: 'Local page',
+      target: 'file:///Users/me/Downloads/ens%20website-test.html',
+    };
+    fs.writeFileSync(getUserBookmarksPath(userDataDir), '[]', 'utf-8');
+
+    const ipcMain = createIpcMainMock();
+    loadBookmarksStore({ userDataDir, ipcMain }).mod.registerBookmarksIpc();
+    await expect(ipcMain.invoke(IPC.BOOKMARKS_ADD, bookmark)).resolves.toBe(true);
+
+    // A fresh module re-reads the file, as on the next launch.
+    const reloaded = createIpcMainMock();
+    loadBookmarksStore({ userDataDir, ipcMain: reloaded }).mod.registerBookmarksIpc();
+    await expect(reloaded.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([bookmark]);
+
+    await expect(reloaded.invoke(IPC.BOOKMARKS_REMOVE, bookmark.target)).resolves.toBe(true);
+    await expect(reloaded.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([]);
+  });
+
   test('updates bookmarks and rejects target conflicts', async () => {
     const ipcMain = createIpcMainMock();
     const initialBookmarks = [

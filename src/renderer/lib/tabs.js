@@ -1015,6 +1015,17 @@ const createWebview = (tabId, initialUrl) => {
         onWebviewEvent('ipc-message', { tabId, channel: event.channel, args: event.args });
       }
     },
+    // The page closed itself: a `window.close()` Blink allowed (a window a
+    // script opened, or one whose history holds a single entry — Chrome's
+    // rule, decided in the guest before this event fires). Electron destroys
+    // the guest webContents right after it but leaves the <webview> element
+    // and its tab in place, a tab with no page behind it. Chrome closes the
+    // tab (and a popup window with it, the last tab closing the window), so
+    // do the same. Without this, a popup that closed itself — popupcheck.com's
+    // all do, 1.4 s after opening — stayed up as a dead tab (#580).
+    close: () => {
+      closeTab(tabId);
+    },
     'update-target-url': (event) => {
       // Gate at the tab edge (same shape as `link-status:zone`) so the
       // link-status module never sees background-tab hover events. Empty
@@ -1584,9 +1595,18 @@ export const closeTab = (tabId) => {
     }
   }
 
-  // Close DevTools before removing webview (prevents crash)
-  if (tab.webview?.isDevToolsOpened?.()) {
-    tab.webview.closeDevTools();
+  // Close DevTools before removing webview (prevents crash). Every <webview>
+  // method throws once the guest is gone ("Invalid guestInstanceId") — which
+  // is the state a page that called `window.close()` leaves it in — and a
+  // throw here would abort the close half-way, leaving a tab neither its
+  // close button nor Cmd/Ctrl+W can remove (#580). A guest that is gone has
+  // no DevTools to close, so carry on.
+  try {
+    if (tab.webview?.isDevToolsOpened?.()) {
+      tab.webview.closeDevTools();
+    }
+  } catch {
+    // Guest already destroyed.
   }
 
   // Cancel the phantom-abort safety-net timers if they're still pending —
@@ -2534,7 +2554,9 @@ export const initTabs = async () => {
         addressInput.select();
       }
     }
-    // Next tab (Ctrl+PageDown; aliases Ctrl+Tab, Cmd+Shift+])
+    // Next tab (Ctrl+PageDown; aliases Ctrl+Tab, Cmd+Shift+]). Next/Previous
+    // are normally claimed in the main process before this listener sees
+    // them (tab-switch-keys.js, #556); this stays as the chrome's fallback.
     if (matchesShortcut(event, 'tab.next')) {
       event.preventDefault();
       switchToNextTab();

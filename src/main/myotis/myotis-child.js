@@ -1,6 +1,6 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
-const EXPECTED_ABI = 36;
+const EXPECTED_ABI = 38;
 const seedPins = require('./seed-pins');
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 // `call` (from/to/data/value only) stays for ENS contract reads. Wallet and

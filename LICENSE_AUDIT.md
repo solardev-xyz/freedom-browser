@@ -13,6 +13,8 @@
 >
 > **2026-10-06 update:** Myotis is now pinned to v0.1.13. `LICENSE` and `NOTICE` are byte-identical to v0.1.12 (`git diff v0.1.12 v0.1.13 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies.
 >
+> **2026-10-06 update (v0.1.14):** Myotis is now pinned to v0.1.14. `LICENSE` and `NOTICE` are byte-identical to v0.1.13 (`git diff v0.1.13 v0.1.14 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies.
+>
 > The previous revision (2026-08-19) described a pre-0.8.5 tree — electron 39.2.7, ant v0.5.21, libradicle 0.3.0, "downloaded binaries: 2", no Myotis, no Arti — and reported `Copyleft (GPL/AGPL/LGPL): 0`, which was already untrue of the tree it was written against. Because `release-process.md` §4's pre-tag license check reads these files, it was passing on stale data. Since 0.8.5 these files are re-derived from the installed dependency tree and from what `package.json`'s `build` config actually packages, and `licenses-audit.test.js` fails the build when either drifts from what is written here.
 
 ---
@@ -84,7 +86,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.59` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.61` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -112,11 +114,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
 
 - **Source:** https://github.com/biafra23/myotis
-- **Version:** `v0.1.13` (pin: `scripts/myotis-release.json` `releaseTag`)
+- **Version:** `v0.1.14` (pin: `scripts/myotis-release.json` `releaseTag`)
 - **License:** **Apache-2.0** (single-licensed, not dual)
 - **Risk:** **Yellow**
 - **Integration:** Native addon (`myotis-node.node`), run out-of-process under Freedom's own supervisor
-- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.13 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10 and v0.1.12): unchanged; the existing attribution still matches.
+- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.14 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10, v0.1.12 and v0.1.13): unchanged; the existing attribution still matches.
 
 ### Arti (Tor Client) — _new in 0.8.5_
 
@@ -158,7 +160,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ## Electron Framework
 
-- **Version:** 44.5.1 (lockfile-resolved)
+- **Version:** 44.6.0 (lockfile-resolved)
 - **License:** MIT
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.

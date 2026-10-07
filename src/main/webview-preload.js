@@ -1095,6 +1095,11 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   resetAllShortcuts: guardSettingsPage('resetAllShortcuts', () =>
     ipcRenderer.invoke('shortcuts:reset', {})
   ),
+  // A recording has to receive the chord it records, including Next/Previous
+  // Tab, which main otherwise claims before the page sees it (#556).
+  setShortcutRecording: guardSettingsPage('setShortcutRecording', (recording) =>
+    ipcRenderer.invoke('shortcuts:set-recording', recording === true)
+  ),
 
   // Platform / environment info needed by settings page
   getPlatform: guardInternal('getPlatform', () => ipcRenderer.invoke('window:get-platform')),
@@ -1108,6 +1113,22 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // Tor rows only where there is one to drive (or where the integration is
   // already enabled). Same shape as checkRadicleBinary: `{ available }`.
   checkTorBinary: guardSettingsPage('checkTorBinary', () => ipcRenderer.invoke('tor:checkBinary')),
+  // Settings → Nodes → Swarm cache (#579): how much the cache holds, read
+  // from the node's `/v0/cache` by the main process; the sizes on offer and
+  // the current one; applying one (live, on the Swarm node Freedom runs);
+  // and clearing the cache (pinned and published content is kept).
+  getSwarmCacheStatus: guardSettingsPage('getSwarmCacheStatus', () =>
+    ipcRenderer.invoke('ant:cache-status')
+  ),
+  getSwarmCacheSettings: guardSettingsPage('getSwarmCacheSettings', () =>
+    ipcRenderer.invoke('ant:cache-get-settings')
+  ),
+  setSwarmCacheSize: guardSettingsPage('setSwarmCacheSize', (bytes) =>
+    ipcRenderer.invoke('ant:cache-set-size', bytes)
+  ),
+  clearSwarmCache: guardSettingsPage('clearSwarmCache', () =>
+    ipcRenderer.invoke('ant:cache-clear')
+  ),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>

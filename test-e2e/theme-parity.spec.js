@@ -30,6 +30,7 @@
 // than guessed at, so a surface cannot go quietly unchecked either way.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const { test, expect } = require('./fixtures');
@@ -452,6 +453,26 @@ const INTERNAL_PAGES = [
   { name: 'profiles', url: 'freedom://profiles', file: '/pages/profiles.html' },
   { name: 'links', url: 'freedom://links', file: '/pages/links.html' },
 ];
+
+// Settings > Privacy and security shows Ad Blocking, which looks different
+// with and without filter lists on disk: without them its rows are dimmed and
+// a "cannot run" status line appears (#274). CI's per-PR job has no lists and
+// the nightly's full run downloads them, so the same baseline failed one or
+// the other. Pin the no-lists state, the one with the recorded gaps, with an
+// empty FREEDOM_ADBLOCK_DIR (as settings-adblock.spec.js does). The updater's
+// own dir is under the per-test scratch profile, so that is empty too.
+let previousAdblockDir;
+test.beforeAll(() => {
+  previousAdblockDir = process.env.FREEDOM_ADBLOCK_DIR;
+  process.env.FREEDOM_ADBLOCK_DIR = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'freedom-e2e-theme-no-lists-')
+  );
+});
+test.afterAll(() => {
+  fs.rmSync(process.env.FREEDOM_ADBLOCK_DIR, { recursive: true, force: true });
+  if (previousAdblockDir === undefined) delete process.env.FREEDOM_ADBLOCK_DIR;
+  else process.env.FREEDOM_ADBLOCK_DIR = previousAdblockDir;
+});
 
 for (const theme of ['dark', 'light']) {
   test.describe(`theme parity: ${theme}`, () => {

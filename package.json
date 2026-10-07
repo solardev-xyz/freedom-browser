@@ -294,14 +294,14 @@
     "node": ">=24.11.0 <25"
   },
   "devDependencies": {
-    "@babel/core": "^8.0.1",
-    "@babel/preset-env": "^8.0.2",
+    "@babel/core": "^8.0.7",
+    "@babel/preset-env": "^8.0.7",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^44.5.1",
+    "electron": "^44.6.0",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "eslint": "^10.12.0",
@@ -312,7 +312,7 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
-    "@corpus-core/colibri-stateless": "3.0.0",
+    "@corpus-core/colibri-stateless": "3.0.1",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",
     "@freedom/railgun-kohaku-adapter": "file:vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.3.0.tgz",

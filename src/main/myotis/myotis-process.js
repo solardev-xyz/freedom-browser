@@ -31,6 +31,31 @@ function supervisorPath() {
     : path.join(__dirname, '../../..', 'myotis-bin', `${os}-${process.arch}`, binary);
 }
 
+// The engine's fork watch (Myotis v0.1.14+, biafra23/myotis#561): `null`, or
+// what enough distinct peer networks announce about a fork this build's
+// schedule lacks. It is peer-supplied and unverified — upstream derives it
+// from discv5 ENRs and libp2p Status digests, never from anything
+// verification reads — so it is display-only here: nothing in main routes
+// or gates on it. Every field must match upstream's documented shape or the
+// whole advisory is dropped; a partial one would say something nobody sent.
+const ADVISORY_PHASES = new Set(['SCHEDULED', 'ACTIVE']);
+// Seconds since the epoch; 0 = unknown. Year 9999 keeps it a valid Date.
+const MAX_ADVISORY_TIME = 253402300799;
+// Distinct peer networks (IPv4 /24, IPv6 /48) that voted; upstream needs 3.
+const MAX_ADVISORY_PEERS = 100000;
+
+function upgradeAdvisory(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { phase, activationTime, forkId, observedPeers } = value;
+  if (!ADVISORY_PHASES.has(phase)) return null;
+  if (!Number.isSafeInteger(activationTime) || activationTime < 0 || activationTime > MAX_ADVISORY_TIME) return null;
+  // `0x00000000` = unknown (upstream: a blob-parameter-only fork rotates the
+  // digest to a value this build cannot compute).
+  if (typeof forkId !== 'string' || !/^0x[0-9a-f]{8}$/i.test(forkId)) return null;
+  if (!Number.isSafeInteger(observedPeers) || observedPeers < 1 || observedPeers > MAX_ADVISORY_PEERS) return null;
+  return { phase, activationTime, forkId: forkId.toLowerCase(), observedPeers };
+}
+
 function statusSnapshot(status) {
   const snapshot = {};
   for (const key of ['beaconState', 'currentPeriod', 'targetPeriod', 'peerCount', 'snapPeers', 'snapServingPeers',
@@ -43,6 +68,8 @@ function statusSnapshot(status) {
   if (typeof status?.optimisticBlockNumber === 'number' && Number.isFinite(status.optimisticBlockNumber)) {
     snapshot.optimisticBlockNumber = status.optimisticBlockNumber;
   }
+  const advisory = upgradeAdvisory(status?.upgradeAdvisory);
+  if (advisory) snapshot.upgradeAdvisory = advisory;
   return snapshot;
 }
 
@@ -360,4 +387,4 @@ class MyotisProcess {
   }
 }
 
-module.exports = { MyotisProcess, childEnvironment, supervisorPath };
+module.exports = { MyotisProcess, childEnvironment, supervisorPath, upgradeAdvisory };

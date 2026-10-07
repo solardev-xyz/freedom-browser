@@ -136,7 +136,7 @@ async function run(options) {
   const result = { runId: ctx.runId, enteredAtMs, deadlineAtMs,
     timingScope: Number.isFinite(supplied) ? 'outer-launch-deadline' : 'driver-entry-only',
     startAttempted: false, readAttempted: false, actualOsExitObserved: false,
-    readQualification: 'ABI 36 requires fresh anchors and serving EL peers; this bounded Quit driver does not qualify cold sync',
+    readQualification: 'ABI 38 requires fresh anchors and serving EL peers; this bounded Quit driver does not qualify cold sync',
     addonAbi: 'not-directly-observed-by-driver' };
   let progressFd;
   let manager;

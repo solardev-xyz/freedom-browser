@@ -87,10 +87,45 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet', 'initial'), path.join(dataDir, 'gnosis', 'initial'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.13', abi: 36, snapPeers: 2, snapServingPeers: 1 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.14', abi: 38, snapPeers: 2, snapServingPeers: 1 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
+  });
+
+  test('carries the fork-watch advisory to the renderer without touching readiness', async () => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    expect(mod.publicStatus().upgradeAdvisory).toBeNull();
+    const advisory = { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000', observedPeers: 3 };
+    // The snapshot arriving here is already validated by myotis-process.js.
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    // Peer-reported and unverified: still ready, still routed to.
+    expect(mod.isReady()).toBe(true);
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', upgradeAdvisory: advisory });
+    // A node that also stopped syncing keeps the advisory on its not-ready status.
+    clients[0].options.onStatus({ ...status, beaconState: 'SYNCING', upgradeAdvisory: advisory });
+    expect(mod.isReady()).toBe(false);
+    expect(mod.publicStatus()).toMatchObject({ state: 'syncing', upgradeAdvisory: advisory });
+    clients[0].options.onStatus(status);
+    expect(mod.publicStatus().upgradeAdvisory).toBeNull();
+  });
+
+  test('a node being stopped drops the advisory before its client has exited', async () => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    const advisory = { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000', observedPeers: 3 };
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    let exit;
+    clients[0].stop.mockImplementation(() => new Promise((resolve) => { exit = resolve; }));
+    const stopping = mod.stopMyotis();
+    // Client still alive; a late snapshot from it must not resurrect the notice.
+    expect(clients[0].exited).toBe(false);
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    expect(mod.publicStatus()).toMatchObject({ state: 'off', running: false, upgradeAdvisory: null });
+    clients[0].exited = true; exit(true);
+    await stopping;
+    expect(mod.publicStatus().upgradeAdvisory ?? null).toBeNull();
   });
 
   test('status queries use cached snapshots and stale status removes readiness', async () => {
@@ -261,6 +296,7 @@ describe('myotis-manager', () => {
   test('automatically verifies stale anchors and restarts in a fresh owned generation', async () => {
     const ctx = await parked();
     expect(ctx.mod.publicStatus(100)).toMatchObject({ running: true, state: 'recovering', recovery: { phase: 'checking' } });
+    expect(ctx.mod.publicStatus(100).upgradeAdvisory).toBeNull();
     expect(ctx.acquireCheckpoint).toHaveBeenCalledWith(100, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     await ctx.mod.stopMyotis(100);
     ctx.acquireCheckpoint.mockResolvedValue(checkpoint);
@@ -624,9 +660,13 @@ describe('myotis-manager', () => {
 
   test('a slowly syncing node automatically recovers when its anchor later expires', async () => {
     const ctx = loadManager(); ctx.status.elReaderAvailable = false;
+    // A fork this build can't follow is the likeliest cause of such a stall,
+    // so the recovery status still carries the advisory.
+    ctx.status.upgradeAdvisory = { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000', observedPeers: 5 };
     await ctx.mod.startMyotis({ chainId: 100 });
     await jest.advanceTimersByTimeAsync(300000);
-    expect(ctx.mod.publicStatus(100).recovery.reason).toBe('stalled');
+    expect(ctx.mod.publicStatus(100)).toMatchObject({ state: 'recovery-blocked', recovery: { reason: 'stalled' },
+      upgradeAdvisory: ctx.status.upgradeAdvisory });
     ctx.status.beaconState = 'STALE_ANCHOR';
     ctx.clients[0].options.onStatus(ctx.status);
     expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(1);

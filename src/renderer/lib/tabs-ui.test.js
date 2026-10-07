@@ -894,6 +894,44 @@ describe('tabs ui behavior', () => {
     expect(lastWindowLoad.mod.getActiveTab()).toBeNull();
   });
 
+  // #580: a page's `window.close()` makes the <webview> fire `close`, and
+  // Electron destroys the guest right after while leaving the element up.
+  test('a page that closes itself closes its tab, and the window with its last tab', async () => {
+    const { mod, electronAPI, createdWebviews } = await loadTabsModule();
+    await mod.initTabs();
+    const popup = mod.createTab('https://popup.example');
+    const popupWebview = createdWebviews[createdWebviews.length - 1];
+    expect(mod.getTabs()).toHaveLength(2);
+
+    popupWebview.dispatch('close');
+    expect(mod.getTabs().map((tab) => tab.id)).not.toContain(popup.id);
+    expect(mod.getTabs()).toHaveLength(1);
+    expect(electronAPI.closeWindow).not.toHaveBeenCalled();
+
+    createdWebviews[0].dispatch('close');
+    expect(mod.getTabs()).toHaveLength(0);
+    expect(electronAPI.closeWindow).toHaveBeenCalledTimes(1);
+  });
+
+  test('a tab whose guest is already destroyed still closes', async () => {
+    const { mod, electronAPI, createdWebviews } = await loadTabsModule();
+    await mod.initTabs();
+    const onlyTab = mod.getActiveTab();
+    const deadWebview = createdWebviews[0];
+    // What every <webview> method does once its guest is gone.
+    deadWebview.isDevToolsOpened = jest.fn(() => {
+      throw new Error('Invalid guestInstanceId: 4');
+    });
+    deadWebview.closeDevTools = jest.fn(() => {
+      throw new Error('Invalid guestInstanceId: 4');
+    });
+
+    expect(() => mod.closeTab(onlyTab.id)).not.toThrow();
+    expect(mod.getTabs()).toHaveLength(0);
+    expect(deadWebview.parentNode).toBeFalsy();
+    expect(electronAPI.closeWindow).toHaveBeenCalledTimes(1);
+  });
+
   test('wires context menu, keyboard shortcuts, and ipc entrypoints', async () => {
     jest.useFakeTimers();
 

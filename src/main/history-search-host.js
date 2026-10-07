@@ -13,6 +13,27 @@
 // freeze the main thread just the same. That holds for every other request
 // queued on the same worker too: they fail with the same timeout rather than
 // falling back, since they would run against the same slow table on main.
+//
+// The timeout does not count a fresh worker's thread start (#562, the same
+// fix as task-worker-host.js got for #545): a request posted to a worker that
+// is not yet `online` has its timer armed when the worker comes online. (Node
+// fires `online` before the worker's own script has loaded, so loading
+// history-search-worker.js and better-sqlite3 still counts against the first
+// request.) The start has its own bound, WORKER_START_TIMEOUT_MS, independent
+// of the request timeout so a tight request limit is not also a start limit.
+// A first worker not online by then counts as one that cannot start (disabled,
+// main-thread fallback). Once any worker has answered, thread starts are known
+// to work, so a replacement that misses the bound is a loaded machine: its
+// requests fail with HistorySearchTimeout and the next request respawns.
+// Node always reports `online`, `error` or `exit`, so the bound is only a
+// safety net for the "every request settles" promise above.
+//
+// A caller's worst-case wait for one request is therefore
+// WORKER_START_TIMEOUT_MS plus REQUEST_TIMEOUT_MS (up to 40 s) when it is
+// posted to a worker that is still starting, not REQUEST_TIMEOUT_MS alone —
+// the History page can spin that long before it errors. Once the worker is
+// online the request's own timer runs from when it was posted, so time spent
+// behind other requests in the worker counts against it.
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const log = require('./logger');
@@ -20,6 +41,9 @@ const log = require('./logger');
 const WORKER_PATH = path.join(__dirname, 'history-search-worker.js');
 let workerPath = WORKER_PATH;
 const REQUEST_TIMEOUT_MS = 10_000;
+// Generous on purpose: a thread start on a heavily loaded machine takes
+// seconds, not tens of them.
+const WORKER_START_TIMEOUT_MS = 30_000;
 const RESOURCE_LIMITS = Object.freeze({
   maxOldGenerationSizeMb: 128,
   maxYoungGenerationSizeMb: 16,
@@ -39,8 +63,11 @@ class HistorySearchTimeout extends Error {
   }
 }
 
-let entry = null; // { worker, pending: Map<id, request>, answered, terminated }
+// { worker, pending: Map<id, request>, online, startTimer, answered, deliberate, terminated }
+let entry = null;
 let disabled = false;
+// Some worker has answered this session, so a thread start can succeed here.
+let anyAnswered = false;
 let nextId = 1;
 let requestTimeoutMs = REQUEST_TIMEOUT_MS;
 
@@ -56,6 +83,7 @@ function retire(target, reason, makeError = () => new HistorySearchUnavailable(r
   if (target.terminated) return;
   target.terminated = true;
   if (entry === target) entry = null;
+  clearTimeout(target.startTimer);
   if (!target.answered && !target.deliberate) {
     disabled = true;
     log.warn(`[HistorySearch] worker unavailable (${reason}); searching on the main thread`);
@@ -72,6 +100,8 @@ function spawn(dbPath) {
   const target = {
     worker: null,
     pending: new Map(),
+    online: false,
+    startTimer: null,
     answered: false,
     // Retired on purpose (timeout, stop), not because it could not run.
     deliberate: false,
@@ -82,6 +112,26 @@ function spawn(dbPath) {
     execArgv: [],
     resourceLimits: RESOURCE_LIMITS,
   });
+  target.worker.on('online', () => {
+    if (target.terminated) return;
+    target.online = true;
+    clearTimeout(target.startTimer);
+    // Everything posted while it was starting gets its timer now.
+    for (const request of target.pending.values()) armTimer(target, request);
+  });
+  target.startTimer = setTimeout(() => {
+    if (target.online) return;
+    const reason = `worker not online after ${WORKER_START_TIMEOUT_MS} ms`;
+    if (!anyAnswered) {
+      retire(target, reason);
+      return;
+    }
+    // Earlier workers started fine: this is load, not a worker that cannot
+    // run. Fail its requests as timeouts and let the next one respawn.
+    log.warn(`[HistorySearch] ${reason}; replacing it`);
+    target.deliberate = true;
+    retire(target, reason, () => new HistorySearchTimeout(`history search ${reason}`));
+  }, WORKER_START_TIMEOUT_MS);
   target.worker.on('message', (message) => {
     if (message?.unavailable) {
       // It could not open the database: no use retrying it this session.
@@ -93,6 +143,7 @@ function spawn(dbPath) {
     target.pending.delete(message.id);
     clearTimeout(request.timer);
     target.answered = true;
+    anyAnswered = true;
     if (message.ok) request.resolve(message.result);
     else request.reject(new Error(`History search failed: ${message.error}`));
   });
@@ -112,7 +163,9 @@ function spawn(dbPath) {
  * @param {'autocomplete'|'page'} op
  * @param {object} payload - `{ query }` or `{ options }`
  * @returns {Promise<any>} rejects with HistorySearchUnavailable when the
- *   caller should answer on the main thread instead
+ *   caller should answer on the main thread instead, or HistorySearchTimeout.
+ *   Settles within REQUEST_TIMEOUT_MS of the worker being online, so up to
+ *   WORKER_START_TIMEOUT_MS + REQUEST_TIMEOUT_MS on a worker still starting.
  */
 function runInWorker(dbPath, op, payload) {
   if (disabled) {
@@ -132,29 +185,36 @@ function runInWorker(dbPath, op, payload) {
   const target = entry;
   return new Promise((resolve, reject) => {
     const id = nextId++;
-    const timeoutMs = requestTimeoutMs;
-    const timer = setTimeout(() => {
-      if (!target.pending.has(id)) return;
-      log.warn(`[HistorySearch] ${op} still running after ${timeoutMs} ms; terminating the worker`);
-      target.pending.delete(id);
-      reject(new HistorySearchTimeout(`history ${op} timed out after ${timeoutMs} ms`));
-      target.deliberate = true;
-      // Requests queued behind the slow one fail the same way, not with
-      // HistorySearchUnavailable: a fallback would run them on main against
-      // the table that just took this long.
-      retire(
-        target,
-        'timed out',
-        () => new HistorySearchTimeout(`history search abandoned: a ${op} timed out ahead of it`)
-      );
-    }, timeoutMs);
-    target.pending.set(id, { resolve, reject, timer });
+    const request = { id, op, resolve, reject, timer: null };
+    target.pending.set(id, request);
+    // A worker still starting arms this from its 'online' handler instead.
+    if (target.online) armTimer(target, request);
     try {
       target.worker.postMessage({ id, op, ...payload });
     } catch (err) {
       retire(target, `worker unreachable (${err.message})`);
     }
   });
+}
+
+function armTimer(target, request) {
+  const { id, op } = request;
+  const timeoutMs = requestTimeoutMs;
+  request.timer = setTimeout(() => {
+    if (target.pending.get(id) !== request) return;
+    log.warn(`[HistorySearch] ${op} still running after ${timeoutMs} ms; terminating the worker`);
+    target.pending.delete(id);
+    request.reject(new HistorySearchTimeout(`history ${op} timed out after ${timeoutMs} ms`));
+    target.deliberate = true;
+    // Requests queued behind the slow one fail the same way, not with
+    // HistorySearchUnavailable: a fallback would run them on main against
+    // the table that just took this long.
+    retire(
+      target,
+      'timed out',
+      () => new HistorySearchTimeout(`history search abandoned: a ${op} timed out ahead of it`)
+    );
+  }, timeoutMs);
 }
 
 /** Terminate the worker (database closing, app quitting). */
@@ -170,6 +230,7 @@ function resetForTest({ timeoutMs = REQUEST_TIMEOUT_MS, path: testWorkerPath = W
   stopWorker();
   entry = null;
   disabled = false;
+  anyAnswered = false;
   requestTimeoutMs = timeoutMs;
   workerPath = testWorkerPath;
 }
@@ -180,6 +241,7 @@ module.exports = {
   HistorySearchUnavailable,
   HistorySearchTimeout,
   REQUEST_TIMEOUT_MS,
+  WORKER_START_TIMEOUT_MS,
   resetForTest,
   WORKER_PATH,
 };

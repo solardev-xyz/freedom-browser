@@ -175,7 +175,7 @@ const test = base.extend({
         // ~1 fps (60 fps shown), and on CI it intermittently stops. The
         // sidebar opens by widening over the area the tab's <webview> had,
         // and the browser routes a click by hit-testing the compositor's
-        // last *submitted* frame (see clickOverGuest in fixtures.js), so
+        // last *presented* frame (see clickOverGuest in fixtures.js), so
         // with no new frame a click on #wallet-selector-btn can still go to
         // the guest: Playwright's in-renderer checks pass, the click
         // returns, and the selector never opens. Looped on CI 2026-10-06, retries

@@ -1,7 +1,7 @@
 const { EventEmitter } = require('events');
 const { runChild } = require('./myotis-child');
 
-function setup(abi = 36, { omit = [] } = {}) {
+function setup(abi = 38, { omit = [] } = {}) {
   const host = new EventEmitter();
   host.connected = true;
   host.send = jest.fn();
@@ -26,7 +26,7 @@ function setup(abi = 36, { omit = [] } = {}) {
   return { host, addon, load, send, start };
 }
 
-test.each([26, 31, 32, 33, 35, '36'])('loads and starts native code only after explicit owned start; refuses ABI %s', (abi) => {
+test.each([26, 31, 32, 33, 35, 36, 37, '38'])('loads and starts native code only after explicit owned start; refuses ABI %s', (abi) => {
   const ctx = setup(abi);
   expect(ctx.load).not.toHaveBeenCalled();
   ctx.start();
@@ -39,7 +39,7 @@ test.each([26, 31, 32, 33, 35, '36'])('loads and starts native code only after e
 // must fail the handshake as `methods`, never start and serve a partial surface.
 test.each(['ethCallTxJson', 'estimateGasTxJson', 'getCodeJson', 'getStorageAtJson'])(
   'refuses an addon without %s before init', (method) => {
-    const ctx = setup(36, { omit: [method] });
+    const ctx = setup(38, { omit: [method] });
     ctx.start();
     expect(ctx.addon.init).not.toHaveBeenCalled();
     expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'started', ok: false, failure: 'methods' }));

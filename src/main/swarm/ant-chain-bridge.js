@@ -22,7 +22,7 @@ const MAX_ERROR_MESSAGE = 500;
 // with room for the router's own handling.
 const LOG_SCAN_QUORUM_TIMEOUT_MS = 30000;
 
-// Ant v0.5.59 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
+// Ant v0.5.61 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
 // unchanged since v0.5.45): its eth_getLogs scan shrinks the window only when
 // the error message contains one of these needles, and aborts
 // owned-batch/chequebook recovery otherwise.

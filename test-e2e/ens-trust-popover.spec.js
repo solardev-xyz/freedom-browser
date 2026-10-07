@@ -13,7 +13,7 @@
 // shape `ens-resolver.js`'s `buildTrust` emits for that verdict — a conflict,
 // for instance, has nobody in `agreed` and every queried host in `dissented`.
 
-const { test, expect, clickOverGuest, waitForPopoverFrame } = require('./fixtures');
+const { test, expect, clickOverGuest } = require('./fixtures');
 
 const LONG_CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
 // Too long for one popover line, so the popover middle-truncates it — which is
@@ -270,11 +270,7 @@ for (const level of Object.keys(LEVELS)) {
     const shield = await loadLevel(window, harness, level);
     await expect(shield).toHaveAttribute('aria-label', expected.shieldLabel);
 
-    await clickOverGuest(
-      window,
-      () => shield.click(),
-      async () => (await menuState(window)).popover
-    );
+    await clickOverGuest(shield);
     const popover = window.locator('#trust-popover');
     await expect(popover).toHaveAttribute('data-trust', level);
     await expect(shield).toHaveAttribute('aria-expanded', 'true');
@@ -317,11 +313,7 @@ test('clicking a value row copies its full, untruncated text', async ({
 }) => {
   const copies = await recordCopies(electronApp);
   const shield = await loadLevel(window, harness, 'verified');
-  await clickOverGuest(
-    window,
-    () => shield.click(),
-    async () => (await menuState(window)).popover
-  );
+  await clickOverGuest(shield);
 
   // The long RPC host doesn't fit one line, so the popover paints it middle-
   // truncated — the premise that makes this copy assertion meaningful.
@@ -332,7 +324,8 @@ test('clicking a value row copies its full, untruncated text', async ({
   expect(displayed).toContain('…');
   expect(displayed.length).toBeLessThan(LONG_HOST.length);
 
-  await hostValue.click();
+  // The popover has only just opened over the tab's `<webview>`.
+  await clickOverGuest(hostValue);
   await expect.poll(copies).toEqual([LONG_HOST]);
   // The "Copied" confirmation, and the popover stays open for another copy.
   await expect(window.locator('#trust-popover-tooltip')).toHaveText('Copied');
@@ -379,13 +372,12 @@ for (const [menu, button] of [
 
     await window.locator(button).click();
     await expect.poll(() => menuState(window)).toMatchObject({ [menu]: true, backdrop: true });
-    await waitForPopoverFrame(window);
 
-    // A real pointer click at the shield's position, exactly once — not a
-    // retrying helper, which could hide a first click that only dismissed the
-    // menu.
-    const box = await shield.boundingBox();
-    await window.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    // A real pointer click on the shield, exactly once — never re-clicked until
+    // the popover shows, which could hide a first click that only dismissed the
+    // menu. The menu has only just opened, so wait until the browser routes the
+    // pointer to the chrome first.
+    await clickOverGuest(shield);
 
     await expect
       .poll(() => menuState(window))

@@ -26,7 +26,7 @@
   "dependencies": [
     {
       "name": "electron",
-      "version": "44.5.1",
+      "version": "44.6.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },
@@ -50,7 +50,7 @@
     },
     {
       "name": "ant (Swarm)",
-      "version": "v0.5.59",
+      "version": "v0.5.61",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },
@@ -110,7 +110,7 @@
     },
     {
       "name": "myotis",
-      "version": "v0.1.13",
+      "version": "v0.1.14",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
@@ -398,7 +398,7 @@
     },
     {
       "name": "@corpus-core/colibri-stateless",
-      "version": "3.0.0",
+      "version": "3.0.1",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/corpus-core/c4" },
