@@ -5,10 +5,44 @@ const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
 
 const PACKAGE = '@freedom/railgun-kohaku-adapter';
-const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.2.0.tgz';
+const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.3.0.tgz';
 const root = path.resolve(__dirname, '../../..');
 const installed = path.join(root, 'node_modules', PACKAGE);
 const modules = {
+  'railgun-private-destination': [
+    PACKAGE + '/host/data',
+    [
+      'isRailgunForeignTransfer',
+      'assertRailgunPrivateTransferRecipient',
+      'decodeRailgunForeignDestination',
+      'verifyRailgunForeignOutput',
+    ],
+  ],
+  'railgun-private-signature': [PACKAGE + '/host/data', ['normalizeRailgunSignature']],
+  'railgun-private-preparation': [
+    PACKAGE + '/host/data',
+    [
+      'selectRailgunPrivatePreparation',
+      'normalizeRailgunPrivatePreparation',
+      'normalizeRailgunPrivateOffer',
+      'normalizeRailgunPrivateOperation',
+    ],
+  ],
+  'railgun-private-results': [
+    PACKAGE + '/host/data',
+    [
+      'normalizeRailgunSignature',
+      'normalizeRailgunSpendSignature',
+      'normalizeRailgunSpendKeyRequest',
+      'normalizeRailgunPrivateVerification',
+      'normalizeRailgunPrivateReceiver',
+    ],
+  ],
+  'railgun-private-recovery-data': [
+    PACKAGE + '/host/data',
+    ['normalizeRailgunPrivateRecoveryInput', 'normalizeRailgunPrivateRecoveryResult'],
+  ],
+
   'railgun-private-policy': [
     PACKAGE + '/host/data',
     ['TRANSACT_ABI', 'BOUND_PARAMS', 'validateRailgunPrivateTransaction'],
@@ -105,6 +139,11 @@ test('the package resolves to one installed copy from the wallet modules', () =>
       'src/data/railgun-private-intent.js',
       'src/data/railgun-private-offer.js',
       'src/data/railgun-private-capsule.js',
+      'src/data/railgun-private-destination.js',
+      'src/data/railgun-private-signature.js',
+      'src/data/railgun-private-preparation.js',
+      'src/data/railgun-private-results.js',
+      'src/data/railgun-private-recovery-data.js',
       'src/railgun-kohaku-private-adapter.js',
       'src/railgun-kohaku-public-adapter.js',
       'src/railgun-kohaku-read-data.js',
@@ -127,7 +166,7 @@ test('the installed package is the committed tarball the lockfile names', () => 
   expect(entry.resolved).toBe('file:' + TARBALL);
   expect(entry.integrity).toBe('sha512-' + createHash('sha512').update(bytes).digest('base64'));
   expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-    '752ace2fbd3fa08a5ec036aa688021e322785ff7903da7555082f88d92b4c610'
+    'f5fedd6e610567690ceb6de4e191bf5e076093cf1e69c8ce33973f2437c4b0a5'
   );
   const files = untar(bytes);
   expect(Object.keys(files).sort()).toEqual(
@@ -144,6 +183,13 @@ test('the installed package is the committed tarball the lockfile names', () => 
       'src/data/railgun-private-intent.js',
       'src/data/railgun-private-offer.js',
       'src/data/railgun-private-capsule.js',
+      'src/data/railgun-private-destination.js',
+      'src/data/railgun-private-signature.js',
+      'src/data/railgun-private-preparation.js',
+      'src/data/railgun-private-results.js',
+      'src/data/railgun-private-recovery-data.js',
+      'src/railgun-engine-manifest.json',
+      'src/railgun-prover-manifest.json',
       'read.mjs',
       'data.cjs',
       'data.mjs',
@@ -191,7 +237,7 @@ test('Freedom keeps the shield pins the package adapters read, byte for byte', (
   );
 });
 
-test('Freedom retains owned preparation and new-capsule checks around host data exports', () => {
+test('Freedom keeps new-capsule creation while sharing preparation and recovery data', () => {
   const host = require(PACKAGE + '/host/data');
   const capsule = require('./railgun-private-capsule');
   expect(capsule.normalizeRailgunPrivateCapsule).toBe(host.normalizeRailgunPrivateCapsule);
@@ -201,3 +247,13 @@ test('Freedom retains owned preparation and new-capsule checks around host data 
     host.normalizeRailgunPrivateOffer
   );
 });
+
+// Result validators and runtime authentication must bind the same build.
+test.each(['engine', 'prover'])(
+  'package %s manifest matches the authenticated Freedom runtime',
+  (name) => {
+    expect(fs.readFileSync(path.join(__dirname, `railgun-${name}-manifest.json`))).toEqual(
+      fs.readFileSync(path.join(installed, `src/railgun-${name}-manifest.json`))
+    );
+  }
+);

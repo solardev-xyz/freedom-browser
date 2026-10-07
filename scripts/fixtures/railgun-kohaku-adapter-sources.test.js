@@ -36,9 +36,16 @@ test('pins this list, the lockfile and every installed adapter file that can loa
   )
     .filter((file) => file.startsWith(installed + path.sep))
     .map((file) => path.relative(root, file));
-  expect(loaded.length).toBe(13);
-  // The exports map in package.json decides which installed file runs.
+  expect(loaded.length).toBe(18);
+  // Exports select the installed entry; result validators lazily read both manifest pins.
   expect(SOURCES.slice(2).sort()).toEqual(
-    [...loaded, path.relative(root, path.join(installed, 'package.json'))].sort()
+    [
+      ...loaded,
+      ...[
+        'package.json',
+        'src/railgun-engine-manifest.json',
+        'src/railgun-prover-manifest.json',
+      ].map((name) => path.relative(root, path.join(installed, name))),
+    ].sort()
   );
 });

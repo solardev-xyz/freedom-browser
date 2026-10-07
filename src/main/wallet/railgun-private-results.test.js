@@ -1,11 +1,14 @@
-jest.mock('./railgun-private-intent', () => ({
-  validateRailgunPrivateSigningIntent: jest.fn(),
-  matchRailgunPrivateProvedTransaction: jest.fn(),
-}));
+jest.mock(
+  '../../../node_modules/@freedom/railgun-kohaku-adapter/src/data/railgun-private-intent',
+  () => ({
+    validateRailgunPrivateSigningIntent: jest.fn(),
+    matchRailgunPrivateProvedTransaction: jest.fn(),
+  })
+);
 const {
   validateRailgunPrivateSigningIntent,
   matchRailgunPrivateProvedTransaction,
-} = require('./railgun-private-intent');
+} = require('../../../node_modules/@freedom/railgun-kohaku-adapter/src/data/railgun-private-intent');
 const {
   normalizeRailgunSpendSignature,
   normalizeRailgunSpendKeyRequest,
@@ -181,7 +184,9 @@ describe('receiver result contracts', () => {
   }
   beforeEach(() =>
     validateRailgunPrivateSigningIntent.mockImplementation(
-      jest.requireActual('./railgun-private-intent').validateRailgunPrivateSigningIntent
+      jest.requireActual(
+        '../../../node_modules/@freedom/railgun-kohaku-adapter/src/data/railgun-private-intent'
+      ).validateRailgunPrivateSigningIntent
     )
   );
   test.each([false, true])(
