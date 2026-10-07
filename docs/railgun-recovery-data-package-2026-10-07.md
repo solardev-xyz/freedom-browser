@@ -25,5 +25,29 @@ type or authority defect. The retained Freedom tests also exercise the package
 through the compatibility modules; a matcher mock now targets the package's actual
 implementation. These are engineering checks, not an external security audit.
 
-Native and packaged acceptance on the final adoption commit remains pending.
+On clean adoption commit `b5d94998`, two native signing/proving cases passed
+(transfer/full unshield and partial unshield), including cold signature reuse. A
+third genuine-account synthetic case passed Shield-input foreign-recipient recovery,
+receiver scanning and independent recipient withdrawal preparation. It did not
+sign, prove or submit B's withdrawal. All three parent processes exited naturally
+with code 0, with source/runtime/package inputs unchanged before and after. The
+launcher retained explicit post-run snapshots for this campaign. These are synthetic
+services and notes, not live or Tor evidence.
+
+An unsigned macOS arm64 directory build also passed. The packaged executable
+reproduced four golden vectors, 21 shared export references and both manifest
+parity checks. All 33 shipped package files matched the 42-file npm artifact,
+except electron-builder's removal of the package scripts field; README and eight
+`.d.ts` files were omitted. Native proving and packaged loading were separate
+checks, not a packaged end-to-end proof run. One initial packaged-consumer command
+stopped on a wrong fixture filename; correcting that input produced the passing
+run without changing the artifact.
+
+The retained Freedom module/inventory checks passed 347 tests, followed by 55
+final identity/source tests after documentation and manifest-parity updates. Claude
+independently passed 736 tests across eleven affected suites. Lint passed. A broad
+run was interrupted after npm's nested script swallowed its worker-limit flag; it
+is not passing evidence. Full combined regression is recorded on the integration
+baseline separately.
+
 The stopped live recovery campaign is unchanged and no new live success is claimed.
