@@ -68,10 +68,12 @@ function storageInput(input) {
   if (
     !text(data.profileId) ||
     subject.kind !== 'private-account' ||
-    !text(subject.principal) ||
+    typeof subject.principal !== 'string' ||
+    !/^railgun:(0|[1-9][0-9]{0,4})$/.test(subject.principal) ||
+    Number(subject.principal.slice(8)) > 65535 ||
     subject.chainId !== 11155111 ||
     subject.protocol !== 'railgun' ||
-    !text(subject.deployment) ||
+    subject.deployment !== 'sepolia' ||
     subject.role !== 'engine' ||
     requirements.origin !== 'tor' ||
     !['public', 'pir'].includes(requirements.content) ||
@@ -217,7 +219,7 @@ function createRailgunPlatformHost(...args) {
       const options = storageInput(input);
       // Worker-local context only; never a main owner facade or legacy fallback.
       const filename = require.resolve('./railgun-owner-storage-entry');
-      return new Worker(filename, {
+      const worker = new Worker(filename, {
         ...options,
         env: {},
         execArgv: [],
@@ -225,6 +227,9 @@ function createRailgunPlatformHost(...args) {
         stderr: true,
         resourceLimits: { maxOldGenerationSizeMb: 256 },
       });
+      worker.stdout.resume();
+      worker.stderr.resume();
+      return worker;
     },
   });
 }

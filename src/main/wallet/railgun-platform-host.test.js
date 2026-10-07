@@ -357,11 +357,43 @@ describe('fixed Railgun platform host', () => {
       expect(options.workerData.storage.key).toBe(input.workerData.storage.key);
       expect(options.workerData.revoked).toBe(input.workerData.revoked);
       expect(options.transferList[0]).toBe(input.workerData.storage.key.buffer);
-      // The package supervisor still owns stream draining and original exit listeners.
-      expect(m.worker.stdout.resume).not.toHaveBeenCalled();
+      // Drain immediately; the package supervisor still owns original exit listeners.
+      expect(m.worker.stdout.resume).toHaveBeenCalledTimes(1);
+      expect(m.worker.stderr.resume).toHaveBeenCalledTimes(1);
+    }
+  );
+  test.each(['railgun:0', 'railgun:65535'])(
+    'accepts the canonical storage principal boundary %s',
+    (principal) => {
+      const m = load(),
+        input = storage();
+      input.workerData.subject.principal = principal;
+      expect(m.factory().spawnStorageWorker(input)).toBe(m.worker);
     }
   );
   test.each([
+    'other:0',
+    'railgun:00',
+    'railgun:01',
+    'railgun:-1',
+    'railgun:65536',
+    'railgun:99999',
+    'railgun:100000',
+    'railgun:1\n',
+  ])('rejects a noncanonical or out-of-range storage principal %p', (principal) => {
+    const m = load(),
+      input = storage();
+    input.workerData.subject.principal = principal;
+    expect(() => m.factory().spawnStorageWorker(input)).toThrow(REFUSED);
+    expect(m.WorkerMock).not.toHaveBeenCalled();
+  });
+  test.each([
+    [
+      'subject deployment',
+      (i) => {
+        i.workerData.subject.deployment = 'mainnet';
+      },
+    ],
     [
       'top callback',
       (i) => {
@@ -598,8 +630,6 @@ parentPort.close();\n`,
     const worker = m.factory().spawnStorageWorker(input);
     expect(worker).toBeInstanceOf(Worker);
     expect(input.workerData.storage.key.byteLength).toBe(0);
-    worker.stdout.resume();
-    worker.stderr.resume();
     const message = new Promise((resolve, reject) => {
       worker.once('message', resolve);
       worker.once('error', reject);
