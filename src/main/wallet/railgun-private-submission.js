@@ -23,7 +23,8 @@ const REVIEW_WINDOW_MS = 30000;
 // H, the person's review deadline; F = H + admissionMs, by which signing,
 // history reconciliation and journal begin must be admitted (the service's
 // review expiry, checked again before and after journal begin, and on the
-// monotonic clock by this module's submission entry); and E, the
+// monotonic clock by this module's submission entry and, for the raw send, at
+// the private RPC's transport admission); and E, the
 // first genuine authority's own unrenewed age. H is offered only if
 // E >= F + sendReserveMs, the time left for the raw send and its
 // acknowledgement. The allowances refuse before the preflight, before the
@@ -409,12 +410,16 @@ async function submitFinal({
     // clock too, so a backward wall-clock step after signing cannot admit
     // journal begin or the send after F. Never in the scope's isCurrent: an
     // acknowledgement after F must stay acknowledged, not become uncertain.
+    // The same monotonic F is the raw send's private RPC admission deadline
+    // (recovered only), checked after the RPC's awaited readiness, last before
+    // transport admission: fixed here, never caller data, never renewed.
     submissions.set(handle, {
       intent,
       assertCurrent: () => {
         assertCurrent();
         if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);
       },
+      admission: lifetimeEnd ? Object.freeze({ admissionDeadline: admissionEnd }) : undefined,
     });
     await network.assertCanSubmit(scope.signal);
     assert.equal(
@@ -638,15 +643,19 @@ async function submitRailgunPrivateTransaction({
   }
   return state.outcome ? Object.freeze(state.outcome) : refusalResult(state);
 }
+// Returns the entry's raw-send admission ({ admissionDeadline }, recovered
+// only; undefined on the warm path) for the network's final transport check.
 function assertRailgunPrivateSubmission(handle, intent) {
+  let entry;
   try {
-    const entry = submissions.get(handle);
+    entry = submissions.get(handle);
     assert.ok(entry);
     assert.deepEqual(entry.intent, intent);
     entry.assertCurrent();
   } catch {
     throw fail();
   }
+  return entry.admission;
 }
 // Cold admission is invocation-private. Neither its data nor a proof-recovery
 // diagnostic can mint a warm completion or be supplied to submitFinal.

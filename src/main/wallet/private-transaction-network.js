@@ -223,10 +223,10 @@ function getPrivateTransactionNetwork(handle, options = {}) {
     // wall-clock step cannot extend. Never part of assertActive(): after the
     // send, a passed F must not turn an acknowledgement into uncertainty.
     const admitted = intent;
-    const assertAdmitted = () => {
-      if (admitted.kind === 'railgun-transact')
-        require('./railgun-private-submission').assertRailgunPrivateSubmission(handle, admitted);
-    };
+    const assertAdmitted = () =>
+      admitted.kind === 'railgun-transact'
+        ? require('./railgun-private-submission').assertRailgunPrivateSubmission(handle, admitted)
+        : undefined;
     assertAdmitted();
     if (intent.kind === 'railgun-native-shield')
       require('./railgun-shield-operation').assertRailgunShieldSubmission(handle, intent);
@@ -262,11 +262,17 @@ function getPrivateTransactionNetwork(handle, options = {}) {
     try {
       assertActive();
       assertDeadline();
-      assertAdmitted();
+      // Recovered only: the submission entry's monotonic F, never caller data,
+      // is also the RPC's admission deadline for the send. The RPC checks it
+      // after its awaited readiness, last before transport admission; it
+      // never cancels an admitted send or judges its response.
+      const admission = assertAdmitted();
       const response = await rpc.request(
         'eth_sendRawTransaction',
         [signed],
-        (result) => hash(result) && result.toLowerCase() === txHash
+        (result) => hash(result) && result.toLowerCase() === txHash,
+        undefined,
+        admission
       );
       await journal().markSubmitted(txHash);
       assertActive();

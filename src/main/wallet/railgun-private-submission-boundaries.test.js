@@ -140,6 +140,7 @@ jest.mock('./private-submission-journal', () => {
       } finally {
         mock.marks.push([name + '-end', performance.now()]);
         mock.writing = null;
+        mock.onWritten?.(name);
       }
     };
   return {
@@ -753,6 +754,25 @@ async function setup(kit, overrides = {}) {
       block();
     };
   };
+  // The same synchronous work after journal begin, inside the raw send's own
+  // RPC request: as ready() resumes from its awaited chain-check promise, or
+  // at raw()'s last activity check after serialization. Each is that
+  // function's second direct activity check; the frame names it, because
+  // every privacy-context check in between also reads the endpoint.
+  mock.onWritten = (name) => {
+    if (name !== 'begin' || !s.crossSend) return;
+    mock.onWritten = null;
+    const frame = new RegExp(`^at ${s.crossSend.at} \\(`);
+    let checks = 0;
+    mock.onEndpoint = () => {
+      // [0] Error, [1] this hook, [2] the endpoint read, [3] the RPC's
+      // assertActive, [4] its caller.
+      if (!frame.test(new Error().stack.split('\n')[4]?.trim() ?? '') || ++checks !== 2) return;
+      mock.onEndpoint = null;
+      mark('crossing');
+      mock.clock.block(s.crossSend.ms);
+    };
+  };
   mock.loadArtifacts = async ({ variant }) => {
     await mock.clock.sleep(s.artifactsMs);
     return { variant, wasm: Buffer.alloc(4, 1), zkey: Buffer.alloc(4, 2) };
@@ -1078,6 +1098,20 @@ const refusedBeforeJournal = (seen) => {
   expect(mock.chain.accepted).toEqual([]);
   expect(seen.diagnostic).toEqual({ stage: 'submission', code: 'PRIVATE_TRANSACTION_FAILED' });
 };
+// Begin was durable: the attempt stays journaled, unsent and uncertain, never
+// safe to resend. The journal admits no further send until it is resolved.
+const staysUncertain = async (seen) => {
+  expect(seen.outcome).toBe('journaled-uncertain');
+  expect(seen.sends).toEqual([]);
+  expect(mock.chain.accepted).toEqual([]);
+  expect(seen.attempts).toEqual([expect.objectContaining({ state: 'attempted' })]);
+  expect(seen.attempts[0].resolution).toBeUndefined();
+  expect(seen.result).toEqual({
+    transactionHash: seen.attempts[0].hash,
+    submissionStatus: 'unknown',
+  });
+  await expect(mock.journal.assertCanSubmit()).rejects.toThrow();
+};
 const MONOTONIC = Object.freeze({
   // Approval 2 ms before F; the signing attestation then takes 5 ms. Only
   // the check before the signer refuses: the borrowed key is never used.
@@ -1152,22 +1186,37 @@ const MONOTONIC = Object.freeze({
       });
       expect(lastAt('begin-start')).toBeLessThan(monoH());
       expect(lastAt('begin-end')).toBeGreaterThanOrEqual(monoH());
-      expect(seen.outcome).toBe('journaled-uncertain');
-      expect(seen.sends).toEqual([]);
-      expect(mock.chain.accepted).toEqual([]);
-      expect(seen.result).toEqual({
-        transactionHash: seen.attempts[0].hash,
-        submissionStatus: 'unknown',
+      await staysUncertain(seen);
+    }
+  },
+  // The same step; begin and the network's check after it are admitted 1 ms
+  // before F, and the raw send's own RPC request crosses F: as ready()
+  // resumes from its awaited chain check, or at raw()'s last activity check.
+  // Only the RPC's admission deadline, the submission entry's monotonic F,
+  // refuses before transport admission: durable, never sent.
+  'ready-crosses-F': async () => {
+    for (const where of ['ready', 'raw']) {
+      const seen = await run(DEFAULT, {
+        ...near(1101),
+        wallStep: { on: 'sign-end', ms: BACK },
+        crossSend: { at: where, ms: 5 },
       });
+      expect(at('wall-step')).toBeLessThan(monoH());
+      expect(lastAt('begin-end')).toBe(monoH() - 1);
+      expect(at('crossing')).toBe(monoH() - 1);
+      await staysUncertain(seen);
     }
   },
   // A send admitted 1 ms before F and acknowledged after it stays
-  // acknowledged: F is no part of the submission scope's isCurrent.
+  // acknowledged, with or without the step: F is no part of the submission
+  // scope's isCurrent, and the RPC's admission deadline never judges a reply.
   'ack-after-F': async () => {
-    const seen = await run(DEFAULT, near(1101));
-    expect(seen.outcome).toBe('acknowledged');
-    expect(seen.sends[0].at).toBe(monoH() - 1);
-    expect(seen.sends[0].end).toBeGreaterThan(monoH());
+    for (const step of [{}, { wallStep: { on: 'sign-end', ms: BACK } }]) {
+      const seen = await run(DEFAULT, { ...near(1101), ...step });
+      expect(seen.outcome).toBe('acknowledged');
+      expect(seen.sends[0].at).toBe(monoH() - 1);
+      expect(seen.sends[0].end).toBeGreaterThan(monoH());
+    }
   },
 });
 describe('the monotonic admission deadline F against a backward wall-clock step', () => {
@@ -1681,10 +1730,58 @@ const MUTATIONS = [
     'refresh-crosses-F',
     'caught',
   ],
+  // Alone it is dominated for F: the RPC refuses at its entry with the
+  // admission this check returns, at the same instant with no event-loop
+  // turn between. Removed together with that admission, it is caught.
   [
-    "the network's check before the raw send",
-    { [NETWORK]: ['assertDeadline();\n      assertAdmitted();\n', 'assertDeadline();\n'] },
+    "the network's check before the raw send, with the RPC admission it returns",
+    { [NETWORK]: ['const admission = assertAdmitted();', 'const admission = undefined;'] },
     'begin-crosses-F',
+    'caught',
+  ],
+  [
+    "the raw send's RPC admission deadline",
+    {
+      [NETWORK]: [
+        '        undefined,\n        admission\n      );',
+        '        undefined,\n        undefined\n      );',
+      ],
+    },
+    'ready-crosses-F',
+    'caught',
+  ],
+  // A begin that crosses F is still refused by the network's check after it.
+  [
+    "the raw send's RPC admission deadline, begin crossing F",
+    {
+      [NETWORK]: [
+        '        undefined,\n        admission\n      );',
+        '        undefined,\n        undefined\n      );',
+      ],
+    },
+    'begin-crosses-F',
+    'survives',
+  ],
+  [
+    "the submission entry's raw-send admission dropped",
+    {
+      [SUBMISSION]: [
+        'admission: lifetimeEnd ? Object.freeze({ admissionDeadline: admissionEnd }) : undefined,',
+        'admission: undefined,',
+      ],
+    },
+    'ready-crosses-F',
+    'caught',
+  ],
+  [
+    "the submission entry's raw-send admission 10 ms after F",
+    {
+      [SUBMISSION]: [
+        'Object.freeze({ admissionDeadline: admissionEnd })',
+        'Object.freeze({ admissionDeadline: admissionEnd + 10 })',
+      ],
+    },
+    'ready-crosses-F',
     'caught',
   ],
   [
