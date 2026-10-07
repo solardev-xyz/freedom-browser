@@ -1494,3 +1494,71 @@ test.each([false, true])(
     }
   }
 );
+
+// Review finding B, quantified for the held L-A transfer (a Shield input). The
+// recovered path asserts the proof (60 s after its verifier exits), the POI
+// receipt (60 s from its acquisition start) and, inside submitFinal, the
+// preflight (60 s from its acquisition start) with 50 s remaining: once after
+// membership (live(50000), stage 'membership') and again at transaction-review
+// admission (reviewMarginMs, stage 'submission'). Everything from the verifier
+// exit to the review therefore has 10 s. Each read is one sequential Tor request.
+const TOR_READS = Object.freeze({
+  'poi-acquire': 4, // pois_per_list, merkle_proofs, one poi_events, validate_poi_merkleroots
+  preflight: 19, // 2 lazy chain-id checks, 12 deployment and 5 private reads
+  eth_getCode: 2, // the transaction RPC's lazy chain-id check, then the EOA code
+  eth_estimateGas: 1,
+  eth_call: 1,
+  eth_getTransactionCount: 1, // twice, in review setup
+  eth_getBalance: 1,
+});
+// Transaction service before its review: lease eth_getCode, eth_gasPrice, nonce.
+const SERVICE_READS = 3;
+async function torBudget({ read, membership = 0 }) {
+  mock.scope.close();
+  setup('railgun-private-transfer', 'Shield');
+  jest.spyOn(performance, 'now').mockImplementation(() => mock.clock);
+  for (const [step, count] of Object.entries(TOR_READS))
+    mock.hooks[step] = () => {
+      mock.clock += count * read;
+    };
+  mock.hooks.membership = () => {
+    mock.clock += membership;
+  };
+  const send = mock.send;
+  mock.send = async (...args) => {
+    mock.clock += SERVICE_READS * read;
+    return send(...args);
+  };
+  const result = await submit(options);
+  return { result, diagnostic: diagnosticOf(result) };
+}
+describe('recovered submission over Tor: the 10 s from verifier exit to review', () => {
+  test('33 sequential reads reach the review only at <= 303 ms each', async () => {
+    const reads =
+      Object.values(TOR_READS).reduce((sum, count) => sum + count, 0) + 1 + SERVICE_READS;
+    expect(reads).toBe(33);
+    const fast = await torBudget({ read: 300 });
+    expect(fast.result).toEqual({ transactionHash: hex(17), submissionStatus: 'acknowledged' });
+    expect(mock.clock - mock.proofAt).toBe(33 * 300);
+    expect(mock.events).toContain('transaction-review');
+    const slow = await torBudget({ read: 310 });
+    expect(slow.result).toEqual({ status: 'recovery-required', stage: 'submission' });
+    expect(slow.diagnostic.stage).toBe('submission');
+    // Refused at review admission: the caller's review never runs, after the
+    // preflight's nullifier query and the calldata's eth_estimateGas and eth_call.
+    expect(mock.events).not.toContain('transaction-review');
+    expect(mock.events).toEqual(expect.arrayContaining(['preflight', 'eth_estimateGas']));
+    expect(mock.events).not.toContain('sign');
+  });
+  test('the measured owned-POI acquisition refuses at membership before any preflight', async () => {
+    // d1b/report.json: one POI acquisition plus membership verification over
+    // this Tor transport took 18,587 ms (4 reads at 300 ms, the rest verifier).
+    const { result, diagnostic } = await torBudget({ read: 300, membership: 18587 - 4 * 300 });
+    expect(result).toEqual({ status: 'recovery-required', stage: 'membership' });
+    expect(diagnostic.stage).toBe('membership');
+    expect(mock.events).toContain('membership');
+    expect(mock.events).not.toContain('preflight-open');
+    expect(mock.events).not.toContain('eth_estimateGas');
+    expect(mock.events).not.toContain('sign');
+  });
+});

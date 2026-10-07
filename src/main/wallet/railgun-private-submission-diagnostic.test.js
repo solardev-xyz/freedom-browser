@@ -33,8 +33,9 @@ jest.mock('./railgun-private-operation', () => ({
   },
 }));
 jest.mock('./railgun-private-proof', () => ({
-  verifyRailgunPrivateProof: async () => mock.proof,
-  assertRailgunPrivateProof: () => {},
+  verifyRailgunPrivateProof: async () => (mock.verify ? mock.verify() : mock.proof),
+  assertRailgunPrivateProof: (_receipt, _enrollment, _evidence, margin = 0) =>
+    mock.assertProof?.(margin),
 }));
 jest.mock('./railgun-artifacts', () => ({
   loadRailgunArtifacts: async (options) => mock.loadArtifacts(options),
@@ -158,6 +159,7 @@ function setup({ checkpointHash = 'b'.repeat(64), intentDigest } = {}) {
   mock.reply = async (operation, method, params) => {
     const name = callName(method, params);
     mock.requests.push(`${operation}:${name}`);
+    mock.latency?.();
     const value = await mock.fault({ operation, method, name, params });
     return value === undefined ? honest(method, params) : value;
   };
@@ -196,8 +198,11 @@ function setup({ checkpointHash = 'b'.repeat(64), intentDigest } = {}) {
   mock.enrollment = {
     signal: scope.signal,
     openReservations: async () => ({
-      withSigningRecovery: async (use) =>
-        use(records, { signal: scope.signal, assertCurrent() {} }),
+      withSigningRecovery: async (use, options) =>
+        use(
+          records,
+          mock.recoveryContext?.(options) ?? { signal: scope.signal, assertCurrent() {} }
+        ),
       assertReceiptContext() {},
       assertReceipt: async () => records[0].entry,
     }),
@@ -724,4 +729,117 @@ test('only genuine refusal results carry a diagnostic', async () => {
   const again = await submit(options);
   expect(again).toEqual({ status: 'recovery-required', stage: 'completion' });
   expect(diagnosticOf(again)).toEqual({ stage: 'completion', code: 'UNCLASSIFIED' });
+});
+
+// L-A step 3b (s3b/report.json, OUTCOME-3B.md) against every clock the original
+// submission path evaluates while state.stage is 'preflight'. Recorded: proving
+// returned after 23,427 ms; the submission refused at 'preflight' 2,410 ms after
+// it started, with 0 reviews; the whole process (observedAt 06:53:38.065Z, report
+// written 06:54:35Z) ran at most 57.9 s including a 4,423 ms Tor bootstrap. So the
+// completion was at most 57.9 - 4.423 - 23.427 - 2.41 = 27.64 s old when the
+// submission started, and its preflight ran for at most 2.41 s. The completion
+// (120 s from mint), the signing-recovery phase (timeoutMs from entry) and the
+// proof receipt (60 s after the verifier exits) are modelled at their production
+// bounds; the 20 s acquisition timer, the 60 s preflight ages, the 10 s admission
+// margin and the header wall-clock window are the real modules.
+const assert = require('assert/strict');
+const RECORDED_3B_GAP_MS = 27640;
+function clocked({ gapMs, verifyMs, rpcMs }) {
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+  setup();
+  const now = () => performance.now();
+  const advance = (ms) => jest.advanceTimersByTime(ms);
+  // railgun-private-operation.js complete(): 120 s from mint, scope closed on expiry.
+  const minted = now(),
+    completion = new AbortController();
+  setTimeout(() => completion.abort(), 120000);
+  mock.claim = {
+    signal: completion.signal,
+    close() {},
+    assertCurrent: () => {
+      assert.ok(!completion.signal.aborted && now() >= minted && now() < minted + 120000);
+      return mock.snapshot;
+    },
+  };
+  // railgun-private-reservations.js withSigningRecovery(): deadline from entry.
+  mock.recoveryContext = ({ timeoutMs }) => {
+    const deadline = now() + timeoutMs,
+      phase = new AbortController();
+    setTimeout(() => phase.abort(), timeoutMs);
+    return {
+      signal: phase.signal,
+      deadline,
+      assertCurrent: () => assert.ok(!phase.signal.aborted && now() < deadline),
+    };
+  };
+  // railgun-private-proof.js: a fresh 60 s receipt lifetime after the verifier exits.
+  mock.verify = async () => {
+    advance(verifyMs);
+    const exited = now(),
+      lifetime = new AbortController();
+    setTimeout(() => lifetime.abort(), 60000);
+    mock.assertProof = (margin) => {
+      if (lifetime.signal.aborted || now() + margin >= exited + 60000)
+        throw Object.assign(Error('proof'), { code: 'RAILGUN_PRIVATE_PROOF_REFUSED' });
+    };
+    return { receipt: {}, signal: lifetime.signal, close() {} };
+  };
+  // Each sequential preflight read waits rpcMs for its reply.
+  mock.latency = () => advance(rpcMs);
+  // Wallet close, capsule read, one eth_estimateGas over Tor and the fee plan.
+  advance(gapMs);
+  // The provider head: one 12 s Sepolia slot behind the wall clock at submission.
+  mock.header.timestamp = '0x' + (Math.floor(Date.now() / 1000) - 12).toString(16);
+  return { minted, now };
+}
+describe('L-A 3b timeline against the original-path clocks', () => {
+  afterEach(() => jest.useRealTimers());
+  // [case, verifier ms, ms per read]: 17 sequential reads (12 deployment, 5 private).
+  test.each([
+    ['the recorded 2.41 s submission', 1400, 50],
+    ['typical Tor reads', 1400, 700],
+    ['the slowest reads inside the 20 s acquisition timer', 1400, 1150],
+  ])('%s clears every clock and reaches EOA work', async (_name, verifyMs, rpcMs) => {
+    const { minted, now } = clocked({ gapMs: RECORDED_3B_GAP_MS, verifyMs, rpcMs });
+    const started = now();
+    const result = await submit(options);
+    expect(result).toEqual({ hash: '0x' + 'c'.repeat(64) });
+    expect(diagnosticOf(result)).toBeNull();
+    expect(mock.requests).toHaveLength(17);
+    expect(mock.eoa).toContain('send');
+    expect(now() - started).toBe(verifyMs + 17 * rpcMs);
+    // Still inside the completion's 120 s with the recorded worst-case gap.
+    expect(now() - minted).toBeLessThan(120000);
+  });
+  // Time alone refuses at 'preflight' only with >= 20 s in acquisition or a
+  // completion (or recovery phase) >= 120 s old: 3b bounds these at 2.41 s and
+  // 27.64 + 2.41 = 30.05 s. Both refusals are 'inactive' during acquisition.
+  test('a 20 s acquisition refuses inactive, after the nullifier query', async () => {
+    clocked({ gapMs: RECORDED_3B_GAP_MS, verifyMs: 1400, rpcMs: 1300 });
+    const result = await submit(options);
+    expect(result).toEqual({ status: 'recovery-required', stage: 'preflight' });
+    expect(diagnosticOf(result)).toEqual({
+      ...PREFLIGHT,
+      substage: 'acquire',
+      reason: 'inactive',
+      step: 'nullifiers',
+    });
+    expect(mock.requests).toContain('private-preflight:nullifiers');
+    expect(mock.eoa).toEqual([]);
+  });
+  test('a completion expiring mid-acquisition refuses inactive at its deployment read', async () => {
+    clocked({ gapMs: 115000, verifyMs: 1400, rpcMs: 700 });
+    const result = await submit(options);
+    expect(result).toEqual({ status: 'recovery-required', stage: 'preflight' });
+    // 115 + 1.4 + 5 x 0.7 s: the completion closes during the sixth read.
+    expect(diagnosticOf(result)).toEqual({
+      ...PREFLIGHT,
+      substage: 'acquire',
+      reason: 'inactive',
+      step: 'deployment',
+      deploymentStep: 'slot-implementation',
+    });
+    expect(mock.requests.includes('private-preflight:nullifiers')).toBe(false);
+    expect(mock.eoa).toEqual([]);
+  });
 });
