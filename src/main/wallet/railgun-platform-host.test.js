@@ -37,7 +37,7 @@ function load(options = {}) {
   const resolver = jest.fn((name) => {
     if (options.missing)
       throw Object.assign(new Error('missing fixed entry'), { code: 'MODULE_NOT_FOUND' });
-    if (name === './railgun-owner-utility-entry') return '/fixed/railgun-owner-utility-entry.js';
+    if (name === './railgun-kernel-entry') return '/fixed/railgun-kernel-entry.js';
     if (name === './railgun-owner-storage-entry')
       return options.workerEntry || '/fixed/railgun-owner-storage-entry.js';
     throw new Error('Unexpected resolution');
@@ -179,9 +179,9 @@ describe('fixed Railgun platform host', () => {
     const m = load({ type: 'browser' });
     const port = m.factory();
     expect(port.spawnUtility(utility(heapMb))).toBe(m.child);
-    expect(m.resolver).toHaveBeenCalledWith('./railgun-owner-utility-entry');
+    expect(m.resolver).toHaveBeenCalledWith('./railgun-kernel-entry');
     expect(m.electron.utilityProcess.fork).toHaveBeenCalledWith(
-      '/fixed/railgun-owner-utility-entry.js',
+      '/fixed/railgun-kernel-entry.js',
       [],
       {
         env: { PATH: '', PUBLIC_TEST: '' },
@@ -290,7 +290,7 @@ describe('fixed Railgun platform host', () => {
     expect(m.electron.utilityProcess.fork).not.toHaveBeenCalled();
     expect(m.WorkerMock).not.toHaveBeenCalled();
     expect(m.resolver.mock.calls.map(([name]) => name)).toEqual([
-      './railgun-owner-utility-entry',
+      './railgun-kernel-entry',
       './railgun-owner-storage-entry',
     ]);
   });

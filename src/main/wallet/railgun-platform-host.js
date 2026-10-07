@@ -181,7 +181,7 @@ function createRailgunPlatformHost(...args) {
         throw fail();
       ready();
       // Fixed host composition: guard installation precedes context/artifact bindings.
-      const filename = require.resolve('./railgun-owner-utility-entry');
+      const filename = require.resolve('./railgun-kernel-entry');
       const child = original.fork.call(original.utilityProcess, filename, [], {
         env: Object.fromEntries(Object.keys(process.env).map((key) => [key, ''])),
         cwd: original.temp.call(original.app, 'temp'),

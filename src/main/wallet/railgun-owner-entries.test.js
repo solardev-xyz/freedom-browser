@@ -3,7 +3,7 @@ const path = require('path');
 const vm = require('vm');
 const cases = [
   [
-    'railgun-owner-utility-entry.js',
+    'railgun-kernel-entry.js',
     '@freedom/railgun-kohaku-adapter/host/bootstrap',
     'installRailgunExecutionBootstrap',
     true,
