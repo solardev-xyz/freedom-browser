@@ -242,6 +242,7 @@ async function main() {
     'src/main/wallet/railgun-wallet-read.js',
     'src/main/wallet/railgun-kohaku-read.js',
     'src/main/wallet/railgun-kohaku-read-data.js',
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'src/main/wallet/railgun-wallet-state.js',
     'src/main/wallet/railgun-wallet-scan.js',
     'src/main/wallet/railgun-wallet-records.js',

@@ -87,6 +87,19 @@ const FIXED_SOURCES = Object.freeze([
   'src/main/profile-paths.js',
   'src/main/identity-manager.js',
   'src/main/settings-store.js',
+  // src/main/wallet/railgun-kohaku-*.js re-export this installed package; its
+  // lockfile entry integrity is bound in dependencyIdentity.
+  ...[
+    'package.json',
+    'index.cjs',
+    'read.cjs',
+    'src/railgun-kohaku-private-adapter.js',
+    'src/railgun-kohaku-public-adapter.js',
+    'src/railgun-kohaku-read-data.js',
+    'src/railgun-kohaku-read-dispatch.js',
+    'src/railgun-kohaku-snapshot-plugin.js',
+    'src/railgun-shield-pins.json',
+  ].map((name) => 'node_modules/@freedom/railgun-kohaku-adapter/' + name),
 ]);
 const ARTIFACT_PATTERN = /^(?:0[12]x0[123]|POI_3x3)\.(?:wasm|zkey|vkey)$/;
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -846,19 +859,30 @@ function describeLiveness({ holdCreated, spend }) {
     laterSpendRefusal: 'RAILGUN_PRIVATE_INPUT_RESERVED',
   };
 }
-// The installed ethers must be the locked one; the lock itself is pinned.
-function dependencyIdentity({ ethersPackage, packageLock, electronVersion }) {
-  let installed, lock;
+// The installed ethers and Kohaku adapter must be the locked ones; the lock
+// itself is pinned, and the adapter's tarball integrity is reported with it.
+function dependencyIdentity({ ethersPackage, adapterPackage, packageLock, electronVersion }) {
+  let installed, adapter, lock;
   try {
     installed = JSON.parse(ethersPackage);
+    adapter = JSON.parse(adapterPackage);
     lock = JSON.parse(packageLock);
   } catch {
     throw refusal('dependencies');
   }
   check(installed?.name === 'ethers' && typeof installed.version === 'string', 'dependencies');
   check(lock?.packages?.['node_modules/ethers']?.version === installed.version, 'dependencies');
+  const locked = lock?.packages?.['node_modules/@freedom/railgun-kohaku-adapter'];
+  check(
+    adapter?.name === '@freedom/railgun-kohaku-adapter' &&
+      typeof adapter.version === 'string' &&
+      locked?.version === adapter.version &&
+      /^sha512-[A-Za-z0-9+/]{86}==$/.test(locked.integrity),
+    'dependencies'
+  );
   return {
     ethersVersion: installed.version,
+    railgunKohakuAdapter: { version: adapter.version, integrity: locked.integrity },
     packageLockSha256: sha(packageLock),
     electronVersion: typeof electronVersion === 'string' ? electronVersion : null,
   };
@@ -914,6 +938,10 @@ function hashRuntime({ archive, proverArchive, artifactDirectory }, base) {
     artifactSha256,
     dependencies: dependencyIdentity({
       ethersPackage: fs.readFileSync(path.join(base, 'node_modules/ethers/package.json'), 'utf8'),
+      adapterPackage: fs.readFileSync(
+        path.join(base, 'node_modules/@freedom/railgun-kohaku-adapter/package.json'),
+        'utf8'
+      ),
       packageLock: fs.readFileSync(path.join(base, 'package-lock.json'), 'utf8'),
       electronVersion: process.versions.electron,
     }),

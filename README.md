@@ -56,6 +56,7 @@ The main process handles `bzz:`, `ipfs:`, `ipns:`, `web3:`, `rad:`, and `.onion`
 | `test-e2e/`     | Playwright harness and live Electron tests                                             |
 | `config/`       | Runtime templates, default data, and platform entitlements                             |
 | `scripts/`      | Build, download, smoke-test, and maintenance tooling                                   |
+| `vendor/`       | Reviewed dependency tarballs that `package.json` installs through `file:` dependencies |
 | `docs/`         | User, protocol, contributor, and maintainer documentation                              |
 
 Contributors changing process responsibilities or adding IPC channels must follow the [architecture boundaries](docs/agent-playbooks/architecture-boundaries.md).

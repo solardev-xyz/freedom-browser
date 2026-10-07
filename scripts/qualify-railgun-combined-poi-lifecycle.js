@@ -159,6 +159,9 @@ async function main() {
         visit(path.join(__dirname, '../src/main'));
         return files;
       })(),
+      ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES.map((name) =>
+        path.join(__dirname, '..', name)
+      ),
     ];
     return Object.fromEntries(
       files

@@ -66,6 +66,9 @@ async function main() {
           .filter((name) => /\.(js|json)$/.test(name))
           .map((name) => path.join(base, name));
       }),
+      ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES.map((name) =>
+        path.join(__dirname, '..', name)
+      ),
     ];
     return Object.fromEntries(
       files

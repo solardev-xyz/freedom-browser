@@ -3,6 +3,7 @@
  * change can require a fresh generation. No caller supplies a policy override.
  */
 const fs = require('fs');
+const path = require('path');
 const { createHash } = require('crypto');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const engine = require('./railgun-engine-manifest.json');
@@ -66,6 +67,16 @@ const sources = [
   'railgun-scan-journal',
   'railgun-public-records',
 ];
+// railgun-kohaku-read-data re-exports @freedom/railgun-kohaku-adapter/read, so
+// the installed package bytes it loads (and the exports map that selects them)
+// bind host validation just as wallet modules do.
+const adapter = '@freedom/railgun-kohaku-adapter';
+const adapterSources = [
+  'package.json',
+  'read.cjs',
+  'src/railgun-kohaku-read-data.js',
+  'src/railgun-kohaku-read-dispatch.js',
+];
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 function getRailgunWalletPolicy(archive) {
   verifyRailgunEngineRuntime(archive);
@@ -77,7 +88,13 @@ function getRailgunWalletPolicy(archive) {
       engine.sha256,
       engine.inventory.sha256,
       getRailgunPublicPolicy(archive),
-      sources.map((name) => [name, hash(fs.readFileSync(require.resolve('./' + name)))]),
+      [
+        ...sources.map((name) => [name, hash(fs.readFileSync(require.resolve('./' + name)))]),
+        ...adapterSources.map((name) => [
+          adapter + '/' + name,
+          hash(fs.readFileSync(path.join(path.dirname(require.resolve(adapter + '/read')), name))),
+        ]),
+      ],
     ])
   );
 }

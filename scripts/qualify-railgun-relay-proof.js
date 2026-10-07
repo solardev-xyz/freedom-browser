@@ -215,6 +215,7 @@ async function main() {
         .filter((n) => /\.(js|json)$/.test(n))
         .map((n) => d + '/' + n)
     ),
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   ].sort();
   const hashes = () =>
     Object.fromEntries(

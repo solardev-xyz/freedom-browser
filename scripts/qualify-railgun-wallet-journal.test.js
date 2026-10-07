@@ -114,6 +114,7 @@ function inventory(publicAdapterMode, publicShield = true) {
       expect([
         '../docs/qualification/railgun-shield-prerequisites-2026-10-04.json',
         '../src/main/wallet/railgun-txid-policy',
+        './fixtures/railgun-kohaku-adapter-sources',
       ]).toContain(name);
       return require(name);
     },
@@ -134,8 +135,8 @@ test('public adapter inventory adds exact evidence paths only when selected', ()
     'scripts/qualify-railgun-wallet-journal.test.js',
   ]);
   expect(selected.filter((name) => !additions.includes(name))).toEqual(baseline);
-  expect(new Set(baseline).size).toBe(182);
-  expect(new Set(selected).size).toBe(190);
+  expect(new Set(baseline).size).toBe(193);
+  expect(new Set(selected).size).toBe(201);
   expect(baseline).toEqual(
     expect.arrayContaining([
       'scripts/fixtures/railgun-transact-staging-source.js',
@@ -149,6 +150,9 @@ test('public adapter inventory adds exact evidence paths only when selected', ()
   expect(baseline).toContain('scripts/fixtures/railgun-kohaku-contract-observer.js');
   expect(baseline).toContain('scripts/fixtures/railgun-kohaku-contract-observer.test.js');
   expect(baseline).toContain('src/main/wallet/railgun-kohaku-read-data.js');
+  expect(baseline).toEqual(
+    expect.arrayContaining(require('./fixtures/railgun-kohaku-adapter-sources').SOURCES)
+  );
   expect(inventory(false, false).some((name) => additions.includes(name))).toBe(false);
 });
 function report(mode) {

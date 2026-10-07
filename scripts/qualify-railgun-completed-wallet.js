@@ -61,6 +61,9 @@ function sourceInventory() {
           .map((name) => path.join(directory, name));
       }
     ),
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES.map((name) =>
+      path.join(root, name)
+    ),
   ];
   return Object.fromEntries(
     [...new Set(files)]

@@ -39,6 +39,9 @@ function sourceInventory() {
     path.join(root, 'babel.config.json'),
     path.join(root, 'eslint.config.js'),
     path.join(root, 'jest.config.js'),
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES.map((name) =>
+      path.join(root, name)
+    ),
   ])
     sources[path.relative(root, file)] = data.digest(fs.readFileSync(file));
   return { root, sources };
