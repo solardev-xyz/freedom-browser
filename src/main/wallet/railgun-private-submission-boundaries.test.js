@@ -1174,6 +1174,69 @@ describe('the monotonic admission deadline F against a backward wall-clock step'
   test.each(Object.keys(MONOTONIC))('%s', (name) => MONOTONIC[name]());
 });
 
+// The native finding, at the real boundary: E closes the submission scope
+// mid-send, so the returned value is a refusal without the transaction hash
+// and its diagnostic says PRIVATE_BROADCAST_UNCERTAIN. The live qualifier
+// takes the hash from the authenticated journal readback instead, and its
+// observe mode chains from that report.
+describe('an uncertain recovered send without a returned hash', () => {
+  test('the journal readback binds the attempt and observe follows it', async () => {
+    const seen = await run(DEFAULT, {
+      resolved: 0,
+      send: { ms: 25000, deliverMs: 2000 },
+      approve: { beforeMs: 100 },
+    });
+    expect(seen.outcome).toBe('journaled-uncertain');
+    expect(seen.result).toEqual({ status: 'recovery-required', stage: 'submission' });
+    expect(seen.diagnostic).toEqual({ stage: 'submission', code: 'PRIVATE_BROADCAST_UNCERTAIN' });
+    const spend = live.classifySpendOutcome({
+      result: seen.result,
+      before: seen.before,
+      after: seen.after,
+    });
+    expect(spend).toEqual({
+      attempted: true,
+      journaled: true,
+      journaledHash: seen.sends[0].hash,
+      journalState: 'attempted',
+      journalNonce: 0,
+      hashSource: 'journal-readback',
+      submissionStatus: 'unknown',
+      resendAllowed: false,
+    });
+    const scan = { sha256: 'ab'.repeat(32), anchor: { number: 6000060, hash: blockHash(6000060) } };
+    const report = JSON.parse(
+      live.renderReport({
+        journey: live.JOURNEY,
+        version: 1,
+        chainId: 11155111,
+        mode: 'recover-submit',
+        passed: false,
+        owner: mock.owner,
+        scan,
+        chain: {
+          ownedPoiReportSha256: 'd1'.repeat(32),
+          shieldTransactionHash: '0x' + '5b'.repeat(32),
+          transfer: { hash: spend.journaledHash },
+          unshield: null,
+        },
+        spend,
+      })
+    );
+    expect(report.spend).toEqual(spend);
+    expect(() =>
+      live.assertPredecessor('observe', report, { scanSha: scan.sha256, scan })
+    ).not.toThrow();
+    const observed = live.selectObservedRecord(
+      seen.after,
+      'transfer',
+      report.chain,
+      spend.journaledHash
+    );
+    expect(observed.hash).toBe(seen.sends[0].hash);
+  });
+});
+
 describe('the nullifier admission boundary', () => {
   test('a stalled deployment read refuses immediately before the nullifier query', async () => {
     // probe-1 shape: the seventh deployment read stalls 10 s but completes.

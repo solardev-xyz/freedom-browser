@@ -342,6 +342,8 @@ describe('journal', () => {
       journaled: true,
       journaledHash: TRANSFER,
       journalState: 'submitted',
+      journalNonce: null,
+      hashSource: 'result',
       submissionStatus: 'unknown',
       resendAllowed: false,
     });
@@ -380,6 +382,29 @@ describe('journal', () => {
         after,
       })
     ).toMatchObject({ attempted: true, submissionStatus: 'unknown' });
+    // A refusal without a hash (its submission scope revoked mid-send): the
+    // journal readback alone names the attempt, with its record's nonce.
+    const numbered = journal([{ ...transferRecord(null), nonce: 7 }], [shieldRecord()]);
+    expect(
+      api.classifySpendOutcome({
+        result: { status: 'recovery-required', stage: 'submission' },
+        before,
+        after: numbered,
+      })
+    ).toMatchObject({
+      journaledHash: TRANSFER,
+      journalNonce: 7,
+      hashSource: 'journal-readback',
+      submissionStatus: 'unknown',
+    });
+    for (const nonce of [-1, 1.5, '7', 2 ** 53])
+      expect(
+        api.classifySpendOutcome({
+          result: { hash: TRANSFER },
+          before,
+          after: journal([{ ...transferRecord(null), nonce }], [shieldRecord()]),
+        })
+      ).toMatchObject({ journalNonce: null, hashSource: 'result' });
   });
   test('refuses unbound or multiple attempts', () => {
     const before = journal([]);
@@ -1810,6 +1835,8 @@ function heldWorld({
   profile,
   probeSha = PROBE_SHA,
   ledger,
+  timing,
+  journaledIntent = {},
 } = {}) {
   const calls = {
     timeline: [],
@@ -1907,7 +1934,8 @@ function heldWorld({
       return { type: 'legacy', gasPrice: gasPrice.toString() };
     },
   };
-  const diagnostics = new WeakMap();
+  const diagnostics = new WeakMap(),
+    timings = new WeakMap();
   const refusal = (stage, value) => {
     const result = Object.freeze({ status: 'recovery-required', stage });
     if (value) diagnostics.set(result, value);
@@ -2029,73 +2057,91 @@ function heldWorld({
     'wallet/railgun-private-submission': {
       getRailgunPrivatePreflightDiagnostic: realSubmission.getRailgunPrivatePreflightDiagnostic,
       getRailgunPrivateSubmissionDiagnostic: (result) => diagnostics.get(result) ?? null,
+      getRailgunPrivateSubmissionTiming: (result) => timings.get(result) ?? null,
       submitRailgunRecoveredPrivateTransaction: async (options) => {
-        log('recover-submit');
-        calls.submit.push(options);
-        for (let n = 0; n < disclosureCalls; n++) {
-          let approved;
-          try {
-            approved = await options.reviewDisclosures(
-              Object.freeze(recoverySummary(summary)),
-              options.signal
-            );
-          } catch (error) {
-            approved = error;
-          }
-          calls.disclosures.push(approved);
-          if (approved !== true)
-            return refusal('disclosure-review', {
-              stage: 'disclosure-review',
-              code: 'RAILGUN_PRIVATE_SUBMISSION_REFUSED',
-            });
-        }
-        if (submit === 'preflight') return refusal('preflight', diagnostic);
-        const request = {
-          transaction: {
-            to: pins.proxy,
-            value: '0',
-            data: CALLDATA,
-            chainId: 11155111,
-            gasLimit: options.gasLimit.toString(),
-            gasPrice: reviewGasPrice.toString(),
-            nonce: 3,
-            ...reviewTransaction,
-          },
-          from: OWNER,
-          intent: {},
-          operation: 'railgun-private-transfer',
-          maxGasFee: options.maxGasFee,
-          fundingAddressPublic: true,
-          chainStateVerified: false,
-        };
-        for (let n = 0; n < reviewCalls; n++) {
-          let approved;
-          try {
-            approved = await options.reviewTransaction(request);
-          } catch (error) {
-            approved = error;
-          }
-          calls.reviews.push(approved);
-          if (approved !== true) return refusal('submission');
-        }
-        calls.sign++;
-        log('sign');
-        journal.records.push({
-          hash: TRANSFER,
-          state: submit === 'ack' ? 'submitted' : 'attempted',
-          intent: {
-            kind: 'railgun-transact',
-            operation: 'railgun-private-transfer',
-            tree: 0,
-            nullifier: NULLIFIER,
-          },
-        });
-        if (submit === 'ack') return { hash: TRANSFER };
-        if (submit === 'lost') return { transactionHash: TRANSFER, submissionStatus: 'unknown' };
-        return refusal('submission');
+        const result = await recoveredSubmission(options);
+        timings.set(
+          result,
+          timing === undefined
+            ? { reviewWindowMs: calls.reviews.length ? 29500 : null, verifierMs: 812 }
+            : timing
+        );
+        return result;
       },
     },
   };
+  async function recoveredSubmission(options) {
+    log('recover-submit');
+    calls.submit.push(options);
+    for (let n = 0; n < disclosureCalls; n++) {
+      let approved;
+      try {
+        approved = await options.reviewDisclosures(
+          Object.freeze(recoverySummary(summary)),
+          options.signal
+        );
+      } catch (error) {
+        approved = error;
+      }
+      calls.disclosures.push(approved);
+      if (approved !== true)
+        return refusal('disclosure-review', {
+          stage: 'disclosure-review',
+          code: 'RAILGUN_PRIVATE_SUBMISSION_REFUSED',
+        });
+    }
+    if (submit === 'preflight') return refusal('preflight', diagnostic);
+    const request = {
+      transaction: {
+        to: pins.proxy,
+        value: '0',
+        data: CALLDATA,
+        chainId: 11155111,
+        gasLimit: options.gasLimit.toString(),
+        gasPrice: reviewGasPrice.toString(),
+        nonce: 3,
+        ...reviewTransaction,
+      },
+      from: OWNER,
+      expiresAt: Date.now() + 29000,
+      intent: {},
+      operation: 'railgun-private-transfer',
+      maxGasFee: options.maxGasFee,
+      fundingAddressPublic: true,
+      chainStateVerified: false,
+    };
+    for (let n = 0; n < reviewCalls; n++) {
+      let approved;
+      try {
+        approved = await options.reviewTransaction(request);
+      } catch (error) {
+        approved = error;
+      }
+      calls.reviews.push(approved);
+      if (approved !== true) return refusal('submission');
+    }
+    calls.sign++;
+    log('sign');
+    journal.records.push({
+      hash: TRANSFER,
+      nonce: 3,
+      state: submit === 'ack' ? 'submitted' : 'attempted',
+      intent: {
+        kind: 'railgun-transact',
+        operation: 'railgun-private-transfer',
+        tree: 0,
+        nullifier: NULLIFIER,
+        ...journaledIntent,
+      },
+    });
+    if (submit === 'ack') return { hash: TRANSFER };
+    if (submit === 'lost') return { transactionHash: TRANSFER, submissionStatus: 'unknown' };
+    // The native shape: the submission scope was revoked mid-send, so
+    // the refusal carries no hash, only the uncertain diagnostic.
+    if (submit === 'revoked')
+      return refusal('submission', { stage: 'submission', code: 'PRIVATE_BROADCAST_UNCERTAIN' });
+    return refusal('submission');
+  }
   const recovering = mode === 'recover-submit';
   const previous = recovering ? probeReport() : heldReport();
   // recover-submit as main() hands it over: the canonical profile, the pinned
@@ -3409,9 +3455,21 @@ const PROBES = {
       journaled: true,
       journaledHash: TRANSFER,
       journalState: 'submitted',
+      journalNonce: 3,
+      hashSource: 'result',
       submissionStatus: 'acknowledged',
       resendAllowed: false,
     });
+    // Production's offered window and verifier duration, and the window left
+    // when the review was shown (the fake shows 29 s), as whole milliseconds.
+    const { timing } = ctx.report.submission;
+    expect(timing).toEqual({
+      reviewWindowMs: 29500,
+      reviewShownMs: expect.any(Number),
+      verifierMs: 812,
+    });
+    expect(timing.reviewShownMs).toBeGreaterThan(28000);
+    expect(timing.reviewShownMs).toBeLessThanOrEqual(29000);
     expect(ctx.report.liveness).toEqual({
       inputHeld: true,
       state: 'sent',
@@ -3590,12 +3648,113 @@ const PROBES = {
       diagnostic: tuple,
       reviews: { disclosure: 1, transaction: 0 },
       elapsedMs: expect.any(Number),
+      timing: { reviewWindowMs: null, reviewShownMs: null, verifierMs: 812 },
     });
     expect(preflight.ctx.report.spend.submissionStatus).toBe('not-sent');
     expect(preflight.ctx.report.liveness.state).toBe('proved-unsent');
     expect(preflight.calls.sign).toBe(0);
     expect(m.assertAggregateReport(preflight.ctx.report)).toBe(true);
     expect(withoutSecrets(preflight.ctx.report)).toBe(true);
+  },
+  // The native finding: E revoked the submission scope mid-send, so the
+  // returned value is a refusal at stage submission whose diagnostic says
+  // PRIVATE_BROADCAST_UNCERTAIN, with no transaction hash. The authenticated
+  // journal readback names the attempt, and observe chains from the report.
+  'recover-native-uncertain': async (m) => {
+    const options = { ...newerScan, previousSha: sha('9c') };
+    const { ctx, calls, journal: state } = heldWorld({ mode: 'recover-submit', submit: 'revoked' });
+    await m.RUNNERS['recover-submit'](ctx);
+    expect(calls.sign).toBe(1);
+    expect(ctx.report.submission).toMatchObject({
+      status: 'refused',
+      stage: 'submission',
+      diagnostic: { stage: 'submission', code: 'PRIVATE_BROADCAST_UNCERTAIN' },
+    });
+    expect(ctx.report.spend).toEqual({
+      attempted: true,
+      journaled: true,
+      journaledHash: TRANSFER,
+      journalState: 'attempted',
+      journalNonce: 3,
+      hashSource: 'journal-readback',
+      submissionStatus: 'unknown',
+      resendAllowed: false,
+    });
+    expect(ctx.report.liveness).toMatchObject({
+      state: 'journaled-uncertain',
+      continuation: 'observe',
+    });
+    expect(ctx.report.passed).toBe(false);
+    expect(ctx.report.failure).toBeUndefined();
+    expect(ctx.chain.transfer).toEqual({ hash: TRANSFER });
+    // The report as written, then observe from it over the same journal.
+    const report = JSON.parse(
+      m.renderReport(
+        journeyReport('recover-submit', {
+          ...copy(ctx.report),
+          scan: { sha256: NEWER_SCAN_SHA, anchor: { ...NEW_ANCHOR } },
+          chain: copy(ctx.chain),
+        })
+      )
+    );
+    expect(report.spend).toEqual(ctx.report.spend);
+    expect(() => m.assertPredecessor('observe', report, options)).not.toThrow();
+    const observed = observeWorld({ previousMode: 'recover-submit' });
+    observed.ctx.previous = report;
+    observed.ctx.chain = copy(report.chain);
+    observed.ctx.readJournal = async () => copy(state);
+    await m.RUNNERS.observe(observed.ctx);
+    expect(observed.ctx.report).toMatchObject({
+      passed: true,
+      target: 'transfer',
+      observedHash: TRANSFER,
+    });
+    // A journaled attempt that is not the held input's still names its hash
+    // for observe, and fails the report.
+    for (const journaledIntent of [{ tree: 1 }, { nullifier: hash('33') }]) {
+      const other = heldWorld({ mode: 'recover-submit', submit: 'revoked', journaledIntent });
+      expect(await settle(m.RUNNERS['recover-submit'](other.ctx))).toEqual(
+        refused('spend-binding')
+      );
+      expect(other.ctx.report.spend.journaledHash).toBe(TRANSFER);
+      expect(other.ctx.chain.transfer).toEqual({ hash: TRANSFER });
+    }
+  },
+  // Timings are allow-listed whole milliseconds within the recovery bound.
+  'recover-timing': async (m) => {
+    for (const [timing, expected] of [
+      [
+        { reviewWindowMs: 29500, verifierMs: 0 },
+        { reviewWindowMs: 29500, verifierMs: 0 },
+      ],
+      [
+        { reviewWindowMs: -1, verifierMs: 600001, nullifier: NULLIFIER },
+        { reviewWindowMs: null, verifierMs: null },
+      ],
+      [
+        { reviewWindowMs: 1.5, verifierMs: '812' },
+        { reviewWindowMs: null, verifierMs: null },
+      ],
+      [
+        { reviewWindowMs: 29500n, verifierMs: CALLDATA },
+        { reviewWindowMs: null, verifierMs: null },
+      ],
+      [null, { reviewWindowMs: null, verifierMs: null }],
+    ]) {
+      const { ctx } = heldWorld({ mode: 'recover-submit', timing });
+      await m.RUNNERS['recover-submit'](ctx);
+      expect(ctx.report.submission.timing).toEqual({
+        ...expected,
+        reviewShownMs: expect.any(Number),
+      });
+      expect(m.assertAggregateReport(ctx.report)).toBe(true);
+      expect(withoutSecrets(ctx.report)).toBe(true);
+    }
+    expect(m.summarizeSubmissionTiming({ reviewShownMs: 600000 })).toEqual({
+      reviewWindowMs: null,
+      reviewShownMs: 600000,
+      verifierMs: null,
+    });
   },
   'recover-fee-plan': async (m) => {
     // Planning bound: 1,500,000 x 1,333,333,334 wei exceeds the cap before production.
@@ -4488,8 +4647,8 @@ const MUTATIONS = [
   ],
   [
     'journal readback replaced',
-    'after: await ctx.readJournal()',
-    'after: before',
+    'report.spend = classifySpendOutcome({ result, before, after });',
+    'report.spend = classifySpendOutcome({ result, before, after: before });',
     'spend-readback',
   ],
   [
@@ -4702,8 +4861,8 @@ const MUTATIONS = [
   ],
   [
     'held nullifier journal rule removed',
-    'record.intent.tree === selection.tree &&',
-    'false &&',
+    '(record) =>\n        record.intent.tree === selection.tree &&',
+    '(record) =>\n        false &&',
     'held-unjournaled',
   ],
   [
@@ -5001,9 +5160,59 @@ const MUTATIONS = [
   ],
   [
     'recovered send not chained',
-    'if (report.spend.journaled) ctx.chain.transfer = { hash: report.spend.journaledHash };',
+    'ctx.chain.transfer = { hash: report.spend.journaledHash };',
     'void 0;',
     'recover-uncertain',
+  ],
+  // The native uncertain shape: no hash returned, the readback names it.
+  [
+    'readback hash source dropped',
+    "hashSource: reported === null ? 'journal-readback' : 'result',",
+    "hashSource: 'result',",
+    'recover-native-uncertain',
+  ],
+  [
+    'journal record nonce dropped',
+    'journalNonce: Number.isSafeInteger(record.nonce) && record.nonce >= 0 ? record.nonce : null,',
+    'journalNonce: null,',
+    'recover-native-uncertain',
+  ],
+  [
+    'recovered attempt unbound to the held input',
+    'record.intent.tree === selection.tree &&\n      record.intent.nullifier === preparation.expected.nullifier,',
+    'true,',
+    'recover-native-uncertain',
+  ],
+  [
+    'recovered attempt bound before it is chained',
+    '    ctx.chain.transfer = { hash: report.spend.journaledHash };\n    assertRecoveredAttempt(after, report.spend.journaledHash, held);',
+    '    assertRecoveredAttempt(after, report.spend.journaledHash, held);\n    ctx.chain.transfer = { hash: report.spend.journaledHash };',
+    'recover-native-uncertain',
+  ],
+  // The recovered submission's timings.
+  [
+    'timing allowlist bypassed',
+    'Number.isSafeInteger(item) && item >= 0 && item <= RECOVERY_TIMEOUT_MS ? item : null,',
+    'item ?? null,',
+    'recover-timing',
+  ],
+  [
+    'timing bound dropped',
+    'item >= 0 && item <= RECOVERY_TIMEOUT_MS',
+    'item >= 0',
+    'recover-timing',
+  ],
+  [
+    'production timing not read',
+    '.getRailgunPrivateSubmissionTiming(result);',
+    '.getRailgunPrivateSubmissionTiming(null);',
+    'recover-ack',
+  ],
+  [
+    'shown review window not recorded',
+    '? request.expiresAt - Date.now()\n          : null;',
+    '? null\n          : null;',
+    'recover-ack',
   ],
   [
     'recovered send not observable',

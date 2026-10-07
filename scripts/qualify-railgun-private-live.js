@@ -36,7 +36,11 @@
  *   Deleting the campaign directory or moving the profile resets the budget;
  *   it is no anti-tampering control. NEW_OUTPUT is also
  *   recover-submit-<probe sha256> beside the probe's output directory, and the
- *   probe is at most 30 minutes old.
+ *   probe is at most 30 minutes old. The report keeps submission.timing (the
+ *   review window offered and shown, the verifier duration, in ms) and takes
+ *   a journaled attempt's hash from the authenticated journal readback
+ *   (spend.hashSource), since a refusal returned after the journal write may
+ *   carry none; observe follows it from there.
  *
  * Publication: only NEW_OUTPUT/report.json is publishable. NEW_OUTPUT/transport/
  * holds the Arti state and arti.log and stays local.
@@ -500,6 +504,11 @@ function classifySpendOutcome({ result, before, after }) {
     journaled: true,
     journaledHash: record.hash,
     journalState: typeof record.state === 'string' ? record.state : null,
+    // With the hash, the journal record's identity for observe.
+    journalNonce: Number.isSafeInteger(record.nonce) && record.nonce >= 0 ? record.nonce : null,
+    // A refusal returned after the journal write (its submission scope
+    // revoked mid-send, say) carries no hash: the readback alone names it.
+    hashSource: reported === null ? 'journal-readback' : 'result',
     submissionStatus: acknowledged ? 'acknowledged' : 'unknown',
     // Any journaled attempt is observation-only from here; never resent.
     resendAllowed: false,
@@ -1876,8 +1885,8 @@ async function spendSteps(ctx, step, onHold) {
   report.passed = report.spend.submissionStatus === 'acknowledged';
 }
 // One production submission's result, then the journal read back: the journal
-// alone decides whether a send was attempted.
-async function recordSubmission(ctx, { result, before, started, reviews }) {
+// alone decides whether a send was attempted. Returns the readback.
+async function recordSubmission(ctx, { result, before, started, reviews, timing }) {
   const { report } = ctx;
   const status =
     typeof result?.hash === 'string'
@@ -1891,11 +1900,52 @@ async function recordSubmission(ctx, { result, before, started, reviews }) {
     ...(status === 'refused' ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),
     reviews,
     elapsedMs: Math.round(performance.now() - started),
+    ...(timing ? { timing } : {}),
   };
   ctx.stage = 'journal-readback';
-  report.spend = classifySpendOutcome({ result, before, after: await ctx.readJournal() });
+  const after = await ctx.readJournal();
+  report.spend = classifySpendOutcome({ result, before, after });
   // Aggregate only; printed at once so a later drain failure cannot hide it.
   console.log(JSON.stringify({ spend: report.spend }));
+  return after;
+}
+// The recovered submission's aggregate timings, allow-listed: the review
+// window production offered, the window left when the review was shown, and
+// the proof verifier's duration. Whole milliseconds within the recovery
+// bound, or null when not reached or unavailable.
+const TIMING_KEYS = Object.freeze(['reviewWindowMs', 'reviewShownMs', 'verifierMs']);
+function summarizeSubmissionTiming(value) {
+  return Object.fromEntries(
+    TIMING_KEYS.map((key) => {
+      const item = plainObject(value) ? value[key] : undefined;
+      return [
+        key,
+        Number.isSafeInteger(item) && item >= 0 && item <= RECOVERY_TIMEOUT_MS ? item : null,
+      ];
+    })
+  );
+}
+function readSubmissionTiming(ctx, result) {
+  try {
+    const value = ctx
+      .load('wallet/railgun-private-submission')
+      .getRailgunPrivateSubmissionTiming(result);
+    return plainObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+// A journaled recovered attempt is the held transfer's: its operation, tree
+// and nullifier, read from the authenticated journal readback.
+function assertRecoveredAttempt(snapshot, hash, held) {
+  const record = transactRecords(snapshot).find((value) => value.hash === hash);
+  const { selection, preparation } = held.stored.capsule;
+  check(
+    record?.intent?.operation === SPEND_KINDS.transfer &&
+      record.intent.tree === selection.tree &&
+      record.intent.nullifier === preparation.expected.nullifier,
+    'spend-binding'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2606,6 +2656,7 @@ async function recoverSubmit(ctx) {
   const reviews = { disclosure: 0, transaction: 0 };
   const maxGasFee = FEE_CAP_WEI;
   const started = performance.now();
+  let reviewShownMs = null;
   // Until the journal is read back, a send may have happened.
   report.spend = {
     attempted: null,
@@ -2631,6 +2682,9 @@ async function recoverSubmit(ctx) {
       },
       reviewTransaction: async (request) => {
         check(++reviews.transaction === 1, 'review-repeated');
+        reviewShownMs = Number.isSafeInteger(request?.expiresAt)
+          ? request.expiresAt - Date.now()
+          : null;
         report.fee.reviewed = reviewRecoveredTransaction(ctx, held, fee, request);
         return true;
       },
@@ -2639,9 +2693,14 @@ async function recoverSubmit(ctx) {
       signal: ctx.enrollment.signal,
       timeoutMs: RECOVERY_TIMEOUT_MS,
     });
-  await recordSubmission(ctx, { result, before, started, reviews });
-  // Uncertain or acknowledged, a journaled attempt continues only in observe.
-  if (report.spend.journaled) ctx.chain.transfer = { hash: report.spend.journaledHash };
+  const timing = summarizeSubmissionTiming({ ...readSubmissionTiming(ctx, result), reviewShownMs });
+  const after = await recordSubmission(ctx, { result, before, started, reviews, timing });
+  // Uncertain or acknowledged, a journaled attempt continues only in observe,
+  // from the readback's hash even when the returned value carries none.
+  if (report.spend.journaled) {
+    ctx.chain.transfer = { hash: report.spend.journaledHash };
+    assertRecoveredAttempt(after, report.spend.journaledHash, held);
+  }
   report.passed = report.spend.submissionStatus === 'acknowledged';
 }
 const RUNNERS = {
@@ -3113,6 +3172,7 @@ module.exports = {
   sanitizeFailure,
   DIAGNOSTIC_CAUSE_STAGES,
   summarizeSubmissionDiagnostic,
+  summarizeSubmissionTiming,
   nullifierQuery,
   summarizePreflightObservation,
   recoveredPreflightInput,
