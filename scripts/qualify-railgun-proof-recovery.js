@@ -130,6 +130,7 @@ async function main() {
         'accountFiles',
         'inventoryHash',
         'setupEvidence',
+        'kernelEvidence',
         'cleanlyDrainedAndProfileReleased',
         ...(forSubmission ? ['submissionBackend', 'metadataSha256'] : []),
       ].sort()
