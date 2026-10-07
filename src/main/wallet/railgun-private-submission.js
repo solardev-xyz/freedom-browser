@@ -22,7 +22,8 @@ const REVIEW_WINDOW_MS = 30000;
 // Recovered review budget: a pinned policy, never caller data. Three clocks:
 // H, the person's review deadline; F = H + admissionMs, by which signing,
 // history reconciliation and journal begin must be admitted (the service's
-// review expiry, checked again before and after journal begin); and E, the
+// review expiry, checked again before and after journal begin, and on the
+// monotonic clock by this module's submission entry); and E, the
 // first genuine authority's own unrenewed age. H is offered only if
 // E >= F + sendReserveMs, the time left for the raw send and its
 // acknowledgement. The allowances refuse before the preflight, before the
@@ -363,7 +364,6 @@ async function submitFinal({
     );
     intent = railgunTransactJournalIntent({ ...tx, from: owner });
     assert.equal(intent.intentDigest, snapshot.entry.facts.intentDigest);
-    submissions.set(handle, { intent, assertCurrent });
     state.stage = 'eoa';
     const wallStarted = Date.now(),
       monoStarted = performance.now();
@@ -389,6 +389,19 @@ async function submitFinal({
       reviewEnd = monoStarted + reviewMs;
     const admissionDeadline = reviewDeadline + admissionMs,
       admissionEnd = reviewEnd + admissionMs;
+    // The service and the network check this entry before the review, at
+    // broadcast entry, before journal begin and before the raw send, beside
+    // the service's wall-clock expiry F. Recovered only: F on the monotonic
+    // clock too, so a backward wall-clock step after signing cannot admit
+    // journal begin or the send after F. Never in the scope's isCurrent: an
+    // acknowledgement after F must stay acknowledged, not become uncertain.
+    submissions.set(handle, {
+      intent,
+      assertCurrent: () => {
+        assertCurrent();
+        if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);
+      },
+    });
     await network.assertCanSubmit(scope.signal);
     assert.equal(
       (await network.request(pins.chainId, 'eth_getCode', [owner, 'pending'])).result,
@@ -423,6 +436,9 @@ async function submitFinal({
         // private records before exposing signed bytes to raw submission.
         await attest();
         assertCurrent();
+        // Dominated by the network's entry check of this submission, which
+        // follows with no event-loop turn between; kept so signed bytes
+        // never leave this callback after F.
         if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);
         return signed;
       }),
@@ -503,7 +519,10 @@ async function submitFinal({
             });
           await attest();
           assertCurrent();
-          // Approval counts only before H, on both clocks.
+          // Approval counts only before H, on both clocks. Under H = F the
+          // monotonic check is dominated by the one before the signer, which
+          // runs later against the same instant and before any signing; with
+          // a split policy (admissionMs > 0) it alone enforces H.
           assert.ok(Date.now() < reviewDeadline);
           if (lifetimeEnd) assert.ok(performance.now() < reviewEnd);
           return approved === true;

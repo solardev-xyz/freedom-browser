@@ -217,8 +217,17 @@ function getPrivateTransactionNetwork(handle, options = {}) {
         'Signed transaction differs from its operation intent'
       );
     }
-    if (intent.kind === 'railgun-transact')
-      require('./railgun-private-submission').assertRailgunPrivateSubmission(handle, intent);
+    // A Railgun private submission's own admission, here and again with each
+    // deadline check before journal begin and before the raw send. On the
+    // recovered path it holds F on the monotonic clock, which a backward
+    // wall-clock step cannot extend. Never part of assertActive(): after the
+    // send, a passed F must not turn an acknowledgement into uncertainty.
+    const admitted = intent;
+    const assertAdmitted = () => {
+      if (admitted.kind === 'railgun-transact')
+        require('./railgun-private-submission').assertRailgunPrivateSubmission(handle, admitted);
+    };
+    assertAdmitted();
     if (intent.kind === 'railgun-native-shield')
       require('./railgun-shield-operation').assertRailgunShieldSubmission(handle, intent);
     // Derive all reservation metadata from signed bytes, never caller fields.
@@ -245,6 +254,7 @@ function getPrivateTransactionNetwork(handle, options = {}) {
     await rpc.ready();
     assertActive();
     assertDeadline();
+    assertAdmitted();
     // Atomic encrypted write + fsync must succeed before transport sees bytes.
     // If the process dies at any later instruction, recovery treats this hash
     // as possibly submitted. The journal never contains the signed bytes.
@@ -252,6 +262,7 @@ function getPrivateTransactionNetwork(handle, options = {}) {
     try {
       assertActive();
       assertDeadline();
+      assertAdmitted();
       const response = await rpc.request(
         'eth_sendRawTransaction',
         [signed],

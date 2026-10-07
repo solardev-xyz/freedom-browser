@@ -1,21 +1,32 @@
-/** Real-boundary qualification of the recovered review budget (offline).
+/** Real-boundary qualification of the recovered review budget (offline),
+ * for a Shield input only: no TXID mirror, creator, note provenance or TXID
+ * root receipt runs, so the Transact branch is not covered here.
  *
- * Production modules run unmodified: the recovered submission and its final
- * core, the private preflight, the transaction service, the private
- * transaction network, private RPC and its destination constraints, privacy
- * contexts and scopes, the encrypted submission journal, its reconciler and
- * privacy storage (real files and real fsync in a temporary directory).
+ * Production modules run unmodified (the mutation controls at the end load
+ * one edited copy each): the recovered submission and its final core, the
+ * private preflight, the transaction service, the private transaction
+ * network, private RPC and its destination constraints, privacy contexts and
+ * scopes, the account phase claim, the encrypted submission journal, its
+ * reconciler and privacy storage (real files and real fsync in a temporary
+ * directory).
  *
- * Fakes stand only at the outer edges: the Tor HTTP transport (per-request
- * latency, delivery, response loss, abort and its 30 s timeout), the EOA
- * signer (latency around real ethers signing), fsync latency, and the
+ * Faked: the enrollment (an object over real privacy contexts); its signing
+ * recovery store, whose withSigningRecovery claims the real account phase
+ * but supplies its own context.deadline (start + timeoutMs) and context
+ * checks, with in-memory receipt and capsule reads; the scan coordinator (a
+ * fixed completed snapshot); the completed account wallet (open, private
+ * input, close); identity, public identity and destination checks; runtime
+ * archive verification; the Tor HTTP transport (per-request latency,
+ * delivery, response loss, abort and its 30 s timeout); the EOA signer
+ * (latency around real ethers signing); fsync latency; and the
  * worker/service receipt producers (verifier, POI source and membership,
  * deployment reads, local artifacts), modelled as time-based receipts with
  * their genuine 60 s ages and, for the proof, its genuine expiry timer.
  *
  * One simulated clock drives every timer, production timers included, in due
  * order. Synchronous work (fsync) advances that clock without running
- * timers, as the event loop would. No timer is disabled or skipped. */
+ * timers, as the event loop would. No timer is disabled or skipped. The wall
+ * clock follows it unless a scenario steps it (wallStep). */
 let mock;
 jest.mock('./railgun-private-operation', () => ({
   claimRailgunPrivateCompletion: () => {
@@ -186,16 +197,41 @@ const preflightAbi = new Interface([
 ]);
 const copy = (v) => JSON.parse(JSON.stringify(v));
 
-// One module registry per budget: the policy file is read once, at module
-// load, and production code requires lazily, so a variant replaces the whole
-// registry rather than isolating a copy of it.
+// A mutation control's edited copy of one production module, evaluated with
+// this suite's own require: the test sits beside the module, so its relative
+// requires resolve to the same registry. Never writes a file.
+const MUTABLE = Object.freeze({
+  submission: './railgun-private-submission',
+  network: './private-transaction-network',
+});
+let mutant = null;
+function loadVariant(name, source) {
+  const filename = require.resolve(name);
+  const variant = { exports: {} };
+  new Function('exports', 'require', 'module', '__filename', '__dirname', source)(
+    variant.exports,
+    require,
+    variant,
+    filename,
+    path.dirname(filename)
+  );
+  return variant.exports;
+}
+
+// One module registry per budget (and mutant): the policy file is read once,
+// at module load, and production code requires lazily, so a variant replaces
+// the whole registry rather than isolating a copy of it.
 let loaded = null;
 function kitFor(budget) {
-  if (loaded?.budget !== budget) {
+  if (loaded?.budget !== budget || loaded?.mutant !== mutant) {
     jest.resetModules();
     jest.doMock('./railgun-recovered-review-budget.json', () => budget);
+    for (const name of Object.values(MUTABLE)) jest.dontMock(name);
+    for (const [name, source] of Object.entries(mutant ?? {}))
+      jest.doMock(name, () => loadVariant(name, source));
     loaded = {
       budget,
+      mutant,
       kit: {
         submission: require('./railgun-private-submission'),
         privacy: require('../networks/privacy-context'),
@@ -216,6 +252,7 @@ function createClock() {
   const timers = new Map();
   const WALL = 1790000000000;
   let now = 1000,
+    wallOffset = 0,
     sequence = 0;
   class Timeout {
     constructor(id) {
@@ -235,7 +272,7 @@ function createClock() {
     }
   }
   jest.spyOn(performance, 'now').mockImplementation(() => now);
-  jest.spyOn(Date, 'now').mockImplementation(() => WALL + now);
+  jest.spyOn(Date, 'now').mockImplementation(() => WALL + now + wallOffset);
   jest.spyOn(global, 'setTimeout').mockImplementation((run, ms, ...args) => {
     const id = ++sequence;
     timers.set(id, { id, at: now + Math.max(1, Math.floor(Number(ms) || 0)), run, args });
@@ -249,6 +286,11 @@ function createClock() {
     now: () => now,
     block(ms) {
       now += ms;
+    },
+    // A wall-clock step (an NTP correction, say): Date.now() jumps, the
+    // monotonic clock and every pending timer do not.
+    stepWall(ms) {
+      wallOffset += ms;
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     async run(promise) {
@@ -296,6 +338,15 @@ const BASE = Object.freeze({
 
 function mark(name) {
   mock.marks.push([name, mock.clock.now()]);
+  stepWallAt(name);
+}
+// A scenario's one wall-clock step, at a named mark or request.
+function stepWallAt(name) {
+  const step = mock.scenario.wallStep;
+  if (!step || mock.wallStepped || step.on !== name) return;
+  mock.wallStepped = true;
+  mock.clock.stepWall(step.ms);
+  mark('wall-step');
 }
 const at = (name) => mock.marks.find(([key]) => key === name)?.[1];
 const lastAt = (name) => mock.marks.findLast(([key]) => key === name)?.[1];
@@ -378,6 +429,7 @@ async function transport(handle, _url, options) {
       : call.method;
   if (call.method === 'eth_sendRawTransaction')
     entry.hash = Transaction.from(call.params[0]).hash.toLowerCase();
+  stepWallAt(entry.name);
   const s = mock.scenario;
   // A transport failure, shaped as the Tor transport rejects: no response.
   const failure = s.fail?.(entry);
@@ -432,6 +484,7 @@ async function setup(kit, overrides = {}) {
     generation: { id: 'd'.repeat(64) },
     token: {},
     receipt: {},
+    attestReads: 0,
   };
   // The retained scan source: a genuine destination observation, no request.
   const sourceHandle = root.getContext({
@@ -514,7 +567,14 @@ async function setup(kit, overrides = {}) {
       if (r !== mock.receipt) throw Error('receipt');
       return copy(mock.stored);
     },
-    get: async () => copy(mock.stored),
+    // Optional latency on the Nth capsule read after the approval (the
+    // attestations in the review callback, then in signing).
+    get: async () => {
+      const slow = s.attestDelay;
+      if (slow && at('approve') !== undefined && ++mock.attestReads === slow.read)
+        await mock.clock.sleep(slow.ms);
+      return copy(mock.stored);
+    },
   };
   mock.checkpoint = { digest: '1'.repeat(64), to: { number: 6000001, hash: blockHash(6000001) } };
   mock.owned = {
@@ -772,9 +832,11 @@ async function setup(kit, overrides = {}) {
         expiresAt: request.expiresAt,
         window: request.expiresAt - Date.now(),
       };
+      // beforeMs is measured against H on the monotonic clock: H was fixed
+      // on both clocks together, before any scenario wall step.
       const wait = Object.hasOwn(s.approve, 'afterMs')
         ? s.approve.afterMs
-        : request.expiresAt - Date.now() - s.approve.beforeMs;
+        : request.expiresAt - mock.clock.WALL - mock.clock.now() - s.approve.beforeMs;
       await mock.clock.sleep(wait);
       mark('approve');
       return true;
@@ -789,10 +851,12 @@ async function run(budget, overrides) {
   }
   const kit = kitFor(budget);
   const options = await setup(kit, overrides);
+  const before = await mock.journal.readSnapshot();
   const result = await mock.clock.run(
     kit.submission.submitRailgunRecoveredPrivateTransaction(options)
   );
-  const { records } = await mock.journal.readSnapshot();
+  const after = await mock.journal.readSnapshot();
+  const { records } = after;
   const attempts = records.filter((v) => v.intent?.kind === 'railgun-transact');
   const named = (name) => mock.requests.filter((v) => v.name === name);
   const outcome = result.hash
@@ -807,6 +871,8 @@ async function run(budget, overrides) {
   return {
     result,
     outcome,
+    before,
+    after,
     diagnostic: kit.submission.getRailgunPrivateSubmissionDiagnostic(result),
     attempts,
     sends: named('eth_sendRawTransaction'),
@@ -886,14 +952,14 @@ describe('where the recovered send actually begins (production service, network 
 // signing until A + 400, the broadcast history refresh until A + 400 + 600 +
 // 80 = A + 1,080 (the check before begin), begin until A + 1,100 (the check
 // after begin), then the raw send. F is the service's expiry.
+const near = (beforeMs) => ({
+  resolved: 4,
+  read: uniform(200),
+  signMs: 400,
+  fsyncMs: () => 10,
+  approve: { beforeMs },
+});
 describe('approval close to the admission deadline F', () => {
-  const near = (beforeMs) => ({
-    resolved: 4,
-    read: uniform(200),
-    signMs: 400,
-    fsyncMs: () => 10,
-    approve: { beforeMs },
-  });
   test('approval 1,101 ms before F sends: the send begins 1 ms before F', async () => {
     const seen = await run(DEFAULT, near(1101));
     expect(seen.outcome).toBe('acknowledged');
@@ -991,6 +1057,120 @@ describe('journal begin and the raw send against F and the evidence lifetime E',
       expect(seen.attempts).toEqual([expect.objectContaining({ state: 'attempted' })]);
     }
   );
+});
+
+// Each monotonic check of F, alone. A scenario steps the wall clock 10 s
+// back after H and F were fixed on both clocks: the service's review timer
+// (armed from Date.now()) then fires 10 s late and every wall-clock
+// comparison with H or F passes for 10 s after them, so only the monotonic
+// checks remain. H and F below are monotonic instants.
+const BACK = -10000;
+const SPLIT = Object.freeze({ ...BUDGET, admissionMs: 5000, sendReserveMs: 5000 });
+const monoH = () => mock.review.expiresAt - mock.clock.WALL;
+const transactionAfter = (instant) =>
+  mock.requests.filter((v) => v.role === 'transaction-rpc' && v.at >= instant);
+const refusedBeforeJournal = (seen) => {
+  expect(seen.outcome).toBe('refused-after-nullifier');
+  expect(seen.attempts).toEqual([]);
+  expect(at('begin-start')).toBeUndefined();
+  expect(seen.sends).toEqual([]);
+  expect(mock.chain.accepted).toEqual([]);
+  expect(seen.diagnostic).toEqual({ stage: 'submission', code: 'PRIVATE_TRANSACTION_FAILED' });
+};
+const MONOTONIC = Object.freeze({
+  // Approval 2 ms before F; the signing attestation then takes 5 ms. Only
+  // the check before the signer refuses: the borrowed key is never used.
+  'pre-sign': async () => {
+    const seen = await run(DEFAULT, {
+      wallStep: { on: 'eth_getCode', ms: BACK },
+      approve: { beforeMs: 2 },
+      attestDelay: { read: 2, ms: 5 },
+    });
+    expect(at('approve')).toBe(monoH() - 2);
+    expect(at('sign-start')).toBeUndefined();
+    refusedBeforeJournal(seen);
+  },
+  // Signing ends 100 ms after F. The check after the signer and the
+  // network's entry check both refuse before any further request.
+  'signing-crosses-F': async () => {
+    const seen = await run(DEFAULT, {
+      resolved: 4,
+      wallStep: { on: 'eth_getCode', ms: BACK },
+      signMs: 400,
+      approve: { beforeMs: 300 },
+    });
+    expect(at('sign-end')).toBe(monoH() + 100);
+    expect(seen.signed).toBe(true);
+    expect(transactionAfter(monoH())).toEqual([]);
+    refusedBeforeJournal(seen);
+  },
+  // A split policy: approval 2 ms after H, well before F = H + 5 s. Only
+  // the approval check refuses; signing, begin and the send would all
+  // still precede F.
+  'approval-after-H': async () => {
+    const seen = await run(SPLIT, {
+      wallStep: { on: 'eth_getCode', ms: BACK },
+      approve: { beforeMs: -2 },
+    });
+    expect(at('approve')).toBe(monoH() + 2);
+    expect(at('approve')).toBeLessThan(monoH() + SPLIT.admissionMs);
+    expect(at('sign-start')).toBeUndefined();
+    refusedBeforeJournal(seen);
+  },
+  // H = F: approval 2 ms after F. The approval check refuses; without it,
+  // the check before the signer refuses at the same instant.
+  'approval-after-F': async () => {
+    const seen = await run(DEFAULT, {
+      wallStep: { on: 'eth_getCode', ms: BACK },
+      approve: { beforeMs: -2 },
+    });
+    expect(at('sign-start')).toBeUndefined();
+    refusedBeforeJournal(seen);
+  },
+  // The wall clock steps back as signing ends, before F; the broadcast
+  // history refresh then crosses F. The network's check before journal
+  // begin refuses: no record, no send.
+  'refresh-crosses-F': async () => {
+    for (const beforeMs of [1080, 401]) {
+      const seen = await run(DEFAULT, {
+        ...near(beforeMs),
+        wallStep: { on: 'sign-end', ms: BACK },
+      });
+      expect(at('wall-step')).toBeLessThan(monoH());
+      expect(seen.signed).toBe(true);
+      refusedBeforeJournal(seen);
+    }
+  },
+  // The same step; begin is admitted before F and its write crosses it.
+  // The network's check before the raw send refuses: durable, never sent.
+  'begin-crosses-F': async () => {
+    for (const beforeMs of [1100, 1081]) {
+      const seen = await run(DEFAULT, {
+        ...near(beforeMs),
+        wallStep: { on: 'sign-end', ms: BACK },
+      });
+      expect(lastAt('begin-start')).toBeLessThan(monoH());
+      expect(lastAt('begin-end')).toBeGreaterThanOrEqual(monoH());
+      expect(seen.outcome).toBe('journaled-uncertain');
+      expect(seen.sends).toEqual([]);
+      expect(mock.chain.accepted).toEqual([]);
+      expect(seen.result).toEqual({
+        transactionHash: seen.attempts[0].hash,
+        submissionStatus: 'unknown',
+      });
+    }
+  },
+  // A send admitted 1 ms before F and acknowledged after it stays
+  // acknowledged: F is no part of the submission scope's isCurrent.
+  'ack-after-F': async () => {
+    const seen = await run(DEFAULT, near(1101));
+    expect(seen.outcome).toBe('acknowledged');
+    expect(seen.sends[0].at).toBe(monoH() - 1);
+    expect(seen.sends[0].end).toBeGreaterThan(monoH());
+  },
+});
+describe('the monotonic admission deadline F against a backward wall-clock step', () => {
+  test.each(Object.keys(MONOTONIC))('%s', (name) => MONOTONIC[name]());
 });
 
 describe('the nullifier disclosure boundary', () => {
@@ -1325,4 +1505,134 @@ describe('policy comparison under real boundaries', () => {
     },
     60000
   );
+});
+
+// Mutation controls: each monotonic F check removed (or F added to the scope)
+// in an edited copy of one production module, run through the probes above.
+// A row that survives is redundant by construction, and says why.
+const SUBMISSION = MUTABLE.submission,
+  NETWORK = MUTABLE.network;
+const MUTATIONS = [
+  [
+    'the check before the signer',
+    {
+      [SUBMISSION]: [
+        'if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);\n        const signed',
+        'const signed',
+      ],
+    },
+    'pre-sign',
+    'caught',
+  ],
+  // The network's entry check follows it with no event-loop turn between.
+  [
+    'the check after the signer',
+    {
+      [SUBMISSION]: [
+        'if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);\n        return signed;',
+        'return signed;',
+      ],
+    },
+    'signing-crosses-F',
+    'survives',
+  ],
+  // The check after the signer precedes it with no event-loop turn between.
+  [
+    "the network's entry check",
+    {
+      [NETWORK]: [
+        "assertAdmitted();\n    if (intent.kind === 'railgun-native-shield')",
+        "if (intent.kind === 'railgun-native-shield')",
+      ],
+    },
+    'signing-crosses-F',
+    'survives',
+  ],
+  [
+    "both the check after the signer and the network's entry check",
+    {
+      [SUBMISSION]: [
+        'if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);\n        return signed;',
+        'return signed;',
+      ],
+      [NETWORK]: [
+        "assertAdmitted();\n    if (intent.kind === 'railgun-native-shield')",
+        "if (intent.kind === 'railgun-native-shield')",
+      ],
+    },
+    'signing-crosses-F',
+    'caught',
+  ],
+  [
+    'the approval check, split policy',
+    { [SUBMISSION]: ['if (lifetimeEnd) assert.ok(performance.now() < reviewEnd);', 'void 0;'] },
+    'approval-after-H',
+    'caught',
+  ],
+  // H = F: the check before the signer refuses at the same instant.
+  [
+    'the approval check, H = F',
+    { [SUBMISSION]: ['if (lifetimeEnd) assert.ok(performance.now() < reviewEnd);', 'void 0;'] },
+    'approval-after-F',
+    'survives',
+  ],
+  [
+    'the monotonic clause of the submission entry',
+    {
+      [SUBMISSION]: [
+        'assertCurrent();\n        if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);\n      },',
+        'assertCurrent();\n      },',
+      ],
+    },
+    'refresh-crosses-F',
+    'caught',
+  ],
+  [
+    "the network's check before journal begin",
+    { [NETWORK]: ['assertDeadline();\n    assertAdmitted();\n', 'assertDeadline();\n'] },
+    'refresh-crosses-F',
+    'caught',
+  ],
+  [
+    "the network's check before the raw send",
+    { [NETWORK]: ['assertDeadline();\n      assertAdmitted();\n', 'assertDeadline();\n'] },
+    'begin-crosses-F',
+    'caught',
+  ],
+  [
+    "F added to the submission scope's isCurrent",
+    {
+      [SUBMISSION]: [
+        '        try {\n          assertCurrent();\n          return true;',
+        '        try {\n          (submissions.get(handle)?.assertCurrent ?? assertCurrent)();\n          return true;',
+      ],
+    },
+    'ack-after-F',
+    'caught',
+  ],
+];
+describe('mutation controls: the monotonic F checks', () => {
+  const sources = Object.fromEntries(
+    Object.values(MUTABLE).map((name) => [name, fs.readFileSync(require.resolve(name), 'utf8')])
+  );
+  afterEach(() => {
+    mutant = null;
+  });
+  test.each(MUTATIONS)('%s', async (_name, edits, probe, expected) => {
+    const variant = {};
+    for (const [name, [from, to]] of Object.entries(edits)) {
+      expect(sources[name].split(from)).toHaveLength(2);
+      variant[name] = sources[name].split(from).join(to);
+    }
+    mutant = variant;
+    let failure = null;
+    try {
+      await MONOTONIC[probe]();
+    } catch (error) {
+      failure = error;
+    }
+    if (expected === 'survives') expect(failure).toBeNull();
+    // Caught by a probe expectation, never by a load or harness error.
+    else expect(failure?.matcherResult).toBeDefined();
+  });
 });
