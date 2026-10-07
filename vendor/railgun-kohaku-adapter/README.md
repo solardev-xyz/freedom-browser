@@ -1,15 +1,15 @@
 # `@freedom/railgun-kohaku-adapter` tarball
 
-`freedom-railgun-kohaku-adapter-0.4.0.tgz` is the `npm pack` output of the restricted Kohaku adapter package that Freedom extracted from `src/main/wallet/`. Freedom depends on it through a `file:` dependency in `package.json`, so `npm ci` installs it from this file and no registry is involved. `src/main/wallet/railgun-kohaku-{private-adapter,public-adapter,snapshot-plugin,read-data,read-dispatch}.js` re-export it; the implementation lives in the package.
+`freedom-railgun-kohaku-adapter-0.5.0.tgz` is the `npm pack` output of the restricted Kohaku adapter package that Freedom extracted from `src/main/wallet/`. Freedom depends on it through a `file:` dependency in `package.json`, so `npm ci` installs it from this file and no registry is involved. `src/main/wallet/railgun-kohaku-{private-adapter,public-adapter,snapshot-plugin,read-data,read-dispatch}.js` re-export it; the implementation lives in the package.
 
 | Field                      | Value                                                                                             |
 | -------------------------- | ------------------------------------------------------------------------------------------------- |
 | Source repository          | https://github.com/solardev-xyz/railgun-kohaku-adapter                                            |
-| Source commit              | `b77c7c1edf0e3e7ffe00ed9627f97d86814ae78a`                                                        |
-| Package                    | `@freedom/railgun-kohaku-adapter` 0.4.0 (MPL-2.0, not published to a registry)                    |
-| SHA-256                    | `35ea07c1f9c64926c94a0b24f39333db75412a7771eae78675743bcae2a6a0a1`                                |
-| Integrity (`package-lock`) | `sha512-jo48Wo3koQR+TDwTyWzJjG9nAPaRkHeraQOtT8z0w1GIhSUh82di4XqtkNVmpMhL4XClbnqeia19Gvr7nDHuvQ==` |
-| Files                      | 59 (`package/` prefix): see below                                                                 |
+| Source commit              | `3d52223b6c4fdd4d7ed9c78933d2ffe1a4d6ca4a`                                                        |
+| Package                    | `@freedom/railgun-kohaku-adapter` 0.5.0 (MPL-2.0, not published to a registry)                    |
+| SHA-256                    | `190ec1f2225afca9663fbd67ac1b3b8601071c58db9119961797e7ebdd03ab52`                                |
+| Integrity (`package-lock`) | `sha512-vja1AN1LS0z4VD5hEeQAM/qTlUEQWy/ZEKJPc9z7Y/V4V9mSstS7HzXt/g/B8guEUy8snevetJTsyBBBB+jSgw==` |
+| Files                      | 99 (`package/` prefix): see below                                                                 |
 
 Do not edit, re-pack or replace the tarball by hand. A new version is a new `npm pack` at a new reviewed package commit, committed under a new file name together with the `package.json` and `package-lock.json` change and an updated table above.
 
@@ -20,12 +20,12 @@ From a clean checkout of the source repository at the commit above (the package 
 ```sh
 git clone https://github.com/solardev-xyz/railgun-kohaku-adapter.git
 cd railgun-kohaku-adapter
-git checkout b77c7c1edf0e3e7ffe00ed9627f97d86814ae78a
+git checkout 3d52223b6c4fdd4d7ed9c78933d2ffe1a4d6ca4a
 npm pack --pack-destination <directory>
-shasum -a 256 <directory>/freedom-railgun-kohaku-adapter-0.4.0.tgz
+shasum -a 256 <directory>/freedom-railgun-kohaku-adapter-0.5.0.tgz
 ```
 
-The tarball was packed with Node.js 24.18.1 and npm 11.16.0. `npm pack` writes fixed timestamps and modes, so a pack of that commit with the same npm version is byte-identical to this file (all 59 packed files checked against the published commit). The original E1 artifact remains retained under its old filename. Its JSON output (`npm pack --json`) reports the same `integrity` as `package-lock.json`.
+The tarball was packed with Node.js 24.18.1 and npm 11.16.0. `npm pack` writes fixed timestamps and modes, so a pack of that commit with the same npm version is byte-identical to this file (all 99 packed files checked against the published commit). The original E1 artifact remains retained under its old filename. Its JSON output (`npm pack --json`) reports the same `integrity` as `package-lock.json`.
 
 ## Contents
 
@@ -40,7 +40,7 @@ share the package implementation without changing their input requirements. The 
 not expose raw errors to users or reports. No engine, prover, key, network or store
 is included. No new third-party dependency or supported chain is added.
 
-Version 0.3.0 adds destination, signature, preparation, result and recovery-input
+Version 0.3.0 added destination, signature, preparation, result and recovery-input
 helpers under `src/data/`, plus the data-only engine and prover manifests. Their
 algorithms retain the exact Freedom checks, including the fixed engine/prover
 builds, `freedomfixture` source label and trusted absolute recovery paths. Host
@@ -48,7 +48,7 @@ selection, keys, genuine capabilities, stores, jobs and execution remain in
 Freedom. Manifest-byte parity and transitive source-inventory tests prevent the
 package's result checks from drifting from Freedom's authenticated runtime.
 
-Version 0.4.0 adds trusted `/host/poi` entries and declarations, twelve POI/TXID
+Version 0.4.0 added trusted `/host/poi` entries and declarations, twelve POI/TXID
 data modules and the pure own-POI payload binder. Freedom retains selectors,
 engine jobs, stores, controllers and genuine authority owners. The TXID and
 wallet policies pin the entire eager host-POI closure, including capsule helpers.
@@ -61,3 +61,28 @@ installed package and all old archived source freezes remain unchanged. External
 positive/cold launchers need fresh copy rules and installed-package inventories
 before a new native run. Ordinary private proof and original-signature recovery
 use the authentic list and do not need that transformation.
+
+Version 0.5.0 adds the fixed private execution kernel under `src/execution/`,
+`host-bootstrap.cjs`, `host-execution.{cjs,mjs}`, their declarations, and
+`docs/execution/{INTEGRATION.md,PROVENANCE.json}`. Freedom's supervisor admits nine
+closed job enums, derives their key eligibility, and sends the enum to a minimal
+entry that installs package guards before loading the host context/artifact ports.
+The package maps each enum to a fixed module; the old filename route refuses those
+local and installed job paths. Existing main owners retain genuine identity,
+loan, account, receipt and original task/drain authority. Only `private-verify` is
+keyless; preparation and operation still restore through one viewing-key request.
+
+This is a staged extraction. All forty original helper/job source files remain; legacy utility routes and main
+consumers still use local shared helpers. The wallet policy binds both
+local and installed implementations. Issuer objects never cross those realms.
+The six existing data wrappers share the installed data functions; the execution
+copy preserves the documented import relocations and adds the reviewed owned
+artifact-buffer size/hash check. Parent-side caller algorithms, key leases,
+provider/storage routing, and source/prover archives remain in Freedom.
+
+The integration has source and controlled owner tests. Native, packaged and
+transformed-copy qualification must use the new bootstrap and installed source
+inventory before execution is claimed qualified. Historical 0.2 qualification
+and old 0.4 package evidence do not qualify this new kernel route. No engine or
+prover archive, production key, live-service result or signing permission is
+included in this tarball.

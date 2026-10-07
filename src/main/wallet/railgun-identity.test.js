@@ -74,6 +74,15 @@ jest.mock('./railgun-process', () => ({
   startRailgunProcess: (options) => {
     const input = JSON.parse(options.input);
     mockInputs.push(input);
+    if (input.purpose || !input.recordDigest) {
+      expect(options.executionJob).toBe(input.purpose || 'spending-sign');
+      expect(options.filename).toBeUndefined();
+      expect(options.binaryKey).toBeUndefined();
+    } else {
+      expect(options.executionJob).toBeUndefined();
+      expect(options.filename).toBe(require.resolve('./railgun-relay-sign-job'));
+      expect(options.binaryKey).toBe(true);
+    }
     if (!input.purpose) {
       const controller = new AbortController();
       let finish, stopped;

@@ -3,9 +3,13 @@ jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
 }));
 jest.mock('./railgun-prover-runtime', () => ({ verifyRailgunProverRuntime: (v) => v }));
-jest.mock('./railgun-private-intent', () => ({
-  matchRailgunPrivateProvedTransaction: () => ({ digest: '0x' + '1'.repeat(64) }),
-}));
+// Mock the shared intent implementation, leaving both host and result checks on one seam.
+jest.mock(
+  '../../../node_modules/@freedom/railgun-kohaku-adapter/src/data/railgun-private-intent',
+  () => ({
+    matchRailgunPrivateProvedTransaction: () => ({ digest: '0x' + '1'.repeat(64) }),
+  })
+);
 jest.mock('./railgun-process', () => ({
   startRailgunProcess: jest.fn((options) => {
     let finish, reject;
@@ -95,6 +99,18 @@ async function verify(extra = {}) {
   results.push(result);
   return result;
 }
+test('host intent checks and guarded results use the same extracted data implementation', () => {
+  const local = require('./railgun-private-intent');
+  const shared = require('../../../node_modules/@freedom/railgun-kohaku-adapter/src/data/railgun-private-intent');
+  const results = require('./railgun-private-results');
+  const host = require('@freedom/railgun-kohaku-adapter/host/data');
+  expect(local.matchRailgunPrivateProvedTransaction).toBe(
+    shared.matchRailgunPrivateProvedTransaction
+  );
+  expect(results.normalizeRailgunPrivateVerification).toBe(
+    host.normalizeRailgunPrivateVerification
+  );
+});
 test('issues exact account-bound evidence only after verifier exit and passes no key or database', async () => {
   const result = await verify();
   expect(mockTask.close).toHaveBeenCalled();
@@ -113,6 +129,8 @@ test('issues exact account-bound evidence only after verifier exit and passes no
   ).toThrow();
   const job = startRailgunProcess.mock.calls[0][0];
   expect(job.binaryKey).toBeUndefined();
+  expect(job.filename).toBeUndefined();
+  expect(job.executionJob).toBe('private-verify');
   expect(Object.keys(JSON.parse(job.input)).sort()).toEqual([
     'archive',
     'artifactDirectory',
