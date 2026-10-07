@@ -104,13 +104,11 @@ that commit and the original Tor-state files were unchanged. The first setup
 demonstrates useful work beyond the old 10-second cap. Distinct tokens do not
 prove distinct Tor circuits, and this was not a funded wallet qualification.
 
-These are source and controlled-network results. The candidate has not been used
-for the funded continuation. A longer first public connection can still exhaust
-the unchanged 20-second preflight acquisition budget; it cannot guarantee recovery
-or POI service acceptance. Reviewer closure on the queue fix and preserving the
-remaining live attempt's source binding are required before live use.
+These source and controlled-network results preceded the bounded live continuation
+below. A longer first public connection can still exhaust the unchanged 20-second
+preflight acquisition budget; it cannot guarantee recovery or POI service acceptance.
 
-## Preserving the unused continuation
+## Source revision binding
 
 The original `continuation.json` remains unchanged. An optional, fixed
 `tor-setup-source-revision.json` binds its exact digest, both failed preparation
@@ -125,3 +123,55 @@ The new header includes the original manifest digest and the source revision
 digest. The revision creates no second recovery attempt and changes no send,
 fee, disclosure, receipt or retry limit. Probe scheduling and reservation of
 the one remaining preparation are enforced separately by the operator guard.
+
+## Final live continuation at `c208245f`
+
+Independent review cleared the queue fix and the fixed source revision. The last
+of the three preparation rounds completed a fresh scan through block 11,865,286,
+with one asset and independent event coverage. The local spent read found the
+held input unspent through that anchor only. Exactly one private preflight probe
+passed in 16,770 ms, queried the nullifier, and left the protected hold, capsule
+and journal unchanged. The probe does not establish that the later recovery can
+complete; that operation acquires fresh prerequisites.
+
+The one reserved recovery attempt then refused with submission elapsed 43,729 ms at
+`preflight / acquire / deployment / anchor`, with reason `rpc` and cause code
+`TOR_REQUEST_FAILED`. It reached one combined disclosure review (POI, private preflight and
+transaction RPC) and no transaction review. Before refusal it made the submitter
+EOA reads and completed the POI membership step, then stopped at deployment before
+the private preflight nullifier query. Only the earlier probe queried the nullifier. The authenticated journal readback found no attempt or send. The input
+remained `proved-unsent` and reserved. The fixed continuation allowance is consumed;
+no observation, POI submission, restart or unshield step followed, and there was
+no resend. The old consumed ledger and original manifest stayed unchanged. All
+349 reported source hashes matched the clean live commit.
+
+| Retained report  | SHA-256                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| Completed scan   | `4e196a6237d2c74fab779a0339fd3fc3c110d29885426d1a15c1e0050bb47d7d` |
+| Passed probe     | `b926daea13088f0a83df3a28912448c379162d4744c6de5563bd5e8ad86c386a` |
+| Refused recovery | `77bf7dce8cf05683b880bd2327ba69fe90b0b908bf315a8b7e099fc3754a81b8` |
+
+Reports containing account-linked data remain local; this document retains only
+the outcome and integrity references. Earlier calldata exposure through gas
+estimation means a local no-send result is not proof that nobody else submitted
+that transaction. The spent observation above is limited to its scan anchor.
+
+The public-metadata setup deadline now ends as `TOR_REQUEST_TIMEOUT`; the
+20-second preflight stop yields `inactive` / `PRIVACY_REQUEST_ABORTED`. This
+`rpc` / `TOR_REQUEST_FAILED` observation is a different failure from the old
+10-second metadata setup cap. The probe and recovery each used a fresh dedicated
+Arti with empty state. The managed Tor state examined by copied-state diagnostics
+applied only to the scan qualifier. These distinctions do not identify the cause.
+
+The deployment preflight dropped the transport's closed `stage` field when wrapping
+its error. A follow-up forwards the six allowed stage values through both wrappers
+and the existing private-submission diagnostic. Own-data property reads refuse
+accessors, proxies, inherited fields and unknown values without evaluating them.
+This adds no requests, retries, fallback or authority. It cannot retrospectively
+identify the failed transport stage or root cause of this live attempt. The
+follow-up passes 520 tests in four affected suites; independent review covered the
+forwarding path, with additional getter/proxy controls added for its review nit.
+
+The live end-to-end self-transfer, output POI acceptance, cold recovery and full
+unshield milestone remains open. This campaign is stopped, not reset. Independent
+portable-package work continues without opening the funded profile.

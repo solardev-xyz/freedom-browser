@@ -266,6 +266,23 @@ const at = (matches, effect) => () => {
 const PREFLIGHT = { code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED', stage: 'preflight' };
 // [name, injection, expected diagnostic beyond PREFLIGHT, nullifier queried]
 const MATRIX = [
+  ...['connect', 'tls', 'socket-new', 'socket-reused', 'response', 'unclassified'].map((stage) => [
+    `deployment anchor Tor failure at ${stage}`,
+    at(
+      shield('eth_getBlockByNumber', (r) => r.params[0] === 'latest'),
+      () => {
+        throw Object.assign(hostile('TOR_REQUEST_FAILED'), { stage });
+      }
+    ),
+    {
+      reason: 'rpc',
+      step: 'deployment',
+      deploymentStep: 'anchor',
+      causeCode: 'TOR_REQUEST_FAILED',
+      causeStage: stage,
+    },
+    false,
+  ]),
   [
     'deployment header transport failure',
     at(

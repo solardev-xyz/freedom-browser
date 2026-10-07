@@ -226,6 +226,59 @@ test('RPC refusal is classified separately from a deployment mismatch', async ()
     causeCode: 'UNCLASSIFIED',
   });
 });
+test.each(['connect', 'tls', 'socket-new', 'socket-reused', 'response', 'unclassified'])(
+  'a deployment RPC preserves the closed Tor stage %s',
+  async (stage) => {
+    mockRequest.mockRejectedValueOnce(
+      Object.assign(Error('private details'), { code: 'TOR_REQUEST_FAILED', stage })
+    );
+    const error = await source.acquire().catch((error) => error);
+    expect(error).toMatchObject({
+      reason: 'rpc',
+      step: 'anchor',
+      causeCode: 'TOR_REQUEST_FAILED',
+      causeStage: stage,
+    });
+    expect(JSON.stringify(error)).not.toContain('private details');
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  }
+);
+test.each(['accessor', 'inherited', 'unknown', 'wrong-code'])(
+  'a %s deployment transport stage is not forwarded',
+  async (kind) => {
+    const error = Object.assign(Error('private details'), {
+      code: kind === 'wrong-code' ? 'PRIVATE_RPC_INVALID' : 'TOR_REQUEST_FAILED',
+    });
+    const getter = jest.fn(() => 'connect');
+    if (kind === 'accessor') Object.defineProperty(error, 'stage', { get: getter });
+    else if (kind === 'inherited') Object.setPrototypeOf(error, { stage: 'connect' });
+    else error.stage = kind === 'unknown' ? 'https://private.example' : 'connect';
+    mockRequest.mockRejectedValueOnce(error);
+    const result = await source.acquire().catch((error) => error);
+    expect(result).not.toHaveProperty('causeStage');
+    expect(getter).not.toHaveBeenCalled();
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  }
+);
+test.each(['accessor', 'inherited', 'proxy', 'object'])(
+  'a %s RPC error code is never evaluated',
+  async (kind) => {
+    const trap = jest.fn(() => {
+      throw Error('private details');
+    });
+    let error = { stage: 'connect' };
+    if (kind === 'accessor') Object.defineProperty(error, 'code', { get: trap });
+    if (kind === 'inherited') Object.setPrototypeOf(error, { code: 'TOR_REQUEST_FAILED' });
+    if (kind === 'proxy') error = new Proxy(error, { get: trap, getOwnPropertyDescriptor: trap });
+    if (kind === 'object') error.code = { toString: trap };
+    mockRequest.mockRejectedValueOnce(error);
+    const result = await source.acquire().catch((value) => value);
+    expect(result).toMatchObject({ reason: 'rpc', step: 'anchor', causeCode: 'UNCLASSIFIED' });
+    expect(result).not.toHaveProperty('causeStage');
+    expect(trap).not.toHaveBeenCalled();
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  }
+);
 test('foreign enrollment cannot use a genuine receipt', async () => {
   const result = await source.acquire();
   const original = mockEnrollment;

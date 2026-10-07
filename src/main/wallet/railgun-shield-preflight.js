@@ -3,6 +3,7 @@
  * a guarantee that governance cannot change before transaction inclusion.
  */
 const { Interface, id, toBeHex, keccak256 } = require('ethers');
+const { isProxy } = require('util').types;
 const { getPrivacyContext, createPrivacyScope } = require('../networks/privacy-context');
 const { createPrivateRpc } = require('../networks/private-rpc');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
@@ -29,6 +30,24 @@ const MAX_BLOCK_AGE_SECONDS = 120;
 // Floor from the reviewed Sepolia deployment qualification. This is a lower
 // bound, not authenticated finality or a replacement for the public scan.
 const MIN_BLOCK = 11833631n;
+// Diagnostic only: never infer delivery or retry permission from a stage.
+const CAUSE_STAGES = Object.freeze([
+  'connect',
+  'tls',
+  'socket-new',
+  'socket-reused',
+  'response',
+  'unclassified',
+]);
+function own(error, key) {
+  if (!error || typeof error !== 'object' || isProxy(error)) return undefined;
+  const property = Object.getOwnPropertyDescriptor(error, key);
+  return property && Object.hasOwn(property, 'value') ? property.value : undefined;
+}
+function causeStage(error, key) {
+  const stage = own(error, key);
+  return CAUSE_STAGES.includes(stage) ? stage : undefined;
+}
 function createRailgunShieldPreflight(enrollment, options = {}) {
   check(
     options &&
@@ -108,8 +127,12 @@ function createRailgunShieldPreflight(enrollment, options = {}) {
         response = await rpc.request(method, params, validate);
       } catch (error) {
         active();
+        const code = own(error, 'code');
+        const stage = code === 'TOR_REQUEST_FAILED' ? causeStage(error, 'stage') : undefined;
         throw Object.assign(fail('rpc'), {
-          causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code ?? '') ? error.code : 'UNCLASSIFIED',
+          causeCode:
+            typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(code) ? code : 'UNCLASSIFIED',
+          ...(stage === undefined ? {} : { causeStage: stage }),
         });
       }
       active();
@@ -207,6 +230,9 @@ function createRailgunShieldPreflight(enrollment, options = {}) {
       throw Object.assign(fail(reason), {
         step,
         ...(reason === 'rpc' ? { causeCode: error.causeCode } : {}),
+        ...(reason === 'rpc' && causeStage(error, 'causeStage') !== undefined
+          ? { causeStage: causeStage(error, 'causeStage') }
+          : {}),
       });
     } finally {
       busy = false;
