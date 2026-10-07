@@ -93,7 +93,14 @@ jest.mock('../identity-manager', () => ({
 }));
 jest.mock('./signers', () => ({ getSigner: () => mock.signer }));
 jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => true }));
-jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mock.endpoint }));
+// Every private RPC activity check reads the endpoint, so a scenario can
+// place synchronous work inside the RPC's own admission path.
+jest.mock('../tor-manager', () => ({
+  getWalletSocksEndpoint: () => {
+    mock.onEndpoint?.();
+    return mock.endpoint;
+  },
+}));
 jest.mock('../networks/network-registry', () => ({
   getNetwork: () => ({}),
   getEndpoints: () => ['https://rpc.example'],
@@ -650,8 +657,33 @@ async function setup(kit, overrides = {}) {
       assertResult: (value) => {
         if (value !== receipt || controller.signal.aborted || performance.now() - started >= 60000)
           throw Error('deployment');
+        // The preflight re-asserts the deployment in each read, after its
+        // own checks; after the verifier reply this is the nullifier read.
+        const last = mock.requests.at(-1);
+        if (s.cross && !mock.crossing && last?.name === 'getVerificationKey' && last.outcome)
+          crossAfterNullifierCheck(s.cross);
         return { anchor: ANCHOR };
       },
+    };
+  };
+  // Synchronous work (clock.block, no timer runs) at one point between the
+  // preflight's own nullifier deadline check and transport admission: in the
+  // preflight's read path, after the RPC's awaited chain-check promise
+  // (ready(), second activity check), or at the RPC's last activity check
+  // after serialization (raw(), fourth).
+  const crossAfterNullifierCheck = ({ at: where, ms }) => {
+    const block = () => {
+      mark('crossing');
+      mock.clock.block(ms);
+    };
+    mock.crossing = true;
+    if (where === 'read') return block();
+    const target = { ready: 2, raw: 4 }[where];
+    let checks = 0;
+    mock.onEndpoint = () => {
+      if (++checks !== target) return;
+      mock.onEndpoint = null;
+      block();
     };
   };
   mock.loadArtifacts = async ({ variant }) => {
@@ -972,26 +1004,59 @@ describe('the nullifier disclosure boundary', () => {
     });
     expect(mock.requests.filter((v) => v.role === 'transaction-rpc')).toEqual([]);
   });
-  test('the deadline is exact at the request: one millisecond later refuses it', async () => {
-    // The preflight receives the conservative estimate minus the floor, the
-    // send reserve, admission, the EOA allowance and the disclosure tail.
-    const before =
-      BUDGET.reviewMinMs +
-      BUDGET.admissionMs +
-      BUDGET.sendReserveMs +
-      BUDGET.eoaAllowanceMs +
-      BUDGET.disclosureTailMs;
-    const stall = (extra) => (entry) =>
-      entry.role === 'protocol-rpc' && entry.roleIndex === 6 ? 150 + extra : 150;
+  // The preflight receives the conservative estimate minus the floor, the
+  // send reserve, admission, the EOA allowance and the disclosure tail.
+  const before =
+    BUDGET.reviewMinMs +
+    BUDGET.admissionMs +
+    BUDGET.sendReserveMs +
+    BUDGET.eoaAllowanceMs +
+    BUDGET.disclosureTailMs;
+  const stall = (extra) => (entry) =>
+    entry.role === 'protocol-rpc' && entry.roleIndex === 6 ? 150 + extra : 150;
+  // A run whose preflight nullifier check happens exactly `offset` ms before
+  // the deadline: with no work in between, the check and the transport share
+  // one instant, so the baseline request time is the check time.
+  async function slackFor() {
     const baseline = await run(DEFAULT, { read: stall(0) });
     const deadline = at('verifier-start') + 60000 - before;
-    const slack = deadline - baseline.nullifier.at;
+    return { deadline, slack: deadline - baseline.nullifier.at };
+  }
+  test('the deadline is exact at the request: one millisecond later refuses it', async () => {
+    const { deadline, slack } = await slackFor();
     const sent = await run(DEFAULT, { read: stall(slack - 1) });
     expect(sent.nullifier.at).toBe(deadline - 1);
     const refused = await run(DEFAULT, { read: stall(slack) });
     expect(refused.nullifier).toBeUndefined();
     expect(refused.outcome).toBe('refused-after-POI');
     expect(refused.diagnostic).toMatchObject({ step: 'nullifiers', reason: 'stale' });
+  });
+  // The preflight's check passes 1 ms before the deadline; synchronous work
+  // then crosses it before the transport sees the request. The private RPC
+  // enforces the same deadline again at its last admission gate.
+  test.each([
+    ['in the preflight read path', 'read'],
+    ["after the RPC's awaited chain-check promise", 'ready'],
+    ["at the RPC's last activity check, after serialization", 'raw'],
+  ])('a deadline crossed %s refuses at transport admission', async (_name, where) => {
+    const { deadline, slack } = await slackFor();
+    const control = await run(DEFAULT, { read: stall(slack - 1), cross: { at: where, ms: 0 } });
+    expect(at('crossing')).toBe(deadline - 1);
+    expect(control.nullifier.at).toBe(deadline - 1);
+    expect(control.outcome).toBe('acknowledged');
+    const crossed = await run(DEFAULT, { read: stall(slack - 1), cross: { at: where, ms: 1 } });
+    expect(at('crossing')).toBe(deadline - 1);
+    expect(crossed.nullifier).toBeUndefined();
+    expect(mock.requests.filter((v) => v.at >= deadline && v.role === 'protocol-rpc')).toEqual([]);
+    expect(crossed.outcome).toBe('refused-after-POI');
+    expect(crossed.diagnostic).toEqual({
+      stage: 'preflight',
+      substage: 'acquire',
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'stale',
+      step: 'nullifiers',
+    });
+    expect(mock.requests.filter((v) => v.role === 'transaction-rpc')).toEqual([]);
   });
 });
 
