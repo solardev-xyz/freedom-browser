@@ -930,6 +930,8 @@ async function main() {
       'railgun-note-provenance-job',
       ...require('../src/main/wallet/railgun-txid-policy').SOURCES,
     ].map((name) => 'src/main/wallet/' + name + '.js'),
+    // The railgun-kohaku-* modules above re-export this installed package.
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   ])
     if (!sources.includes(file)) sources.push(file);
   const hashes = () =>

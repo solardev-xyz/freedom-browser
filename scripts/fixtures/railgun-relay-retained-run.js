@@ -169,6 +169,7 @@ function sourceHashes() {
     'scripts/qualify-railgun-relay-retained.js',
     'scripts/qualify-railgun-relay-proof.js',
     'scripts/qualify-railgun-relay-wire.js',
+    ...require('./railgun-kohaku-adapter-sources').SOURCES,
   ];
   for (const directory of directories)
     for (const name of fs.readdirSync(path.join(root, directory)))
