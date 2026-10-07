@@ -1700,14 +1700,16 @@ const SOURCES = {
 };
 // The real file system, with every ledger step on the world's timeline so tests
 // can order the durable reservation against all other work. Hooks stand in for
-// a concurrent winner or a short write.
-function ledgerFs(log, { beforeCreate, write } = {}) {
+// a concurrent winner, a swapped directory, an unreadable path or a short write.
+function ledgerFs(log, { beforeCreate, beforeMkdir, lstat, write } = {}) {
   const kinds = new Map();
   return {
-    lstatSync: (file) => fs.lstatSync(file),
+    lstatSync: (file) => (lstat ?? fs.lstatSync)(file),
     realpathSync: (file) => fs.realpathSync(file),
     readFileSync: (file, encoding) => fs.readFileSync(file, encoding),
+    readdirSync: (directory) => fs.readdirSync(directory),
     mkdirSync: (directory, options) => {
+      beforeMkdir?.(directory);
       const created = fs.mkdirSync(directory, options);
       log('ledger-mkdir');
       return created;
@@ -1738,6 +1740,33 @@ function ledgerFs(log, { beforeCreate, write } = {}) {
   };
 }
 const ledgerLines = (file) => fs.readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
+// main()'s Electron, profile, vault and Tor owners as recorders that refuse: a run
+// refused before them enters none. One recorder serves every run, because Jest
+// keeps the first instance of a mocked module.
+const MAIN_ENTERED = [];
+const enter = (name) => () => {
+  MAIN_ENTERED.push(name);
+  throw Error(name + ' entered');
+};
+const MAIN_MOCKS = [
+  [
+    'electron',
+    () => ({
+      app: { isPackaged: false, whenReady: enter('app-ready'), exit: enter('app-exit') },
+      safeStorage: {
+        isEncryptionAvailable: enter('safe-storage'),
+        decryptString: enter('decrypt'),
+      },
+    }),
+  ],
+  ['../src/main/profile-resolver', () => ({ initializeProfile: enter('profile') })],
+  ['../src/main/profile-lock', () => ({ acquireProfileLock: enter('profile-lock') })],
+  [
+    '../src/main/identity/vault',
+    () => ({ vaultExists: enter('vault'), unlockVault: enter('unlock'), lockVault: enter('lock') }),
+  ],
+  ['./qualify-ppv2-live', () => ({ openLiveTransport: enter('tor') })],
+];
 function heldWorld({
   mode = 'preflight-probe',
   records,
@@ -3547,14 +3576,16 @@ const PROBES = {
       expect.arrayContaining(['eth_getCode', 'eth_gasPrice', 'recover-submit', 'sign'])
     );
     expect(calls.timeline.at(-1)).toBe('ledger-finished-synced');
+    // The profile's one allowance, named by no report digest.
     const file = m.recoveryLedgerPath(ctx.args.profile);
-    expect(file).toBe(`${ctx.args.profile}.l-a-recovery-ledger/recover-submit-${HELD_SHA}.jsonl`);
+    expect(file).toBe(`${ctx.args.profile}.l-a-recovery-ledger/recover-submit.jsonl`);
     // A sibling of the profile; the profile itself gains nothing.
     expect(fs.readdirSync(path.dirname(ctx.args.profile)).sort()).toEqual([
       'profile',
       'profile.l-a-recovery-ledger',
     ]);
     expect(fs.readdirSync(ctx.args.profile)).toEqual([]);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(['recover-submit.jsonl']);
     const [header, pending, finished, ...rest] = ledgerLines(file);
     expect(rest).toEqual([]);
     expect(header).toEqual({
@@ -3790,7 +3821,7 @@ const PROBES = {
       return {
         header: { ...header, profile },
         pending,
-        done: { type: 'attempt-finished', attemptId: pending.attemptId },
+        done: { type: 'attempt-finished', attemptId: pending.attemptId, holdIdSha256: null },
       };
     };
     // Damaged, unbound or foreign ledgers refuse as damage, before any work.
@@ -3810,6 +3841,11 @@ const PROBES = {
         line(header) + line(pending) + line({ ...done, attemptId: 'f'.repeat(32) }),
       ({ header, pending, done }) => line(header) + line(pending) + line(done) + line(pending),
       ({ header, pending }) => line(header) + JSON.stringify(pending),
+      // A finished record names its hold by a digest, or by none.
+      ({ header, pending, done }) =>
+        line(header) + line(pending) + line({ ...done, holdIdSha256: 'hold' }),
+      ({ header, pending, done }) =>
+        line(header) + line(pending) + line({ ...done, holdIdSha256: undefined }),
     ]) {
       const world = heldWorld({ mode: 'recover-submit' });
       const file = m.recoveryLedgerPath(world.ctx.args.profile);
@@ -3841,6 +3877,18 @@ const PROBES = {
     );
     expect([redirected.calls.timeline, redirected.calls.loaded]).toEqual([[], []]);
     expect(fs.readdirSync(elsewhere)).toEqual([]);
+    // Also when it is swapped in after the admission read, before the reservation.
+    const swappedIn = path.join(path.dirname(newProfile()), 'swapped-in');
+    fs.mkdirSync(swappedIn);
+    const swapped = heldWorld({
+      mode: 'recover-submit',
+      ledger: { beforeMkdir: (directory) => fs.symlinkSync(swappedIn, directory) },
+    });
+    expect(await settle(m.RUNNERS['recover-submit'](swapped.ctx))).toEqual(
+      refused('recovery-ledger')
+    );
+    expect([swapped.calls.timeline, swapped.calls.loaded]).toEqual([[], []]);
+    expect(fs.readdirSync(swappedIn)).toEqual([]);
   },
   'recover-ledger-binding': async (m) => {
     // A run without its complete binding reserves nothing and does nothing.
@@ -3868,6 +3916,265 @@ const PROBES = {
       expect(await settle(m.RUNNERS['recover-submit'](ctx))).toEqual(refused('recovery-binding'));
       expect([calls.timeline, calls.loaded, calls.network]).toEqual([[], [], []]);
       expect(fs.readdirSync(world).filter((name) => name.endsWith('-ledger'))).toEqual([]);
+    }
+  },
+  // The allowance is the profile's, never a report digest's: another rendering of
+  // the same hold, or a ledger minted under another pin, never adds a second one.
+  'recover-ledger-campaign': async (m) => {
+    // The operator's original held report, the only one the recovery modes admit.
+    expect(m.HELD_TRANSFER_REPORT_SHA256).toBe(
+      'd0d05c02c9303205f34382652737613932649a2bf4ecadd134cc8fc46489348c'
+    );
+    const RERENDERED = sha('d2');
+    const line = (value) => JSON.stringify(value) + '\n';
+    const campaign = (profile) => {
+      const directory = profile + '.l-a-recovery-ledger';
+      return fs.existsSync(directory)
+        ? fs
+            .readdirSync(directory)
+            .map((name) => [name, fs.readFileSync(path.join(directory, name), 'utf8')])
+        : [];
+    };
+    const untouched = ({ calls }) =>
+      expect([calls.timeline, calls.loaded, calls.network]).toEqual([[], [], []]);
+    // A transport failure after the reservation and before any nullifier read
+    // spends the allowance like every started attempt. The finished record names
+    // the held operation by its hold id digest.
+    const dropped = heldWorld({ mode: 'recover-submit' });
+    dropped.ctx.network.request = async () => {
+      throw Object.assign(Error('transport closed'), { code: 'ECONNRESET' });
+    };
+    expect(await settle(m.RUNNERS['recover-submit'](dropped.ctx))).toMatchObject({
+      code: 'ECONNRESET',
+    });
+    expect([dropped.calls.submit, dropped.calls.preflights]).toEqual([[], []]);
+    const profile = dropped.ctx.args.profile;
+    const spent = campaign(profile);
+    expect(spent.map(([name]) => name)).toEqual(['recover-submit.jsonl']);
+    const [header, pending, finished] = ledgerLines(m.recoveryLedgerPath(profile));
+    expect(finished).toMatchObject({
+      holdIdSha256: digest('railgun-l-a-recovery-hold-id\n' + HOLD_ID),
+      outcome: {
+        stage: 'submitter',
+        failure: { stage: 'submitter', code: 'ECONNRESET' },
+        submission: null,
+        passed: false,
+      },
+    });
+    const retry = heldWorld({ mode: 'recover-submit', profile });
+    expect(await settle(m.RUNNERS['recover-submit'](retry.ctx))).toEqual(
+      refused('recovery-attempted')
+    );
+    untouched(retry);
+    // Another rendering of the same hold has another digest: refused before the
+    // reservation, on the spent profile and on a fresh one alike.
+    const fresh = newProfile();
+    for (const target of [profile, fresh]) {
+      const other = heldWorld({ mode: 'recover-submit', profile: target });
+      other.ctx.chain.heldTransfer.reportSha256 = RERENDERED;
+      expectRefusal(() => m.assertRecoveryAdmissible(other.ctx), 'recovery-binding');
+      expect(await settle(m.RUNNERS['recover-submit'](other.ctx))).toEqual(
+        refused('recovery-binding')
+      );
+      untouched(other);
+    }
+    expect(campaign(profile)).toEqual(spent);
+    expect(campaign(fresh)).toEqual([]);
+    // A ledger minted for a profile under another pin is foreign: it refuses as
+    // damage, and nothing is added beside it.
+    const minted = heldWorld({ mode: 'recover-submit' });
+    const mintedProfile = minted.ctx.args.profile;
+    const repinned =
+      line({ ...header, profile: mintedProfile, heldTransferReportSha256: RERENDERED }) +
+      line({ ...pending, binding: { ...pending.binding, heldTransferReportSha256: RERENDERED } }) +
+      line(finished);
+    fs.mkdirSync(mintedProfile + '.l-a-recovery-ledger');
+    fs.writeFileSync(m.recoveryLedgerPath(mintedProfile), repinned);
+    expectRefusal(() => m.assertRecoveryAdmissible(minted.ctx), 'recovery-ledger');
+    expect(await settle(m.RUNNERS['recover-submit'](minted.ctx))).toEqual(
+      refused('recovery-ledger')
+    );
+    untouched(minted);
+    expect(campaign(mintedProfile)).toEqual([['recover-submit.jsonl', repinned]]);
+    // A valid ledger under a digest-keyed name, alone or beside the allowance, is
+    // never read as an unspent campaign or as one allowance among several.
+    const rebound = (target) =>
+      line({ ...header, profile: target }) + line(pending) + line(finished);
+    const keyed = `recover-submit-${HELD_SHA}.jsonl`;
+    for (const names of [[keyed], ['recover-submit.jsonl', `recover-submit-${RERENDERED}.jsonl`]]) {
+      const world = heldWorld({ mode: 'recover-submit' });
+      const target = world.ctx.args.profile;
+      fs.mkdirSync(target + '.l-a-recovery-ledger');
+      for (const name of names)
+        fs.writeFileSync(path.join(target + '.l-a-recovery-ledger', name), rebound(target));
+      const before = campaign(target);
+      expectRefusal(() => m.assertRecoveryAdmissible(world.ctx), 'recovery-ledger');
+      expect(await settle(m.RUNNERS['recover-submit'](world.ctx))).toEqual(
+        refused('recovery-ledger')
+      );
+      untouched(world);
+      expect(campaign(target)).toEqual(before);
+    }
+  },
+  // main()'s read-only admission: before unlock, Tor and the mode, it refuses a
+  // spent, damaged or unbound campaign and creates nothing.
+  'recover-ledger-admission': async (m) => {
+    const source = m.main.toString();
+    const order = [
+      'assertPredecessor(mode, previous, {',
+      '.initializeProfile(app, {',
+      'ctx.profileId = profile.id;',
+      "if (mode === 'recover-submit') {\n      ctx.stage = 'admission';\n      assertRecoveryAdmissible(ctx);",
+      'await vault.unlockVault(',
+      'await openLiveTransport(',
+      'await RUNNERS[mode](ctx);',
+    ].map((text) => {
+      expect(source.split(text)).toHaveLength(2);
+      return source.indexOf(text);
+    });
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    // Unspent: no campaign yet, or an empty one. Admission creates nothing.
+    const fresh = heldWorld({ mode: 'recover-submit' });
+    const directory = fresh.ctx.args.profile + '.l-a-recovery-ledger';
+    expect(m.assertRecoveryAdmissible(fresh.ctx)).toBeUndefined();
+    expect(fs.existsSync(directory)).toBe(false);
+    fs.mkdirSync(directory);
+    expect(m.assertRecoveryAdmissible(fresh.ctx)).toBeUndefined();
+    expect(fs.readdirSync(directory)).toEqual([]);
+    expect(fresh.calls.timeline).toEqual([]);
+    // Spent, even while pending: refused as attempted and left as found.
+    const reservation = m.reserveRecoveryAttempt(fresh.ctx);
+    const reserved = fs.readFileSync(reservation.file, 'utf8');
+    const again = heldWorld({ mode: 'recover-submit', profile: fresh.ctx.args.profile });
+    expectRefusal(() => m.assertRecoveryAdmissible(again.ctx), 'recovery-attempted');
+    expect(fs.readFileSync(reservation.file, 'utf8')).toBe(reserved);
+    // A damaged allowance, a symlinked campaign (even to an empty directory) and
+    // an unreadable one refuse as damage; an unbound run refuses as unbound.
+    const damaged = heldWorld({ mode: 'recover-submit' });
+    fs.mkdirSync(damaged.ctx.args.profile + '.l-a-recovery-ledger');
+    fs.writeFileSync(m.recoveryLedgerPath(damaged.ctx.args.profile), '');
+    expectRefusal(() => m.assertRecoveryAdmissible(damaged.ctx), 'recovery-ledger');
+    const linked = heldWorld({ mode: 'recover-submit' });
+    const elsewhere = path.join(path.dirname(linked.ctx.args.profile), 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, linked.ctx.args.profile + '.l-a-recovery-ledger');
+    expectRefusal(() => m.assertRecoveryAdmissible(linked.ctx), 'recovery-ledger');
+    const unreadable = heldWorld({
+      mode: 'recover-submit',
+      ledger: {
+        lstat: (file) => {
+          if (file.endsWith('.l-a-recovery-ledger'))
+            throw Object.assign(Error('unreadable'), { code: 'EIO' });
+          return fs.lstatSync(file);
+        },
+      },
+    });
+    expectRefusal(() => m.assertRecoveryAdmissible(unreadable.ctx), 'recovery-ledger');
+    const unbound = heldWorld({ mode: 'recover-submit' });
+    delete unbound.ctx.profileId;
+    expectRefusal(() => m.assertRecoveryAdmissible(unbound.ctx), 'recovery-binding');
+    // A create that fails for another reason refuses as damage and writes
+    // nothing: the reservation never completed, so the empty campaign is unspent.
+    const denied = heldWorld({
+      mode: 'recover-submit',
+      ledger: {
+        beforeCreate: () => {
+          throw Object.assign(Error('denied'), { code: 'EACCES' });
+        },
+      },
+    });
+    expect(await settle(m.RUNNERS['recover-submit'](denied.ctx))).toEqual(
+      refused('recovery-ledger')
+    );
+    expect(denied.calls.timeline).toEqual(['ledger-mkdir', 'ledger-directory-synced']);
+    expect(denied.calls.loaded).toEqual([]);
+    expect(fs.readdirSync(denied.ctx.args.profile + '.l-a-recovery-ledger')).toEqual([]);
+    expect(m.assertRecoveryAdmissible(denied.ctx)).toBeUndefined();
+  },
+  // main() refuses another held report digest before the profile, the campaign,
+  // the reservation and any network work.
+  'recover-held-pin-main': async (m) => {
+    const profile = newProfile();
+    const world = path.dirname(profile);
+    MAIN_ENTERED.length = 0;
+    const run = async (heldSha) => {
+      const directory = fs.mkdtempSync(path.join(world, 'run-'));
+      const write = (file, value) => {
+        fs.mkdirSync(path.dirname(file));
+        const text = JSON.stringify(value);
+        fs.writeFileSync(file, text);
+        return digest(text);
+      };
+      const scanFile = path.join(directory, 'scan', 'report.json');
+      const scanSha = write(
+        scanFile,
+        scanReport(NEW_ANCHOR.number, { sourceSha256: { [QUALIFIER]: sha('5c') } })
+      );
+      const previousFile = path.join(directory, 'probe-1', 'report.json');
+      const previousSha = write(
+        previousFile,
+        probeReport({
+          observedAt: new Date().toISOString(),
+          scan: { sha256: scanSha, anchor: { ...NEW_ANCHOR } },
+          chain: heldChain({
+            heldTransfer: { reportSha256: heldSha, estimate: '1247366', gasLimit: '1559208' },
+          }),
+        })
+      );
+      const output = path.join(directory, 'recover-submit-' + previousSha);
+      process.argv = [
+        'electron',
+        SCRIPT,
+        'recover-submit',
+        '/w/engine.asar',
+        '/w/prover.asar',
+        '/w/artifacts',
+        profile,
+        scanFile,
+        scanSha,
+        previousFile,
+        previousSha,
+        output,
+      ];
+      expect(await m.main()).toBe(1);
+      return JSON.parse(fs.readFileSync(path.join(output, 'report.json'), 'utf8'));
+    };
+    const saved = {
+      argv: process.argv,
+      tor: process.env.FREEDOM_WALLET_TOR_EXPERIMENT,
+      identity: process.env.FREEDOM_IDENTITY_DATA,
+    };
+    const restore = (key, value) =>
+      value === undefined ? delete process.env[key] : (process.env[key] = value);
+    const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
+    for (const [name, factory] of MAIN_MOCKS) jest.doMock(name, factory);
+    try {
+      process.env.FREEDOM_WALLET_TOR_EXPERIMENT = '1';
+      delete process.env.FREEDOM_IDENTITY_DATA;
+      const other = await run(sha('d2'));
+      expect(other.failure).toEqual({
+        stage: 'preconditions',
+        code: 'RAILGUN_LIVE_JOURNEY_REFUSED',
+        step: 'predecessor-held',
+      });
+      expect(other.reservation).toBeUndefined();
+      // The pinned digest passes that check and is refused at the next one.
+      const pinned = await run(HELD_SHA);
+      expect(pinned.failure).toEqual({
+        stage: 'preconditions',
+        code: 'RAILGUN_LIVE_JOURNEY_REFUSED',
+        step: 'scan-sources',
+      });
+      // No Electron readiness, profile, lock, vault or Tor transport was reached.
+      expect(MAIN_ENTERED).toEqual([]);
+      expect(fs.readdirSync(profile)).toEqual([]);
+      expect(fs.existsSync(profile + '.l-a-recovery-ledger')).toBe(false);
+    } finally {
+      for (const [name] of MAIN_MOCKS) jest.dontMock(name);
+      quiet.mockRestore();
+      process.argv = saved.argv;
+      restore('FREEDOM_WALLET_TOR_EXPERIMENT', saved.tor);
+      restore('FREEDOM_IDENTITY_DATA', saved.identity);
     }
   },
 };
@@ -4673,19 +4980,92 @@ const MUTATIONS = [
     'recovery ledger created without exclusion',
     "fd = fsImpl.openSync(file, 'wx', 0o600);",
     "fd = fsImpl.openSync(file, 'w', 0o600);",
-    'recover-ledger-once',
+    'recover-ledger-race',
   ],
   [
-    'existing recovery ledger appended to',
-    "    throw refusal('recovery-attempted');",
-    "    fd = fsImpl.openSync(file, 'a');",
-    'recover-ledger-once',
+    'failed create appended to',
+    "    throw refusal('recovery-ledger');\n  }\n  try {\n    const bytes",
+    "    fd = fsImpl.openSync(file, 'a');\n  }\n  try {\n    const bytes",
+    'recover-ledger-admission',
   ],
   [
     'existing recovery ledger not validated',
-    "    readRecoveryLedger(fsImpl, file, header);\n    throw refusal('recovery-attempted');",
-    "    throw refusal('recovery-attempted');",
+    "  readRecoveryLedger(fsImpl, file, header);\n  throw refusal('recovery-attempted');",
+    "  throw refusal('recovery-attempted');",
     'recover-ledger-damage',
+  ],
+  // The profile campaign: one allowance, named by no report digest.
+  [
+    'held report pin re-pointed',
+    "'d0d05c02c9303205f34382652737613932649a2bf4ecadd134cc8fc46489348c'",
+    "'d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2'",
+    'recover-ledger-campaign',
+  ],
+  [
+    'recovery allowance keyed by the held report',
+    'path.join(`${profile}.l-a-recovery-ledger`, RECOVERY_ALLOWANCE)',
+    'path.join(`${profile}.l-a-recovery-ledger`, `recover-submit-${HELD_TRANSFER_REPORT_SHA256}.jsonl`)',
+    'recover-ledger-ack',
+  ],
+  [
+    'entries beside the allowance admitted',
+    "check(names.length === 1 && names[0] === path.basename(file), 'recovery-ledger');",
+    'void 0;',
+    'recover-ledger-campaign',
+  ],
+  [
+    'spent allowance read as unspent',
+    "  readRecoveryLedger(fsImpl, file, header);\n  throw refusal('recovery-attempted');",
+    '  readRecoveryLedger(fsImpl, file, header);',
+    'recover-ledger-once',
+  ],
+  [
+    'reservation without the campaign read',
+    '  assertRecoveryUnspent(fsImpl, file, header);\n  return { fsImpl, binding, header, file };',
+    '  return { fsImpl, binding, header, file };',
+    'recover-ledger-admission',
+  ],
+  [
+    'lost create race read as damage',
+    "    assertRecoveryUnspent(fsImpl, file, header);\n    throw refusal('recovery-ledger');",
+    "    throw refusal('recovery-ledger');",
+    'recover-ledger-race',
+  ],
+  [
+    'symlinked campaign followed at admission',
+    "  check(stat.isDirectory(), 'recovery-ledger');",
+    'void 0;',
+    'recover-ledger-admission',
+  ],
+  [
+    'unreadable campaign read as absent',
+    "    if (error?.code === 'ENOENT') return;",
+    '    return;',
+    'recover-ledger-admission',
+  ],
+  [
+    'admission creates the campaign',
+    'function assertRecoveryAdmissible(ctx) {\n  recoveryAdmission(ctx);',
+    'function assertRecoveryAdmissible(ctx) {\n  reserveRecoveryAttempt(ctx);',
+    'recover-ledger-admission',
+  ],
+  [
+    'campaign admission skipped in main',
+    "    if (mode === 'recover-submit') {\n      ctx.stage = 'admission';\n      assertRecoveryAdmissible(ctx);\n    }\n",
+    '',
+    'recover-ledger-admission',
+  ],
+  [
+    'finished hold digest unchecked',
+    'finished.holdIdSha256 === null || SHA256.test(finished.holdIdSha256),',
+    'true,',
+    'recover-ledger-damage',
+  ],
+  [
+    'probe held report digest unchecked',
+    'previous.chain.heldTransfer?.reportSha256 === HELD_TRANSFER_REPORT_SHA256,',
+    'true,',
+    'recover-held-pin-main',
   ],
   [
     'pending record not synced',
@@ -4907,5 +5287,45 @@ describe('source mutation controls', () => {
       failure = error;
     }
     expect(failure).not.toBeNull();
+  });
+});
+
+describe('recovery campaign under a re-pinned held report', () => {
+  // Even a qualifier re-pinned to another rendering of the same hold finds the
+  // profile's allowance spent, in either order: no second ledger appears.
+  test('never mints a second allowance for the same profile', async () => {
+    const RERENDERED = sha('d2');
+    const original = fs.readFileSync(SCRIPT, 'utf8');
+    expect(original.split(HELD_SHA)).toHaveLength(2);
+    const repinned = loadVariant(original.split(HELD_SHA).join(RERENDERED));
+    expect(repinned.HELD_TRANSFER_REPORT_SHA256).toBe(RERENDERED);
+    const world = (m, profile) => {
+      const value = heldWorld({ mode: 'recover-submit', profile });
+      if (m === repinned) {
+        value.ctx.chain.heldTransfer.reportSha256 = RERENDERED;
+        value.ctx.previous.chain.heldTransfer.reportSha256 = RERENDERED;
+      }
+      return value;
+    };
+    for (const [first, second] of [
+      [api, repinned],
+      [repinned, api],
+    ]) {
+      const spent = world(first);
+      await first.RUNNERS['recover-submit'](spent.ctx);
+      expect(spent.calls.submit).toHaveLength(1);
+      const profile = spent.ctx.args.profile;
+      const file = first.recoveryLedgerPath(profile);
+      expect(second.recoveryLedgerPath(profile)).toBe(file);
+      const ledger = fs.readFileSync(file, 'utf8');
+      const again = world(second, profile);
+      expectRefusal(() => second.assertRecoveryAdmissible(again.ctx), 'recovery-ledger');
+      expect(await settle(second.RUNNERS['recover-submit'](again.ctx))).toEqual(
+        refused('recovery-ledger')
+      );
+      expect([again.calls.timeline, again.calls.loaded, again.calls.network]).toEqual([[], [], []]);
+      expect(fs.readdirSync(path.dirname(file))).toEqual(['recover-submit.jsonl']);
+      expect(fs.readFileSync(file, 'utf8')).toBe(ledger);
+    }
   });
 });
