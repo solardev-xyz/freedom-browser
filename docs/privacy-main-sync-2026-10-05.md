@@ -22,4 +22,4 @@ Read-only fresh-process import-cache probe confirmed merged profile-resolver -> 
 
 The evidence index contains exact logs and hashes, source pin hashes, archive/installed-binary hashes, root-vs-reviewer evidence attribution and the separated diagnostic. No secrets or profile contents are included.
 
-The JSON native-qualification field records the report-creation snapshot. See the [connected restart evidence](railgun-connected-change-restart-2026-10-05.md) for the completed campaign.
+The JSON native-qualification field records the report-creation snapshot. See the [connected restart evidence](https://github.com/solardev-xyz/freedom-browser/blob/354e9a9887dff106ec7fb62a24d7a9490d002d5e/docs/railgun-connected-change-restart-2026-10-05.md) for the completed campaign.
