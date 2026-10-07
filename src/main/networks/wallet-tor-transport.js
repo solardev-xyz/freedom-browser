@@ -16,7 +16,19 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 // and the request may have reached the server, but no response byte came;
 // response: a response byte arrived (headers possibly incomplete);
 // unclassified: anything else, including the generic fallback for
-// unexpected exceptions and deterministic local SOCKS refusals.
+// unexpected exceptions, deterministic local SOCKS refusals and an assigned
+// socket whose byte counter is absent or unusable.
+// The stage is a diagnostic only. socket-new and socket-reused never prove
+// that the request was not delivered or acted on, and no stage authorizes
+// anything or makes a retry safe: callers must not derive either from it.
+const REQUEST_FAILURE_STAGES = Object.freeze([
+  'connect',
+  'tls',
+  'socket-new',
+  'socket-reused',
+  'response',
+  'unclassified',
+]);
 const CONNECT_STAGES = Object.freeze({
   SOCKS_CONNECTION_FAILED: 'connect',
   SOCKS_CONNECTION_CLOSED: 'connect',
@@ -25,7 +37,9 @@ const CONNECT_STAGES = Object.freeze({
   TOR_TLS_FAILED: 'tls',
 });
 const requestFailed = (stage) =>
-  Object.assign(privacyError('TOR_REQUEST_FAILED', 'Private HTTP request failed'), { stage });
+  Object.assign(privacyError('TOR_REQUEST_FAILED', 'Private HTTP request failed'), {
+    stage: REQUEST_FAILURE_STAGES.includes(stage) ? stage : 'unclassified',
+  });
 
 function createWalletTorTransport({
   getEndpoint = () => require('../tor-manager').getWalletSocksEndpoint(),
@@ -313,6 +327,8 @@ function createWalletTorTransport({
         const attempt = { connect: null };
         // Application bytes on the assigned (TLS) socket when it was assigned:
         // any later growth means response bytes arrived, even partial headers.
+        // A counter that is absent or not a usable integer at either end, or
+        // that went backwards, proves nothing either way: unclassified.
         let assigned;
         const assign = (socket) => {
           socketAssigned = true;
@@ -321,8 +337,11 @@ function createWalletTorTransport({
         const stage = () => {
           if (receivedResponse) return 'response';
           if (socketAssigned) {
-            const bytes = assigned?.socket?.bytesRead;
-            if (!Number.isSafeInteger(bytes) || bytes !== assigned.bytes) return 'response';
+            const before = assigned?.bytes,
+              after = assigned?.socket?.bytesRead;
+            if (!Number.isSafeInteger(before) || !Number.isSafeInteger(after) || after < before)
+              return 'unclassified';
+            if (after !== before) return 'response';
             return req.reusedSocket === true ? 'socket-reused' : 'socket-new';
           }
           return attempt.connect || 'unclassified';
@@ -517,4 +536,4 @@ function createWalletTorTransport({
   });
 }
 
-module.exports = { createWalletTorTransport };
+module.exports = { createWalletTorTransport, REQUEST_FAILURE_STAGES };

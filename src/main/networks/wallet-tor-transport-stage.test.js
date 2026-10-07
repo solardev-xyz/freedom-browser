@@ -6,7 +6,7 @@ const https = require('https');
 const { once } = require('events');
 const { listen, proxy } = require('../../../test/helpers/tor-socks-fixture');
 const certificate = require('../../../test/helpers/tor-tls-fixture');
-const { createWalletTorTransport } = require('./wallet-tor-transport');
+const { createWalletTorTransport, REQUEST_FAILURE_STAGES } = require('./wallet-tor-transport');
 const { createPrivacyScope } = require('./privacy-context');
 
 let server, socks, transport, scope, handle, requests, cleanup;
@@ -75,6 +75,59 @@ test('a server drop on a fresh connection is socket-new and on a kept-alive one 
   expect(Object.keys(error).sort()).toEqual(['code', 'stage']);
   expect(error.message).toBe('Private HTTP request failed');
   expect(requests).toEqual(['/drop', '/ok', '/drop']);
+});
+
+test('the stages are a closed list of six', () => {
+  expect(REQUEST_FAILURE_STAGES).toEqual([
+    'connect',
+    'tls',
+    'socket-new',
+    'socket-reused',
+    'response',
+    'unclassified',
+  ]);
+  expect(Object.isFrozen(REQUEST_FAILURE_STAGES)).toBe(true);
+});
+
+// The assigned socket's byte counter decides between a pre-response stage and
+// response. One that is absent or unusable proves neither: unclassified.
+test.each([
+  ['absent', () => undefined],
+  ['not an integer', () => 1.5],
+  ['not a number', () => '0'],
+  ['unsafe', () => Number.MAX_SAFE_INTEGER + 2],
+])('a %s socket byte counter is unclassified, never response', async (_label, counter) => {
+  await open();
+  const onSocket = http.ClientRequest.prototype.onSocket;
+  jest.spyOn(http.ClientRequest.prototype, 'onSocket').mockImplementation(function (
+    socket,
+    ...rest
+  ) {
+    if (socket) Object.defineProperty(socket, 'bytesRead', { configurable: true, get: counter });
+    return onSocket.call(this, socket, ...rest);
+  });
+  const error = await send('/drop').catch((value) => value);
+  expect(error).toMatchObject({ code: 'TOR_REQUEST_FAILED', stage: 'unclassified' });
+  expect(requests).toEqual(['/drop']);
+});
+
+test('a byte counter that goes backwards is unclassified', async () => {
+  await open();
+  const onSocket = http.ClientRequest.prototype.onSocket;
+  jest.spyOn(http.ClientRequest.prototype, 'onSocket').mockImplementation(function (
+    socket,
+    ...rest
+  ) {
+    let reads = 0;
+    if (socket)
+      Object.defineProperty(socket, 'bytesRead', {
+        configurable: true,
+        get: () => (reads++ === 0 ? 10 : 5),
+      });
+    return onSocket.call(this, socket, ...rest);
+  });
+  const error = await send('/drop').catch((value) => value);
+  expect(error).toMatchObject({ code: 'TOR_REQUEST_FAILED', stage: 'unclassified' });
 });
 
 test('any response byte before headers completes makes the failure a response stage', async () => {
