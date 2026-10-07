@@ -103,6 +103,31 @@ function createWalletTorTransport({
       maxTotalSockets: 4,
       maxFreeSockets: 1,
     });
+    // Node's same-origin replacement path can pass the retired socket's
+    // options to createSocket(req, options). Bind private lifetime data to
+    // the actual queued request instead of inheriting the previous request's.
+    const requestOptions = new WeakMap();
+    const addRequest = agent.addRequest;
+    agent.addRequest = function (req, options) {
+      requestOptions.set(req, {
+        signal: options.signal,
+        privacySignal: options.privacySignal,
+        privacyAttempt: options.privacyAttempt,
+        privacyConnectTimeoutMs: options.privacyConnectTimeoutMs,
+        privacyDeadline: options.privacyDeadline,
+        privacyTimeout: options.privacyTimeout,
+      });
+      return addRequest.call(this, req, options);
+    };
+    const createSocket = agent.createSocket;
+    agent.createSocket = function (req, options, callback) {
+      const owned = requestOptions.get(req);
+      if (!owned) {
+        callback(privacyError('PRIVACY_REQUEST_ABORTED', 'Private request unavailable'));
+        return;
+      }
+      return createSocket.call(this, req, { ...options, ...owned }, callback);
+    };
     agent.createConnection = (options, callback) => {
       connections += 1;
       let notified = false;
@@ -121,9 +146,16 @@ function createWalletTorTransport({
         }
       }
       async function connect() {
+        let setupUsesRequestDeadline = false;
         try {
           if (closed || group.closed || options.privacySignal.aborted)
             throw privacyError('PRIVACY_REQUEST_ABORTED', 'Private request cancelled');
+          const remainingMs = options.privacyDeadline - performance.now();
+          if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+            options.privacyTimeout.abort();
+            throw privacyError('TOR_REQUEST_TIMEOUT', 'Private HTTP request failed');
+          }
+          setupUsesRequestDeadline = options.privacyConnectTimeoutMs >= remainingMs;
           socket = await connectIsolatedSocks(
             {
               endpoint: group.endpoint,
@@ -131,6 +163,9 @@ function createWalletTorTransport({
               port: Number(options.port),
               token: group.context.isolationToken,
               signal: options.privacySignal,
+              // Queue time is already spent. The original request timer and
+              // combined signal continue to bound setup, TLS and the response.
+              timeoutMs: Math.min(options.privacyConnectTimeoutMs, remainingMs),
             },
             (created) => trackSocket(group, created)
           );
@@ -177,6 +212,9 @@ function createWalletTorTransport({
           secured?.destroy();
           socket?.destroy();
           const code = typeof error?.code === 'string' ? error.code : '';
+          // If the request-bound setup timer wins a timer tie, classify the
+          // same expired request consistently through its original controller.
+          if (code === 'SOCKS_TIMEOUT' && setupUsesRequestDeadline) options.privacyTimeout.abort();
           if (options.privacyAttempt && !options.privacyAttempt.connect)
             options.privacyAttempt.connect = Object.hasOwn(CONNECT_STAGES, code)
               ? CONNECT_STAGES[code]
@@ -237,6 +275,7 @@ function createWalletTorTransport({
       body,
       signal,
       timeoutMs = 30000,
+      connectTimeoutMs = Math.min(10000, timeoutMs),
       maxResponseBytes = MAX_RESPONSE_BYTES,
       requireFramedResponse = false,
     } = {}
@@ -269,6 +308,9 @@ function createWalletTorTransport({
       !Number.isFinite(timeoutMs) ||
       timeoutMs <= 0 ||
       timeoutMs > 120000 ||
+      !Number.isFinite(connectTimeoutMs) ||
+      connectTimeoutMs <= 0 ||
+      connectTimeoutMs > timeoutMs ||
       !Number.isSafeInteger(maxResponseBytes) ||
       maxResponseBytes < 1 ||
       maxResponseBytes > MAX_RESPONSE_BYTES ||
@@ -314,6 +356,7 @@ function createWalletTorTransport({
       timeout.signal,
       ...(signal ? [signal] : []),
     ]);
+    const deadline = performance.now() + timeoutMs;
     const timer = setTimeout(() => timeout.abort(), timeoutMs);
     timer.unref();
     group.pending += 1;
@@ -383,6 +426,9 @@ function createWalletTorTransport({
             signal: combined,
             privacySignal: combined,
             privacyAttempt: attempt,
+            privacyConnectTimeoutMs: connectTimeoutMs,
+            privacyDeadline: deadline,
+            privacyTimeout: timeout,
           },
           (response) => {
             receivedResponse = response;

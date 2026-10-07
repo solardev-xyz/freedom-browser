@@ -106,6 +106,157 @@ describe('wallet Tor transport', () => {
     expect(seen).toHaveLength(0);
   });
 
+  test.each(['http', 'https'])(
+    '%s connection setup may exceed 10 s within the original request budget',
+    async (protocol) => {
+      let secureServer, trusted;
+      try {
+        if (protocol === 'https') {
+          secureServer = https.createServer(fixture, handler);
+          await listen(secureServer);
+        }
+        await socks.close();
+        socks = await proxy((secureServer || server).address().port, 'normal', {
+          connectDelayMs: 10100,
+        });
+        trusted = createWalletTorTransport({
+          getEndpoint: () => socks.endpoint,
+          allowHttp: protocol === 'http',
+          ca: protocol === 'https' ? fixture.cert : undefined,
+        });
+        const result = await trusted.request(context(), `${protocol}://rpc.example.test/`, {
+          timeoutMs: 15000,
+          connectTimeoutMs: 15000,
+        });
+        expect(result.body.toString()).toBe('ok');
+        expect(socks.records).toHaveLength(1);
+        expect(seen).toHaveLength(1);
+      } finally {
+        trusted?.close();
+        if (secureServer) {
+          secureServer.closeAllConnections();
+          await new Promise((resolve) => secureServer.close(resolve));
+        }
+      }
+    },
+    20000
+  );
+
+  test('connection setup does not restart the response deadline', async () => {
+    await socks.close();
+    socks = await proxy(server.address().port, 'normal', { connectDelayMs: 200 });
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      seen.push(req.url);
+      const timer = setTimeout(() => res.end('too late'), 200);
+      res.once('close', () => clearTimeout(timer));
+    });
+    await expect(
+      transport.request(context(), 'http://rpc.example.test/', { timeoutMs: 300 })
+    ).rejects.toMatchObject({ code: 'TOR_REQUEST_TIMEOUT' });
+    expect(seen).toHaveLength(1);
+    expect(socks.records).toHaveLength(1);
+  });
+
+  test.each([0, -1, Infinity, NaN, '100', 301])(
+    'refuses invalid setup budget %s before connecting',
+    async (connectTimeoutMs) => {
+      await expect(
+        transport.request(context(), 'http://rpc.example.test/', {
+          timeoutMs: 300,
+          connectTimeoutMs,
+        })
+      ).rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST' });
+      expect(socks.records).toHaveLength(0);
+      expect(seen).toHaveLength(0);
+    }
+  );
+
+  test('a capped connection does not borrow a concurrent extended setup budget', async () => {
+    await socks.close();
+    socks = await proxy(server.address().port, 'normal', { connectDelayMs: 10100 });
+    const handle = context();
+    const extended = transport.request(handle, 'http://rpc.example.test/extended', {
+      timeoutMs: 15000,
+      connectTimeoutMs: 15000,
+    });
+    const capped = transport.request(handle, 'http://rpc.example.test/capped', {
+      timeoutMs: 15000,
+    });
+    const [longResult, shortResult] = await Promise.allSettled([extended, capped]);
+    expect(longResult).toMatchObject({ status: 'fulfilled', value: { status: 200 } });
+    expect(shortResult).toMatchObject({
+      status: 'rejected',
+      reason: { code: 'TOR_REQUEST_FAILED', stage: 'connect' },
+    });
+    expect(socks.records).toHaveLength(2);
+    expect(seen.map((r) => r.url)).toEqual(['/extended']);
+  }, 20000);
+
+  test('an elapsed monotonic deadline refuses queued setup before its timer callback', async () => {
+    let now = 0;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const responses = [];
+    let occupied;
+    const both = new Promise((resolve) => {
+      occupied = resolve;
+    });
+    server.removeAllListeners('request');
+    server.on('request', (_req, res) => {
+      res.setHeader('Connection', 'close');
+      responses.push(res);
+      if (responses.length === 2) occupied();
+    });
+    const handle = context();
+    const first = [0, 1].map((n) =>
+      transport.request(handle, `http://rpc.example.test/first-${n}`, { timeoutMs: 2000 })
+    );
+    await both;
+    const queued = transport.request(handle, 'http://rpc.example.test/queued', {
+      timeoutMs: 1000,
+      connectTimeoutMs: 1000,
+    });
+    now = 1001;
+    responses.forEach((res) => res.end('ok'));
+    await expect(queued).rejects.toMatchObject({ code: 'TOR_REQUEST_TIMEOUT' });
+    await Promise.all(first);
+    expect(socks.records).toHaveLength(2);
+    expect(responses).toHaveLength(2);
+  });
+
+  test('queue time is not renewed when a replacement connection starts', async () => {
+    await socks.close();
+    socks = await proxy(server.address().port, 'normal', { connectDelayMs: 250 });
+    server.removeAllListeners('request');
+    const responses = [];
+    let occupied;
+    const both = new Promise((resolve) => {
+      occupied = resolve;
+    });
+    server.on('request', (req, res) => {
+      seen.push(req.url);
+      res.setHeader('Connection', 'close');
+      responses.push(res);
+      if (responses.length === 2) occupied();
+    });
+    const handle = context();
+    const first = [0, 1].map((n) =>
+      transport.request(handle, `http://rpc.example.test/first-${n}`, { timeoutMs: 2000 })
+    );
+    await both;
+    const queued = transport.request(handle, 'http://rpc.example.test/queued', {
+      timeoutMs: 700,
+    });
+    const release = setTimeout(() => responses.slice(0, 2).forEach((res) => res.end('ok')), 500);
+    release.unref();
+    await expect(queued).rejects.toMatchObject({ code: 'TOR_REQUEST_TIMEOUT' });
+    expect((await Promise.all(first)).every((r) => r.status === 200)).toBe(true);
+    expect(seen.sort()).toEqual(['/first-0', '/first-1']);
+    // Closing both occupied sockets can make Node allocate one or two
+    // replacements for the queued request. Neither may deliver its HTTP bytes.
+    expect([3, 4]).toContain(socks.records.length);
+  });
+
   test('outage aborts active responses and refuses new requests without direct fallback', async () => {
     await transport.request(context(), 'http://rpc.example.test/');
     const arrived = once(server, 'request');

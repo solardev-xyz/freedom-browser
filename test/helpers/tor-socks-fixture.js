@@ -9,7 +9,7 @@ async function listen(server) {
 
 // Controlled SOCKS peer. It records credentials and names, then forwards only
 // to the test server's loopback port, without resolving the supplied name.
-async function proxy(targetPort, behavior = 'normal') {
+async function proxy(targetPort, behavior = 'normal', { connectDelayMs = 0 } = {}) {
   const sockets = new Set();
   const records = [];
   let greeted;
@@ -72,9 +72,16 @@ async function proxy(targetPort, behavior = 'normal') {
         });
         socket.on('close', () => upstream.destroy());
         upstream.once('connect', () => {
-          socket.removeListener('data', receive);
-          socket.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 1]));
-          socket.pipe(upstream).pipe(socket);
+          const connected = () => {
+            if (socket.destroyed) return;
+            socket.removeListener('data', receive);
+            socket.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 1]));
+            socket.pipe(upstream).pipe(socket);
+          };
+          if (connectDelayMs) {
+            const timer = setTimeout(connected, connectDelayMs);
+            socket.once('close', () => clearTimeout(timer));
+          } else connected();
         });
       }
     }

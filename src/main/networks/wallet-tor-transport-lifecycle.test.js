@@ -79,9 +79,11 @@ function requestBoundary(url, options, received) {
   request.end = jest.fn(() => {
     options.agent.createConnection(
       {
+        // Model Node forwarding request options to connection creation. Agent
+        // queue/replacement ownership is covered by the real loopback suite.
+        ...options,
         host: url.hostname,
         port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)),
-        privacySignal: options.privacySignal,
       },
       (error, socket) => {
         mock.callbacks++;

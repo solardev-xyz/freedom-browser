@@ -116,6 +116,32 @@ test('registry replacement preserves the originally reviewed client and dispatch
   const replacement = createPrivateRpc(handle, 'transaction-rpc');
   expect(() => assertDestination(replacement, handle, observed)).toThrow();
 });
+
+test('only public chain metadata extends setup within the original request timeout', async () => {
+  const client = createPrivateRpc(handle, 'transaction-rpc');
+  for (const method of [
+    'eth_getBlockByNumber',
+    'eth_call',
+    'eth_estimateGas',
+    'eth_sendRawTransaction',
+    'eth_getTransactionCount',
+  ])
+    await client.request(method, [], () => true);
+  expect(mockRequest.mock.calls.map(([, , options]) => JSON.parse(options.body).method)).toEqual([
+    'eth_chainId',
+    'eth_getBlockByNumber',
+    'eth_call',
+    'eth_estimateGas',
+    'eth_sendRawTransaction',
+    'eth_getTransactionCount',
+  ]);
+  for (const [, , options] of mockRequest.mock.calls) {
+    const method = JSON.parse(options.body).method;
+    if (['eth_chainId', 'eth_getBlockByNumber'].includes(method))
+      expect(options.connectTimeoutMs).toBe(options.timeoutMs);
+    else expect(Object.hasOwn(options, 'connectTimeoutMs')).toBe(false);
+  }
+});
 test.each(['context', 'tor-abort', 'tor-replacement', 'caller'])(
   'destination identity is revoked by %s without dispatch',
   (boundary) => {
@@ -760,6 +786,22 @@ describe('per-request admission deadline', () => {
       return normal(...args);
     });
     await expect(ask(client, 1500)).rejects.toMatchObject(expired);
+    expect(methods()).toEqual(['eth_chainId']);
+    expect(client.signal.aborted).toBe(false);
+  });
+  test('a chain check over 10 s cannot admit a raw send after its admission deadline', async () => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    const normal = mockRequest.getMockImplementation();
+    mockRequest.mockImplementationOnce(async (...args) => {
+      expect(args[2].connectTimeoutMs).toBe(30000);
+      now += 11000;
+      return normal(...args);
+    });
+    await expect(
+      client.request('eth_sendRawTransaction', ['0x00'], () => true, undefined, {
+        admissionDeadline: now + 10000,
+      })
+    ).rejects.toMatchObject(expired);
     expect(methods()).toEqual(['eth_chainId']);
     expect(client.signal.aborted).toBe(false);
   });

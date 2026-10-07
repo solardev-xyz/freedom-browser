@@ -536,6 +536,12 @@ function createPrivateRpc(handle, role, { signal, destinationConstraint: constra
       timeoutMs: Math.min(120000, Math.max(500, Number(network.quorum?.timeoutMs) || 30000)),
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
     };
+    // Public chain metadata can wait for circuit setup within its already
+    // bounded request. Calls carrying nullifiers, calldata or signed sends
+    // retain the transport's 10 s setup cap. ready() is still followed by the
+    // original admission check before any subsequent sensitive request.
+    if (method === 'eth_chainId' || method === 'eth_getBlockByNumber')
+      options.connectTimeoutMs = options.timeoutMs;
     // Factory and JSON serialization can synchronously revoke the operation.
     // Check again at the last admission boundary, including hidden chain-ID.
     try {
