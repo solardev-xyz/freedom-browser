@@ -4,6 +4,7 @@ const path = require('path');
 const { getRailgunWalletPolicy } = require('./railgun-wallet-policy');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const engine = require('./railgun-engine-manifest.json');
+const adapter = path.dirname(require.resolve('@freedom/railgun-kohaku-adapter/read'));
 afterEach(() => {
   jest.restoreAllMocks();
   jest.clearAllMocks();
@@ -55,9 +56,30 @@ test('an unauthenticated archive cannot obtain a wallet policy', () => {
   });
   const read = jest.spyOn(fs, 'readFileSync');
   expect(() => getRailgunWalletPolicy('/bad/engine.asar')).toThrow('archive');
-  expect(read.mock.calls.filter(([name]) => String(name).includes('/src/main/wallet/'))).toEqual(
-    []
-  );
+  expect(
+    read.mock.calls.filter(
+      ([name]) =>
+        String(name).includes('/src/main/wallet/') || String(name).startsWith(adapter + path.sep)
+    )
+  ).toEqual([]);
+});
+test.each([
+  'package.json',
+  'read.cjs',
+  'src/railgun-kohaku-read-data.js',
+  'src/railgun-kohaku-read-dispatch.js',
+])('policy binds the installed adapter %s that the read-data re-export loads', (name) => {
+  const first = getRailgunWalletPolicy('/first/engine.asar');
+  const filename = path.join(adapter, name);
+  const original = fs.readFileSync;
+  jest
+    .spyOn(fs, 'readFileSync')
+    .mockImplementation((file, ...args) =>
+      file === filename ? Buffer.from('changed validation') : original(file, ...args)
+    );
+  expect(getRailgunWalletPolicy('/first/engine.asar')).not.toBe(first);
+  fs.readFileSync.mockRestore();
+  expect(getRailgunWalletPolicy('/first/engine.asar')).toBe(first);
 });
 test('local wallet job and host validation dependencies are pinned or cross explicit infrastructure boundaries', () => {
   const read = jest.spyOn(fs, 'readFileSync');
@@ -84,9 +106,15 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     visited.add(filename);
     expect(included.has(filename)).toBe(true);
     const text = fs.readFileSync(filename, 'utf8');
-    for (const [, name] of text.matchAll(/require\(['"](\.\/[^'"]+)['"]\)/g)) {
-      const dependency = require.resolve(path.resolve(path.dirname(filename), name));
-      if (path.dirname(dependency) === __dirname) walk(dependency);
+    for (const [, name] of text.matchAll(
+      /require\(['"]((?:\.\/|@freedom\/railgun-kohaku-adapter)[^'"]*)['"]\)/g
+    )) {
+      // Package re-exports are traversed into the installed files they load.
+      const dependency = name.startsWith('./')
+        ? require.resolve(path.resolve(path.dirname(filename), name))
+        : require.resolve(name, { paths: [path.dirname(filename)] });
+      if (path.dirname(dependency) === __dirname || dependency.startsWith(adapter + path.sep))
+        walk(dependency);
     }
   }
   for (const root of [
@@ -108,5 +136,12 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-relay-proof',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(57);
+  expect(visited.size).toBe(60);
+  expect([...visited].filter((name) => name.startsWith(adapter + path.sep)).sort()).toEqual(
+    ['read.cjs', 'src/railgun-kohaku-read-data.js', 'src/railgun-kohaku-read-dispatch.js'].map(
+      (name) => path.join(adapter, name)
+    )
+  );
+  // The exports map in package.json selects which installed file runs.
+  expect(included.has(path.join(adapter, 'package.json'))).toBe(true);
 });
