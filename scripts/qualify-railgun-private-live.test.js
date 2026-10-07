@@ -124,13 +124,32 @@ describe('arguments', () => {
     sha('bb'),
     '/w/l-a/transfer',
   ];
+  // recover-submit writes recover-submit-<probe sha256> beside the probe's output.
+  const recoverOutput = '/w/recover-submit-' + sha('bb');
   test('accepts the fixed ten-argument form for every mode', () => {
-    for (const mode of api.MODES)
-      expect(api.parseArguments([mode, ...valid.slice(1)])).toMatchObject({
+    for (const mode of api.MODES) {
+      const output = mode === 'recover-submit' ? recoverOutput : '/w/l-a/transfer';
+      expect(api.parseArguments([mode, ...valid.slice(1, 9), output])).toMatchObject({
         mode,
         profile: '/w/identity-data/railgun-sepolia-live',
-        output: '/w/l-a/transfer',
+        output,
       });
+    }
+  });
+  test('recover-submit refuses any output but the one for its probe', () => {
+    const recover = (output, previous = valid[7], previousSha = valid[8]) =>
+      api.parseArguments(['recover-submit', ...valid.slice(1, 7), previous, previousSha, output]);
+    expect(recover(recoverOutput).output).toBe(recoverOutput);
+    for (const [output, previous, previousSha] of [
+      ['/w/l-a/transfer'],
+      ['/w/recover-submit-' + sha('bc')],
+      ['/w/recover-submit-' + sha('bb') + '-2'],
+      ['/w/other/recover-submit-' + sha('bb')],
+      ['/recover-submit-' + sha('bb')],
+      [recoverOutput, valid[7], sha('bc')],
+      [recoverOutput, '/w/elsewhere/check/report.json'],
+    ])
+      expectRefusal(() => recover(output, previous, previousSha), 'output');
   });
   test.each([
     ['too few', valid.slice(0, 9), 'arguments'],
@@ -1388,6 +1407,14 @@ function world({
   };
   return { ctx, calls, journal };
 }
+// Waits on real macrotasks only, so it also works under fake timers.
+const until = async (ready) => {
+  for (let n = 0; n < 1000; n++) {
+    if (ready()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw Error('test gate not entered');
+};
 const settle = async (work) => {
   try {
     await work;
@@ -1553,8 +1580,12 @@ const heldChain = (extra = {}) => ({
   heldTransfer: { reportSha256: HELD_SHA, estimate: '1247366', gasLimit: '1559208' },
   ...extra,
 });
+const PROBE_AT = '2026-10-07T12:00:00.000Z';
+const SCAN_AT = '2026-10-07T11:30:00.000Z';
 const probeReport = (extra = {}) =>
   journeyReport('preflight-probe', {
+    observedAt: PROBE_AT,
+    result: 'preflight-passed',
     scan: { sha256: NEWER_SCAN_SHA, anchor: { ...NEW_ANCHOR } },
     chain: heldChain(),
     preflight: {
@@ -1670,6 +1701,8 @@ function heldWorld({
   reviewCalls = 1,
   disclosureCalls = 1,
   diagnostic,
+  alter,
+  abortOnOpen = false,
 } = {}) {
   const calls = {
     timeline: [],
@@ -1683,6 +1716,7 @@ function heldWorld({
     sign: 0,
     abandon: 0,
     recoveryTimeouts: [],
+    recoveryControllers: [],
   };
   const log = (event) => calls.timeline.push(event);
   const journal = { records: records ?? [], archive: [shieldRecord()] };
@@ -1694,6 +1728,7 @@ function heldWorld({
       capsules: { records: 1, signatures: 1, proofs: 1, capacity: 96 },
     },
   };
+  alter?.(state);
   const reservations = {
     withSigningRecovery: async (use, options) => {
       log('recovery');
@@ -1702,10 +1737,15 @@ function heldWorld({
         receipt: {},
         entry: copy(state.entry),
       }));
+      // Like production, an ended phase aborts its signal and refuses assertCurrent.
+      const phase = new AbortController();
+      calls.recoveryControllers.push(phase);
       return use(listed, {
-        signal: new AbortController().signal,
+        signal: phase.signal,
         deadline: Infinity,
-        assertCurrent() {},
+        assertCurrent() {
+          if (phase.signal.aborted) throw Error('recovery phase ended');
+        },
       });
     },
     assertReceiptContext() {},
@@ -1822,6 +1862,7 @@ function heldWorld({
       createRailgunPrivatePreflight: (options) => {
         calls.preflights.push(options);
         log('preflight-open');
+        if (abortOnOpen) calls.recoveryControllers.at(-1).abort();
         if (preflight === 'open')
           throw Object.assign(Error('Railgun private preflight unavailable'), {
             code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
@@ -1832,6 +1873,18 @@ function heldWorld({
             calls.acquires++;
             log('acquire');
             during?.(state);
+            // Production's in-flight read fails inactive once the preflight closes.
+            if (preflight === 'hang')
+              return new Promise((_resolve, reject) => {
+                calls.release = () =>
+                  reject(
+                    Object.assign(Error('Railgun private preflight unavailable'), {
+                      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+                      reason: 'inactive',
+                      step: 'rootHistory',
+                    })
+                  );
+              });
             if (preflight !== 'pass')
               throw Object.assign(Error('secret /Users/someone ' + NULLIFIER), {
                 code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
@@ -1840,7 +1893,10 @@ function heldWorld({
               });
             return { receipt: {}, observation: {} };
           },
-          close: () => log('preflight-close'),
+          close: () => {
+            log('preflight-close');
+            calls.release?.();
+          },
         };
       },
       assertRailgunPrivatePreflight: (_source, _receipt, owner) => {
@@ -1938,6 +1994,7 @@ function heldWorld({
     report: { passed: false },
     stage: 'preconditions',
     scan: {
+      observedAt: SCAN_AT,
       generationId: 'generation',
       publicPolicy: 'policy',
       anchor: { ...NEW_ANCHOR },
@@ -2525,7 +2582,7 @@ const PROBES = {
     no(journaled);
   },
   'recover-predecessor': async (m) => {
-    const options = { ...newerScan, previousSha: PROBE_SHA };
+    const options = { ...newerScan, previousSha: PROBE_SHA, now: Date.parse(PROBE_AT) + 60000 };
     const ok = (mode, report, extra = {}) =>
       expect(() => m.assertPredecessor(mode, report, { ...options, ...extra })).not.toThrow();
     const no = (mode, report, extra = {}) =>
@@ -2535,6 +2592,10 @@ const PROBES = {
     no('recover-submit', probeReport({ preflight: { passed: false, acquireCalls: 1 } }));
     no('recover-submit', probeReport({ preflight: { passed: true, acquireCalls: 2 } }));
     no('recover-submit', probeReport({ immutables: { unchanged: false } }));
+    // Only a completed probe whose result is a passed preflight admits it.
+    no('recover-submit', probeReport({ result: 'preflight-refused' }));
+    no('recover-submit', probeReport({ result: 'not-completed' }));
+    no('recover-submit', probeReport({ result: undefined }));
     no(
       'recover-submit',
       probeReport({
@@ -2549,6 +2610,16 @@ const PROBES = {
       scanSha: sha('ae'),
       scan: scanReport(NEW_ANCHOR.number),
     });
+    // At most 30 minutes old, never in the future, canonical ISO time only.
+    const at = Date.parse(PROBE_AT);
+    expect(m.PROBE_MAX_AGE_MS).toBe(1800000);
+    ok('recover-submit', probeReport(), { now: at });
+    ok('recover-submit', probeReport(), { now: at + 1800000 });
+    no('recover-submit', probeReport(), { now: at + 1800001 });
+    no('recover-submit', probeReport(), { now: at - 1 });
+    no('recover-submit', probeReport(), { now: NaN });
+    for (const observedAt of [undefined, 'yesterday', '2026-10-07T12:00:00Z', at])
+      no('recover-submit', probeReport({ observedAt }));
     // A journaled recovery, acknowledged or uncertain, continues only in observe.
     const spent = {
       attempted: true,
@@ -2569,6 +2640,9 @@ const PROBES = {
     // A lost recover-submit report: the passed probe stands as its check report.
     ok('observe', probeReport());
     no('observe', probeReport({ preflight: { passed: false } }));
+    no('observe', probeReport({ result: 'preflight-refused' }));
+    // Observing a lost recovery needs no fresh probe.
+    ok('observe', probeReport(), { now: Date.parse(PROBE_AT) + 86400000 });
   },
   'proof-runtime': async (m) => {
     const runtime = heldReport().runtime;
@@ -2743,6 +2817,19 @@ const PROBES = {
       wholeProfileIdentityAsserted: false,
     });
     expect(ctx.report.liveness.state).toBe('proved-unsent');
+    // passed is a completed probe; result and scope say what it qualified.
+    expect(ctx.report.result).toBe('preflight-passed');
+    expect(ctx.report.scope).toEqual({
+      qualifies: 'private-preflight-stage-only',
+      passedMeans: 'probe-completed',
+      notQualified: [
+        'wallet-note-binding',
+        'poi-status',
+        'proof-recheck',
+        'eoa-steps',
+        'recovered-submission-timing',
+      ],
+    });
     expect(ctx.report.coverage).toMatchObject({
       scanAnchor: NEW_ANCHOR,
       holdAnchorNumber: HOLD_ANCHOR,
@@ -2787,6 +2874,7 @@ const PROBES = {
       await m.RUNNERS['preflight-probe'](ctx);
       // A completed probe whose preflight refused: one acquire, never a retry.
       expect(ctx.report.passed).toBe(true);
+      expect(ctx.report.result).toBe('preflight-refused');
       expect(calls.acquires).toBe(1);
       expect(ctx.report.preflight).toEqual({
         attempted: true,
@@ -2866,6 +2954,17 @@ const PROBES = {
       [{ foreign: true }, 'hold-recipient'],
       [{ recipient: '0zk1' + 'x'.repeat(60) }, 'hold-recipient'],
       [{ signed: false }, 'hold-signature'],
+      // Each readHeld binding alone: submitter, proved target, kind, the facts'
+      // tree and nullifier against the capsule, signing state and capsule hold id.
+      [{ alter: (s) => (s.entry.signing.submitter = '0x' + '99'.repeat(20)) }, 'hold'],
+      [{ alter: (s) => (s.stored.provedTransaction.to = '0x' + '98'.repeat(20)) }, 'hold'],
+      [{ alter: (s) => (s.entry.facts.kind = 'railgun-token-unshield') }, 'hold'],
+      [{ alter: (s) => (s.stored.capsule.selection.kind = 'railgun-token-unshield') }, 'hold'],
+      [{ alter: (s) => (s.entry.facts.nullifier = hash('97')) }, 'hold'],
+      [{ alter: (s) => (s.entry.facts.tree = 1) }, 'hold'],
+      [{ alter: (s) => (s.entry.state = 'held') }, 'hold'],
+      [{ alter: (s) => (s.stored.holdId = sha('96')) }, 'hold'],
+      [{ alter: (s) => (s.entry.id = s.stored.holdId = 'hold') }, 'hold'],
     ]) {
       const { ctx, calls } = heldWorld(options);
       expect(await settle(m.RUNNERS['preflight-probe'](ctx))).toEqual(refused(step));
@@ -2892,6 +2991,116 @@ const PROBES = {
       expect(calls.timeline).not.toContain('identity-open');
     }
   },
+  'recover-output': async (m) => {
+    const args = (output, previous = '/w/probe/report.json', previousSha = PROBE_SHA) => [
+      'recover-submit',
+      '/w/engine.asar',
+      '/w/prover.asar',
+      '/w/artifacts',
+      '/w/identity-data/railgun-sepolia-live',
+      '/w/scan/report.json',
+      NEWER_SCAN_SHA,
+      previous,
+      previousSha,
+      output,
+    ];
+    const valid = '/w/recover-submit-' + PROBE_SHA;
+    expect(m.parseArguments(args(valid)).output).toBe(valid);
+    for (const [output, previous, previousSha] of [
+      ['/w/l-a/recover'],
+      ['/w/recover-submit-' + sha('9c')],
+      ['/w/other/recover-submit-' + PROBE_SHA],
+      [valid, '/w/elsewhere/probe/report.json'],
+      [valid, undefined, sha('9c')],
+    ])
+      expectRefusal(() => m.parseArguments(args(output, previous, previousSha)), 'output');
+    // Every other mode keeps a free output name.
+    expect(m.parseArguments(['preflight-probe', ...args('/w/l-a/probe').slice(1)]).output).toBe(
+      '/w/l-a/probe'
+    );
+  },
+  'probe-timer': async (m) => {
+    // The production 20 s acquisition timer closes a hung preflight: refused
+    // inactive, one acquire, a completed probe and no retry.
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    const { ctx, calls } = heldWorld({ preflight: 'hang' });
+    let settled = false;
+    const run = m.RUNNERS['preflight-probe'](ctx).finally(() => {
+      settled = true;
+    });
+    run.catch(() => {});
+    try {
+      await until(() => calls.acquires === 1);
+      await jest.advanceTimersByTimeAsync(19999);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await until(() => settled);
+      await run;
+    } finally {
+      calls.release?.();
+      jest.useRealTimers();
+    }
+    expect(ctx.report.preflight).toMatchObject({
+      attempted: true,
+      acquireCalls: 1,
+      retry: false,
+      passed: false,
+      diagnostic: {
+        stage: 'preflight',
+        substage: 'acquire',
+        code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+        reason: 'inactive',
+        step: 'rootHistory',
+      },
+      nullifierQuery: 'not-queried',
+      elapsedMs: 20000,
+    });
+    expect(ctx.report.result).toBe('preflight-refused');
+    expect(calls.acquires).toBe(1);
+  },
+  'probe-abort': async (m) => {
+    // A recovery phase that ends while the preflight opens: never acquired.
+    const opened = heldWorld({ abortOnOpen: true });
+    expect(await settle(m.RUNNERS['preflight-probe'](opened.ctx))).toEqual(
+      Error('recovery phase ended')
+    );
+    expect(opened.calls.acquires).toBe(0);
+    expect(opened.ctx.report.preflight).toMatchObject({
+      attempted: false,
+      acquireCalls: 0,
+      passed: false,
+      nullifierQuery: 'not-queried',
+      diagnostic: {
+        stage: 'preflight',
+        substage: 'open',
+        code: 'RAILGUN_LIVE_JOURNEY_REFUSED',
+      },
+    });
+    expect(opened.ctx.report.result).toBe('not-completed');
+    // A phase that ends during acquisition closes the in-flight preflight.
+    const hung = heldWorld({ preflight: 'hang' });
+    let settled = false;
+    const run = settle(m.RUNNERS['preflight-probe'](hung.ctx)).then((value) => {
+      settled = true;
+      return value;
+    });
+    try {
+      await until(() => hung.calls.acquires === 1);
+      expect(settled).toBe(false);
+      hung.calls.recoveryControllers[0].abort();
+      await until(() => settled);
+    } finally {
+      hung.calls.release?.();
+    }
+    expect(await run).toEqual(Error('recovery phase ended'));
+    expect(hung.ctx.report.preflight).toMatchObject({
+      acquireCalls: 1,
+      passed: false,
+      diagnostic: { substage: 'acquire', reason: 'inactive', step: 'rootHistory' },
+    });
+    expect(hung.ctx.report.result).toBe('not-completed');
+    expect(hung.ctx.report.passed).toBe(false);
+  },
   'probe-immutables': async (m) => {
     for (const [name, during] of [
       ['signature', (s) => (s.stored.signature = { R8: ['9', '9'], S: '9' })],
@@ -2917,21 +3126,41 @@ const PROBES = {
       expect(ctx.report.passed).toBe(false);
       expect(ctx.report.immutables.unchanged).toBe(false);
       expect(ctx.report.immutables.changed).toContain(name);
+      // The preflight itself passed; an incomplete probe never reports it.
+      expect(ctx.report.preflight.passed).toBe(true);
+      expect(ctx.report.result).toBe('not-completed');
       expect(m.assertAggregateReport(ctx.report)).toBe(true);
     }
   },
   'spent-read': async (m) => {
+    // Through the scan anchor only: when the scan began, and when the wallet read.
+    const anchorOnly = {
+      through: NEW_ANCHOR,
+      scanObservedAt: SCAN_AT,
+      readAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
+      observedThroughAnchorOnly: true,
+    };
+    const before = Date.now();
     const unspent = heldWorld({ mode: 'spent-read' });
     await m.RUNNERS['spent-read'](unspent.ctx);
     expect(unspent.ctx.report.passed).toBe(true);
-    expect(unspent.ctx.report.input).toEqual({ spent: false, through: NEW_ANCHOR });
+    expect(unspent.ctx.report.input).toEqual({ spent: false, ...anchorOnly });
+    const readAt = Date.parse(unspent.ctx.report.input.readAt);
+    expect(readAt >= before && readAt <= Date.now()).toBe(true);
+    // An unrecorded or non-canonical scan time is null, never echoed.
+    for (const observedAt of [undefined, '2026-10-07T11:00:00Z', 1]) {
+      const other = heldWorld({ mode: 'spent-read' });
+      other.ctx.scan.observedAt = observedAt;
+      await m.RUNNERS['spent-read'](other.ctx);
+      expect(other.ctx.report.input.scanObservedAt).toBeNull();
+    }
     for (const spentTxid of [hash('9a'), '9A'.repeat(32)]) {
       const spent = heldWorld({ mode: 'spent-read', spentTxid });
       await m.RUNNERS['spent-read'](spent.ctx);
       expect(spent.ctx.report.input).toEqual({
         spent: true,
         transactionHash: hash('9a'),
-        through: NEW_ANCHOR,
+        ...anchorOnly,
       });
       expect(m.assertAggregateReport(spent.ctx.report)).toBe(true);
       expect(withoutSecrets(spent.ctx.report)).toBe(true);
@@ -3611,6 +3840,56 @@ const MUTATIONS = [
     'void 0;',
     'held-chain',
   ],
+  // One recover-submit per fresh, passed probe.
+  [
+    'recover-submit output name unbound to the probe',
+    'path.basename(output) === `recover-submit-${previousSha}` &&',
+    'true &&',
+    'recover-output',
+  ],
+  [
+    'recover-submit output outside the probe directory',
+    'path.dirname(output) === path.dirname(path.dirname(previousFile)),',
+    'true,',
+    'recover-output',
+  ],
+  [
+    'refused probe result admits recovery',
+    "check(previous.result === 'preflight-passed', 'predecessor-preflight');",
+    'void 0;',
+    'recover-predecessor',
+  ],
+  [
+    'refused probe result observed',
+    "check(previous.result === 'preflight-passed', 'predecessor');",
+    'void 0;',
+    'recover-predecessor',
+  ],
+  [
+    'stale probe admitted',
+    "check(probeFresh(previous.observedAt, now), 'predecessor-stale');",
+    'void 0;',
+    'recover-predecessor',
+  ],
+  [
+    'probe age bound exclusive',
+    'now - at <= PROBE_MAX_AGE_MS',
+    'now - at < PROBE_MAX_AGE_MS',
+    'recover-predecessor',
+  ],
+  [
+    'probe age bound raised',
+    'now - at <= PROBE_MAX_AGE_MS',
+    'now - at <= PROBE_MAX_AGE_MS * 2',
+    'recover-predecessor',
+  ],
+  ['future probe admitted', 'at <= now &&', 'true &&', 'recover-predecessor'],
+  [
+    'non-canonical probe time admitted',
+    'new Date(at).toISOString() === observedAt &&',
+    'true &&',
+    'recover-predecessor',
+  ],
   // Held journal and hold.
   [
     'held journal admission skipped',
@@ -3646,6 +3925,60 @@ const MUTATIONS = [
     'foreign hold accepted',
     "check(!Object.hasOwn(selection, 'recipientRelationship'), 'hold-recipient');",
     'void 0;',
+    'probe-hold',
+  ],
+  [
+    'hold submitter unchecked',
+    "check(lower(entry.signing?.submitter) === ctx.owner, 'hold');",
+    'void 0;',
+    'probe-hold',
+  ],
+  [
+    'held proved target unchecked',
+    "check(lower(stored.provedTransaction.to) === pins.proxy, 'hold');",
+    'void 0;',
+    'probe-hold',
+  ],
+  [
+    'held capsule kind unchecked',
+    'selection.kind === SPEND_KINDS.transfer && entry.facts.kind === SPEND_KINDS.transfer,',
+    'entry.facts.kind === SPEND_KINDS.transfer,',
+    'probe-hold',
+  ],
+  [
+    'held facts kind unchecked',
+    'selection.kind === SPEND_KINDS.transfer && entry.facts.kind === SPEND_KINDS.transfer,',
+    'selection.kind === SPEND_KINDS.transfer,',
+    'probe-hold',
+  ],
+  [
+    'held facts tree unbound to the capsule',
+    'entry.facts.tree === selection.tree && entry.facts.nullifier === preparation.expected.nullifier,',
+    'entry.facts.nullifier === preparation.expected.nullifier,',
+    'probe-hold',
+  ],
+  [
+    'held facts nullifier unbound to the capsule',
+    'entry.facts.tree === selection.tree && entry.facts.nullifier === preparation.expected.nullifier,',
+    'entry.facts.tree === selection.tree,',
+    'probe-hold',
+  ],
+  [
+    'hold id shape unchecked',
+    "SHA256.test(entry.id) && stored?.holdId === entry.id && entry.state === 'signing'",
+    "stored?.holdId === entry.id && entry.state === 'signing'",
+    'probe-hold',
+  ],
+  [
+    'capsule hold id unbound',
+    "SHA256.test(entry.id) && stored?.holdId === entry.id && entry.state === 'signing'",
+    "SHA256.test(entry.id) && entry.state === 'signing'",
+    'probe-hold',
+  ],
+  [
+    'hold signing state unchecked',
+    "SHA256.test(entry.id) && stored?.holdId === entry.id && entry.state === 'signing'",
+    'SHA256.test(entry.id) && stored?.holdId === entry.id',
     'probe-hold',
   ],
   // Preflight binding: original proof inputs, current completed checkpoint.
@@ -3708,6 +4041,54 @@ const MUTATIONS = [
     'probe diagnostic dropped',
     'diagnostic = readPreflightDiagnostic(ctx, substage, error);',
     'diagnostic = null;',
+    'probe-refusals',
+  ],
+  [
+    'probe acquisition timer removed',
+    'const timer = setTimeout(stop, PREFLIGHT_MS);',
+    'const timer = setTimeout(() => {}, PREFLIGHT_MS);',
+    'probe-timer',
+  ],
+  [
+    'probe acquisition timer lengthened',
+    'const PREFLIGHT_MS = 20000;',
+    'const PREFLIGHT_MS = 20001;',
+    'probe-timer',
+  ],
+  [
+    'probe acquisition timer shortened',
+    'const PREFLIGHT_MS = 20000;',
+    'const PREFLIGHT_MS = 19999;',
+    'probe-timer',
+  ],
+  [
+    'probe ignores the end of its recovery phase',
+    "signal.addEventListener('abort', stop, { once: true });",
+    'void 0;',
+    'probe-abort',
+  ],
+  [
+    'probe opens in an ended recovery phase',
+    "check(!signal.aborted, 'preflight');",
+    'void 0;',
+    'probe-abort',
+  ],
+  [
+    'probe scope dropped',
+    'report.scope = JSON.parse(JSON.stringify(PROBE_SCOPE));',
+    'void 0;',
+    'probe-pass',
+  ],
+  [
+    'probe result reported before completion',
+    "report.result = 'not-completed';",
+    "report.result = 'preflight-passed';",
+    'probe-immutables',
+  ],
+  [
+    'probe result ignores the preflight',
+    "report.preflight.passed === true ? 'preflight-passed' : 'preflight-refused';",
+    "'preflight-passed';",
     'probe-refusals',
   ],
   [
@@ -3846,6 +4227,19 @@ const MUTATIONS = [
     'void 0;',
     'spent-read',
   ],
+  [
+    'spent read time dropped',
+    'const readAt = new Date().toISOString();',
+    'const readAt = null;',
+    'spent-read',
+  ],
+  [
+    'spent read scan time unchecked',
+    'scanObservedAt: isoTime(ctx.scan.observedAt),',
+    'scanObservedAt: ctx.scan.observedAt ?? null,',
+    'spent-read',
+  ],
+  ['spent read anchor-only label dropped', 'observedThroughAnchorOnly: true,', '', 'spent-read'],
   [
     'spent txid shape unchecked',
     "check(HASH.test(value), 'input-spent');",

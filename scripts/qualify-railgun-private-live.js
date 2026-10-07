@@ -16,11 +16,16 @@
  * newer scan on the current sources; recover-submit takes a passed probe report.
  *
  * Held-transfer recovery (each mode separately authorized):
- * - spent-read: the held Shield input's spent marker through the scan anchor.
+ * - spent-read: the held Shield input's spent marker through the scan anchor
+ *   only, with the read time.
  * - preflight-probe: one production private preflight for the held input, with
- *   no account wallet, proof, EOA request, calldata, signing or broadcast.
+ *   no account wallet, proof, EOA request, calldata, signing or broadcast. Its
+ *   passed means the probe completed; result says whether the preflight passed,
+ *   and scope lists what the probe does not qualify.
  * - recover-submit: the production recovered submission of the held proof,
- *   reusing its original spending signature; at most one journaled send.
+ *   reusing its original spending signature; at most one journaled send. Once
+ *   per probe: NEW_OUTPUT is recover-submit-<probe sha256> beside the probe's
+ *   output directory, and the probe is at most 30 minutes old.
  *
  * Publication: only NEW_OUTPUT/report.json is publishable. NEW_OUTPUT/transport/
  * holds the Arti state and arti.log and stays local.
@@ -90,6 +95,24 @@ const RECOVERY_TIMEOUT_MS = 600000;
 const PREFLIGHT_MS = 20000;
 const PROBE_PHASE_MS = 60000;
 const READ_PHASE_MS = 15000;
+// How long a passed probe admits its one recover-submit. Production re-reads
+// every chain fact under its own 60 s clocks, so a probe is never admission
+// evidence: this bound only keeps the probe and the submission in one session,
+// on one scan, while the probe still describes current conditions.
+const PROBE_MAX_AGE_MS = 30 * 60 * 1000;
+// What a preflight-probe report qualifies. Its top-level passed means only that
+// the probe completed; result alone says whether the preflight passed.
+const PROBE_SCOPE = Object.freeze({
+  qualifies: 'private-preflight-stage-only',
+  passedMeans: 'probe-completed',
+  notQualified: Object.freeze([
+    'wallet-note-binding',
+    'poi-status',
+    'proof-recheck',
+    'eoa-steps',
+    'recovered-submission-timing',
+  ]),
+});
 // The reviewed disclosure summary of the recovered submission, exactly. Any
 // production change to it refuses at the disclosure review until reviewed here.
 const RECOVERY_EXPOSURES = Object.freeze({
@@ -247,6 +270,15 @@ function parseArguments(args) {
   const inside = path.relative(profile, output);
   check(inside === '..' || inside.startsWith('..' + path.sep) || path.isAbsolute(inside), 'output');
   check(![scanFile, previousFile].includes(output), 'output');
+  // One recovered submission per probe report: the name is fixed by the probe's
+  // digest beside the probe's own output, so main()'s no-overwrite check refuses
+  // a second run.
+  if (mode === 'recover-submit')
+    check(
+      path.basename(output) === `recover-submit-${previousSha}` &&
+        path.dirname(output) === path.dirname(path.dirname(previousFile)),
+      'output'
+    );
   return Object.freeze({
     mode,
     archive,
@@ -614,7 +646,7 @@ function validPoiStatus(poi) {
   );
 }
 // Mode order. Only these predecessor/mode pairs are accepted.
-function assertPredecessor(mode, previous, { scanSha, scan, previousSha }) {
+function assertPredecessor(mode, previous, { scanSha, scan, previousSha, now = Date.now() }) {
   check(MODES.includes(mode), 'mode');
   if (mode === 'check-transfer') return assertOwnedPoiReport(previous, scanSha);
   check(plainObject(previous) && previous.journey === JOURNEY, 'predecessor');
@@ -649,6 +681,7 @@ function assertPredecessor(mode, previous, { scanSha, scan, previousSha }) {
       if (previous.mode === 'preflight-probe') {
         // A lost recover-submit report: the passed probe stands as its check report.
         check(previous.passed === true && previous.preflight?.passed === true, 'predecessor');
+        check(previous.result === 'preflight-passed', 'predecessor');
         return;
       }
       check(previous.mode === 'observe' && previous.passed === true, 'predecessor');
@@ -711,7 +744,9 @@ function assertPredecessor(mode, previous, { scanSha, scan, previousSha }) {
         previous.preflight?.passed === true && previous.preflight.acquireCalls === 1,
         'predecessor-preflight'
       );
+      check(previous.result === 'preflight-passed', 'predecessor-preflight');
       check(previous.immutables?.unchanged === true, 'predecessor');
+      check(probeFresh(previous.observedAt, now), 'predecessor-stale');
       check(
         previous.chain.heldTransfer?.reportSha256 === HELD_TRANSFER_REPORT_SHA256,
         'predecessor-held'
@@ -723,6 +758,16 @@ function assertPredecessor(mode, previous, { scanSha, scan, previousSha }) {
     default:
       throw refusal('mode');
   }
+}
+// A canonical ISO time no later than now and at most PROBE_MAX_AGE_MS before it.
+function probeFresh(observedAt, now) {
+  const at = typeof observedAt === 'string' ? Date.parse(observedAt) : NaN;
+  return (
+    Number.isFinite(at) &&
+    new Date(at).toISOString() === observedAt &&
+    at <= now &&
+    now - at <= PROBE_MAX_AGE_MS
+  );
 }
 function nextChain(mode, previous, previousSha) {
   if (mode === 'check-transfer')
@@ -754,6 +799,12 @@ function nextChain(mode, previous, previousSha) {
 }
 
 // Aggregate summaries. Whitelists only: production objects carry private facts.
+const isoTime = (value) =>
+  typeof value === 'string' &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(Date.parse(value)).toISOString() === value
+    ? value
+    : null;
 function blockNumber(value) {
   if (value === undefined || value === null) return null;
   let number;
@@ -1390,6 +1441,7 @@ async function main() {
       poiSubmission: report.poiSubmission?.classification,
       input: report.input?.spent,
       preflight: report.preflight?.passed,
+      result: report.result,
       nullifierQuery: report.preflight?.nullifierQuery,
     })
   );
@@ -2130,6 +2182,8 @@ function spentStatus(note) {
 // Experiment 1: the read-only preflight probe of the held input.
 async function preflightProbe(ctx) {
   const { report, previous } = ctx;
+  report.scope = JSON.parse(JSON.stringify(PROBE_SCOPE));
+  report.result = 'not-completed';
   ctx.stage = 'journal';
   const before = await ctx.readJournal();
   assertHeldJournal(before, ctx.chain);
@@ -2203,7 +2257,8 @@ async function preflightProbe(ctx) {
     wholeProfileIdentityAsserted: false,
   };
   check(changed.length === 0, 'immutables');
-  // A completed probe; only preflight.passed admits recover-submit.
+  // A completed probe; only result 'preflight-passed' admits recover-submit.
+  report.result = report.preflight.passed === true ? 'preflight-passed' : 'preflight-refused';
   report.passed = true;
 }
 // Experiment 2: production recovered submission of the held proved input. The
@@ -2617,11 +2672,18 @@ const RUNNERS = {
     assertHeldJournal(await ctx.readJournal(), ctx.chain);
     await openAccount(ctx);
     const owned = await openWallet(ctx);
+    const readAt = new Date().toISOString();
     ctx.stage = 'input';
-    // Never the nullifier, root or hold id.
+    // Never the nullifier, root or hold id. The scan report records its anchor
+    // as number and hash only (openAccount requires exactly that), not a block
+    // time; the anchor was a finalized block when the scan began (scanObservedAt).
+    // Nothing after the anchor is observed, at readAt or otherwise.
     ctx.report.input = {
       ...spentStatus(heldShieldNote(owned, ctx.chain.shieldTransactionHash)),
       through: { number: ctx.status.to.number, hash: ctx.status.to.hash },
+      scanObservedAt: isoTime(ctx.scan.observedAt),
+      readAt,
+      observedThroughAnchorOnly: true,
     };
     ctx.report.passed = true;
   },
@@ -2688,6 +2750,8 @@ module.exports = {
   REBASED_MODES,
   RECOVERY_EXPOSURES,
   RECOVERY_TIMEOUT_MS,
+  PROBE_MAX_AGE_MS,
+  PROBE_SCOPE,
   PROBE_DISCLOSURE_ORDER,
   parseArguments,
   feeExposure,
