@@ -8,6 +8,24 @@ const net = require('net');
 const { connectIsolatedSocks } = require('./isolated-socks');
 const { getPrivacyContext, privacyError } = require('./privacy-context');
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+// Closed local stage of a TOR_REQUEST_FAILED, derived only from this request's
+// own lifecycle (never from a URL, header, body or library message):
+// connect: SOCKS/Tor stream setup failed, so no TLS or HTTP bytes left;
+// tls: the TLS handshake or certificate check failed before any HTTP bytes;
+// socket-new / socket-reused: a fresh or kept-alive connection was assigned
+// and the request may have reached the server, but no response byte came;
+// response: a response byte arrived (headers possibly incomplete);
+// unclassified: anything else, including the generic fallback for
+// unexpected exceptions and deterministic local SOCKS refusals.
+const CONNECT_STAGES = Object.freeze({
+  SOCKS_CONNECTION_FAILED: 'connect',
+  SOCKS_CONNECTION_CLOSED: 'connect',
+  SOCKS_TIMEOUT: 'connect',
+  SOCKS_PROTOCOL_ERROR: 'connect',
+  TOR_TLS_FAILED: 'tls',
+});
+const requestFailed = (stage) =>
+  Object.assign(privacyError('TOR_REQUEST_FAILED', 'Private HTTP request failed'), { stage });
 
 function createWalletTorTransport({
   getEndpoint = () => require('../tor-manager').getWalletSocksEndpoint(),
@@ -144,6 +162,11 @@ function createWalletTorTransport({
         } catch (error) {
           secured?.destroy();
           socket?.destroy();
+          const code = typeof error?.code === 'string' ? error.code : '';
+          if (options.privacyAttempt && !options.privacyAttempt.connect)
+            options.privacyAttempt.connect = Object.hasOwn(CONNECT_STAGES, code)
+              ? CONNECT_STAGES[code]
+              : 'unclassified';
           notify(error);
         } finally {
           connections -= 1;
@@ -286,15 +309,31 @@ function createWalletTorTransport({
         let settled = false,
           socketAssigned = false,
           receivedResponse;
+        // Written only by this request's own connection attempt (see makeAgent).
+        const attempt = { connect: null };
+        // Application bytes on the assigned (TLS) socket when it was assigned:
+        // any later growth means response bytes arrived, even partial headers.
+        let assigned;
+        const assign = (socket) => {
+          socketAssigned = true;
+          assigned ??= { socket, bytes: socket?.bytesRead };
+        };
+        const stage = () => {
+          if (receivedResponse) return 'response';
+          if (socketAssigned) {
+            const bytes = assigned?.socket?.bytesRead;
+            if (!Number.isSafeInteger(bytes) || bytes !== assigned.bytes) return 'response';
+            return req.reusedSocket === true ? 'socket-reused' : 'socket-new';
+          }
+          return attempt.connect || 'unclassified';
+        };
         const failure = () =>
-          privacyError(
-            combined.aborted
-              ? timeout.signal.aborted
-                ? 'TOR_REQUEST_TIMEOUT'
-                : 'PRIVACY_REQUEST_ABORTED'
-              : 'TOR_REQUEST_FAILED',
-            'Private HTTP request failed'
-          );
+          combined.aborted
+            ? privacyError(
+                timeout.signal.aborted ? 'TOR_REQUEST_TIMEOUT' : 'PRIVACY_REQUEST_ABORTED',
+                'Private HTTP request failed'
+              )
+            : requestFailed(stage());
         const finish = (error, value) => {
           if (settled) return;
           settled = true;
@@ -324,6 +363,7 @@ function createWalletTorTransport({
             agent: url.protocol === 'https:' ? group.https : group.http,
             signal: combined,
             privacySignal: combined,
+            privacyAttempt: attempt,
           },
           (response) => {
             receivedResponse = response;
@@ -413,10 +453,8 @@ function createWalletTorTransport({
         );
         // Retain the error consumer for errors delivered after cancellation.
         req.on('error', () => finish(failure()));
-        socketAssigned = Boolean(req.socket);
-        req.once('socket', () => {
-          socketAssigned = true;
-        });
+        if (req.socket) assign(req.socket);
+        req.once('socket', assign);
         requests.add(req);
         req.once('close', () => {
           requests.delete(req);
@@ -447,7 +485,7 @@ function createWalletTorTransport({
       // fixed transport diagnostics are permitted across this boundary.
       if (typeof error?.code === 'string' && /^(PRIVATE_|PRIVACY_|TOR_)/.test(error.code))
         throw error;
-      throw privacyError('TOR_REQUEST_FAILED', 'Private HTTP request failed');
+      throw requestFailed('unclassified');
     } finally {
       clearTimeout(timer);
       group.pending -= 1;
