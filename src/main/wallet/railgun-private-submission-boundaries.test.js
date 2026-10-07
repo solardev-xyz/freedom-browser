@@ -1224,65 +1224,180 @@ describe('the monotonic admission deadline F against a backward wall-clock step'
 });
 
 // The native finding, at the real boundary: E closes the submission scope
-// mid-send, so the returned value is a refusal without the transaction hash
-// and its diagnostic says PRIVATE_BROADCAST_UNCERTAIN. The live qualifier
-// takes the hash from the authenticated journal readback instead, and its
-// observe mode chains from that report.
+// mid-send after the node accepted it, so the returned value is a refusal
+// without the transaction hash and its diagnostic says
+// PRIVATE_BROADCAST_UNCERTAIN. That exact result and the real journal go
+// through the live qualifier's own recover-submit settlement: the held
+// journal intent derived by production's classifier from the held proved
+// transaction, the readback binding, the labels and the chain, the liveness,
+// the rendered report, observe's predecessor rule and the observe runner.
 describe('an uncertain recovered send without a returned hash', () => {
-  test('the journal readback binds the attempt and observe follows it', async () => {
+  test('the qualifier binds it from the journal readback and observe follows it', async () => {
     const seen = await run(DEFAULT, {
       resolved: 0,
       send: { ms: 25000, deliverMs: 2000 },
       approve: { beforeMs: 100 },
     });
     expect(seen.outcome).toBe('journaled-uncertain');
+    expect(mock.chain.accepted).toHaveLength(1);
     expect(seen.result).toEqual({ status: 'recovery-required', stage: 'submission' });
     expect(seen.diagnostic).toEqual({ stage: 'submission', code: 'PRIVATE_BROADCAST_UNCERTAIN' });
-    const spend = live.classifySpendOutcome({
+    const held = copy({ entry: mock.entry, stored: mock.stored });
+    const scan = { sha256: 'ab'.repeat(32), anchor: { number: 6000060, hash: blockHash(6000060) } };
+    const ctx = {
+      report: {
+        spend: {
+          attempted: null,
+          journaled: null,
+          submissionStatus: 'unknown',
+          resendAllowed: false,
+        },
+      },
+      chain: {
+        ownedPoiReportSha256: 'd1'.repeat(32),
+        shieldTransactionHash: '0x' + '5b'.repeat(32),
+        transfer: null,
+        unshield: null,
+      },
+      load: (name) =>
+        ({
+          'wallet/railgun-private-submission': mock.kit.submission,
+          'wallet/railgun-transact-intent': mock.kit.transactIntent,
+        })[name],
+      readJournal: async () => copy(seen.after),
+    };
+    const intent = live.heldJournalIntent(ctx, held);
+    expect(seen.attempts[0].intent).toEqual(intent);
+    // The same held calldata from another account is another journal intent:
+    // the readback binds nothing, and the spend stays uncertain and unchained.
+    const elsewhere = copy(held);
+    elsewhere.entry.signing.submitter = '0x' + '2'.repeat(40);
+    const unbound = { ...ctx, report: copy(ctx.report), chain: copy(ctx.chain) };
+    await expect(
+      live.settleRecoveredSubmission(unbound, {
+        result: seen.result,
+        before: seen.before,
+        started: performance.now(),
+        reviews: { disclosure: 1, transaction: 1 },
+        reviewShownMs: null,
+        intent: live.heldJournalIntent(unbound, elsewhere),
+      })
+    ).rejects.toMatchObject({ step: 'spend-binding' });
+    expect(unbound.report.spend.journaled).toBeNull();
+    expect(unbound.report.submission.status).toBe('unknown');
+    expect(unbound.chain.transfer).toBeNull();
+    await live.settleRecoveredSubmission(ctx, {
       result: seen.result,
       before: seen.before,
-      after: seen.after,
+      started: performance.now(),
+      reviews: { disclosure: 1, transaction: 1 },
+      reviewShownMs: null,
+      intent,
     });
-    expect(spend).toEqual({
+    expect(ctx.report.submission).toMatchObject({
+      status: 'unknown',
+      stage: 'submission',
+      diagnostic: { stage: 'submission', code: 'PRIVATE_BROADCAST_UNCERTAIN' },
+    });
+    expect(ctx.report.spend).toEqual({
       attempted: true,
       journaled: true,
       journaledHash: seen.sends[0].hash,
       journalState: 'attempted',
-      journalNonce: 0,
       hashSource: 'journal-readback',
       submissionStatus: 'unknown',
       resendAllowed: false,
     });
-    const scan = { sha256: 'ab'.repeat(32), anchor: { number: 6000060, hash: blockHash(6000060) } };
+    expect(ctx.report.passed).toBe(false);
+    expect(ctx.chain.transfer).toEqual({ hash: seen.sends[0].hash });
+    const liveness = live.describeLiveness({ holdCreated: true, spend: ctx.report.spend });
+    expect(liveness).toMatchObject({ state: 'journaled-uncertain', continuation: 'observe' });
     const report = JSON.parse(
       live.renderReport({
         journey: live.JOURNEY,
         version: 1,
         chainId: 11155111,
         mode: 'recover-submit',
-        passed: false,
         owner: mock.owner,
         scan,
-        chain: {
-          ownedPoiReportSha256: 'd1'.repeat(32),
-          shieldTransactionHash: '0x' + '5b'.repeat(32),
-          transfer: { hash: spend.journaledHash },
-          unshield: null,
-        },
-        spend,
+        ...ctx.report,
+        liveness,
+        chain: ctx.chain,
       })
     );
-    expect(report.spend).toEqual(spend);
-    expect(() =>
-      live.assertPredecessor('observe', report, { scanSha: scan.sha256, scan })
-    ).not.toThrow();
-    const observed = live.selectObservedRecord(
-      seen.after,
-      'transfer',
-      report.chain,
-      spend.journaledHash
-    );
-    expect(observed.hash).toBe(seen.sends[0].hash);
+    expect(report.spend).toEqual(ctx.report.spend);
+    expect(report.failure).toBeUndefined();
+    live.assertPredecessor('observe', report, { scanSha: scan.sha256, scan });
+    // Observe over the same real journal snapshot, with a fake transact
+    // recovery that finds it included, matched and final.
+    const sent = seen.sends[0].hash;
+    let resolution = null;
+    const recovery = {
+      observe: async (txHash) => ({
+        record: {
+          hash: txHash,
+          state: 'attempted',
+          observation: {
+            status: 'included',
+            blockNumber: HEAD + 1,
+            blockHash: blockHash(HEAD + 1),
+            confirmations: 14,
+          },
+        },
+        transact: {
+          status: 'matched',
+          operation: 'railgun-private-transfer',
+          output: { kind: 'shielded' },
+          trust: 'unverified-rpc',
+        },
+      }),
+      resolve: async (txHash, options) => {
+        expect(txHash).toBe(sent);
+        await options.review({
+          transact: {
+            status: 'matched',
+            operation: 'railgun-private-transfer',
+            output: { kind: 'shielded' },
+          },
+        });
+        resolution = {
+          minimumConfirmations: options.minimumConfirmations,
+          railgun: {
+            outcome: 'matched',
+            finalizedBlockNumber: HEAD + 20,
+            finalizedBlockHash: blockHash(HEAD + 20),
+          },
+        };
+      },
+      list: async () => [{ ...copy(seen.attempts[0]), resolution }],
+      close() {},
+    };
+    const observing = {
+      report: { passed: false },
+      stage: 'preconditions',
+      owner: mock.owner,
+      previous: report,
+      chain: copy(report.chain),
+      network: {
+        request: async (_chainId, method) =>
+          method === 'eth_getTransactionReceipt'
+            ? { result: { gasUsed: '0x100', effectiveGasPrice: '0x64', status: '0x1' } }
+            : { result: { number: hex(HEAD + 20) } },
+      },
+      readJournal: async () => copy(seen.after),
+      load: (name) => {
+        expect(name).toBe('wallet/railgun-transact-recovery');
+        return { openRailgunTransactRecovery: () => recovery };
+      },
+    };
+    await live.RUNNERS.observe(observing);
+    expect(observing.report).toMatchObject({
+      passed: true,
+      target: 'transfer',
+      observedHash: sent,
+      resolved: { outcome: 'matched' },
+    });
+    expect(observing.chain.transfer).toEqual({ hash: sent, blockNumber: HEAD + 1 });
   });
 });
 

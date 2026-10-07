@@ -40,7 +40,11 @@
  *   review window offered and shown, the verifier duration, in ms) and takes
  *   a journaled attempt's hash from the authenticated journal readback
  *   (spend.hashSource), since a refusal returned after the journal write may
- *   carry none; observe follows it from there.
+ *   carry none; observe follows it from there. The readback's one new record
+ *   must carry exactly the held operation's journal intent, as production
+ *   derives it from the held proved transaction and its submitter; anything
+ *   else stays uncertain and unchained. submission.status is refused only
+ *   when the readback shows no journaled attempt.
  *
  * Publication: only NEW_OUTPUT/report.json is publishable. NEW_OUTPUT/transport/
  * holds the Arti state and arti.log and stays local.
@@ -383,12 +387,13 @@ function reviewedFee(transaction, gasLimit) {
 }
 
 // Journal rules. The EOA journal is the only send history this script trusts.
-function transactRecords(snapshot) {
+function journalRecords(snapshot) {
   check(plainObject(snapshot), 'journal');
   check(Array.isArray(snapshot.records) && Array.isArray(snapshot.archive), 'journal');
-  return [...snapshot.records, ...snapshot.archive].filter(
-    (record) => record?.intent?.kind === 'railgun-transact'
-  );
+  return [...snapshot.records, ...snapshot.archive];
+}
+function transactRecords(snapshot) {
+  return journalRecords(snapshot).filter((record) => record?.intent?.kind === 'railgun-transact');
 }
 function assertJournalResolved(snapshot) {
   check(plainObject(snapshot) && Array.isArray(snapshot.records), 'journal');
@@ -475,9 +480,15 @@ function selectObservedRecord(snapshot, target, chain, hash) {
   );
   return candidates[0];
 }
-function classifySpendOutcome({ result, before, after }) {
-  const known = new Set(transactRecords(before).map((record) => record.hash));
-  const added = transactRecords(after).filter((record) => !known.has(record.hash));
+// The journal readback alone selects the attempt: the one record added since
+// before, never the last row. A recovered attempt (intent given) counts every
+// new record, of any kind, and must carry exactly the held operation's
+// journal intent; another new record, more than one, or a returned hash that
+// names another refuses, and the caller's uncertain spend stands.
+function classifySpendOutcome({ result, before, after, intent }) {
+  const records = intent === undefined ? transactRecords : journalRecords;
+  const known = new Set(records(before).map((record) => record?.hash));
+  const added = records(after).filter((record) => !known.has(record?.hash));
   const reported =
     typeof result?.hash === 'string'
       ? result.hash.toLowerCase()
@@ -498,16 +509,16 @@ function classifySpendOutcome({ result, before, after }) {
   const record = added[0];
   check(HASH.test(record.hash), 'spend-hash');
   check(reported === null || reported === record.hash, 'spend-hash');
+  if (intent !== undefined) check(same(record.intent, intent), 'spend-binding');
   const acknowledged = typeof result?.hash === 'string' && reported === record.hash;
   return Object.freeze({
     attempted: true,
     journaled: true,
     journaledHash: record.hash,
     journalState: typeof record.state === 'string' ? record.state : null,
-    // With the hash, the journal record's identity for observe.
-    journalNonce: Number.isSafeInteger(record.nonce) && record.nonce >= 0 ? record.nonce : null,
-    // A refusal returned after the journal write (its submission scope
-    // revoked mid-send, say) carries no hash: the readback alone names it.
+    // A label only: the hash is always the readback's. A refusal returned
+    // after the journal write (its submission scope revoked mid-send, say)
+    // carries none, and the readback alone names it.
     hashSource: reported === null ? 'journal-readback' : 'result',
     submissionStatus: acknowledged ? 'acknowledged' : 'unknown',
     // Any journaled attempt is observation-only from here; never resent.
@@ -1885,29 +1896,26 @@ async function spendSteps(ctx, step, onHold) {
   report.passed = report.spend.submissionStatus === 'acknowledged';
 }
 // One production submission's result, then the journal read back: the journal
-// alone decides whether a send was attempted. Returns the readback.
-async function recordSubmission(ctx, { result, before, started, reviews, timing }) {
+// alone decides whether a send was attempted. A returned refusal is labelled
+// refused only once the readback shows nothing journaled; until then, and if
+// the readback fails or binds nothing, it stays unknown, never unsent.
+async function recordSubmission(ctx, { result, before, started, reviews, timing, intent }) {
   const { report } = ctx;
-  const status =
-    typeof result?.hash === 'string'
-      ? 'acknowledged'
-      : typeof result?.transactionHash === 'string'
-        ? 'unknown'
-        : 'refused';
+  const returnedRefusal =
+    typeof result?.hash !== 'string' && typeof result?.transactionHash !== 'string';
   report.submission = {
-    status,
+    status: typeof result?.hash === 'string' ? 'acknowledged' : 'unknown',
     ...(typeof result?.stage === 'string' ? { stage: result.stage } : {}),
-    ...(status === 'refused' ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),
+    ...(returnedRefusal ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),
     reviews,
     elapsedMs: Math.round(performance.now() - started),
     ...(timing ? { timing } : {}),
   };
   ctx.stage = 'journal-readback';
-  const after = await ctx.readJournal();
-  report.spend = classifySpendOutcome({ result, before, after });
+  report.spend = classifySpendOutcome({ result, before, after: await ctx.readJournal(), intent });
+  if (report.spend.journaled === false) report.submission.status = 'refused';
   // Aggregate only; printed at once so a later drain failure cannot hide it.
   console.log(JSON.stringify({ spend: report.spend }));
-  return after;
 }
 // The recovered submission's aggregate timings, allow-listed: the review
 // window production offered, the window left when the review was shown, and
@@ -1935,17 +1943,30 @@ function readSubmissionTiming(ctx, result) {
     return null;
   }
 }
-// A journaled recovered attempt is the held transfer's: its operation, tree
-// and nullifier, read from the authenticated journal readback.
-function assertRecoveredAttempt(snapshot, hash, held) {
-  const record = transactRecords(snapshot).find((value) => value.hash === hash);
+// The held operation's journal intent, derived as production derives and binds
+// it (railgun-own-operation): from the held proved transaction and its
+// submitter, whose intent digest the hold records. Its digest covers chain,
+// account, target, value and the exact calldata; the binding fields cover the
+// operation, tree, root, nullifier and commitment. Held in memory only.
+function heldJournalIntent(ctx, held) {
+  let intent;
+  try {
+    intent = ctx.load('wallet/railgun-transact-intent').railgunTransactJournalIntent({
+      ...held.stored.provedTransaction,
+      from: held.entry.signing.submitter,
+    });
+  } catch {
+    throw refusal('hold-intent');
+  }
   const { selection, preparation } = held.stored.capsule;
+  check(plainObject(intent) && intent.kind === 'railgun-transact', 'hold-intent');
+  check(intent.operation === SPEND_KINDS.transfer, 'hold-intent');
+  check(intent.intentDigest === held.entry.facts.intentDigest, 'hold-intent');
   check(
-    record?.intent?.operation === SPEND_KINDS.transfer &&
-      record.intent.tree === selection.tree &&
-      record.intent.nullifier === preparation.expected.nullifier,
-    'spend-binding'
+    intent.tree === selection.tree && intent.nullifier === preparation.expected.nullifier,
+    'hold-intent'
   );
+  return JSON.parse(JSON.stringify(intent));
 }
 
 // ---------------------------------------------------------------------------
@@ -2632,6 +2653,7 @@ async function recoverSubmit(ctx) {
   assertHeldUnjournaled(before, held);
   // Only a digest of the hold id leaves recovery, into the local ledger.
   ctx.holdIdSha256 = sha(HOLD_ID_DOMAIN + held.entry.id);
+  const intent = heldJournalIntent(ctx, held);
   report.hold = { ...HELD_SUMMARY };
   ctx.stage = 'submitter';
   report.submitter = await submitterChecks(ctx);
@@ -2693,14 +2715,21 @@ async function recoverSubmit(ctx) {
       signal: ctx.enrollment.signal,
       timeoutMs: RECOVERY_TIMEOUT_MS,
     });
+  await settleRecoveredSubmission(ctx, { result, before, started, reviews, reviewShownMs, intent });
+}
+// The recovered submission's returned value, read back against the journal:
+// what recover-submit records, labels and chains after production returns.
+async function settleRecoveredSubmission(
+  ctx,
+  { result, before, started, reviews, reviewShownMs, intent }
+) {
+  const { report } = ctx;
   const timing = summarizeSubmissionTiming({ ...readSubmissionTiming(ctx, result), reviewShownMs });
-  const after = await recordSubmission(ctx, { result, before, started, reviews, timing });
-  // Uncertain or acknowledged, a journaled attempt continues only in observe,
-  // from the readback's hash even when the returned value carries none.
-  if (report.spend.journaled) {
-    ctx.chain.transfer = { hash: report.spend.journaledHash };
-    assertRecoveredAttempt(after, report.spend.journaledHash, held);
-  }
+  await recordSubmission(ctx, { result, before, started, reviews, timing, intent });
+  // Uncertain or acknowledged, the held operation's journaled attempt continues
+  // only in observe, from the readback's hash even when the returned value
+  // carries none.
+  if (report.spend.journaled) ctx.chain.transfer = { hash: report.spend.journaledHash };
   report.passed = report.spend.submissionStatus === 'acknowledged';
 }
 const RUNNERS = {
@@ -3181,6 +3210,8 @@ module.exports = {
   renderReport,
   assessPoiSubmission,
   describeLiveness,
+  heldJournalIntent,
+  settleRecoveredSubmission,
   dependencyIdentity,
   listSourceFiles,
   shieldInput,

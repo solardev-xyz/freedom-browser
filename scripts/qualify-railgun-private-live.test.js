@@ -342,7 +342,6 @@ describe('journal', () => {
       journaled: true,
       journaledHash: TRANSFER,
       journalState: 'submitted',
-      journalNonce: null,
       hashSource: 'result',
       submissionStatus: 'unknown',
       resendAllowed: false,
@@ -383,28 +382,104 @@ describe('journal', () => {
       })
     ).toMatchObject({ attempted: true, submissionStatus: 'unknown' });
     // A refusal without a hash (its submission scope revoked mid-send): the
-    // journal readback alone names the attempt, with its record's nonce.
+    // journal readback alone names the attempt. The hash is its one identity.
     const numbered = journal([{ ...transferRecord(null), nonce: 7 }], [shieldRecord()]);
-    expect(
-      api.classifySpendOutcome({
-        result: { status: 'recovery-required', stage: 'submission' },
-        before,
-        after: numbered,
-      })
-    ).toMatchObject({
+    const readback = api.classifySpendOutcome({
+      result: { status: 'recovery-required', stage: 'submission' },
+      before,
+      after: numbered,
+    });
+    expect(readback).toMatchObject({
       journaledHash: TRANSFER,
-      journalNonce: 7,
       hashSource: 'journal-readback',
       submissionStatus: 'unknown',
     });
-    for (const nonce of [-1, 1.5, '7', 2 ** 53])
-      expect(
+    expect(readback).not.toHaveProperty('journalNonce');
+  });
+  test('a recovered attempt is selected only as the exact held journal intent', () => {
+    const held = { ...transferRecord(null).intent, tree: 0, intentDigest: sha('34') };
+    const before = journal([], [shieldRecord()]);
+    const ours = { ...transferRecord(null), state: 'attempted', intent: { ...held } };
+    const revoked = { status: 'recovery-required', stage: 'submission' };
+    expect(
+      api.classifySpendOutcome({ result: revoked, before, after: journal([ours]), intent: held })
+    ).toMatchObject({ journaledHash: TRANSFER, hashSource: 'journal-readback' });
+    expect(
+      api.classifySpendOutcome({
+        result: { hash: TRANSFER },
+        before,
+        after: journal([ours]),
+        intent: held,
+      })
+    ).toMatchObject({ journaledHash: TRANSFER, submissionStatus: 'acknowledged' });
+    // Another operation, tree, nullifier or intent, or a record with no intent.
+    for (const changed of [
+      { operation: 'railgun-token-unshield' },
+      { tree: 1 },
+      { nullifier: 'other' },
+      { intentDigest: sha('35') },
+      { extra: true },
+    ])
+      expectRefusal(
+        () =>
+          api.classifySpendOutcome({
+            result: revoked,
+            before,
+            after: journal([{ ...ours, intent: { ...held, ...changed } }]),
+            intent: held,
+          }),
+        'spend-binding'
+      );
+    // Any other new record counts, Railgun or not: alone it is not ours,
+    // beside ours it is ambiguous.
+    const ordinary = { hash: hash('7d'), nonce: 4, state: 'attempted', route: 'ordinary' };
+    expectRefusal(
+      () =>
         api.classifySpendOutcome({
-          result: { hash: TRANSFER },
+          result: revoked,
           before,
-          after: journal([{ ...transferRecord(null), nonce }], [shieldRecord()]),
-        })
-      ).toMatchObject({ journalNonce: null, hashSource: 'result' });
+          after: journal([ordinary]),
+          intent: held,
+        }),
+      'spend-binding'
+    );
+    expectRefusal(
+      () =>
+        api.classifySpendOutcome({
+          result: revoked,
+          before,
+          after: journal([ours, ordinary]),
+          intent: held,
+        }),
+      'spend-multiple'
+    );
+    // An unrelated new record beside ours, ahead of it or after it: never the last row.
+    const unrelated = { ...unshieldRecord(), hash: hash('7c') };
+    for (const records of [
+      [ours, unrelated],
+      [unrelated, ours],
+    ])
+      expectRefusal(
+        () =>
+          api.classifySpendOutcome({
+            result: revoked,
+            before,
+            after: journal(records),
+            intent: held,
+          }),
+        'spend-multiple'
+      );
+    // A returned hash that names another transaction.
+    expectRefusal(
+      () =>
+        api.classifySpendOutcome({
+          result: { hash: UNSHIELD },
+          before,
+          after: journal([ours]),
+          intent: held,
+        }),
+      'spend-hash'
+    );
   });
   test('refuses unbound or multiple attempts', () => {
     const before = journal([]);
@@ -1623,6 +1698,32 @@ const heldChain = (extra = {}) => ({
   heldTransfer: { reportSha256: HELD_SHA, estimate: '1247366', gasLimit: '1559208' },
   ...extra,
 });
+// The fake production classifier (railgunTransactJournalIntent): the held
+// capsule's binding fields, and a digest over the transaction's chain,
+// account, target, value and calldata, as production's digest covers them.
+const journalIntentOf = (tx) => ({
+  kind: 'railgun-transact',
+  operation: 'railgun-private-transfer',
+  tree: 0,
+  merkleRoot: MERKLE_ROOT,
+  nullifier: NULLIFIER,
+  commitment: hash('3c'),
+  boundParamsHash: hash('3d'),
+  intentDigest: hash('34'),
+  digest:
+    '0x' +
+    createHash('sha256')
+      .update(
+        JSON.stringify([
+          tx.chainId ?? 11155111,
+          String(tx.from).toLowerCase(),
+          String(tx.to).toLowerCase(),
+          tx.value ?? '0x0',
+          tx.data,
+        ])
+      )
+      .digest('hex'),
+});
 const PROBE_AT = '2026-10-07T12:00:00.000Z';
 const SCAN_AT = '2026-10-07T11:30:00.000Z';
 const probeReport = (extra = {}) =>
@@ -1837,6 +1938,8 @@ function heldWorld({
   ledger,
   timing,
   journaledIntent = {},
+  journaled,
+  intentFails = false,
 } = {}) {
   const calls = {
     timeline: [],
@@ -1995,6 +2098,13 @@ function heldWorld({
         return { constraint, close() {} };
       },
     },
+    'wallet/railgun-transact-intent': {
+      railgunTransactJournalIntent: (tx) => {
+        calls.intents = (calls.intents ?? 0) + 1;
+        if (intentFails) throw Error('secret classifier failure ' + NULLIFIER);
+        return Object.freeze(journalIntentOf(tx));
+      },
+    },
     'wallet/railgun-private-preflight': {
       createRailgunPrivatePreflight: (options) => {
         calls.preflights.push(options);
@@ -2122,18 +2232,17 @@ function heldWorld({
     }
     calls.sign++;
     log('sign');
+    // Production journals the signed held transaction's own intent.
     journal.records.push({
       hash: TRANSFER,
       nonce: 3,
       state: submit === 'ack' ? 'submitted' : 'attempted',
       intent: {
-        kind: 'railgun-transact',
-        operation: 'railgun-private-transfer',
-        tree: 0,
-        nullifier: NULLIFIER,
+        ...journalIntentOf({ ...state.stored.provedTransaction, from: OWNER }),
         ...journaledIntent,
       },
     });
+    journaled?.(journal.records);
     if (submit === 'ack') return { hash: TRANSFER };
     if (submit === 'lost') return { transactionHash: TRANSFER, submissionStatus: 'unknown' };
     // The native shape: the submission scope was revoked mid-send, so
@@ -3433,6 +3542,8 @@ const PROBES = {
     expect(calls.disclosures).toEqual([true]);
     expect(calls.reviews).toEqual([true]);
     expect(calls.sign).toBe(1);
+    // The held journal intent is derived once, from the held proved transaction.
+    expect(calls.intents).toBe(1);
     // The original signature is reused: no prover, spending key, wallet or preflight.
     for (const name of [
       'wallet/railgun-private-operation',
@@ -3455,7 +3566,6 @@ const PROBES = {
       journaled: true,
       journaledHash: TRANSFER,
       journalState: 'submitted',
-      journalNonce: 3,
       hashSource: 'result',
       submissionStatus: 'acknowledged',
       resendAllowed: false,
@@ -3665,8 +3775,9 @@ const PROBES = {
     const { ctx, calls, journal: state } = heldWorld({ mode: 'recover-submit', submit: 'revoked' });
     await m.RUNNERS['recover-submit'](ctx);
     expect(calls.sign).toBe(1);
+    // Journaled and unacknowledged: unknown, never labelled refused.
     expect(ctx.report.submission).toMatchObject({
-      status: 'refused',
+      status: 'unknown',
       stage: 'submission',
       diagnostic: { stage: 'submission', code: 'PRIVATE_BROADCAST_UNCERTAIN' },
     });
@@ -3675,7 +3786,6 @@ const PROBES = {
       journaled: true,
       journaledHash: TRANSFER,
       journalState: 'attempted',
-      journalNonce: 3,
       hashSource: 'journal-readback',
       submissionStatus: 'unknown',
       resendAllowed: false,
@@ -3709,15 +3819,117 @@ const PROBES = {
       target: 'transfer',
       observedHash: TRANSFER,
     });
-    // A journaled attempt that is not the held input's still names its hash
-    // for observe, and fails the report.
-    for (const journaledIntent of [{ tree: 1 }, { nullifier: hash('33') }]) {
-      const other = heldWorld({ mode: 'recover-submit', submit: 'revoked', journaledIntent });
-      expect(await settle(m.RUNNERS['recover-submit'](other.ctx))).toEqual(
-        refused('spend-binding')
+  },
+  // The readback's one new record must be the held operation's exact journal
+  // intent. Anything else is never chained: the spend stays uncertain, never
+  // unsent, observe refuses the report and the journal refuses a resend.
+  'recover-binding': async (m) => {
+    const options = { ...newerScan, previousSha: sha('9c') };
+    const proved = heldState().stored.provedTransaction;
+    const uncertain = {
+      attempted: null,
+      journaled: null,
+      submissionStatus: 'unknown',
+      resendAllowed: false,
+    };
+    // What production returned stays its label; the readback alone decides
+    // the spend, and a returned refusal is never labelled refused here.
+    const unbound = async (world, step, returned = 'unknown') => {
+      const { ctx, journal: state, calls } = world;
+      const error = await settle(m.RUNNERS['recover-submit'](ctx));
+      expect(error).toEqual(step ? refused(step) : expect.any(Error));
+      expect(calls.sign).toBe(1);
+      expect(ctx.stage).toBe('journal-readback');
+      expect(ctx.report.spend).toEqual(uncertain);
+      expect(ctx.report.submission.status).toBe(returned);
+      expect(ctx.report.liveness).toMatchObject({
+        inputHeld: true,
+        state: 'unknown',
+        continuation: 'separately-authorized-recovery',
+      });
+      expect(ctx.chain.transfer).toBeNull();
+      expect(ctx.report.passed).toBe(false);
+      const report = JSON.parse(
+        m.renderReport(
+          journeyReport('recover-submit', {
+            ...copy(ctx.report),
+            passed: false,
+            scan: { sha256: NEWER_SCAN_SHA, anchor: { ...NEW_ANCHOR } },
+            chain: copy(ctx.chain),
+          })
+        )
       );
-      expect(other.ctx.report.spend.journaledHash).toBe(TRANSFER);
-      expect(other.ctx.chain.transfer).toEqual({ hash: TRANSFER });
+      expectRefusal(() => m.assertPredecessor('observe', report, options), 'predecessor');
+      expect(withoutSecrets(report)).toBe(true);
+      const again = heldWorld({ mode: 'recover-submit', records: copy(state.records) });
+      expect(await settle(m.RUNNERS['recover-submit'](again.ctx))).toEqual(
+        refused('journal-unresolved')
+      );
+      expect(again.calls.submit).toEqual([]);
+    };
+    // Another operation, tree, root, nullifier, commitment or intent digest,
+    // or the same calldata from another account or for another chain.
+    for (const journaledIntent of [
+      { operation: 'railgun-token-unshield' },
+      { tree: 1 },
+      { merkleRoot: hash('42') },
+      { nullifier: hash('33') },
+      { commitment: hash('43') },
+      { intentDigest: hash('35') },
+      { digest: journalIntentOf({ ...proved, from: '0x' + 'c1'.repeat(20) }).digest },
+      { digest: journalIntentOf({ ...proved, from: OWNER, chainId: 1 }).digest },
+    ])
+      for (const submit of ['revoked', 'lost'])
+        await unbound(
+          heldWorld({ mode: 'recover-submit', submit, journaledIntent }),
+          'spend-binding'
+        );
+    // An unrelated record beside the held one, ahead of it or after it.
+    for (const at of ['push', 'unshift'])
+      await unbound(
+        heldWorld({
+          mode: 'recover-submit',
+          submit: 'revoked',
+          journaled: (records) =>
+            records[at]({ hash: hash('7d'), nonce: 4, state: 'attempted', route: 'ordinary' }),
+        }),
+        'spend-multiple'
+      );
+    // A returned hash that names another transaction than the journaled one.
+    await unbound(
+      heldWorld({
+        mode: 'recover-submit',
+        journaled: (records) => (records.at(-1).hash = hash('7c')),
+      }),
+      'spend-hash',
+      'acknowledged'
+    );
+    // The readback itself fails: still uncertain, never unsent.
+    const failing = heldWorld({ mode: 'recover-submit', submit: 'revoked' });
+    const read = failing.ctx.readJournal;
+    let reads = 0;
+    failing.ctx.readJournal = async () => {
+      if (++reads === 2) throw Error('journal unavailable ' + NULLIFIER);
+      return read();
+    };
+    await unbound(failing);
+    // The held intent is derived and bound to the hold before any submission.
+    for (const options of [
+      { alter: (state) => (state.entry.facts.intentDigest = hash('35')) },
+      {
+        alter: (state) => {
+          state.entry.facts.nullifier = hash('44');
+          state.stored.capsule.preparation.expected.nullifier = hash('44');
+        },
+      },
+      { intentFails: true },
+    ]) {
+      const { ctx, calls } = heldWorld({ mode: 'recover-submit', ...options });
+      expect(await settle(m.RUNNERS['recover-submit'](ctx))).toEqual(refused('hold-intent'));
+      expect(calls.submit).toEqual([]);
+      expect(calls.network).toEqual([]);
+      expect(ctx.report.spend.submissionStatus).toBe('not-sent');
+      expect(withoutSecrets(ctx.report)).toBe(true);
     }
   },
   // Timings are allow-listed whole milliseconds within the recovery bound.
@@ -4647,8 +4859,8 @@ const MUTATIONS = [
   ],
   [
     'journal readback replaced',
-    'report.spend = classifySpendOutcome({ result, before, after });',
-    'report.spend = classifySpendOutcome({ result, before, after: before });',
+    'after: await ctx.readJournal(), intent });',
+    'after: before, intent });',
     'spend-readback',
   ],
   [
@@ -4689,7 +4901,7 @@ const MUTATIONS = [
   ],
   [
     'diagnostic on a send',
-    "...(status === 'refused' ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),",
+    '...(returnedRefusal ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),',
     '...{ diagnostic: readSubmissionDiagnostic(ctx, result) },',
     'spend-preflight-diagnostic',
   ],
@@ -5171,23 +5383,60 @@ const MUTATIONS = [
     "hashSource: 'result',",
     'recover-native-uncertain',
   ],
+  // The recovered attempt is the held operation's exact journal intent.
   [
-    'journal record nonce dropped',
-    'journalNonce: Number.isSafeInteger(record.nonce) && record.nonce >= 0 ? record.nonce : null,',
-    'journalNonce: null,',
-    'recover-native-uncertain',
+    'recovered attempt unbound to the held intent',
+    "if (intent !== undefined) check(same(record.intent, intent), 'spend-binding');",
+    'void 0;',
+    'recover-binding',
   ],
   [
-    'recovered attempt unbound to the held input',
-    'record.intent.tree === selection.tree &&\n      record.intent.nullifier === preparation.expected.nullifier,',
+    'held intent not passed to the readback',
+    'await recordSubmission(ctx, { result, before, started, reviews, timing, intent });',
+    'await recordSubmission(ctx, { result, before, started, reviews, timing });',
+    'recover-binding',
+  ],
+  [
+    'held intent digest unchecked',
+    "check(intent.intentDigest === held.entry.facts.intentDigest, 'hold-intent');",
+    'void 0;',
+    'recover-binding',
+  ],
+  [
+    'held intent tree and nullifier unchecked',
+    'intent.tree === selection.tree && intent.nullifier === preparation.expected.nullifier,',
     'true,',
+    'recover-binding',
+  ],
+  [
+    'held intent derived without its submitter',
+    'from: held.entry.signing.submitter,',
+    'from: undefined,',
+    'recover-ack',
+  ],
+  [
+    'last journal row selected',
+    'const added = records(after).filter((record) => !known.has(record?.hash));',
+    'const added = records(after).slice(-1);',
+    'recover-binding',
+  ],
+  [
+    'only Railgun records counted for the recovered attempt',
+    'const records = intent === undefined ? transactRecords : journalRecords;',
+    'const records = transactRecords;',
+    'recover-binding',
+  ],
+  [
+    'returned refusal labelled before the readback',
+    "status: typeof result?.hash === 'string' ? 'acknowledged' : 'unknown',",
+    "status: typeof result?.hash === 'string' ? 'acknowledged' : 'refused',",
     'recover-native-uncertain',
   ],
   [
-    'recovered attempt bound before it is chained',
-    '    ctx.chain.transfer = { hash: report.spend.journaledHash };\n    assertRecoveredAttempt(after, report.spend.journaledHash, held);',
-    '    assertRecoveredAttempt(after, report.spend.journaledHash, held);\n    ctx.chain.transfer = { hash: report.spend.journaledHash };',
-    'recover-native-uncertain',
+    'readback-confirmed refusal not labelled',
+    "if (report.spend.journaled === false) report.submission.status = 'refused';",
+    'void 0;',
+    'recover-uncertain',
   ],
   // The recovered submission's timings.
   [
