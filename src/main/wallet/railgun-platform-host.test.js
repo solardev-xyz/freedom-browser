@@ -16,11 +16,11 @@ function load(options = {}) {
   const WorkerMock = options.Worker || jest.fn(() => worker);
   const samples = [{ pid: 1234, memory: { workingSetSize: 512 } }];
   const electron = {
-    app: {
+    app: Object.assign(new EventEmitter(), {
       isReady: jest.fn(() => true),
       getPath: jest.fn(() => '/public-temp'),
       getAppMetrics: jest.fn(() => samples),
-    },
+    }),
     utilityProcess: { fork: jest.fn(() => child) },
     MessageChannelMain: jest.fn(function () {
       this.port1 = {};
@@ -62,6 +62,7 @@ function load(options = {}) {
       Uint8Array,
       ArrayBuffer,
       SharedArrayBuffer,
+      AbortController,
       Number,
       Reflect,
       WeakMap,
@@ -115,6 +116,7 @@ describe('fixed Railgun platform host', () => {
     const m = load();
     const port = m.factory();
     expect(Object.keys(port)).toEqual([
+      'applicationLifetime',
       'spawnUtility',
       'createUtilityChannel',
       'memorySamples',
@@ -125,6 +127,42 @@ describe('fixed Railgun platform host', () => {
     expect(m.imports).toEqual(['path', 'util', 'events', 'worker_threads', 'electron']);
     expect(m.resolver).not.toHaveBeenCalled();
     expect(m.electron.utilityProcess.fork).not.toHaveBeenCalled();
+  });
+  test('captures one application lifetime and never resets it across factories', () => {
+    const m = load(),
+      a = m.factory(),
+      b = m.factory();
+    const signal = a.applicationLifetime();
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+    expect(b.applicationLifetime()).toBe(signal);
+    expect(m.electron.app.listenerCount('before-quit')).toBe(1);
+    const aborted = jest.fn();
+    signal.addEventListener('abort', aborted);
+    m.electron.app.emit('before-quit');
+    expect(signal.aborted).toBe(true);
+    expect(aborted).toHaveBeenCalledTimes(1);
+    expect(m.factory().applicationLifetime()).toBe(signal);
+    expect(m.electron.app.listenerCount('before-quit')).toBe(0);
+    m.electron.app.emit('before-quit');
+    expect(aborted).toHaveBeenCalledTimes(1);
+  });
+  test('application lifetime has no event or callback injection', () => {
+    const m = load(),
+      port = m.factory(),
+      callback = jest.fn();
+    expect(() => port.applicationLifetime('quit', callback)).toThrow(REFUSED);
+    expect(callback).not.toHaveBeenCalled();
+    expect(m.electron.app.eventNames()).toEqual(['before-quit']);
+  });
+  test('captures the original before-quit listener without a mutable app method', () => {
+    const m = load();
+    m.electron.app.once = () => {
+      throw new Error('replacement');
+    };
+    const signal = m.factory().applicationLifetime();
+    m.electron.app.emit('before-quit');
+    expect(signal.aborted).toBe(true);
   });
   test.each([{ type: 'renderer' }, { type: 'utility' }, { mainThread: false }])(
     'refuses the wrong realm before Electron load: %p',

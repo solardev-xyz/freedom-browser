@@ -9,6 +9,9 @@ const { isMainThread, Worker } = require('worker_threads');
 const kill = process.kill;
 const platform = process.platform;
 const on = EventEmitter.prototype.on;
+const once = EventEmitter.prototype.once;
+const Controller = AbortController;
+const abort = AbortController.prototype.abort;
 const typed = Object.getPrototypeOf(Uint8Array.prototype);
 const typedBuffer = Object.getOwnPropertyDescriptor(typed, 'buffer').get;
 const typedLength = Object.getOwnPropertyDescriptor(typed, 'byteLength').get;
@@ -141,8 +144,13 @@ function storageInput(input) {
 function capture() {
   if (!originals) {
     const { app, utilityProcess, MessageChannelMain } = require('electron');
+    const lifetime = new Controller();
+    // Freedom shutdown is one-way. This notification cannot be reset or used to
+    // prevent quit; the package retains original child drainage and release.
+    once.call(app, 'before-quit', () => abort.call(lifetime));
     originals = Object.freeze({
       app,
+      lifetime: lifetime.signal,
       utilityProcess,
       Channel: MessageChannelMain,
       ready: app.isReady,
@@ -163,6 +171,10 @@ function createRailgunPlatformHost(...args) {
     if (!original.ready.call(original.app)) throw fail();
   };
   return Object.freeze({
+    applicationLifetime(...args) {
+      if (args.length) throw fail();
+      return original.lifetime;
+    },
     spawnUtility(input, ...extra) {
       const { entry, heapMb } = record(input, ['entry', 'heapMb']);
       if (extra.length || entry !== 'railgun-utility-v1' || !integer(heapMb, 16, 1024))
