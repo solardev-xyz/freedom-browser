@@ -1,4 +1,6 @@
-/** Sequential offline matrix launcher. No network/funded profile inputs accepted. */
+/** Sequential offline matrix launcher. No network/funded profile inputs accepted.
+ * An optional final argument 'latency' runs the simulated-latency cases of
+ * fixtures/railgun-cold-submission-latency.js instead, each to completion. */
 const fs = require('fs'),
   path = require('path'),
   assert = require('./fixtures/railgun-native-assertions').assert;
@@ -7,8 +9,10 @@ const fixtureChecks = require('./fixtures/railgun-native-assertions');
 const { createHash } = require('crypto');
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 async function main() {
-  const [electron, source, base, engine, prover, artifacts, bytecodes] = process.argv.slice(2);
-  assert.equal(process.argv.length, 9);
+  const [electron, source, base, engine, prover, artifacts, bytecodes, mode] =
+    process.argv.slice(2);
+  assert.ok(process.argv.length === 9 || (process.argv.length === 10 && mode === 'latency'));
+  const latency = mode === 'latency';
   assert.ok([electron, source, base, engine, prover, artifacts, bytecodes].every(path.isAbsolute));
   assert.equal(fs.existsSync(base), false);
   assert.equal(
@@ -17,14 +21,25 @@ async function main() {
   );
   fs.mkdirSync(base, { mode: 0o700 });
   const cases = [];
-  for (const creator of ['Shield', 'Transact'])
-    for (const kind of ['transfer', 'unshield', 'partial'])
-      for (const outcome of ['acknowledged', 'lost-response'])
-        cases.push({ creator, kind, outcome, history: 'advanced-root' });
-  cases.push(
-    { creator: 'Shield', kind: 'transfer', outcome: 'acknowledged', history: 'same-root' },
-    { creator: 'Transact', kind: 'partial', outcome: 'lost-response', history: 'same-root' }
-  );
+  if (latency)
+    for (const name of Object.keys(require('./fixtures/railgun-cold-submission-latency').CASES))
+      cases.push({
+        creator: 'Shield',
+        kind: 'transfer',
+        outcome: 'acknowledged',
+        history: 'advanced-root',
+        latency: name,
+      });
+  else {
+    for (const creator of ['Shield', 'Transact'])
+      for (const kind of ['transfer', 'unshield', 'partial'])
+        for (const outcome of ['acknowledged', 'lost-response'])
+          cases.push({ creator, kind, outcome, history: 'advanced-root' });
+    cases.push(
+      { creator: 'Shield', kind: 'transfer', outcome: 'acknowledged', history: 'same-root' },
+      { creator: 'Transact', kind: 'partial', outcome: 'lost-response', history: 'same-root' }
+    );
+  }
   const launches = [],
     compatibility = [];
   const run = (script, args, log) =>
@@ -75,61 +90,75 @@ async function main() {
     });
   try {
     for (const item of cases) {
-      const name = [item.creator.toLowerCase(), item.kind, item.outcome, item.history].join('-'),
+      const name = item.latency
+          ? 'latency-' + item.latency
+          : [item.creator.toLowerCase(), item.kind, item.outcome, item.history].join('-'),
         directory = path.join(base, name);
-      const common = [
-        source,
-        directory,
-        engine,
-        prover,
-        artifacts,
-        bytecodes,
-        item.creator,
-        item.kind,
-      ];
-      const setup = await run(
-        'qualify-railgun-proof-recovery.js',
-        [...common, 'setup', item.history, 'submission-handoff'],
-        path.join(base, name + '-setup.log')
-      );
-      const recover = await run(
-        'qualify-railgun-proof-recovery.js',
-        [...common, 'resume', item.history, 'submission-handoff'],
-        path.join(base, name + '-recover.log')
-      );
-      const submit = await run(
-        'qualify-railgun-cold-submission.js',
-        [...common, item.outcome],
-        path.join(base, name + '-submit.log')
-      );
-      fixtureChecks.assertEmpty();
-      assert.equal(new Set([setup.pid, recover.pid, submit.pid]).size, 3);
-      const handoff = JSON.parse(
-        fs.readFileSync(path.join(directory, 'cold-submission-handoff.json'), 'utf8')
-      );
-      assert.equal(handoff.setupPID, setup.pid);
-      assert.equal(handoff.recoveryPID, recover.pid);
-      const report = JSON.parse(
-        fs.readFileSync(
-          path.join(directory, 'cold-submission-' + item.outcome + '-report.json'),
-          'utf8'
-        )
-      );
-      assert.equal(report.submissionPID, submit.pid);
-      assert.equal(report.runID, handoff.runID);
-      item.evidence = Object.fromEntries(
-        [
-          'restart-handoff.json',
-          'resume-report.json',
-          'cold-submission-handoff.json',
-          'cold-submission-' + item.outcome + '-report.json',
-        ].map((file) => [file, sha(fs.readFileSync(path.join(directory, file)))])
-      );
+      const reportName = item.latency
+        ? 'cold-submission-latency-' + item.latency + '-report.json'
+        : 'cold-submission-' + item.outcome + '-report.json';
+      // A latency case that fails keeps its profile, logs and any report; the
+      // next case still runs. Nothing is retried.
+      try {
+        const common = [
+          source,
+          directory,
+          engine,
+          prover,
+          artifacts,
+          bytecodes,
+          item.creator,
+          item.kind,
+        ];
+        const setup = await run(
+          'qualify-railgun-proof-recovery.js',
+          [...common, 'setup', item.history, 'submission-handoff'],
+          path.join(base, name + '-setup.log')
+        );
+        const recover = await run(
+          'qualify-railgun-proof-recovery.js',
+          [...common, 'resume', item.history, 'submission-handoff'],
+          path.join(base, name + '-recover.log')
+        );
+        const submit = await run(
+          'qualify-railgun-cold-submission.js',
+          [...common, item.outcome, ...(item.latency ? [item.latency] : [])],
+          path.join(base, name + '-submit.log')
+        );
+        fixtureChecks.assertEmpty();
+        assert.equal(new Set([setup.pid, recover.pid, submit.pid]).size, 3);
+        const handoff = JSON.parse(
+          fs.readFileSync(path.join(directory, 'cold-submission-handoff.json'), 'utf8')
+        );
+        assert.equal(handoff.setupPID, setup.pid);
+        assert.equal(handoff.recoveryPID, recover.pid);
+        const report = JSON.parse(fs.readFileSync(path.join(directory, reportName), 'utf8'));
+        assert.equal(report.submissionPID, submit.pid);
+        assert.equal(report.runID, handoff.runID);
+        item.evidence = Object.fromEntries(
+          [
+            'restart-handoff.json',
+            'resume-report.json',
+            'cold-submission-handoff.json',
+            reportName,
+          ].map((file) => [file, sha(fs.readFileSync(path.join(directory, file)))])
+        );
+      } catch (error) {
+        if (!item.latency) throw error;
+        item.failed = error.message;
+        item.preserved = Object.fromEntries(
+          ['restart-handoff.json', 'resume-report.json', 'cold-submission-handoff.json', reportName]
+            .filter((file) => fs.existsSync(path.join(directory, file)))
+            .map((file) => [file, sha(fs.readFileSync(path.join(directory, file)))])
+        );
+      }
     }
-    for (const [creator, kind] of [
-      ['Shield', 'partial'],
-      ['Transact', 'transfer'],
-    ]) {
+    for (const [creator, kind] of latency
+      ? []
+      : [
+          ['Shield', 'partial'],
+          ['Transact', 'transfer'],
+        ]) {
       const directory = path.join(base, 'default-warm-' + creator.toLowerCase() + '-' + kind);
       await run(
         'qualify-railgun-proof-recovery.js',
@@ -151,11 +180,14 @@ async function main() {
       path.join(base, 'launcher-report.json'),
       JSON.stringify(
         {
-          schema: 'railgun-cold-submission-launcher-v1',
+          schema: latency
+            ? 'railgun-cold-submission-latency-launcher-v1'
+            : 'railgun-cold-submission-launcher-v1',
           cases,
           launches,
           compatibility,
-          allCasesCompleted: cases.every((item) => item.evidence) && compatibility.length === 2,
+          allCasesCompleted:
+            cases.every((item) => item.evidence) && compatibility.length === (latency ? 0 : 2),
           fixtureViolations: fixtureChecks.report(),
         },
         null,
@@ -164,6 +196,7 @@ async function main() {
       { flag: 'wx', mode: 0o600 }
     );
   }
+  if (cases.some((item) => item.failed)) process.exitCode = 1;
 }
 main().catch((error) => {
   console.error(error.stack);

@@ -1,10 +1,24 @@
 /** Transport/signing observers only; never issues completion or submission authority. */
 const fixtureChecks = require('./railgun-native-assertions');
 const assert = fixtureChecks.assert;
-const { Transaction } = require('ethers');
-exports.install = function install({ testCase, endpoint }) {
+const { Transaction, toBeHex } = require('ethers');
+// Opt-in synthetic EOA history: earlier ordinary sends, resolved at these
+// blocks, which the journal's history refresh re-reads before each send.
+const HEAD = 11834600;
+const historyBlockHash = (n) => toBeHex(BigInt(n) * 7919n + 1n, 32);
+const syntheticHistory = (resolved) =>
+  Array.from({ length: resolved }, (_, n) => ({
+    hash: '0x' + (n + 1).toString(16).padStart(64, 'a'),
+    nonce: n,
+    blockNumber: HEAD - 40 + n,
+    blockHash: historyBlockHash(HEAD - 40 + n),
+    confirmations: 41 - n,
+  }));
+exports.install = function install({ testCase, endpoint, resolved = 0 }) {
   assert.ok(['acknowledged', 'lost-response'].includes(testCase));
   assert.equal(endpoint, 'https://synthetic.invalid/railgun-partial-controller');
+  assert.ok(Number.isSafeInteger(resolved) && resolved >= 0 && resolved <= 8);
+  const history = syntheticHistory(resolved);
   const transport = require('../../src/main/networks/wallet-tor-transport');
   const signers = require('../../src/main/wallet/signers');
   const { getPrivacyContext } = require('../../src/main/networks/privacy-context');
@@ -123,7 +137,21 @@ exports.install = function install({ testCase, endpoint }) {
             assert.equal(wire.params.length, 2);
             assert.equal(wire.params[0].toLowerCase(), expected.owner);
             assert.ok(['pending', 'latest'].includes(wire.params[1]));
-            result = '0x0';
+            result = '0x' + resolved.toString(16);
+          } else if (resolved && wire.method === 'eth_blockNumber') {
+            assert.deepEqual(wire.params, []);
+            result = '0x' + HEAD.toString(16);
+          } else if (resolved && wire.method === 'eth_getBlockByNumber') {
+            assert.equal(wire.params.length, 2);
+            assert.equal(wire.params[1], false);
+            const number = Number(BigInt(wire.params[0]));
+            assert.ok(history.some((entry) => entry.blockNumber === number));
+            result = {
+              number: wire.params[0],
+              hash: historyBlockHash(number),
+              parentHash: historyBlockHash(number - 1),
+              timestamp: '0x6500',
+            };
           } else if (wire.method === 'eth_gasPrice') {
             assert.deepEqual(wire.params, []);
             result = '0x64';
@@ -153,8 +181,13 @@ exports.install = function install({ testCase, endpoint }) {
               );
             const records = await journal.list();
             currency();
-            assert.equal(records.length, 1);
-            const record = records[0];
+            assert.equal(records.length, resolved + 1);
+            for (const [index, prior] of records.slice(0, -1).entries()) {
+              assert.equal(prior.hash, history[index].hash);
+              assert.equal(prior.intent, undefined);
+              assert.equal(prior.resolution.blockHash, history[index].blockHash);
+            }
+            const record = records.at(-1);
             assert.equal(record.state, 'attempted');
             assert.equal(record.hash, signed.hash.toLowerCase());
             assert.deepEqual(
@@ -201,6 +234,8 @@ exports.install = function install({ testCase, endpoint }) {
       assert.equal(BigInt(transaction.chainId), 11155111n);
       expected = JSON.parse(JSON.stringify({ owner, transaction }));
     },
+    // The synthetic resolved sends a qualifier seeds through the real journal.
+    history: () => history.map((entry) => ({ ...entry })),
     report() {
       return {
         ...counts,

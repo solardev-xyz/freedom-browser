@@ -1,4 +1,6 @@
-/** Offline third-process original-proof submission with synthetic external services. */
+/** Offline third-process original-proof submission with synthetic external services.
+ * An optional tenth argument names a case of fixtures/railgun-cold-submission-latency.js:
+ * the same submission under simulated per-destination latency (never live or Tor). */
 const { app } = require('electron');
 const fs = require('fs'),
   path = require('path'),
@@ -50,7 +52,7 @@ function snapshot(directory) {
 }
 async function main() {
   const args = process.argv.slice(2);
-  assert.equal(args.length, 9);
+  assert.ok(args.length === 9 || args.length === 10);
   const [
     sourceFilename,
     directory,
@@ -61,11 +63,23 @@ async function main() {
     inputCreator,
     kind,
     testCase,
+    latencyName,
   ] = args;
   assert.ok(args.slice(0, 6).every(path.isAbsolute));
   assert.ok(['Shield', 'Transact'].includes(inputCreator));
   assert.ok(['transfer', 'unshield', 'partial'].includes(kind));
   assert.ok(['acknowledged', 'lost-response'].includes(testCase));
+  // Latency cases model the boundary suite's Shield private transfer only.
+  const latencyCase =
+    latencyName === undefined
+      ? null
+      : require('./fixtures/railgun-cold-submission-latency').CASES[latencyName];
+  if (latencyName !== undefined) {
+    assert.ok(latencyCase);
+    assert.equal(inputCreator, 'Shield');
+    assert.equal(kind, 'transfer');
+    assert.equal(testCase, 'acknowledged');
+  }
   assert.equal(fs.realpathSync(directory), directory);
   assert.equal(fs.lstatSync(directory).isSymbolicLink(), false);
   const handoff = readJson(path.join(directory, 'cold-submission-handoff.json'));
@@ -158,7 +172,13 @@ async function main() {
     inputCreator,
     handoff.historyMode
   );
-  const reportFile = path.join(directory, 'cold-submission-' + testCase + '-report.json');
+  const reportFile = path.join(
+    directory,
+    latencyCase
+      ? 'cold-submission-latency-' + latencyName + '-report.json'
+      : 'cold-submission-' + testCase + '-report.json'
+  );
+  if (latencyCase) assert.equal(handoff.historyMode, 'advanced-root');
   assert.equal(fs.existsSync(reportFile), false);
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
     env: { FREEDOM_TEST_USER_DATA: path.join(directory, 'profile') },
@@ -184,6 +204,70 @@ async function main() {
   ];
   const storageWrites = [];
   let authenticatedPublicCheckpoint, journalFilename, txidJournalFilename, authenticatedJournal;
+  // Latency mode only: every EOA journal write is one step of seeding the
+  // synthetic resolved history, a history-refresh observation of it, the
+  // attempt's begin or its acknowledgement. Anything else fails the run.
+  const latencyJournalChange = (before, after) => {
+    const history = eoa.history();
+    const seeded = (record) => history.find((entry) => entry.hash === record.hash);
+    const facts = ({ observation: _observation, revision: _revision, ...rest }) => rest;
+    if (after.length === before.length + 1) {
+      assert.deepEqual(after.slice(0, -1), before);
+      const added = after.at(-1);
+      if (phase === 'journal-seed') {
+        assert.equal(added.nonce, seeded(added).nonce);
+        assert.deepEqual(Object.keys(added).sort(), ['attemptedAt', 'hash', 'nonce', 'state']);
+        assert.equal(added.state, 'attempted');
+        return 'seed-begin';
+      }
+      assert.equal(phase, 'cold-submit');
+      assert.equal(seeded(added), undefined);
+      assert.deepEqual(Object.keys(added).sort(), [
+        'attemptedAt',
+        'hash',
+        'intent',
+        'nonce',
+        'state',
+      ]);
+      assert.equal(added.intent.kind, 'railgun-transact');
+      assert.equal(added.state, 'attempted');
+      assert.equal(added.nonce, history.length);
+      return 'begin';
+    }
+    assert.equal(after.length, before.length);
+    const changed = after
+      .map((_record, index) => index)
+      .filter((index) => JSON.stringify(after[index]) !== JSON.stringify(before[index]));
+    assert.equal(changed.length, 1);
+    const prior = before[changed[0]],
+      next = after[changed[0]];
+    if (seeded(next)) {
+      assert.equal(next.revision, (prior.revision || 0) + 1);
+      if (phase === 'journal-seed') {
+        if (!prior.observation) {
+          assert.deepEqual(facts(next), facts(prior));
+          assert.equal(next.observation.status, 'included');
+          return 'seed-observe';
+        }
+        assert.ok(!prior.resolution && next.resolution);
+        assert.deepEqual(next.observation, prior.observation);
+        return 'seed-resolve';
+      }
+      // The refresh re-reads the same block: only its confirmations and
+      // observation time change, and the resolution stands.
+      assert.equal(phase, 'cold-submit');
+      assert.deepEqual(facts(next), facts(prior));
+      const { confirmations: _a, observedAt: _b, ...priorBlock } = prior.observation;
+      const { confirmations: _c, observedAt: _d, ...nextBlock } = next.observation;
+      assert.deepEqual(nextBlock, priorBlock);
+      return 'refresh-observe';
+    }
+    assert.equal(phase, 'cold-submit');
+    assert.equal(prior.intent.kind, 'railgun-transact');
+    assert.equal(prior.state, 'attempted');
+    assert.deepEqual(next, { ...prior, state: 'submitted' });
+    return 'submitted';
+  };
   storage.createPrivacyStorage = (options) => {
     const genuine = originalStorage(options),
       filename = storage.getPrivacyStoragePath(options.handle, options.directory);
@@ -264,6 +348,26 @@ async function main() {
       );
       journalFilename ??= filename;
       assert.equal(filename, journalFilename);
+      if (latencyCase) {
+        assert.ok(['journal-seed', 'cold-submit'].includes(phase));
+        assert.notEqual(previous, null);
+        const old = JSON.parse(previous),
+          value = JSON.parse(next);
+        assert.deepEqual(old, authenticatedJournal);
+        assert.deepEqual(Object.keys(value).sort(), ['archive', 'records', 'version']);
+        assert.equal(value.version, 4);
+        assert.deepEqual(value.archive, []);
+        const change = latencyJournalChange(old.records, value.records);
+        authenticatedJournal = structuredClone(value);
+        return {
+          phase,
+          filename,
+          record: name,
+          previousPresent: true,
+          recordCount: value.records.length,
+          change,
+        };
+      }
       assert.equal(phase, 'cold-submit');
       assert.notEqual(previous, null);
       const old = JSON.parse(previous),
@@ -365,6 +469,7 @@ async function main() {
   runtime.startRailgunProcess = (options) => {
     const job = path.basename(options.filename),
       launched = phase,
+      launchedAt = performance.now(),
       broker = options.broker;
     jobs[job] = (jobs[job] || 0) + 1;
     assert.ok(
@@ -405,6 +510,9 @@ async function main() {
                   keys[message.purpose] = (keys[message.purpose] || 0) + 1;
                   assert.notEqual(message.purpose, 'spending-sign');
                 }
+                // Latency mode: a simulated membership duration (no-op unless armed).
+                if (latency && job === 'railgun-poi-job.js' && message.method === 'result')
+                  await latency.holdMembership(launchedAt, broker.signal);
                 const reply = await broker.dispatch(wire);
                 if (message.method === 'key') {
                   assert.ok(reply instanceof Uint8Array && reply.length === 32);
@@ -449,7 +557,11 @@ async function main() {
   const eoa = require('./fixtures/railgun-cold-submission-eoa').install({
     testCase,
     endpoint: 'https://synthetic.invalid/railgun-partial-controller',
+    ...(latencyCase ? { resolved: latencyCase.resolved } : {}),
   });
+  const latency = latencyCase
+    ? require('./fixtures/railgun-cold-submission-latency').install({ name: latencyName })
+    : null;
   const vault = require('../src/main/identity/vault');
   let identity, enrollment, publicAccount, reservations, capsules, immutableOriginal;
   const metrics = () => ({
@@ -550,7 +662,7 @@ async function main() {
     assert.equal(sha(fs.readFileSync(metadata)), handoff.metadataSha256);
     const markerBefore = readJson(marker),
       eoaDirectory = path.join(profile.userDataDir, 'wallet-private-submissions');
-    const journalBaseline = snapshot(eoaDirectory);
+    let journalBaseline = snapshot(eoaDirectory);
     const journalNames = Object.keys(journalBaseline);
     assert.equal(journalNames.length, 1);
     assert.match(journalNames[0], /^[0-9a-f]{64}\.json$/);
@@ -586,9 +698,62 @@ async function main() {
     const assertOriginalJournalBytes = () => {
       assert.deepEqual(snapshot(eoaDirectory), journalBaseline);
       assert.equal(sha(fs.readFileSync(marker)), handoff.inventoryHash);
-      assert.equal(storageWrites.filter((write) => write.record === 'submissions-v1').length, 0);
+      assert.equal(
+        storageWrites.filter(
+          (write) => write.record === 'submissions-v1' && write.phase !== 'journal-seed'
+        ).length,
+        0
+      );
     };
     assertOriginalJournalBytes();
+    if (latencyCase?.resolved) {
+      // Earlier ordinary sends, resolved, through the production journal API,
+      // so every history refresh before the send re-reads their blocks.
+      phase = 'journal-seed';
+      const seedScope = createPrivacyScope({
+        profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
+        signal: vault.getSessionSignal(),
+      });
+      try {
+        const journal =
+          require('../src/main/wallet/private-submission-journal').getPrivateSubmissionJournal(
+            seedScope.getContext({
+              kind: 'public-address',
+              principal: handoff.submissionBackend.submitter,
+              chainId: 11155111,
+              role: 'transaction-rpc',
+            })
+          );
+        for (const entry of eoa.history()) {
+          await journal.begin(entry.hash, entry.nonce);
+          const observed = await journal.observe(
+            entry.hash,
+            {
+              status: 'included',
+              blockNumber: entry.blockNumber,
+              blockHash: entry.blockHash,
+              confirmations: entry.confirmations,
+              observedAt: Date.now(),
+              trust: 'unverified',
+            },
+            0
+          );
+          await journal.resolve(entry.hash, observed.revision, 1);
+        }
+        const seeded = await journal.readSnapshot();
+        assert.equal(seeded.records.length, latencyCase.resolved);
+        assert.ok(seeded.records.every((record) => record.resolution && !record.intent));
+        assert.deepEqual(seeded.archive, []);
+      } finally {
+        seedScope.close();
+      }
+      assert.deepEqual(
+        storageWrites.filter((write) => write.record === 'submissions-v1').map((w) => w.change),
+        eoa.history().flatMap(() => ['seed-begin', 'seed-observe', 'seed-resolve'])
+      );
+      journalBaseline = snapshot(eoaDirectory);
+      assertOriginalJournalBytes();
+    }
     phase = 'backend-fixture';
     const backendBefore = metrics();
     if (inputCreator === 'Transact') await services.initializeTxid({ archive, enrollment });
@@ -753,6 +918,7 @@ async function main() {
     };
     const negatives = [];
     if (
+      !latencyCase &&
       testCase === 'acknowledged' &&
       handoff.historyMode === 'advanced-root' &&
       ((inputCreator === 'Shield' && kind === 'transfer') ||
@@ -896,7 +1062,9 @@ async function main() {
     const before = metrics();
     let disclosureReviews = 0,
       transactionReviews = 0,
-      reviewTiming;
+      reviewTiming,
+      reviewWindow;
+    latency?.arm();
     const result = await invoke({
       ...common,
       reviewDisclosures: async (summary, lifetime) => {
@@ -906,7 +1074,7 @@ async function main() {
       },
       reviewTransaction: async (request) => {
         transactionReviews++;
-        reviewTiming = observeFinalReview(before, 'healthy');
+        reviewTiming = observeFinalReview(before, latency ? 'latency-' + latencyName : 'healthy');
         const observed = eoa.report();
         assert.equal(
           observed.methods.eth_estimateGas,
@@ -916,22 +1084,29 @@ async function main() {
         assert.equal(observed.signatureAttempts, 0);
         assert.equal(observed.sends, 0);
         assert.equal(request.transaction.data, original.stored.provedTransaction.data);
+        if (latency) {
+          // A simulated person approves after a delay or just before the
+          // shown deadline H. No production deadline is read back or extended.
+          reviewWindow = {
+            shownAt: performance.now(),
+            shownWindowMs: request.expiresAt - Date.now(),
+          };
+          const { approve } = latencyCase;
+          const waitMs = Object.hasOwn(approve, 'afterMs')
+            ? approve.afterMs
+            : request.expiresAt - Date.now() - approve.beforeMs;
+          await new Promise((resolve) => setTimeout(resolve, Math.max(0, waitMs)));
+          reviewWindow.approvedAt = performance.now();
+          reviewWindow.approvedBeforeShownDeadlineMs = request.expiresAt - Date.now();
+        }
         return true;
       },
     });
+    const resultAt = performance.now();
+    latency?.disarm();
     const after = metrics();
     assertPipeline(after, before, 'healthy');
     assert.equal(disclosureReviews, 1);
-    assert.equal(transactionReviews, 1);
-    assert.equal(after.eoa.signatures, 1);
-    assert.equal(after.eoa.sends, 1);
-    assert.equal(after.eoa.journalBeforeSend, 1);
-    assert.equal(after.eoa.unexpectedFailures, 0);
-    assert.equal(after.eoa.controlledLostReplies, testCase === 'lost-response' ? 1 : 0);
-    if (testCase === 'lost-response') {
-      assert.equal(result.submissionStatus, 'unknown');
-      assert.equal(result.transactionHash, after.eoa.transactionHash);
-    } else assert.equal(result.hash, after.eoa.transactionHash);
     assert.deepEqual(await inspect(), original);
     assert.equal(
       (after.jobs['railgun-wallet-job.js'] || 0) - (before.jobs['railgun-wallet-job.js'] || 0),
@@ -985,43 +1160,201 @@ async function main() {
     }
     assert.ok(after.services.poiRequests > before.services.poiRequests);
     assert.ok(after.services.signatureChecks > before.services.signatureChecks);
-    assert.equal(
-      after.services.selectedNullifierQueries - before.services.selectedNullifierQueries,
-      1
-    );
-    assert.deepEqual(
-      after.services.verificationKeyVariants.slice(before.services.verificationKeyVariants.length),
-      [kind === 'partial' ? '01x02' : '01x01']
-    );
+    let latencyOutcome = null;
+    if (!latency) {
+      assert.equal(transactionReviews, 1);
+      assert.equal(after.eoa.signatures, 1);
+      assert.equal(after.eoa.sends, 1);
+      assert.equal(after.eoa.journalBeforeSend, 1);
+      assert.equal(after.eoa.unexpectedFailures, 0);
+      assert.equal(after.eoa.controlledLostReplies, testCase === 'lost-response' ? 1 : 0);
+      if (testCase === 'lost-response') {
+        assert.equal(result.submissionStatus, 'unknown');
+        assert.equal(result.transactionHash, after.eoa.transactionHash);
+      } else assert.equal(result.hash, after.eoa.transactionHash);
+      assert.equal(
+        after.services.selectedNullifierQueries - before.services.selectedNullifierQueries,
+        1
+      );
+      assert.deepEqual(
+        after.services.verificationKeyVariants.slice(
+          before.services.verificationKeyVariants.length
+        ),
+        [kind === 'partial' ? '01x02' : '01x01']
+      );
+    } else {
+      // Classified as the boundary suite does: an acknowledged hash, else a
+      // durable attempt, else the first disclosure class never issued. The
+      // inventory is the wallet side: an issued request may have left even
+      // if it was aborted before the synthetic service saw it.
+      const inventory = latency.inventory();
+      const issued = (name) => inventory.filter((entry) => entry.disclosure === name);
+      const attempts = authenticatedJournal.records.filter(
+        (record) => record.intent?.kind === 'railgun-transact'
+      );
+      const order = [
+        ['poi-selected-commitment', 'poi'],
+        ['selected-nullifier', 'nullifier'],
+        ['proved-calldata', 'calldata'],
+        ['signed-transaction', 'send'],
+      ];
+      const withheld = order.findIndex(([name]) => issued(name).length === 0);
+      const outcome = result.hash
+        ? 'acknowledged'
+        : attempts.length
+          ? 'journaled-uncertain'
+          : 'refused-before-disclosure-' + (withheld < 0 ? 'none' : order[withheld][1]);
+      const eoaDelta = {
+        transactionEntries: after.eoa.transactionEntries - before.eoa.transactionEntries,
+        signatures: after.eoa.signatures - before.eoa.signatures,
+        sends: after.eoa.sends - before.eoa.sends,
+        journalBeforeSend: after.eoa.journalBeforeSend - before.eoa.journalBeforeSend,
+      };
+      const delivered = (entries) => entries.filter((entry) => entry.delivered !== undefined);
+      // The inner synthetic services agree with the wallet-side inventory.
+      assert.equal(
+        after.services.selectedNullifierQueries - before.services.selectedNullifierQueries,
+        delivered(issued('selected-nullifier')).length
+      );
+      assert.equal(
+        eoaDelta.transactionEntries,
+        delivered(inventory.filter((entry) => entry.destination === 'transaction-rpc')).length
+      );
+      assert.equal(eoaDelta.sends, delivered(issued('signed-transaction')).length);
+      assert.equal(after.eoa.unexpectedFailures, 0);
+      assert.equal(after.eoa.controlledLostReplies, 0);
+      if (outcome === 'acknowledged') {
+        assert.equal(transactionReviews, 1);
+        assert.equal(result.hash, after.eoa.transactionHash);
+        assert.deepEqual(eoaDelta, {
+          transactionEntries: eoaDelta.transactionEntries,
+          signatures: 1,
+          sends: 1,
+          journalBeforeSend: 1,
+        });
+        assert.equal(attempts.length, 1);
+        assert.equal(attempts[0].state, 'submitted');
+        assert.equal(attempts[0].hash, result.hash);
+      } else if (outcome === 'journaled-uncertain') {
+        assert.equal(transactionReviews, 1);
+        assert.equal(eoaDelta.signatures, 1);
+        assert.equal(attempts.length, 1);
+        assert.equal(attempts[0].state, 'attempted');
+        assert.equal(issued('signed-transaction').length, 1);
+        if (eoaDelta.sends) assert.equal(attempts[0].hash, after.eoa.transactionHash);
+      } else {
+        // Nothing at or after the refusal point was issued, and the hold
+        // and EOA journal are untouched.
+        assert.ok(withheld >= 0);
+        for (const [name] of order.slice(withheld)) assert.deepEqual(issued(name), []);
+        // Only a refusal after the calldata simulation can have signed.
+        if (order[withheld][1] !== 'send') assert.equal(eoaDelta.signatures, 0);
+        assert.equal(eoaDelta.sends, 0);
+        assert.equal(attempts.length, 0);
+        assertOriginalJournalBytes();
+      }
+      const diagnostic =
+        require('../src/main/wallet/railgun-private-submission').getRailgunPrivateSubmissionDiagnostic(
+          result
+        );
+      const { expected } = latencyCase;
+      const nodeAccepted = eoaDelta.sends === 1;
+      const relative = (at) =>
+        at === undefined ? null : Math.round((at - latency.report().armedAt) * 1000) / 1000;
+      const event = (type, job) =>
+        hostEvents.find((value) => value.type === type && value.job === job)?.at;
+      const holds = latency.report().membershipHolds;
+      const poiRequests = issued('poi-selected-commitment');
+      const send = issued('signed-transaction')[0];
+      latencyOutcome = {
+        expected,
+        outcome,
+        result: JSON.parse(JSON.stringify(result)),
+        diagnostic,
+        nodeAccepted,
+        eoaDelta,
+        matchesExpectation:
+          outcome === expected.outcome &&
+          (expected.diagnostic === undefined ||
+            require('util').isDeepStrictEqual({ ...diagnostic }, expected.diagnostic)) &&
+          (expected.nodeAccepted === undefined || nodeAccepted === expected.nodeAccepted),
+        disclosedBeforeOutcome: Object.fromEntries(
+          order.map(([name, label]) => [label, issued(name).length])
+        ),
+        preflightReadsIssued: inventory
+          .filter((entry) => entry.operation === 'private-preflight')
+          .map((entry) => entry.name),
+        deploymentReadsIssued: inventory.filter((entry) => entry.operation === 'shield-preflight')
+          .length,
+        transactionRpcIssued: inventory
+          .filter((entry) => entry.destination === 'transaction-rpc')
+          .map((entry) => entry.name),
+        // Milliseconds since arming, on the qualifier's monotonic clock.
+        timeline: {
+          verifierStart: relative(event('child-start', 'railgun-private-verify-job.js')),
+          verifierExitObserved: relative(event('child-exit', 'railgun-private-verify-job.js')),
+          poiFirstRequest: poiRequests[0]?.at ?? null,
+          poiSourceEnd: poiRequests.at(-1)?.end ?? null,
+          membershipJobStart: holds[0]?.jobStarted ?? null,
+          membershipReleased: holds[0]?.releasedAt ?? null,
+          membershipJobExitObserved: relative(event('child-exit', 'railgun-poi-job.js')),
+          nullifierIssued: issued('selected-nullifier')[0]?.at ?? null,
+          firstCalldataIssued: issued('proved-calldata')[0]?.at ?? null,
+          reviewShown: relative(reviewWindow?.shownAt),
+          shownWindowMs: reviewWindow?.shownWindowMs ?? null,
+          approved: relative(reviewWindow?.approvedAt),
+          approvedBeforeShownDeadlineMs: reviewWindow?.approvedBeforeShownDeadlineMs ?? null,
+          sendIssued: send?.at ?? null,
+          sendDelivered: send?.delivered ?? null,
+          sendEnd: send?.end ?? null,
+          sendOutcome: send?.outcome ?? null,
+          result: relative(resultAt),
+        },
+        poiPhaseMeasuredMs:
+          poiRequests.length && event('child-exit', 'railgun-poi-job.js') !== undefined
+            ? relative(event('child-exit', 'railgun-poi-job.js')) - poiRequests[0].at
+            : null,
+        conservativeEvidenceEndApproxMs:
+          event('child-start', 'railgun-private-verify-job.js') === undefined
+            ? null
+            : relative(event('child-start', 'railgun-private-verify-job.js')) + 60000,
+      };
+    }
+    const sent = !latencyOutcome || !latencyOutcome.outcome.startsWith('refused-');
     const journalAfterSend = snapshot(eoaDirectory);
     const journalWriteCountAfterSend = storageWrites.filter(
       (write) => write.record === 'submissions-v1'
     ).length;
-    phase = 'no-retry';
-    const beforeRetry = metrics();
-    const duplicate = await invoke({
-      ...common,
-      reviewDisclosures: async () => {
-        throw Error('Duplicate reached disclosure');
-      },
-      reviewTransaction: async () => {
-        throw Error('Duplicate reached EOA review');
-      },
-    });
-    assert.deepEqual(duplicate, { status: 'recovery-required', stage: 'prior-attempt' });
-    const afterRetry = metrics();
-    assert.deepEqual(afterRetry.jobs, beforeRetry.jobs);
-    assert.deepEqual(afterRetry.keys, beforeRetry.keys);
-    assert.equal(afterRetry.eoa.entries, beforeRetry.eoa.entries);
-    assert.equal(afterRetry.services.transportEntries, beforeRetry.services.transportEntries);
-    assert.equal(afterRetry.eoa.signatures, beforeRetry.eoa.signatures);
-    assert.equal(afterRetry.eoa.sends, beforeRetry.eoa.sends);
-    assert.deepEqual(snapshot(eoaDirectory), journalAfterSend);
-    assert.equal(
-      storageWrites.filter((write) => write.record === 'submissions-v1').length,
-      journalWriteCountAfterSend
-    );
-    assert.deepEqual(await inspect(), original);
+    let beforeRetry = null,
+      afterRetry = null,
+      duplicate = null;
+    if (sent) {
+      phase = 'no-retry';
+      beforeRetry = metrics();
+      duplicate = await invoke({
+        ...common,
+        reviewDisclosures: async () => {
+          throw Error('Duplicate reached disclosure');
+        },
+        reviewTransaction: async () => {
+          throw Error('Duplicate reached EOA review');
+        },
+      });
+      assert.deepEqual(duplicate, { status: 'recovery-required', stage: 'prior-attempt' });
+      afterRetry = metrics();
+      assert.deepEqual(afterRetry.jobs, beforeRetry.jobs);
+      assert.deepEqual(afterRetry.keys, beforeRetry.keys);
+      assert.equal(afterRetry.eoa.entries, beforeRetry.eoa.entries);
+      assert.equal(afterRetry.services.transportEntries, beforeRetry.services.transportEntries);
+      assert.equal(afterRetry.eoa.signatures, beforeRetry.eoa.signatures);
+      assert.equal(afterRetry.eoa.sends, beforeRetry.eoa.sends);
+      assert.deepEqual(snapshot(eoaDirectory), journalAfterSend);
+      assert.equal(
+        storageWrites.filter((write) => write.record === 'submissions-v1').length,
+        journalWriteCountAfterSend
+      );
+      assert.deepEqual(await inspect(), original);
+    }
     const assertFinalAccountBytes = () => {
       const currentFiles = snapshot(accountBase);
       assert.deepEqual(Object.keys(currentFiles), Object.keys(coldFiles));
@@ -1039,19 +1372,39 @@ async function main() {
     const journalRelative = path.relative(profile.userDataDir, journalFilename);
     const journalFiles = snapshot(eoaDirectory);
     assert.deepEqual(Object.keys(journalFiles), [path.basename(journalFilename)]);
-    assert.notEqual(
+    (sent ? assert.notEqual : assert.equal)(
       journalFiles[path.basename(journalFilename)],
       journalBaseline[path.basename(journalFilename)]
     );
     assert.deepEqual(readJson(marker), markerBefore);
     assert.equal(sha(fs.readFileSync(marker)), handoff.inventoryHash);
     const journalWrites = storageWrites.filter((write) => write.record === 'submissions-v1');
-    assert.equal(journalWrites.length, testCase === 'acknowledged' ? 2 : 1);
-    assert.equal(authenticatedJournal.records[0].hash, after.eoa.transactionHash);
-    assert.equal(
-      authenticatedJournal.records[0].state,
-      testCase === 'acknowledged' ? 'submitted' : 'attempted'
-    );
+    if (latency) {
+      // Seeding, then only history refreshes, one begin and its acknowledgement.
+      const changes = journalWrites
+        .filter((write) => write.phase === 'cold-submit')
+        .map((write) => write.change);
+      assert.ok(
+        changes.every(
+          (change) => change === 'refresh-observe' || change === 'begin' || change === 'submitted'
+        )
+      );
+      assert.equal(changes.filter((change) => change === 'begin').length, sent ? 1 : 0);
+      assert.equal(
+        changes.filter((change) => change === 'submitted').length,
+        latencyOutcome.outcome === 'acknowledged' ? 1 : 0
+      );
+      if (!latencyCase.resolved)
+        assert.equal(changes.filter((c) => c === 'refresh-observe').length, 0);
+      latencyOutcome.journalChanges = changes;
+    } else {
+      assert.equal(journalWrites.length, testCase === 'acknowledged' ? 2 : 1);
+      assert.equal(authenticatedJournal.records[0].hash, after.eoa.transactionHash);
+      assert.equal(
+        authenticatedJournal.records[0].state,
+        testCase === 'acknowledged' ? 'submitted' : 'attempted'
+      );
+    }
     assert.ok(
       storageWrites
         .slice(afterBootstrapWriteOffset)
@@ -1071,7 +1424,8 @@ async function main() {
       txidCheckpointOnlyPermitsConstructorLeaseWrites: inputCreator === 'Transact',
       eoaJournalRelativePath: journalRelative,
       existingJournalAuthenticatedEmptyBeforeAdmission: true,
-      existingJournalChangedOnlyByBeginAndAcknowledgement: true,
+      ...(latency ? { seededResolvedHistory: latencyCase.resolved } : {}),
+      existingJournalChangedOnlyByBeginAndAcknowledgement: !latency,
       profileInventoryBytesUnchanged: true,
       eoaJournalBaselineSha256: journalBaseline[path.basename(journalFilename)],
       eoaJournalFinalSha256: journalFiles[path.basename(journalFilename)],
@@ -1119,6 +1473,7 @@ async function main() {
       JSON.stringify(childResults)
     );
     assert.ok(loans.every((key) => key.every((byte) => byte === 0)));
+    await latency?.close();
     await eoa.close();
     await services.close();
     assert.equal(services.report().unexpectedTransportFailures, 0);
@@ -1132,7 +1487,9 @@ async function main() {
     fixtureChecks.assertEmpty();
     assert.equal(privateIntentAttempts, 0);
     const report = {
-      schema: 'railgun-cold-submission-native-v1',
+      schema: latency
+        ? 'railgun-cold-submission-latency-native-v1'
+        : 'railgun-cold-submission-native-v1',
       runID: handoff.runID,
       setupPID: handoff.setupPID,
       recoveryPID: handoff.recoveryPID,
@@ -1189,12 +1546,28 @@ async function main() {
       cleanRestartNotPowerLoss: true,
       liveTorOrFundedSubmission: false,
       sourceHashes: handoff.sourceHashes,
+      ...(latency
+        ? {
+            latencyCase: latencyName,
+            latencyOutcome,
+            latency: latency.report(),
+            recoveredReviewBudget: require('../src/main/wallet/railgun-recovered-review-budget.json'),
+            simulatedServiceLatency: true,
+            syntheticChainAndServices: true,
+            live: false,
+            tor: false,
+            circuitIsolation: 'not-applicable',
+          }
+        : {}),
       elapsedMs: Math.round(performance.now() - started),
     };
     fs.writeFileSync(reportFile, JSON.stringify(report, null, 2) + '\n', {
       flag: 'wx',
       mode: 0o600,
     });
+    // A latency case writes its report first, then fails on an unmet expectation.
+    if (latency)
+      assert.ok(latencyOutcome.matchesExpectation, 'Latency outcome differs from its expectation');
     console.log(JSON.stringify({ status: 'qualified', elapsedMs: report.elapsedMs }));
   } finally {
     try {
@@ -1207,6 +1580,7 @@ async function main() {
       for (const worker of workers) worker.close();
       await bounded(Promise.all([...children].map((task) => task.closed)));
       await bounded(Promise.all([...workers].map((worker) => worker.closed)));
+      await latency?.close();
       await eoa.close();
       await services.close();
       storage.createPrivacyStorage = originalStorage;
