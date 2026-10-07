@@ -17,6 +17,7 @@ async function main() {
   app.dock?.hide();
   await app.whenReady();
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-poi-read.js',
     'scripts/qualify-ppv2-live.js',
     'scripts/fixtures/railgun-poi-signed-event.json',

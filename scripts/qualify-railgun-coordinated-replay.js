@@ -213,6 +213,7 @@ async function main() {
     await Promise.all([ledger?.closed, session?.closed]);
   }
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-coordinated-replay.js',
     'scripts/railgun-coordinated-child.js',
     'scripts/fixtures/railgun-coordinated-job.js',

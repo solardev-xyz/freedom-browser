@@ -9,7 +9,7 @@ const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
 const { prepareRailgunPoiTransactSelectorInput } = require('./railgun-poi-transact-selector-data');
 const { normalizePoiProofs, REQUIRED_LIST } = require('./railgun-poi-records');
-const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
+const { bindRailgunOwnPoiPayload } = require('@freedom/railgun-kohaku-adapter/host/poi');
 const freeze = (v) => {
   if (v && typeof v === 'object') {
     Object.values(v).forEach(freeze);
@@ -95,29 +95,7 @@ function expectedRailgunOwnPoiFields(input) {
     outputCount: ownShape.outputCount,
   });
 }
-function bindRailgunOwnPoiPayload(value, expected) {
-  const payload = normalizeRailgunPoiPayload(value);
-  for (const key of [
-    'listKey',
-    'poiMerkleroots',
-    'txidMerkleroot',
-    'txidMerklerootIndex',
-    'railgunTxidIfHasUnshield',
-  ])
-    assert.deepEqual(payload[key], expected[key]);
-  assert.equal(payload.blindedCommitmentsOut.length, expected.outputCount);
-  // Construct the payload from host-derived metadata. Only the proof and
-  // receiver-derived blinded outputs originate with the viewing utility.
-  return normalizeRailgunPoiPayload({
-    listKey: expected.listKey,
-    poiMerkleroots: expected.poiMerkleroots,
-    txidMerkleroot: expected.txidMerkleroot,
-    txidMerklerootIndex: expected.txidMerklerootIndex,
-    railgunTxidIfHasUnshield: expected.railgunTxidIfHasUnshield,
-    proof: payload.proof,
-    blindedCommitmentsOut: payload.blindedCommitmentsOut,
-  });
-}
+
 module.exports = {
   normalizeRailgunOwnPoiProofInput,
   expectedRailgunOwnPoiFields,

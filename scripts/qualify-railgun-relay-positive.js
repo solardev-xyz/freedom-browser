@@ -21,7 +21,15 @@ function deriveIsolatedPoiSource(bytes) {
   return changed;
 }
 function assertIsolation() {
-  const filename = path.resolve(__dirname, '../src/main/wallet/railgun-poi-records.js');
+  const packageRoot = path.resolve(__dirname, '../node_modules/@freedom/railgun-kohaku-adapter');
+  assert.equal(fs.realpathSync(packageRoot), packageRoot);
+  assert.equal(
+    require.resolve('@freedom/railgun-kohaku-adapter/host/poi', {
+      paths: [path.resolve(__dirname, '../src/main/wallet')],
+    }),
+    path.join(packageRoot, 'host-poi.cjs')
+  );
+  const filename = path.join(packageRoot, 'src/data/railgun-poi-records.js');
   assert.equal(fs.realpathSync(filename), filename);
   const stat = fs.lstatSync(filename);
   assert.ok(stat.isFile() && !stat.isSymbolicLink());

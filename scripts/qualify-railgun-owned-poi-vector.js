@@ -83,6 +83,7 @@ async function main() {
     project({ ...txo, blindedCommitment: '0x' + '0'.repeat(64) }, leaf, runtime, txo.nullifier)
   );
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-owned-poi-vector.js',
     'scripts/fixtures/railgun-owned-poi-public-vector.json',
     'scripts/fixtures/railgun-poi-signed-event.json',

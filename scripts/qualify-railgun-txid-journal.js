@@ -21,6 +21,7 @@ async function main() {
   assert.equal(source.passed, true);
   assert.equal(source.publicQueriesOnly, true);
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     ...new Set([
       'scripts/qualify-railgun-txid-journal.js',
       ...Object.keys(

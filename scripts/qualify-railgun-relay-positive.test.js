@@ -4,7 +4,12 @@ const vm = require('vm');
 const crypto = require('crypto');
 const assert = require('assert/strict');
 const api = require('./qualify-railgun-relay-positive');
-const original = fs.readFileSync(path.join(__dirname, '../src/main/wallet/railgun-poi-records.js'));
+const original = fs.readFileSync(
+  path.join(
+    path.dirname(require.resolve('@freedom/railgun-kohaku-adapter/host/poi')),
+    'src/data/railgun-poi-records.js'
+  )
+);
 test('pure copy transformation changes exactly one reviewed literal, never the real source', () => {
   const before = Buffer.from(original);
   const isolated = api.deriveIsolatedPoiSource(original);
@@ -70,6 +75,7 @@ test('Electron entry fallback activates only its exact filename', async () => {
     if (name === './fixtures/railgun-relay-positive-native') return runner;
     return require(name);
   };
+  req.resolve = () => '/fixture/node_modules/@freedom/railgun-kohaku-adapter/host-poi.cjs';
   req.main = {};
   const p = {
     argv: ['electron', filename],
@@ -120,3 +126,50 @@ test('missing opt-in refuses before isolation checks or runner import', async ()
   expect(app.exit).toHaveBeenCalledWith(1);
   expect(imports).not.toContain('./fixtures/railgun-relay-positive-native');
 });
+
+test.each(['physical', 'shared-package', 'shadow-entry', 'symlink-source', 'real-list'])(
+  'isolated package source guard handles %s',
+  (kind) => {
+    const filename = '/fixture/scripts/qualify-railgun-relay-positive.js';
+    const packageRoot = '/fixture/node_modules/@freedom/railgun-kohaku-adapter';
+    const sourceFile = packageRoot + '/src/data/railgun-poi-records.js';
+    const read = jest.fn(() =>
+      kind === 'real-list' ? original : api.deriveIsolatedPoiSource(original)
+    );
+    const req = (name) =>
+      name === 'fs'
+        ? {
+            realpathSync: (file) =>
+              kind === 'shared-package' && file === packageRoot ? '/shared/package' : file,
+            lstatSync: () => ({
+              isFile: () => true,
+              isSymbolicLink: () => kind === 'symlink-source',
+            }),
+            readFileSync: read,
+          }
+        : require(name);
+    req.resolve = () =>
+      kind === 'shadow-entry' ? '/other/host-poi.cjs' : packageRoot + '/host-poi.cjs';
+    req.main = {};
+    const module = { exports: {} };
+    vm.runInNewContext(fs.readFileSync(__filename.replace('.test.js', '.js'), 'utf8'), {
+      require: req,
+      module,
+      __dirname: path.dirname(filename),
+      __filename: filename,
+      Buffer,
+      process: { versions: {}, argv: [], env: {} },
+      console,
+    });
+    if (kind === 'physical') {
+      expect(module.exports.assertIsolation()).toEqual({
+        originalPoiSourceSha256: api.ORIGINAL_SHA,
+        isolatedPoiSourceSha256: api.ISOLATED_SHA,
+      });
+      expect(read).toHaveBeenCalledWith(sourceFile);
+    } else {
+      expect(() => module.exports.assertIsolation()).toThrow();
+      if (kind !== 'real-list') expect(read).not.toHaveBeenCalled();
+    }
+  }
+);

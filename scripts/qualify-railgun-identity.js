@@ -61,6 +61,7 @@ async function main() {
     withRailgunViewingCredential,
   } = require('../src/main/wallet/railgun-identity');
   const files = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-identity.js',
     'scripts/build-railgun-engine.js',
     'src/main/wallet/railgun-identity.js',

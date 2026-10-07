@@ -49,6 +49,7 @@ async function main() {
     assert.equal(closed.code, 'RAILGUN_PROCESS_CLOSED');
     assert.ok(result);
     const sources = [
+      ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
       'scripts/qualify-railgun-wallet-aes.js',
       'scripts/fixtures/railgun-wallet-aes-job.js',
       'scripts/railgun-fixture-integrity.js',

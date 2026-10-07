@@ -305,12 +305,18 @@ test('maximum historical capacity matches the oracle with synthetic continuity c
   // all other tests above/below use the real policy, and no source is changed.
   let capacityCreate;
   jest.isolateModules(() => {
-    jest.doMock('./railgun-txid-omissions', () => ({
-      classifyRailgunTxidContinuity: () => ({
-        status: 'synthetic-capacity-fixture',
-        globalTxidCompleteness: false,
-      }),
-    }));
+    jest.doMock(
+      require('path').join(
+        require('path').dirname(require.resolve('@freedom/railgun-kohaku-adapter/host/poi')),
+        'src/data/railgun-txid-omissions.js'
+      ),
+      () => ({
+        classifyRailgunTxidContinuity: () => ({
+          status: 'synthetic-capacity-fixture',
+          globalTxidCompleteness: false,
+        }),
+      })
+    );
     const { createRailgunTxidProjection: factory } = require('./railgun-txid-projection');
     capacityCreate = () =>
       factory({
@@ -320,7 +326,12 @@ test('maximum historical capacity matches the oracle with synthetic continuity c
         zeroNodes: zeros,
       });
   });
-  jest.dontMock('./railgun-txid-omissions');
+  jest.dontMock(
+    require('path').join(
+      require('path').dirname(require.resolve('@freedom/railgun-kohaku-adapter/host/poi')),
+      'src/data/railgun-txid-omissions.js'
+    )
+  );
   const { input, db, state } = await historicalFixture(8000, capacityCreate);
   for (const index of [4095, 4096, 7998, 7999]) {
     const result = await capacityCreate().historicalRoot(state, index, db.read);

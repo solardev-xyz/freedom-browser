@@ -113,6 +113,7 @@ async function main() {
     }
   }
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     ...new Set([
       'src/main/swarm/ant-cache.js',
       ...Object.keys(

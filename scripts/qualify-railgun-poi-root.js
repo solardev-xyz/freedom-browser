@@ -25,6 +25,7 @@ async function main() {
     onRefusal() {},
   });
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-poi-root.js',
     'src/main/wallet/railgun-poi-root.js',
     'src/main/wallet/railgun-poi-root.test.js',

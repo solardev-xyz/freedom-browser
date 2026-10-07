@@ -19,6 +19,7 @@ async function main() {
   assert.equal(source.passed, true);
   assert.equal(source.publicQueriesOnly, true);
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-txid-tree.js',
     'scripts/fixtures/railgun-txid-tree-job.js',
     'src/main/wallet/railgun-process.js',

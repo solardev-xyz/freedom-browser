@@ -90,6 +90,7 @@ async function main() {
     passed: false,
   };
   const sourceNames = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-funding.js',
     'scripts/qualify-railgun-funding-account.js',
     'scripts/lib/railgun-funding-plan.js',

@@ -10,6 +10,7 @@ const { createPrivacyScope } = require('../src/main/networks/privacy-context');
 const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
 const { verifyRailgunNoteProvenance } = require('../src/main/wallet/railgun-note-provenance');
 const sources = [
+  ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   'scripts/qualify-railgun-note-provenance.js',
   'scripts/fixtures/railgun-note-provenance-job.js',
   'src/main/wallet/railgun-note-provenance.test.js',

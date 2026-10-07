@@ -146,6 +146,8 @@ async function main() {
   assert.equal(priorReport.recovery.status, 'proof-stored');
   const root = path.join(__dirname, '..');
   const verifyPriorSources = () => {
+    for (const relative of require('./fixtures/railgun-kohaku-adapter-sources').SOURCES)
+      assert.ok(Object.hasOwn(handoff.sourceHashes, relative), 'Installed source pin missing');
     for (const [relative, digest] of Object.entries(handoff.sourceHashes)) {
       assert.ok(!path.isAbsolute(relative) && !relative.split(path.sep).includes('..'));
       assert.equal(sha(fs.readFileSync(path.join(root, relative))), digest, relative);

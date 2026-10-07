@@ -63,6 +63,7 @@ async function main() {
   assert.ok(vault.vaultExists(path.join(directory, 'identity')));
   fs.mkdirSync(output, { mode: 0o700 });
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     ...new Set([
       'src/main/swarm/ant-cache.js',
       ...Object.keys(scan.sourceSha256),
