@@ -58,9 +58,34 @@ the vendored tarball against the installed bytes. Historical evidence files reta
 their original source scope; future cooperative qualification configs must include
 the installed package closure.
 
-Native utility-process acceptance and packaged-app loading are pending on the
-final adoption baseline. The live recovery campaign remains consumed and stopped;
-this package work does not claim a successful private transfer or unshield.
+Native acceptance ran on clean adoption commit `668e97ed` with the pinned Electron,
+engine, prover and artifacts. Transfer/full-unshield and partial-unshield cases
+both exited naturally with code 0. Real SDK signing, proving, independent checking
+and cold reconstruction reused the original signatures through the installed
+package. Both reports pinned all five newly installed host/core files; protected
+inputs were unchanged afterwards. These were synthetic cases with zero account,
+network, POI or submission calls.
+
+An unsigned macOS arm64 directory build completed with Freedom's actual after-pack
+hook and prebuilt dependencies (`npmRebuild=false`). All package runtime files were
+present exactly once and byte-identical inside `app.asar`. Electron-builder shipped
+26 of the 35 npm files, omitting the README and eight `.d.ts` files; it removed only
+the `scripts` field from package metadata. The actual packaged Electron executable
+loaded the adapters, confirmed five shared function identities and reproduced all
+four golden vectors without opening a wallet or making a network request. This
+qualifies packaged loading, not signing, notarization or a release.
+
+Freedom validation records remain separate: an initial constrained run had missing
+fixture/loopback failures; after installing the pinned fixture, the broad run passed
+417 suites (15,251 tests), with one package-byte assertion failing on stale local
+README/declaration files. Their bytes were restored from an independently installed
+final tarball, then all 12 package/inventory tests passed. The runtime bytes had
+already matched. Claude independently passed 671 tests across ten affected suites;
+lint and binary checks passed. The failed broad runs are not described as one green
+run.
+
+The live recovery campaign remains consumed and stopped. This package work does
+not claim a successful live private transfer or unshield.
 
 ## Remaining extraction
 
