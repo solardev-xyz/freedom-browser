@@ -1,3 +1,0 @@
-import { createRailgunKohakuPrivateAdapter, type PrivateAdapter } from '@freedom/restricted-railgun-node-prototype';
-import type { CreatePluginFn } from 'kohaku-plugin-base';
-const generic: CreatePluginFn<PrivateAdapter, {signal:AbortSignal}> = createRailgunKohakuPrivateAdapter;

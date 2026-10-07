@@ -32,8 +32,8 @@ metadata mismatch, checkpoint limits and cancellation drain. Lint is clean.
 
 | Mode | Elapsed | Source hashes | Scenarios |
 | --- | ---: | ---: | ---: |
-| [Transfer](qualification/railgun-own-witness-transfer-2026-10-03.json) | 9,000 ms | 143 matched | 8 passed |
-| [Unshield](qualification/railgun-own-witness-unshield-2026-10-03.json) | 8,947 ms | 143 matched | 8 passed |
+| [Transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-witness-transfer-2026-10-03.json) | 9,000 ms | 143 matched | 8 passed |
+| [Unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-witness-unshield-2026-10-03.json) | 8,947 ms | 143 matched | 8 passed |
 
 Both runs use real disposable vaults, encrypted account/public/TXID stores, actual
 guarded utilities and genuine submission-resolution permits. Eight scenarios cover

@@ -93,7 +93,7 @@ module override. Production files remain untouched by that control.
 All 454 focused tests pass across five suites in 21.67 seconds, including 122
 controller cases; lint is clean.
 
-The native [transfer report](qualification/railgun-poi-cold-transfer-2026-10-04.json)
+The native [transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-cold-transfer-2026-10-04.json)
 passes in 124,579 ms with 199 matching source hashes. After genuine enrollment and
 prepared-store reopen, the fixture changes only the verifier input's on-curve
 `pi_a` y coordinate after the host hashes its original input. The encrypted record
@@ -113,7 +113,7 @@ provides one report / 91 checks, all with zero prohibited attempts. The refused
 verifier sends no result and consequently supplies no guard report. These are
 instrumented broker/process observations, not an OS-wide egress assertion.
 
-The native [unshield report](qualification/railgun-poi-cold-unshield-2026-10-04.json)
+The native [unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-cold-unshield-2026-10-04.json)
 passes in 123,059 ms with the same 199 matching hashes. It repeats the invalid
 proof then healthy retry, releasing zero viewing keys. The verifier jobs take
 139 and 174 ms; the negative job again has no positive RSS sample, while the

@@ -142,8 +142,8 @@ proving work. The earlier 17 membership, seven recovery, 13 proof, eight checks
 and six storage cases remain. Enrollment reopen is within the same process;
 the source/root services are simulated. There is no live-service evidence.
 
-Reports: [transfer](qualification/railgun-poi-plan-transfer-2026-10-04.json) and
-[unshield](qualification/railgun-poi-plan-unshield-2026-10-04.json). The earlier
+Reports: [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-plan-transfer-2026-10-04.json) and
+[unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-plan-unshield-2026-10-04.json). The earlier
 checks stage records 14 utility guard reports / 1,274 canary checks with zero
 prohibited attempts in each run; the plan stage starts no utilities and therefore
 adds no guard reports. Earlier whole-source-closure reports remain historical.

@@ -1,6 +1,6 @@
 # Railgun Electron process supervision — October 2, 2026
 
-The private main-process supervisor now runs the approved engine fixture in an actual Electron utility process. [Recorded evidence](qualification/railgun-electron-runtime-2026-10-02.json) contains source hashes and 13 passing scenarios on Electron 44.4.5 / Node 24.21.0, macOS arm64. Four scenarios initialize engine 9.6.0; nine exercise intentional startup/lifecycle failures. This is development infrastructure, with no product enrollment, renderer channel, live Railgun RPC, transaction signing or balance claim.
+The private main-process supervisor now runs the approved engine fixture in an actual Electron utility process. [Recorded evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-electron-runtime-2026-10-02.json) contains source hashes and 13 passing scenarios on Electron 44.4.5 / Node 24.21.0, macOS arm64. Four scenarios initialize engine 9.6.0; nine exercise intentional startup/lifecycle failures. This is development infrastructure, with no product enrollment, renderer channel, live Railgun RPC, transaction signing or balance claim.
 
 ## Ownership and failure handling
 

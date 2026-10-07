@@ -30,11 +30,11 @@ Strict TypeScript 6.0.3 qualification passes one positive program and 23 negativ
 
 The compiler checks declaration consumers, not the JavaScript implementation. A typed token spread still compiles and must be rejected at runtime. Widening to the actual upstream method type permits tailCalls, while the concrete adapter refuses them; assignability does not establish static exclusion. Installed ox differs from the upstream provider range, so this is not an upstream lockfile build or portable package-resolution test. The publication archive records those limits and distinguishes original evidence bytes from explicitly normalized local paths.
 
-The exact strict compiler evidence is archived [here](qualification/railgun-kohaku-private-types-2026-10-06/README.md). It predates the final JavaScript-only correction and retains its declaration-consumer scope.
+The exact strict compiler evidence is archived [here](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-private-types-2026-10-06/README.md). It predates the final JavaScript-only correction and retains its declaration-consumer scope.
 
 ## Native qualification
 
-All five fresh disposable-account processes passed at `f84da57a`; the original driver also exited 0. The [native evidence index](qualification/railgun-kohaku-private-adapter-2026-10-06/INDEX.json) joins exact report hashes, original child exits, source/runtime pins and completed root checks. Raw report bytes are preserved.
+All five fresh disposable-account processes passed at `f84da57a`; the original driver also exited 0. The [native evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-private-adapter-2026-10-06/INDEX.json) joins exact report hashes, original child exits, source/runtime pins and completed root checks. Raw report bytes are preserved.
 
 | Case                                                                 | Observed result                                                                                             |
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |

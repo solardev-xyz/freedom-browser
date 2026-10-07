@@ -37,7 +37,7 @@ profile-inventory scope. EOA records are compared logically, not as a whole-vaul
 file snapshot. The first attempted POI entry, its two reserves and encrypted
 bytes remain unchanged through terminal work.
 
-The [evidence index](qualification/railgun-terminal-ingest-integration-2026-10-05.json)
+The [evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-terminal-ingest-integration-2026-10-05.json)
 records source inventories, byte-exact raw reports, command templates,
 diagnostics and independent audit. Runtime/input captures are referenced by
 local path and hash, not bundled as a standalone reproducer.

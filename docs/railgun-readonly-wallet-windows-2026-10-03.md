@@ -32,7 +32,7 @@ wallet state.
 
 ## Qualification
 
-[Eight synthetic vault-bound Electron runs](qualification/railgun-readonly-wallet-2026-10-03.json)
+[Eight synthetic vault-bound Electron runs](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-readonly-wallet-2026-10-03.json)
 cover scan, restoration and retained rebuild states. Three restoration cases
 each open two extra read-only windows: six windows total. Every window records
 zero write attempts, unchanged wallet bytes, fresh journal revalidation and
@@ -45,13 +45,13 @@ store visible to the trusted test harness to exercise the window sequence. No
 product API exposes that store. These are synthetic history tests, not funded
 preparation/proving or full enrolled private-operation tests.
 
-[The sixteen-case enrolled recovery qualification](qualification/railgun-readonly-enrolled-2026-10-03.json)
+[The sixteen-case enrolled recovery qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-readonly-enrolled-2026-10-03.json)
 also passes against these sources, covering the existing account scan, cold
 restore, retained rebuild and interrupted/cancelled recovery paths. It does not
 exercise the new repeated-window entry, which remains covered by the separate
 vault-bound run above. The wallet policy changes with these source files and
 required rebuilding the retained live wallet generation; public and TXID policies
-are unchanged. [The subsequent live cache refresh](qualification/railgun-readonly-live-refresh-2026-10-03.json)
+are unchanged. [The subsequent live cache refresh](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-readonly-live-refresh-2026-10-03.json)
 passes at block 11,834,513, recovers one asset and retains coverage of all 4,230
 mirrored TXID rows. It performs ordinary account recovery under the new policy,
 not the additional read-only-window entry or private preparation. It sends no

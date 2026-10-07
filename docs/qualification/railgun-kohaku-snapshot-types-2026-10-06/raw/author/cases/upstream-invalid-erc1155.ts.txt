@@ -1,5 +1,0 @@
-import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
-import type { PluginInstance } from 'kohaku-plugin-base';
-type BadAmount = { asset: { __type:'erc1155'; contract:`0x${string}`; tokenId:bigint }; amount:bigint; tag:'unverified' };
-type BadCaps = { features:{}; note:ReadNote; assetAmounts:{ input:ReadAmount; internal:ReadAmount; output:ReadAmount; read:BadAmount }; extras:SnapshotExtras };
-export type Wrong = PluginInstance<string, BadCaps>;

@@ -50,13 +50,13 @@ and privacy review. There is no new renderer or IPC access in this slice.
 
 ## Qualification
 
-- [Synthetic Electron report](qualification/railgun-kohaku-reads-2026-10-03.json):
+- [Synthetic Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-reads-2026-10-03.json):
   thirteen scan/recovery cases, eight successful scan/restore windows. Current
   reads show 3,000 → 2,000 → 2,700 fixture units with 2 → 1 → 2 unspent notes.
   Including spent notes returns 2 → 2 → 3. Native filtering returns no matches.
   A forged receipt is refused, raw result mutation does not change balances, and
   replay-triggered session invalidation refuses all subsequent reads.
-- [Archived-history Electron report](qualification/railgun-kohaku-read-history-2026-10-03.json):
+- [Archived-history Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-read-history-2026-10-03.json):
   scan and cold restore traverse all 10,194 commitments. The public test wallet
   has no received/sent notes or balances and retains 70 separately classified
   unrecoverable sent entries. Scan took 2,648 ms; restore took 2,509 ms in this run.

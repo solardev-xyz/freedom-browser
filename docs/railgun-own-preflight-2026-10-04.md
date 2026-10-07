@@ -40,8 +40,8 @@ matching recaptures do not exclude intervening journal writers.
 
 | Mode | Elapsed | Source hashes | Scenarios |
 | --- | ---: | ---: | ---: |
-| [Transfer](qualification/railgun-own-preflight-transfer-2026-10-04.json) | 14,209 ms | 146 matched | 10 passed |
-| [Unshield](qualification/railgun-own-preflight-unshield-2026-10-04.json) | 15,777 ms | 146 matched | 10 passed |
+| [Transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-preflight-transfer-2026-10-04.json) | 14,209 ms | 146 matched | 10 passed |
+| [Unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-preflight-unshield-2026-10-04.json) | 15,777 ms | 146 matched | 10 passed |
 
 Both actual Electron runs use disposable vaults, genuine enrollments and encrypted
 stores, genuine resolution permits, the pinned engine, a selected synthetic

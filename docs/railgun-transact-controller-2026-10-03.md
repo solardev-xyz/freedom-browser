@@ -32,9 +32,9 @@ provenance before leaving A; it never closes the account from its own callback.
 
 | Run | Controller | Staging plus controller | Spending-key replies |
 | --- | ---: | ---: | ---: |
-| [Transact transfer](qualification/railgun-transact-controller-transfer-2026-10-03.json) | 3,563 ms | 7,275 ms | 1 |
-| [Transact unshield](qualification/railgun-transact-controller-unshield-2026-10-03.json) | 3,214 ms | 6,913 ms | 1 |
-| [Shield transfer regression](qualification/railgun-transact-controller-shield-2026-10-03.json) | 4,124 ms | not applicable | 1 |
+| [Transact transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-controller-transfer-2026-10-03.json) | 3,563 ms | 7,275 ms | 1 |
+| [Transact unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-controller-unshield-2026-10-03.json) | 3,214 ms | 6,913 ms | 1 |
+| [Shield transfer regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-controller-shield-2026-10-03.json) | 4,124 ms | not applicable | 1 |
 
 These are single local measurements from concurrently running qualifications,
 not production latency estimates. Each report contains 19 recovery runs and

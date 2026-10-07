@@ -1,7 +1,7 @@
 # Railgun viewing-only note validation — October 2, 2026
 
 The pinned engine9.6 now has a controlled wallet-note qualification and validation
-helpers. [Eighteen guarded real-engine cases](qualification/railgun-wallet-notes-2026-10-02.json)
+helpers. [Eighteen guarded real-engine cases](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-wallet-notes-2026-10-02.json)
 exercise guarded scanning against synthetic encrypted Shield
 and Transact notes, using public upstream viewing vectors and disposable encrypted
 stores. This is not a product wallet, a host coverage grant or a funded test.
@@ -34,7 +34,7 @@ Preflight cryptography is injected from the authenticated engine closure; Freedo
 does not add a cryptographic implementation. Public-field bounds prevent
 noncanonical token values from reaching token resolution. The test's sender and
 receiver classification uses the pinned engine's existing blinding/annotation
-semantics. [A real guarded Electron utility test](qualification/railgun-wallet-aes-2026-10-02.json)
+semantics. [A real guarded Electron utility test](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-wallet-aes-2026-10-02.json)
 confirms the exact AES authentication-failure text on this macOS arm64 runtime.
 Other exceptions fail rather than being treated as foreign notes. That narrow
 error mapping remains a platform qualification requirement.

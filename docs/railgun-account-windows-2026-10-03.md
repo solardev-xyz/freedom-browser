@@ -22,14 +22,14 @@ window rather than throw through that destructive failure path.
 
 ## Evidence
 
-The [enrolled Electron qualification](qualification/railgun-account-windows-2026-10-03.json)
+The [enrolled Electron qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-account-windows-2026-10-03.json)
 passes 17 cases. Six additional account windows across receive, spent and
 self-transfer states preserve owned projections, tree roots and balances while
 refusing busy reads and old views. A forced interruption before the viewing-key
 reply closes both owners; cold recovery restores the 2,700-unit synthetic
 balance. Reports retain aggregate assertions, not private note projections.
 
-The [live Sepolia run](qualification/railgun-account-windows-live-2026-10-03.json)
+The [live Sepolia run](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-account-windows-live-2026-10-03.json)
 also passes two account windows at block 11,834,513 over 10,246 public commitments.
 They take 3,921 and 3,960 ms, including two RPC header refreshes and post-window
 re-attestation. These totals are upper bounds on the work covered by the

@@ -71,10 +71,10 @@ and six selector groups**, with **166 matching source hashes**:
 
 | Own operation | Creator          | Entire fixture duration | Report                                                                             |
 | ------------- | ---------------- | ----------------------: | ---------------------------------------------------------------------------------- |
-| Transfer      | Self             |               55,250 ms | [Report](qualification/railgun-transact-selector-transfer-self-2026-10-04.json)    |
-| Transfer      | Foreign received |               55,316 ms | [Report](qualification/railgun-transact-selector-transfer-foreign-2026-10-04.json) |
-| Unshield      | Self             |               54,813 ms | [Report](qualification/railgun-transact-selector-unshield-self-2026-10-04.json)    |
-| Unshield      | Foreign received |               54,506 ms | [Report](qualification/railgun-transact-selector-unshield-foreign-2026-10-04.json) |
+| Transfer      | Self             |               55,250 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-selector-transfer-self-2026-10-04.json)    |
+| Transfer      | Foreign received |               55,316 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-selector-transfer-foreign-2026-10-04.json) |
+| Unshield      | Self             |               54,813 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-selector-unshield-self-2026-10-04.json)    |
+| Unshield      | Foreign received |               54,506 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-selector-unshield-foreign-2026-10-04.json) |
 
 Each run has three successful selector recoveries, one wrong-key refusal after
 admission, one wrong-identity refusal before preflight, and one root refusal before
@@ -104,8 +104,8 @@ intent reserve mutation occurs. Independent engineering review is not a security
 audit. Claude reviewed implementation and qualification scope; Codex provided
 implementation and independent tests/controls.
 
-Legacy Shield [transfer](qualification/railgun-transact-selector-shield-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-transact-selector-shield-unshield-2026-10-04.json)
+Legacy Shield [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-selector-shield-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-selector-shield-unshield-2026-10-04.json)
 compatibility runs also pass in **50,732/50,256 ms**, each with **211 matching source
 hashes**, 19 membership scenarios and seven recovery scenarios. They retain the
 keyless Shield selector, genuine membership receipts and the existing drain tests.

@@ -1,2 +1,0 @@
-import type { PrivateInput } from 'freedom-private-contract';
-const value: PrivateInput = {asset:{__type:'erc20',contract:'0x01'},amount:1n};

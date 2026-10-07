@@ -1,2 +1,0 @@
-import type { PrivateOperation } from 'freedom-private-contract';
-const op: PrivateOperation = {__type:'privateOperation'};

@@ -73,8 +73,8 @@ pre-disclosure checks and actual service acceptance remain subsequent work.
 
 ## Results
 
-The final [transfer report](qualification/railgun-own-poi-membership-transfer-2026-10-04.json)
-and [unshield report](qualification/railgun-own-poi-membership-unshield-2026-10-04.json)
+The final [transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-poi-membership-transfer-2026-10-04.json)
+and [unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-poi-membership-unshield-2026-10-04.json)
 each pass 17 scenarios with 168 matching source hashes, in 41,184 and 40,943 ms.
 They cover active and archived operations, routine journal refresh, archive
 transition, reopening stores, injected caller proofs, forged enrollment, wrong

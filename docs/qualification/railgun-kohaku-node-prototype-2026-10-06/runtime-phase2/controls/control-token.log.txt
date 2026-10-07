@@ -1,5 +1,0 @@
-AssertionError [ERR_ASSERTION]: Missing expected rejection.
-    at async <RUNTIME_PHASE2>/control-token/matrix.cjs:266:7
-    at async test (<RUNTIME_PHASE2>/control-token/matrix.cjs:43:7)
-    at async runMatrix (<RUNTIME_PHASE2>/control-token/matrix.cjs:259:5)
-    at async main (<RUNTIME_PHASE2>/control-token/consumer.cjs:158:18)

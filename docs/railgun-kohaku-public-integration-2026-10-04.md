@@ -85,9 +85,9 @@ source issues. Claude's suggested import-order checks were added before executio
 
 | Offline case                                                                             | Public-flow time | EOA signatures | Simulated sends |
 | ---------------------------------------------------------------------------------------- | ---------------: | -------------: | --------------: |
-| [Acknowledged](qualification/railgun-kohaku-public-acknowledged-2026-10-04.json)         |         1,839 ms |              1 |               1 |
-| [Lost response](qualification/railgun-kohaku-public-lost-response-2026-10-04.json)       |         1,854 ms |              1 |               1 |
-| [Review cancelled](qualification/railgun-kohaku-public-review-cancelled-2026-10-04.json) |         2,149 ms |              0 |               0 |
+| [Acknowledged](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-public-acknowledged-2026-10-04.json)         |         1,839 ms |              1 |               1 |
+| [Lost response](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-public-lost-response-2026-10-04.json)       |         1,854 ms |              1 |               1 |
+| [Review cancelled](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-public-review-cancelled-2026-10-04.json) |         2,149 ms |              0 |               0 |
 
 Each is a fresh Electron process and disposable public-vector profile; each also
 passes the existing 19 enrolled wallet/recovery cases. All three reports contain
@@ -123,7 +123,7 @@ including account reopens; it is not a pre-public-operation snapshot. Public-flo
 including the cancellation contender. It does not mean Shield itself queried
 retained note history.
 
-[Five fresh private compatibility runs](qualification/railgun-kohaku-public-private-compatibility-2026-10-04.json)
+[Five fresh private compatibility runs](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-public-private-compatibility-2026-10-04.json)
 also pass: Shield transfer with lost acknowledgment (4,554 ms), Shield full
 unshield (4,067 ms), received-Transact transfer (8,061 ms), received-Transact full
 unshield with lost acknowledgment (7,914 ms), and held private transaction-review
@@ -137,7 +137,7 @@ Kohaku result objects and the shared source inventory; repeated baseline rows
 are omitted there, and each byte-identical full original is committed alongside
 the aggregate and identified by its relative filename and SHA-256.
 
-The [full frozen-tree regression](qualification/railgun-kohaku-public-regression-2026-10-04.json)
+The [full frozen-tree regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-public-regression-2026-10-04.json)
 passes **13,736 tests / 33 skipped**, with **502 passing suites / five skipped**,
 in **521.36 seconds**. All 1,494 source/test/configuration hashes remain identical
 before and after. The command retains the existing `openlv-protocol.test.js`

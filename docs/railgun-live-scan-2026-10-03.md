@@ -25,7 +25,7 @@ This was a resumed qualification, not an uninterrupted first attempt. The
 [cancellation report](railgun-tor-drain-2026-10-03.md) records the interrupted
 run at block 9,959,999 and the subsequent failed partial continuation through
 10,119,999. The final successful continuation preserves those failures as
-part of the evidence. Its [machine-readable report](qualification/railgun-live-scan-2026-10-03.json)
+part of the evidence. Its [machine-readable report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-live-scan-2026-10-03.json)
 records the ranges, source hashes, public state and wallet result.
 
 TXID membership, independent TXID/event comparison, account POI and funded

@@ -92,8 +92,8 @@ scope also remain open.
 
 ## Qualification
 
-The [self-transfer report](qualification/railgun-own-poi-checks-transfer-2026-10-04.json)
-and [full-unshield report](qualification/railgun-own-poi-checks-unshield-2026-10-04.json)
+The [self-transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-poi-checks-transfer-2026-10-04.json)
+and [full-unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-poi-checks-unshield-2026-10-04.json)
 each pass eight checks scenarios, alongside the existing 13 proof, seven recovery
 and 17 membership scenarios. Both match all 187 frozen source hashes. Total host
 work takes 113,623 and 114,001 ms, respectively, excluding Electron startup. Prover

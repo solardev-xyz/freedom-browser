@@ -94,7 +94,7 @@ an isolated in-memory override, and pass on the current code. Production sources
 were not modified by that control. A frozen-witness mutation in an initial test
 setup was corrected before the passing focused run.
 
-The native [transfer report](qualification/railgun-poi-output-transfer-2026-10-04.json)
+The native [transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-output-transfer-2026-10-04.json)
 passes in 119,052 ms with 197 matching source hashes. After genuine enrollment and
 store reopen, the fixture first verifies the real utility's correct output, then
 substitutes a different valid field element before host dispatch. The host refuses
@@ -123,7 +123,7 @@ and 17 membership scenarios. Enrollment reopen precedes the final journal-drift
 membership scenario in this mode; the older `intents` mode keeps its prior order.
 No additional POI prover/verifier, owned-note lookup or spending-key derivation
 occurs during output recovery. There is no instrumented artifact-import counter.
-The native [unshield report](qualification/railgun-poi-output-unshield-2026-10-04.json)
+The native [unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-output-unshield-2026-10-04.json)
 passes in 115,219 ms with the same 197 source hashes and previous scenario counts.
 Its single cold recovery matches with zero viewing jobs, keys or output-job
 results. Six keyless utilities exit; their reports contain 546 canary checks and

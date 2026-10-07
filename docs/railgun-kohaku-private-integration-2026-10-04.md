@@ -114,11 +114,11 @@ locally alongside regression work, not total process time or Tor latency promise
 
 | Input and operation                   | Outcome                           | Facade time | Evidence                                                                             |
 | ------------------------------------- | --------------------------------- | ----------: | ------------------------------------------------------------------------------------ |
-| Shield input, self-transfer           | Lost acknowledgment retained      |    4,512 ms | [Report](qualification/railgun-kohaku-shield-transfer-lostack-2026-10-04.json)       |
-| Shield input, full unshield           | Acknowledged                      |    4,246 ms | [Report](qualification/railgun-kohaku-shield-unshield-2026-10-04.json)               |
-| Transact input, self-transfer         | Acknowledged                      |    8,096 ms | [Report](qualification/railgun-kohaku-transact-transfer-2026-10-04.json)             |
-| Transact input, full unshield         | Lost acknowledgment retained      |    7,921 ms | [Report](qualification/railgun-kohaku-transact-unshield-lostack-2026-10-04.json)     |
-| Shield input, held transaction review | Cancelled; private proof retained |    3,723 ms | [Report](qualification/railgun-kohaku-shield-transfer-review-cancel-2026-10-04.json) |
+| Shield input, self-transfer           | Lost acknowledgment retained      |    4,512 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-shield-transfer-lostack-2026-10-04.json)       |
+| Shield input, full unshield           | Acknowledged                      |    4,246 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-shield-unshield-2026-10-04.json)               |
+| Transact input, self-transfer         | Acknowledged                      |    8,096 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-transact-transfer-2026-10-04.json)             |
+| Transact input, full unshield         | Lost acknowledgment retained      |    7,921 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-transact-unshield-lostack-2026-10-04.json)     |
+| Shield input, held transaction review | Cancelled; private proof retained |    3,723 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-shield-transfer-review-cancel-2026-10-04.json) |
 
 Each primary facade run releases one private spending key, makes one Ethereum
 signature and one simulated raw send, and checks the exact attempted journal
@@ -149,7 +149,7 @@ was needed to pass the native matrix. Recorded private jobs close without forced
 escalation. Journal reopening is in the same process with a fresh context, not
 an application restart. Lost acknowledgment is injected, not a mined outcome.
 
-The [merged-tree regression](qualification/railgun-kohaku-regression-2026-10-04.json)
+The [merged-tree regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-regression-2026-10-04.json)
 passes **13,496 tests / 33 skipped**, across **500 passing suites / five skipped**,
 in **520.067 seconds**. All 1,487 recorded source/test/config files stayed unchanged
 through that run. It uses native permissions, the existing OpenLV exclusion and

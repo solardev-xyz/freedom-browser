@@ -12,7 +12,7 @@ Claude approved the boundary and lifecycle. Eighty-one related tests pass, inclu
 wrong operation, non-1x1 and out-of-field inputs, pre-abort, unauthorized broker
 methods, malformed/duplicate results, and cancellation drain. Lint is clean.
 
-The [actual Electron qualification](qualification/railgun-own-selector-2026-10-03.json)
+The [actual Electron qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-selector-2026-10-03.json)
 passes six scenarios in 1,843 ms with 38 matching source hashes. Four synthetic
 calldata samples agree with the mirror's lookup keys; replacing proof bytes preserves
 the TXID while changing the transaction binding and input digest. Malformed calldata

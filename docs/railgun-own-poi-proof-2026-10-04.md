@@ -79,8 +79,8 @@ sixteen nonzero siblings were exercised separately in the earlier
 [standalone reconstruction qualification](railgun-poi-reconstruction-2026-10-04.md).
 Those runs do not substitute for an integrated nonzero-position run.
 
-The final [self-transfer report](qualification/railgun-own-poi-proof-transfer-2026-10-04.json)
-and [unshield report](qualification/railgun-own-poi-proof-unshield-2026-10-04.json)
+The final [self-transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-poi-proof-transfer-2026-10-04.json)
+and [unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-poi-proof-unshield-2026-10-04.json)
 each pass 13 proof scenarios, the seven retained-recovery scenarios and the 17
 membership scenarios. All 183 recorded source hashes match the frozen tree.
 The runs take 97,895 and 97,358 ms, respectively; prover peak RSS is 487,473,152

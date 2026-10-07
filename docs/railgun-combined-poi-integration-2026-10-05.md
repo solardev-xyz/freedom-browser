@@ -84,7 +84,7 @@ wallet authority.
 
 ## Qualification
 
-The [qualification index](qualification/railgun-combined-poi-integration-2026-10-05.json)
+The [qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-combined-poi-integration-2026-10-05.json)
 links the unchanged raw reports, source inventories, runtime pins, command
 templates and local diagnostic hashes.
 

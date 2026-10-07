@@ -1,6 +1,6 @@
 # Public Shield facade: cold resolution and normal note credit
 
-Reviewed implementation plan, October 5, 2026. Implementation and native qualification of this complete three-process path remain pending. The [source inventory](qualification/railgun-public-facade-cold-credit-plan-sources-2026-10-05.json) binds the inspected checkpoint at `868f43a3`; line references below refer to that snapshot. The later Kohaku contract campaign changes fixture instrumentation, not the production interfaces described here. This plan incorporates independent source review and seven corrections covering chain continuity, event position, owner binding, recovery drainage and transport boundaries.
+Reviewed implementation plan, October 5, 2026. Implementation and native qualification of this complete three-process path remain pending. The [source inventory](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-facade-cold-credit-plan-sources-2026-10-05.json) binds the inspected checkpoint at `868f43a3`; line references below refer to that snapshot. The later Kohaku contract campaign changes fixture instrumentation, not the production interfaces described here. This plan incorporates independent source review and seven corrections covering chain continuity, event position, owner binding, recovery drainage and transport boundaries.
 
 ## Concrete missing connection
 

@@ -2,7 +2,7 @@
 
 A controlled native experiment at `0cc74e6c` proves the fee/output shape needed for a future Railgun relay lane: one synthetic 1000-unit WETH input produces a 100-unit broadcaster fee first and a 900-unit self output second. Both minimum-gas cases pass independent proof verification. This closes a cryptographic prerequisite; the current production broadcaster still submits through the enrolled Ethereum account, and gas relaying is not implemented.
 
-The [evidence index](qualification/railgun-relay-proof-2026-10-06/INDEX.json) joins the aggregate report, source/runtime/artifact provenance, original process observations, engineering review and retained failed attempt.
+The [evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-relay-proof-2026-10-06/INDEX.json) joins the aggregate report, source/runtime/artifact provenance, original process observations, engineering review and retained failed attempt.
 
 ## What passed
 
@@ -25,7 +25,7 @@ The fixture uses public disposable keys, fixed note randomness and an unsigned s
 
 The compact archive retains the aggregate assertions, counts and provenance, **not public proof objects or calldata**. A reader can audit the recorded joins and source-derived checks, but cannot independently reverify the cryptography from this archive alone. That requires a new run with the pinned source, runtime and artifacts. Exact copied reports and normalized metadata are labelled separately.
 
-[Failed attempt a](qualification/railgun-relay-proof-2026-10-06/FAILED-A.json) is preserved. Its Node entrypoint guard did not run under Electron's app loader, so no proof report was produced. Default Electron startup occurred and the parent externally terminated it. The resulting child exit 0 is not natural success; its driver exited 1. The corrected fresh attempt b above is separate.
+[Failed attempt a](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-relay-proof-2026-10-06/FAILED-A.json) is preserved. Its Node entrypoint guard did not run under Electron's app loader, so no proof report was produced. Default Electron startup occurred and the parent externally terminated it. The resulting child exit 0 is not natural success; its driver exited 1. The corrected fresh attempt b above is separate.
 
 ## Next integration work
 

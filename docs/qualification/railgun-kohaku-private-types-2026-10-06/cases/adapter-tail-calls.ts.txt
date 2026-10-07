@@ -1,4 +1,0 @@
-import type { PrivateAdapter, PrivateInput } from 'freedom-private-contract';
-declare const adapter: PrivateAdapter;
-declare const value: PrivateInput;
-adapter.prepareUnshield(value, '0x01', {tailCalls:async()=>[]});

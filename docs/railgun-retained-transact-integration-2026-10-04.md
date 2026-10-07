@@ -235,7 +235,7 @@ in every native source inventory:
 - `scripts/qualify-railgun-own-transact-creator.js`: `a2f2d3e729dbff4184f81ba915e8d773e4279f579554ebd604c54317da0e813e`
 - `scripts/qualify-railgun-own-poi-membership.js`: `356c558ed7adb9ce33a8cadbd61bb1c1c130f6ff809858f49a53734bacf1934a`
 
-The separate [full-regression manifest](qualification/railgun-retained-transact-regression-2026-10-04.json)
+The separate [full-regression manifest](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-transact-regression-2026-10-04.json)
 records the exact nine production and eleven test hashes, command, exclusions and
 results. Those files remain unchanged after regression; subsequent standalone
 qualifier edits were covered by lint and the native runs. Force-exit does not
@@ -243,16 +243,16 @@ establish natural application-handle shutdown.
 
 | Native run | Elapsed ms | Source hashes |
 | --- | ---: | ---: |
-| [transact-transfer-self](qualification/railgun-retained-transact-transfer-self-2026-10-04.json) | 123735 | 222 |
-| [transact-transfer-foreign](qualification/railgun-retained-transact-transfer-foreign-2026-10-04.json) | 123288 | 222 |
-| [transact-unshield-self](qualification/railgun-retained-transact-unshield-self-2026-10-04.json) | 113240 | 222 |
-| [transact-unshield-foreign](qualification/railgun-retained-transact-unshield-foreign-2026-10-04.json) | 112770 | 222 |
-| [shield-output-transfer](qualification/railgun-retained-shield-output-transfer-2026-10-04.json) | 128260 | 212 |
-| [shield-output-unshield](qualification/railgun-retained-shield-output-unshield-2026-10-04.json) | 123645 | 212 |
-| [shield-cold-transfer](qualification/railgun-retained-shield-cold-transfer-2026-10-04.json) | 127410 | 212 |
-| [shield-cold-unshield](qualification/railgun-retained-shield-cold-unshield-2026-10-04.json) | 122765 | 212 |
-| [shield-submission-transfer](qualification/railgun-retained-shield-submission-transfer-2026-10-04.json) | 145413 | 212 |
-| [shield-submission-unshield](qualification/railgun-retained-shield-submission-unshield-2026-10-04.json) | 140811 | 212 |
+| [transact-transfer-self](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-transact-transfer-self-2026-10-04.json) | 123735 | 222 |
+| [transact-transfer-foreign](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-transact-transfer-foreign-2026-10-04.json) | 123288 | 222 |
+| [transact-unshield-self](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-transact-unshield-self-2026-10-04.json) | 113240 | 222 |
+| [transact-unshield-foreign](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-transact-unshield-foreign-2026-10-04.json) | 112770 | 222 |
+| [shield-output-transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-shield-output-transfer-2026-10-04.json) | 128260 | 212 |
+| [shield-output-unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-shield-output-unshield-2026-10-04.json) | 123645 | 212 |
+| [shield-cold-transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-shield-cold-transfer-2026-10-04.json) | 127410 | 212 |
+| [shield-cold-unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-shield-cold-unshield-2026-10-04.json) | 122765 | 212 |
+| [shield-submission-transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-shield-submission-transfer-2026-10-04.json) | 145413 | 212 |
+| [shield-submission-unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-shield-submission-unshield-2026-10-04.json) | 140811 | 212 |
 
 ## Initial native runs excluded
 

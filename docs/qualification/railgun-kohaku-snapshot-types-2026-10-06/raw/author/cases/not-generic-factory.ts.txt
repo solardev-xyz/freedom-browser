@@ -1,4 +1,0 @@
-import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
-import type { CreatePluginFn } from 'kohaku-plugin-base';
-import { createRailgunKohakuSnapshotPlugin } from 'freedom-snapshot-contract';
-export const wrong: CreatePluginFn<SnapshotReadPlugin, {}> = createRailgunKohakuSnapshotPlugin;

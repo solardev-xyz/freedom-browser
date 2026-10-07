@@ -1,2 +1,0 @@
-import type { PrivateInput } from 'freedom-private-contract';
-const value: PrivateInput = {asset:{__type:'native',contract:'0x01'},noteId:'0:0',amount:1n};

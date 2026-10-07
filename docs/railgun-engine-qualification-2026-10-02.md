@@ -8,7 +8,7 @@ The engine tarball's SHA-512 matches the integrity recorded in the earlier sourc
 
 Nine packages declare installation scripts; none ran. The installed tree nevertheless includes packaged native binaries and WASM. The initial controlled checks use the package's actual cryptographic implementation; no new elliptic-curve or signature implementation was written by Freedom.
 
-The registry audit reports **52 affected dependency entries: 13 low, 31 moderate, five high and three critical**. These are not 52 independently proven exploitable vulnerabilities. The critical entries include `form-data`, `request` and `tar` in the older Web3 dependency closure. Reachability and remediation have not been cleared. The installed metadata declares two GPL-3.0 and 21 LGPL-3.0 package entries, among other licenses. [The complete dependency/advisory inventory](qualification/railgun-engine-dependencies-2026-10-02.json) remains a release/distribution gate. No automatic dependency upgrade or override was applied.
+The registry audit reports **52 affected dependency entries: 13 low, 31 moderate, five high and three critical**. These are not 52 independently proven exploitable vulnerabilities. The critical entries include `form-data`, `request` and `tar` in the older Web3 dependency closure. Reachability and remediation have not been cleared. The installed metadata declares two GPL-3.0 and 21 LGPL-3.0 package entries, among other licenses. [The complete dependency/advisory inventory](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-engine-dependencies-2026-10-02.json) remains a release/distribution gate. No automatic dependency upgrade or override was applied.
 
 ## Encrypted store and compatibility bridge
 
@@ -36,7 +36,7 @@ The first network-enabled invocation completed its checks but failed the parent'
 
 The engine's `Database.put` and `batch` can also return successfully after the database is closed. The bridge refuses late operations while called, but cannot fix a wrapper that never calls it. Main-owned session entry/exit guards remain required before exposing operations. No network is reloaded within a child, and permissive default txid-root validators are never used.
 
-[Machine-readable qualification evidence](qualification/railgun-engine-runtime-2026-10-02.json) records source hashes, exact runtime inventory, all three process reports, native module paths, timer census and the unsuccessful intermediate attempts.
+[Machine-readable qualification evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-engine-runtime-2026-10-02.json) records source hashes, exact runtime inventory, all three process reports, native module paths, timer census and the unsuccessful intermediate attempts.
 
 Final regression passed **6,910 unit tests / 33 skipped**, with six OpenLV tests passing separately. Lint and formatting passed. Claude reviewed the implementation and evidence; the review is not an external security audit.
 

@@ -1,4 +1,0 @@
-{
-  "positive": "positive.ts",
-  "negatives": []
-}

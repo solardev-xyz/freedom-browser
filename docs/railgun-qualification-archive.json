@@ -1,0 +1,135 @@
+{
+  "schema": "freedom-railgun-qualification-archive-reference-v1",
+  "archiveRepository": "https://github.com/solardev-xyz/railgun-kohaku-adapter",
+  "archiveCommit": "377c2a5d1aca18f0ed328dfdda955bd7d1ba271c",
+  "archiveTree": "4fc082b216692f1ee92c089ec8d9414aba29ab7e",
+  "archiveManifestPath": "docs/freedom-qualification/MANIFEST.json",
+  "archiveManifestSha256": "ad170fca262809aea199ae2977e75df0ba8a5b5c524bbbbc721e0b41d7d140a8",
+  "originalRepository": "https://github.com/solardev-xyz/freedom-browser",
+  "originalCommit": "6e2fe585b07fa02b255e5430f6f6c834b52409f2",
+  "originalTree": "d9240a1bf8bec1df909dd42973a3baf38434af9d",
+  "originalMergeBase": "60837dc267fc103c4082799de649e5f8182dec05",
+  "archivedFiles": 1165,
+  "archivedBytes": 80213641,
+  "retainedInputs": [
+    {
+      "path": "docs/qualification/railgun-account-txid-live-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-account-txid-live-2026-10-03.json",
+      "sha256": "e3c02196786d963d24f597b7be334ade056e9f91e3bb0578a16ddaec063ebf9b",
+      "gitBlob": "e612146e728acc47a2eb79e0c5e189b2a2c06ae2",
+      "bytes": 27628
+    },
+    {
+      "path": "docs/qualification/railgun-frontier-vectors-2026-10-02.json",
+      "archivePath": "docs/freedom-qualification/railgun-frontier-vectors-2026-10-02.json",
+      "sha256": "4f376bf100a26cf9c1450667b933ddb89356785d153d7c11e9b35daadbc0ab40",
+      "gitBlob": "76de82f4fd25ea881c4deff29b8bd3b6d01d07fc",
+      "bytes": 3377
+    },
+    {
+      "path": "docs/qualification/railgun-live-event-coverage-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-live-event-coverage-2026-10-03.json",
+      "sha256": "2388388f06b1161839fe3d0e41d916ba0f4774c971b05486643a17d5578c1af8",
+      "gitBlob": "08fc4639bc55426a145469575e40d6778fe2603f",
+      "bytes": 35777
+    },
+    {
+      "path": "docs/qualification/railgun-poi-read-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-poi-read-2026-10-03.json",
+      "sha256": "51e48062ded021c62fcc39028e4f9d5a5d9d1df3c995dc6f7a39ee2a9440a18d",
+      "gitBlob": "8fef63a5cfe60f8b9eb0c84c35688a737b895bff",
+      "bytes": 7783
+    },
+    {
+      "path": "docs/qualification/railgun-public-contract-bytecodes-2026-10-04.json",
+      "archivePath": "docs/freedom-qualification/railgun-public-contract-bytecodes-2026-10-04.json",
+      "sha256": "a1f3a1c51c6272eca7940313bf3b8d6b8229527db3aaf3334acc76d8314c0427",
+      "gitBlob": "d60227768149f470aaa4261ee4f345f28da9c4c6",
+      "bytes": 74671
+    },
+    {
+      "path": "docs/qualification/railgun-public-generations-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-public-generations-2026-10-03.json",
+      "sha256": "8c545e5d5440d0f24eb2adef249dec2b9378b9cbfa4faaa831e552dca56a45b7",
+      "gitBlob": "c31d4c6aabddfa019a85892bd20f23e10a60b3b0",
+      "bytes": 48630
+    },
+    {
+      "path": "docs/qualification/railgun-public-state-2026-10-02.json",
+      "archivePath": "docs/freedom-qualification/railgun-public-state-2026-10-02.json",
+      "sha256": "ba53382fa368d5db5f953cf6a17cac4f20e6f0b917fe213d955d0cfceaa370cd",
+      "gitBlob": "d2777389fdcdc0c5e4739c1ac3cf505cd8323c4a",
+      "bytes": 315537
+    },
+    {
+      "path": "docs/qualification/railgun-sepolia-deployment-2026-10-02.json",
+      "archivePath": "docs/freedom-qualification/railgun-sepolia-deployment-2026-10-02.json",
+      "sha256": "bc5e558e858fcc87c23d9eb00cfc7e09497255e3fe29b090ccfb70cb7ee6036f",
+      "gitBlob": "bc347a54c7667ead8ca78f0d05b4daea87dacac2",
+      "bytes": 10390
+    },
+    {
+      "path": "docs/qualification/railgun-sepolia-deployment-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-sepolia-deployment-2026-10-03.json",
+      "sha256": "502bbc42d85b3ef206e66d0afe1c7db7f7ca4d5688358d4039fa88169b4d5e21",
+      "gitBlob": "497008265e7f7e714665a1a171447e0a3e520b94",
+      "bytes": 15536
+    },
+    {
+      "path": "docs/qualification/railgun-sepolia-governance-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-sepolia-governance-2026-10-03.json",
+      "sha256": "b688ac8f61d7f532b915f0c334004e8026e1df29ca5b6f8d14cd38b0a02fe15f",
+      "gitBlob": "69d5a107a3dd36f90214e1888f22406e473f9a77",
+      "bytes": 85543
+    },
+    {
+      "path": "docs/qualification/railgun-sepolia-history-2026-10-02.json",
+      "archivePath": "docs/freedom-qualification/railgun-sepolia-history-2026-10-02.json",
+      "sha256": "20e1452bc0aed7991073515c77207c643288f4588c8e1e183c9f240f139f3df8",
+      "gitBlob": "d3c1ff92ab39bc3fd5101d98b164df3a40d849be",
+      "bytes": 7386
+    },
+    {
+      "path": "docs/qualification/railgun-sepolia-verifiers-2026-10-02.json",
+      "archivePath": "docs/freedom-qualification/railgun-sepolia-verifiers-2026-10-02.json",
+      "sha256": "3c0436fa71bb8099d1d60b56185837318fa4b102a77d93a8785e7fcde328228c",
+      "gitBlob": "16ed4e93262d7c00f2effe921d3f178e1cc99b10",
+      "bytes": 15536
+    },
+    {
+      "path": "docs/qualification/railgun-shield-account-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-shield-account-2026-10-03.json",
+      "sha256": "dcf38019860d50b75100527e8f9e72da11b5870f0d029cb9d4bf29758305f044",
+      "gitBlob": "c3edf9ad9ba73cd7db2b56612e2c7ff8ab99f502",
+      "bytes": 9189
+    },
+    {
+      "path": "docs/qualification/railgun-shield-prerequisites-2026-10-04.json",
+      "archivePath": "docs/freedom-qualification/railgun-shield-prerequisites-2026-10-04.json",
+      "sha256": "1c614d0ca5f0c60c94f3deb61f33961cbee68b2096d694764792e5f24f922978",
+      "gitBlob": "2cbd547f0bf496c8b6977ee2e8e891f79e7a8112",
+      "bytes": 9416
+    },
+    {
+      "path": "docs/qualification/railgun-shield-submission-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-shield-submission-2026-10-03.json",
+      "sha256": "4f4ea46d4c17f69f149c2a08e4feb7a39e41da0ab585ca6912a13fc0d426aeb4",
+      "gitBlob": "faf02581a415c9511ff8484cc6987c11055e09ba",
+      "bytes": 6766
+    },
+    {
+      "path": "docs/qualification/railgun-txid-storage-2026-10-03.json",
+      "archivePath": "docs/freedom-qualification/railgun-txid-storage-2026-10-03.json",
+      "sha256": "517a7e2dc20932638a6ddcf1f449dfca786bcd2ec1e22947350b4bc7311fd3d2",
+      "gitBlob": "585e7178bc10795939d9932958b37d7158decb27",
+      "bytes": 5435
+    },
+    {
+      "path": "docs/qualification/railgun-unsigned-relay-preparation-2026-10-06/public-source.json",
+      "archivePath": "docs/freedom-qualification/railgun-unsigned-relay-preparation-2026-10-06/public-source.json",
+      "sha256": "bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc1e41",
+      "gitBlob": "44628103e0fcaf1dd347327199c51d20d179bdaa",
+      "bytes": 8466
+    }
+  ]
+}

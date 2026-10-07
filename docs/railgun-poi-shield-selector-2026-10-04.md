@@ -26,7 +26,7 @@ owned disclosure. Transact inputs require a viewing-key path and are refused her
 
 ## Evidence
 
-The [native report](qualification/railgun-poi-shield-selector-2026-10-04.json)
+The [native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-shield-selector-2026-10-04.json)
 records three vectors with 27 matching source hashes: tree 0/position 10,245,
 tree 1/position 65,535 and tree 65,535/position 65,535. The fixture performs actual
 Shield encryption and a randomness-decryption round trip, then compares the new

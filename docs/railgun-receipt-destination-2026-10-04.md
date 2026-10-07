@@ -80,8 +80,8 @@ is observed; network routing and actual Tor circuit isolation are not qualified.
 Chain observations and spend proof/signature fixtures are synthetic. No live
 requests, owned-note disclosures, funded profile access or submissions occur.
 
-The frozen [transfer](qualification/railgun-receipt-destination-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-receipt-destination-unshield-2026-10-04.json)
+The frozen [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-destination-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-destination-unshield-2026-10-04.json)
 reports each bind 146 source files and pass in 2,271 and 2,074 ms respectively.
 Both record 223 simulated transport dispatches, including 16 chain-ID requests
 across all scenarios. The alternate URL receives none. These are single offline
@@ -101,15 +101,15 @@ The frozen full regression passes 11,812 tests / 33 skipped across 476 passing
 suites in 396.424 seconds (native access; existing OpenLV exclusion). This run
 precedes the next merge of main.
 
-Own-preflight [transfer](qualification/railgun-receipt-compat-own-preflight-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-receipt-compat-own-preflight-unshield-2026-10-04.json)
+Own-preflight [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-compat-own-preflight-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-compat-own-preflight-unshield-2026-10-04.json)
 pass ten cases each with 146 matching hashes in 15,171/15,202 ms. POI-preflight
-[transfer](qualification/railgun-receipt-compat-poi-preflight-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-receipt-compat-poi-preflight-unshield-2026-10-04.json)
+[transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-compat-poi-preflight-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-compat-poi-preflight-unshield-2026-10-04.json)
 pass ten cases each with 153 hashes in 15,346/14,911 ms. These four compatibility
 runs retain their synthetic private-RPC boundary; no chain-ID count is inferred.
-Retained-history [transfer](qualification/railgun-receipt-compat-history-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-receipt-compat-history-unshield-2026-10-04.json)
+Retained-history [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-compat-history-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-compat-history-unshield-2026-10-04.json)
 pass 17 cases each with 204 matching hashes in 128,700/126,673 ms. All six
 compatibility reports preserve their prior scenario results and RPC/service counts.
 

@@ -28,7 +28,7 @@ another request. No account is closed from inside its own operation callback.
 
 ## Validation and limits
 
-[Actual enrolled qualification](qualification/railgun-transact-provenance-enrolled-2026-10-03.json)
+[Actual enrolled qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-provenance-enrolled-2026-10-03.json)
 passes alongside 19 recovery runs with 130 matching source hashes. The new slice
 takes 3,934 ms in one local measurement. Five independently revocable simulated
 services receive six latest-root queries, one page query and five root checks.

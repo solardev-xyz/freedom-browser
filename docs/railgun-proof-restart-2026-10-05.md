@@ -87,7 +87,7 @@ observations do not establish protocol or live-service acceptance.
 
 ## Matrix and reproducibility
 
-The [qualification index](qualification/railgun-proof-restart-2026-10-05.json)
+The [qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-restart-2026-10-05.json)
 binds all twelve setup handoffs and twelve resume reports, their hashes, matching
 run IDs, successful setup-log records, runtime hashes and two warm reports. All
 fourteen completed cases carry the same **532 source hashes**, rechecked against

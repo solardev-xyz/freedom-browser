@@ -53,8 +53,8 @@ timer/normal-close exceptions, late messages, held derivation and reattestation,
 rejected child barriers, post-cleanup currency and otherwise-exact non-private
 contexts. They do not establish native proof correctness or physical exit.
 
-Native Shield [transfer](qualification/railgun-proof-host-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-proof-host-unshield-2026-10-04.json) pass in
+Native Shield [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-host-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-host-unshield-2026-10-04.json) pass in
 107,902 / 106,525 ms. Each retains 19 membership, seven recovery and 13 proof
 scenarios with 211 matching source hashes: 11 viewing jobs, seven credential
 replies, and two fresh keyless verifiers. Child exits match starts, mutable keys

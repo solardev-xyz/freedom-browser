@@ -1,5 +1,0 @@
-import type {PublicShieldOperation} from '@freedom/restricted-railgun-node-prototype';
-import type {PrivateAdapterBroadcaster} from '@freedom/restricted-railgun-node-prototype';
-declare const broadcaster: PrivateAdapterBroadcaster;
-declare const operation: PublicShieldOperation;
-broadcaster.broadcast(operation);

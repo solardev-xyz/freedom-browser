@@ -1,3 +1,0 @@
-import type { PrivateAdapter } from 'freedom-private-contract';
-declare const adapter: PrivateAdapter;
-adapter.prepareShieldMulti;

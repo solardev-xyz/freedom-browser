@@ -52,7 +52,7 @@ flags, public anchors and the already public shield hash are recorded.
 
 ## Qualification
 
-[The real public vector](qualification/railgun-owned-poi-vector-2026-10-03.json)
+[The real public vector](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-owned-poi-vector-2026-10-03.json)
 uses the integrity-checked engine fixture whose inventory matches the packed
 runtime. It reproduces the blinded commitment in the existing signed list event
 from an archived public Shield, and rejects changed note key, position and
@@ -61,7 +61,7 @@ block and log provenance are metadata from the two-RPC capture; the script check
 the commitment relation, not that capture again. Signature verification is covered
 by the existing POI fixture tests.
 
-[Sixteen enrolled Electron recovery cases](qualification/railgun-owned-wallet-recovery-2026-10-03.json)
+[Sixteen enrolled Electron recovery cases](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-owned-wallet-recovery-2026-10-03.json)
 exercise the new projection through real guarded scans, cold restores and retained
 wallet-generation rebuilds. Synthetic balances progress through 3,000, 2,000 and
 2,700 units; the rebuild preserves the final amount. Cancellation and closed-read

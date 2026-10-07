@@ -56,7 +56,7 @@ precedes mutation and leaves the active catalog usable. Every generation retains
 its full source/public data, so disk usage can become the practical limit first.
 Cleanup/export is not implemented; removal would require explicit user authorization.
 
-[The actual Electron report](qualification/railgun-public-generations-2026-10-03.json)
+[The actual Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-generations-2026-10-03.json)
 contains 16 recorded cases plus viewing-key cancellation. It covers the previous
 scan/recovery and twelve-wallet-rebuild series, an interrupted public rebuild below
 its protected height, cold candidate resume, completion-before-publication recovery,

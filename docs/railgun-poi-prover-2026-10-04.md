@@ -32,7 +32,7 @@ renderer, IPC or top-level responsibility changed.
 
 ## Evidence
 
-The [native report](qualification/railgun-poi-prover-2026-10-04.json) records 37
+The [native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-prover-2026-10-04.json) records 37
 matching source hashes. Transfer and full unshield complete in 6,593 ms and
 6,378 ms. The utility-only production prover runs once per fresh fixture process;
 a second attempt refuses. The fixture separately compares the payload with its

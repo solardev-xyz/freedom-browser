@@ -33,7 +33,7 @@ this is not whole-profile rollback protection.
 
 ## Evidence and limits
 
-[Eighteen enrolled Electron cases](qualification/railgun-private-reservations-2026-10-03.json)
+[Eighteen enrolled Electron cases](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-reservations-2026-10-03.json)
 include an explicitly synthetic reservation that survives enrollment reopen and
 wallet/public generation replacement. The duplicate stays refused, old receipts
 stay invalid and the stored hold count stays one. The existing six account

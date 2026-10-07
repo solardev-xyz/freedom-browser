@@ -58,8 +58,8 @@ inclusion-drift regression fail. Lint is clean.
 
 | Mode | Elapsed | Source hashes | Scenarios |
 | --- | ---: | ---: | ---: |
-| [Transfer](qualification/railgun-own-operation-transfer-2026-10-03.json) | 1,509 ms | 139 matched | 8 passed |
-| [Unshield](qualification/railgun-own-operation-unshield-2026-10-03.json) | 1,512 ms | 139 matched | 8 passed |
+| [Transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-operation-transfer-2026-10-03.json) | 1,509 ms | 139 matched | 8 passed |
+| [Unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-operation-unshield-2026-10-03.json) | 1,512 ms | 139 matched | 8 passed |
 
 The Electron runs create disposable vaults and real enrolled encrypted reservation,
 capsule and submission stores. They use the production recovery-permit path to

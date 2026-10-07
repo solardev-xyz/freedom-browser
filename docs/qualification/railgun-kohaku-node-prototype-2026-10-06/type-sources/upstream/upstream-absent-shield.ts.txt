@@ -1,3 +1,0 @@
-import type { PinnedPrivateTarget } from './bridge';
-declare const target: PinnedPrivateTarget;
-target.prepareShield;

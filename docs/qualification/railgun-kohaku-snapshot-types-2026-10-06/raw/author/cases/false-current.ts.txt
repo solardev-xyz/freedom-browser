@@ -1,3 +1,0 @@
-import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
-declare const signal: AbortSignal;
-export const host: SnapshotHost = {signal, capture() { return { snapshot:{instanceId:'example', received:[]}, assertCurrent() { return false; } }; }};

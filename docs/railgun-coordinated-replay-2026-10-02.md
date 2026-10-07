@@ -8,7 +8,7 @@ This is development infrastructure, not wallet readiness or a spending grant.
 
 ## Evidence
 
-[The complete source-bound report](qualification/railgun-coordinated-replay-2026-10-02.json)
+[The complete source-bound report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-coordinated-replay-2026-10-02.json)
 records 121 contiguous ranges, all 14,822 captured logs, a forced SIGKILL after
 nullifier writes in the range ending at block 7,099,999, recovery with a changed
 archived provider identity, and a final cold restart. All range observations and

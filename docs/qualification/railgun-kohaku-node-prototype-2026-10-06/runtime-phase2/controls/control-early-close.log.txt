@@ -1,8 +1,0 @@
-AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
-
-true !== false
-
-    at <RUNTIME_PHASE2>/control-early-close/matrix.cjs:119:16
-    at async test (<RUNTIME_PHASE2>/control-early-close/matrix.cjs:43:7)
-    at async runMatrix (<RUNTIME_PHASE2>/control-early-close/matrix.cjs:95:7)
-    at async main (<RUNTIME_PHASE2>/control-early-close/consumer.cjs:158:18)

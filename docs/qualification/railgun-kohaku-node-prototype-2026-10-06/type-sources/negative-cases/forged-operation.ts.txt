@@ -1,2 +1,0 @@
-import type { PrivateOperation } from '@freedom/restricted-railgun-node-prototype';
-const op: PrivateOperation = {__type:'privateOperation'};

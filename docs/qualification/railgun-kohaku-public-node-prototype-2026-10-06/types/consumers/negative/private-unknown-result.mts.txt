@@ -1,2 +1,0 @@
-import type {PublicShieldAcknowledgement} from '@freedom/restricted-railgun-node-prototype';
-const result: PublicShieldAcknowledgement = {transactionHash:'0x01',submissionStatus:'unknown'};

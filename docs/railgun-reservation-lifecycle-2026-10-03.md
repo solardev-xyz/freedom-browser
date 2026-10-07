@@ -52,7 +52,7 @@ nullifiers and operation/submitter metadata and stay encrypted and out of report
 
 ## Qualification and remaining work
 
-The [enrolled synthetic qualification](qualification/railgun-reservation-lifecycle-2026-10-03.json)
+The [enrolled synthetic qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-reservation-lifecycle-2026-10-03.json)
 passes nineteen cases with 72 matching source hashes. It opens an actual wallet
 to prove recovery exclusion, drains it, abandons the earlier synthetic hold,
 reserves the input again, records synthetic signing evidence and cold-reopens

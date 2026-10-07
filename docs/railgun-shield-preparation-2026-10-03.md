@@ -44,13 +44,13 @@ of the renderer and gives it no signing or broadcast authority.
 
 ## Qualification evidence
 
-[Offline engine report](qualification/railgun-shield-build-2026-10-03.json):
+[Offline engine report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-build-2026-10-03.json):
 two real guarded builds produce distinct note keys and calldata. Independent
 engine decryption reproduces each note and net commitment; a wrong viewing key
 is refused. Zero amount and invalid recipient are refused. No account opened,
 network request or submission occurs in this qualification.
 
-[Enrolled account report](qualification/railgun-shield-account-2026-10-03.json):
+[Enrolled account report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-account-2026-10-03.json):
 two preparations in a disposable, known public-vector vault, with a cold reopen
 between them. Both pass enrolled viewing-key recovery and fresh deployment
 checks over Tor. The recipient stays the same, notes differ, and locking the

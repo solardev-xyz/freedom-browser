@@ -42,7 +42,7 @@ not mean the service holds every transaction up to that boundary. The
 Both flags can be true with an unexplained `unindexedTail`; the whole coverage
 object retains that field. Global completeness remains false in every case.
 
-The [actual archived-data qualification](qualification/railgun-txid-coverage-2026-10-03.json)
+The [actual archived-data qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-coverage-2026-10-03.json)
 passes with 4,214 checked rows across 4,103 Ethereum transactions in 5.66 seconds.
 Its public capture ends at block 11,829,346, leaving 16 of the 4,230 mirrored rows
 unchecked. It finds the one pinned omission, no discrepancy and no unindexed
@@ -59,8 +59,8 @@ wallet infrastructure; no renderer capability or dependency was added. Source
 feed extraction and authenticated snapshot traversal change the public cache
 policy, so the next live qualification builds a new retained generation.
 
-The fresh live scan targets finalized block 11,833,631. [Two public RPCs agree](qualification/railgun-sepolia-deployment-2026-10-03.json) on
-the anchor, deployed code and verifying keys. A [separate read-only comparison](qualification/railgun-sepolia-governance-2026-10-03.json) of
+The fresh live scan targets finalized block 11,833,631. [Two public RPCs agree](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-sepolia-deployment-2026-10-03.json) on
+the anchor, deployed code and verifying keys. A [separate read-only comparison](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-sepolia-governance-2026-10-03.json) of
 blocks 11,829,347–11,833,631 found 50 ordinary protocol events and no governance
 events. These supporting public-contract reads used direct HTTPS, not Tor.
 The first new live run stopped with a coordinator refusal after retaining

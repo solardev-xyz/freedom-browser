@@ -35,8 +35,8 @@ in-memory transformer makes every one fail. Repository source is untouched by
 these controls. Lint passes.
 
 Both frozen offline native requalifications pass with 202 matching source hashes:
-[transfer](qualification/railgun-own-broker-transfer-2026-10-04.json) in 132,465 ms
-and [unshield](qualification/railgun-own-broker-unshield-2026-10-04.json) in
+[transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-broker-transfer-2026-10-04.json) in 132,465 ms
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-broker-unshield-2026-10-04.json) in
 130,313 ms. Each preserves 17 membership, seven recovery, 13 proof, eight checks,
 six prepared-store cases and the two retained-history attempts (substituted root
 refused, healthy retry validated). Prepared records and submission journals remain

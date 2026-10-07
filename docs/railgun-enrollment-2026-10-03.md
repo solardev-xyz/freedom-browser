@@ -78,7 +78,7 @@ optimization, including its scheduling and traffic-correlation implications.
 
 ## Evidence
 
-[The source-bound Electron report](qualification/railgun-enrollment-2026-10-03.json)
+[The source-bound Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-enrollment-2026-10-03.json)
 uses a fresh disposable vault with an explicitly public mnemonic. It derives the
 real engine identity, enrolls it, creates actual encrypted source/public/wallet
 paged stores, observes worker closure, locks/unlocks the vault, re-derives the

@@ -63,7 +63,7 @@ moving key or storage responsibilities between processes.
 
 ## Actual enrolled qualification
 
-The [October 3 report](qualification/railgun-transact-staging-enrolled-2026-10-03.json)
+The [October 3 report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-staging-enrolled-2026-10-03.json)
 records 19 existing recovery runs and 129 matching before/after source hashes.
 The new staging slice takes 3,788 ms in this single local measurement. It creates
 and closes an actual encrypted enrolled TXID mirror, then uses checkpoint-only

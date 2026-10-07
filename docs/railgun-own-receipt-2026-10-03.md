@@ -36,8 +36,8 @@ files were not modified for that control. Lint is clean.
 
 | Mode | Elapsed | Source hashes | Scenarios |
 | --- | ---: | ---: | ---: |
-| [Transfer](qualification/railgun-own-receipt-transfer-2026-10-03.json) | 1,667 ms | 142 matched | 9 passed |
-| [Unshield](qualification/railgun-own-receipt-unshield-2026-10-03.json) | 1,619 ms | 142 matched | 9 passed |
+| [Transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-receipt-transfer-2026-10-03.json) | 1,667 ms | 142 matched | 9 passed |
+| [Unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-receipt-unshield-2026-10-03.json) | 1,619 ms | 142 matched | 9 passed |
 
 Both runs use disposable vaults, real encrypted reservation/capsule/EOA stores and
 genuine resolution permits, with simulated RPC and structural proof/signature data.

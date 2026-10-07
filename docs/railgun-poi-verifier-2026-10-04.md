@@ -29,7 +29,7 @@ changed.
 
 ## Evidence
 
-The [native report](qualification/railgun-poi-verifier-2026-10-04.json) records 41
+The [native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-verifier-2026-10-04.json) records 41
 matching source hashes. Actual synthetic transfer and unshield POI proofs are
 produced through the local production prover. The proving utility exits before
 the fresh verifier starts. Each operation then passes ordinary verification and

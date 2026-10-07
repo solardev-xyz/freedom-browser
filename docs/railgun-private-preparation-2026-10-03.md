@@ -39,7 +39,7 @@ authority, with no renderer, IPC or product UX changes.
 
 ## Qualification
 
-The [synthetic enrolled WETH qualification](qualification/railgun-private-preparation-2026-10-03.json)
+The [synthetic enrolled WETH qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-preparation-2026-10-03.json)
 exercises six preparation windows: both operation kinds over the fixture's
 receive, spent and self-transfer history. Every window uses one viewing-key transfer, attempts zero
 writes, preserves the owned projection and replaces the view while rejecting its
@@ -56,7 +56,7 @@ rebuilding the live wallet. The full native regression passes 8,593 tests (33
 skipped); three subsequently added entry-boundary tests pass separately. All 131
 focused checks and lint pass.
 
-The [live Sepolia qualification](qualification/railgun-private-preparation-live-2026-10-03.json)
+The [live Sepolia qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-preparation-live-2026-10-03.json)
 passes at block 11,834,513 after rebuilding the retained wallet cache. It recovers
 one asset over 10,246 public commitments and retains coverage of all 4,230 mirrored
 TXID rows. Two restoration windows take 3,844 and 3,356 ms. Local self-transfer and

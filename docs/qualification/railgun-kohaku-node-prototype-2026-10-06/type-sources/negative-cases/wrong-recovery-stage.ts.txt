@@ -1,2 +1,0 @@
-import type { PrivateSubmissionOutcome } from '@freedom/restricted-railgun-node-prototype';
-const result: PrivateSubmissionOutcome = {status:'recovery-required',stage:'success'};

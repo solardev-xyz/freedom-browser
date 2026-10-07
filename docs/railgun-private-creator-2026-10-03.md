@@ -102,7 +102,7 @@ All 167 phase/account/enrollment/reservation tests pass across five suites; lint
 is clean. The Codex reviewer approved the implementation and delayed-worker
 failure cases. No renderer capability, service endpoint or dependency was added.
 
-The [enrolled Electron regression](qualification/railgun-handoff-exclusion-enrolled-2026-10-03.json)
+The [enrolled Electron regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-handoff-exclusion-enrolled-2026-10-03.json)
 also passes all nineteen existing scan/restore/recovery cases with 110 matching
 source hashes, synthetic public history and zero live acquisition/submissions.
 It confirms existing enrolled flows still work after the phase changes; the new

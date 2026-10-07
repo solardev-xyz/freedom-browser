@@ -57,7 +57,7 @@ also pass, with no submission handoff created. The launcher verifies 44 actual
 Electron process exits and the setup/recovery/submission PID joins. The separate
 six-case warm partial-submission/capture matrix passes against the shared core.
 
-The [qualification index](qualification/railgun-cold-submission-2026-10-05.json)
+The [qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-cold-submission-2026-10-05.json)
 records exact raw operation reports, launcher records, handoff/log hashes and runtime pins.
 The published cold launcher replaces 132 machine-local repository path prefixes
 with `<repository-root>`; its original and published hashes are both recorded.
@@ -78,7 +78,7 @@ reassertion. The post-sign/creator/drain controls belong to their preserved pre-
 the margin/token-rejoin/root/list controls use the final frozen source.
 Independent receipt revocation controls avoid falsely claiming that
 POI expiry can be isolated when the earlier proof has the same lifetime.
-Full repository lint and scoped formatting pass. The [repository regression](qualification/railgun-cold-submission-regression-2026-10-05.json)
+Full repository lint and scoped formatting pass. The [repository regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-cold-submission-regression-2026-10-05.json)
 passes **15,457 tests across 512 suites**, with 33 tests and five suites skipped,
 in 606.564 seconds. Its exact 1,378-file JavaScript/JSON inventory is unchanged
 before/after. The command retains the established OpenLV suite exclusion and

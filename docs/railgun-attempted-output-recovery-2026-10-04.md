@@ -99,8 +99,8 @@ Four frozen native runs pass with 209 matching source hashes each:
 
 | Mode | Transfer | Unshield |
 | --- | --- | --- |
-| Attempted output and eleven durable-attempt compatibility cases | [129,268 ms](qualification/railgun-attempted-output-transfer-2026-10-04.json) | [123,696 ms](qualification/railgun-attempted-output-unshield-2026-10-04.json) |
-| Sender overlap and attempted recovery after cold reopen | [147,230 ms](qualification/railgun-attempted-output-sender-transfer-2026-10-04.json) | [143,700 ms](qualification/railgun-attempted-output-sender-unshield-2026-10-04.json) |
+| Attempted output and eleven durable-attempt compatibility cases | [129,268 ms](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-attempted-output-transfer-2026-10-04.json) | [123,696 ms](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-attempted-output-unshield-2026-10-04.json) |
+| Sender overlap and attempted recovery after cold reopen | [147,230 ms](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-attempted-output-sender-transfer-2026-10-04.json) | [143,700 ms](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-attempted-output-sender-unshield-2026-10-04.json) |
 
 Each preserves 17 base scenarios, seven recovery and thirteen proof exercises.
 Attempted-output mode adds prepared refusal and a successful cold match for both

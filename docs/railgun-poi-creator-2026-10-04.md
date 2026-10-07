@@ -33,8 +33,8 @@ by account/root reattestation. The collector is not a chain-completeness verifie
 ## Evidence
 
 Actual disposable enrollment, encrypted source/public stores and the production
-coordinator pass six scenarios for [Shield](qualification/railgun-poi-creator-shield-2026-10-04.json)
-and [Transact](qualification/railgun-poi-creator-transact-2026-10-04.json): capture,
+coordinator pass six scenarios for [Shield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-creator-shield-2026-10-04.json)
+and [Transact](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-creator-transact-2026-10-04.json): capture,
 later-snapshot revocation, semantic refusal followed by recovery, mid-visit
 cancellation followed by recovery, injected post-visit integrity failure, and
 store reopening within the same process with identical private extraction. Each selects offset one from

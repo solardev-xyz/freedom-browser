@@ -1,3 +1,0 @@
-import type {PublicAdapter} from '@freedom/restricted-railgun-node-prototype';
-declare const target: PublicAdapter;
-target.prepareUnshield;

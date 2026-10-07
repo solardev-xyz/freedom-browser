@@ -25,14 +25,14 @@ All 230 focused routing and bridge tests pass across four suites in 1.245 second
 The initial sandbox run could not bind local test listeners; the complete rerun
 with local-listener permissions passed. External RPCs remain mocked.
 
-The fresh [merged self-change OUTPUT report](qualification/railgun-creator-merged-output-self-2026-10-05.json)
+The fresh [merged self-change OUTPUT report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-creator-merged-output-self-2026-10-05.json)
 passes eleven retained recovery groups, eleven membership groups and seventeen
 connected proof/check/output groups in 113,128 ms. Genuine local POI proving for
 the legacy second operation takes 4,749 ms and has an independent keyless verifier.
 All 223 recorded hashes match. This is additional integration confirmation: the
 main merge did not change any inputs inventoried by the preceding creator reports.
 
-The [full merged regression](qualification/railgun-creator-merged-regression-2026-10-05.json)
+The [full merged regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-creator-merged-regression-2026-10-05.json)
 passes **14,483 tests / 33 skipped**, with **507 passing suites / five skipped**
 (512 total), in 528.133 seconds. All 1,358 tracked JavaScript/JSON file hashes
 outside docs/research and their exact file set match before and after the run.

@@ -70,8 +70,8 @@ case proves immediate receipt revocation, zero-traffic competing refusal and hea
 reopen only after closure. Existing proof/check modes use explicit request-aware
 transport barriers as well.
 
-Final native [transfer](qualification/railgun-poi-source-drain-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-poi-source-drain-unshield-2026-10-04.json)
+Final native [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-source-drain-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-source-drain-unshield-2026-10-04.json)
 runs pass in **127,010/125,682 ms**, each with **211 matching source hashes**,
 19 membership scenarios, seven recovery scenarios, 13 proof scenarios and eight
 root-check scenarios. They retain fixture signature trust and synthetic chain

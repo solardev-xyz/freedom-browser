@@ -37,7 +37,7 @@ than admitting another child over an uncertain one.
 
 ## Connected native evidence
 
-The committed [native report](qualification/railgun-partial-controller-native-2026-10-05.json)
+The committed [native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-controller-native-2026-10-05.json)
 comes from `scripts/qualify-railgun-partial-controller.js`, final run D, **21,678 ms**.
 Its **522 source/test/fixture hashes** remained unchanged throughout the run.
 The disposable public-mnemonic history is replayed above the POI launch block
@@ -79,7 +79,7 @@ D pass; no production safeguard was weakened. Only D is qualification evidence.
 ## Validation
 
 Final focused regression: **689 tests across 13 suites passed in 157.921 seconds**;
-`npm run lint` passed. The [qualification index](qualification/railgun-partial-controller-2026-10-05.json)
+`npm run lint` passed. The [qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-controller-2026-10-05.json)
 records all changed JavaScript hashes, the native report hash and local evidence
 hashes. The exact test command was:
 

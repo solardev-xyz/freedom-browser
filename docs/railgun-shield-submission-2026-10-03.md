@@ -72,7 +72,7 @@ labels them not shielded or retries them.
 
 ## Actual qualification and limits
 
-[Electron submission report](qualification/railgun-shield-submission-2026-10-03.json)
+[Electron submission report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-submission-2026-10-03.json)
 records three cases with real disposable vault enrollment, guarded engine
 preparation/decryption, secp256k1 signing, encrypted journals and cold recovery:
 
@@ -100,7 +100,7 @@ only `b` is the current submission qualification. Its Arti endpoint is the
 qualification-only shim; production Tor-manager/circuit isolation is not
 qualified by this run.
 
-[Live preflight timing report](qualification/railgun-shield-preflight-timing-2026-10-03.json)
+[Live preflight timing report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-preflight-timing-2026-10-03.json)
 records two additional public-vector cold-reopen checks, totaling 6.45 and
 5.60 seconds for preparation, recipient recovery and live deployment reads.
 Run `e` requalifies the account path with the current preflight; the earlier

@@ -36,7 +36,7 @@ submission/recovery policy remain separate work; no live query occurs here.
 
 ## Qualification
 
-The [native report](qualification/railgun-poi-root-2026-10-04.json) passes 13
+The [native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-root-2026-10-04.json) passes 13
 scenarios with seven matching source hashes. The measured host work takes 69 ms;
 Electron startup is outside that measurement. Fourteen simulated requests pass
 all wire assertions, and all 13 transports close. Accepted/renewed receipts,

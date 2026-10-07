@@ -47,8 +47,8 @@ represent a valid private spend.
 
 | Mode | Elapsed | Source hashes | Scenarios |
 | --- | ---: | ---: | ---: |
-| [Transfer](qualification/railgun-own-source-transfer-2026-10-03.json) | 1,982 ms | 136 matched | 6 passed |
-| [Unshield](qualification/railgun-own-source-unshield-2026-10-03.json) | 2,068 ms | 136 matched | 6 passed |
+| [Transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-source-transfer-2026-10-03.json) | 1,982 ms | 136 matched | 6 passed |
+| [Unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-source-unshield-2026-10-03.json) | 2,068 ms | 136 matched | 6 passed |
 
 Each run covers genuine capture, invalidation by a later snapshot, refusal after
 an injected failure following the real authenticated ledger visit, and exact

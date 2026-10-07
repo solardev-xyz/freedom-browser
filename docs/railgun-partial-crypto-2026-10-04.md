@@ -44,7 +44,7 @@ artifact pin or runtime archive changes are involved.
 
 ## Native cryptographic evidence
 
-The [complete partial report](qualification/railgun-partial-crypto-2026-10-04.json)
+The [complete partial report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-crypto-2026-10-04.json)
 records a real production-witness/01x02 proof in **3,716 ms**, followed by cold
 stored-signature recovery in **3,378 ms**. Recovery makes **zero additional
 spending-key transfers**, retains the original intent and TXID, and passes fresh
@@ -81,7 +81,7 @@ fixture closes after readiness rejection. These paths can race. The report
 establishes refusal and an observed supervised exit, not a natural self-exit or
 the exact ordering of those events.
 
-The [complete legacy report](qualification/railgun-legacy-crypto-2026-10-04.json)
+The [complete legacy report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-legacy-crypto-2026-10-04.json)
 preserves transfer/unshield proving (**2,863 / 2,767 ms**) and four cold cases
 (**2,908 / 2,863 / 3,113 / 3,075 ms**). Stored-signature cases use no new spending
 key; the two explicitly requested legacy resign cases each use one. Both reports
@@ -97,7 +97,7 @@ This is engineering review, not an external security audit.
 
 Six additional fresh Electron runs preserve the connected Kohaku operations;
 each passes 19 enrolled-wallet baseline cases. The
-[compatibility index](qualification/railgun-partial-crypto-compatibility-2026-10-04.json)
+[compatibility index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-crypto-compatibility-2026-10-04.json)
 links the complete original reports:
 
 | Existing flow                     | Outcome               | Operation time | Source inventory |
@@ -120,7 +120,7 @@ changes. Public/TXID policy inputs, archives, pins and dependencies are unchange
 Main `3b4f62df` remains merged after a fresh fetch; its explicit node refresh
 remains current. The funded profile was not opened or refreshed.
 
-The [full frozen regression](qualification/railgun-partial-crypto-regression-2026-10-04.json)
+The [full frozen regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-crypto-regression-2026-10-04.json)
 passes **13,949 tests / 33 skipped**, **504 suites / five skipped**, in **504.063
 seconds**, with all **1,497 source/test/configuration hashes unchanged**. It retains
 the existing OpenLV exclusion and force-exit; natural application-handle drainage

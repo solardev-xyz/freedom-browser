@@ -21,7 +21,7 @@ identity. Callers must use the ledger for source access. Public/wallet stores
 retain their previous binding and do not acquire a source ledger. All of this is
 main-process wallet persistence; no renderer or generic RPC capability is added.
 
-[The actual Electron report](qualification/railgun-enrolled-source-2026-10-03.json)
+[The actual Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-enrolled-source-2026-10-03.json)
 uses a disposable public vault, the authenticated engine archive and real encrypted
 workers. Source, public and wallet IDs survive vault lock/reopen. A synthetic
 empty-log range survives source-ledger reopening and repeats with the same

@@ -32,8 +32,8 @@ window and signal checks. Five temporary baseline controls pass; removing accoun
 busy tracking exposes two failures, bypassing controller POI waiting exposes two,
 and removing the immediate rejection latch exposes one pre-key-refusal failure.
 
-Native [transfer](qualification/railgun-poi-account-drain-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-poi-account-drain-unshield-2026-10-04.json)
+Native [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-account-drain-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-account-drain-unshield-2026-10-04.json)
 qualifications exit successfully, each preserving 19 surrounding wallet scenarios
 and **130 matching source hashes**. Their production controller steps take
 **4,036/3,349 ms**. A resource-free synthetic POI barrier is held first after a

@@ -35,13 +35,13 @@ to bind the frontier, cursor, continuity and transcript. Any other state refuses
 
 Actual-engine evidence:
 
-- [Projection and paths](qualification/railgun-txid-projection-2026-10-03.json):
+- [Projection and paths](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-projection-2026-10-03.json):
   4,230 captured rows reproduce root
   `17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da`.
   The engine's independent proof verifier accepts paths at indices 0, 4,187,
   4,188 and 4,229. Page replay, fresh projection instances and corrupt-root
   refusal are exercised with zero guard violations.
-- [Encrypted storage](qualification/railgun-txid-storage-2026-10-03.json):
+- [Encrypted storage](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-storage-2026-10-03.json):
   all 43 captured pages run through actual guarded project/apply jobs and the
   encrypted worker. The 16,932-record, 6.3 MB logical store survives cold worker
   reopen with an identical digest, root and transcript. Recovery after an applied

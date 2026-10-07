@@ -69,7 +69,7 @@ this storage layer supplies the durable ordering needed to compose it safely.
 
 ## Qualification
 
-[The actual Electron report](qualification/railgun-capsule-storage-2026-10-03.json)
+[The actual Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-capsule-storage-2026-10-03.json)
 records 85 matching source hashes and 19 recovery runs over a disposable enrolled
 vault and archived synthetic public history. The added capsule lifecycle persists
 before the signing marker, preserves both across enrollment restart, binds the gates

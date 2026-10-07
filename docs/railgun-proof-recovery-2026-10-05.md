@@ -45,7 +45,7 @@ manufactures a completion token or submission authority.
 
 ## Native evidence
 
-The [qualification manifest](qualification/railgun-proof-recovery-2026-10-05.json)
+The [qualification manifest](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-2026-10-05.json)
 binds sources, tests, policies and six reports. Each case uses its own new disposable
 public-vector profile and real enrollment, account scanning, private signer,
 prover, verifier and encrypted stores. External chain, POI/list and transport
@@ -54,12 +54,12 @@ not proved by this fixture.
 
 | Input creator | Operation          |  Duration | Report                                                                           |
 | ------------- | ------------------ | --------: | -------------------------------------------------------------------------------- |
-| Shield        | Transfer           | 22,674 ms | [Report](qualification/railgun-proof-recovery-shield-transfer-2026-10-05.json)   |
-| Shield        | Full withdrawal    | 21,867 ms | [Report](qualification/railgun-proof-recovery-shield-unshield-2026-10-05.json)   |
-| Shield        | Partial withdrawal | 21,406 ms | [Report](qualification/railgun-proof-recovery-shield-partial-2026-10-05.json)    |
-| Transact      | Transfer           | 25,218 ms | [Report](qualification/railgun-proof-recovery-transact-transfer-2026-10-05.json) |
-| Transact      | Full withdrawal    | 24,017 ms | [Report](qualification/railgun-proof-recovery-transact-unshield-2026-10-05.json) |
-| Transact      | Partial withdrawal | 25,516 ms | [Report](qualification/railgun-proof-recovery-transact-partial-2026-10-05.json)  |
+| Shield        | Transfer           | 22,674 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-shield-transfer-2026-10-05.json)   |
+| Shield        | Full withdrawal    | 21,867 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-shield-unshield-2026-10-05.json)   |
+| Shield        | Partial withdrawal | 21,406 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-shield-partial-2026-10-05.json)    |
+| Transact      | Transfer           | 25,218 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-transact-transfer-2026-10-05.json) |
+| Transact      | Full withdrawal    | 24,017 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-transact-unshield-2026-10-05.json) |
+| Transact      | Partial withdrawal | 25,516 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-transact-partial-2026-10-05.json)  |
 
 All six reports have the same **532 unchanged source hashes**. After the genuine
 signer saves the signature, a fixture wrapper substitutes a refusal for the
@@ -105,7 +105,7 @@ use separate profiles.
 The direct suites pass **547 tests across nine suites** in 13.759 seconds; the
 dependent prepare/operate, controller, submission, own-operation, staging and
 Kohaku suites pass **374 tests across seven suites** in 8.56 seconds. Together
-these cover 921 distinct tests across 16 suites. Full lint is clean. The [repository coverage run](qualification/railgun-proof-recovery-regression-2026-10-05.json)
+these cover 921 distinct tests across 16 suites. Full lint is clean. The [repository coverage run](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-recovery-regression-2026-10-05.json)
 passes **15,178 tests**, with 33 skipped, across 511 passing and five skipped
 suites in **611.319 seconds**. The exact 1,371-file JavaScript/JSON inventory
 is unchanged before/after (SHA-256 `3552c205e29e5193cabe333c315e5609c725ce9c841f79c4e454e45345edb233`).

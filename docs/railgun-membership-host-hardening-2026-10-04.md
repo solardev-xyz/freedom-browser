@@ -38,8 +38,8 @@ fail because the fixture incorrectly receives a membership result. The productio
 supervisor is intentionally replaced in those controls; no production bypass is
 claimed. The final source and tests were frozen throughout qualification.
 
-Native [transfer](qualification/railgun-membership-hardening-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-membership-hardening-unshield-2026-10-04.json)
+Native [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-membership-hardening-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-membership-hardening-unshield-2026-10-04.json)
 compatibility pass 17 membership and seven recovery scenarios each in
 43,820/42,890 ms with 209 matching source hashes each. Genuine encrypted
 stores, service receipts and guarded utilities run against simulated chain/service/

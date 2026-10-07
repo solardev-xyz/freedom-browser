@@ -43,7 +43,7 @@ to a fresh source snapshot inside the final recovery phase.
 
 ## Validation
 
-The [evidence index](qualification/railgun-cold-submission-prerequisites-2026-10-05.json)
+The [evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-cold-submission-prerequisites-2026-10-05.json)
 records the exact four source/test hashes and root integration logs:
 
 - Journal, PPv2 reservation, retention and submission consumers: **214 tests in

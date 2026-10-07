@@ -68,7 +68,7 @@ Shield-c and Transact-a runs remain diagnostics under their earlier report-label
 source hash; their reports have not been relabeled. The final qualifier reports
 normal scan credit explicitly while keeping second-spend qualification false.
 
-The [evidence index](qualification/railgun-combined-change-integration-2026-10-05.json)
+The [evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-combined-change-integration-2026-10-05.json)
 records raw report hashes, source inventories, commands, targeted checks and
 preserved diagnostic outcomes. The reports use public test vectors and fresh
 disposable profiles. No funded profile or real service was accessed.

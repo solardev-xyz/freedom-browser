@@ -33,7 +33,7 @@ case triggers automatic retry or a direct-network fallback.
 
 Evidence:
 
-- [Actual host-journal qualification](qualification/railgun-txid-journal-2026-10-03.json)
+- [Actual host-journal qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-journal-2026-10-03.json)
   runs all 4,230 captured rows through the real guarded engine, encrypted worker
   and host journal. Controlled interruptions after prepare and after apply are
   followed by cold worker/journal reopen, replay and completion. Final root,
@@ -41,7 +41,7 @@ Evidence:
   component shutdowns at explicit boundaries, not OS-crash or power-loss tests.
   Root receipts in this fixture are explicitly controlled assertions; public
   generation identities and encryption keys are synthetic.
-- [Separate live root qualification](qualification/railgun-txid-root-2026-10-03.json)
+- [Separate live root qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-root-2026-10-03.json)
   obtains real POI-node acceptance for the reconstructed root at index 4,229
   and the known historical root at index 4,187, then submits an invalid root at
   that same historical index and receives rejection.

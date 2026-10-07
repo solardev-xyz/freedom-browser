@@ -75,7 +75,7 @@ Lint is clean. Claude reviewed the implementation and identified the additional
 admission boundaries, which were fixed and reviewed again. This is engineering
 review, not an external security audit.
 
-The [full frozen regression](qualification/railgun-partial-structure-regression-2026-10-04.json)
+The [full frozen regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-structure-regression-2026-10-04.json)
 passes **13,872 tests / 33 skipped**, **503 suites / five skipped**, in **557.035
 seconds**, with all **1,496 source/test/configuration hashes unchanged**. The
 existing OpenLV exclusion and force-exit remain; this suite does not qualify
@@ -93,7 +93,7 @@ source. Each passes the 19 surrounding enrolled-wallet baseline cases:
 | Shield input → private transfer   | Held review cancelled |       3,514 ms |              133 |
 | Public native-ETH Shield          | Acknowledged          |       1,874 ms |              169 |
 
-The [native evidence index](qualification/railgun-partial-structure-native-2026-10-04.json)
+The [native evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-structure-native-2026-10-04.json)
 retains each complete operation result and points to byte-identical original
 reports. All listed source hashes match the frozen working tree. Inventories
 identify source versions; inclusion does not prove execution of every module.

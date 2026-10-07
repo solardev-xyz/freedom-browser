@@ -125,8 +125,8 @@ when its earlier checks succeeded.
   (2), falsy visitor exceptions (5), and corrupt ledger suffix (1). The healthy
   suffix counterpart still passes. The first suffix mutation matched two sites
   and refused to run; only the corrected single-site control is counted.
-- Native Electron [transfer](qualification/railgun-completed-source-transfer-2026-10-04.json)
-  and [unshield](qualification/railgun-completed-source-unshield-2026-10-04.json)
+- Native Electron [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-source-transfer-2026-10-04.json)
+  and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-source-unshield-2026-10-04.json)
   each pass 19 groups: six existing source, three destination and ten completed
   snapshot groups. They retain 140 matching source hashes, taking 3,658/3,088 ms.
   Actual enrollment, encrypted storage, journal, public planner and coordinator
@@ -148,12 +148,12 @@ when its earlier checks succeeded.
 - The pending-checkpoint, expiry, event-boundary overlap and RPC fatal-category
   cases are unit-level evidence. Native fatal coverage is the broker case with
   `rpcFailure: null`; no native response-corruption category claim is made.
-- Fresh-policy retained-history [transfer](qualification/railgun-completed-history-transfer-2026-10-04.json)
-  and [unshield](qualification/railgun-completed-history-unshield-2026-10-04.json)
+- Fresh-policy retained-history [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-history-transfer-2026-10-04.json)
+  and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-history-unshield-2026-10-04.json)
   preserve 17 cases and 204 hashes in 130,246/128,196 ms. These compatibility
   fixtures explicitly simulate destination binding and services; they do not
   exercise the new completed-only path or real chain-ID handshakes.
-- Fresh enrolled [staging](qualification/railgun-completed-staging-2026-10-04.json)
+- Fresh enrolled [staging](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-staging-2026-10-04.json)
   preserves 19 surrounding cases and 130 hashes; its handoff takes 4,198 ms with
   no spending key, signer or external transport admission in that stage.
 - All five report inventories were rehashed and copied byte-for-byte. Initial

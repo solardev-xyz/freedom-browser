@@ -2,7 +2,7 @@
 
 [The read-only probe](../scripts/inspect-railgun-sepolia.js) captures candidate deployment state through Sentio and Tenderly over direct HTTPS. Both providers agree at finalized block **11,829,346**, hash `0xbac192ba1a044d54ba19764c6e48eadb0b6a46e0a7631d32fa3c3236cbcc7065`. Every code, storage and contract read uses EIP-1898 with that block hash and `requireCanonical: true`; both providers must still return that hash at the selected height afterward. This is corroborated RPC data, not a verified chain proof or a complete scan.
 
-The [source-hashed report](qualification/railgun-sepolia-deployment-2026-10-02.json) records:
+The [source-hashed report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-sepolia-deployment-2026-10-02.json) records:
 
 | Candidate | Address |
 | --- | --- |

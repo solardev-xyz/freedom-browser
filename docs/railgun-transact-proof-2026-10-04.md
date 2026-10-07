@@ -102,10 +102,10 @@ The real proof/store segment takes 4,972–5,049 ms.
 
 | Creator / own output | Total elapsed | Report |
 | --- | ---: | --- |
-| Self / transfer | 82,208 ms | [Report](qualification/railgun-transact-proof-transfer-self-2026-10-04.json) |
-| Self / unshield | 81,100 ms | [Report](qualification/railgun-transact-proof-unshield-self-2026-10-04.json) |
-| Foreign / transfer | 83,787 ms | [Report](qualification/railgun-transact-proof-transfer-foreign-2026-10-04.json) |
-| Foreign / unshield | 82,732 ms | [Report](qualification/railgun-transact-proof-unshield-foreign-2026-10-04.json) |
+| Self / transfer | 82,208 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-proof-transfer-self-2026-10-04.json) |
+| Self / unshield | 81,100 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-proof-unshield-self-2026-10-04.json) |
+| Foreign / transfer | 83,787 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-proof-transfer-foreign-2026-10-04.json) |
+| Foreign / unshield | 82,732 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-proof-unshield-foreign-2026-10-04.json) |
 
 The matrix exercises self/foreign creator × own transfer/unshield with actual encrypted
 accounts, membership, viewing proof worker, independent keyless verifier and
@@ -130,8 +130,8 @@ equality assertion after reopening. Reopen intentionally rotates the lease and
 rewrites the encrypted floor. Those runs produced no reports and are excluded;
 production was unchanged for the corrected reruns.
 
-Final-tree Shield intents-mode [transfer](qualification/railgun-transact-proof-shield-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-transact-proof-shield-unshield-2026-10-04.json)
+Final-tree Shield intents-mode [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-proof-shield-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-proof-shield-unshield-2026-10-04.json)
 runs pass in 131,319 / 129,842 ms with 212 matching source hashes each. They retain
 19 membership, seven recovery, thirteen proof, eight root-check and six intent
 scenarios, including a genuinely changed proof rejected by independent verification

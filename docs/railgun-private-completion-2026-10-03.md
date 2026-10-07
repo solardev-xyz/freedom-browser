@@ -61,8 +61,8 @@ not a claim that its current logic matches the pinned deployment bytecode.
 
 ## Qualification
 
-The [transfer](qualification/railgun-private-completion-transfer-2026-10-03.json)
-and [unshield](qualification/railgun-private-completion-unshield-2026-10-03.json)
+The [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-completion-transfer-2026-10-03.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-completion-unshield-2026-10-03.json)
 reports each retain 94 matching source hashes and 19 existing enrolled runs.
 The new controller portions finish in 3,770 ms and 3,290 ms respectively.
 These synthetic enrolled runs exercise actual vault signing, isolated

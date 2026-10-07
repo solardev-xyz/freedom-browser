@@ -85,8 +85,8 @@ The native fixture does not inject those storage faults.
 
 All 394 focused tests across seven suites pass, including 128 new store tests and
 eight new enrollment cases. Lint is clean. The final native
-[transfer](qualification/railgun-poi-intents-transfer-2026-10-04.json) and
-[unshield](qualification/railgun-poi-intents-unshield-2026-10-04.json) reports each
+[transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-intents-transfer-2026-10-04.json) and
+[unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-intents-unshield-2026-10-04.json) reports each
 pass six storage, eight checks, 13 proof, seven recovery and 17 membership cases
 with 191 source hashes verified against this tree. Elapsed times are 115,611 and
 113,491 ms; proving peaks are 477,691,904 and 431,833,088 bytes. These include the

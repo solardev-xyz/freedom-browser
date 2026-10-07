@@ -9,8 +9,8 @@ persisted its attempted hash and calldata-derived intent. Completion reuse is
 refused. A fresh public-address context reopens the journal and confirms that the
 unresolved attempt still blocks another transaction.
 
-The final [acknowledged transfer report](qualification/railgun-enrolled-submission-transfer-2026-10-03.json)
-and [lost-acknowledgment unshield report](qualification/railgun-enrolled-submission-unshield-uncertain-2026-10-03.json)
+The final [acknowledged transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-enrolled-submission-transfer-2026-10-03.json)
+and [lost-acknowledgment unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-enrolled-submission-unshield-uncertain-2026-10-03.json)
 each record 109 source hashes matching the qualification tree and 19 existing
 enrolled recovery runs. Their additional combined controller portions take
 4,271 ms and 3,839 ms respectively. Both record exactly one simulated raw send,

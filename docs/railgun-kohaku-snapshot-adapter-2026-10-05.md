@@ -35,7 +35,7 @@ Root checks pass **510 tests across fifteen suites in 1.355 seconds**, with natu
 exit and no force-exit. Full lint passes with `--max-warnings=0`; all six added
 files pass formatting. Logs and original exits are recorded separately from the
 older native/full-suite checkpoints in the
-[unit evidence record](qualification/railgun-kohaku-snapshot-unit-2026-10-05.json).
+[unit evidence record](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-snapshot-unit-2026-10-05.json).
 No fresh full regression is claimed here.
 
 The new component contributes 89 tests. Shared vectors cover both hosts; the

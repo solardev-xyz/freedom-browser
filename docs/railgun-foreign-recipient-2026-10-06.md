@@ -152,7 +152,7 @@ so an existing account needs a fresh wallet generation.
 ## Open questions
 
 1. Native Electron qualification ran at `ea9cbdc0`; see the
-   [native archive](qualification/railgun-foreign-recipient-native-2026-10-07/README.md).
+   [native archive](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-foreign-recipient-native-2026-10-07/README.md).
    It covers Shield and Transact inputs, warm and fresh-process restart runs
    (same and advanced root), and a self-transfer regression. Each foreign case
    covers signing, proving and original-signature recovery of a transfer to

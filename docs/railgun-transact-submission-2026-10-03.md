@@ -7,8 +7,8 @@ production transaction service and encrypted EOA submission journal.
 
 | Synthetic run | Combined staging/controller/submission | Result |
 | --- | ---: | --- |
-| [Transfer](qualification/railgun-transact-submission-transfer-2026-10-03.json) | 7,540 ms | Simulated acknowledgment; submitted journal record |
-| [Unshield](qualification/railgun-transact-submission-unshield-uncertain-2026-10-03.json) | 7,178 ms | Simulated lost acknowledgment; attempted record and authenticated hash retained |
+| [Transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-submission-transfer-2026-10-03.json) | 7,540 ms | Simulated acknowledgment; submitted journal record |
+| [Unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-submission-unshield-uncertain-2026-10-03.json) | 7,178 ms | Simulated lost acknowledgment; attempted record and authenticated hash retained |
 
 Both reports contain 19 recovery runs and 130 source hashes matching the frozen
 qualification tree. Timings are single local observations from concurrent runs,

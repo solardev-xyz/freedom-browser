@@ -43,9 +43,9 @@ hashes. Neither report exercises the watchdog's forced-exit path.
 
 Evidence:
 
-- [Interrupted original observation](qualification/railgun-live-interrupted-2026-10-03.json):
+- [Interrupted original observation](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-live-interrupted-2026-10-03.json):
   the original saved report, intentionally lacking a final pass/failure result.
-- [Bounded failed continuation](qualification/railgun-live-bounded-failure-2026-10-03.json):
+- [Bounded failed continuation](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-live-bounded-failure-2026-10-03.json):
   eight recovered/advanced ranges and the final refusal.
 - Transport/source focused checks passed under Electron's Node 24.21.0.
 - Native full suite: 7,993 passed, 33 skipped, 382 passing suites; lint clean.
