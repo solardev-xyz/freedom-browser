@@ -1572,18 +1572,47 @@ const PROBES = {
   },
   dependency: async (m) => {
     const ethersPackage = JSON.stringify({ name: 'ethers', version: '6.17.0' });
-    const lock = (version) => JSON.stringify({ packages: { 'node_modules/ethers': { version } } });
+    const adapterName = '@freedom/railgun-kohaku-adapter';
+    const adapterPackage = JSON.stringify({ name: adapterName, version: '0.1.0' });
+    const integrity = 'sha512-' + Buffer.alloc(64, 7).toString('base64');
+    const lock = (version, adapter = { version: '0.1.0', integrity }) =>
+      JSON.stringify({
+        packages: { 'node_modules/ethers': { version }, ['node_modules/' + adapterName]: adapter },
+      });
     expect(
-      m.dependencyIdentity({ ethersPackage, packageLock: lock('6.17.0'), electronVersion: '1.0.0' })
+      m.dependencyIdentity({
+        ethersPackage,
+        adapterPackage,
+        packageLock: lock('6.17.0'),
+        electronVersion: '1.0.0',
+      })
     ).toEqual({
       ethersVersion: '6.17.0',
+      railgunKohakuAdapter: { version: '0.1.0', integrity },
       packageLockSha256: require('crypto')
         .createHash('sha256')
         .update(lock('6.17.0'))
         .digest('hex'),
       electronVersion: '1.0.0',
     });
-    expect(() => m.dependencyIdentity({ ethersPackage, packageLock: lock('6.16.0') })).toThrow();
+    expect(() =>
+      m.dependencyIdentity({ ethersPackage, adapterPackage, packageLock: lock('6.16.0') })
+    ).toThrow();
+    for (const [installed, locked] of [
+      [adapterPackage, { version: '0.1.1', integrity }],
+      [adapterPackage, { version: '0.1.0', integrity: 'sha1-' + 'A'.repeat(27) + '=' }],
+      [adapterPackage, { version: '0.1.0' }],
+      [adapterPackage, null],
+      [JSON.stringify({ name: 'other', version: '0.1.0' }), { version: '0.1.0', integrity }],
+      [undefined, { version: '0.1.0', integrity }],
+    ])
+      expect(() =>
+        m.dependencyIdentity({
+          ethersPackage,
+          adapterPackage: installed,
+          packageLock: lock('6.17.0', locked),
+        })
+      ).toThrow();
   },
   'shield-input': async (m) => {
     const weth = { __type: 'erc20', contract: pins.wrappedNative };
@@ -2014,6 +2043,18 @@ const MUTATIONS = [
     'ethers not bound to the lock',
     "check(lock?.packages?.['node_modules/ethers']?.version === installed.version, 'dependencies');",
     'void 0;',
+    'dependency',
+  ],
+  [
+    'Kohaku adapter not bound to the lock',
+    'locked?.version === adapter.version &&',
+    '',
+    'dependency',
+  ],
+  [
+    'Kohaku adapter integrity unchecked',
+    '/^sha512-[A-Za-z0-9+/]{86}==$/.test(locked.integrity)',
+    'true',
     'dependency',
   ],
   [
