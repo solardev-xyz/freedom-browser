@@ -65,6 +65,11 @@ jest.mock('../networks/private-rpc', () => ({
   },
 }));
 jest.mock('./signers', () => ({ getSigner: () => mock.signer }));
+// The vault's public wallet-0 record, read by the live probe through production.
+jest.mock('../identity-manager', () => ({
+  getWalletRecord: (index) => (index === 0 ? mock.walletRecord : null),
+  WALLET_TYPES: { MNEMONIC: 'mnemonic' },
+}));
 jest.mock('./private-transaction-network', () => ({
   getPrivateTransactionNetwork: () => {
     mock.eoa.push('network');
@@ -577,6 +582,7 @@ function probeContext() {
     inspect: async () => ({ records: 1, signatures: 1, proofs: 1 }),
   };
   mock.enrollment.openPrivateRecoveryStores = async () => ({ reservations, capsules });
+  mock.walletRecord = { index: 0, type: 'mnemonic', address: owner };
   const checkpoint = { to: { ...PROBE_ANCHOR }, state: { storeId: 'store', trees: [] } };
   const publicAccount = {
     generationId: 'generation',
@@ -693,7 +699,24 @@ test('a passing probe binds the current checkpoint and discloses the nullifier l
   ]);
   expect(mock.eoa).toEqual([]);
   expect(ctx.report.preflightBinding.minimumBlock).toBe(PROBE_ANCHOR.number);
+  expect(ctx.report.submitterMetadata).toEqual({
+    walletIndex: 0,
+    type: 'mnemonic',
+    address: 'enrolled-eoa',
+  });
   expect(live.assertAggregateReport(ctx.report)).toBe(true);
+});
+
+test("a probe on a vault without production's submitter metadata refuses before the preflight", async () => {
+  setup();
+  const ctx = probeContext();
+  mock.walletRecord = null;
+  await expect(live.RUNNERS['preflight-probe'](ctx)).rejects.toMatchObject({
+    code: 'RAILGUN_LIVE_JOURNEY_REFUSED',
+    step: 'submitter-metadata',
+  });
+  expect(ctx.report.preflight).toBeUndefined();
+  expect(mock.requests.filter((v) => v.startsWith('private-preflight:'))).toEqual([]);
 });
 
 test('a probe minimum block above the provider anchor refuses as stale', async () => {

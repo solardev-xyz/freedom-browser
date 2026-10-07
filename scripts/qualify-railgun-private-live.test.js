@@ -1721,6 +1721,9 @@ const journalIntentOf = (tx) => ({
       .digest('hex'),
 });
 const PROBE_AT = '2026-10-07T12:00:00.000Z';
+// The one module recover-submit loads before its reservation: production's
+// public submitter metadata reader.
+const SUBMISSION_MODULE = 'wallet/railgun-private-submission';
 const SCAN_AT = '2026-10-07T11:30:00.000Z';
 const probeReport = (extra = {}) =>
   journeyReport('preflight-probe', {
@@ -1736,6 +1739,7 @@ const probeReport = (extra = {}) =>
       diagnostic: null,
       nullifierQuery: 'queried',
     },
+    submitterMetadata: { walletIndex: 0, type: 'mnemonic', address: 'enrolled-eoa' },
     immutables: { unchanged: true },
     ...extra,
   });
@@ -1937,6 +1941,8 @@ function heldWorld({
   journaledIntent = {},
   journaled,
   intentFails = false,
+  // Production's public wallet-0 record, or the error its reader throws.
+  submitterMetadata = { index: 0, type: 'mnemonic', address: OWNER },
 } = {}) {
   const calls = {
     timeline: [],
@@ -2162,6 +2168,11 @@ function heldWorld({
     // Mirrors production order: disclosure review, preflight, transaction
     // review, then the journal write before the one send.
     'wallet/railgun-private-submission': {
+      readRailgunSubmitterMetadata: () => {
+        log('submitter-metadata');
+        if (submitterMetadata instanceof Error) throw submitterMetadata;
+        return Object.freeze({ ...submitterMetadata });
+      },
       getRailgunPrivatePreflightDiagnostic: realSubmission.getRailgunPrivatePreflightDiagnostic,
       getRailgunPrivateSubmissionDiagnostic: (result) => diagnostics.get(result) ?? null,
       getRailgunPrivateSubmissionTiming: (result) => timings.get(result) ?? null,
@@ -2899,6 +2910,14 @@ const PROBES = {
     no('recover-submit', probeReport({ preflight: { passed: false, acquireCalls: 1 } }));
     no('recover-submit', probeReport({ preflight: { passed: true, acquireCalls: 2 } }));
     no('recover-submit', probeReport({ immutables: { unchanged: false } }));
+    // Only a probe that found production's submitter metadata admits it.
+    no('recover-submit', probeReport({ submitterMetadata: undefined }));
+    no(
+      'recover-submit',
+      probeReport({
+        submitterMetadata: { walletIndex: 0, type: 'ledger', address: 'enrolled-eoa' },
+      })
+    );
     // Only a completed probe whose result is a passed preflight admits it.
     no('recover-submit', probeReport({ result: 'preflight-refused' }));
     no('recover-submit', probeReport({ result: 'not-completed' }));
@@ -3306,6 +3325,68 @@ const PROBES = {
       expect(await settle(m.RUNNERS['preflight-probe'](ctx))).toEqual(refused(step));
       expect(calls.timeline).not.toContain('identity-open');
     }
+  },
+  // Production's recovered history binds the hold's submitter to the vault's
+  // public wallet-0 record; a vault made without identity-manager has none.
+  'probe-submitter-metadata': async (m) => {
+    const passed = heldWorld();
+    await m.RUNNERS['preflight-probe'](passed.ctx);
+    expect(passed.ctx.report.submitterMetadata).toEqual({
+      walletIndex: 0,
+      type: 'mnemonic',
+      address: 'enrolled-eoa',
+    });
+    const { timeline } = passed.calls;
+    expect(timeline.indexOf('submitter-metadata')).toBeGreaterThan(
+      timeline.indexOf('identity-open')
+    );
+    expect(timeline.indexOf('submitter-metadata')).toBeLessThan(
+      timeline.indexOf('recovery-stores')
+    );
+    for (const submitterMetadata of [
+      Object.assign(Error('secret /Users/someone ' + NULLIFIER), { code: 'ERR_ASSERTION' }),
+      { index: 0, type: 'mnemonic', address: '0x' + '98'.repeat(20) },
+      { index: 0, type: 'mnemonic', address: OWNER.toUpperCase().replace('0X', '0x') },
+      { index: 0, type: 'ledger', address: OWNER },
+      { index: 1, type: 'mnemonic', address: OWNER },
+      null,
+    ]) {
+      const { ctx, calls, constraints } = heldWorld({ submitterMetadata });
+      expect(await settle(m.RUNNERS['preflight-probe'](ctx))).toEqual(
+        refused('submitter-metadata')
+      );
+      // Before any destination, hold read, preflight or nullifier query.
+      expect(constraints).toEqual([]);
+      expect(calls.timeline).not.toContain('recovery-stores');
+      expect(calls.preflights).toEqual([]);
+      expect(ctx.report.submitterMetadata).toBeUndefined();
+      expect(withoutSecrets(ctx.report)).toBe(true);
+    }
+  },
+  'recover-submitter-metadata': async (m) => {
+    const absent = Object.assign(Error('missing'), { code: 'ERR_ASSERTION' });
+    for (const submitterMetadata of [
+      absent,
+      { index: 0, type: 'mnemonic', address: '0x' + '98'.repeat(20) },
+    ]) {
+      const { ctx, calls } = heldWorld({ mode: 'recover-submit', submitterMetadata });
+      expect(await settle(m.RUNNERS['recover-submit'](ctx))).toEqual(refused('submitter-metadata'));
+      // Refused before its reservation: the campaign's one allowance is kept.
+      expect(calls.timeline).toEqual(['submitter-metadata']);
+      expect([calls.loaded, calls.network, calls.submit]).toEqual([[SUBMISSION_MODULE], [], []]);
+      expect(fs.existsSync(m.recoveryLedgerPath(ctx.args.profile))).toBe(false);
+      expect(m.assertRecoveryAdmissible(ctx)).toBeUndefined();
+      expect(ctx.report.reservation).toBeUndefined();
+      expect(ctx.report.spend).toMatchObject({ attempted: false, journaled: false });
+    }
+    // Once present it is read before the reservation and kept in the report.
+    const { ctx } = heldWorld({ mode: 'recover-submit' });
+    await m.RUNNERS['recover-submit'](ctx);
+    expect(ctx.report.submitterMetadata).toEqual({
+      walletIndex: 0,
+      type: 'mnemonic',
+      address: 'enrolled-eoa',
+    });
   },
   'recover-output': async (m) => {
     const args = (output, previous = '/w/probe/report.json', previousSha = PROBE_SHA) => [
@@ -3988,9 +4069,11 @@ const PROBES = {
     await m.RUNNERS['recover-submit'](ctx);
     expect(ctx.report.passed).toBe(true);
     expect(calls.submit).toHaveLength(1);
-    // Only the synced reservation precedes the account, POI, nullifier and EOA work.
+    // Only production's public submitter metadata and the synced reservation
+    // precede the account, POI, nullifier and EOA work.
     const work = calls.timeline.indexOf('identity-open');
     expect(calls.timeline.slice(0, work)).toEqual([
+      'submitter-metadata',
       'ledger-mkdir',
       'ledger-directory-synced',
       'ledger-create',
@@ -4156,8 +4239,12 @@ const PROBES = {
     expect(await settle(m.RUNNERS['recover-submit'](loser.ctx))).toEqual(
       refused('recovery-attempted')
     );
-    expect(loser.calls.timeline).toEqual(['ledger-mkdir', 'ledger-directory-synced']);
-    expect([loser.calls.loaded, loser.calls.network]).toEqual([[], []]);
+    expect(loser.calls.timeline).toEqual([
+      'submitter-metadata',
+      'ledger-mkdir',
+      'ledger-directory-synced',
+    ]);
+    expect([loser.calls.loaded, loser.calls.network]).toEqual([[SUBMISSION_MODULE], []]);
     expect(winner.calls.timeline).toEqual([
       'ledger-create',
       'ledger-pending-synced',
@@ -4189,11 +4276,12 @@ const PROBES = {
     });
     expect(await settle(m.RUNNERS['recover-submit'](torn.ctx))).toEqual(refused('recovery-ledger'));
     expect(torn.calls.timeline).toEqual([
+      'submitter-metadata',
       'ledger-mkdir',
       'ledger-directory-synced',
       'ledger-create',
     ]);
-    expect(torn.calls.loaded).toEqual([]);
+    expect(torn.calls.loaded).toEqual([SUBMISSION_MODULE]);
     const afterTorn = heldWorld({ mode: 'recover-submit', profile: torn.ctx.args.profile });
     expect(await settle(m.RUNNERS['recover-submit'](afterTorn.ctx))).toEqual(
       refused('recovery-ledger')
@@ -4312,7 +4400,10 @@ const PROBES = {
     expect(await settle(m.RUNNERS['recover-submit'](swapped.ctx))).toEqual(
       refused('recovery-ledger')
     );
-    expect([swapped.calls.timeline, swapped.calls.loaded]).toEqual([[], []]);
+    expect([swapped.calls.timeline, swapped.calls.loaded]).toEqual([
+      ['submitter-metadata'],
+      [SUBMISSION_MODULE],
+    ]);
     expect(fs.readdirSync(swappedIn)).toEqual([]);
   },
   'recover-ledger-binding': async (m) => {
@@ -4511,8 +4602,12 @@ const PROBES = {
     expect(await settle(m.RUNNERS['recover-submit'](denied.ctx))).toEqual(
       refused('recovery-ledger')
     );
-    expect(denied.calls.timeline).toEqual(['ledger-mkdir', 'ledger-directory-synced']);
-    expect(denied.calls.loaded).toEqual([]);
+    expect(denied.calls.timeline).toEqual([
+      'submitter-metadata',
+      'ledger-mkdir',
+      'ledger-directory-synced',
+    ]);
+    expect(denied.calls.loaded).toEqual([SUBMISSION_MODULE]);
     expect(fs.readdirSync(denied.ctx.args.profile + '.l-a-recovery-ledger')).toEqual([]);
     expect(m.assertRecoveryAdmissible(denied.ctx)).toBeUndefined();
   },
@@ -5055,6 +5150,36 @@ const MUTATIONS = [
     'recover-predecessor',
   ],
   ['future probe admitted', 'at <= now &&', 'true &&', 'recover-predecessor'],
+  [
+    'probe skips the submitter metadata',
+    "report.submitterMetadata = assertSubmitterMetadata(ctx);\n  ctx.stage = 'binding';",
+    "ctx.stage = 'binding';",
+    'probe-submitter-metadata',
+  ],
+  [
+    'recover-submit skips the submitter metadata',
+    'report.submitterMetadata = assertSubmitterMetadata(ctx);\n      // Nothing of the attempt',
+    '// Nothing of the attempt',
+    'recover-submitter-metadata',
+  ],
+  [
+    'submitter metadata unbound to the enrolled EOA',
+    'metadata.address === ctx.owner,',
+    'true,',
+    'probe-submitter-metadata',
+  ],
+  [
+    'submitter metadata kind unchecked',
+    "metadata.type === 'mnemonic' &&",
+    'true &&',
+    'probe-submitter-metadata',
+  ],
+  [
+    'probe without submitter metadata admitted',
+    "check(same(previous.submitterMetadata, SUBMITTER_METADATA), 'predecessor-submitter-metadata');",
+    'void 0;',
+    'recover-predecessor',
+  ],
   [
     'non-canonical probe time admitted',
     'new Date(at).toISOString() === observedAt &&',

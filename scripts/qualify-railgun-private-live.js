@@ -21,14 +21,18 @@
  * - preflight-probe: one production private preflight for the held input, with
  *   no account wallet, proof, EOA request, calldata, signing or broadcast. Its
  *   passed means the probe completed; result says whether the preflight passed,
- *   and scope lists what the probe does not qualify.
+ *   and scope lists what the probe does not qualify. Before any destination
+ *   or preflight it requires the vault's public wallet-0 record that production
+ *   binds to the hold's submitter (submitterMetadata); a vault created by
+ *   create-railgun-test-profile.js has none until separately provisioned.
  * - recover-submit: the production recovered submission of the held proof,
  *   reusing its original spending signature; at most one journaled send. One
  *   allowance per canonical profile campaign, bound to the one pinned held
  *   report: not a reusable facility for an arbitrary hold. The profile's
  *   campaign directory PROFILE.l-a-recovery-ledger holds at most its one
  *   allowance file, recover-submit.jsonl, named by no report digest. Before
- *   unlock and Tor the mode refuses a spent or damaged campaign; before any
+ *   unlock and Tor the mode refuses a spent or damaged campaign; it refuses a
+ *   profile without that submitter metadata before reserving; before any
  *   account, POI, nullifier or EOA work it reserves the allowance durably. Any
  *   existing allowance or other campaign entry refuses, whatever its probe,
  *   output, held report digest or outcome, and consumption fails closed: an
@@ -779,6 +783,8 @@ function assertPredecessor(mode, previous, { scanSha, scan, previousSha, now = D
         'predecessor-preflight'
       );
       check(previous.result === 'preflight-passed', 'predecessor-preflight');
+      // Only a probe that found production's submitter metadata admits.
+      check(same(previous.submitterMetadata, SUBMITTER_METADATA), 'predecessor-submitter-metadata');
       check(previous.immutables?.unchanged === true, 'predecessor');
       check(probeFresh(previous.observedAt, now), 'predecessor-stale');
       check(
@@ -2026,6 +2032,36 @@ const HELD_SUMMARY = Object.freeze({
   provedTransactionPresent: true,
   journaled: false,
 });
+// Production's recovered history binds the hold's submitter to the vault's
+// public wallet-0 record (readRailgunSubmitterMetadata) before any disclosure,
+// without borrowing the EOA key. A vault made by create-railgun-test-profile.js
+// has no such record, so that history stage refuses. Read here through the same
+// production reader, against the unlocked EOA that readHeld binds to the hold:
+// by the probe before any destination or preflight, and by recover-submit
+// before its one attempt is reserved. Provisioning the record is a separately
+// authorized profile step, never done here.
+const SUBMITTER_METADATA = Object.freeze({
+  walletIndex: 0,
+  type: 'mnemonic',
+  address: 'enrolled-eoa',
+});
+function assertSubmitterMetadata(ctx) {
+  let metadata;
+  try {
+    metadata = ctx.load('wallet/railgun-private-submission').readRailgunSubmitterMetadata();
+  } catch {
+    throw refusal('submitter-metadata');
+  }
+  check(
+    plainObject(metadata) &&
+      metadata.index === 0 &&
+      metadata.type === 'mnemonic' &&
+      ADDRESS.test(ctx.owner) &&
+      metadata.address === ctx.owner,
+    'submitter-metadata'
+  );
+  return { ...SUBMITTER_METADATA };
+}
 // Aggregate hold counts; a lease rewrite or floor advance leaves them unchanged.
 async function holdCounts({ reservations, capsules }) {
   // [report key, store key]: the report never names a proof field.
@@ -2303,6 +2339,8 @@ async function preflightProbe(ctx) {
   assertHeldJournal(before, ctx.chain);
   report.liveness = describeLiveness({ holdCreated: true, spend: { journaled: false } });
   await openAccount(ctx);
+  ctx.stage = 'submitter-metadata';
+  report.submitterMetadata = assertSubmitterMetadata(ctx);
   ctx.stage = 'binding';
   const current = currentPreflightBinding(ctx);
   const holdAnchor = previous.scan.anchor.number;
@@ -3094,6 +3132,12 @@ const RUNNERS = {
     let reservation = null,
       failure = null;
     try {
+      // Read-only and local, after the campaign admits: a profile whose
+      // submitter metadata production's history would refuse keeps its allowance.
+      ctx.stage = 'reservation';
+      assertRecoveryAdmissible(ctx);
+      ctx.stage = 'submitter-metadata';
+      report.submitterMetadata = assertSubmitterMetadata(ctx);
       // Nothing of the attempt runs before its durable one-use reservation.
       ctx.stage = 'reservation';
       reservation = reserveRecoveryAttempt(ctx);
