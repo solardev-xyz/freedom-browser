@@ -909,10 +909,9 @@ function cacheFixture() {
     fs.mkdtempSync(path.join(require('os').tmpdir(), 'railgun-cache-control-'))
   );
   const root = path.join(base, 'copy'),
-    dep = path.join(base, 'shared', 'node_modules');
+    dep = path.join(root, 'node_modules');
   fs.mkdirSync(root, { recursive: true });
   fs.mkdirSync(dep, { recursive: true });
-  fs.symlinkSync(dep, path.join(root, 'node_modules'));
   const electron = {},
     cache = {};
   const add = (base, relative, bytes = 'module.exports = {};') => {
@@ -925,10 +924,11 @@ function cacheFixture() {
   add(root, 'scripts/fixture.js');
   add(root, 'src/main/fixture.js');
   add(dep, 'one/index.js');
-  const containerPath = path.join(
-    dep,
-    'electron/dist/Electron.app/Contents/Resources/default_app.asar'
-  );
+  const contents = path.join(base, 'runtime/Electron.app/Contents');
+  const executable = path.join(contents, 'MacOS/Electron');
+  fs.mkdirSync(path.dirname(executable), { recursive: true });
+  fs.writeFileSync(executable, 'synthetic executable, never executed');
+  const containerPath = path.join(contents, 'Resources/default_app.asar');
   fs.mkdirSync(path.dirname(containerPath), { recursive: true });
   const container = Buffer.alloc(110862, 0x63),
     member = Buffer.alloc(95, 0x6d),
@@ -990,6 +990,7 @@ function cacheFixture() {
     flags,
     containerPath,
     memberPath,
+    executable,
     overrides,
   };
 }
@@ -1001,7 +1002,12 @@ test('publication cache classifies exact copied application, canonical dependenc
   f.add(f.dep, 'sqlite/prebuilds/test.node', 'synthetic binary bytes only');
   for (const name of ['electron', 'electron/common', 'electron/main'])
     f.cache[name] = { id: 'electron', filename: name, loaded: true, exports: f.electron };
-  const result = inspect({ root: f.root, cache: f.cache, electron: f.electron });
+  const result = inspect({
+    root: f.root,
+    cache: f.cache,
+    electron: f.electron,
+    executable: f.executable,
+  });
   expect(result.scope).toBe('main-require-cache-at-publication');
   expect(result.historicalExecutionCoverage).toBe(false);
   expect(result.utilityImportCoverage).toBe(false);
@@ -1034,7 +1040,11 @@ test.each([
   'virtual-id',
   'virtual-exports',
   'virtual-shadow',
-  'mount-directory',
+  'mount-symlink',
+  'hardlink',
+  'copied-engine',
+  'nested-dependency',
+  'copied-runtime',
   'mount-relative',
 ])('publication cache refuses %s', (name) => {
   const f = cacheFixture(),
@@ -1049,7 +1059,8 @@ test.each([
     f.cache[alias] = { id: alias, filename: alias, loaded: true };
   }
   if (name === 'dependency-alias') {
-    const filename = path.join(f.root, 'node_modules/one/index.js');
+    const filename = path.join(f.dep, 'alias.js');
+    fs.symlinkSync(path.join(f.dep, 'one/index.js'), filename);
     f.cache[filename] = { id: filename, filename, loaded: true };
   }
   if (name === 'wrong-app-extra') f.add(f.root, 'docs/unreviewed.json', '{}');
@@ -1063,17 +1074,25 @@ test.each([
     if (name === 'virtual-exports') f.cache[key].exports = {};
     if (name === 'virtual-shadow') fs.writeFileSync(path.join(f.root, 'electron'), 'shadow');
   }
-  if (name === 'mount-directory') {
-    // Separate root avoids deleting the real synthetic mount.
+  if (name === 'mount-symlink') {
     f.root = path.join(f.base, 'other-copy');
-    fs.mkdirSync(path.join(f.root, 'node_modules'), { recursive: true });
+    fs.mkdirSync(f.root);
+    fs.symlinkSync(f.dep, path.join(f.root, 'node_modules'));
   }
+  if (name === 'hardlink')
+    fs.linkSync(path.join(f.dep, 'one/index.js'), path.join(f.dep, 'alias.js'));
+  if (name === 'copied-engine') f.add(f.root, 'scripts/fixtures/railgun-engine/index.js');
+  if (name === 'nested-dependency') f.add(f.root, 'src/node_modules/one/index.js');
+  if (name === 'copied-runtime')
+    f.executable = f.add(f.dep, 'electron/dist/Electron.app/Contents/MacOS/Electron');
   if (name === 'mount-relative') {
     f.root = path.join(f.base, 'relative-copy');
     fs.mkdirSync(f.root);
     fs.symlinkSync(path.relative(f.root, f.dep), path.join(f.root, 'node_modules'));
   }
-  expect(() => inspect({ root: f.root, cache: f.cache, electron: f.electron })).toThrow();
+  expect(() =>
+    inspect({ root: f.root, cache: f.cache, electron: f.electron, executable: f.executable })
+  ).toThrow();
 });
 test('cache publication refuses original application fallback before opening its bytes', () => {
   const f = cacheFixture(),
@@ -1085,14 +1104,35 @@ test('cache publication refuses original application fallback before opening its
       return Reflect.apply(original, this, [filename, ...args]);
     });
   try {
-    expect(() => inspect({ root: f.root, cache: f.cache, electron: f.electron })).toThrow(
-      'outside declared roots'
-    );
+    expect(() =>
+      inspect({ root: f.root, cache: f.cache, electron: f.electron, executable: f.executable })
+    ).toThrow('outside declared roots');
     expect(read.mock.calls.some((args) => args[0] === outside)).toBe(false);
   } finally {
     read.mockRestore();
   }
 });
+test.each([
+  ['scripts/fixtures/railgun-engine/index.js', 'Copied engine or nested dependency'],
+  ['src/node_modules/unapproved/index.js', 'Copied engine or nested dependency'],
+])('cache refuses %s before reading its source', (relative, reason) => {
+  const f = cacheFixture();
+  const forbidden = f.add(f.root, relative);
+  const original = fs.readFileSync;
+  const read = jest.spyOn(fs, 'readFileSync').mockImplementation(function (filename, ...args) {
+    if (filename === forbidden) throw Error('Unexpected forbidden source read');
+    return Reflect.apply(original, this, [filename, ...args]);
+  });
+  try {
+    expect(() =>
+      f.inspect({ root: f.root, cache: f.cache, electron: f.electron, executable: f.executable })
+    ).toThrow(reason);
+    expect(read.mock.calls.some((args) => args[0] === forbidden)).toBe(false);
+  } finally {
+    read.mockRestore();
+  }
+});
+
 test('cache rows bind content hashes and detect membership drift during observation', () => {
   const f = cacheFixture(),
     inspect = f.inspect,
@@ -1104,7 +1144,9 @@ test('cache rows bind content hashes and detect membership drift during observat
       return result;
     });
   try {
-    expect(() => inspect({ root: f.root, cache: f.cache, electron: f.electron })).toThrow();
+    expect(() =>
+      inspect({ root: f.root, cache: f.cache, electron: f.electron, executable: f.executable })
+    ).toThrow();
   } finally {
     read.mockRestore();
   }
@@ -1136,7 +1178,9 @@ test.each([
     const filename = f.containerPath + '/main.js';
     f.cache[filename] = { id: filename, filename, loaded: true };
   }
-  expect(() => f.inspect({ root: f.root, cache: f.cache, electron: f.electron })).toThrow();
+  expect(() =>
+    f.inspect({ root: f.root, cache: f.cache, electron: f.electron, executable: f.executable })
+  ).toThrow();
 });
 
 function refusalDiagnostic(result, jobs = { rows: [] }, custody = { rows: [] }) {
