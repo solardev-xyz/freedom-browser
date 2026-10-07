@@ -114,6 +114,11 @@ function refusalResult(state, extra = {}) {
 function getRailgunPrivateSubmissionDiagnostic(result) {
   return (result && typeof result === 'object' && diagnostics.get(result)) || null;
 }
+// The same bounded tuple for one preflight run outside a submission (the live
+// qualifier's read-only probe). Reads the error's own data properties only.
+function getRailgunPrivatePreflightDiagnostic(substage, error) {
+  return diagnose('preflight', substage, error);
+}
 // Both callers are fixed entry points below. This core is not exported and
 // accepts no renderer/caller-selected admission callback or completion object.
 async function submitFinal({
@@ -1268,4 +1273,5 @@ module.exports = {
   submitRailgunRecoveredPrivateTransaction,
   assertRailgunPrivateSubmission,
   getRailgunPrivateSubmissionDiagnostic,
+  getRailgunPrivatePreflightDiagnostic,
 };

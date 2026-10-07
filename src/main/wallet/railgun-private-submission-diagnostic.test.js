@@ -502,6 +502,42 @@ test('a passing preflight leaves no diagnostic on the acknowledged send', async 
   expect(mock.eoa).toContain('send');
 });
 
+test('the probe helper returns the same closed tuple for one preflight run', () => {
+  const { getRailgunPrivatePreflightDiagnostic: probeOf } = require('./railgun-private-submission');
+  const refusal = Object.assign(hostile('RAILGUN_PRIVATE_PREFLIGHT_REFUSED'), {
+    reason: 'rpc',
+    step: 'rootHistory',
+    causeCode: 'TOR_REQUEST_FAILED',
+  });
+  const tuple = probeOf('acquire', refusal);
+  expect(tuple).toEqual({
+    ...PREFLIGHT,
+    substage: 'acquire',
+    reason: 'rpc',
+    step: 'rootHistory',
+    causeCode: 'TOR_REQUEST_FAILED',
+  });
+  expect(Object.isFrozen(tuple)).toBe(true);
+  expect(JSON.stringify(tuple)).not.toMatch(/secret|Users|[0-9a-f]{16}/i);
+  expect(probeOf('retry', refusal)).not.toHaveProperty('substage');
+  // Other codes cannot borrow preflight fields; unreadable errors stay closed.
+  const borrowed = Object.assign(hostile('PRIVATE_RPC_DESTINATION_REFUSED'), {
+    reason: 'rpc',
+    step: 'deployment',
+  });
+  expect(probeOf('admission', borrowed)).toEqual({
+    stage: 'preflight',
+    substage: 'admission',
+    code: 'PRIVATE_RPC_DESTINATION_REFUSED',
+  });
+  for (const value of [null, new Proxy(refusal, {})])
+    expect(probeOf('open', value)).toEqual({
+      stage: 'preflight',
+      substage: 'open',
+      code: 'UNCLASSIFIED',
+    });
+});
+
 test('only genuine refusal results carry a diagnostic', async () => {
   setup();
   mock.fault = (r) =>
