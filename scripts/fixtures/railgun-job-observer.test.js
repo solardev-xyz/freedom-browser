@@ -87,6 +87,7 @@ describe('main-observed installed target evidence', () => {
         'host-bootstrap.cjs',
         'src/execution/job-locations.js',
         'src/execution/host-bindings.js',
+        'src/execution/railgun-process-guards.js',
         'src/execution/railgun-private-operate-job.js',
       ].map((name) => packageName + '/' + name),
     ])
@@ -129,7 +130,7 @@ describe('main-observed installed target evidence', () => {
       packageRoot: packageName,
       targets: [target],
     });
-    expect(report.bootstrapPins).toHaveLength(8);
+    expect(report.bootstrapPins).toHaveLength(9);
     expect(report.mainPackageCache).toHaveLength(1);
     expect(options.broker).toEqual({});
     expect(locate).toHaveBeenCalledTimes(1);

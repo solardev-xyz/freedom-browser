@@ -79,6 +79,7 @@ function createRailgunJobEvidence() {
       'host-bootstrap.cjs',
       'src/execution/job-locations.js',
       'src/execution/host-bindings.js',
+      'src/execution/railgun-process-guards.js',
     ].map((name) => relativeRoot + '/' + name),
   ]
     .sort()
