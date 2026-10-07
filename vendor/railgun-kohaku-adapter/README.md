@@ -1,15 +1,15 @@
 # `@freedom/railgun-kohaku-adapter` tarball
 
-`freedom-railgun-kohaku-adapter-0.3.0.tgz` is the `npm pack` output of the restricted Kohaku adapter package that Freedom extracted from `src/main/wallet/`. Freedom depends on it through a `file:` dependency in `package.json`, so `npm ci` installs it from this file and no registry is involved. `src/main/wallet/railgun-kohaku-{private-adapter,public-adapter,snapshot-plugin,read-data,read-dispatch}.js` re-export it; the implementation lives in the package.
+`freedom-railgun-kohaku-adapter-0.4.0.tgz` is the `npm pack` output of the restricted Kohaku adapter package that Freedom extracted from `src/main/wallet/`. Freedom depends on it through a `file:` dependency in `package.json`, so `npm ci` installs it from this file and no registry is involved. `src/main/wallet/railgun-kohaku-{private-adapter,public-adapter,snapshot-plugin,read-data,read-dispatch}.js` re-export it; the implementation lives in the package.
 
 | Field                      | Value                                                                                             |
 | -------------------------- | ------------------------------------------------------------------------------------------------- |
 | Source repository          | https://github.com/solardev-xyz/railgun-kohaku-adapter                                            |
-| Source commit              | `cbc34b2c5d2d346e4fde722741c3638f4dcd312c`                                                        |
-| Package                    | `@freedom/railgun-kohaku-adapter` 0.3.0 (MPL-2.0, not published to a registry)                    |
-| SHA-256                    | `f5fedd6e610567690ceb6de4e191bf5e076093cf1e69c8ce33973f2437c4b0a5`                                |
-| Integrity (`package-lock`) | `sha512-unpvh3HctaEyi5bYZLIDD2QW0XufpOFU+FStYCAWpBcrwc/zUUdzykagySZbwEKxVD5FZ8XENThLFcFAACy0TA==` |
-| Files                      | 42 (`package/` prefix): see below                                                                 |
+| Source commit              | `b77c7c1edf0e3e7ffe00ed9627f97d86814ae78a`                                                        |
+| Package                    | `@freedom/railgun-kohaku-adapter` 0.4.0 (MPL-2.0, not published to a registry)                    |
+| SHA-256                    | `35ea07c1f9c64926c94a0b24f39333db75412a7771eae78675743bcae2a6a0a1`                                |
+| Integrity (`package-lock`) | `sha512-jo48Wo3koQR+TDwTyWzJjG9nAPaRkHeraQOtT8z0w1GIhSUh82di4XqtkNVmpMhL4XClbnqeia19Gvr7nDHuvQ==` |
+| Files                      | 59 (`package/` prefix): see below                                                                 |
 
 Do not edit, re-pack or replace the tarball by hand. A new version is a new `npm pack` at a new reviewed package commit, committed under a new file name together with the `package.json` and `package-lock.json` change and an updated table above.
 
@@ -20,12 +20,12 @@ From a clean checkout of the source repository at the commit above (the package 
 ```sh
 git clone https://github.com/solardev-xyz/railgun-kohaku-adapter.git
 cd railgun-kohaku-adapter
-git checkout cbc34b2c5d2d346e4fde722741c3638f4dcd312c
+git checkout b77c7c1edf0e3e7ffe00ed9627f97d86814ae78a
 npm pack --pack-destination <directory>
-shasum -a 256 <directory>/freedom-railgun-kohaku-adapter-0.3.0.tgz
+shasum -a 256 <directory>/freedom-railgun-kohaku-adapter-0.4.0.tgz
 ```
 
-The tarball was packed with Node.js 24.18.1 and npm 11.16.0. `npm pack` writes fixed timestamps and modes, so a pack of that commit with the same npm version is byte-identical to this file (checked from a fresh clone). The original E1 artifact remains retained under its old filename. Its JSON output (`npm pack --json`) reports the same `integrity` as `package-lock.json`.
+The tarball was packed with Node.js 24.18.1 and npm 11.16.0. `npm pack` writes fixed timestamps and modes, so a pack of that commit with the same npm version is byte-identical to this file (all 59 packed files checked against the published commit). The original E1 artifact remains retained under its old filename. Its JSON output (`npm pack --json`) reports the same `integrity` as `package-lock.json`.
 
 ## Contents
 
@@ -47,3 +47,17 @@ builds, `freedomfixture` source label and trusted absolute recovery paths. Host
 selection, keys, genuine capabilities, stores, jobs and execution remain in
 Freedom. Manifest-byte parity and transitive source-inventory tests prevent the
 package's result checks from drifting from Freedom's authenticated runtime.
+
+Version 0.4.0 adds trusted `/host/poi` entries and declarations, twelve POI/TXID
+data modules and the pure own-POI payload binder. Freedom retains selectors,
+engine jobs, stores, controllers and genuine authority owners. The TXID and
+wallet policies pin the entire eager host-POI closure, including capsule helpers.
+The original Freedom selector integration tests remain here. No proof, membership,
+disclosure, signing or storage permission follows from these data helpers.
+
+Synthetic-list relay qualification now requires a physical isolated package copy.
+Only that copy may receive the reviewed REQUIRED_LIST replacement; the regular
+installed package and all old archived source freezes remain unchanged. External
+positive/cold launchers need fresh copy rules and installed-package inventories
+before a new native run. Ordinary private proof and original-signature recovery
+use the authentic list and do not need that transformation.

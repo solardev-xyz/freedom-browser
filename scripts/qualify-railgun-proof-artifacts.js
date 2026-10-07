@@ -14,6 +14,7 @@ async function main() {
   app.dock?.hide();
   await app.whenReady();
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-proof-artifacts.js',
     'scripts/fixtures/railgun-proof-artifacts-job.js',
     'scripts/fixtures/railgun-proof-inputs.js',

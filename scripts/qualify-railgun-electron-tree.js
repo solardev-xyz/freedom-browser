@@ -10,6 +10,7 @@ const { readRailgunFrontier, readRailgunPosition } = require('../src/main/wallet
 const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
 const storageWorker = process.argv[3] === '--worker';
 const sources = [
+  ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   'scripts/qualify-railgun-electron-tree.js',
   'scripts/fixtures/railgun-electron-tree-job.js',
   'scripts/railgun-fixture-integrity.js',

@@ -113,6 +113,7 @@ async function main() {
     }
   }
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     ...new Set([
       ...Object.keys(
         require('../docs/qualification/railgun-shield-submission-2026-10-03.json').sourceSha256

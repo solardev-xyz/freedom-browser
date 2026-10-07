@@ -14,6 +14,7 @@ const INDICES = Object.freeze([
   0, 1, 2, 3, 15, 16, 63, 64, 99, 100, 127, 128, 255, 256, 1023, 1024, 4095, 4096, 4187, 4188, 4229,
 ]);
 const SOURCES = [
+  ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   'scripts/qualify-railgun-txid-historical.js',
   'scripts/qualify-railgun-txid-storage.js',
   ...[

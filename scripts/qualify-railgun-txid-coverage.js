@@ -26,6 +26,7 @@ async function main() {
   assert.equal(txids.publicQueriesOnly, true);
   const capture = require('./railgun-log-capture-data').readRailgunLogCapture(logsDirectory);
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     ...new Set([
       'scripts/qualify-railgun-txid-coverage.js',
       'scripts/railgun-log-capture-data.js',

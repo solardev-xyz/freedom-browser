@@ -65,6 +65,21 @@ test('an unauthenticated archive cannot obtain a wallet policy', () => {
 });
 test.each([
   'package.json',
+  'host-poi.cjs',
+  'src/data/railgun-poi-records.js',
+  'src/data/railgun-poi-payload.js',
+  'src/data/railgun-poi-creator-data.js',
+  'src/data/railgun-poi-shield-selector-data.js',
+  'src/data/railgun-poi-transact-selector-data.js',
+  'src/data/railgun-own-poi-binding.js',
+  'src/data/railgun-own-poi-shape-data.js',
+  'src/data/railgun-owned-poi-records.js',
+  'src/data/railgun-poi-submit-data.js',
+  'src/data/railgun-txid-note-witness.js',
+  'src/data/railgun-txid-projection.js',
+  'src/data/railgun-txid-omissions.js',
+  'src/data/railgun-own-poi-payload-binding.js',
+
   'read.cjs',
   'host-data.cjs',
   'src/data/railgun-private-policy.js',
@@ -149,13 +164,28 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-relay-proof',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(73);
+  expect(visited.size).toBe(87);
   expect([...visited].filter((name) => name.startsWith(adapter + path.sep)).sort()).toEqual(
     [
       'read.cjs',
       'src/railgun-kohaku-read-data.js',
       'src/railgun-kohaku-read-dispatch.js',
       'host-data.cjs',
+      'host-poi.cjs',
+      'src/data/railgun-poi-records.js',
+      'src/data/railgun-poi-payload.js',
+      'src/data/railgun-poi-creator-data.js',
+      'src/data/railgun-poi-shield-selector-data.js',
+      'src/data/railgun-poi-transact-selector-data.js',
+      'src/data/railgun-own-poi-binding.js',
+      'src/data/railgun-own-poi-shape-data.js',
+      'src/data/railgun-owned-poi-records.js',
+      'src/data/railgun-poi-submit-data.js',
+      'src/data/railgun-txid-note-witness.js',
+      'src/data/railgun-txid-projection.js',
+      'src/data/railgun-txid-omissions.js',
+      'src/data/railgun-own-poi-payload-binding.js',
+
       'src/data/railgun-private-policy.js',
       'src/data/railgun-private-intent.js',
       'src/data/railgun-private-offer.js',

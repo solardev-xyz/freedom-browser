@@ -11,6 +11,7 @@ const paged = process.argv[3] === '--paged';
 const storageWorker = process.argv.includes('--worker');
 const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
 const sources = [
+  ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   'scripts/qualify-railgun-electron.js',
   'scripts/fixtures/railgun-electron-job.js',
   'scripts/railgun-fixture-integrity.js',

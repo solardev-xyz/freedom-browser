@@ -178,6 +178,7 @@ async function main() {
     await Promise.all([ledger?.closed, session?.closed]);
   }
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-wallet-synthetic.js',
     'scripts/fixtures/railgun-wallet-source.js',
     'scripts/railgun-wallet-snapshot-electron.js',

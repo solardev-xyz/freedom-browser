@@ -5,7 +5,7 @@ const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
 
 const PACKAGE = '@freedom/railgun-kohaku-adapter';
-const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.3.0.tgz';
+const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.4.0.tgz';
 const root = path.resolve(__dirname, '../../..');
 const installed = path.join(root, 'node_modules', PACKAGE);
 const modules = {
@@ -70,6 +70,61 @@ const modules = {
   ],
   'railgun-kohaku-read-dispatch': [PACKAGE + '/read', ['dispatchRailgunKohakuRead']],
 };
+modules['railgun-poi-records'] = [
+  PACKAGE + '/host/poi',
+  [
+    'REQUIRED_LIST',
+    'MAX_NOTES',
+    'normalizePoiNotes',
+    'normalizePoiStatuses',
+    'normalizePoiProofs',
+    'verifyPoiMembership',
+    'verifyPoiEvent',
+  ],
+];
+modules['railgun-poi-payload'] = [PACKAGE + '/host/poi', ['normalizeRailgunPoiPayload']];
+modules['railgun-poi-creator-data'] = [
+  PACKAGE + '/host/poi',
+  [
+    'assertRailgunPoiCreatorEvents',
+    'normalizeRailgunPoiCreatorWitness',
+    'assertRailgunPoiCreatorVerification',
+  ],
+];
+modules['railgun-poi-shield-selector-data'] = [
+  PACKAGE + '/host/poi',
+  ['normalizeRailgunPoiShieldFacts', 'normalizeRailgunPoiShieldInput'],
+];
+modules['railgun-poi-transact-selector-data'] = [
+  PACKAGE + '/host/poi',
+  ['prepareRailgunPoiTransactSelectorInput', 'normalizeRailgunPoiTransactSelectorInput'],
+];
+modules['railgun-own-poi-binding'] = [
+  PACKAGE + '/host/poi',
+  ['assertRailgunOwnPoiCapture', 'assertRailgunOwnPoiStableCapture'],
+];
+modules['railgun-own-poi-shape-data'] = [
+  PACKAGE + '/host/poi',
+  ['getRailgunOwnPoiShape', 'assertRailgunOwnPoiPayloadShape'],
+];
+modules['railgun-owned-poi-records'] = [
+  PACKAGE + '/host/poi',
+  ['projectRailgunOwnedPoiRecord', 'normalizeRailgunOwnedPoiRecords', 'POI_LAUNCH_BLOCK'],
+];
+modules['railgun-poi-submit-data'] = [
+  PACKAGE + '/host/poi',
+  ['prepareRailgunPoiSubmission', 'normalizeRailgunPoiSubmission', 'inspectRailgunPoiResponse'],
+];
+modules['railgun-txid-note-witness'] = [
+  PACKAGE + '/host/poi',
+  ['findRailgunNoteTxidWitness', 'normalizeRailgunTxidWitness', 'normalizeRailgunNoteTxidWitness'],
+];
+modules['railgun-txid-projection'] = [
+  PACKAGE + '/host/poi',
+  ['createRailgunTxidProjection', 'validateRailgunTxidRow'],
+];
+modules['railgun-txid-omissions'] = [PACKAGE + '/host/poi', ['classifyRailgunTxidContinuity']];
+
 // npm pack output: plain ustar entries under package/, gzip-compressed.
 function untar(bytes) {
   const tar = zlib.gunzipSync(bytes),
@@ -98,7 +153,11 @@ test.each(Object.entries(modules))(
     expect(Object.keys(freedom)).toEqual(keys);
     for (const key of keys) {
       expect(typeof upstream[key]).toBe(
-        ['TRANSACT_ABI', 'BOUND_PARAMS'].includes(key) ? 'string' : 'function'
+        ['TRANSACT_ABI', 'BOUND_PARAMS', 'REQUIRED_LIST'].includes(key)
+          ? 'string'
+          : ['MAX_NOTES', 'POI_LAUNCH_BLOCK'].includes(key)
+            ? 'number'
+            : 'function'
       );
       expect(freedom[key]).toBe(upstream[key]);
     }
@@ -135,6 +194,21 @@ test('the package resolves to one installed copy from the wallet modules', () =>
       'index.cjs',
       'read.cjs',
       'host-data.cjs',
+      'host-poi.cjs',
+      'src/data/railgun-poi-records.js',
+      'src/data/railgun-poi-payload.js',
+      'src/data/railgun-poi-creator-data.js',
+      'src/data/railgun-poi-shield-selector-data.js',
+      'src/data/railgun-poi-transact-selector-data.js',
+      'src/data/railgun-own-poi-binding.js',
+      'src/data/railgun-own-poi-shape-data.js',
+      'src/data/railgun-owned-poi-records.js',
+      'src/data/railgun-poi-submit-data.js',
+      'src/data/railgun-txid-note-witness.js',
+      'src/data/railgun-txid-projection.js',
+      'src/data/railgun-txid-omissions.js',
+      'src/data/railgun-own-poi-payload-binding.js',
+
       'src/data/railgun-private-policy.js',
       'src/data/railgun-private-intent.js',
       'src/data/railgun-private-offer.js',
@@ -166,7 +240,7 @@ test('the installed package is the committed tarball the lockfile names', () => 
   expect(entry.resolved).toBe('file:' + TARBALL);
   expect(entry.integrity).toBe('sha512-' + createHash('sha512').update(bytes).digest('base64'));
   expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-    'f5fedd6e610567690ceb6de4e191bf5e076093cf1e69c8ce33973f2437c4b0a5'
+    '35ea07c1f9c64926c94a0b24f39333db75412a7771eae78675743bcae2a6a0a1'
   );
   const files = untar(bytes);
   expect(Object.keys(files).sort()).toEqual(
@@ -179,6 +253,21 @@ test('the installed package is the committed tarball the lockfile names', () => 
       'package.json',
       'read.cjs',
       'host-data.cjs',
+      'host-poi.cjs',
+      'src/data/railgun-poi-records.js',
+      'src/data/railgun-poi-payload.js',
+      'src/data/railgun-poi-creator-data.js',
+      'src/data/railgun-poi-shield-selector-data.js',
+      'src/data/railgun-poi-transact-selector-data.js',
+      'src/data/railgun-own-poi-binding.js',
+      'src/data/railgun-own-poi-shape-data.js',
+      'src/data/railgun-owned-poi-records.js',
+      'src/data/railgun-poi-submit-data.js',
+      'src/data/railgun-txid-note-witness.js',
+      'src/data/railgun-txid-projection.js',
+      'src/data/railgun-txid-omissions.js',
+      'src/data/railgun-own-poi-payload-binding.js',
+
       'src/data/railgun-private-policy.js',
       'src/data/railgun-private-intent.js',
       'src/data/railgun-private-offer.js',
@@ -194,6 +283,9 @@ test('the installed package is the committed tarball the lockfile names', () => 
       'data.cjs',
       'data.mjs',
       'host-data.mjs',
+      'host-poi.mjs',
+      'types/host-poi.d.ts',
+      'types/host-poi.d.mts',
       'src/data/index.js',
       'types/data.d.ts',
       'types/data.d.mts',
@@ -257,3 +349,10 @@ test.each(['engine', 'prover'])(
     );
   }
 );
+
+test('only the pure own-POI binder moves; host launch helpers stay local', () => {
+  const local = require('./railgun-own-poi-proof-data');
+  expect(local.bindRailgunOwnPoiPayload).toBe(
+    require(PACKAGE + '/host/poi').bindRailgunOwnPoiPayload
+  );
+});

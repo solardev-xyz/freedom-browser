@@ -14,6 +14,7 @@ async function main() {
   if (treeReport) assert.ok(path.isAbsolute(treeReport));
   assert.ok(path.isAbsolute(output) && !fs.existsSync(output));
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-public-services.js',
     'scripts/qualify-ppv2-live.js',
     'src/main/wallet/railgun-public-services.js',

@@ -16,6 +16,7 @@ async function main() {
   app.dock?.hide();
   await app.whenReady();
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-shield-build.js',
     'scripts/fixtures/railgun-shield-receive-job.js',
     'scripts/fixtures/railgun-wallet-snapshot-job.js',

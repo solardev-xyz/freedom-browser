@@ -17,6 +17,7 @@ async function main() {
   assert.equal(tree.result.matches, true);
   const point = { index: tree.result.count - 1, root: tree.result.root };
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-txid-root.js',
     'scripts/qualify-ppv2-live.js',
     'src/main/wallet/railgun-txid-root.js',
