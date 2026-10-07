@@ -196,6 +196,7 @@ jest.mock('./railgun-private-proof', () => ({
   },
 }));
 jest.mock('./railgun-poi-source', () => ({
+  MAX_AGE_MS: 60000,
   createRailgunPoiSource: ({ handle, notes }) => {
     mock.poiHandle = handle;
     mock.notes = notes;
@@ -219,6 +220,7 @@ jest.mock('./railgun-poi-membership', () => ({
   },
 }));
 jest.mock('./railgun-txid-root', () => ({
+  MAX_AGE_MS: 60000,
   createRailgunTxidRootSource: (handle) => {
     mock.rootHandle = handle;
     mock.events.push('root-open');
@@ -226,6 +228,7 @@ jest.mock('./railgun-txid-root', () => ({
   },
 }));
 jest.mock('./railgun-private-preflight', () => ({
+  MAX_AGE_MS: 60000,
   createRailgunPrivatePreflight: (input) => {
     mock.preflightOptions = input;
     mock.events.push('preflight-open');
@@ -1381,15 +1384,25 @@ test.each(['digest', 'to'])(
   }
 );
 
-test.each(['preflight', 'eth_getBalance'])(
+// Budget: review floor 15 s, send reserve 10 s, EOA allowance 5 s. A preflight
+// that leaves C < 30 s refuses before any EOA request (no calldata disclosure);
+// review setup that leaves < 15 s of the review refuses before the caller's review.
+test.each([
+  ['preflight', 30001, 'eoa', 'eth_getCode'],
+  ['eth_getBalance', 15001, 'submission', 'transaction-review'],
+])(
   'slow %s setup refuses the cold review before signature or durable attempt',
-  async (stage) => {
+  async (step, ms, stage, absent) => {
     jest.spyOn(performance, 'now').mockImplementation(() => mock.clock);
-    mock.hooks[stage] = () => {
-      mock.clock += 10000;
+    mock.hooks[step] = () => {
+      mock.clock += ms;
     };
-    expect((await submit(options)).status).toBe('recovery-required');
-    expect(mock.events).toContain(stage);
+    const result = await submit(options);
+    expect(result).toEqual({ status: 'recovery-required', stage });
+    if (stage === 'eoa')
+      expect(diagnosticOf(result)).toEqual({ stage, code: 'RAILGUN_PRIVATE_REVIEW_BUDGET' });
+    expect(mock.events).toContain(step);
+    expect(mock.events).not.toContain(absent);
     expect(mock.proofClosed).toBe(true); // Cleaned up, not a renewed C.
     expect(mock.events).not.toContain('transaction-review');
     expect(mock.events).not.toContain('sign');
@@ -1397,7 +1410,21 @@ test.each(['preflight', 'eth_getBalance'])(
     expect(mock.events.filter((v) => v === 'C')).toHaveLength(1);
   }
 );
-test('cold review checks 50s on every genuine authority without resetting its service expiry', async () => {
+test.each([
+  ['preflight', 29997],
+  ['eth_getBalance', 14997],
+])('%s setup just inside the budget still reaches review and send', async (step, ms) => {
+  jest.spyOn(performance, 'now').mockImplementation(() => mock.clock);
+  mock.hooks[step] = () => {
+    mock.clock += ms;
+  };
+  expect(await submit(options)).toEqual({
+    transactionHash: hex(17),
+    submissionStatus: 'acknowledged',
+  });
+  expect(mock.events).toContain('transaction-review');
+});
+test('cold review checks review end plus send reserve on every genuine authority without resetting its service expiry', async () => {
   setup('railgun-partial-unshield', 'Transact');
   jest.spyOn(performance, 'now').mockImplementation(() => mock.clock);
   let wall = 1000000;
@@ -1415,8 +1442,11 @@ test('cold review checks 50s on every genuine authority without resetting its se
     // The existing deadline began before EOA RPC, not at this display.
     expect(request.expiresAt).toBe(1030000);
     expect(request.expiresAt - Date.now()).toBe(29000);
-    expect(mock.proofMargins).toContain(50000);
-    expect(mock.preflightMargins).toContain(50000);
+    // Before EOA: the full 30 s review plus the 10 s send reserve. At review
+    // admission: what is left of that review (28,999 ms) plus the reserve.
+    expect(mock.proofMargins).toEqual(expect.arrayContaining([35000, 40000, 38999]));
+    expect(mock.preflightMargins).toEqual(expect.arrayContaining([40000, 38999]));
+    expect(mock.proofMargins.some((v) => v > 40000)).toBe(false);
     await gate.promise;
     advance(25000);
     expect(Date.now()).toBeLessThan(request.expiresAt);
@@ -1495,15 +1525,15 @@ test.each([false, true])(
   }
 );
 
-// Review finding B, quantified for the held L-A transfer (a Shield input). The
-// recovered path asserts the proof (60 s after its verifier exits), the POI
-// receipt (60 s from its acquisition start) and, inside submitFinal, the
-// preflight (60 s from its acquisition start) with 50 s remaining: once after
-// membership (live(50000), stage 'membership') and again at transaction-review
-// admission (reviewMarginMs, stage 'submission'). Everything from the verifier
-// exit to the review therefore has 10 s. Each read is one sequential Tor request.
+// Review finding B under the review budget, for the held L-A transfer (a Shield
+// input). Authorities keep their own unrenewed ages: the proof 60 s after its
+// verifier exits, the POI (and, for Transact, root) receipt 60 s from its
+// acquisition start, the preflight 60 s from its acquisition start. The budget
+// offers a review of at most 30 s and at least 15 s that ends 10 s before the
+// first authority would, refusing before the nullifier query (35 s left) and
+// before any EOA request (20 s of review left) when that is out of reach.
+// Each read is one sequential Tor request.
 const TOR_READS = Object.freeze({
-  'poi-acquire': 4, // pois_per_list, merkle_proofs, one poi_events, validate_poi_merkleroots
   preflight: 19, // 2 lazy chain-id checks, 12 deployment and 5 private reads
   eth_getCode: 2, // the transaction RPC's lazy chain-id check, then the EOA code
   eth_estimateGas: 1,
@@ -1513,52 +1543,118 @@ const TOR_READS = Object.freeze({
 });
 // Transaction service before its review: lease eth_getCode, eth_gasPrice, nonce.
 const SERVICE_READS = 3;
-async function torBudget({ read, membership = 0 }) {
+// d1b/report.json: one POI acquisition plus membership over this transport.
+const D1B_POI_MS = 18587;
+const SEND_RESERVE_MS = 10000;
+function torTimeline({ type = 'Shield', read, poiMs = D1B_POI_MS, rootMs = 0, sendMs = 0 }) {
   mock.scope.close();
-  setup('railgun-private-transfer', 'Shield');
+  setup('railgun-private-transfer', type);
+  let wallStep = 0;
   jest.spyOn(performance, 'now').mockImplementation(() => mock.clock);
-  for (const [step, count] of Object.entries(TOR_READS))
-    mock.hooks[step] = () => {
-      mock.clock += count * read;
-    };
-  mock.hooks.membership = () => {
-    mock.clock += membership;
+  jest.spyOn(Date, 'now').mockImplementation(() => 1000000 + mock.clock + wallStep);
+  const advance = (ms) => {
+    mock.clock += ms;
   };
+  for (const [step, count] of Object.entries(TOR_READS))
+    mock.hooks[step] = () => advance(count * read);
+  // The whole acquisition-plus-membership interval, inside the POI receipt's age.
+  mock.hooks['poi-acquire'] = () => advance(poiMs);
+  mock.hooks.root = () => advance(rootMs);
   const send = mock.send;
   mock.send = async (...args) => {
-    mock.clock += SERVICE_READS * read;
+    advance(SERVICE_READS * read);
     return send(...args);
   };
-  const result = await submit(options);
-  return { result, diagnostic: diagnosticOf(result) };
+  const seen = { stepWallBack: 0 };
+  options.reviewTransaction = async (request) => {
+    mock.events.push('transaction-review');
+    seen.window = request.expiresAt - Date.now();
+    // The person approves at the last millisecond the review allows; a wall
+    // clock stepped back by stepWallBack hides that from Date.now() alone.
+    advance(seen.window - 1 + seen.stepWallBack);
+    wallStep -= seen.stepWallBack;
+    return true;
+  };
+  mock.hooks.broadcast = () => {
+    // Journal begin and the raw send, entirely after the review's end.
+    advance(sendMs);
+    authorize(
+      mock.networkHandle,
+      railgunTransactJournalIntent({ ...mock.stored.provedTransaction, from: mock.owner })
+    );
+  };
+  return seen;
 }
-describe('recovered submission over Tor: the 10 s from verifier exit to review', () => {
-  test('33 sequential reads reach the review only at <= 303 ms each', async () => {
-    const reads =
-      Object.values(TOR_READS).reduce((sum, count) => sum + count, 0) + 1 + SERVICE_READS;
-    expect(reads).toBe(33);
-    const fast = await torBudget({ read: 300 });
-    expect(fast.result).toEqual({ transactionHash: hex(17), submissionStatus: 'acknowledged' });
-    expect(mock.clock - mock.proofAt).toBe(33 * 300);
-    expect(mock.events).toContain('transaction-review');
-    const slow = await torBudget({ read: 310 });
-    expect(slow.result).toEqual({ status: 'recovery-required', stage: 'submission' });
-    expect(slow.diagnostic.stage).toBe('submission');
-    // Refused at review admission: the caller's review never runs, after the
-    // preflight's nullifier query and the calldata's eth_estimateGas and eth_call.
-    expect(mock.events).not.toContain('transaction-review');
-    expect(mock.events).toEqual(expect.arrayContaining(['preflight', 'eth_estimateGas']));
-    expect(mock.events).not.toContain('sign');
+const SENT = { transactionHash: hex(17), submissionStatus: 'acknowledged' };
+describe('recovered submission over Tor under the review budget', () => {
+  // [ms per read, review offered]: d1b's 18,587 ms POI phase, then 19 preflight,
+  // 4 EOA, 3 service and 3 review-setup reads: the review is 31,412 - 29 x read ms.
+  test.each([
+    [150, 27062],
+    [300, 22712],
+    [500, 16912],
+  ])(
+    'the measured POI phase and %s ms reads reach a %s ms review; approval at its end still sends',
+    async (read, window) => {
+      const seen = torTimeline({ read, sendMs: SEND_RESERVE_MS - 2 });
+      const result = await submit(options);
+      expect(result).toEqual(SENT);
+      expect(diagnosticOf(result)).toBeNull();
+      expect(seen.window).toBe(window);
+      expect(seen.window).toBeGreaterThanOrEqual(15000);
+      expect(mock.events.filter((v) => v === 'sign')).toHaveLength(1);
+      expect(Math.max(...mock.proofMargins)).toBeLessThanOrEqual(40000);
+    }
+  );
+  test('a received-Transact input pays its root reads inside the same budget', async () => {
+    const seen = torTimeline({ type: 'Transact', read: 150, rootMs: 3000 });
+    expect(await submit(options)).toEqual(SENT);
+    expect(seen.window).toBeGreaterThanOrEqual(15000);
+    expect(mock.events).toContain('root');
   });
-  test('the measured owned-POI acquisition refuses at membership before any preflight', async () => {
-    // d1b/report.json: one POI acquisition plus membership verification over
-    // this Tor transport took 18,587 ms (4 reads at 300 ms, the rest verifier).
-    const { result, diagnostic } = await torBudget({ read: 300, membership: 18587 - 4 * 300 });
+  test('a POI phase that leaves under 35 s refuses at membership, before the nullifier query', async () => {
+    torTimeline({ read: 150, poiMs: 25000 });
+    const result = await submit(options);
     expect(result).toEqual({ status: 'recovery-required', stage: 'membership' });
-    expect(diagnostic.stage).toBe('membership');
-    expect(mock.events).toContain('membership');
+    expect(diagnosticOf(result)).toEqual({
+      stage: 'membership',
+      code: 'RAILGUN_PRIVATE_REVIEW_BUDGET',
+    });
     expect(mock.events).not.toContain('preflight-open');
     expect(mock.events).not.toContain('eth_estimateGas');
+    torTimeline({ read: 150, poiMs: 24998 });
+    expect(await submit(options)).toEqual(SENT);
+  });
+  test('reads that leave under 20 s of review refuse before any EOA request', async () => {
+    torTimeline({ read: 650 });
+    const result = await submit(options);
+    expect(result).toEqual({ status: 'recovery-required', stage: 'eoa' });
+    expect(diagnosticOf(result)).toEqual({ stage: 'eoa', code: 'RAILGUN_PRIVATE_REVIEW_BUDGET' });
+    // The nullifier query happened; the proved calldata was never simulated.
+    expect(mock.events).toContain('preflight');
+    expect(mock.events).not.toContain('eth_getCode');
+    expect(mock.events).not.toContain('eth_estimateGas');
+  });
+  test('setup beyond the EOA allowance still refuses at review admission, not later', async () => {
+    // The allowance is an estimate: 10 reads at 600 ms exceed its 5 s, so the
+    // calldata was simulated, but the caller's review never runs.
+    torTimeline({ read: 600 });
+    const result = await submit(options);
+    expect(result).toEqual({ status: 'recovery-required', stage: 'submission' });
+    expect(mock.events).toContain('eth_estimateGas');
+    expect(mock.events).not.toContain('transaction-review');
+    expect(mock.events).not.toContain('sign');
+  });
+  test('authorities are not renewed after approval: a send past the reserve finds them expired', async () => {
+    torTimeline({ read: 150, sendMs: SEND_RESERVE_MS + 2 });
+    expect(await submit(options)).toEqual({ status: 'recovery-required', stage: 'submission' });
+    expect(mock.events).toContain('sign');
+  });
+  test('a wall-clock step back cannot extend the recovered review past its monotonic end', async () => {
+    const seen = torTimeline({ read: 150 });
+    seen.stepWallBack = 2;
+    expect(await submit(options)).toEqual({ status: 'recovery-required', stage: 'submission' });
+    expect(mock.events).toContain('transaction-review');
     expect(mock.events).not.toContain('sign');
   });
 });

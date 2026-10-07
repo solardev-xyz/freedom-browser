@@ -8,6 +8,7 @@ const { verifyRailgunPrivateProof, assertRailgunPrivateProof } = require('./rail
 const {
   createRailgunPrivatePreflight,
   assertRailgunPrivatePreflight,
+  MAX_AGE_MS: PREFLIGHT_MAX_AGE_MS,
 } = require('./railgun-private-preflight');
 const { railgunTransactJournalIntent } = require('./railgun-transact-intent');
 const pins = require('./railgun-shield-pins.json');
@@ -16,6 +17,25 @@ const fail = () =>
   Object.assign(new Error('Railgun private submission unavailable'), {
     code: 'RAILGUN_PRIVATE_SUBMISSION_REFUSED',
   });
+// Recovered review budget. Every authority keeps its own unrenewed age; these
+// only split what is left between the review and the post-approval send.
+// The review never exceeds the existing 30 s cap and is offered only if every
+// authority outlives its deadline by SEND_RESERVE_MS (signing, journal begin
+// and the raw send). The allowances refuse before the nullifier query or the
+// calldata simulation when the floor is already out of reach.
+const REVIEW_WINDOW_MS = 30000;
+const REVIEW_MIN_MS = 15000;
+const SEND_RESERVE_MS = 10000;
+const EOA_ALLOWANCE_MS = 5000;
+const PREFLIGHT_ALLOWANCE_MS = 5000;
+// railgun-private-proof.js: a receipt lives 60 s after its verifier exits.
+const PROOF_RECEIPT_MS = 60000;
+const budgetFail = () =>
+  Object.assign(new Error('Railgun private review budget unavailable'), {
+    code: 'RAILGUN_PRIVATE_REVIEW_BUDGET',
+  });
+// Whole milliseconds strictly inside a monotonic end; never rounds up.
+const leftUntil = (end) => Math.floor(end - performance.now()) - 1;
 // Refusal diagnostics, keyed by the frozen returned value so every caller's
 // closed result shape is unchanged. Closed enumerations and identifier codes
 // only: never messages, stacks, RPC payloads, nullifiers, calldata or paths.
@@ -137,7 +157,8 @@ async function submitFinal({
   state,
   preparedProof,
   currentCheckpointHash,
-  reviewMarginMs = 0,
+  // Recovered only: a conservative monotonic end of the caller's authorities.
+  lifetimeEnd = null,
   extraCurrent = () => {},
 }) {
   const kind = snapshot.stored.capsule.selection.kind;
@@ -215,12 +236,14 @@ async function submitFinal({
     const stop = () => preflight.close();
     const signal = AbortSignal.any([claim.signal, context.signal]);
     signal.addEventListener('abort', stop, { once: true });
-    let acquired;
+    let acquired, preflightStarted;
     const timer = setTimeout(stop, 20000);
     timer.unref?.();
     try {
       assert.ok(!signal.aborted);
       substage = 'acquire';
+      // At or before the preflight's own age origin: a conservative end.
+      preflightStarted = performance.now();
       acquired = await preflight.acquire();
     } finally {
       clearTimeout(timer);
@@ -271,8 +294,20 @@ async function submitFinal({
     intent = railgunTransactJournalIntent({ ...tx, from: owner });
     assert.equal(intent.intentDigest, snapshot.entry.facts.intentDigest);
     submissions.set(handle, { intent, assertCurrent });
-    const reviewDeadline = Date.now() + 30000;
     state.stage = 'eoa';
+    const reviewStarted = performance.now();
+    let reviewMs = REVIEW_WINDOW_MS;
+    if (lifetimeEnd) {
+      // Shorten, never renew: the review ends SEND_RESERVE_MS before the
+      // first authority would. Refused here, before any EOA request
+      // discloses the proved calldata, unless the floor remains reachable.
+      const end = Math.min(lifetimeEnd(), preflightStarted + PREFLIGHT_MAX_AGE_MS);
+      reviewMs = Math.min(REVIEW_WINDOW_MS, leftUntil(end) - SEND_RESERVE_MS);
+      if (!(reviewMs >= REVIEW_MIN_MS + EOA_ALLOWANCE_MS)) throw budgetFail();
+      assertCurrent(reviewMs + SEND_RESERVE_MS);
+    }
+    const reviewDeadline = Date.now() + reviewMs;
+    const reviewEnd = reviewStarted + reviewMs;
     await network.assertCanSubmit(scope.signal);
     assert.equal(
       (await network.request(pins.chainId, 'eth_getCode', [owner, 'pending'])).result,
@@ -299,6 +334,9 @@ async function submitFinal({
         signingAttempted = true;
         await attest();
         assertCurrent();
+        // A wall-clock step cannot extend a recovered review past its
+        // monotonic end, which the send reserve was measured against.
+        if (lifetimeEnd) assert.ok(performance.now() < reviewEnd);
         const signed = await signer.signTransaction(transaction);
         // Signing may be held across durable history changes. Re-read both
         // private records before exposing signed bytes to raw submission.
@@ -349,7 +387,13 @@ async function submitFinal({
             .then(() => {
               // This is admission to the actual review callback, after every
               // setup await. Do not renew the service's existing review clock.
-              assertCurrent(reviewMarginMs);
+              // A recovered review needs its floor left, and every authority
+              // must outlive the review's end by the post-approval reserve.
+              if (lifetimeEnd) {
+                const left = leftUntil(reviewEnd);
+                if (!(left >= REVIEW_MIN_MS)) throw budgetFail();
+                assertCurrent(left + SEND_RESERVE_MS);
+              } else assertCurrent();
               return review(
                 Object.freeze({
                   ...request,
@@ -374,6 +418,7 @@ async function submitFinal({
           await attest();
           assertCurrent();
           assert.ok(Date.now() < reviewDeadline);
+          if (lifetimeEnd) assert.ok(performance.now() < reviewEnd);
           return approved === true;
         }),
       }
@@ -947,6 +992,8 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
       async (records, context) => {
         const phaseSignal = AbortSignal.any([lifetime, context.signal]);
         let eligibilityScope, sourceReceipt, membership, rootReceipt, rootPoint, verifiedCreator;
+        // Taken before each acquisition, so at or before its age origin.
+        let proofStarted, poiStarted, rootStarted;
         const phaseCurrent = (margin = 0) => {
           current(margin);
           context.assertCurrent();
@@ -1076,6 +1123,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             transaction: provedTransaction,
             expected: capsule.preparation.expected,
           };
+          proofStarted = performance.now();
           proof = await verifyRailgunPrivateProof({
             enrollment,
             proverArchive,
@@ -1113,6 +1161,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             notes,
           });
           assert.ok(poi.closed && typeof poi.closed.then === 'function');
+          poiStarted = performance.now();
           const acquired = await poi.acquire({ timeoutMs: listBudget });
           phaseCurrent();
           sourceReceipt = acquired.receipt;
@@ -1166,12 +1215,26 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             const rootTimer = setTimeout(() => eligibilityScope.close(), budget);
             rootTimer.unref?.();
             try {
+              rootStarted = performance.now();
               rootReceipt = await roots.acquire(rootPoint);
             } finally {
               clearTimeout(rootTimer);
             }
           }
-          live(50000);
+          // Conservative: the genuine receipts below remain the authority.
+          const lifetimeEnd = () =>
+            Math.min(
+              deadline,
+              context.deadline,
+              proofStarted + PROOF_RECEIPT_MS,
+              poiStarted + require('./railgun-poi-source').MAX_AGE_MS,
+              rootPoint ? rootStarted + require('./railgun-txid-root').MAX_AGE_MS : Infinity
+            );
+          // Before the nullifier query: refuse once the review floor, the send
+          // reserve and the expected preflight and EOA reads cannot all fit.
+          const early = REVIEW_MIN_MS + SEND_RESERVE_MS + PREFLIGHT_ALLOWANCE_MS + EOA_ALLOWANCE_MS;
+          if (!(leftUntil(lifetimeEnd()) >= early)) throw budgetFail();
+          live(early);
           await attest();
           const submissionSnapshot = Object.freeze({
             ...baseline,
@@ -1201,7 +1264,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             state,
             preparedProof: proof,
             currentCheckpointHash: owned.binding.checkpointHash,
-            reviewMarginMs: 50000,
+            lifetimeEnd,
             extraCurrent: live,
           });
         } catch (error) {
