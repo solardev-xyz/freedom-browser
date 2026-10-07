@@ -1,23 +1,6 @@
-/** Internal read sequencing only. Fixed main composition supplies these ports;
- * their shape confers no account, plugin, operation or currentness authority.
+/** Compatibility re-export. Internal read sequencing is implemented in
+ * @freedom/railgun-kohaku-adapter/read (vendor/railgun-kohaku-adapter/); this
+ * module keeps Freedom's require path and export shape.
  */
-const assert = require('assert/strict');
-function dispatchRailgunKohakuRead(ports, method, args) {
-  try {
-    assert.ok(['instanceId', 'balance', 'notes'].includes(method));
-    const captured = ports.capture();
-    return ports.retain(
-      Promise.resolve(captured.view[method](...args))
-        .then((result) => {
-          ports.recheck(captured);
-          return result;
-        })
-        .catch(() => {
-          throw ports.refused();
-        })
-    );
-  } catch {
-    return Promise.reject(ports.refused());
-  }
-}
+const { dispatchRailgunKohakuRead } = require('@freedom/railgun-kohaku-adapter/read');
 module.exports = { dispatchRailgunKohakuRead };
