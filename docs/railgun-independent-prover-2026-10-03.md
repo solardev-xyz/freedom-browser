@@ -9,11 +9,11 @@ fixture; production engine/account-session packaging remains separate work.
 
 ## Build and provenance
 
-`build-railgun-prover.js` reads the already installed snarkjs 0.7.5 dependency
+[The preserved builder](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/714401ae4a6f18275829e297ef5856d305a820ae/tools/railgun-runtime-build/scripts/build-railgun-prover.js) reads the already installed snarkjs 0.7.5 dependency
 tree. Its current input root is the ignored pinned PPv2 build-input checkout,
 but it imports no PPv2 protocol source or SDK, installs nothing and changes no
 application dependency or lockfile. Ordinary builds require the committed
-[73-file inventory](../scripts/fixtures/railgun-prover-inputs.json), including
+[73-file inventory](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/714401ae4a6f18275829e297ef5856d305a820ae/tools/railgun-runtime-build/scripts/fixtures/railgun-prover-inputs.json), including
 16 package metadata sets and available license files. `--capture-inputs` creates
 an unapproved candidate inventory for review; it cannot change runtime pins.
 The builder rereads captured files after assembly and refuses a differing input
@@ -88,6 +88,11 @@ remove unused tooling, subject to requalification.
 Account enrollment, live source/history advancement, TXID/POI and relay services,
 checked operation-bound signing, transaction journals and funded lifecycle tests
 remain required for parity with PPv2. No Railgun funds have moved.
+
+The following commands record the original Freedom layout. The byte-identical
+builder and checker now live in the dedicated repository; use its
+[current invocation instructions](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/714401ae4a6f18275829e297ef5856d305a820ae/tools/railgun-runtime-build/README.md) for a new build. This
+relocation does not change the historical build results above.
 
 ```sh
 node scripts/build-railgun-prover.js /absolute/pinned-input-root /absolute/new-build

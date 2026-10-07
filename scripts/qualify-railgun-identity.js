@@ -60,10 +60,10 @@ async function main() {
     assertRailgunIdentity,
     withRailgunViewingCredential,
   } = require('../src/main/wallet/railgun-identity');
+  // Runtime/source observation; immutable build provenance remains in the engine manifest.
   const files = [
     ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-identity.js',
-    'scripts/build-railgun-engine.js',
     'src/main/wallet/railgun-identity.js',
     'src/main/wallet/railgun-identity-job.js',
     'src/main/wallet/railgun-engine-runtime.js',

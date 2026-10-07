@@ -43,3 +43,8 @@ Final regression passed **6,910 unit tests / 33 skipped**, with six OpenLV tests
 ## Next implementation boundaries
 
 Continue with the main-owned persistent process and storage/RPC message capabilities; derive a separate wallet-encryption key and keep spending material in a separately reviewed signer. Then qualify controlled history replay, note/POI classification and current Kohaku interface mapping before advertising balances or notes. Signed-operation binding, pinned circuits/proving, real deployment checks, POI routes, archive/build/licensing and dependency-advisory resolution, platform qualification and product UX remain open. The funded PPv2 profile is untouched.
+
+Build-tool ownership was moved separately to the dedicated repository. See its
+[pinned tooling instructions](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/714401ae4a6f18275829e297ef5856d305a820ae/tools/railgun-runtime-build/README.md); the local fixture
+installation and qualification instructions linked above remain applicable.
+This move does not alter this historical qualification.

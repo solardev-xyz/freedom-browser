@@ -63,7 +63,7 @@ checked signing and funded transaction recovery remain ahead.
 
 ## Engine container
 
-`build-railgun-engine.js` copies the exact approved engine 9.6.0 fixture and its
+[The preserved engine builder](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/714401ae4a6f18275829e297ef5856d305a820ae/tools/railgun-runtime-build/scripts/build-railgun-engine.js) copies the exact approved engine 9.6.0 fixture and its
 locked dependency inventory, excluding only the previously excluded npm
 bookkeeping and executable links. It authenticates original and copied files.
 No dependency is installed, upgraded or transformed. Two separate builds produce
