@@ -9,17 +9,27 @@
  * FREEDOM_WALLET_TOR_EXPERIMENT=1 electron scripts/qualify-railgun-private-live.js \
  *   MODE ENGINE_ASAR PROVER_ASAR ARTIFACT_DIRECTORY PROFILE \
  *   SCAN_REPORT SCAN_SHA256 PREVIOUS_REPORT PREVIOUS_SHA256 NEW_OUTPUT
- * MODE: check-transfer|transfer|observe|poi-submit|recover|status|check-unshield|unshield
+ * MODE: check-transfer|transfer|observe|poi-submit|recover|status|check-unshield|unshield|
+ *   spent-read|preflight-probe|recover-submit
  * check-transfer takes the owned-POI report of qualify-railgun-owned-poi-live.js.
+ * spent-read and preflight-probe take the held transfer report pinned below and a
+ * newer scan on the current sources; recover-submit takes a passed probe report.
+ *
+ * Held-transfer recovery (each mode separately authorized):
+ * - spent-read: the held Shield input's spent marker through the scan anchor.
+ * - preflight-probe: one production private preflight for the held input, with
+ *   no account wallet, proof, EOA request, calldata, signing or broadcast.
+ * - recover-submit: the production recovered submission of the held proof,
+ *   reusing its original spending signature; at most one journaled send.
  *
  * Publication: only NEW_OUTPUT/report.json is publishable. NEW_OUTPUT/transport/
  * holds the Arti state and arti.log and stays local.
  *
- * Stuck states (report.liveness). Neither has a continuation in this script;
- * each needs a separately authorized recovery step:
+ * Stuck states (report.liveness). Each needs a separately authorized recovery step:
  * - proved-unsent: a refusal after proving (fee cap, completion expiry,
  *   preflight) leaves the input held in signing state. Any later spend of it
- *   is refused with RAILGUN_PRIVATE_INPUT_RESERVED.
+ *   is refused with RAILGUN_PRIVATE_INPUT_RESERVED. Only the pinned held
+ *   transfer continues, through preflight-probe and then recover-submit.
  * - journaled-uncertain: a journaled attempt whose send is unknown. If its
  *   deadline expired between the journal write and the broadcast, it was never
  *   sent, and observe cannot resolve it.
@@ -64,6 +74,90 @@ const MODES = Object.freeze([
   'status',
   'check-unshield',
   'unshield',
+  'spent-read',
+  'preflight-probe',
+  'recover-submit',
+]);
+// The held transfer (L-A step 3b): proved, refused at the production preflight
+// before any review, never journaled. The recovery modes bind to this report only.
+const HELD_TRANSFER_REPORT_SHA256 =
+  'd0d05c02c9303205f34382652737613932649a2bf4ecadd134cc8fc46489348c';
+// Modes that follow that report from an older source baseline: sources are pinned
+// to a newer scan instead, and the runtime to the held proof's engine and circuits.
+const REBASED_MODES = Object.freeze(['spent-read', 'preflight-probe']);
+// Production bounds of the recovered submission (railgun-private-submission.js).
+const RECOVERY_TIMEOUT_MS = 600000;
+const PREFLIGHT_MS = 20000;
+const PROBE_PHASE_MS = 60000;
+const READ_PHASE_MS = 15000;
+// The reviewed disclosure summary of the recovered submission, exactly. Any
+// production change to it refuses at the disclosure review until reviewed here.
+const RECOVERY_EXPOSURES = Object.freeze({
+  source: Object.freeze([
+    'lazy-chain-id-check',
+    'public-proxy-logs',
+    'canonical-blocks',
+    'retained-range-and-timing',
+  ]),
+  poi: Object.freeze([
+    'selected-blinded-commitment',
+    'commitment-type',
+    'required-list',
+    'membership-roots',
+    'membership-position-and-signed-event',
+  ]),
+  txidIfTransact: Object.freeze([
+    'latest-txid',
+    'checkpoint-tree-index-root',
+    'creating-transaction-source-binding',
+  ]),
+  privatePreflight: Object.freeze([
+    'lazy-chain-id-check',
+    'deployment-code-and-storage',
+    'verification-key',
+    'unshield-fee',
+    'original-input-tree',
+    'original-merkle-root',
+    'selected-nullifier',
+    'root-history',
+    'unspent-check',
+  ]),
+  transactionRpc: Object.freeze([
+    'lazy-chain-id-check',
+    'public-submitter',
+    'code',
+    'nonce',
+    'balance',
+    'fee-estimates',
+    'original-proved-calldata',
+    'recipient',
+    'nullifier',
+    'commitments',
+    'encrypted-output',
+    'eth_estimateGas',
+    'eth_call',
+    'signed-transaction',
+  ]),
+});
+// The probe's disclosures, in production order (railgun-private-preflight.js).
+// The selected nullifier is queried only after every earlier check passes.
+const PROBE_DISCLOSURE_ORDER = Object.freeze([
+  'lazy-chain-id-check',
+  'latest-header',
+  'deployment-code-and-storage',
+  'deployment-getters',
+  'root-history',
+  'unshield-fee',
+  'verification-key',
+  'selected-nullifier',
+  'anchor-header-recheck',
+]);
+const BEFORE_NULLIFIER = Object.freeze([
+  'deployment',
+  'artifacts',
+  'rootHistory',
+  'unshieldFee',
+  'verifier',
 ]);
 const SPEND_KINDS = Object.freeze({
   transfer: 'railgun-private-transfer',
@@ -289,6 +383,25 @@ function assertTransferSettled(snapshot, chain) {
   const records = transactRecords(snapshot);
   check(records.length === 1 && matchedTransfer(records[0], chain.transfer?.hash), 'journal');
 }
+// The held transfer was never journaled: the D1 shield, all resolved, no private send.
+function assertHeldJournal(snapshot, chain) {
+  assertShieldRecord(snapshot, chain.shieldTransactionHash);
+  assertSpendAdmission(snapshot, 'transfer', chain);
+}
+// Production's prior-attempt rule for a recovered submission, restated: no
+// unresolved record and no record or archive entry for this tree and nullifier.
+function assertHeldUnjournaled(snapshot, held) {
+  assertJournalResolved(snapshot);
+  const { selection, preparation } = held.stored.capsule;
+  check(
+    !transactRecords(snapshot).some(
+      (record) =>
+        record.intent.tree === selection.tree &&
+        record.intent.nullifier === preparation.expected.nullifier
+    ),
+    'journal-held'
+  );
+}
 // Observation is the only mode allowed while its own target is unresolved.
 function selectObservedRecord(snapshot, target, chain, hash) {
   check(['transfer', 'unshield'].includes(target), 'observe-target');
@@ -392,6 +505,17 @@ function assertSameRuntime(previous, actual) {
   );
   check(same(previous, actual), 'runtime');
 }
+// The held proof's runtime: engine, prover and circuit artifacts. Dependency
+// identity is recorded fresh, because the source baseline changed.
+function assertSameProofRuntime(previous, actual) {
+  check(plainObject(previous) && plainObject(actual), 'runtime');
+  const proof = ({ engineSha256, proverSha256, artifactSha256 }) => ({
+    engineSha256,
+    proverSha256,
+    artifactSha256,
+  });
+  assertSameRuntime(proof(previous), proof(actual));
+}
 function assertScanReport(scan) {
   check(plainObject(scan), 'scan');
   check(scan.passed === true && scan.completed === true && scan.chainId === CHAIN_ID, 'scan');
@@ -428,14 +552,56 @@ function assertOwnedPoiReport(report, scanSha) {
     'predecessor-poi'
   );
 }
+// The held transfer report: proved, refused at preflight before any review,
+// never journaled. The pinned digest is the binding; the shape is restated.
+function assertHeldTransferReport(previous, previousSha) {
+  check(previousSha === HELD_TRANSFER_REPORT_SHA256, 'predecessor-held');
+  check(previous.mode === 'transfer' && previous.passed === false, 'predecessor-held');
+  check(previous.failure === undefined, 'predecessor-held');
+  check(
+    previous.prove?.status === 'proved' && previous.prove.holdCreated === true,
+    'predecessor-held'
+  );
+  check(
+    same(previous.spend, {
+      attempted: false,
+      journaled: false,
+      submissionStatus: 'not-sent',
+      resendAllowed: false,
+    }),
+    'predecessor-held'
+  );
+  check(
+    previous.liveness?.state === 'proved-unsent' && previous.liveness.inputHeld === true,
+    'predecessor-held'
+  );
+  check(
+    previous.submission?.status === 'refused' &&
+      previous.submission.stage === 'preflight' &&
+      previous.submission.reviews === 0,
+    'predecessor-held'
+  );
+  check(
+    previous.spendRequest?.kind === SPEND_KINDS.transfer &&
+      previous.spendRequest.recipient === 'self',
+    'predecessor-held'
+  );
+  check(previous.chain.transfer === null && previous.chain.unshield === null, 'predecessor-held');
+  const plan = previous.fee?.plan;
+  check(plainObject(plan) && /^[1-9][0-9]{0,8}$/.test(plan.estimate ?? ''), 'predecessor-held');
+  check(plan.gasLimit === gasLimitFromEstimate(plan.estimate).toString(), 'predecessor-held');
+}
 // Observe follows a spend report, or its check report after a lost spend report.
 function observedTarget(previous) {
   if (previous.mode === 'observe') return previous.target;
+  if (['recover-submit', 'preflight-probe'].includes(previous.mode)) return 'transfer';
   return { transfer: 'transfer', unshield: 'unshield' }[previous.mode.replace(/^check-/, '')];
 }
 function observedHash(previous) {
   if (previous.mode === 'observe') return previous.observedHash;
-  return ['transfer', 'unshield'].includes(previous.mode) ? previous.spend.journaledHash : null;
+  return ['transfer', 'unshield', 'recover-submit'].includes(previous.mode)
+    ? previous.spend.journaledHash
+    : null;
 }
 function validPoiStatus(poi) {
   return (
@@ -448,7 +614,7 @@ function validPoiStatus(poi) {
   );
 }
 // Mode order. Only these predecessor/mode pairs are accepted.
-function assertPredecessor(mode, previous, { scanSha, scan }) {
+function assertPredecessor(mode, previous, { scanSha, scan, previousSha }) {
   check(MODES.includes(mode), 'mode');
   if (mode === 'check-transfer') return assertOwnedPoiReport(previous, scanSha);
   check(plainObject(previous) && previous.journey === JOURNEY, 'predecessor');
@@ -470,7 +636,7 @@ function assertPredecessor(mode, previous, { scanSha, scan }) {
       return;
     case 'observe':
       check(sameScan, 'predecessor-scan');
-      if (['transfer', 'unshield'].includes(previous.mode)) {
+      if (['transfer', 'unshield', 'recover-submit'].includes(previous.mode)) {
         // A failed or uncertain spend is still observed once it is journaled.
         check(previous.spend?.journaled === true, 'predecessor');
         check(HASH.test(previous.spend.journaledHash), 'predecessor');
@@ -478,6 +644,11 @@ function assertPredecessor(mode, previous, { scanSha, scan }) {
       }
       if (['check-transfer', 'check-unshield'].includes(previous.mode)) {
         check(previous.passed === true, 'predecessor');
+        return;
+      }
+      if (previous.mode === 'preflight-probe') {
+        // A lost recover-submit report: the passed probe stands as its check report.
+        check(previous.passed === true && previous.preflight?.passed === true, 'predecessor');
         return;
       }
       check(previous.mode === 'observe' && previous.passed === true, 'predecessor');
@@ -525,6 +696,30 @@ function assertPredecessor(mode, previous, { scanSha, scan }) {
       check(validPoiStatus(previous.chain.outputPoi), 'predecessor-poi');
       check(notOlder && afterTransfer, 'predecessor-scan');
       return;
+    case 'spent-read':
+    case 'preflight-probe':
+      assertHeldTransferReport(previous, previousSha);
+      // A newer scan on the current sources; the hold-time scan never qualifies.
+      check(
+        scanSha !== previous.scan?.sha256 && anchor > previous.scan?.anchor?.number,
+        'predecessor-scan-newer'
+      );
+      return;
+    case 'recover-submit':
+      check(previous.mode === 'preflight-probe' && previous.passed === true, 'predecessor');
+      check(
+        previous.preflight?.passed === true && previous.preflight.acquireCalls === 1,
+        'predecessor-preflight'
+      );
+      check(previous.immutables?.unchanged === true, 'predecessor');
+      check(
+        previous.chain.heldTransfer?.reportSha256 === HELD_TRANSFER_REPORT_SHA256,
+        'predecessor-held'
+      );
+      check(previous.chain.transfer === null, 'predecessor');
+      // The probe's conditions: the same scan, sources and runtime.
+      check(sameScan, 'predecessor-scan');
+      return;
     default:
       throw refusal('mode');
   }
@@ -538,6 +733,14 @@ function nextChain(mode, previous, previousSha) {
       unshield: null,
     };
   const chain = JSON.parse(JSON.stringify(previous.chain));
+  if (REBASED_MODES.includes(mode))
+    chain.heldTransfer = {
+      reportSha256: previousSha,
+      estimate: previous.fee.plan.estimate,
+      gasLimit: previous.fee.plan.gasLimit,
+    };
+  if (mode === 'recover-submit')
+    chain.heldTransfer = { ...chain.heldTransfer, probeReportSha256: previousSha };
   if (mode === 'check-unshield')
     chain.outputPoi = {
       reportSha256: previousSha,
@@ -706,6 +909,46 @@ function readSubmissionDiagnostic(ctx, result) {
   } catch {
     return null;
   }
+}
+// The probe's refusal through the same production tuple and the same allowlist.
+function readPreflightDiagnostic(ctx, substage, error) {
+  try {
+    return summarizeSubmissionDiagnostic(
+      ctx
+        .load('wallet/railgun-private-submission')
+        .getRailgunPrivatePreflightDiagnostic(substage, error)
+    );
+  } catch {
+    return null;
+  }
+}
+// Whether nullifiers(tree, nullifier) reached the RPC. Production queries it only
+// after the deployment, artifact, root, fee and verifier steps pass.
+function nullifierQuery({ passed, diagnostic }) {
+  if (passed || diagnostic?.substage === 'admission' || diagnostic?.step === 'anchor-recheck')
+    return 'queried';
+  if (diagnostic?.substage === 'open' || BEFORE_NULLIFIER.includes(diagnostic?.step))
+    return 'not-queried';
+  if (diagnostic?.step === 'nullifiers')
+    return diagnostic.reason === 'mismatch' ? 'queried' : 'possibly-queried';
+  return 'unknown';
+}
+// Public anchor facts and fixed booleans of a passed preflight; never its input.
+function summarizePreflightObservation(observed) {
+  const anchor = observed?.anchor;
+  return {
+    anchor: {
+      blockNumber: blockNumber(anchor?.number),
+      blockHash: HASH.test(anchor?.hash) ? anchor.hash : null,
+      timestamp: blockNumber(anchor?.timestamp),
+    },
+    deploymentMatched: observed?.deploymentMatched === true,
+    verifierMatched: observed?.verifierMatched === true,
+    rootAccepted: observed?.rootAccepted === true,
+    inputUnspent: observed?.inputUnspent === true,
+    unshieldFeeBps: Number.isSafeInteger(observed?.unshieldFeeBps) ? observed.unshieldFeeBps : null,
+    trust: observed?.trust === 'unverified-rpc' ? 'unverified-rpc' : null,
+  };
 }
 
 // Redaction backstop for every report write. Public hashes only under fixed keys.
@@ -1004,17 +1247,29 @@ async function main() {
     const scan = readPinnedReport(args.scanFile, args.scanSha);
     const previous = readPinnedReport(args.previousFile, args.previousSha);
     assertScanReport(scan);
-    assertPredecessor(mode, previous, { scanSha: args.scanSha, scan });
-    const names = journeySourceNames({ listed: listSourceFiles(base), scan, previous });
+    assertPredecessor(mode, previous, {
+      scanSha: args.scanSha,
+      scan,
+      previousSha: args.previousSha,
+    });
+    // A rebased mode's sources are anchored by the newer scan alone; its report
+    // is the new chain anchor that recover-submit compares in full.
+    const rebased = REBASED_MODES.includes(mode);
+    const names = journeySourceNames({
+      listed: listSourceFiles(base),
+      scan,
+      previous: rebased ? undefined : previous,
+    });
     const hashes = () =>
       Object.fromEntries(names.map((name) => [name, sha(fs.readFileSync(path.join(base, name)))]));
     const sourceSha256 = hashes();
     assertSourcesMatch(scan.sourceSha256, sourceSha256, 'scan-sources');
     if (mode === 'check-transfer')
       assertSourcesMatch(previous.sourceSha256, sourceSha256, 'predecessor-sources');
-    else assertSameSources(previous.sourceSha256, sourceSha256);
+    else if (!rebased) assertSameSources(previous.sourceSha256, sourceSha256);
     const runtime = hashRuntime(args, base);
-    if (mode !== 'check-transfer') assertSameRuntime(previous.runtime, runtime);
+    if (rebased) assertSameProofRuntime(previous.runtime, runtime);
+    else if (mode !== 'check-transfer') assertSameRuntime(previous.runtime, runtime);
     report.previous.mode = mode === 'check-transfer' ? 'owned-poi' : previous.mode;
     report.scan.anchor = { number: scan.anchor.number, hash: scan.anchor.hash };
     report.chain = nextChain(mode, previous, args.previousSha);
@@ -1133,6 +1388,9 @@ async function main() {
       resolved: report.resolved?.outcome,
       poi: report.poi?.statuses,
       poiSubmission: report.poiSubmission?.classification,
+      input: report.input?.spent,
+      preflight: report.preflight?.passed,
+      nullifierQuery: report.preflight?.nullifierQuery,
     })
   );
   return report.passed ? 0 : 1;
@@ -1140,6 +1398,7 @@ async function main() {
 async function closeAll(ctx) {
   // Reverse acquisition order. A failed close never skips the remaining owners.
   const steps = [
+    () => ctx.preflight?.close(),
     () => ctx.poi?.close(),
     async () => ctx.poi && (await ctx.poi.closed),
     () => ctx.membership?.close?.(),
@@ -1190,6 +1449,8 @@ async function openAccount(ctx) {
   check(checked.state.storeId === scan.publicState?.storeId, 'scan-state');
   check(same(checked.state.trees, scan.publicState?.trees), 'scan-state');
   ctx.status = status;
+  // The completed checkpoint of this scan: a recovered preflight's current binding.
+  ctx.checkpoint = checked;
   ctx.owners = Object.freeze({
     identity: ctx.identity,
     enrollment: ctx.enrollment,
@@ -1511,6 +1772,18 @@ async function spendSteps(ctx, step, onHold) {
         return true;
       },
     });
+  await recordSubmission(ctx, { result, before, started: submitStarted, reviews });
+  if (report.spend.journaled)
+    ctx.chain[step] = {
+      hash: report.spend.journaledHash,
+      ...(step === 'unshield' ? { amount: note.amount.toString() } : {}),
+    };
+  report.passed = report.spend.submissionStatus === 'acknowledged';
+}
+// One production submission's result, then the journal read back: the journal
+// alone decides whether a send was attempted.
+async function recordSubmission(ctx, { result, before, started, reviews }) {
+  const { report } = ctx;
   const status =
     typeof result?.hash === 'string'
       ? 'acknowledged'
@@ -1522,17 +1795,493 @@ async function spendSteps(ctx, step, onHold) {
     ...(typeof result?.stage === 'string' ? { stage: result.stage } : {}),
     ...(status === 'refused' ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),
     reviews,
-    elapsedMs: Math.round(performance.now() - submitStarted),
+    elapsedMs: Math.round(performance.now() - started),
   };
   ctx.stage = 'journal-readback';
   report.spend = classifySpendOutcome({ result, before, after: await ctx.readJournal() });
   // Aggregate only; printed at once so a later drain failure cannot hide it.
   console.log(JSON.stringify({ spend: report.spend }));
-  if (report.spend.journaled)
-    ctx.chain[step] = {
-      hash: report.spend.journaledHash,
-      ...(step === 'unshield' ? { amount: note.amount.toString() } : {}),
+}
+
+// ---------------------------------------------------------------------------
+// Held-transfer recovery. Every step reads the one held signing record through
+// the production signing-recovery path; none releases, discards or re-signs it.
+// ---------------------------------------------------------------------------
+// Expected refusals stay values inside recovery, as in production, so a refused
+// check never closes the authenticated stores.
+async function inRecovery(stores, timeoutMs, use) {
+  const outcome = await stores.reservations.withSigningRecovery(
+    async (records, context) => {
+      try {
+        return { value: await use(records, context) };
+      } catch (error) {
+        return { error };
+      }
+    },
+    { timeoutMs }
+  );
+  if (outcome.error) throw outcome.error;
+  return outcome.value;
+}
+// The one signing-recovery record and its capsule, read like the production
+// recovered submission: receipt-attested, original signature and proof present.
+async function readHeld(ctx, { reservations, capsules }, records, context) {
+  context.assertCurrent();
+  check(Array.isArray(records) && records.length === 1, 'hold');
+  const [{ receipt, entry }] = records;
+  reservations.assertReceiptContext(receipt, 'recovery');
+  check(same(await reservations.assertReceipt(receipt), entry), 'hold');
+  const stored = await capsules.readSigned(receipt);
+  context.assertCurrent();
+  check(SHA256.test(entry.id) && stored?.holdId === entry.id && entry.state === 'signing', 'hold');
+  check(lower(entry.signing?.submitter) === ctx.owner, 'hold');
+  check(!!stored.signature && plainObject(stored.provedTransaction), 'hold-signature');
+  check(lower(stored.provedTransaction.to) === pins.proxy, 'hold');
+  const { selection, preparation } = stored.capsule;
+  check(
+    selection.kind === SPEND_KINDS.transfer && entry.facts.kind === SPEND_KINDS.transfer,
+    'hold'
+  );
+  check(selection.recipient === ctx.identity.descriptor.instanceId, 'hold-recipient');
+  check(!Object.hasOwn(selection, 'recipientRelationship'), 'hold-recipient');
+  check(
+    entry.facts.tree === selection.tree && entry.facts.nullifier === preparation.expected.nullifier,
+    'hold'
+  );
+  // A detached copy: the receipt and live store objects stay inside recovery.
+  return JSON.parse(JSON.stringify({ entry, stored }));
+}
+const HELD_SUMMARY = Object.freeze({
+  signingRecords: 1,
+  operation: SPEND_KINDS.transfer,
+  recipient: 'self',
+  submitter: 'enrolled-eoa',
+  originalSignaturePresent: true,
+  provedTransactionPresent: true,
+  journaled: false,
+});
+// Aggregate hold counts; a lease rewrite or floor advance leaves them unchanged.
+async function holdCounts({ reservations, capsules }) {
+  // [report key, store key]: the report never names a proof field.
+  const count = (value, keys) =>
+    Object.fromEntries(
+      keys.map(([name, key]) => {
+        check(Number.isSafeInteger(value?.[key]) && value[key] >= 0, 'hold-counts');
+        return [name, value[key]];
+      })
+    );
+  return {
+    reservations: count(
+      await reservations.inspect(),
+      ['held', 'signing', 'abandoned', 'legacy'].map((key) => [key, key])
+    ),
+    capsules: count(await capsules.inspect(), [
+      ['records', 'records'],
+      ['signed', 'signatures'],
+      ['proved', 'proofs'],
+    ]),
+  };
+}
+// The authenticated immutable facts a read-only probe must leave unchanged.
+// Lease rewrites and floor advances on store open are expected and not compared.
+function immutableParts({ held, journal, holds }) {
+  const { entry, stored } = held;
+  const { preparation } = stored.capsule;
+  return {
+    'hold-entry': entry,
+    intent: [entry.facts, preparation.transaction, preparation.expected, stored.factsDigest],
+    signing: [entry.signing, stored.signingDigest, stored.authorizationDigest],
+    signature: stored.signature,
+    'proved-transaction': stored.provedTransaction,
+    'calldata-ciphertext': [preparation.transaction.data, stored.provedTransaction.data],
+    capsule: [stored.holdId, stored.capsuleDigest, stored.capsule],
+    'journal-records': journal.records,
+    'journal-archive': journal.archive,
+    'hold-counts': holds,
+  };
+}
+const EXPECTED_STORE_WRITES = Object.freeze([
+  'reservations-lease',
+  'reservations-floor',
+  'capsules-lease',
+  'capsules-floor',
+]);
+// The binding production supplies to a recovered submission: the current
+// completed checkpoint hash and its block (owned.binding.checkpointHash and
+// owned.publicThrough.number), both taken from this scan's coordinator checkpoint.
+function currentPreflightBinding(ctx) {
+  const checkpoint = ctx.checkpoint;
+  check(plainObject(checkpoint) && plainObject(checkpoint.to), 'preflight-binding');
+  check(
+    same(checkpoint.to, ctx.status.to) && same(checkpoint.to, ctx.scan.anchor),
+    'preflight-binding'
+  );
+  const value = ctx.load('wallet/railgun-wallet-coverage').checkpointHash(checkpoint);
+  check(SHA256.test(value) && Number.isSafeInteger(checkpoint.to.number), 'preflight-binding');
+  return Object.freeze({ checkpointHash: value, minimumBlock: checkpoint.to.number });
+}
+// The recovered-submission preflight input (submitFinal with currentCheckpointHash):
+// the held proof's original tree, merkleRoot and nullifier, bound to the current
+// completed checkpoint and its block. Never the hold-time binding, never a mix.
+function recoveredPreflightInput({ held, current, holdAnchor }) {
+  const { entry, stored } = held;
+  const input = Object.freeze({
+    tree: stored.capsule.selection.tree,
+    merkleRoot: stored.capsule.preparation.expected.merkleRoot,
+    nullifier: entry.facts.nullifier,
+    checkpointHash: current.checkpointHash,
+    minimumBlock: current.minimumBlock,
+  });
+  assertRecoveredPreflightInput(input, { held, current, holdAnchor });
+  return input;
+}
+function assertRecoveredPreflightInput(input, { held, current, holdAnchor }) {
+  const { entry, stored } = held;
+  const { selection, preparation } = stored.capsule;
+  check(
+    plainObject(input) &&
+      same(Object.keys(input).sort(), [
+        'checkpointHash',
+        'merkleRoot',
+        'minimumBlock',
+        'nullifier',
+        'tree',
+      ]),
+    'preflight-binding'
+  );
+  // The original held proof inputs.
+  check(input.tree === selection.tree && input.tree === entry.facts.tree, 'preflight-binding');
+  check(input.merkleRoot === preparation.expected.merkleRoot, 'preflight-binding');
+  check(
+    input.nullifier === entry.facts.nullifier && input.nullifier === preparation.expected.nullifier,
+    'preflight-binding'
+  );
+  // Both halves of the binding from the one current completed checkpoint.
+  check(input.checkpointHash === current.checkpointHash, 'preflight-binding');
+  check(input.minimumBlock === current.minimumBlock, 'preflight-binding');
+  // Neither half may be the hold-time binding.
+  check(input.checkpointHash !== entry.facts.checkpointHash, 'preflight-binding');
+  check(Number.isSafeInteger(holdAnchor) && input.minimumBlock > holdAnchor, 'preflight-binding');
+}
+// Exactly one production private preflight under the reviewed destination, with
+// the recovered submission's timer and admission and without proof, EOA or
+// signing work. A refusal is data and is never retried.
+async function probePreflight(ctx, input, signal) {
+  const preflights = ctx.load('wallet/railgun-private-preflight');
+  const started = performance.now();
+  let substage = 'open',
+    acquireCalls = 0,
+    preflight,
+    passed = false,
+    diagnostic = null,
+    observation = null;
+  try {
+    preflight = preflights.createRailgunPrivatePreflight({
+      enrollment: ctx.enrollment,
+      artifactDirectory: ctx.args.artifactDirectory,
+      input,
+      destinationConstraint: ctx.destinations.value.protocol,
+    });
+    ctx.preflight = preflight;
+    const stop = () => preflight.close();
+    const timer = setTimeout(stop, PREFLIGHT_MS);
+    timer.unref?.();
+    signal.addEventListener('abort', stop, { once: true });
+    let acquired;
+    try {
+      check(!signal.aborted, 'preflight');
+      substage = 'acquire';
+      acquireCalls++;
+      acquired = await preflight.acquire();
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', stop);
+    }
+    substage = 'admission';
+    const observed = preflights.assertRailgunPrivatePreflight(
+      preflight,
+      acquired.receipt,
+      ctx.enrollment
+    );
+    check(same(observed.input, input), 'preflight-input');
+    observation = summarizePreflightObservation(observed);
+    passed = true;
+  } catch (error) {
+    diagnostic = readPreflightDiagnostic(ctx, substage, error);
+  } finally {
+    try {
+      preflight?.close();
+    } catch {
+      // Production also continues past a failed close; closeAll retries it.
+    }
+    ctx.preflight = undefined;
+  }
+  return {
+    attempted: acquireCalls > 0,
+    acquireCalls,
+    retry: false,
+    passed,
+    diagnostic,
+    nullifierQuery: nullifierQuery({ passed, diagnostic }),
+    observation,
+    elapsedMs: Math.round(performance.now() - started),
+  };
+}
+// The disclosure review of the recovered submission, answered by fixed policy:
+// the self transfer by the enrolled EOA, the original signature reused, the
+// reviewed Sentio and POI destinations and exactly the reviewed exposures.
+function assertRecoveryDisclosure(ctx, held, summary) {
+  const origin = (value) => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return null;
+    }
+  };
+  const { selection } = held.stored.capsule;
+  const rpc = new URL(RPC_URL).origin;
+  check(plainObject(summary) && plainObject(summary.destinations), 'disclosure-review');
+  check(summary.purpose === 'railgun-recovered-private-submission', 'disclosure-review');
+  check(
+    summary.chainId === CHAIN_ID && summary.operation === SPEND_KINDS.transfer,
+    'disclosure-review'
+  );
+  check(lower(summary.submitter) === ctx.owner, 'disclosure-review');
+  check(summary.recipient === ctx.identity.descriptor.instanceId, 'disclosure-review');
+  check(!Object.hasOwn(summary, 'recipientRelationship'), 'disclosure-review');
+  check(
+    summary.selection?.noteId === `${selection.tree}:${selection.position}`,
+    'disclosure-review'
+  );
+  check(
+    summary.selection.originalCheckpointHash === held.entry.facts.checkpointHash,
+    'disclosure-review'
+  );
+  for (const key of ['retainedSource', 'protocolRpc', 'transactionRpc'])
+    check(origin(summary.destinations[key]) === rpc, 'disclosure-review');
+  check(
+    summary.destinations.poi === POI_ORIGIN && summary.destinations.txid === POI_ORIGIN,
+    'disclosure-review'
+  );
+  check(same(summary.exposures, RECOVERY_EXPOSURES), 'disclosure-review');
+  check(summary.requiredList === REQUIRED_LIST, 'disclosure-review');
+  check(
+    summary.originalSpendingSignatureReused === true && summary.newSpendingSignature === false,
+    'disclosure-review'
+  );
+  check(
+    summary.eoaSigningAndBroadcast === true && summary.simulationBeforeTransactionReview === true,
+    'disclosure-review'
+  );
+  check(
+    summary.automaticRetry === false &&
+      summary.chainStateVerified === false &&
+      summary.inputCreatorDeterminedByCompletedWallet === true,
+    'disclosure-review'
+  );
+  return {
+    purpose: summary.purpose,
+    operation: summary.operation,
+    recipient: 'self',
+    submitter: 'enrolled-eoa',
+    destinationOrigins: {
+      rpc,
+      poi: POI_ORIGIN,
+    },
+    exposures: JSON.parse(JSON.stringify(RECOVERY_EXPOSURES)),
+    originalSpendingSignatureReused: true,
+    newSpendingSignature: false,
+    automaticRetry: false,
+  };
+}
+// The transfer mode's fixed review policy for the original proved calldata. The
+// fee recheck refuses before production signs the EOA transaction.
+function reviewRecoveredTransaction(ctx, held, fee, request) {
+  check(plainObject(request) && plainObject(request.transaction), 'review');
+  const actual = request.transaction;
+  check(request.operation === SPEND_KINDS.transfer, 'review');
+  check(!Object.hasOwn(request, 'recipientRelationship'), 'review');
+  check(lower(request.from) === ctx.owner, 'review');
+  check(lower(actual.to) === pins.proxy && BigInt(actual.value) === 0n, 'review');
+  check(Number(actual.chainId) === CHAIN_ID, 'review');
+  check(actual.data === held.stored.provedTransaction.data, 'review-calldata');
+  check(request.maxGasFee === FEE_CAP_WEI && request.fundingAddressPublic === true, 'review');
+  check(request.chainStateVerified === false, 'review');
+  return reviewedFee(actual, fee.gasLimit);
+}
+// The held Shield input with its spent marker. Unlike shieldInput, a spent note
+// is reported, never refused.
+function heldShieldNote(owned, shieldTransactionHash) {
+  const notes = owned.read.received.filter((note) => lower(note.txid) === shieldTransactionHash);
+  check(notes.length === 1 && wethNote(notes[0]), 'input');
+  const [note] = notes;
+  const record = owned.ownedPoi.find((value) => value.id === note.id);
+  check(record?.type === 'Shield' && lower(record.txid) === lower(note.txid), 'input-record');
+  return note;
+}
+// Public facts only: spent or not, and the public spending transaction.
+function spentStatus(note) {
+  if (note.spentTxid === false) return { spent: false };
+  const txid = lower(note.spentTxid);
+  const value = typeof txid === 'string' && /^[0-9a-f]{64}$/.test(txid) ? '0x' + txid : txid;
+  check(HASH.test(value), 'input-spent');
+  return { spent: true, transactionHash: value };
+}
+// Experiment 1: the read-only preflight probe of the held input.
+async function preflightProbe(ctx) {
+  const { report, previous } = ctx;
+  ctx.stage = 'journal';
+  const before = await ctx.readJournal();
+  assertHeldJournal(before, ctx.chain);
+  report.liveness = describeLiveness({ holdCreated: true, spend: { journaled: false } });
+  await openAccount(ctx);
+  ctx.stage = 'binding';
+  const current = currentPreflightBinding(ctx);
+  const holdAnchor = previous.scan.anchor.number;
+  ctx.stage = 'destinations';
+  ctx.destinations = openDestinationConstraints(ctx);
+  report.destinations = { rpcOrigins: ctx.destinations.origins };
+  ctx.stage = 'hold';
+  const stores = await ctx.enrollment.openPrivateRecoveryStores();
+  const holdsBefore = await holdCounts(stores);
+  ctx.stage = 'preflight';
+  const observedAt = new Date().toISOString();
+  const held = await inRecovery(stores, PROBE_PHASE_MS, async (records, context) => {
+    const value = await readHeld(ctx, stores, records, context);
+    assertHeldUnjournaled(before, value);
+    report.hold = { ...HELD_SUMMARY };
+    const input = recoveredPreflightInput({ held: value, current, holdAnchor });
+    report.preflightBinding = {
+      rule: 'recovered-submission',
+      originalFields: ['tree', 'merkleRoot', 'nullifier'],
+      currentFields: ['checkpointHash', 'minimumBlock'],
+      minimumBlock: input.minimumBlock,
+      holdAnchorNumber: holdAnchor,
+      checkpointChangedSinceHold: true,
     };
+    report.preflight = await probePreflight(ctx, input, context.signal);
+    report.disclosure = {
+      order: PROBE_DISCLOSURE_ORDER,
+      nullifierQuery: report.preflight.nullifierQuery,
+      eoa: false,
+      calldata: false,
+      poi: false,
+      signing: false,
+      broadcast: false,
+    };
+    context.assertCurrent();
+    return value;
+  });
+  report.coverage = {
+    scanAnchor: { number: ctx.status.to.number, hash: ctx.status.to.hash },
+    holdAnchorNumber: holdAnchor,
+    preflightAnchor: report.preflight.observation?.anchor ?? null,
+    observedAt,
+    appliesTo: 'conditions-at-observation',
+  };
+  ctx.stage = 'immutables';
+  const reread = await inRecovery(stores, READ_PHASE_MS, (records, context) =>
+    readHeld(ctx, stores, records, context)
+  );
+  const parts = {
+    before: immutableParts({ held, journal: before, holds: holdsBefore }),
+    after: immutableParts({
+      held: reread,
+      journal: await ctx.readJournal(),
+      holds: await holdCounts(stores),
+    }),
+  };
+  const changed = Object.keys(parts.before).filter(
+    (name) => !same(parts.before[name], parts.after[name])
+  );
+  report.immutables = {
+    unchanged: changed.length === 0,
+    compared: Object.keys(parts.before),
+    changed,
+    holds: holdsBefore,
+    expectedStoreWrites: EXPECTED_STORE_WRITES,
+    wholeProfileIdentityAsserted: false,
+  };
+  check(changed.length === 0, 'immutables');
+  // A completed probe; only preflight.passed admits recover-submit.
+  report.passed = true;
+}
+// Experiment 2: production recovered submission of the held proved input. The
+// original spending signature and proof are reused: no proving, no spending-key
+// use, no hold release or discard, and at most one journaled send.
+async function recoverSubmit(ctx) {
+  const { report } = ctx;
+  const { archive, proverArchive, artifactDirectory } = ctx.args;
+  ctx.stage = 'journal';
+  const before = await ctx.readJournal();
+  assertHeldJournal(before, ctx.chain);
+  await openAccount(ctx);
+  ctx.stage = 'hold';
+  const stores = await ctx.enrollment.openPrivateRecoveryStores();
+  const held = await inRecovery(stores, READ_PHASE_MS, (records, context) =>
+    readHeld(ctx, stores, records, context)
+  );
+  assertHeldUnjournaled(before, held);
+  report.hold = { ...HELD_SUMMARY };
+  ctx.stage = 'submitter';
+  report.submitter = await submitterChecks(ctx);
+  ctx.stage = 'fee-cap';
+  // The held transfer's own estimate: no calldata leaves before production's
+  // ordered disclosure review, and production refuses a higher estimate.
+  const fee = planSubmissionFee({
+    estimate: ctx.chain.heldTransfer.estimate,
+    gasPrice: ctx.quotedGasPrice,
+  });
+  check(fee.gasLimit === ctx.chain.heldTransfer.gasLimit, 'fee-plan');
+  report.fee = {
+    plan: fee,
+    estimateSource: 'held-transfer-report',
+    headroomReason: GAS_HEADROOM_REASON,
+  };
+  ctx.stage = 'destination';
+  const destination = ctx
+    .load('wallet/railgun-account-public')
+    .getRailgunAccountPublicDestination(ctx.publicAccount.coordinator, ctx.enrollment);
+  ctx.stage = 'submission';
+  const reviews = { disclosure: 0, transaction: 0 };
+  const maxGasFee = FEE_CAP_WEI;
+  const started = performance.now();
+  // Until the journal is read back, a send may have happened.
+  report.spend = {
+    attempted: null,
+    journaled: null,
+    submissionStatus: 'unknown',
+    resendAllowed: false,
+  };
+  const result = await ctx
+    .load('wallet/railgun-private-submission')
+    .submitRailgunRecoveredPrivateTransaction({
+      identity: ctx.identity,
+      enrollment: ctx.enrollment,
+      coordinator: ctx.publicAccount.coordinator,
+      destination,
+      archive,
+      proverArchive,
+      artifactDirectory,
+      holdId: held.entry.id,
+      reviewDisclosures: async (summary) => {
+        check(++reviews.disclosure === 1, 'review-repeated');
+        report.recovery = { disclosure: assertRecoveryDisclosure(ctx, held, summary) };
+        return true;
+      },
+      reviewTransaction: async (request) => {
+        check(++reviews.transaction === 1, 'review-repeated');
+        report.fee.reviewed = reviewRecoveredTransaction(ctx, held, fee, request);
+        return true;
+      },
+      gasLimit: BigInt(fee.gasLimit),
+      maxGasFee,
+      signal: ctx.enrollment.signal,
+      timeoutMs: RECOVERY_TIMEOUT_MS,
+    });
+  await recordSubmission(ctx, { result, before, started, reviews });
+  // Uncertain or acknowledged, a journaled attempt continues only in observe.
+  if (report.spend.journaled) ctx.chain.transfer = { hash: report.spend.journaledHash };
   report.passed = report.spend.submissionStatus === 'acknowledged';
 }
 const RUNNERS = {
@@ -1862,6 +2611,38 @@ const RUNNERS = {
   async unshield(ctx) {
     await spend(ctx, 'unshield');
   },
+  // Experiment 0: the held input's spent marker through the scan's anchor only.
+  async 'spent-read'(ctx) {
+    ctx.stage = 'journal';
+    assertHeldJournal(await ctx.readJournal(), ctx.chain);
+    await openAccount(ctx);
+    const owned = await openWallet(ctx);
+    ctx.stage = 'input';
+    // Never the nullifier, root or hold id.
+    ctx.report.input = {
+      ...spentStatus(heldShieldNote(owned, ctx.chain.shieldTransactionHash)),
+      through: { number: ctx.status.to.number, hash: ctx.status.to.hash },
+    };
+    ctx.report.passed = true;
+  },
+  async 'preflight-probe'(ctx) {
+    await preflightProbe(ctx);
+  },
+  async 'recover-submit'(ctx) {
+    const { report } = ctx;
+    report.spend = {
+      attempted: false,
+      journaled: false,
+      submissionStatus: 'not-sent',
+      resendAllowed: false,
+    };
+    try {
+      await recoverSubmit(ctx);
+    } finally {
+      // The input was already held when this mode started.
+      report.liveness = describeLiveness({ holdCreated: true, spend: report.spend });
+    }
+  },
 };
 
 if (
@@ -1903,6 +2684,11 @@ module.exports = {
   SPEND_KINDS,
   FIXED_SOURCES,
   SOURCE_DIRECTORIES,
+  HELD_TRANSFER_REPORT_SHA256,
+  REBASED_MODES,
+  RECOVERY_EXPOSURES,
+  RECOVERY_TIMEOUT_MS,
+  PROBE_DISCLOSURE_ORDER,
   parseArguments,
   feeExposure,
   assertFeeWithinCap,
@@ -1915,6 +2701,8 @@ module.exports = {
   assertShieldRecord,
   assertSpendAdmission,
   assertTransferSettled,
+  assertHeldJournal,
+  assertHeldUnjournaled,
   selectObservedRecord,
   classifySpendOutcome,
   journeySourceNames,
@@ -1922,8 +2710,10 @@ module.exports = {
   assertSourcesMatch,
   assertSameSources,
   assertSameRuntime,
+  assertSameProofRuntime,
   assertScanReport,
   assertOwnedPoiReport,
+  assertHeldTransferReport,
   assertPredecessor,
   nextChain,
   summarizeObservation,
@@ -1934,6 +2724,10 @@ module.exports = {
   summarizePoiResponse,
   sanitizeFailure,
   summarizeSubmissionDiagnostic,
+  nullifierQuery,
+  summarizePreflightObservation,
+  recoveredPreflightInput,
+  assertRecoveredPreflightInput,
   assertAggregateReport,
   renderReport,
   assessPoiSubmission,
@@ -1942,6 +2736,8 @@ module.exports = {
   listSourceFiles,
   shieldInput,
   transferOutput,
+  heldShieldNote,
+  spentStatus,
   spend,
   RUNNERS,
 };

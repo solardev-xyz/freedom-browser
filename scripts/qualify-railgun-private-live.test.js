@@ -44,6 +44,44 @@ describe('pinned constants', () => {
     expect(source).toContain('maxGasFee <= 2000000000000000n');
     expect(source).toContain('gasLimit * fee <= maxGasFee');
   });
+  test('the recovered submission binds the current checkpoint the probe reproduces', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, '../src/main/wallet/railgun-private-submission.js'),
+      'utf8'
+    );
+    for (const text of [
+      'checkpointHash: currentCheckpointHash ?? snapshot.entry.facts.checkpointHash,',
+      'minimumBlock: owned.publicThrough.number,',
+      'currentCheckpointHash: owned.binding.checkpointHash,',
+      'timeoutMs = 600000,',
+      'const timer = setTimeout(stop, 20000);',
+    ])
+      expect(source).toContain(text);
+    expect(api.RECOVERY_TIMEOUT_MS).toBe(600000);
+    expect(api.HELD_TRANSFER_REPORT_SHA256).toMatch(/^[0-9a-f]{64}$/);
+  });
+  test('the production preflight queries the selected nullifier after every earlier check', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, '../src/main/wallet/railgun-private-preflight.js'),
+      'utf8'
+    );
+    const order = [
+      'const base = await deployment.acquire();',
+      "step = 'artifacts';",
+      "await getter('rootHistory'",
+      "await getter('unshieldFee'",
+      'assertRailgunArtifactVerifier(artifacts, encoded);',
+      "await getter('nullifiers'",
+      "step = 'anchor-recheck';",
+    ].map((text) => {
+      expect(source.split(text)).toHaveLength(2);
+      return source.indexOf(text);
+    });
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(api.PROBE_DISCLOSURE_ORDER.indexOf('selected-nullifier')).toBe(
+      api.PROBE_DISCLOSURE_ORDER.length - 2
+    );
+  });
   test('loading the script starts no Electron, profile, wallet or network work', () => {
     const filename = path.join(__dirname, 'qualify-railgun-private-live.js');
     const imports = [];
@@ -1451,6 +1489,475 @@ function observeWorld({
   return { ctx, calls, journal };
 }
 
+// Held-transfer recovery over the real journal and report rules, a fake signing
+// recovery store and fake production preflight and recovered submission. The
+// probe's refusal diagnostic is the real production helper.
+const realSubmission = require('../src/main/wallet/railgun-private-submission');
+const HELD_SHA = api.HELD_TRANSFER_REPORT_SHA256;
+const PROBE_SHA = sha('9b');
+const HOLD_ID = sha('4d');
+const HOLD_ANCHOR = 11859803;
+const NEW_ANCHOR = { number: 11860000, hash: hash('ac') };
+const OLD_CHECKPOINT = sha('0c');
+const NEW_CHECKPOINT = sha('1c');
+const NULLIFIER = hash('31');
+const MERKLE_ROOT = hash('32');
+const CALLDATA = '0xc0ffee99';
+const SECRETS = [HOLD_ID, NULLIFIER, MERKLE_ROOT, OLD_CHECKPOINT, NEW_CHECKPOINT, CALLDATA];
+const copy = (value) => JSON.parse(JSON.stringify(value));
+const withoutSecrets = (report) => {
+  const text = JSON.stringify(report);
+  return SECRETS.every((value) => !text.includes(value.replace(/^0x/, '')));
+};
+const heldPlan = {
+  estimate: '1247366',
+  gasLimit: '1559208',
+  headroom: '5/4',
+  quotedGasPrice: '1000015',
+  quotedExposureWei: '1559231388120',
+  capWei: '2000000000000000',
+};
+// The s3b report shape: proved, refused at preflight with no review, never journaled.
+const heldReport = (extra = {}) =>
+  journeyReport('transfer', {
+    passed: false,
+    scan: { sha256: SCAN_SHA, anchor: { number: HOLD_ANCHOR, hash: hash('ac') } },
+    runtime: {
+      engineSha256: sha('e0'),
+      proverSha256: sha('f0'),
+      artifactSha256: { '01x01.zkey': sha('11') },
+    },
+    spendRequest: { kind: 'railgun-private-transfer', recipient: 'self', fullInputValue: true },
+    prove: { status: 'proved', holdCreated: true, elapsedMs: 1 },
+    spend: {
+      attempted: false,
+      journaled: false,
+      submissionStatus: 'not-sent',
+      resendAllowed: false,
+    },
+    fee: { plan: { ...heldPlan } },
+    submission: { status: 'refused', stage: 'preflight', reviews: 0, elapsedMs: 1 },
+    liveness: {
+      inputHeld: true,
+      state: 'proved-unsent',
+      continuation: 'separately-authorized-recovery',
+      laterSpendRefusal: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+    },
+    ...extra,
+  });
+const heldChain = (extra = {}) => ({
+  ownedPoiReportSha256: D1_SHA,
+  shieldTransactionHash: SHIELD,
+  transfer: null,
+  unshield: null,
+  heldTransfer: { reportSha256: HELD_SHA, estimate: '1247366', gasLimit: '1559208' },
+  ...extra,
+});
+const probeReport = (extra = {}) =>
+  journeyReport('preflight-probe', {
+    scan: { sha256: NEWER_SCAN_SHA, anchor: { ...NEW_ANCHOR } },
+    chain: heldChain(),
+    preflight: {
+      attempted: true,
+      acquireCalls: 1,
+      retry: false,
+      passed: true,
+      diagnostic: null,
+      nullifierQuery: 'queried',
+    },
+    immutables: { unchanged: true },
+    ...extra,
+  });
+const newerScan = { scanSha: NEWER_SCAN_SHA, scan: scanReport(NEW_ANCHOR.number) };
+// The held signing record and its capsule, as the production stores return them.
+function heldState({ recipient = INSTANCE, foreign = false, signed = true } = {}) {
+  const kind = 'railgun-private-transfer';
+  return {
+    entry: {
+      id: HOLD_ID,
+      state: 'signing',
+      facts: {
+        kind,
+        tree: 0,
+        position: 1,
+        nullifier: NULLIFIER,
+        noteHash: hash('33'),
+        intentDigest: hash('34'),
+        checkpointHash: OLD_CHECKPOINT,
+        poiDigest: sha('35'),
+      },
+      signing: { submitter: OWNER, operationId: sha('36'), gatesDigest: sha('37') },
+    },
+    stored: {
+      holdId: HOLD_ID,
+      factsDigest: sha('38'),
+      authorizationDigest: sha('39'),
+      capsuleDigest: sha('3a'),
+      capsule: {
+        version: 1,
+        walletId: sha('3b'),
+        selection: {
+          kind,
+          tree: 0,
+          position: 1,
+          recipient,
+          ...(foreign ? { recipientRelationship: 'foreign' } : {}),
+        },
+        preparation: {
+          transaction: { chainId: 11155111, to: pins.proxy, value: '0x0', data: '0xcafe' },
+          expected: {
+            kind,
+            tree: 0,
+            merkleRoot: MERKLE_ROOT,
+            nullifier: NULLIFIER,
+            commitment: hash('3c'),
+            boundParamsHash: hash('3d'),
+          },
+          amount: AMOUNT.toString(),
+        },
+        noteHash: hash('33'),
+      },
+      signingDigest: sha('3e'),
+      signature: signed ? { R8: ['1', '2'], S: '3' } : null,
+      provedTransaction: { to: pins.proxy, data: CALLDATA },
+    },
+  };
+}
+const recoverySummary = (extra = {}) => ({
+  purpose: 'railgun-recovered-private-submission',
+  chainId: 11155111,
+  operation: 'railgun-private-transfer',
+  submitter: OWNER,
+  recipient: INSTANCE,
+  selection: { noteId: '0:1', originalCheckpointHash: OLD_CHECKPOINT },
+  destinations: {
+    retainedSource: api.RPC_URL + '/retained',
+    protocolRpc: api.RPC_URL,
+    transactionRpc: api.RPC_URL,
+    poi: api.POI_ORIGIN,
+    txid: api.POI_ORIGIN,
+  },
+  exposures: copy(api.RECOVERY_EXPOSURES),
+  requiredList: api.REQUIRED_LIST,
+  inputCreatorDeterminedByCompletedWallet: true,
+  originalSpendingSignatureReused: true,
+  newSpendingSignature: false,
+  eoaSigningAndBroadcast: true,
+  simulationBeforeTransactionReview: true,
+  automaticRetry: false,
+  chainStateVerified: false,
+  ...extra,
+});
+function heldWorld({
+  mode = 'preflight-probe',
+  records,
+  signingRecords = 1,
+  recipient,
+  foreign,
+  signed,
+  checkpointHash = NEW_CHECKPOINT,
+  checkpointTo = NEW_ANCHOR,
+  preflight = 'pass',
+  echoInput,
+  during,
+  spentTxid = false,
+  ownedType = 'Shield',
+  gasPrice = 1000015n,
+  submit = 'ack',
+  summary = {},
+  reviewGasPrice = 1000015n,
+  reviewTransaction = {},
+  reviewCalls = 1,
+  disclosureCalls = 1,
+  diagnostic,
+} = {}) {
+  const calls = {
+    timeline: [],
+    loaded: [],
+    network: [],
+    preflights: [],
+    acquires: 0,
+    submit: [],
+    disclosures: [],
+    reviews: [],
+    sign: 0,
+    abandon: 0,
+    recoveryTimeouts: [],
+  };
+  const log = (event) => calls.timeline.push(event);
+  const journal = { records: records ?? [], archive: [shieldRecord()] };
+  const state = {
+    ...heldState({ recipient, foreign, signed }),
+    journal,
+    counts: {
+      reservations: { held: 0, signing: signingRecords, abandoned: 0, legacy: 0 },
+      capsules: { records: 1, signatures: 1, proofs: 1, capacity: 96 },
+    },
+  };
+  const reservations = {
+    withSigningRecovery: async (use, options) => {
+      log('recovery');
+      calls.recoveryTimeouts.push(options.timeoutMs);
+      const listed = Array.from({ length: signingRecords }, () => ({
+        receipt: {},
+        entry: copy(state.entry),
+      }));
+      return use(listed, {
+        signal: new AbortController().signal,
+        deadline: Infinity,
+        assertCurrent() {},
+      });
+    },
+    assertReceiptContext() {},
+    assertReceipt: async () => copy(state.entry),
+    inspect: async () => ({ ...state.counts.reservations }),
+    abandon: async () => calls.abandon++,
+    abandonRecovered: async () => calls.abandon++,
+  };
+  const capsules = {
+    readSigned: async () => copy(state.stored),
+    inspect: async () => ({ ...state.counts.capsules }),
+  };
+  const enrollment = {
+    signal: new AbortController().signal,
+    getContext: () => ({ role: 'engine' }),
+    openPrivateRecoveryStores: async () => {
+      log('recovery-stores');
+      return { reservations, capsules };
+    },
+    close: () => log('enrollment-close'),
+  };
+  const identity = { descriptor: { instanceId: INSTANCE }, close: () => log('identity-close') };
+  const checkpoint = { to: { ...checkpointTo }, state: { storeId: 'store', trees: [] } };
+  const publicAccount = {
+    generationId: 'generation',
+    policy: 'policy',
+    coordinator: {
+      recover: async () => ({ to: { ...NEW_ANCHOR } }),
+      withPublicSnapshot: async () => ({ evidence: {} }),
+      assertSnapshot: () => checkpoint,
+    },
+    close: async () => log('public-close'),
+  };
+  const destination = Object.freeze({ retained: true });
+  const constraints = [];
+  const weth = { __type: 'erc20', contract: pins.wrappedNative };
+  const wallet = { view: {}, close: async () => log('wallet-close') };
+  const network = {
+    request: async (_chainId, method) => {
+      calls.network.push(method);
+      const results = {
+        eth_getCode: '0x',
+        eth_getBalance: '0xde0b6b3a7640000',
+        eth_getTransactionCount: '0x3',
+      };
+      return { result: results[method] };
+    },
+    getFeeQuote: async () => {
+      calls.network.push('eth_gasPrice');
+      return { type: 'legacy', gasPrice: gasPrice.toString() };
+    },
+  };
+  const diagnostics = new WeakMap();
+  const refusal = (stage, value) => {
+    const result = Object.freeze({ status: 'recovery-required', stage });
+    if (value) diagnostics.set(result, value);
+    return result;
+  };
+  const modules = {
+    'wallet/railgun-identity': {
+      openRailgunIdentity: async () => {
+        log('identity-open');
+        return identity;
+      },
+    },
+    'wallet/railgun-account-enrollment': { openRailgunAccountEnrollment: async () => enrollment },
+    'wallet/railgun-account-public': {
+      openRailgunAccountPublic: async () => publicAccount,
+      getRailgunAccountPublicDestination: (coordinator, owner) => {
+        if (coordinator !== publicAccount.coordinator || owner !== enrollment) throw Error('owner');
+        return destination;
+      },
+    },
+    'wallet/railgun-wallet-coverage': {
+      checkpointHash: (value) => {
+        if (value !== checkpoint) throw Error('checkpoint');
+        return checkpointHash;
+      },
+    },
+    'wallet/railgun-account-wallet': {
+      openRailgunAccountWallet: async () => {
+        log('wallet-open');
+        return wallet;
+      },
+      readRailgunAccountOwnedNotes: () => ({
+        checkpointHash: 'checkpoint',
+        read: {
+          readiness: { to: { ...NEW_ANCHOR } },
+          instanceId: INSTANCE,
+          received: [{ id: '0:1', txid: SHIELD, spentTxid, asset: weth, amount: AMOUNT }],
+        },
+        ownedPoi: [{ id: '0:1', type: ownedType, txid: SHIELD }],
+        trees: [],
+      }),
+    },
+    'networks/privacy-context': {
+      getPrivacyContext: () => ({
+        profileId: 'profile',
+        subject: { kind: 'private-account', role: 'engine', operation: 'x' },
+      }),
+      createPrivacyScope: () => ({ getContext: (subject) => subject, close() {} }),
+    },
+    'networks/private-rpc': {
+      createPrivateRpc: () => ({ release() {} }),
+      getPrivateRpcDestination: () => ({}),
+      getPrivateRpcDestinationDetails: () => ({ url: api.RPC_URL }),
+      createPrivateRpcDestinationConstraint: () => {
+        const constraint = Object.freeze({ index: constraints.length });
+        constraints.push(constraint);
+        return { constraint, close() {} };
+      },
+    },
+    'wallet/railgun-private-preflight': {
+      createRailgunPrivatePreflight: (options) => {
+        calls.preflights.push(options);
+        log('preflight-open');
+        if (preflight === 'open')
+          throw Object.assign(Error('Railgun private preflight unavailable'), {
+            code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+            reason: 'refused',
+          });
+        return {
+          acquire: async () => {
+            calls.acquires++;
+            log('acquire');
+            during?.(state);
+            if (preflight !== 'pass')
+              throw Object.assign(Error('secret /Users/someone ' + NULLIFIER), {
+                code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+                nullifier: NULLIFIER,
+                ...preflight,
+              });
+            return { receipt: {}, observation: {} };
+          },
+          close: () => log('preflight-close'),
+        };
+      },
+      assertRailgunPrivatePreflight: (_source, _receipt, owner) => {
+        if (owner !== enrollment) throw Error('enrollment');
+        return {
+          anchor: { number: '0xb4f9a0', hash: hash('a1'), timestamp: '0x67000000' },
+          input: echoInput ?? { ...calls.preflights[0].input },
+          deploymentMatched: true,
+          verifierMatched: true,
+          rootAccepted: true,
+          inputUnspent: true,
+          unshieldFeeBps: 25,
+          trust: 'unverified-rpc',
+          ownershipVerified: false,
+          signingEnabled: false,
+        };
+      },
+    },
+    // Mirrors production order: disclosure review, preflight, transaction
+    // review, then the journal write before the one send.
+    'wallet/railgun-private-submission': {
+      getRailgunPrivatePreflightDiagnostic: realSubmission.getRailgunPrivatePreflightDiagnostic,
+      getRailgunPrivateSubmissionDiagnostic: (result) => diagnostics.get(result) ?? null,
+      submitRailgunRecoveredPrivateTransaction: async (options) => {
+        log('recover-submit');
+        calls.submit.push(options);
+        for (let n = 0; n < disclosureCalls; n++) {
+          let approved;
+          try {
+            approved = await options.reviewDisclosures(
+              Object.freeze(recoverySummary(summary)),
+              options.signal
+            );
+          } catch (error) {
+            approved = error;
+          }
+          calls.disclosures.push(approved);
+          if (approved !== true)
+            return refusal('disclosure-review', {
+              stage: 'disclosure-review',
+              code: 'RAILGUN_PRIVATE_SUBMISSION_REFUSED',
+            });
+        }
+        if (submit === 'preflight') return refusal('preflight', diagnostic);
+        const request = {
+          transaction: {
+            to: pins.proxy,
+            value: '0',
+            data: CALLDATA,
+            chainId: 11155111,
+            gasLimit: options.gasLimit.toString(),
+            gasPrice: reviewGasPrice.toString(),
+            nonce: 3,
+            ...reviewTransaction,
+          },
+          from: OWNER,
+          intent: {},
+          operation: 'railgun-private-transfer',
+          maxGasFee: options.maxGasFee,
+          fundingAddressPublic: true,
+          chainStateVerified: false,
+        };
+        for (let n = 0; n < reviewCalls; n++) {
+          let approved;
+          try {
+            approved = await options.reviewTransaction(request);
+          } catch (error) {
+            approved = error;
+          }
+          calls.reviews.push(approved);
+          if (approved !== true) return refusal('submission');
+        }
+        calls.sign++;
+        log('sign');
+        journal.records.push({
+          hash: TRANSFER,
+          state: submit === 'ack' ? 'submitted' : 'attempted',
+          intent: {
+            kind: 'railgun-transact',
+            operation: 'railgun-private-transfer',
+            tree: 0,
+            nullifier: NULLIFIER,
+          },
+        });
+        if (submit === 'ack') return { hash: TRANSFER };
+        if (submit === 'lost') return { transactionHash: TRANSFER, submissionStatus: 'unknown' };
+        return refusal('submission');
+      },
+    },
+  };
+  const recovering = mode === 'recover-submit';
+  const previous = recovering ? probeReport() : heldReport();
+  const ctx = {
+    args: { archive: '/e', proverArchive: '/p', artifactDirectory: '/a' },
+    report: { passed: false },
+    stage: 'preconditions',
+    scan: {
+      generationId: 'generation',
+      publicPolicy: 'policy',
+      anchor: { ...NEW_ANCHOR },
+      publicState: { storeId: 'store', trees: [] },
+      wallet: { to: { ...NEW_ANCHOR } },
+    },
+    previous,
+    chain: api.nextChain(mode, previous, recovering ? PROBE_SHA : HELD_SHA),
+    owner: OWNER,
+    network,
+    readJournal: async () => copy(journal),
+    load: (name) => {
+      calls.loaded.push(name);
+      if (!modules[name]) throw Error('unexpected module ' + name);
+      return modules[name];
+    },
+  };
+  return { ctx, calls, state, journal, constraints, destination };
+}
+
 // Each probe holds for the real script and must fail for its mutation rows.
 const PROBES = {
   'fee-boundary': async (m) => {
@@ -1981,6 +2488,738 @@ const PROBES = {
     for (const value of [recovered, status, checkTransfer, checkUnshield])
       expect(m.assertAggregateReport(value.ctx.report)).toBe(true);
   },
+  'held-predecessor': async (m) => {
+    const options = { ...newerScan, previousSha: HELD_SHA };
+    for (const mode of ['spent-read', 'preflight-probe'])
+      expect(() => m.assertPredecessor(mode, heldReport(), options)).not.toThrow();
+    const no = (report, extra = {}) =>
+      expect(() =>
+        m.assertPredecessor('preflight-probe', report, { ...options, ...extra })
+      ).toThrow();
+    // The same content under another digest is another report.
+    no(heldReport(), { previousSha: sha('d0') });
+    // The hold-time scan, or one not newer than it, never qualifies.
+    no(heldReport(), { scanSha: SCAN_SHA });
+    no(heldReport(), { scan: scanReport(HOLD_ANCHOR) });
+    no(heldReport({ liveness: { inputHeld: true, state: 'journaled-uncertain' } }));
+    no(
+      heldReport({
+        spend: {
+          attempted: true,
+          journaled: true,
+          submissionStatus: 'unknown',
+          resendAllowed: false,
+        },
+      })
+    );
+    no(heldReport({ prove: { status: 'signed-unfinished', holdCreated: true } }));
+    no(heldReport({ submission: { status: 'refused', stage: 'submission', reviews: 1 } }));
+    no(heldReport({ failure: { stage: 'prove', code: 'X' } }));
+    no(heldReport({ mode: 'check-transfer' }));
+    no(heldReport({ passed: true }));
+    no(heldReport({ spendRequest: { kind: 'railgun-token-unshield', recipient: 'enrolled-eoa' } }));
+    no(heldReport({ fee: { plan: { ...heldPlan, gasLimit: '1559207' } } }));
+    no(heldReport({ fee: undefined }));
+    const journaled = heldReport();
+    journaled.chain.transfer = { hash: TRANSFER };
+    no(journaled);
+  },
+  'recover-predecessor': async (m) => {
+    const options = { ...newerScan, previousSha: PROBE_SHA };
+    const ok = (mode, report, extra = {}) =>
+      expect(() => m.assertPredecessor(mode, report, { ...options, ...extra })).not.toThrow();
+    const no = (mode, report, extra = {}) =>
+      expect(() => m.assertPredecessor(mode, report, { ...options, ...extra })).toThrow();
+    ok('recover-submit', probeReport());
+    no('recover-submit', probeReport({ passed: false }));
+    no('recover-submit', probeReport({ preflight: { passed: false, acquireCalls: 1 } }));
+    no('recover-submit', probeReport({ preflight: { passed: true, acquireCalls: 2 } }));
+    no('recover-submit', probeReport({ immutables: { unchanged: false } }));
+    no(
+      'recover-submit',
+      probeReport({
+        chain: heldChain({
+          heldTransfer: { reportSha256: sha('d0'), estimate: '1', gasLimit: '2' },
+        }),
+      })
+    );
+    no('recover-submit', probeReport({ chain: heldChain({ transfer: { hash: TRANSFER } }) }));
+    no('recover-submit', heldReport());
+    no('recover-submit', probeReport(), {
+      scanSha: sha('ae'),
+      scan: scanReport(NEW_ANCHOR.number),
+    });
+    // A journaled recovery, acknowledged or uncertain, continues only in observe.
+    const spent = {
+      attempted: true,
+      journaled: true,
+      journaledHash: TRANSFER,
+      submissionStatus: 'unknown',
+      resendAllowed: false,
+    };
+    const recovered = journeyReport('recover-submit', {
+      passed: false,
+      scan: { sha256: NEWER_SCAN_SHA, anchor: { ...NEW_ANCHOR } },
+      chain: heldChain({ transfer: { hash: TRANSFER } }),
+      spend: spent,
+    });
+    ok('observe', recovered);
+    no('observe', { ...recovered, spend: { ...spent, journaled: false } });
+    no('recover-submit', recovered);
+    // A lost recover-submit report: the passed probe stands as its check report.
+    ok('observe', probeReport());
+    no('observe', probeReport({ preflight: { passed: false } }));
+  },
+  'proof-runtime': async (m) => {
+    const runtime = heldReport().runtime;
+    const later = {
+      ...copy(runtime),
+      dependencies: { railgunKohakuAdapter: { version: '0.1.0' }, packageLockSha256: sha('5c') },
+    };
+    expect(() => m.assertSameProofRuntime(runtime, later)).not.toThrow();
+    for (const changed of [
+      { ...later, proverSha256: sha('f1') },
+      { ...later, engineSha256: sha('e1') },
+      { ...later, artifactSha256: { '01x01.zkey': sha('12') } },
+    ])
+      expect(() => m.assertSameProofRuntime(runtime, changed)).toThrow();
+  },
+  'held-chain': async (m) => {
+    const probe = m.nextChain('preflight-probe', heldReport(), HELD_SHA);
+    expect(probe).toEqual(heldChain());
+    expect(m.nextChain('spent-read', heldReport(), HELD_SHA)).toEqual(heldChain());
+    expect(m.nextChain('recover-submit', probeReport(), PROBE_SHA)).toEqual(
+      heldChain({
+        heldTransfer: { ...heldChain().heldTransfer, probeReportSha256: PROBE_SHA },
+      })
+    );
+  },
+  'preflight-binding': async (m) => {
+    const held = heldState();
+    const current = { checkpointHash: NEW_CHECKPOINT, minimumBlock: NEW_ANCHOR.number };
+    const input = m.recoveredPreflightInput({ held, current, holdAnchor: HOLD_ANCHOR });
+    expect(input).toEqual({
+      tree: 0,
+      merkleRoot: MERKLE_ROOT,
+      nullifier: NULLIFIER,
+      checkpointHash: NEW_CHECKPOINT,
+      minimumBlock: NEW_ANCHOR.number,
+    });
+    const refuse = (value, against = current) =>
+      expectRefusal(
+        () =>
+          m.assertRecoveredPreflightInput(value, {
+            held,
+            current: against,
+            holdAnchor: HOLD_ANCHOR,
+          }),
+        'preflight-binding'
+      );
+    // Mixed old/new bindings, and a checkpoint from neither.
+    refuse({ ...input, checkpointHash: OLD_CHECKPOINT });
+    refuse({ ...input, minimumBlock: HOLD_ANCHOR });
+    refuse({ ...input, checkpointHash: OLD_CHECKPOINT, minimumBlock: HOLD_ANCHOR });
+    refuse({ ...input, checkpointHash: sha('2c') });
+    refuse({ ...input, minimumBlock: NEW_ANCHOR.number + 1 });
+    // A "current" checkpoint that is still the hold-time one.
+    refuse(
+      { ...input, checkpointHash: OLD_CHECKPOINT },
+      { ...current, checkpointHash: OLD_CHECKPOINT }
+    );
+    refuse({ ...input, minimumBlock: HOLD_ANCHOR }, { ...current, minimumBlock: HOLD_ANCHOR });
+    // The original held proof inputs only.
+    refuse({ ...input, merkleRoot: hash('99') });
+    refuse({ ...input, nullifier: hash('98') });
+    refuse({ ...input, tree: 1 });
+    refuse({ ...input, extra: 1 });
+  },
+  'held-unjournaled': async (m) => {
+    const held = heldState();
+    const record = (nullifier, resolution = { railgun: { outcome: 'reverted' } }) => ({
+      hash: TRANSFER,
+      state: 'submitted',
+      intent: { kind: 'railgun-transact', tree: 0, nullifier },
+      ...(resolution ? { resolution } : {}),
+    });
+    expect(() =>
+      m.assertHeldUnjournaled(journal([], [shieldRecord(), record(hash('77'))]), held)
+    ).not.toThrow();
+    expect(() =>
+      m.assertHeldUnjournaled(journal([], [shieldRecord(), record(NULLIFIER)]), held)
+    ).toThrow();
+    expect(() =>
+      m.assertHeldUnjournaled(journal([record(NULLIFIER)], [shieldRecord()]), held)
+    ).toThrow();
+    expect(() =>
+      m.assertHeldUnjournaled(journal([record(hash('77'), null)], [shieldRecord()]), held)
+    ).toThrow();
+  },
+  'probe-pass': async (m) => {
+    const { ctx, calls, constraints } = heldWorld();
+    await m.RUNNERS['preflight-probe'](ctx);
+    expect(ctx.report.passed).toBe(true);
+    // Exactly one preflight, built by the recovered-submission rules.
+    expect(calls.preflights).toHaveLength(1);
+    expect(calls.acquires).toBe(1);
+    expect(Object.keys(calls.preflights[0]).sort()).toEqual([
+      'artifactDirectory',
+      'destinationConstraint',
+      'enrollment',
+      'input',
+    ]);
+    expect(calls.preflights[0].input).toEqual({
+      tree: 0,
+      merkleRoot: MERKLE_ROOT,
+      nullifier: NULLIFIER,
+      checkpointHash: NEW_CHECKPOINT,
+      minimumBlock: NEW_ANCHOR.number,
+    });
+    expect(calls.preflights[0].destinationConstraint).toBe(constraints[0]);
+    expect(ctx.report.preflight).toEqual({
+      attempted: true,
+      acquireCalls: 1,
+      retry: false,
+      passed: true,
+      diagnostic: null,
+      nullifierQuery: 'queried',
+      observation: {
+        anchor: { blockNumber: 0xb4f9a0, blockHash: hash('a1'), timestamp: 0x67000000 },
+        deploymentMatched: true,
+        verifierMatched: true,
+        rootAccepted: true,
+        inputUnspent: true,
+        unshieldFeeBps: 25,
+        trust: 'unverified-rpc',
+      },
+      elapsedMs: expect.any(Number),
+    });
+    expect(ctx.report.preflightBinding).toMatchObject({
+      rule: 'recovered-submission',
+      minimumBlock: NEW_ANCHOR.number,
+      holdAnchorNumber: HOLD_ANCHOR,
+    });
+    // No account wallet, proof, EOA request, POI, signing, broadcast or release.
+    expect(calls.network).toEqual([]);
+    for (const name of [
+      'wallet/railgun-account-wallet',
+      'wallet/railgun-private-operation',
+      'wallet/railgun-account-poi',
+      'wallet/signers',
+    ])
+      expect(calls.loaded).not.toContain(name);
+    expect(calls.submit).toEqual([]);
+    expect(calls.abandon).toBe(0);
+    expect(calls.timeline.filter((event) => event === 'acquire')).toHaveLength(1);
+    expect(calls.timeline.indexOf('acquire')).toBeLessThan(
+      calls.timeline.indexOf('preflight-close')
+    );
+    // The preflight runs inside the first recovery read; the second re-reads.
+    expect(calls.recoveryTimeouts).toEqual([60000, 15000]);
+    expect(ctx.report.immutables).toEqual({
+      unchanged: true,
+      compared: [
+        'hold-entry',
+        'intent',
+        'signing',
+        'signature',
+        'proved-transaction',
+        'calldata-ciphertext',
+        'capsule',
+        'journal-records',
+        'journal-archive',
+        'hold-counts',
+      ],
+      changed: [],
+      holds: {
+        reservations: { held: 0, signing: 1, abandoned: 0, legacy: 0 },
+        capsules: { records: 1, signed: 1, proved: 1 },
+      },
+      expectedStoreWrites: [
+        'reservations-lease',
+        'reservations-floor',
+        'capsules-lease',
+        'capsules-floor',
+      ],
+      wholeProfileIdentityAsserted: false,
+    });
+    expect(ctx.report.liveness.state).toBe('proved-unsent');
+    expect(ctx.report.coverage).toMatchObject({
+      scanAnchor: NEW_ANCHOR,
+      holdAnchorNumber: HOLD_ANCHOR,
+      preflightAnchor: { blockNumber: 0xb4f9a0, blockHash: hash('a1') },
+      appliesTo: 'conditions-at-observation',
+    });
+    expect(ctx.report.disclosure).toMatchObject({
+      nullifierQuery: 'queried',
+      eoa: false,
+      calldata: false,
+      signing: false,
+      broadcast: false,
+    });
+    expect(m.assertAggregateReport(ctx.report)).toBe(true);
+    expect(JSON.parse(m.renderReport(ctx.report))).toEqual(copy(ctx.report));
+    expect(withoutSecrets(ctx.report)).toBe(true);
+  },
+  'probe-refusals': async (m) => {
+    // [refusal tuple, nullifier query]: production queries the nullifier only
+    // after the deployment, artifact, root, fee and verifier steps pass.
+    for (const [tuple, query] of [
+      [
+        {
+          reason: 'rpc',
+          step: 'deployment',
+          deploymentStep: 'anchor',
+          causeCode: 'PRIVATE_RPC_INVALID',
+        },
+        'not-queried',
+      ],
+      [{ reason: 'stale', step: 'deployment', deploymentStep: 'anchor-recheck' }, 'not-queried'],
+      [{ reason: 'mismatch', step: 'deployment', deploymentStep: 'slot-paused' }, 'not-queried'],
+      [{ reason: 'refused', step: 'artifacts' }, 'not-queried'],
+      [{ reason: 'rpc', step: 'rootHistory', causeCode: 'TOR_REQUEST_FAILED' }, 'not-queried'],
+      [{ reason: 'mismatch', step: 'unshieldFee' }, 'not-queried'],
+      [{ reason: 'mismatch', step: 'verifier' }, 'not-queried'],
+      [{ reason: 'inactive', step: 'nullifiers' }, 'possibly-queried'],
+      [{ reason: 'mismatch', step: 'nullifiers' }, 'queried'],
+      [{ reason: 'stale', step: 'anchor-recheck' }, 'queried'],
+    ]) {
+      const { ctx, calls } = heldWorld({ preflight: tuple });
+      await m.RUNNERS['preflight-probe'](ctx);
+      // A completed probe whose preflight refused: one acquire, never a retry.
+      expect(ctx.report.passed).toBe(true);
+      expect(calls.acquires).toBe(1);
+      expect(ctx.report.preflight).toEqual({
+        attempted: true,
+        acquireCalls: 1,
+        retry: false,
+        passed: false,
+        diagnostic: {
+          stage: 'preflight',
+          substage: 'acquire',
+          code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+          ...tuple,
+        },
+        nullifierQuery: query,
+        observation: null,
+        elapsedMs: expect.any(Number),
+      });
+      expect(calls.network).toEqual([]);
+      expect(m.assertAggregateReport(ctx.report)).toBe(true);
+      expect(withoutSecrets(ctx.report)).toBe(true);
+    }
+    // Construction refusal: no acquire and nothing queried.
+    const open = heldWorld({ preflight: 'open' });
+    await m.RUNNERS['preflight-probe'](open.ctx);
+    expect(open.calls.acquires).toBe(0);
+    expect(open.ctx.report.preflight).toMatchObject({
+      attempted: false,
+      acquireCalls: 0,
+      passed: false,
+      nullifierQuery: 'not-queried',
+      diagnostic: {
+        stage: 'preflight',
+        substage: 'open',
+        code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+        reason: 'refused',
+      },
+    });
+    // An observation for another input is an admission refusal, never a pass.
+    const echoed = heldWorld({
+      echoInput: {
+        tree: 0,
+        merkleRoot: MERKLE_ROOT,
+        nullifier: NULLIFIER,
+        checkpointHash: OLD_CHECKPOINT,
+        minimumBlock: HOLD_ANCHOR,
+      },
+    });
+    await m.RUNNERS['preflight-probe'](echoed.ctx);
+    expect(echoed.ctx.report.preflight).toMatchObject({
+      passed: false,
+      acquireCalls: 1,
+      nullifierQuery: 'queried',
+      observation: null,
+      diagnostic: {
+        stage: 'preflight',
+        substage: 'admission',
+        code: 'RAILGUN_LIVE_JOURNEY_REFUSED',
+      },
+    });
+  },
+  'probe-binding-runner': async (m) => {
+    // A coordinator still at the hold-time checkpoint, or a checkpoint that is
+    // not this scan's: refused before any preflight exists.
+    for (const options of [
+      { checkpointHash: OLD_CHECKPOINT },
+      { checkpointTo: { number: HOLD_ANCHOR, hash: hash('ac') } },
+      { checkpointTo: { number: NEW_ANCHOR.number + 5, hash: hash('ae') } },
+    ]) {
+      const { ctx, calls } = heldWorld(options);
+      expect(await settle(m.RUNNERS['preflight-probe'](ctx))).toEqual(refused('preflight-binding'));
+      expect(calls.preflights).toEqual([]);
+      expect(calls.acquires).toBe(0);
+    }
+  },
+  'probe-hold': async (m) => {
+    for (const [options, step] of [
+      [{ signingRecords: 2 }, 'hold'],
+      [{ foreign: true }, 'hold-recipient'],
+      [{ recipient: '0zk1' + 'x'.repeat(60) }, 'hold-recipient'],
+      [{ signed: false }, 'hold-signature'],
+    ]) {
+      const { ctx, calls } = heldWorld(options);
+      expect(await settle(m.RUNNERS['preflight-probe'](ctx))).toEqual(refused(step));
+      expect(calls.preflights).toEqual([]);
+      expect(calls.abandon).toBe(0);
+    }
+    // Any private send or open record refuses before the profile is opened.
+    for (const [records, step] of [
+      [
+        [
+          {
+            hash: TRANSFER,
+            state: 'submitted',
+            intent: { kind: 'railgun-transact', tree: 0, nullifier: NULLIFIER },
+            resolution: { railgun: { outcome: 'reverted' } },
+          },
+        ],
+        'spend-attempted',
+      ],
+      [[{ hash: hash('41'), state: 'attempted', intent: { kind: 'other' } }], 'journal-unresolved'],
+    ]) {
+      const { ctx, calls } = heldWorld({ records });
+      expect(await settle(m.RUNNERS['preflight-probe'](ctx))).toEqual(refused(step));
+      expect(calls.timeline).not.toContain('identity-open');
+    }
+  },
+  'probe-immutables': async (m) => {
+    for (const [name, during] of [
+      ['signature', (s) => (s.stored.signature = { R8: ['9', '9'], S: '9' })],
+      ['proved-transaction', (s) => (s.stored.provedTransaction.data = '0xbeef')],
+      ['calldata-ciphertext', (s) => (s.stored.capsule.preparation.transaction.data = '0xcafd')],
+      ['hold-entry', (s) => (s.entry.signing.operationId = sha('66'))],
+      ['intent', (s) => (s.entry.facts.intentDigest = hash('67'))],
+      [
+        'journal-records',
+        (s) =>
+          s.journal.records.push({
+            hash: hash('42'),
+            state: 'submitted',
+            intent: {},
+            resolution: {},
+          }),
+      ],
+      ['journal-archive', (s) => s.journal.archive.push({ hash: hash('43'), intent: {} })],
+      ['hold-counts', (s) => (s.counts.reservations.abandoned = 1)],
+    ]) {
+      const { ctx } = heldWorld({ during });
+      expect(await settle(m.RUNNERS['preflight-probe'](ctx))).toEqual(refused('immutables'));
+      expect(ctx.report.passed).toBe(false);
+      expect(ctx.report.immutables.unchanged).toBe(false);
+      expect(ctx.report.immutables.changed).toContain(name);
+      expect(m.assertAggregateReport(ctx.report)).toBe(true);
+    }
+  },
+  'spent-read': async (m) => {
+    const unspent = heldWorld({ mode: 'spent-read' });
+    await m.RUNNERS['spent-read'](unspent.ctx);
+    expect(unspent.ctx.report.passed).toBe(true);
+    expect(unspent.ctx.report.input).toEqual({ spent: false, through: NEW_ANCHOR });
+    for (const spentTxid of [hash('9a'), '9A'.repeat(32)]) {
+      const spent = heldWorld({ mode: 'spent-read', spentTxid });
+      await m.RUNNERS['spent-read'](spent.ctx);
+      expect(spent.ctx.report.input).toEqual({
+        spent: true,
+        transactionHash: hash('9a'),
+        through: NEW_ANCHOR,
+      });
+      expect(m.assertAggregateReport(spent.ctx.report)).toBe(true);
+      expect(withoutSecrets(spent.ctx.report)).toBe(true);
+    }
+    for (const [options, step] of [
+      [{ spentTxid: '0x12' }, 'input-spent'],
+      [{ ownedType: 'Transact' }, 'input-record'],
+    ]) {
+      const bad = heldWorld({ mode: 'spent-read', ...options });
+      expect(await settle(m.RUNNERS['spent-read'](bad.ctx))).toEqual(refused(step));
+    }
+    // A wallet read only: no recovery store, preflight, submission or EOA request.
+    expect(unspent.calls.network).toEqual([]);
+    expect(unspent.calls.timeline).not.toContain('recovery-stores');
+    for (const name of ['wallet/railgun-private-preflight', 'wallet/railgun-private-submission'])
+      expect(unspent.calls.loaded).not.toContain(name);
+    const journaled = heldWorld({
+      mode: 'spent-read',
+      records: [{ hash: hash('41'), state: 'attempted', intent: { kind: 'other' } }],
+    });
+    expect(await settle(m.RUNNERS['spent-read'](journaled.ctx))).toEqual(
+      refused('journal-unresolved')
+    );
+  },
+  'recover-ack': async (m) => {
+    const { ctx, calls, destination } = heldWorld({ mode: 'recover-submit' });
+    await m.RUNNERS['recover-submit'](ctx);
+    expect(ctx.report.passed).toBe(true);
+    expect(calls.submit).toHaveLength(1);
+    const options = calls.submit[0];
+    expect(Object.keys(options).sort()).toEqual(
+      [
+        'identity',
+        'enrollment',
+        'coordinator',
+        'destination',
+        'archive',
+        'proverArchive',
+        'artifactDirectory',
+        'holdId',
+        'reviewDisclosures',
+        'reviewTransaction',
+        'gasLimit',
+        'maxGasFee',
+        'signal',
+        'timeoutMs',
+      ].sort()
+    );
+    expect(options).toMatchObject({
+      holdId: HOLD_ID,
+      destination,
+      archive: '/e',
+      proverArchive: '/p',
+      artifactDirectory: '/a',
+      gasLimit: 1559208n,
+      maxGasFee: 2000000000000000n,
+      timeoutMs: 600000,
+    });
+    expect(options.signal).toBe(ctx.enrollment.signal);
+    expect(calls.disclosures).toEqual([true]);
+    expect(calls.reviews).toEqual([true]);
+    expect(calls.sign).toBe(1);
+    // The original signature is reused: no prover, spending key, wallet or preflight.
+    for (const name of [
+      'wallet/railgun-private-operation',
+      'wallet/railgun-account-wallet',
+      'wallet/railgun-private-preflight',
+      'wallet/signers',
+    ])
+      expect(calls.loaded).not.toContain(name);
+    expect(calls.abandon).toBe(0);
+    // Public EOA reads and one fee quote before production; never calldata.
+    expect(calls.network).toEqual([
+      'eth_getCode',
+      'eth_getBalance',
+      'eth_getTransactionCount',
+      'eth_getTransactionCount',
+      'eth_gasPrice',
+    ]);
+    expect(ctx.report.spend).toEqual({
+      attempted: true,
+      journaled: true,
+      journaledHash: TRANSFER,
+      journalState: 'submitted',
+      submissionStatus: 'acknowledged',
+      resendAllowed: false,
+    });
+    expect(ctx.report.liveness).toEqual({
+      inputHeld: true,
+      state: 'sent',
+      continuation: 'observe',
+    });
+    expect(ctx.chain.transfer).toEqual({ hash: TRANSFER });
+    expect(ctx.chain.heldTransfer.probeReportSha256).toBe(PROBE_SHA);
+    expect(ctx.report.fee.plan).toMatchObject({ estimate: '1247366', gasLimit: '1559208' });
+    expect(ctx.report.fee.reviewed).toMatchObject({ gasLimit: '1559208', fee: '1000015' });
+    expect(ctx.report.recovery.disclosure).toMatchObject({
+      purpose: 'railgun-recovered-private-submission',
+      recipient: 'self',
+      originalSpendingSignatureReused: true,
+      newSpendingSignature: false,
+    });
+    expect(ctx.report.submission).toMatchObject({
+      status: 'acknowledged',
+      reviews: { disclosure: 1, transaction: 1 },
+    });
+    expect(m.assertAggregateReport(ctx.report)).toBe(true);
+    expect(withoutSecrets(ctx.report)).toBe(true);
+  },
+  'recover-disclosure': async (m) => {
+    const destinations = recoverySummary().destinations;
+    for (const summary of [
+      { newSpendingSignature: true },
+      { originalSpendingSignatureReused: false },
+      {
+        exposures: {
+          ...copy(api.RECOVERY_EXPOSURES),
+          poi: [...api.RECOVERY_EXPOSURES.poi, 'extra'],
+        },
+      },
+      { destinations: { ...destinations, protocolRpc: 'https://other.example' } },
+      { destinations: { ...destinations, poi: 'https://other.example' } },
+      { recipient: '0zk1' + 'x'.repeat(60) },
+      { recipientRelationship: 'foreign' },
+      { submitter: '0x' + '11'.repeat(20) },
+      { selection: { noteId: '0:2', originalCheckpointHash: OLD_CHECKPOINT } },
+      { selection: { noteId: '0:1', originalCheckpointHash: NEW_CHECKPOINT } },
+      { operation: 'railgun-token-unshield' },
+      { automaticRetry: true },
+    ]) {
+      const { ctx, calls, journal: state } = heldWorld({ mode: 'recover-submit', summary });
+      await m.RUNNERS['recover-submit'](ctx);
+      expect(calls.disclosures).toEqual([refused('disclosure-review')]);
+      expect(calls.reviews).toEqual([]);
+      expect(calls.sign).toBe(0);
+      expect(state.records).toEqual([]);
+      expect(ctx.report.spend).toMatchObject({ journaled: false, submissionStatus: 'not-sent' });
+      expect(ctx.report.liveness.state).toBe('proved-unsent');
+      expect(ctx.report.passed).toBe(false);
+    }
+    const twice = heldWorld({ mode: 'recover-submit', disclosureCalls: 2 });
+    await m.RUNNERS['recover-submit'](twice.ctx);
+    expect(twice.calls.disclosures).toEqual([true, refused('review-repeated')]);
+    expect(twice.calls.sign).toBe(0);
+  },
+  'recover-review': async (m) => {
+    // 1,559,208 gas x 1.3 gwei exceeds 0.002 ETH: refused before the EOA signature.
+    for (const [options, step] of [
+      [{ reviewGasPrice: 1300000000n }, 'fee-cap'],
+      [{ reviewTransaction: { gasLimit: '1559209' } }, 'fee-gas-limit'],
+      [{ reviewTransaction: { data: '0xbeef' } }, 'review-calldata'],
+      [{ reviewTransaction: { to: '0x' + '11'.repeat(20) } }, 'review'],
+    ]) {
+      const { ctx, calls, journal: state } = heldWorld({ mode: 'recover-submit', ...options });
+      await m.RUNNERS['recover-submit'](ctx);
+      expect(calls.reviews).toEqual([refused(step)]);
+      expect(calls.sign).toBe(0);
+      expect(state.records).toEqual([]);
+      expect(ctx.report.spend.submissionStatus).toBe('not-sent');
+    }
+    const twice = heldWorld({ mode: 'recover-submit', reviewCalls: 2 });
+    await m.RUNNERS['recover-submit'](twice.ctx);
+    expect(twice.calls.reviews).toEqual([true, refused('review-repeated')]);
+    expect(twice.calls.sign).toBe(0);
+  },
+  'recover-admission': async (m) => {
+    // An existing journal entry for the held input is never resent.
+    const sent = heldWorld({
+      mode: 'recover-submit',
+      records: [
+        {
+          hash: TRANSFER,
+          state: 'submitted',
+          intent: { kind: 'railgun-transact', tree: 0, nullifier: NULLIFIER },
+          resolution: { railgun: { outcome: 'reverted' } },
+        },
+      ],
+    });
+    expect(await settle(m.RUNNERS['recover-submit'](sent.ctx))).toEqual(refused('spend-attempted'));
+    expect(sent.calls.submit).toEqual([]);
+    expect(sent.calls.timeline).not.toContain('identity-open');
+    const open = heldWorld({
+      mode: 'recover-submit',
+      records: [{ hash: hash('41'), state: 'attempted', intent: { kind: 'other' } }],
+    });
+    expect(await settle(m.RUNNERS['recover-submit'](open.ctx))).toEqual(
+      refused('journal-unresolved')
+    );
+    expect(open.calls.submit).toEqual([]);
+    expect(open.calls.timeline).not.toContain('identity-open');
+    for (const [options, step] of [
+      [{ signingRecords: 2 }, 'hold'],
+      [{ signed: false }, 'hold-signature'],
+    ]) {
+      const held = heldWorld({ mode: 'recover-submit', ...options });
+      expect(await settle(m.RUNNERS['recover-submit'](held.ctx))).toEqual(refused(step));
+      expect(held.calls.submit).toEqual([]);
+      expect(held.calls.network).toEqual([]);
+    }
+  },
+  'recover-uncertain': async (m) => {
+    const options = { ...newerScan, previousSha: sha('9c') };
+    for (const submit of ['lost', 'journaled-refused']) {
+      const { ctx, calls, journal: state } = heldWorld({ mode: 'recover-submit', submit });
+      await m.RUNNERS['recover-submit'](ctx);
+      expect(calls.sign).toBe(1);
+      expect(ctx.report.spend).toMatchObject({
+        attempted: true,
+        journaled: true,
+        journaledHash: TRANSFER,
+        submissionStatus: 'unknown',
+        resendAllowed: false,
+      });
+      expect(ctx.report.liveness).toMatchObject({
+        state: 'journaled-uncertain',
+        continuation: 'observe',
+        mayNeverResolve: true,
+      });
+      expect(ctx.report.passed).toBe(false);
+      expect(ctx.chain.transfer).toEqual({ hash: TRANSFER });
+      // Observation only: the report admits observe and never another recovery.
+      const report = journeyReport('recover-submit', {
+        ...copy(ctx.report),
+        scan: { sha256: NEWER_SCAN_SHA, anchor: { ...NEW_ANCHOR } },
+        chain: copy(ctx.chain),
+      });
+      expect(() => m.assertPredecessor('observe', report, options)).not.toThrow();
+      expect(() => m.assertPredecessor('recover-submit', report, options)).toThrow();
+      // The journal itself now refuses any further recovery.
+      const again = heldWorld({ mode: 'recover-submit', records: copy(state.records) });
+      expect(await settle(m.RUNNERS['recover-submit'](again.ctx))).toEqual(
+        refused('journal-unresolved')
+      );
+      expect(again.calls.submit).toEqual([]);
+    }
+    // The existing observe mode follows a journaled recovery of the transfer.
+    const observed = observeWorld({ previousMode: 'recover-submit' });
+    await m.RUNNERS.observe(observed.ctx);
+    expect(observed.ctx.report).toMatchObject({
+      passed: true,
+      target: 'transfer',
+      observedHash: TRANSFER,
+    });
+    // A refusal before the journal write is a value with its bounded diagnostic.
+    const tuple = {
+      stage: 'preflight',
+      substage: 'acquire',
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'rpc',
+      step: 'rootHistory',
+      causeCode: 'TOR_REQUEST_FAILED',
+    };
+    const preflight = heldWorld({
+      mode: 'recover-submit',
+      submit: 'preflight',
+      diagnostic: { ...tuple, message: 'secret /Users/someone', nullifier: NULLIFIER },
+    });
+    await m.RUNNERS['recover-submit'](preflight.ctx);
+    expect(preflight.ctx.report.submission).toEqual({
+      status: 'refused',
+      stage: 'preflight',
+      diagnostic: tuple,
+      reviews: { disclosure: 1, transaction: 0 },
+      elapsedMs: expect.any(Number),
+    });
+    expect(preflight.ctx.report.spend.submissionStatus).toBe('not-sent');
+    expect(preflight.ctx.report.liveness.state).toBe('proved-unsent');
+    expect(preflight.calls.sign).toBe(0);
+    expect(m.assertAggregateReport(preflight.ctx.report)).toBe(true);
+    expect(withoutSecrets(preflight.ctx.report)).toBe(true);
+  },
+  'recover-fee-plan': async (m) => {
+    // Planning bound: 1,500,000 x 1,333,333,334 wei exceeds the cap before production.
+    const planning = heldWorld({ mode: 'recover-submit', gasPrice: 1333333334n });
+    expect(await settle(m.RUNNERS['recover-submit'](planning.ctx))).toEqual(refused('fee-cap'));
+    expect(planning.ctx.stage).toBe('submitter');
+    expect(planning.calls.submit).toEqual([]);
+    // Planning passes (1.95e15); the held estimate x 5/4 at 1.3 gwei does not.
+    const plan = heldWorld({ mode: 'recover-submit', gasPrice: 1300000000n });
+    expect(await settle(m.RUNNERS['recover-submit'](plan.ctx))).toEqual(refused('fee-cap'));
+    expect(plan.ctx.stage).toBe('fee-cap');
+    expect(plan.calls.submit).toEqual([]);
+    // A carried gas limit that is not the held estimate's 5/4 refuses.
+    const carried = heldWorld({ mode: 'recover-submit' });
+    carried.ctx.chain.heldTransfer.gasLimit = '1559209';
+    expect(await settle(m.RUNNERS['recover-submit'](carried.ctx))).toEqual(refused('fee-plan'));
+    expect(carried.calls.submit).toEqual([]);
+  },
 };
 
 describe('live wiring with injected production fakes', () => {
@@ -2310,6 +3549,308 @@ const MUTATIONS = [
     "check(lower(transact.output.recipient) === ctx.owner, 'resolution');",
     'void 0;',
     'observe-runner',
+  ],
+  // Held-transfer recovery: predecessor binding.
+  [
+    'held report digest unpinned',
+    "check(previousSha === HELD_TRANSFER_REPORT_SHA256, 'predecessor-held');",
+    'void 0;',
+    'held-predecessor',
+  ],
+  [
+    'held report liveness unchecked',
+    "previous.liveness?.state === 'proved-unsent' && previous.liveness.inputHeld === true,",
+    'true,',
+    'held-predecessor',
+  ],
+  [
+    'held fee plan unchecked',
+    "check(plan.gasLimit === gasLimitFromEstimate(plan.estimate).toString(), 'predecessor-held');",
+    'void 0;',
+    'held-predecessor',
+  ],
+  [
+    'hold-time scan accepted',
+    'scanSha !== previous.scan?.sha256 && anchor > previous.scan?.anchor?.number,',
+    'true,',
+    'held-predecessor',
+  ],
+  [
+    'recovery without a passed preflight',
+    'previous.preflight?.passed === true && previous.preflight.acquireCalls === 1,',
+    'true,',
+    'recover-predecessor',
+  ],
+  [
+    'recovery without unchanged immutables',
+    "check(previous.immutables?.unchanged === true, 'predecessor');",
+    'void 0;',
+    'recover-predecessor',
+  ],
+  [
+    'recovery after a journaled transfer',
+    "check(previous.chain.transfer === null, 'predecessor');",
+    'void 0;',
+    'recover-predecessor',
+  ],
+  [
+    'probe report accepted by observe without a passed preflight',
+    "check(previous.passed === true && previous.preflight?.passed === true, 'predecessor');",
+    'void 0;',
+    'recover-predecessor',
+  ],
+  [
+    'held proof runtime unchecked',
+    'assertSameRuntime(proof(previous), proof(actual));',
+    'void 0;',
+    'proof-runtime',
+  ],
+  [
+    'probe digest not carried',
+    'chain.heldTransfer = { ...chain.heldTransfer, probeReportSha256: previousSha };',
+    'void 0;',
+    'held-chain',
+  ],
+  // Held journal and hold.
+  [
+    'held journal admission skipped',
+    "assertSpendAdmission(snapshot, 'transfer', chain);",
+    'void 0;',
+    'recover-admission',
+  ],
+  [
+    'held nullifier journal rule removed',
+    'record.intent.tree === selection.tree &&',
+    'false &&',
+    'held-unjournaled',
+  ],
+  [
+    'more than one signing record accepted',
+    "check(Array.isArray(records) && records.length === 1, 'hold');",
+    'void 0;',
+    'probe-hold',
+  ],
+  [
+    'hold without original signature accepted',
+    "check(!!stored.signature && plainObject(stored.provedTransaction), 'hold-signature');",
+    'void 0;',
+    'probe-hold',
+  ],
+  [
+    'hold recipient unchecked',
+    "check(selection.recipient === ctx.identity.descriptor.instanceId, 'hold-recipient');",
+    'void 0;',
+    'probe-hold',
+  ],
+  [
+    'foreign hold accepted',
+    "check(!Object.hasOwn(selection, 'recipientRelationship'), 'hold-recipient');",
+    'void 0;',
+    'probe-hold',
+  ],
+  // Preflight binding: original proof inputs, current completed checkpoint.
+  [
+    'checkpoint unbound to the scan',
+    'same(checkpoint.to, ctx.status.to) && same(checkpoint.to, ctx.scan.anchor),',
+    'true,',
+    'probe-binding-runner',
+  ],
+  [
+    'builder uses the hold-time checkpoint',
+    'checkpointHash: current.checkpointHash,',
+    'checkpointHash: entry.facts.checkpointHash,',
+    'preflight-binding',
+  ],
+  [
+    'builder uses the hold-time block',
+    'minimumBlock: current.minimumBlock,',
+    'minimumBlock: holdAnchor,',
+    'preflight-binding',
+  ],
+  [
+    'checkpoint hash unbound to the current checkpoint',
+    "check(input.checkpointHash === current.checkpointHash, 'preflight-binding');",
+    'void 0;',
+    'preflight-binding',
+  ],
+  [
+    'minimum block unbound to the current checkpoint',
+    "check(input.minimumBlock === current.minimumBlock, 'preflight-binding');",
+    'void 0;',
+    'preflight-binding',
+  ],
+  [
+    'hold-time checkpoint hash accepted',
+    "check(input.checkpointHash !== entry.facts.checkpointHash, 'preflight-binding');",
+    'void 0;',
+    'preflight-binding',
+  ],
+  [
+    'hold-time block accepted',
+    "check(Number.isSafeInteger(holdAnchor) && input.minimumBlock > holdAnchor, 'preflight-binding');",
+    'void 0;',
+    'preflight-binding',
+  ],
+  // The one preflight, its diagnostic and its disclosure.
+  [
+    'preflight retried',
+    'acquired = await preflight.acquire();',
+    'acquired = await preflight.acquire().catch(() => preflight.acquire());',
+    'probe-refusals',
+  ],
+  [
+    'observation for another input accepted',
+    "check(same(observed.input, input), 'preflight-input');",
+    'void 0;',
+    'probe-refusals',
+  ],
+  [
+    'probe diagnostic dropped',
+    'diagnostic = readPreflightDiagnostic(ctx, substage, error);',
+    'diagnostic = null;',
+    'probe-refusals',
+  ],
+  [
+    'nullifier query reported after an earlier refusal',
+    "if (diagnostic?.substage === 'open' || BEFORE_NULLIFIER.includes(diagnostic?.step))",
+    "if (diagnostic?.substage === 'open')",
+    'probe-refusals',
+  ],
+  [
+    'possible nullifier query reported as none',
+    "return diagnostic.reason === 'mismatch' ? 'queried' : 'possibly-queried';",
+    "return 'not-queried';",
+    'probe-refusals',
+  ],
+  // Immutable facts after the probe.
+  [
+    'changed immutables accepted',
+    "check(changed.length === 0, 'immutables');",
+    'void 0;',
+    'probe-immutables',
+  ],
+  [
+    'immutables never compared',
+    '(name) => !same(parts.before[name], parts.after[name])',
+    '() => false',
+    'probe-immutables',
+  ],
+  ['hold not read again', 'held: reread,', 'held,', 'probe-immutables'],
+  [
+    'journal not read again',
+    'journal: await ctx.readJournal(),',
+    'journal: before,',
+    'probe-immutables',
+  ],
+  // Recovered submission: disclosure review and transaction review policy.
+  [
+    'new spending signature accepted',
+    'summary.originalSpendingSignatureReused === true && summary.newSpendingSignature === false,',
+    'true,',
+    'recover-disclosure',
+  ],
+  [
+    'disclosure exposures unpinned',
+    "check(same(summary.exposures, RECOVERY_EXPOSURES), 'disclosure-review');",
+    'void 0;',
+    'recover-disclosure',
+  ],
+  [
+    'disclosure RPC destinations unchecked',
+    "check(origin(summary.destinations[key]) === rpc, 'disclosure-review');",
+    'void 0;',
+    'recover-disclosure',
+  ],
+  [
+    'disclosure POI destination unchecked',
+    'summary.destinations.poi === POI_ORIGIN && summary.destinations.txid === POI_ORIGIN,',
+    'true,',
+    'recover-disclosure',
+  ],
+  [
+    'disclosure recipient unchecked',
+    "check(summary.recipient === ctx.identity.descriptor.instanceId, 'disclosure-review');",
+    'void 0;',
+    'recover-disclosure',
+  ],
+  [
+    'disclosure review repeated',
+    "check(++reviews.disclosure === 1, 'review-repeated');",
+    '++reviews.disclosure;',
+    'recover-disclosure',
+  ],
+  [
+    'recovered review repeated',
+    "check(++reviews.transaction === 1, 'review-repeated');",
+    '++reviews.transaction;',
+    'recover-review',
+  ],
+  [
+    'recovered calldata unbound',
+    "check(actual.data === held.stored.provedTransaction.data, 'review-calldata');",
+    'void 0;',
+    'recover-review',
+  ],
+  [
+    'recovered review fee recheck removed',
+    'return reviewedFee(actual, fee.gasLimit);',
+    'return null;',
+    'recover-review',
+  ],
+  [
+    'recovered maxGasFee raised',
+    'const maxGasFee = FEE_CAP_WEI;',
+    'const maxGasFee = FEE_CAP_WEI * 2n;',
+    'recover-ack',
+  ],
+  [
+    'recovered fee plan removed',
+    'const fee = planSubmissionFee({\n    estimate: ctx.chain.heldTransfer.estimate,',
+    'const fee = (({ estimate }) => ({ gasLimit: gasLimitFromEstimate(estimate).toString() }))({\n    estimate: ctx.chain.heldTransfer.estimate,',
+    'recover-fee-plan',
+  ],
+  [
+    'carried gas limit unchecked',
+    "check(fee.gasLimit === ctx.chain.heldTransfer.gasLimit, 'fee-plan');",
+    'void 0;',
+    'recover-fee-plan',
+  ],
+  [
+    'recovered send not chained',
+    'if (report.spend.journaled) ctx.chain.transfer = { hash: report.spend.journaledHash };',
+    'void 0;',
+    'recover-uncertain',
+  ],
+  [
+    'recovered send not observable',
+    "if (['recover-submit', 'preflight-probe'].includes(previous.mode)) return 'transfer';",
+    '',
+    'recover-uncertain',
+  ],
+  [
+    'recovery hold not reported',
+    'report.liveness = describeLiveness({ holdCreated: true, spend: report.spend });',
+    'report.liveness = describeLiveness({ holdCreated: false, spend: report.spend });',
+    'recover-ack',
+  ],
+  // The spent read.
+  [
+    'spent marker dropped',
+    'if (note.spentTxid === false) return { spent: false };',
+    'return { spent: false };',
+    'spent-read',
+  ],
+  [
+    'spent input record unchecked',
+    "check(record?.type === 'Shield' && lower(record.txid) === lower(note.txid), 'input-record');",
+    'void 0;',
+    'spent-read',
+  ],
+  [
+    'spent txid shape unchecked',
+    "check(HASH.test(value), 'input-spent');",
+    'void 0;',
+    'spent-read',
   ],
 ];
 function loadVariant(source) {

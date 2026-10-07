@@ -925,6 +925,32 @@ test('cold self transfer disclosure summary carries no relationship fields', asy
   expect(mock.summary).not.toHaveProperty('recipientRelationship');
   expect(mock.summary).not.toHaveProperty('foreignOutputPoiDisclosure');
 });
+test('the live qualifier recover-submit mode pins this exact self-transfer summary', async () => {
+  const live = require('../../../scripts/qualify-railgun-private-live');
+  setup('railgun-private-transfer');
+  await submit(options);
+  // Any change here refuses at the mode's disclosure review until re-reviewed.
+  expect(copy(mock.summary.exposures)).toEqual(copy(live.RECOVERY_EXPOSURES));
+  expect(mock.summary).toMatchObject({
+    purpose: 'railgun-recovered-private-submission',
+    chainId: 11155111,
+    operation: 'railgun-private-transfer',
+    requiredList: live.REQUIRED_LIST,
+    inputCreatorDeterminedByCompletedWallet: true,
+    originalSpendingSignatureReused: true,
+    newSpendingSignature: false,
+    eoaSigningAndBroadcast: true,
+    simulationBeforeTransactionReview: true,
+    automaticRetry: false,
+    chainStateVerified: false,
+  });
+  expect(Object.keys(mock.summary.selection).sort()).toEqual(['noteId', 'originalCheckpointHash']);
+  expect(Object.keys(mock.summary.destinations).sort()).toEqual(
+    ['protocolRpc', 'retainedSource', 'transactionRpc', 'poi', 'txid'].sort()
+  );
+  expect(mock.summary.destinations.poi).toBe(live.POI_ORIGIN);
+  expect(mock.summary.destinations.txid).toBe(live.POI_ORIGIN);
+});
 test('legacy refuses an observation claiming partial intent', async () => {
   setup('railgun-private-transfer');
   mock.preflightOverride = { intentKind: 'railgun-partial-unshield' };

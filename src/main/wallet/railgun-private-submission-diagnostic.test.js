@@ -191,6 +191,7 @@ function setup({ checkpointHash = 'b'.repeat(64), intentDigest } = {}) {
     },
   };
   const records = [{ receipt: {}, entry: JSON.parse(JSON.stringify(snapshot.entry)) }];
+  Object.assign(mock, { snapshot, owner });
   mock.claim = { signal: scope.signal, close() {}, assertCurrent: () => snapshot };
   mock.enrollment = {
     signal: scope.signal,
@@ -500,6 +501,177 @@ test('a passing preflight leaves no diagnostic on the acknowledged send', async 
     'private-preflight:eth_getBlockByNumber',
   ]);
   expect(mock.eoa).toContain('send');
+});
+
+// The live qualifier's read-only preflight probe on the same boundary: the real
+// private and deployment preflights and the real diagnostic, driven through the
+// probe's recovered-submission binding. Its account, hold and journal are fakes.
+const SHIELD_HASH = '0x' + '5b'.repeat(32);
+const PROBE_ANCHOR = { number: 11860000, hash: '0x' + 'ad'.repeat(32) };
+function probeContext() {
+  const { snapshot, owner } = mock;
+  const instanceId = '0zk1' + 'q'.repeat(60);
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+  const entry = {
+    ...copy(snapshot.entry),
+    facts: {
+      ...copy(snapshot.entry.facts),
+      kind: snapshot.stored.capsule.selection.kind,
+      tree: 0,
+      position: 1,
+    },
+  };
+  const stored = {
+    ...copy(snapshot.stored),
+    holdId: entry.id,
+    signature: { R8: ['1', '2'], S: '3' },
+    capsule: {
+      ...copy(snapshot.stored.capsule),
+      selection: { ...snapshot.stored.capsule.selection, position: 1, recipient: instanceId },
+    },
+  };
+  const reservations = {
+    withSigningRecovery: async (use) =>
+      use([{ receipt: {}, entry: copy(entry) }], { signal: scope.signal, assertCurrent() {} }),
+    assertReceiptContext() {},
+    assertReceipt: async () => copy(entry),
+    inspect: async () => ({ held: 0, signing: 1, abandoned: 0, legacy: 0 }),
+  };
+  const capsules = {
+    readSigned: async () => copy(stored),
+    inspect: async () => ({ records: 1, signatures: 1, proofs: 1 }),
+  };
+  mock.enrollment.openPrivateRecoveryStores = async () => ({ reservations, capsules });
+  const checkpoint = { to: { ...PROBE_ANCHOR }, state: { storeId: 'store', trees: [] } };
+  const publicAccount = {
+    generationId: 'generation',
+    policy: 'policy',
+    coordinator: {
+      recover: async () => ({ to: { ...PROBE_ANCHOR } }),
+      withPublicSnapshot: async () => ({ evidence: {} }),
+      assertSnapshot: () => checkpoint,
+    },
+  };
+  const modules = {
+    'wallet/railgun-identity': {
+      openRailgunIdentity: async () => ({ descriptor: { instanceId } }),
+    },
+    'wallet/railgun-account-enrollment': {
+      openRailgunAccountEnrollment: async () => mock.enrollment,
+    },
+    'wallet/railgun-account-public': { openRailgunAccountPublic: async () => publicAccount },
+    'wallet/railgun-wallet-coverage': { checkpointHash: () => 'c'.repeat(64) },
+    'networks/privacy-context': require('../networks/privacy-context'),
+    'networks/private-rpc': {
+      createPrivateRpc: () => ({ release() {} }),
+      getPrivateRpcDestination: () => ({}),
+      getPrivateRpcDestinationDetails: () => ({ url: live.RPC_URL }),
+      createPrivateRpcDestinationConstraint: () => ({ constraint: {}, close() {} }),
+    },
+    'wallet/railgun-private-preflight': require('./railgun-private-preflight'),
+    'wallet/railgun-private-submission': require('./railgun-private-submission'),
+  };
+  return {
+    args: { archive: '/engine', proverArchive: '/prover', artifactDirectory: '/artifacts' },
+    report: { passed: false },
+    stage: 'preconditions',
+    scan: {
+      generationId: 'generation',
+      publicPolicy: 'policy',
+      anchor: { ...PROBE_ANCHOR },
+      publicState: { storeId: 'store', trees: [] },
+    },
+    previous: { scan: { anchor: { number: 11859803 } } },
+    chain: { shieldTransactionHash: SHIELD_HASH, transfer: null, unshield: null },
+    owner: owner.toLowerCase(),
+    network: {
+      request: async () => {
+        mock.eoa.push('probe-request');
+      },
+    },
+    readJournal: async () => ({
+      records: [],
+      archive: [
+        {
+          hash: SHIELD_HASH,
+          intent: { kind: 'railgun-native-shield' },
+          resolution: { railgun: { outcome: 'matched' } },
+        },
+      ],
+    }),
+    load: (name) => {
+      if (!modules[name]) throw Error('unexpected module ' + name);
+      return modules[name];
+    },
+  };
+}
+
+test.each(MATRIX)(
+  '%s reaches the read-only probe diagnostic in the same order',
+  async (_name, inject, expected, nullifierQueried) => {
+    setup();
+    inject();
+    const ctx = probeContext();
+    await live.RUNNERS['preflight-probe'](ctx);
+    expect(ctx.report.passed).toBe(true);
+    expect(ctx.report.preflight).toEqual({
+      attempted: true,
+      acquireCalls: 1,
+      retry: false,
+      passed: false,
+      diagnostic: { ...PREFLIGHT, substage: 'acquire', ...expected },
+      nullifierQuery: nullifierQueried ? 'queried' : 'not-queried',
+      observation: null,
+      elapsedMs: expect.any(Number),
+    });
+    expect(mock.requests.includes('private-preflight:nullifiers')).toBe(nullifierQueried);
+    expect(mock.eoa).toEqual([]);
+    expect(ctx.report.immutables.unchanged).toBe(true);
+    expect(live.assertAggregateReport(ctx.report)).toBe(true);
+    expect(JSON.stringify(ctx.report)).not.toMatch(/secret|Users|identity-data/);
+  }
+);
+
+test('a passing probe binds the current checkpoint and discloses the nullifier last', async () => {
+  setup();
+  const ctx = probeContext();
+  await live.RUNNERS['preflight-probe'](ctx);
+  expect(ctx.report.preflight).toMatchObject({
+    passed: true,
+    acquireCalls: 1,
+    nullifierQuery: 'queried',
+    observation: {
+      anchor: { blockNumber: 0xb4f9a0, blockHash: '0x' + 'a1'.repeat(32) },
+      deploymentMatched: true,
+      verifierMatched: true,
+      rootAccepted: true,
+      inputUnspent: true,
+      unshieldFeeBps: 25,
+    },
+  });
+  expect(mock.requests.filter((v) => v.startsWith('private-preflight:'))).toEqual([
+    'private-preflight:rootHistory',
+    'private-preflight:unshieldFee',
+    'private-preflight:getVerificationKey',
+    'private-preflight:nullifiers',
+    'private-preflight:eth_getBlockByNumber',
+  ]);
+  expect(mock.eoa).toEqual([]);
+  expect(ctx.report.preflightBinding.minimumBlock).toBe(PROBE_ANCHOR.number);
+  expect(live.assertAggregateReport(ctx.report)).toBe(true);
+});
+
+test('a probe minimum block above the provider anchor refuses as stale', async () => {
+  setup();
+  const ctx = probeContext();
+  mock.header.number = '0x' + (PROBE_ANCHOR.number - 1).toString(16);
+  await live.RUNNERS['preflight-probe'](ctx);
+  expect(ctx.report.preflight).toMatchObject({
+    passed: false,
+    nullifierQuery: 'not-queried',
+    diagnostic: { ...PREFLIGHT, substage: 'acquire', reason: 'stale', step: 'deployment' },
+  });
+  expect(mock.requests.includes('private-preflight:nullifiers')).toBe(false);
 });
 
 test('the probe helper returns the same closed tuple for one preflight run', () => {
