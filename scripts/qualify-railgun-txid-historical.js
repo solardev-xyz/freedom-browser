@@ -1,3 +1,4 @@
+const { isRailgunWalletJob } = require('./fixtures/railgun-job-observer');
 /** Offline historical-prefix qualification using the pinned public capture.
  * Real encrypted worker, runner and guarded engine; public fixture key 89 only.
  * No enrollment, host TXID journal, live service acceptance or account authority.
@@ -206,7 +207,7 @@ async function main() {
       throw Error('Unexpected fixture utility');
     }
     jobs[historical ? 'historical' : input.mode]++;
-    assert.equal(options.filename, require.resolve('../src/main/wallet/railgun-txid-job'));
+    assert.equal(isRailgunWalletJob(options, 'railgun-txid-job.js'), true);
     assert.deepEqual(input, { archive, mode: input.mode });
     assert.equal(options.archive, archive);
     assert.ok(!options.binaryKey);

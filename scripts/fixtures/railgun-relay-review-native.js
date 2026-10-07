@@ -1,3 +1,4 @@
+const { isRailgunWalletJob } = require('./railgun-job-observer');
 /** Optional genuine live-account probe. Public synthetic setup; no relay authority. */
 const nativeAssertions = require('./railgun-native-assertions');
 const { assert } = nativeAssertions;
@@ -44,7 +45,7 @@ function install() {
   let restored = false;
   const observed = function (...args) {
     const options = args[0];
-    if (options.filename !== require.resolve(wallet + 'railgun-relay-quote-job'))
+    if (!isRailgunWalletJob(options, 'railgun-relay-quote-job.js'))
       return Reflect.apply(original, this, args);
     assert.equal(options.binaryKey, false);
     const input = JSON.parse(options.input);

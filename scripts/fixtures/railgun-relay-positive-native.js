@@ -1,3 +1,4 @@
+const { observeRailgunJob, isRailgunWalletJob } = require('./railgun-job-observer');
 /** Opt-in public synthetic-list Shield composition. This runs only from the
  * reviewed isolated source copy; real cryptographic checks and owners remain. */
 const native = require('./railgun-native-assertions');
@@ -465,14 +466,12 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
   const observed = function (options, ...rest) {
     const input = JSON.parse(options.input);
     let role;
-    if (options.filename === require.resolve(wallet + 'railgun-identity-job')) role = input.purpose;
-    else if (options.filename === require.resolve(wallet + 'railgun-public-job'))
-      role = 'public-' + input.mode;
-    else if (options.filename === require.resolve(wallet + 'railgun-wallet-job'))
+    if (isRailgunWalletJob(options, 'railgun-identity-job.js')) role = input.purpose;
+    else if (isRailgunWalletJob(options, 'railgun-public-job.js')) role = 'public-' + input.mode;
+    else if (isRailgunWalletJob(options, 'railgun-wallet-job.js'))
       role = input.restore ? 'wallet-restore' : 'wallet-scan';
-    else if (options.filename === require.resolve(wallet + 'railgun-relay-quote-job'))
-      role = 'quote';
-    else if (options.filename === require.resolve(wallet + 'railgun-relay-wallet-job'))
+    else if (isRailgunWalletJob(options, 'railgun-relay-quote-job.js')) role = 'quote';
+    else if (isRailgunWalletJob(options, 'railgun-relay-wallet-job.js'))
       role = input.relayRequest ? 'construct' : 'reconstruct';
     else if (options.filename === require.resolve('./railgun-relay-positive-membership-job'))
       role = 'membership-fixture';
@@ -480,10 +479,10 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
       role = 'audit-' + input.auditCase;
     else if (options.filename === require.resolve('./railgun-transact-staging-row'))
       role = 'txid-row-fixture';
-    else if (options.filename === require.resolve(wallet + 'railgun-txid-job')) {
+    else if (isRailgunWalletJob(options, 'railgun-txid-job.js')) {
       assert.match(input.mode, /^[a-z-]{1,32}$/);
       role = 'txid-' + input.mode;
-    } else if (options.filename === require.resolve(wallet + 'railgun-note-provenance-job'))
+    } else if (isRailgunWalletJob(options, 'railgun-note-provenance-job.js'))
       role = 'note-provenance';
     else {
       const fixed = {
@@ -494,9 +493,9 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
         'railgun-relay-prove-job.js': 'proof-A',
         'railgun-relay-verify-job.js': 'dual-proof-C',
       };
-      role = fixed[path.basename(options.filename)];
+      role = fixed[observeRailgunJob(options).name];
       assert.ok(role);
-      assert.equal(options.filename, require.resolve(wallet + path.basename(options.filename)));
+      assert.equal(options.filename, require.resolve(wallet + observeRailgunJob(options).name));
     }
     assert.ok(roles[rows.length] === role, 'Unexpected original utility order: ' + role);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);

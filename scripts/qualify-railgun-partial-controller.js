@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./fixtures/railgun-job-observer');
 /** Offline internal partial withdrawal over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
@@ -92,7 +93,7 @@ async function main() {
   let reservations, capsules;
   runtime.startRailgunProcess = (options) => {
     const broker = options.broker;
-    const traced = path.basename(options.filename) === 'railgun-private-operate-job.js';
+    const traced = observeRailgunJob(options).name === 'railgun-private-operate-job.js';
     if (traced && broker)
       broker.signal.addEventListener(
         'abort',
@@ -145,7 +146,7 @@ async function main() {
     children.add(task);
     task.closed.then((value) => {
       children.delete(task);
-      childResults.push({ job: path.basename(options.filename), ...value });
+      childResults.push({ job: observeRailgunJob(options).name, ...value });
     });
     return task;
   };

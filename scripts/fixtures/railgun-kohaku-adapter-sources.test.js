@@ -11,8 +11,10 @@ const installed = path.dirname(
 test('pins this list, the lockfile and every installed adapter file that can load', () => {
   expect(Object.isFrozen(SOURCES)).toBe(true);
   expect(new Set(SOURCES).size).toBe(SOURCES.length);
-  expect(SOURCES.slice(0, 2)).toEqual([
+  expect(SOURCES.slice(0, 4)).toEqual([
     path.relative(root, __filename).replace(/\.test\.js$/, '.js'),
+    'scripts/fixtures/railgun-job-observer.js',
+    'src/main/wallet/railgun-kernel-entry.js',
     'package-lock.json',
   ]);
   for (const name of SOURCES) {
@@ -39,9 +41,17 @@ test('pins this list, the lockfile and every installed adapter file that can loa
     .map((file) => path.relative(root, file));
   expect(loaded.length).toBe(32);
   // Exports select the installed entry; result validators lazily read both manifest pins.
-  expect(SOURCES.slice(2).sort()).toEqual(
+  expect(SOURCES.slice(4).sort()).toEqual(
     [
       ...loaded,
+      ...[
+        'host-bootstrap.cjs',
+        'host-execution.cjs',
+        'host-execution.mjs',
+        ...fs
+          .readdirSync(path.join(installed, 'src/execution'))
+          .map((name) => 'src/execution/' + name),
+      ].map((name) => path.relative(root, path.join(installed, name))),
       ...[
         'package.json',
         'src/railgun-engine-manifest.json',

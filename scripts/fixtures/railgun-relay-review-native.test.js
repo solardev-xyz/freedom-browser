@@ -311,8 +311,10 @@ function installedObserver(cached = []) {
     if (name.endsWith('/railgun-process')) return runtime;
     return require(name);
   };
-  req.resolve = (name) => name;
-  req.cache = Object.fromEntries(cached.map((name) => ['../../src/main/wallet/' + name, {}]));
+  req.resolve = (name) => require.resolve(name);
+  req.cache = Object.fromEntries(
+    cached.map((name) => [require.resolve('../../src/main/wallet/' + name), {}])
+  );
   const module = { exports: {} };
   Function('require', 'module', source)(req, module);
   return {
@@ -332,7 +334,7 @@ test('observer returns original task and broker promise, preserves this and argu
   const receiver = {},
     tail = {};
   const options = {
-    filename: '../../src/main/wallet/railgun-relay-quote-job',
+    filename: require.resolve('../../src/main/wallet/railgun-relay-quote-job'),
     input: JSON.stringify({ archive: '/public/engine', quote: {}, gas: {} }),
     binaryKey: false,
     broker: { dispatch: f.originalDispatch },
@@ -390,7 +392,7 @@ test('broker observer preserves original rejected promise and original error ide
   f.originalDispatch.mockImplementation(() => Promise.reject(error));
   f.install();
   f.runtime.startRailgunProcess({
-    filename: '../../src/main/wallet/railgun-relay-quote-job',
+    filename: require.resolve('../../src/main/wallet/railgun-relay-quote-job'),
     input: JSON.stringify({ archive: '/public/engine', quote: {}, gas: {} }),
     binaryKey: false,
     broker: { dispatch: f.originalDispatch },
@@ -410,7 +412,7 @@ test.each(['key-allowed', 'owned-input'])(
     if (kind === 'owned-input') input.noteId = '0:2';
     expect(() =>
       f.runtime.startRailgunProcess({
-        filename: '../../src/main/wallet/railgun-relay-quote-job',
+        filename: require.resolve('../../src/main/wallet/railgun-relay-quote-job'),
         input: JSON.stringify(input),
         binaryKey: kind === 'key-allowed',
         broker: {},
@@ -419,3 +421,20 @@ test.each(['key-allowed', 'owned-input'])(
     expect(original).not.toHaveBeenCalled();
   }
 );
+
+test('review observer refuses the old identity route before its original launcher', async () => {
+  const f = installedObserver(),
+    original = f.runtime.startRailgunProcess,
+    probe = f.install();
+  try {
+    expect(() =>
+      f.runtime.startRailgunProcess({
+        filename: require.resolve('../../src/main/wallet/railgun-identity-job'),
+        input: JSON.stringify({ purpose: 'spending-public' }),
+      })
+    ).toThrow();
+    expect(original).not.toHaveBeenCalled();
+  } finally {
+    await probe.resources.close();
+  }
+});

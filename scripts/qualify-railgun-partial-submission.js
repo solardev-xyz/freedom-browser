@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./fixtures/railgun-job-observer');
 /** Offline partial EOA submission and capture over genuinely scanned, disposable
  * enrolled accounts. Service/RPC responses and list signing trust are fixtures;
  * account, POI/preflight hosts, reservations, signer and A/B/C are production.
@@ -164,7 +165,7 @@ async function main() {
     guards = [];
   let reservations, capsules;
   runtime.startRailgunProcess = (options) => {
-    const job = path.basename(options.filename),
+    const job = observeRailgunJob(options).name,
       launchPhase = phase,
       broker = options.broker;
     jobs[job] = (jobs[job] || 0) + 1;

@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./fixtures/railgun-job-observer');
 /** Offline third-process original-proof submission with synthetic external services.
  * An optional tenth argument names a case of fixtures/railgun-cold-submission-latency.js:
  * the same submission under simulated per-destination latency (never live or Tor). */
@@ -469,7 +470,7 @@ async function main() {
   sessions.startRailgunSessionWorker = trackWorker(originalSession, false);
   sessions.startRailgunReadOnlySessionWorker = trackWorker(originalReadonly, true);
   runtime.startRailgunProcess = (options) => {
-    const job = path.basename(options.filename),
+    const job = observeRailgunJob(options).name,
       launched = phase,
       launchedAt = performance.now(),
       broker = options.broker;

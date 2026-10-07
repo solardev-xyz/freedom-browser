@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./fixtures/railgun-job-observer');
 /** Offline original-signature proof recovery over a disposable enrolled account.
  * Synthetic external services; real account, gates, signer, stores and recovery A/C.
  * electron script SOURCE NEW_DIR ENGINE PROVER ARTIFACTS BYTECODES
@@ -441,7 +442,7 @@ async function main() {
   sessions.startRailgunSessionWorker = trackSession(originals.session, false);
   sessions.startRailgunReadOnlySessionWorker = trackSession(originals.readOnlySession, true);
   runtime.startRailgunProcess = (options) => {
-    const job = path.basename(options.filename),
+    const job = observeRailgunJob(options).name,
       launchPhase = phase;
     counts.childStarts++;
     jobs[job] = (jobs[job] || 0) + 1;

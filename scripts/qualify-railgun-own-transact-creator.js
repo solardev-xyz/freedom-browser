@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./fixtures/railgun-job-observer');
 /** Genuine encrypted enrolled Transact-creator preflight with synthetic chain
  * and service transport. Actual current-format self/foreign input encryption;
  * structural spend proof/signature only. Optional intercepted typed membership
@@ -728,7 +729,7 @@ async function main() {
   const selectorKeyBuffers = [],
     selectorKeyTimings = [];
   processModule.startRailgunProcess = (options) => {
-    const name = path.basename(options.filename);
+    const name = observeRailgunJob(options).name;
     const counts = (jobs[name] ||= {
       starts: 0,
       exits: 0,

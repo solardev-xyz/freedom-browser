@@ -6,7 +6,7 @@ const source = fs.readFileSync(path.join(__dirname, 'railgun-relay-positive-nati
 const w = '../../src/main/wallet/',
   n = '../../src/main/networks/';
 const guards = require(w + 'railgun-relay-quote-data').EXPECTED_GUARDS;
-const resolved = (name) => (name.endsWith('.js') ? name : name + '.js');
+const resolved = (name) => require.resolve(name);
 function load(overrides = {}, cached = []) {
   const errors = [];
   const sticky = {
@@ -119,7 +119,12 @@ function roleOptions(role) {
       sha256: '00'.repeat(32),
       chunks: 1,
     };
-  return { filename: resolved(filename), input: JSON.stringify(input), purpose };
+  const route = ['spending-public', 'viewing-identity'].includes(role)
+    ? { executionJob: role }
+    : role.startsWith('wallet-')
+      ? { executionJob: 'wallet-viewing' }
+      : { filename: resolved(filename) };
+  return { ...route, input: JSON.stringify(input), purpose };
 }
 test.each(['success', 'missing-result', 'exit-one'])(
   'observer preserves original task and broker reply identities across all 79 roles (%s)',
@@ -1718,3 +1723,25 @@ test('Transact roles add keyless TXID setup and staging around the unchanged rel
   ]);
   expect(f.select(f.TRANSACT, args, {}).scenario).toBe('synthetic-list-transact');
 });
+
+test.each(['legacy-filename', 'mixed-route'])(
+  'observer rejects an extracted identity %s before original launch',
+  (kind) => {
+    const original = jest.fn(),
+      runtime = { startRailgunProcess: original };
+    const f = load({ [w + 'railgun-process']: runtime }),
+      observer = f.installJobs();
+    const options = {
+      filename: require.resolve(w + 'railgun-identity-job'),
+      input: JSON.stringify({ purpose: 'spending-public' }),
+      broker: { dispatch: jest.fn() },
+      ...(kind === 'mixed-route' ? { executionJob: 'spending-public' } : {}),
+    };
+    try {
+      expect(() => runtime.startRailgunProcess(options)).toThrow();
+      expect(original).not.toHaveBeenCalled();
+    } finally {
+      observer.restore();
+    }
+  }
+);

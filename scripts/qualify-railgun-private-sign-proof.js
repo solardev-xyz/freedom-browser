@@ -114,9 +114,8 @@ async function main() {
     const start = performance.now();
     const task = startRailgunProcess({
       handle: context('keystore', 'spending-sign'),
-      filename: require.resolve('../src/main/wallet/railgun-spend-sign-job'),
+      executionJob: 'spending-sign',
       input: JSON.stringify(payload),
-      binaryKey: true,
       startupMs: 30000,
       lifetimeMs: 60000,
       heapMb: 128,
@@ -192,7 +191,7 @@ async function main() {
     let result;
     const task = startRailgunProcess({
       handle: context('prover', 'private-verify'),
-      filename: require.resolve('../src/main/wallet/railgun-private-verify-job'),
+      executionJob: 'private-verify',
       input: JSON.stringify({
         archive: proverArchive,
         artifactDirectory,

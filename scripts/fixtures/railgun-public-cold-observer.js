@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./railgun-job-observer');
 /** Transparent, sticky utility/worker/key observations for this fixed public lane. */
 const path = require('path');
 const sticky = require('./railgun-native-assertions');
@@ -69,7 +70,7 @@ function install() {
   });
   runtime.startRailgunProcess = (options) => {
     assert.equal(active, true);
-    const name = path.basename(options.filename, '.js'),
+    const name = observeRailgunJob(options).name.slice(0, -3),
       input = JSON.parse(options.input);
     assert.ok(
       [

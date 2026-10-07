@@ -1,3 +1,4 @@
+const { observeRailgunJob, isRailgunWalletJob } = require('./fixtures/railgun-job-observer');
 /** Disposable cooperative enrollment across original main-process lifetimes.
  * No scan, signing, relay authority or live fence-file hashing. */
 const fs = require('fs');
@@ -98,10 +99,11 @@ function installIdentityObserver(runtime, expectedGuards, violations) {
   const wrapped = function (...args) {
     const options = args[0],
       input = JSON.parse(options.input);
-    assert.equal(options.filename, require.resolve('../src/main/wallet/railgun-identity-job'));
+    assert.equal(isRailgunWalletJob(options, 'railgun-identity-job.js'), true);
     assert.equal(input.purpose, ['spending-public', 'viewing-identity'][rows.length]);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);
-    assert.equal(options.binaryKey, true);
+    assert.equal(observeRailgunJob(options).route, 'kernel');
+    assert.equal(options.executionJob, input.purpose);
     const row = {
       purpose: input.purpose,
       messages: 0,
