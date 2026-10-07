@@ -176,3 +176,99 @@ test('missing or accessor host methods refuse without invoking the accessor', ()
   expect(m.initialize).not.toHaveBeenCalled();
   expect(() => m.start()).toThrow(refused);
 });
+function nodes(tree, visit) {
+  if (!tree || typeof tree !== 'object') return;
+  if (typeof tree.type === 'string') visit(tree);
+  for (const value of Object.values(tree)) {
+    if (Array.isArray(value)) value.forEach((child) => nodes(child, visit));
+    else if (value && typeof value === 'object') nodes(value, visit);
+  }
+}
+function syntax(filename) {
+  return require('acorn').parse(fs.readFileSync(filename, 'utf8'), {
+    ecmaVersion: 'latest',
+    sourceType: 'script',
+    allowReturnOutsideFunction: true,
+  });
+}
+test('fixed host method names resolve to real plain function exports without loading services', () => {
+  for (const [name, names] of Object.entries(shape)) {
+    const tree = syntax(path.resolve(__dirname, name + '.js'));
+    const functions = new Set(),
+      exports = [];
+    nodes(tree, (node) => {
+      if (node.type === 'FunctionDeclaration') functions.add(node.id.name);
+      if (
+        node.type === 'VariableDeclarator' &&
+        node.id.type === 'Identifier' &&
+        ['FunctionExpression', 'ArrowFunctionExpression'].includes(node.init?.type)
+      )
+        functions.add(node.id.name);
+      if (
+        node.type === 'AssignmentExpression' &&
+        node.left.type === 'MemberExpression' &&
+        !node.left.computed &&
+        node.left.object.name === 'module' &&
+        node.left.property.name === 'exports'
+      )
+        exports.push(node.right);
+    });
+    expect(exports).toHaveLength(1);
+    expect(exports[0].type).toBe('ObjectExpression');
+    for (const method of names) {
+      const property = exports[0].properties.find(
+        (entry) => !entry.computed && entry.key.name === method
+      );
+      expect(property).toBeDefined();
+      expect(property.kind).toBe('init');
+      expect(
+        property.value.type === 'FunctionExpression' ||
+          property.value.type === 'ArrowFunctionExpression' ||
+          (property.value.type === 'Identifier' && functions.has(property.value.name))
+      ).toBe(true);
+    }
+  }
+});
+test('the staged composition and its authority hosts remain unreachable from production callers', () => {
+  const root = path.resolve(__dirname, '..');
+  const targets = new Set([
+    path.join(__dirname, 'railgun-owner-host.js'),
+    path.join(__dirname, 'railgun-platform-host.js'),
+    path.resolve(__dirname, '../identity/railgun-credential-host.js'),
+    path.resolve(__dirname, '../identity/railgun-submitter-host.js'),
+  ]);
+  const allowed = path.join(__dirname, 'railgun-owner-host.js');
+  const violations = [];
+  function scan(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const filename = path.join(directory, entry.name);
+      if (entry.isDirectory()) scan(filename);
+      else if (
+        entry.isFile() &&
+        entry.name.endsWith('.js') &&
+        !entry.name.endsWith('.test.js') &&
+        !entry.name.endsWith('.fixture.js')
+      ) {
+        nodes(syntax(filename), (node) => {
+          if (
+            node.type !== 'CallExpression' ||
+            node.callee.name !== 'require' ||
+            node.arguments.length !== 1 ||
+            typeof node.arguments[0].value !== 'string'
+          )
+            return;
+          const specifier = node.arguments[0].value;
+          if (!specifier.startsWith('.')) return;
+          const target = path.resolve(
+            path.dirname(filename),
+            specifier + (specifier.endsWith('.js') ? '' : '.js')
+          );
+          if (targets.has(target) && filename !== allowed)
+            violations.push(path.relative(root, filename));
+        });
+      }
+    }
+  }
+  scan(root);
+  expect(violations).toEqual([]);
+});
