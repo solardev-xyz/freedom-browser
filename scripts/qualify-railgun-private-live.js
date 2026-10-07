@@ -24,14 +24,17 @@
  *   and scope lists what the probe does not qualify.
  * - recover-submit: the production recovered submission of the held proof,
  *   reusing its original spending signature; at most one journaled send. One
- *   attempt per profile, ever: the profile's campaign directory
- *   PROFILE.l-a-recovery-ledger holds at most its one allowance file,
- *   recover-submit.jsonl, named by no report digest. Before unlock and Tor the
- *   mode refuses a spent or damaged campaign; before any account, POI,
- *   nullifier or EOA work it reserves the allowance durably. Any existing
- *   allowance or other campaign entry refuses, whatever its probe, output,
- *   held report digest or outcome. An interrupted attempt stays pending and
- *   consumes the budget until diagnosed. NEW_OUTPUT is also
+ *   allowance per canonical profile campaign, bound to the one pinned held
+ *   report: not a reusable facility for an arbitrary hold. The profile's
+ *   campaign directory PROFILE.l-a-recovery-ledger holds at most its one
+ *   allowance file, recover-submit.jsonl, named by no report digest. Before
+ *   unlock and Tor the mode refuses a spent or damaged campaign; before any
+ *   account, POI, nullifier or EOA work it reserves the allowance durably. Any
+ *   existing allowance or other campaign entry refuses, whatever its probe,
+ *   output, held report digest or outcome, and consumption fails closed: an
+ *   interrupted attempt stays pending and consumes the budget until diagnosed.
+ *   Deleting the campaign directory or moving the profile resets the budget;
+ *   it is no anti-tampering control. NEW_OUTPUT is also
  *   recover-submit-<probe sha256> beside the probe's output directory, and the
  *   probe is at most 30 minutes old.
  *
@@ -2302,7 +2305,11 @@ async function preflightProbe(ctx) {
   report.passed = true;
 }
 // ---------------------------------------------------------------------------
-// The recovered submission's one-use budget: one allowance per profile campaign.
+// The recovered submission's one-use budget: one allowance per canonical profile
+// campaign, bound to the one pinned held report (HELD_TRANSFER_REPORT_SHA256).
+// It is scoped to that L-A campaign, not a reusable per-hold facility: keyed by
+// the profile alone, so neither a re-pinned report nor any other hold in the
+// same profile mints a second allowance.
 // The stable identity of the held operation, its hold id, lives only in the
 // enrollment's authenticated recovery stores: readable after unlock, the Tor
 // transport and the account open, never before network work. So the allowance is
