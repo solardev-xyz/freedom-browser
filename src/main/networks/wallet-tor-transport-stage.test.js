@@ -17,8 +17,7 @@ function routes(req, res) {
     return;
   }
   if (req.url === '/partial-status') {
-    req.socket.end('HTTP/1.1 200 O');
-    req.socket.destroy();
+    req.socket.write('HTTP/1.1 200 O', () => req.socket.destroy());
     return;
   }
   if (req.url === '/headers-then-drop') {
