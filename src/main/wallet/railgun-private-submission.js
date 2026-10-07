@@ -111,6 +111,31 @@ const DIAGNOSTIC = Object.freeze({
   // open: construction; acquire: the anchored reads; admission: the checks
   // between the acquired observation and EOA work.
   substage: Object.freeze(['open', 'acquire', 'admission']),
+  // The recovered history stage, in order; disjoint from the preflight's.
+  // stores: opening the recovery stores; records: the signing-recovery read,
+  // its admission and lifetime checks; select: exactly one signing record of
+  // the hold id; receipt: that record's receipt; capsule: its signed capsule
+  // (hold, wallet, signature and proof present, normalized);
+  // proved-transaction: the proved calldata against the signed intent; intent:
+  // the journal intent digest against the hold's; recipient: an unshield pays
+  // the submitter; owner: the submitter's shape; submitter-metadata: the
+  // vault's public wallet-0 record (readRailgunSubmitterMetadata); submitter:
+  // its address against the hold's submitter; destinations: the RPC
+  // destination constraints.
+  historySubstage: Object.freeze([
+    'stores',
+    'records',
+    'select',
+    'receipt',
+    'capsule',
+    'proved-transaction',
+    'intent',
+    'recipient',
+    'owner',
+    'submitter-metadata',
+    'submitter',
+    'destinations',
+  ]),
   reason: Object.freeze(['rpc', 'stale', 'inactive', 'mismatch', 'refused']),
   step: Object.freeze([
     'deployment',
@@ -152,6 +177,11 @@ const diagnosticCode = (value) =>
   typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(value) && !/[0-9A-F]{16}/.test(value)
     ? value
     : 'UNCLASSIFIED';
+// Only these stages name a sub-step, each from its own closed list.
+const SUBSTAGES = Object.freeze({
+  preflight: DIAGNOSTIC.substage,
+  history: DIAGNOSTIC.historySubstage,
+});
 function diagnose(stage, substage, error) {
   const stageValue = DIAGNOSTIC.stage.includes(stage) ? stage : 'unknown';
   try {
@@ -171,7 +201,9 @@ function diagnose(stage, substage, error) {
       step = pick('step');
     return Object.freeze({
       stage: stageValue,
-      ...(stage === 'preflight' && DIAGNOSTIC.substage.includes(substage) ? { substage } : {}),
+      ...(Object.hasOwn(SUBSTAGES, stageValue) && SUBSTAGES[stageValue].includes(substage)
+        ? { substage }
+        : {}),
       code,
       ...reason,
       ...step,
@@ -208,6 +240,19 @@ function getRailgunPrivateSubmissionTiming(result) {
 // qualifier's read-only probe). Reads the error's own data properties only.
 function getRailgunPrivatePreflightDiagnostic(substage, error) {
   return diagnose('preflight', substage, error);
+}
+// The vault's public wallet-0 record a recovered submission binds to the hold's
+// submitter before any disclosure: present, index 0, the mnemonic account and
+// a nonzero address (lowercase). Public metadata only, never the EOA key. A
+// profile whose vault was made without identity-manager has none, and refuses.
+// Exported for the live qualifier's read-only probe.
+function readRailgunSubmitterMetadata() {
+  const { getWalletRecord, WALLET_TYPES } = require('../identity-manager');
+  const record = getWalletRecord(0);
+  assert.ok(record && record.index === 0 && record.type === WALLET_TYPES.MNEMONIC);
+  const address = require('ethers').getAddress(record.address).toLowerCase();
+  assert.ok(BigInt(address) > 0n);
+  return Object.freeze({ index: 0, type: record.type, address });
 }
 // Both callers are fixed entry points below. This core is not exported and
 // accepts no renderer/caller-selected admission callback or completion object.
@@ -682,6 +727,8 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
     poi,
     roots,
     sourceOutcome,
+    // The history sub-step under way (DIAGNOSTIC.historySubstage).
+    historyStep,
     provenanceExitUnknown = false,
     claimed = false,
     constraints = [],
@@ -785,14 +832,6 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
     const started = performance.now(),
       deadline = started + timeoutMs;
     let owned, generation, token, completedCheckpoint, submitterMetadata;
-    const readSubmitterMetadata = () => {
-      const { getWalletRecord, WALLET_TYPES } = require('../identity-manager');
-      const record = getWalletRecord(0);
-      assert.ok(record && record.index === 0 && record.type === WALLET_TYPES.MNEMONIC);
-      const address = require('ethers').getAddress(record.address).toLowerCase();
-      assert.ok(BigInt(address) > 0n);
-      return Object.freeze({ index: 0, type: record.type, address });
-    };
     const current = (margin = 0) => {
       const now = performance.now();
       assert.ok(!lifetime.aborted && now >= started && now + margin < deadline);
@@ -804,7 +843,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
       );
       assertRailgunAccountPublicDestination(coordinator, enrollment, destination, publicPolicy);
       for (const value of constraints) assert.ok(!value.signal.aborted);
-      if (submitterMetadata) assert.deepEqual(readSubmitterMetadata(), submitterMetadata);
+      if (submitterMetadata) assert.deepEqual(readRailgunSubmitterMetadata(), submitterMetadata);
       if (generation) assert.deepEqual(enrollment.catalog.activeFor(walletPolicy), generation);
       if (token) assert.deepEqual(coordinator.assertSnapshot(token), completedCheckpoint);
     };
@@ -837,6 +876,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
     timer.unref?.();
     lifetime.addEventListener('abort', stop, { once: true });
     state.stage = 'history';
+    historyStep = 'stores';
     const { reservations, capsules } = await enrollment.openPrivateRecoveryStores();
     current();
     const select = (records) => {
@@ -844,28 +884,38 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
       assert.equal(matches.length, 1);
       return matches[0];
     };
+    historyStep = 'records';
     const baseline = await reservations.withSigningRecovery(
       async (records, context) => {
+        // The sub-step under way; only its closed name leaves on refusal.
+        let step = 'records';
         try {
           current();
           context.assertCurrent();
+          step = 'select';
           const selected = select(records);
+          step = 'receipt';
           reservations.assertReceiptContext(selected.receipt, 'recovery');
           assert.deepEqual(await reservations.assertReceipt(selected.receipt), selected.entry);
+          step = 'capsule';
           const stored = await capsules.readSigned(selected.receipt);
+          step = 'records';
           context.assertCurrent();
           current();
+          step = 'capsule';
           assert.equal(stored.holdId, holdId);
           assert.equal(stored.capsule.walletId, descriptor.walletId);
           assert.ok(stored.signature && stored.provedTransaction);
           const capsule = require('./railgun-private-capsule').normalizeRailgunPrivateCapsule(
             stored.capsule
           );
+          step = 'proved-transaction';
           require('./railgun-private-intent').matchRailgunPrivateProvedTransaction(
             capsule.preparation.transaction,
             stored.provedTransaction,
             capsule.preparation.expected
           );
+          step = 'intent';
           assert.equal(
             railgunTransactJournalIntent({
               ...stored.provedTransaction,
@@ -873,10 +923,12 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             }).intentDigest,
             selected.entry.facts.intentDigest
           );
+          step = 'recipient';
           if (capsule.selection.kind !== 'railgun-private-transfer')
             assert.equal(capsule.selection.recipient, selected.entry.signing.submitter);
           return detach({ entry: selected.entry, stored });
         } catch {
+          historyStep = step;
           return null;
         }
       },
@@ -886,11 +938,15 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
     assert.ok(baseline);
     const { capsule, provedTransaction } = baseline.stored;
     const owner = baseline.entry.signing.submitter;
+    historyStep = 'owner';
     assert.match(owner, /^0x[0-9a-f]{40}$/);
     // Public vault metadata only before review: getAddress() itself may
     // borrow the EOA key. The real signer is checked in the final core.
-    submitterMetadata = readSubmitterMetadata();
+    historyStep = 'submitter-metadata';
+    submitterMetadata = readRailgunSubmitterMetadata();
+    historyStep = 'submitter';
     assert.equal(submitterMetadata.address, owner);
+    historyStep = 'destinations';
     current();
     scope = createPrivacyScope({
       profileId: getPrivacyContext(parent).profileId,
@@ -1445,7 +1501,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
   } catch (error) {
     // Never promote thrown transaction hashes or recovery diagnostics; only
     // the bounded refusal diagnostic is kept, outside the result shape.
-    noteRefusal(state, error);
+    noteRefusal(state, error, historyStep);
   } finally {
     clearTimeout(timer);
     stop();
@@ -1485,4 +1541,5 @@ module.exports = {
   getRailgunPrivateSubmissionDiagnostic,
   getRailgunPrivateSubmissionTiming,
   getRailgunPrivatePreflightDiagnostic,
+  readRailgunSubmitterMetadata,
 };

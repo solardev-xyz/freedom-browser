@@ -795,6 +795,87 @@ test('binds original submitter before any disclosed work', async () => {
   expect(mock.events).not.toContain('disclosure-review');
   expect(mock.events).not.toContain('wallet-open');
 });
+// Each refusing history check names its closed sub-step; its code is the
+// error's identifier-shaped code only, never a message, value or path.
+const refused = (code) => () => {
+  throw Object.assign(Error('secret ' + hex(10) + ' /Users/someone'), { code });
+};
+test.each([
+  [
+    'stores',
+    'RAILGUN_STORE_REFUSED',
+    () => (mock.enrollment.openPrivateRecoveryStores = refused('RAILGUN_STORE_REFUSED')),
+  ],
+  [
+    'records',
+    'RAILGUN_RESERVATIONS_REFUSED',
+    () => (mock.reservations.withSigningRecovery = refused('RAILGUN_RESERVATIONS_REFUSED')),
+  ],
+  ['select', 'ERR_ASSERTION', () => (options.holdId = 'a'.repeat(64))],
+  ['receipt', 'ERR_ASSERTION', () => (mock.failure = 'hold-read')],
+  ['capsule', 'ERR_ASSERTION', () => (mock.failure = 'signed-read')],
+  ['capsule', 'ERR_ASSERTION', () => (mock.stored.signature = null)],
+  ['proved-transaction', 'ERR_ASSERTION', () => (mock.stored.provedTransaction.data = '0x1234')],
+  ['intent', 'ERR_ASSERTION', () => (mock.entry.facts.intentDigest = hex(9))],
+  [
+    'recipient',
+    'ERR_ASSERTION',
+    () => {
+      setup('railgun-token-unshield');
+      // The journal intent digest does not cover the submitter; the recipient rule does.
+      mock.entry.signing.submitter = '0x' + '98'.repeat(20);
+    },
+  ],
+  [
+    'owner',
+    'ERR_ASSERTION',
+    () => {
+      // A transfer has no recipient rule; a checksummed submitter is still refused.
+      setup('railgun-private-transfer');
+      mock.entry.signing.submitter = require('ethers').getAddress('0x' + 'ab'.repeat(20));
+    },
+  ],
+  ['submitter-metadata', 'ERR_ASSERTION', () => (mock.walletMetadata = null)],
+  [
+    'submitter-metadata',
+    'ERR_ASSERTION',
+    () => (mock.walletMetadata = { ...mock.walletMetadata, type: 'ledger' }),
+  ],
+  [
+    'submitter-metadata',
+    'INVALID_ARGUMENT',
+    () => (mock.walletMetadata = { ...mock.walletMetadata, address: null }),
+  ],
+  ['submitter', 'ERR_ASSERTION', () => (mock.walletMetadata.address = '0x' + '98'.repeat(20))],
+  [
+    'destinations',
+    'RAILGUN_RPC_REFUSED',
+    () =>
+      jest
+        .spyOn(require('../networks/private-rpc'), 'createPrivateRpc')
+        .mockImplementation(refused('RAILGUN_RPC_REFUSED')),
+  ],
+])('a history refusal at %s names that sub-step (%s)', async (substage, code, change) => {
+  change();
+  const result = await submit(options);
+  expect(result).toEqual({ status: 'recovery-required', stage: 'history' });
+  const diagnostic = { stage: 'history', substage, code };
+  expect(diagnosticOf(result)).toEqual(diagnostic);
+  // The live report keeps the same closed tuple through its allowlist.
+  expect(
+    require('../../../scripts/qualify-railgun-private-live').summarizeSubmissionDiagnostic(
+      diagnosticOf(result)
+    )
+  ).toEqual(diagnostic);
+  for (const event of ['journal-read', 'disclosure-review', 'wallet-open', 'C'])
+    expect(mock.events).not.toContain(event);
+});
+test('the history sub-step never rides on a later stage', async () => {
+  mock.history.records = [{ intent: { kind: 'railgun-transact', tree: 0, nullifier: hex(100) } }];
+  const result = await submit(options);
+  expect(result.stage).toBe('prior-attempt');
+  expect(diagnosticOf(result)).toEqual({ stage: 'prior-attempt', code: 'ERR_ASSERTION' });
+});
 test.each(['records', 'archive'])(
   'prior nullifier attempt in %s refuses before review/jobs',
   async (list) => {
