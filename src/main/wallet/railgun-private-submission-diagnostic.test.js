@@ -697,6 +697,19 @@ test('the probe helper returns the same closed tuple for one preflight run', () 
   expect(Object.isFrozen(tuple)).toBe(true);
   expect(JSON.stringify(tuple)).not.toMatch(/secret|Users|[0-9a-f]{16}/i);
   expect(probeOf('retry', refusal)).not.toHaveProperty('substage');
+  // A closed transport stage is forwarded; anything else is dropped.
+  for (const [causeStage, expected] of [
+    ['socket-reused', { causeStage: 'socket-reused' }],
+    ['https://secret.example', {}],
+  ])
+    expect(probeOf('acquire', Object.assign(refusal, { causeStage }))).toEqual({
+      ...PREFLIGHT,
+      substage: 'acquire',
+      reason: 'rpc',
+      step: 'rootHistory',
+      causeCode: 'TOR_REQUEST_FAILED',
+      ...expected,
+    });
   // Other codes cannot borrow preflight fields; unreadable errors stay closed.
   const borrowed = Object.assign(hostile('PRIVATE_RPC_DESTINATION_REFUSED'), {
     reason: 'rpc',

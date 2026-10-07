@@ -3538,6 +3538,7 @@ const PROBES = {
       reason: 'rpc',
       step: 'rootHistory',
       causeCode: 'TOR_REQUEST_FAILED',
+      causeStage: 'socket-reused',
     };
     const preflight = heldWorld({
       mode: 'recover-submit',

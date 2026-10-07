@@ -952,6 +952,7 @@ const DIAGNOSTIC_KEYS = Object.freeze({
   step: /^[a-z][a-zA-Z-]{0,31}$/,
   deploymentStep: /^[a-z][a-zA-Z-]{0,31}$/,
   causeCode: /^[A-Z][A-Z0-9_]{0,79}$/,
+  causeStage: /^[a-z][a-z-]{0,31}$/,
 });
 function summarizeSubmissionDiagnostic(value) {
   if (!plainObject(value)) return null;

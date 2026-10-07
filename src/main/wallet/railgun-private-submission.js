@@ -129,6 +129,15 @@ const DIAGNOSTIC = Object.freeze({
     'getter-tokenBlocklist',
     'anchor-recheck',
   ]),
+  // Closed TOR_REQUEST_FAILED stages (wallet-tor-transport.js), on rpc refusals.
+  causeStage: Object.freeze([
+    'connect',
+    'tls',
+    'socket-new',
+    'socket-reused',
+    'response',
+    'unclassified',
+  ]),
 });
 // The preflight's code shape, refusing long hex runs that could carry data.
 const diagnosticCode = (value) =>
@@ -159,7 +168,9 @@ function diagnose(stage, substage, error) {
       ...reason,
       ...step,
       ...(step.step === 'deployment' ? pick('deploymentStep') : {}),
-      ...(reason.reason === 'rpc' ? { causeCode: diagnosticCode(own('causeCode')) } : {}),
+      ...(reason.reason === 'rpc'
+        ? { causeCode: diagnosticCode(own('causeCode')), ...pick('causeStage') }
+        : {}),
     });
   } catch {
     return Object.freeze({ stage: stageValue, code: 'UNCLASSIFIED' });
