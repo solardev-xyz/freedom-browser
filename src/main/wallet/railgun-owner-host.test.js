@@ -54,8 +54,12 @@ function load(options = {}) {
   }
   const platform = Object.freeze({ applicationLifetime: jest.fn() }),
     credentials = Object.freeze({ currentSession: jest.fn(), withMaterial: jest.fn() }),
-    submitter = Object.freeze({ readMetadata: jest.fn() });
+    submitter = Object.freeze({ readMetadata: jest.fn() }),
+    sourceIdentity = Object.freeze({ readDigest: jest.fn() });
   const factories = {
+    './railgun-source-identity-host': {
+      createRailgunSourceIdentityHost: jest.fn(() => sourceIdentity),
+    },
     './railgun-platform-host': { createRailgunPlatformHost: jest.fn(() => platform) },
     '../identity/railgun-credential-host': {
       createRailgunCredentialHost: jest.fn(() => credentials),
@@ -103,6 +107,7 @@ test('captures fixed host families once with platform startup first and no retur
     'credentials',
     'platform',
     'submitter',
+    'sourceIdentity',
     'profiles',
     'sessions',
     'storage',
@@ -241,6 +246,7 @@ test('the staged composition and its authority hosts remain unreachable from pro
     path.join(__dirname, 'railgun-platform-host.js'),
     path.resolve(__dirname, '../identity/railgun-credential-host.js'),
     path.resolve(__dirname, '../identity/railgun-submitter-host.js'),
+    path.join(__dirname, 'railgun-source-identity-host.js'),
   ]);
   const allowed = path.join(__dirname, 'railgun-owner-host.js');
   const violations = [];

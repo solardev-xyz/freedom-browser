@@ -30,6 +30,8 @@ function initializeRailgunOwner(...args) {
   const platform = require('./railgun-platform-host').createRailgunPlatformHost();
   const credentials = require('../identity/railgun-credential-host').createRailgunCredentialHost();
   const submitter = require('../identity/railgun-submitter-host').createRailgunSubmitterHost();
+  const sourceIdentity =
+    require('./railgun-source-identity-host').createRailgunSourceIdentityHost();
   const bindings = Object.freeze({
     context: fixed(require('../networks/privacy-context'), [
       'getPrivacyContext',
@@ -39,6 +41,7 @@ function initializeRailgunOwner(...args) {
     credentials,
     platform,
     submitter,
+    sourceIdentity,
     profiles: fixed(require('../profile-resolver'), ['getActiveProfile']),
     sessions: fixed(require('./privacy-session'), ['openPrivacySession']),
     storage: fixed(require('./privacy-storage'), ['createPrivacyStorage', 'getPrivacyStoragePath']),
