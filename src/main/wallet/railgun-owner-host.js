@@ -53,6 +53,11 @@ function initializeRailgunOwner(...args) {
     ]),
     transport: fixed(require('../networks/wallet-tor-transport'), ['createWalletTorTransport']),
     settings: fixed(require('../settings-store'), ['isWalletTorExperimentAvailable']),
+    registry: fixed(require('../networks/network-registry'), [
+      'getNetwork',
+      'getEndpointSources',
+      'getEndpoints',
+    ]),
     tor: fixed(require('../tor-manager'), ['getWalletSocksEndpoint']),
     signers: fixed(require('./signers'), ['getSigner']),
     transactionIntent: fixed(require('./private-transaction-intent'), [
