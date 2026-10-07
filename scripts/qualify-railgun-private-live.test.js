@@ -1,6 +1,8 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vm = require('vm');
+const { createHash } = require('crypto');
 const api = require('./qualify-railgun-private-live');
 
 const hash = (byte) => '0x' + byte.repeat(32);
@@ -1679,6 +1681,63 @@ const recoverySummary = (extra = {}) => ({
   chainStateVerified: false,
   ...extra,
 });
+// Each recover-submit world gets a fresh canonical profile in its own temporary
+// directory, so its recovery ledger starts absent unless a test shares the profile.
+const LEDGER_ROOT = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'l-a-ledger-'));
+afterAll(() => fs.rmSync(LEDGER_ROOT, { recursive: true, force: true }));
+let profiles = 0;
+const newProfile = () => {
+  const profile = path.join(LEDGER_ROOT, `world-${++profiles}`, 'profile');
+  fs.mkdirSync(profile, { recursive: true });
+  return profile;
+};
+const digest = (text) => createHash('sha256').update(text).digest('hex');
+const QUALIFIER = 'scripts/qualify-railgun-private-live.js';
+const COMMIT = 'd1727e0a'.repeat(5);
+const SOURCES = {
+  [QUALIFIER]: sha('5c'),
+  'src/main/wallet/railgun-private-submission.js': sha('5d'),
+};
+// The real file system, with every ledger step on the world's timeline so tests
+// can order the durable reservation against all other work. Hooks stand in for
+// a concurrent winner or a short write.
+function ledgerFs(log, { beforeCreate, write } = {}) {
+  const kinds = new Map();
+  return {
+    lstatSync: (file) => fs.lstatSync(file),
+    realpathSync: (file) => fs.realpathSync(file),
+    readFileSync: (file, encoding) => fs.readFileSync(file, encoding),
+    mkdirSync: (directory, options) => {
+      const created = fs.mkdirSync(directory, options);
+      log('ledger-mkdir');
+      return created;
+    },
+    openSync: (file, flags, mode) => {
+      if (flags === 'wx') beforeCreate?.(file);
+      const fd = fs.openSync(file, flags, mode);
+      kinds.set(fd, flags);
+      if (flags === 'wx') log('ledger-create');
+      return fd;
+    },
+    writeSync: (fd, bytes) =>
+      (write ?? ((_kind, ...rest) => fs.writeSync(...rest)))(kinds.get(fd), fd, bytes),
+    fsyncSync: (fd) => {
+      fs.fsyncSync(fd);
+      log(
+        {
+          wx: 'ledger-pending-synced',
+          a: 'ledger-finished-synced',
+          r: 'ledger-directory-synced',
+        }[kinds.get(fd)]
+      );
+    },
+    closeSync: (fd) => {
+      kinds.delete(fd);
+      fs.closeSync(fd);
+    },
+  };
+}
+const ledgerLines = (file) => fs.readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
 function heldWorld({
   mode = 'preflight-probe',
   records,
@@ -1703,6 +1762,9 @@ function heldWorld({
   diagnostic,
   alter,
   abortOnOpen = false,
+  profile,
+  probeSha = PROBE_SHA,
+  ledger,
 } = {}) {
   const calls = {
     timeline: [],
@@ -1786,6 +1848,7 @@ function heldWorld({
   const network = {
     request: async (_chainId, method) => {
       calls.network.push(method);
+      log(method);
       const results = {
         eth_getCode: '0x',
         eth_getBalance: '0xde0b6b3a7640000',
@@ -1795,6 +1858,7 @@ function heldWorld({
     },
     getFeeQuote: async () => {
       calls.network.push('eth_gasPrice');
+      log('eth_gasPrice');
       return { type: 'legacy', gasPrice: gasPrice.toString() };
     },
   };
@@ -1989,9 +2053,24 @@ function heldWorld({
   };
   const recovering = mode === 'recover-submit';
   const previous = recovering ? probeReport() : heldReport();
+  // recover-submit as main() hands it over: the canonical profile, the pinned
+  // probe and scan digests, the source binding and the ledger file system.
+  const binding = recovering && {
+    args: {
+      profile: profile ?? newProfile(),
+      scanSha: NEWER_SCAN_SHA,
+      previousFile: '/w/probe-1/report.json',
+      previousSha: probeSha,
+      output: '/w/recover-submit-' + probeSha,
+    },
+    report: { sourceSha256: { ...SOURCES } },
+  };
   const ctx = {
-    args: { archive: '/e', proverArchive: '/p', artifactDirectory: '/a' },
-    report: { passed: false },
+    args: { archive: '/e', proverArchive: '/p', artifactDirectory: '/a', ...binding?.args },
+    report: { passed: false, ...binding?.report },
+    fs: ledgerFs(log, ledger),
+    profileId: 'test',
+    sourceCommit: COMMIT,
     stage: 'preconditions',
     scan: {
       observedAt: SCAN_AT,
@@ -2002,7 +2081,7 @@ function heldWorld({
       wallet: { to: { ...NEW_ANCHOR } },
     },
     previous,
-    chain: api.nextChain(mode, previous, recovering ? PROBE_SHA : HELD_SHA),
+    chain: api.nextChain(mode, previous, recovering ? probeSha : HELD_SHA),
     owner: OWNER,
     network,
     readJournal: async () => copy(journal),
@@ -3449,6 +3528,348 @@ const PROBES = {
     expect(await settle(m.RUNNERS['recover-submit'](carried.ctx))).toEqual(refused('fee-plan'));
     expect(carried.calls.submit).toEqual([]);
   },
+  // The one-use recovery ledger: reserved durably before any other work.
+  'recover-ledger-ack': async (m) => {
+    const { ctx, calls } = heldWorld({ mode: 'recover-submit' });
+    await m.RUNNERS['recover-submit'](ctx);
+    expect(ctx.report.passed).toBe(true);
+    expect(calls.submit).toHaveLength(1);
+    // Only the synced reservation precedes the account, POI, nullifier and EOA work.
+    const work = calls.timeline.indexOf('identity-open');
+    expect(calls.timeline.slice(0, work)).toEqual([
+      'ledger-mkdir',
+      'ledger-directory-synced',
+      'ledger-create',
+      'ledger-pending-synced',
+      'ledger-directory-synced',
+    ]);
+    expect(calls.timeline.slice(work)).toEqual(
+      expect.arrayContaining(['eth_getCode', 'eth_gasPrice', 'recover-submit', 'sign'])
+    );
+    expect(calls.timeline.at(-1)).toBe('ledger-finished-synced');
+    const file = m.recoveryLedgerPath(ctx.args.profile);
+    expect(file).toBe(`${ctx.args.profile}.l-a-recovery-ledger/recover-submit-${HELD_SHA}.jsonl`);
+    // A sibling of the profile; the profile itself gains nothing.
+    expect(fs.readdirSync(path.dirname(ctx.args.profile)).sort()).toEqual([
+      'profile',
+      'profile.l-a-recovery-ledger',
+    ]);
+    expect(fs.readdirSync(ctx.args.profile)).toEqual([]);
+    const [header, pending, finished, ...rest] = ledgerLines(file);
+    expect(rest).toEqual([]);
+    expect(header).toEqual({
+      type: 'railgun-l-a-recovery-ledger',
+      version: 1,
+      journey: api.JOURNEY,
+      chainId: 11155111,
+      mode: 'recover-submit',
+      budget: 1,
+      profile: ctx.args.profile,
+      profileId: 'test',
+      heldTransferReportSha256: HELD_SHA,
+    });
+    expect(pending).toEqual({
+      type: 'attempt-pending',
+      attempt: 1,
+      attemptId: expect.stringMatching(/^[0-9a-f]{32}$/),
+      reservedAt: expect.any(String),
+      pid: process.pid,
+      output: ctx.args.output,
+      probeReport: ctx.args.previousFile,
+      binding: {
+        heldTransferReportSha256: HELD_SHA,
+        probeReportSha256: PROBE_SHA,
+        probeObservedAt: PROBE_AT,
+        scanReportSha256: NEWER_SCAN_SHA,
+        scanAnchor: NEW_ANCHOR,
+        sourceCommit: COMMIT,
+        scriptSha256: SOURCES[QUALIFIER],
+        sourcesSha256: digest(JSON.stringify(SOURCES)),
+      },
+    });
+    expect(finished).toEqual({
+      type: 'attempt-finished',
+      attempt: 1,
+      attemptId: pending.attemptId,
+      finishedAt: expect.any(String),
+      holdIdSha256: digest('railgun-l-a-recovery-hold-id\n' + HOLD_ID),
+      outcome: {
+        stage: 'journal-readback',
+        failure: null,
+        submission: 'acknowledged',
+        spend: ctx.report.spend,
+        passed: true,
+      },
+    });
+    expect(m.readRecoveryLedger(fs, file, header)).toEqual({ pending, finished });
+    expect(ctx.report.reservation).toEqual({
+      ledger: 'profile-sibling',
+      budget: 1,
+      reservedBeforeAccountWork: true,
+      finished: true,
+    });
+    // Local only, and still without a secret.
+    expect(withoutSecrets(fs.readFileSync(file, 'utf8'))).toBe(true);
+    expect(m.assertAggregateReport(ctx.report)).toBe(true);
+    expect(withoutSecrets(ctx.report)).toBe(true);
+    // A refusal inside the attempt is its finished outcome.
+    const declined = heldWorld({ mode: 'recover-submit', signingRecords: 2 });
+    expect(await settle(m.RUNNERS['recover-submit'](declined.ctx))).toEqual(refused('hold'));
+    expect(declined.calls.timeline.at(-1)).toBe('ledger-finished-synced');
+    expect(ledgerLines(m.recoveryLedgerPath(declined.ctx.args.profile))[2]).toMatchObject({
+      holdIdSha256: null,
+      outcome: {
+        stage: 'hold',
+        failure: { stage: 'hold', code: 'RAILGUN_LIVE_JOURNEY_REFUSED', step: 'hold' },
+        submission: null,
+        spend: { journaled: false, submissionStatus: 'not-sent' },
+        passed: false,
+      },
+    });
+    expect(declined.ctx.report.reservation.finished).toBe(true);
+  },
+  'recover-ledger-once': async (m) => {
+    const first = heldWorld({ mode: 'recover-submit' });
+    await m.RUNNERS['recover-submit'](first.ctx);
+    expect(first.calls.submit).toHaveLength(1);
+    const profile = first.ctx.args.profile;
+    // Everything the profile's ledger directory holds, wherever a ledger lands in it.
+    const directory = profile + '.l-a-recovery-ledger';
+    const ledgers = () =>
+      fs.existsSync(directory)
+        ? fs
+            .readdirSync(directory)
+            .map((name) => fs.readFileSync(path.join(directory, name), 'utf8'))
+        : [];
+    const recorded = ledgers();
+    expect(recorded).toHaveLength(1);
+    // Whatever probe, probe location or output a later invocation names.
+    for (const [change, probeSha] of [
+      [() => {}],
+      [(args) => (args.output = '/w/recover-submit-' + PROBE_SHA + '-2')],
+      [(args) => (args.output = '/elsewhere/recover-submit-' + PROBE_SHA)],
+      [
+        (args) => {
+          args.previousFile = '/w/copied/probe-1/report.json';
+          args.output = '/w/copied/recover-submit-' + PROBE_SHA;
+        },
+      ],
+      [() => {}, sha('9d')],
+    ]) {
+      const again = heldWorld({ mode: 'recover-submit', profile, probeSha });
+      change(again.ctx.args);
+      expect(await settle(m.RUNNERS['recover-submit'](again.ctx))).toEqual(
+        refused('recovery-attempted')
+      );
+      expect(again.ctx.stage).toBe('reservation');
+      expect([again.calls.timeline, again.calls.loaded, again.calls.network]).toEqual([[], [], []]);
+      expect(again.ctx.report.liveness.state).toBe('proved-unsent');
+      expect(ledgers()).toEqual(recorded);
+    }
+    // A refused attempt spends the budget too: refused at preflight, before any send.
+    const declined = heldWorld({ mode: 'recover-submit', submit: 'preflight' });
+    await m.RUNNERS['recover-submit'](declined.ctx);
+    expect(declined.calls.sign).toBe(0);
+    const retry = heldWorld({ mode: 'recover-submit', profile: declined.ctx.args.profile });
+    expect(await settle(m.RUNNERS['recover-submit'](retry.ctx))).toEqual(
+      refused('recovery-attempted')
+    );
+    expect([retry.calls.timeline, retry.calls.submit]).toEqual([[], []]);
+  },
+  'recover-ledger-race': async (m) => {
+    // Two invocations started together: one reserves, the other is refused
+    // before it loads a module or makes a request.
+    const profile = newProfile();
+    const worlds = [0, 1].map(() => heldWorld({ mode: 'recover-submit', profile }));
+    const outcomes = await Promise.all(
+      worlds.map((world) => settle(m.RUNNERS['recover-submit'](world.ctx)))
+    );
+    expect(outcomes).toEqual([null, refused('recovery-attempted')]);
+    expect(worlds[0].calls.submit).toHaveLength(1);
+    const late = worlds[1].calls;
+    expect([late.timeline, late.loaded, late.network]).toEqual([[], [], []]);
+    // The race inside the reservation: a concurrent winner creates the ledger
+    // after this invocation found none and before its exclusive create.
+    const shared = newProfile();
+    const winner = heldWorld({ mode: 'recover-submit', profile: shared });
+    const loser = heldWorld({
+      mode: 'recover-submit',
+      profile: shared,
+      ledger: { beforeCreate: () => m.reserveRecoveryAttempt(winner.ctx) },
+    });
+    expect(await settle(m.RUNNERS['recover-submit'](loser.ctx))).toEqual(
+      refused('recovery-attempted')
+    );
+    expect(loser.calls.timeline).toEqual(['ledger-mkdir', 'ledger-directory-synced']);
+    expect([loser.calls.loaded, loser.calls.network]).toEqual([[], []]);
+    expect(winner.calls.timeline).toEqual([
+      'ledger-create',
+      'ledger-pending-synced',
+      'ledger-directory-synced',
+    ]);
+    expect(ledgerLines(m.recoveryLedgerPath(shared))).toHaveLength(2);
+  },
+  'recover-ledger-interrupted': async (m) => {
+    // A process that died after its reservation: pending, never finished.
+    const crashed = heldWorld({ mode: 'recover-submit' });
+    const reservation = m.reserveRecoveryAttempt(crashed.ctx);
+    const pending = fs.readFileSync(reservation.file, 'utf8');
+    const restart = heldWorld({ mode: 'recover-submit', profile: crashed.ctx.args.profile });
+    expect(await settle(m.RUNNERS['recover-submit'](restart.ctx))).toEqual(
+      refused('recovery-attempted')
+    );
+    expect([restart.calls.timeline, restart.calls.loaded, restart.calls.network]).toEqual([
+      [],
+      [],
+      [],
+    ]);
+    // Never finished or repaired by a later run.
+    expect(fs.readFileSync(reservation.file, 'utf8')).toBe(pending);
+    expect(m.readRecoveryLedger(fs, reservation.file, reservation.header).finished).toBeNull();
+    // A short reservation write refuses before any work, and the damage stays.
+    const torn = heldWorld({
+      mode: 'recover-submit',
+      ledger: { write: (kind, ...rest) => (kind === 'wx' ? 0 : fs.writeSync(...rest)) },
+    });
+    expect(await settle(m.RUNNERS['recover-submit'](torn.ctx))).toEqual(refused('recovery-ledger'));
+    expect(torn.calls.timeline).toEqual([
+      'ledger-mkdir',
+      'ledger-directory-synced',
+      'ledger-create',
+    ]);
+    expect(torn.calls.loaded).toEqual([]);
+    const afterTorn = heldWorld({ mode: 'recover-submit', profile: torn.ctx.args.profile });
+    expect(await settle(m.RUNNERS['recover-submit'](afterTorn.ctx))).toEqual(
+      refused('recovery-ledger')
+    );
+    expect(afterTorn.calls.loaded).toEqual([]);
+    // An outcome that cannot be recorded leaves the attempt pending and fails the report.
+    const unrecorded = heldWorld({
+      mode: 'recover-submit',
+      ledger: { write: (kind, ...rest) => (kind === 'a' ? 0 : fs.writeSync(...rest)) },
+    });
+    await m.RUNNERS['recover-submit'](unrecorded.ctx);
+    expect(unrecorded.ctx.report.spend.submissionStatus).toBe('acknowledged');
+    expect(unrecorded.ctx.report.reservation.finished).toBe(false);
+    expect(unrecorded.ctx.report.passed).toBe(false);
+    const unrecordedFile = m.recoveryLedgerPath(unrecorded.ctx.args.profile);
+    expect(ledgerLines(unrecordedFile)).toHaveLength(2);
+    const again = heldWorld({ mode: 'recover-submit', profile: unrecorded.ctx.args.profile });
+    expect(await settle(m.RUNNERS['recover-submit'](again.ctx))).toEqual(
+      refused('recovery-attempted')
+    );
+    expect(again.calls.submit).toEqual([]);
+    // A ledger changed during the attempt is left as found, and fails the report.
+    const swapped = heldWorld({ mode: 'recover-submit' });
+    const swappedFile = m.recoveryLedgerPath(swapped.ctx.args.profile);
+    const readJournal = swapped.ctx.readJournal;
+    let foreign;
+    swapped.ctx.readJournal = async () => {
+      if (!foreign && fs.existsSync(swappedFile)) {
+        const [header, entry] = ledgerLines(swappedFile);
+        foreign = [header, { ...entry, attemptId: 'f'.repeat(32) }]
+          .map((value) => JSON.stringify(value) + '\n')
+          .join('');
+        fs.writeFileSync(swappedFile, foreign);
+      }
+      return readJournal();
+    };
+    await m.RUNNERS['recover-submit'](swapped.ctx);
+    expect(swapped.calls.submit).toHaveLength(1);
+    expect(fs.readFileSync(swappedFile, 'utf8')).toBe(foreign);
+    expect(swapped.ctx.report.reservation.finished).toBe(false);
+    expect(swapped.ctx.report.passed).toBe(false);
+  },
+  'recover-ledger-damage': async (m) => {
+    const line = (value) => JSON.stringify(value) + '\n';
+    // Valid records of another profile's reservation, rebound to this profile.
+    const reference = m.reserveRecoveryAttempt(heldWorld({ mode: 'recover-submit' }).ctx);
+    const ledger = (profile) => {
+      fs.mkdirSync(profile + '.l-a-recovery-ledger');
+      const { header, pending } = reference;
+      return {
+        header: { ...header, profile },
+        pending,
+        done: { type: 'attempt-finished', attemptId: pending.attemptId },
+      };
+    };
+    // Damaged, unbound or foreign ledgers refuse as damage, before any work.
+    for (const damage of [
+      () => '',
+      () => 'not json\n',
+      ({ pending }) => line(pending),
+      ({ header }) => line(header),
+      ({ header, pending }) => line({ ...header, profile: '/w/other/profile' }) + line(pending),
+      ({ header, pending }) => line({ ...header, profileId: 'other' }) + line(pending),
+      ({ header, pending }) => line({ ...header, budget: 2 }) + line(pending),
+      ({ header, pending }) =>
+        line(header) +
+        line({ ...pending, binding: { ...pending.binding, heldTransferReportSha256: sha('9e') } }),
+      ({ header, pending }) => line(header) + line({ ...pending, type: 'attempt-finished' }),
+      ({ header, pending, done }) =>
+        line(header) + line(pending) + line({ ...done, attemptId: 'f'.repeat(32) }),
+      ({ header, pending, done }) => line(header) + line(pending) + line(done) + line(pending),
+      ({ header, pending }) => line(header) + JSON.stringify(pending),
+    ]) {
+      const world = heldWorld({ mode: 'recover-submit' });
+      const file = m.recoveryLedgerPath(world.ctx.args.profile);
+      const text = damage(ledger(world.ctx.args.profile));
+      fs.writeFileSync(file, text);
+      expect(await settle(m.RUNNERS['recover-submit'](world.ctx))).toEqual(
+        refused('recovery-ledger')
+      );
+      expect([world.calls.timeline, world.calls.loaded, world.calls.network]).toEqual([[], [], []]);
+      expect(fs.readFileSync(file, 'utf8')).toBe(text);
+    }
+    // A symlinked ledger is damage, even when it points at a valid one.
+    const linked = heldWorld({ mode: 'recover-submit' });
+    const target = newProfile() + '-ledger.jsonl';
+    const { header, pending } = ledger(linked.ctx.args.profile);
+    fs.writeFileSync(target, line(header) + line(pending));
+    fs.symlinkSync(target, m.recoveryLedgerPath(linked.ctx.args.profile));
+    expect(await settle(m.RUNNERS['recover-submit'](linked.ctx))).toEqual(
+      refused('recovery-ledger')
+    );
+    expect(linked.calls.loaded).toEqual([]);
+    // A symlinked ledger directory is refused and never written through.
+    const redirected = heldWorld({ mode: 'recover-submit' });
+    const elsewhere = path.join(path.dirname(newProfile()), 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.symlinkSync(elsewhere, redirected.ctx.args.profile + '.l-a-recovery-ledger');
+    expect(await settle(m.RUNNERS['recover-submit'](redirected.ctx))).toEqual(
+      refused('recovery-ledger')
+    );
+    expect([redirected.calls.timeline, redirected.calls.loaded]).toEqual([[], []]);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+  },
+  'recover-ledger-binding': async (m) => {
+    // A run without its complete binding reserves nothing and does nothing.
+    for (const change of [
+      (ctx) => (ctx.args.profile += '-missing'),
+      (ctx) => {
+        fs.symlinkSync(ctx.args.profile, ctx.args.profile + '-link');
+        ctx.args.profile += '-link';
+      },
+      (ctx) => (ctx.args.profile += '/'),
+      (ctx) => (ctx.args.profile = 'missing/profile'),
+      (ctx) => delete ctx.fs,
+      (ctx) => delete ctx.profileId,
+      (ctx) => (ctx.chain.heldTransfer.reportSha256 = sha('9e')),
+      (ctx) => (ctx.args.previousSha = sha('9d')),
+      (ctx) => (ctx.args.scanSha = SCAN_SHA),
+      (ctx) => (ctx.scan.anchor = { number: NEW_ANCHOR.number }),
+      (ctx) => (ctx.previous = { ...ctx.previous, observedAt: undefined }),
+      (ctx) => delete ctx.sourceCommit,
+      (ctx) => delete ctx.report.sourceSha256[QUALIFIER],
+    ]) {
+      const { ctx, calls } = heldWorld({ mode: 'recover-submit' });
+      const world = path.dirname(ctx.args.profile);
+      change(ctx);
+      expect(await settle(m.RUNNERS['recover-submit'](ctx))).toEqual(refused('recovery-binding'));
+      expect([calls.timeline, calls.loaded, calls.network]).toEqual([[], [], []]);
+      expect(fs.readdirSync(world).filter((name) => name.endsWith('-ledger'))).toEqual([]);
+    }
+  },
 };
 
 describe('live wiring with injected production fakes', () => {
@@ -4213,6 +4634,217 @@ const MUTATIONS = [
     'report.liveness = describeLiveness({ holdCreated: true, spend: report.spend });',
     'report.liveness = describeLiveness({ holdCreated: false, spend: report.spend });',
     'recover-ack',
+  ],
+  // The one-use recovery ledger.
+  [
+    'recovery attempt not reserved',
+    'reservation = reserveRecoveryAttempt(ctx);',
+    'void 0;',
+    'recover-ledger-once',
+  ],
+  [
+    'recovery reserved after the attempt',
+    'reservation = reserveRecoveryAttempt(ctx);\n' +
+      '      report.reservation = {\n' +
+      "        ledger: 'profile-sibling',\n" +
+      '        budget: 1,\n' +
+      '        reservedBeforeAccountWork: true,\n' +
+      '        finished: false,\n' +
+      '      };\n' +
+      '      await recoverSubmit(ctx);',
+    'await recoverSubmit(ctx);\n' +
+      '      reservation = reserveRecoveryAttempt(ctx);\n' +
+      "      report.reservation = { ledger: 'profile-sibling', finished: false };",
+    'recover-ledger-ack',
+  ],
+  [
+    'recovery ledger keyed by the probe',
+    'const file = recoveryLedgerPath(profile);',
+    'const file = recoveryLedgerPath(profile) + ctx.args.previousSha;',
+    'recover-ledger-once',
+  ],
+  [
+    'recovery ledger keyed by the output',
+    'const file = recoveryLedgerPath(profile);',
+    'const file = recoveryLedgerPath(profile) + path.basename(ctx.args.output);',
+    'recover-ledger-once',
+  ],
+  [
+    'recovery ledger created without exclusion',
+    "fd = fsImpl.openSync(file, 'wx', 0o600);",
+    "fd = fsImpl.openSync(file, 'w', 0o600);",
+    'recover-ledger-once',
+  ],
+  [
+    'existing recovery ledger appended to',
+    "    throw refusal('recovery-attempted');",
+    "    fd = fsImpl.openSync(file, 'a');",
+    'recover-ledger-once',
+  ],
+  [
+    'existing recovery ledger not validated',
+    "    readRecoveryLedger(fsImpl, file, header);\n    throw refusal('recovery-attempted');",
+    "    throw refusal('recovery-attempted');",
+    'recover-ledger-damage',
+  ],
+  [
+    'pending record not synced',
+    "    check(fsImpl.writeSync(fd, bytes) === bytes.length, 'recovery-ledger');\n" +
+      '    fsImpl.fsyncSync(fd);',
+    "    check(fsImpl.writeSync(fd, bytes) === bytes.length, 'recovery-ledger');",
+    'recover-ledger-ack',
+  ],
+  [
+    'pending record directory entry not synced',
+    '  syncDirectory(fsImpl, directory);\n  return Object.freeze({ file, header, pending',
+    '  return Object.freeze({ file, header, pending',
+    'recover-ledger-ack',
+  ],
+  [
+    'new ledger directory not synced',
+    'if (created) syncDirectory(fsImpl, path.dirname(directory));',
+    'void 0;',
+    'recover-ledger-ack',
+  ],
+  [
+    'short pending write accepted',
+    "    check(fsImpl.writeSync(fd, bytes) === bytes.length, 'recovery-ledger');\n" +
+      '    fsImpl.fsyncSync(fd);',
+    '    fsImpl.writeSync(fd, bytes);\n    fsImpl.fsyncSync(fd);',
+    'recover-ledger-interrupted',
+  ],
+  [
+    'symlinked ledger directory followed',
+    'holds(() => fsImpl.lstatSync(directory).isDirectory()),',
+    'true,',
+    'recover-ledger-damage',
+  ],
+  [
+    'non-canonical profile accepted',
+    '() => fsImpl.lstatSync(profile).isDirectory() && fsImpl.realpathSync(profile) === profile',
+    '() => true',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery profile id unbound',
+    "check(typeof ctx.profileId === 'string' && ctx.profileId.length > 0, 'recovery-binding');",
+    'void 0;',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery held transfer unbound',
+    "check(chain?.heldTransfer?.reportSha256 === HELD_TRANSFER_REPORT_SHA256, 'recovery-binding');",
+    'void 0;',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery probe unbound',
+    'SHA256.test(args.previousSha) && chain.heldTransfer.probeReportSha256 === args.previousSha,',
+    'true,',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery scan unbound',
+    "check(SHA256.test(args.scanSha) && previous?.scan?.sha256 === args.scanSha, 'recovery-binding');",
+    'void 0;',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery scan anchor unbound',
+    'Number.isSafeInteger(scan?.anchor?.number) && HASH.test(scan.anchor.hash),',
+    'true,',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery probe time unbound',
+    "check(typeof previous.observedAt === 'string', 'recovery-binding');",
+    'void 0;',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery source commit unbound',
+    "check(COMMIT.test(ctx.sourceCommit), 'recovery-binding');",
+    'void 0;',
+    'recover-ledger-binding',
+  ],
+  [
+    'recovery script digest unbound',
+    "check(plainObject(sources) && SHA256.test(sources[QUALIFIER]), 'recovery-binding');",
+    'void 0;',
+    'recover-ledger-binding',
+  ],
+  [
+    'symlinked or oversized ledger read',
+    "check(stat.isFile() && stat.size <= RECOVERY_LEDGER_MAX_BYTES, 'recovery-ledger');",
+    'void 0;',
+    'recover-ledger-damage',
+  ],
+  [
+    'torn ledger write read',
+    "check(lines.pop() === '', 'recovery-ledger');",
+    'void 0;',
+    'recover-ledger-damage',
+  ],
+  [
+    'ledger header unchecked',
+    "check(same(first, header), 'recovery-ledger');",
+    'void 0;',
+    'recover-ledger-damage',
+  ],
+  [
+    'ledger pending record unchecked',
+    "pending?.type === 'attempt-pending' &&",
+    'true &&',
+    'recover-ledger-damage',
+  ],
+  [
+    'ledger finished record unchecked',
+    "(finished?.type === 'attempt-finished' && finished.attemptId === pending.attemptId),",
+    'true,',
+    'recover-ledger-damage',
+  ],
+  [
+    'ledger extra records unchecked',
+    "check(rest.length === 0, 'recovery-ledger');",
+    'void 0;',
+    'recover-ledger-damage',
+  ],
+  [
+    'recovery outcome not recorded',
+    'if (reservation) finishRecoveryAttempt(ctx, reservation, failure);',
+    'void 0;',
+    'recover-ledger-ack',
+  ],
+  [
+    'recovery hold digest not recorded',
+    'ctx.holdIdSha256 = sha(HOLD_ID_DOMAIN + held.entry.id);',
+    'void 0;',
+    'recover-ledger-ack',
+  ],
+  ['recovery failure not recorded', 'failure = { error };', 'void 0;', 'recover-ledger-ack'],
+  [
+    'changed ledger finished anyway',
+    'same(current.pending, reservation.pending) && current.finished === null,',
+    'true,',
+    'recover-ledger-interrupted',
+  ],
+  [
+    'short finished write accepted',
+    "      check(fsImpl.writeSync(fd, bytes) === bytes.length, 'recovery-ledger');",
+    '      fsImpl.writeSync(fd, bytes);',
+    'recover-ledger-interrupted',
+  ],
+  [
+    'unrecorded outcome passes',
+    '  } catch {\n    report.passed = false;\n  }',
+    '  } catch {\n    void 0;\n  }',
+    'recover-ledger-interrupted',
+  ],
+  [
+    'recorded outcome not reported',
+    'report.reservation.finished = true;',
+    'void 0;',
+    'recover-ledger-ack',
   ],
   // The spent read.
   [

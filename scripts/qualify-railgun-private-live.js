@@ -23,9 +23,14 @@
  *   passed means the probe completed; result says whether the preflight passed,
  *   and scope lists what the probe does not qualify.
  * - recover-submit: the production recovered submission of the held proof,
- *   reusing its original spending signature; at most one journaled send. Once
- *   per probe: NEW_OUTPUT is recover-submit-<probe sha256> beside the probe's
- *   output directory, and the probe is at most 30 minutes old.
+ *   reusing its original spending signature; at most one journaled send. One
+ *   attempt per profile and held transfer, ever: before any account, POI,
+ *   nullifier or EOA work the mode reserves it durably in
+ *   PROFILE.l-a-recovery-ledger/recover-submit-<held sha256>.jsonl, and any
+ *   existing ledger refuses, whatever its probe, output or outcome. An
+ *   interrupted attempt stays pending and consumes the budget until diagnosed.
+ *   NEW_OUTPUT is also recover-submit-<probe sha256> beside the probe's output
+ *   directory, and the probe is at most 30 minutes old.
  *
  * Publication: only NEW_OUTPUT/report.json is publishable. NEW_OUTPUT/transport/
  * holds the Arti state and arti.log and stays local.
@@ -42,7 +47,7 @@
  */
 const fs = require('fs'),
   path = require('path');
-const { createHash } = require('crypto');
+const { createHash, randomBytes } = require('crypto');
 const { isDeepStrictEqual } = require('util');
 const pins = require('../src/main/wallet/railgun-shield-pins.json');
 
@@ -222,6 +227,7 @@ const ARTIFACT_PATTERN = /^(?:0[12]x0[123]|POI_3x3)\.(?:wasm|zkey|vkey)$/;
 const HASH = /^0x[0-9a-f]{64}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
+const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 function refusal(step) {
   return Object.assign(new Error('Railgun live journey refused'), {
@@ -1207,6 +1213,14 @@ function listSourceFiles(base, directories = SOURCE_DIRECTORIES, fsImpl = fs) {
 // ---------------------------------------------------------------------------
 let lock,
   backgroundFailure = false;
+// The checkout's commit, bound in the recovery ledger beside the source digests.
+function sourceCommit(base) {
+  const value = require('child_process')
+    .execFileSync('git', ['-C', base, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 })
+    .trim();
+  check(COMMIT.test(value), 'recovery-binding');
+  return value;
+}
 function readPinnedReport(filename, expected) {
   const stat = fs.lstatSync(filename);
   check(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 4 * 1024 * 1024, 'pinned');
@@ -1291,6 +1305,8 @@ async function main() {
     report,
     stage: 'preconditions',
     load: (name) => require('../src/main/' + name),
+    // The recovery ledger's file system (recover-submit only).
+    fs,
   };
   let client, vault;
   try {
@@ -1327,6 +1343,7 @@ async function main() {
     report.sourceSha256 = sourceSha256;
     report.runtime = runtime;
     Object.assign(ctx, { scan, previous, chain: report.chain });
+    if (mode === 'recover-submit') ctx.sourceCommit = sourceCommit(base);
 
     ctx.stage = 'profile';
     const profile = require('../src/main/profile-resolver').initializeProfile(app, {
@@ -1342,6 +1359,7 @@ async function main() {
       same(marker, { version: 1, chainId: CHAIN_ID, profileId: profile.id, disposable: true }),
       'profile'
     );
+    ctx.profileId = profile.id;
     check(safeStorage.isEncryptionAvailable(), 'profile');
     if (process.platform === 'linux')
       check(safeStorage.getSelectedStorageBackend() !== 'basic_text', 'profile');
@@ -2261,6 +2279,209 @@ async function preflightProbe(ctx) {
   report.result = report.preflight.passed === true ? 'preflight-passed' : 'preflight-refused';
   report.passed = true;
 }
+// ---------------------------------------------------------------------------
+// The recovered submission's one-use budget. Before any account, POI, nullifier
+// or EOA work the mode reserves its one attempt in a ledger whose place is fixed
+// by the profile and the held transfer alone: never by NEW_OUTPUT, the probe's
+// location or its digest. Creating the ledger exclusively (O_CREAT|O_EXCL) is the
+// lock, and it is never released: an existing ledger refuses every later attempt,
+// pending or finished, valid or damaged. An interrupted attempt stays pending and
+// consumes the budget until diagnosed; nothing here retries. The production
+// journal and hold checks stay the independent no-double-send boundary.
+// ---------------------------------------------------------------------------
+const RECOVERY_LEDGER = 'railgun-l-a-recovery-ledger';
+const RECOVERY_LEDGER_MAX_BYTES = 64 * 1024;
+const QUALIFIER = 'scripts/qualify-railgun-private-live.js';
+const HOLD_ID_DOMAIN = 'railgun-l-a-recovery-hold-id\n';
+// A sibling of the profile directory: fixed by the profile's canonical path and
+// the pinned held transfer, and outside the funded profile itself.
+function recoveryLedgerPath(profile) {
+  return path.join(
+    `${profile}.l-a-recovery-ledger`,
+    `recover-submit-${HELD_TRANSFER_REPORT_SHA256}.jsonl`
+  );
+}
+function recoveryLedgerHeader(ctx) {
+  return {
+    type: RECOVERY_LEDGER,
+    version: 1,
+    journey: JOURNEY,
+    chainId: CHAIN_ID,
+    mode: 'recover-submit',
+    budget: 1,
+    profile: ctx.args.profile,
+    profileId: ctx.profileId,
+    heldTransferReportSha256: HELD_TRANSFER_REPORT_SHA256,
+  };
+}
+// What the attempt is bound to, all known before any account work. The hold id
+// is read only inside the attempt, so its digest lands in the finished record.
+function recoveryAttemptBinding(ctx) {
+  const { args, chain, previous, scan, report } = ctx;
+  const sources = report?.sourceSha256;
+  check(typeof ctx.profileId === 'string' && ctx.profileId.length > 0, 'recovery-binding');
+  check(chain?.heldTransfer?.reportSha256 === HELD_TRANSFER_REPORT_SHA256, 'recovery-binding');
+  check(
+    SHA256.test(args.previousSha) && chain.heldTransfer.probeReportSha256 === args.previousSha,
+    'recovery-binding'
+  );
+  check(SHA256.test(args.scanSha) && previous?.scan?.sha256 === args.scanSha, 'recovery-binding');
+  check(
+    Number.isSafeInteger(scan?.anchor?.number) && HASH.test(scan.anchor.hash),
+    'recovery-binding'
+  );
+  check(typeof previous.observedAt === 'string', 'recovery-binding');
+  check(COMMIT.test(ctx.sourceCommit), 'recovery-binding');
+  check(plainObject(sources) && SHA256.test(sources[QUALIFIER]), 'recovery-binding');
+  return {
+    heldTransferReportSha256: HELD_TRANSFER_REPORT_SHA256,
+    probeReportSha256: args.previousSha,
+    probeObservedAt: previous.observedAt,
+    scanReportSha256: args.scanSha,
+    scanAnchor: { number: scan.anchor.number, hash: scan.anchor.hash },
+    sourceCommit: ctx.sourceCommit,
+    scriptSha256: sources[QUALIFIER],
+    sourcesSha256: sha(JSON.stringify(sources)),
+  };
+}
+// A file-system predicate that is false, never a throw, for an unusable path.
+function holds(read) {
+  try {
+    return read() === true;
+  } catch {
+    return false;
+  }
+}
+function syncDirectory(fsImpl, directory) {
+  const fd = fsImpl.openSync(directory, 'r');
+  try {
+    fsImpl.fsyncSync(fd);
+  } finally {
+    fsImpl.closeSync(fd);
+  }
+}
+// The whole ledger: its exact header, one attempt-pending and at most one
+// attempt-finished of that attempt. Anything else is damage. No read admits.
+function readRecoveryLedger(fsImpl, file, header) {
+  let records;
+  try {
+    // lstat: a symlinked ledger is damage, never followed.
+    const stat = fsImpl.lstatSync(file);
+    check(stat.isFile() && stat.size <= RECOVERY_LEDGER_MAX_BYTES, 'recovery-ledger');
+    const lines = fsImpl.readFileSync(file, 'utf8').split('\n');
+    // A last record without its newline is a torn write, and damage too.
+    check(lines.pop() === '', 'recovery-ledger');
+    records = lines.map((line) => JSON.parse(line));
+  } catch {
+    throw refusal('recovery-ledger');
+  }
+  const [first, pending, finished, ...rest] = records;
+  check(same(first, header), 'recovery-ledger');
+  check(
+    pending?.type === 'attempt-pending' &&
+      pending.attempt === 1 &&
+      same(pending.binding?.heldTransferReportSha256, header.heldTransferReportSha256),
+    'recovery-ledger'
+  );
+  check(
+    finished === undefined ||
+      (finished?.type === 'attempt-finished' && finished.attemptId === pending.attemptId),
+    'recovery-ledger'
+  );
+  check(rest.length === 0, 'recovery-ledger');
+  return { pending, finished: finished ?? null };
+}
+// Reserves the one attempt, or refuses before anything else of the mode runs.
+// Returns only after the pending record and its directory entry are synced.
+function reserveRecoveryAttempt(ctx) {
+  const fsImpl = ctx.fs,
+    profile = ctx.args?.profile;
+  // The profile main() opened: a real directory under its canonical path.
+  check(
+    holds(
+      () => fsImpl.lstatSync(profile).isDirectory() && fsImpl.realpathSync(profile) === profile
+    ),
+    'recovery-binding'
+  );
+  const binding = recoveryAttemptBinding(ctx);
+  const header = recoveryLedgerHeader(ctx);
+  const file = recoveryLedgerPath(profile);
+  const directory = path.dirname(file);
+  const created = holds(() => fsImpl.mkdirSync(directory, { mode: 0o700 }) === undefined);
+  // lstat: a symlinked ledger directory is refused, never followed.
+  check(
+    holds(() => fsImpl.lstatSync(directory).isDirectory()),
+    'recovery-ledger'
+  );
+  if (created) syncDirectory(fsImpl, path.dirname(directory));
+  const line = JSON.stringify({
+    type: 'attempt-pending',
+    attempt: 1,
+    attemptId: randomBytes(16).toString('hex'),
+    reservedAt: new Date().toISOString(),
+    pid: process.pid,
+    // Diagnostics only: neither path decides anything.
+    output: ctx.args.output,
+    probeReport: ctx.args.previousFile,
+    binding,
+  });
+  let fd;
+  try {
+    fd = fsImpl.openSync(file, 'wx', 0o600);
+  } catch {
+    // An attempt exists. Damage, or any other failed create, refuses as damage,
+    // so it is diagnosed and never read as a record.
+    readRecoveryLedger(fsImpl, file, header);
+    throw refusal('recovery-attempted');
+  }
+  try {
+    const bytes = Buffer.from(JSON.stringify(header) + '\n' + line + '\n');
+    check(fsImpl.writeSync(fd, bytes) === bytes.length, 'recovery-ledger');
+    fsImpl.fsyncSync(fd);
+  } finally {
+    fsImpl.closeSync(fd);
+  }
+  syncDirectory(fsImpl, directory);
+  return Object.freeze({ file, header, pending: JSON.parse(line) });
+}
+// Appends the attempt's outcome once. A ledger that is no longer exactly this
+// attempt's pending record stays as it is, keeps refusing, and fails the report.
+function finishRecoveryAttempt(ctx, reservation, failure) {
+  const { report } = ctx;
+  try {
+    const fsImpl = ctx.fs;
+    const current = readRecoveryLedger(fsImpl, reservation.file, reservation.header);
+    check(
+      same(current.pending, reservation.pending) && current.finished === null,
+      'recovery-ledger'
+    );
+    const finished = {
+      type: 'attempt-finished',
+      attempt: 1,
+      attemptId: reservation.pending.attemptId,
+      finishedAt: new Date().toISOString(),
+      holdIdSha256: ctx.holdIdSha256 ?? null,
+      outcome: {
+        stage: ctx.stage,
+        failure: failure ? sanitizeFailure(ctx.stage, failure.error) : null,
+        submission: report.submission?.status ?? null,
+        spend: JSON.parse(JSON.stringify(report.spend)),
+        passed: report.passed === true,
+      },
+    };
+    const bytes = Buffer.from(JSON.stringify(finished) + '\n');
+    const fd = fsImpl.openSync(reservation.file, 'a');
+    try {
+      check(fsImpl.writeSync(fd, bytes) === bytes.length, 'recovery-ledger');
+      fsImpl.fsyncSync(fd);
+    } finally {
+      fsImpl.closeSync(fd);
+    }
+    report.reservation.finished = true;
+  } catch {
+    report.passed = false;
+  }
+}
 // Experiment 2: production recovered submission of the held proved input. The
 // original spending signature and proof are reused: no proving, no spending-key
 // use, no hold release or discard, and at most one journaled send.
@@ -2277,6 +2498,8 @@ async function recoverSubmit(ctx) {
     readHeld(ctx, stores, records, context)
   );
   assertHeldUnjournaled(before, held);
+  // Only a digest of the hold id leaves recovery, into the local ledger.
+  ctx.holdIdSha256 = sha(HOLD_ID_DOMAIN + held.entry.id);
   report.hold = { ...HELD_SUMMARY };
   ctx.stage = 'submitter';
   report.submitter = await submitterChecks(ctx);
@@ -2698,11 +2921,26 @@ const RUNNERS = {
       submissionStatus: 'not-sent',
       resendAllowed: false,
     };
+    let reservation = null,
+      failure = null;
     try {
+      // Nothing of the attempt runs before its durable one-use reservation.
+      ctx.stage = 'reservation';
+      reservation = reserveRecoveryAttempt(ctx);
+      report.reservation = {
+        ledger: 'profile-sibling',
+        budget: 1,
+        reservedBeforeAccountWork: true,
+        finished: false,
+      };
       await recoverSubmit(ctx);
+    } catch (error) {
+      failure = { error };
+      throw error;
     } finally {
       // The input was already held when this mode started.
       report.liveness = describeLiveness({ holdCreated: true, spend: report.spend });
+      if (reservation) finishRecoveryAttempt(ctx, reservation, failure);
     }
   },
 };
@@ -2754,6 +2992,9 @@ module.exports = {
   PROBE_SCOPE,
   PROBE_DISCLOSURE_ORDER,
   parseArguments,
+  recoveryLedgerPath,
+  readRecoveryLedger,
+  reserveRecoveryAttempt,
   feeExposure,
   assertFeeWithinCap,
   gasLimitFromEstimate,
