@@ -264,6 +264,7 @@ const { railgunTransactJournalIntent } = require('./railgun-transact-intent');
 const {
   submitRailgunRecoveredPrivateTransaction: submit,
   assertRailgunPrivateSubmission: authorize,
+  getRailgunPrivateSubmissionDiagnostic: diagnosticOf,
 } = require('./railgun-private-submission');
 const copy = (v) => JSON.parse(JSON.stringify(v));
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
@@ -973,7 +974,31 @@ test('forged source error does not become authenticated outcome', async () => {
   mock.hooks.source = () => {
     throw Object.assign(Error('private source'), { fatal: true, reason: 'rpc' });
   };
-  expect(await submit(options)).toEqual({ status: 'recovery-required', stage: 'source' });
+  const result = await submit(options);
+  expect(result).toEqual({ status: 'recovery-required', stage: 'source' });
+  // Only the bounded stage and code, never the forged reason or message.
+  expect(diagnosticOf(result)).toEqual({ stage: 'source', code: 'UNCLASSIFIED' });
+});
+test('cold preflight refusal keeps its bounded diagnostic outside the result shape', async () => {
+  mock.preflight.acquire = async () => {
+    throw Object.assign(Error('secret ' + hex(10) + ' /Users/someone'), {
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'mismatch',
+      step: 'nullifiers',
+      causeCode: 'NOT_FOR_MISMATCH',
+      payload: hex(11),
+    });
+  };
+  const result = await submit(options);
+  expect(result).toEqual({ status: 'recovery-required', stage: 'preflight' });
+  expect(diagnosticOf(result)).toEqual({
+    stage: 'preflight',
+    substage: 'acquire',
+    code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+    reason: 'mismatch',
+    step: 'nullifiers',
+  });
+  expect(mock.events).not.toContain('network');
 });
 test.each(['transactionIndex', 'blockNumber', 'transactionHash'])(
   'Transact creator %s mismatch refuses before C/list/root',

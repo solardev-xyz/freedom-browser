@@ -23,6 +23,22 @@ const abi = new Interface([
 // Matched by the October 3 Sepolia deployment qualification. A changed fee
 // requires a reviewed policy change, never silent acceptance during signing.
 const UNSHIELD_FEE_BPS = 25;
+// Closed deployment sub-steps of railgun-shield-preflight.js, forwarded as a
+// refusal diagnostic only. Anything else is dropped, never echoed.
+const DEPLOYMENT_STEPS = Object.freeze([
+  'anchor',
+  'code-proxy',
+  'code-relayAdapt',
+  'code-wrappedNative',
+  'code-implementation',
+  'slot-implementation',
+  'slot-paused',
+  'getter-railgun',
+  'getter-wBase',
+  'getter-shieldFee',
+  'getter-tokenBlocklist',
+  'anchor-recheck',
+]);
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const sources = new WeakMap();
 const fail = (reason = 'refused') =>
@@ -260,6 +276,11 @@ function createPreflight(options, relay = false) {
         : 'refused';
       throw Object.assign(fail(reason), {
         step,
+        ...(step === 'deployment' &&
+        error?.code === 'RAILGUN_SHIELD_DEPLOYMENT_REFUSED' &&
+        DEPLOYMENT_STEPS.includes(error.step)
+          ? { deploymentStep: error.step }
+          : {}),
         ...(reason === 'rpc'
           ? {
               causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.causeCode ?? '')

@@ -16,6 +16,104 @@ const fail = () =>
   Object.assign(new Error('Railgun private submission unavailable'), {
     code: 'RAILGUN_PRIVATE_SUBMISSION_REFUSED',
   });
+// Refusal diagnostics, keyed by the frozen returned value so every caller's
+// closed result shape is unchanged. Closed enumerations and identifier codes
+// only: never messages, stacks, RPC payloads, nullifiers, calldata or paths.
+const diagnostics = new WeakMap();
+const DIAGNOSTIC = Object.freeze({
+  stage: Object.freeze([
+    'completion',
+    'recovery',
+    'proof',
+    'preflight',
+    'eoa',
+    'submission',
+    'admission',
+    'history',
+    'prior-attempt',
+    'disclosure-review',
+    'wallet',
+    'txid',
+    'source',
+    'creator',
+    'membership',
+    'root',
+  ]),
+  // open: construction; acquire: the anchored reads; admission: the checks
+  // between the acquired observation and EOA work.
+  substage: Object.freeze(['open', 'acquire', 'admission']),
+  reason: Object.freeze(['rpc', 'stale', 'inactive', 'mismatch', 'refused']),
+  step: Object.freeze([
+    'deployment',
+    'artifacts',
+    'rootHistory',
+    'unshieldFee',
+    'verifier',
+    'nullifiers',
+    'anchor-recheck',
+  ]),
+  deploymentStep: Object.freeze([
+    'anchor',
+    'code-proxy',
+    'code-relayAdapt',
+    'code-wrappedNative',
+    'code-implementation',
+    'slot-implementation',
+    'slot-paused',
+    'getter-railgun',
+    'getter-wBase',
+    'getter-shieldFee',
+    'getter-tokenBlocklist',
+    'anchor-recheck',
+  ]),
+});
+// The preflight's code shape, refusing long hex runs that could carry data.
+const diagnosticCode = (value) =>
+  typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(value) && !/[0-9A-F]{16}/.test(value)
+    ? value
+    : 'UNCLASSIFIED';
+function diagnose(stage, substage, error) {
+  const stageValue = DIAGNOSTIC.stage.includes(stage) ? stage : 'unknown';
+  try {
+    // Own data properties only: no getter or proxy trap runs here.
+    const own = (key) => {
+      if (!error || typeof error !== 'object' || require('util').types.isProxy(error)) return;
+      const descriptor = Object.getOwnPropertyDescriptor(error, key);
+      return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+    };
+    const code = diagnosticCode(own('code'));
+    const preflight = code === 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED';
+    const pick = (key) => {
+      const value = preflight ? own(key) : undefined;
+      return DIAGNOSTIC[key].includes(value) ? { [key]: value } : {};
+    };
+    const reason = pick('reason'),
+      step = pick('step');
+    return Object.freeze({
+      stage: stageValue,
+      ...(stage === 'preflight' && DIAGNOSTIC.substage.includes(substage) ? { substage } : {}),
+      code,
+      ...reason,
+      ...step,
+      ...(step.step === 'deployment' ? pick('deploymentStep') : {}),
+      ...(reason.reason === 'rpc' ? { causeCode: diagnosticCode(own('causeCode')) } : {}),
+    });
+  } catch {
+    return Object.freeze({ stage: stageValue, code: 'UNCLASSIFIED' });
+  }
+}
+// The first refusal is the specific one; later cleanup failures never replace it.
+const noteRefusal = (state, error, substage) => {
+  state.diagnostic ??= diagnose(state.stage, substage, error);
+};
+function refusalResult(state, extra = {}) {
+  const result = Object.freeze({ status: 'recovery-required', stage: state.stage, ...extra });
+  if (state.diagnostic) diagnostics.set(result, state.diagnostic);
+  return result;
+}
+function getRailgunPrivateSubmissionDiagnostic(result) {
+  return (result && typeof result === 'object' && diagnostics.get(result)) || null;
+}
 // Both callers are fixed entry points below. This core is not exported and
 // accepts no renderer/caller-selected admission callback or completion object.
 async function submitFinal({
@@ -39,7 +137,7 @@ async function submitFinal({
 }) {
   const kind = snapshot.stored.capsule.selection.kind;
   const partial = kind === 'railgun-partial-unshield';
-  let proof, preflight, scope;
+  let proof, preflight, scope, substage;
   let handle, network, intent;
   const callbacks = new Set();
   const track =
@@ -99,6 +197,7 @@ async function submitFinal({
       checkpointHash: currentCheckpointHash ?? snapshot.entry.facts.checkpointHash,
       minimumBlock: snapshot.minimumBlock,
     };
+    substage = 'open';
     preflight = createRailgunPrivatePreflight({
       enrollment,
       artifactDirectory,
@@ -116,11 +215,13 @@ async function submitFinal({
     timer.unref?.();
     try {
       assert.ok(!signal.aborted);
+      substage = 'acquire';
       acquired = await preflight.acquire();
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', stop);
     }
+    substage = 'admission';
     const observed = assertRailgunPrivatePreflight(preflight, acquired.receipt, enrollment, 10000);
     assert.deepEqual(observed.input, input);
     assert.equal(Object.hasOwn(observed, 'intentKind'), partial);
@@ -294,6 +395,7 @@ async function submitFinal({
       }
     }
     // Expected refusal is a value, so it does not close authenticated stores.
+    noteRefusal(state, error, substage);
   } finally {
     if (handle) submissions.delete(handle);
     // Revoke all admissions before draining borrowed signer/review work;
@@ -358,12 +460,13 @@ async function submitRailgunPrivateTransaction({
       },
       { timeoutMs: 120000 }
     );
-  } catch {
+  } catch (error) {
     // A phase expiry after journaling must not hide its acknowledged/uncertain hash.
+    noteRefusal(state, error);
   } finally {
     claim?.close();
   }
-  return Object.freeze(state.outcome || { status: 'recovery-required', stage: state.stage });
+  return state.outcome ? Object.freeze(state.outcome) : refusalResult(state);
 }
 function assertRailgunPrivateSubmission(handle, intent) {
   try {
@@ -1097,6 +1200,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             extraCurrent: live,
           });
         } catch (error) {
+          noteRefusal(state, error);
           if (error?.code === 'RAILGUN_NOTE_PROVENANCE_EXIT_UNOBSERVED') {
             provenanceExitUnknown = true;
             try {
@@ -1131,8 +1235,10 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
       },
       { timeoutMs: remaining(175000) }
     );
-  } catch {
-    // Never promote thrown transaction hashes or recovery diagnostics.
+  } catch (error) {
+    // Never promote thrown transaction hashes or recovery diagnostics; only
+    // the bounded refusal diagnostic is kept, outside the result shape.
+    noteRefusal(state, error);
   } finally {
     clearTimeout(timer);
     stop();
@@ -1152,17 +1258,14 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
     }
     if (claimed && !provenanceExitUnknown) recoveredBusy.delete(enrollment);
   }
-  return Object.freeze(
-    state.outcome || {
-      status: 'recovery-required',
-      stage: state.stage,
-      ...(sourceOutcome ? { sourceOutcome } : {}),
-    }
-  );
+  return state.outcome
+    ? Object.freeze(state.outcome)
+    : refusalResult(state, sourceOutcome ? { sourceOutcome } : {});
 }
 
 module.exports = {
   submitRailgunPrivateTransaction,
   submitRailgunRecoveredPrivateTransaction,
   assertRailgunPrivateSubmission,
+  getRailgunPrivateSubmissionDiagnostic,
 };

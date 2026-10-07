@@ -520,6 +520,26 @@ test('untrusted RPC error codes are redacted', async () => {
     causeCode: 'UNCLASSIFIED',
   });
 });
+test.each([
+  ['a listed shield sub-step', 'RAILGUN_SHIELD_DEPLOYMENT_REFUSED', 'anchor-recheck', true],
+  [
+    'an unlisted shield sub-step',
+    'RAILGUN_SHIELD_DEPLOYMENT_REFUSED',
+    'https://secret.example',
+    false,
+  ],
+  ['a sub-step on another error', 'PRIVATE_RPC_INVALID', 'anchor', false],
+])('deployment refusal forwards %s only when closed', async (_name, code, step, forwarded) => {
+  mockDeployment.acquire.mockRejectedValueOnce(
+    Object.assign(Error('secret deployment detail'), { code, reason: 'stale', step })
+  );
+  const error = await source.acquire().catch((value) => value);
+  expect(error).toMatchObject({ reason: 'stale', step: 'deployment' });
+  if (forwarded) expect(error.deploymentStep).toBe(step);
+  else expect(error).not.toHaveProperty('deploymentStep');
+  expect(require('util').inspect(error)).not.toContain('secret');
+  expect(mockRequest).not.toHaveBeenCalled();
+});
 test('deployment mismatch never queries the private input', async () => {
   mockDeployment.acquire.mockRejectedValueOnce(
     Object.assign(Error('deployment mismatch'), { reason: 'mismatch' })
