@@ -27,12 +27,15 @@ function routes(req, res) {
   }
   res.end('ok');
 }
-async function open(handler = routes, secure = false) {
+// secure: a loopback TLS server for rpc.example.test; trusted: the transport
+// is given its test CA, so the handshake succeeds and HTTP bytes follow.
+async function open(handler = routes, secure = false, trusted = false) {
   server = secure ? https.createServer(certificate, handler) : http.createServer(handler);
   socks = await proxy(await listen(server));
   transport = createWalletTorTransport({
     getEndpoint: () => socks.endpoint,
     allowHttp: !secure,
+    ...(trusted ? { ca: certificate.cert } : {}),
   });
 }
 const send = (route, origin = 'http://stage.example.test') =>
@@ -208,4 +211,48 @@ test('cancellation and deadlines keep their own codes without a stage', async ()
     .catch((value) => value);
   expect(timedOut.code).toBe('TOR_REQUEST_TIMEOUT');
   expect(Object.hasOwn(timedOut, 'stage')).toBe(false);
+});
+
+// The same stages over real loopback TLS through the SOCKS fixture, with the
+// transport trusting the test CA. The byte counter is the TLS socket's,
+// sampled once the handshake (and anything the server sent with it) is done.
+const runtime = process.versions.electron
+  ? `Electron ${process.versions.electron}, Node ${process.versions.node}`
+  : `Node ${process.versions.node}`;
+describe(`over HTTPS (${runtime})`, () => {
+  const secure = (route) => send(route, 'https://rpc.example.test');
+  test('a server drop on a fresh connection is socket-new and on a kept-alive one socket-reused', async () => {
+    await open(routes, true, true);
+    await expect(secure('/drop')).rejects.toMatchObject({
+      code: 'TOR_REQUEST_FAILED',
+      stage: 'socket-new',
+    });
+    expect((await secure('/ok')).body.toString()).toBe('ok');
+    const connections = socks.records.length;
+    const error = await secure('/drop').catch((value) => value);
+    expect(error).toMatchObject({ code: 'TOR_REQUEST_FAILED', stage: 'socket-reused' });
+    expect(socks.records).toHaveLength(connections);
+    expect(Object.keys(error).sort()).toEqual(['code', 'stage']);
+    expect(requests).toEqual(['/drop', '/ok', '/drop']);
+  });
+  test('any response byte before headers completes is a response stage', async () => {
+    await open(routes, true, true);
+    await expect(secure('/partial-status')).rejects.toMatchObject({
+      code: 'TOR_REQUEST_FAILED',
+      stage: 'response',
+    });
+    const error = await secure('/headers-then-drop').catch((value) => value);
+    if (error.code === 'TOR_REQUEST_FAILED') expect(error.stage).toBe('response');
+    else expect(error.code).toBe('TOR_RESPONSE_FAILED');
+  });
+  test('a SOCKS reply failure before the handshake is a connect stage', async () => {
+    await open(routes, true, true);
+    await socks.close();
+    socks = await proxy(server.address().port, 'bad-reply');
+    await expect(secure('/ok')).rejects.toMatchObject({
+      code: 'TOR_REQUEST_FAILED',
+      stage: 'connect',
+    });
+    expect(requests).toEqual([]);
+  });
 });
