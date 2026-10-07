@@ -403,13 +403,43 @@ const MATRIX = [
     false,
   ],
   [
+    'root read Tor stream dropped on a kept-alive connection',
+    at(privateCall('rootHistory'), () => {
+      throw Object.assign(hostile('TOR_REQUEST_FAILED'), { stage: 'socket-reused' });
+    }),
+    {
+      reason: 'rpc',
+      step: 'rootHistory',
+      causeCode: 'TOR_REQUEST_FAILED',
+      causeStage: 'socket-reused',
+    },
+    false,
+  ],
+  [
+    'root read Tor failure with an unlisted stage',
+    at(privateCall('rootHistory'), () => {
+      throw Object.assign(hostile('TOR_REQUEST_FAILED'), { stage: 'socket-maybe' });
+    }),
+    { reason: 'rpc', step: 'rootHistory', causeCode: 'TOR_REQUEST_FAILED' },
+    false,
+  ],
+  [
     'hex-shaped cause code',
     at(privateCall('rootHistory'), fail('E' + 'ABCDEF0123456789'.repeat(2))),
     { reason: 'rpc', step: 'rootHistory', causeCode: 'UNCLASSIFIED' },
     false,
   ],
 ];
-const ALLOWED = ['stage', 'substage', 'code', 'reason', 'step', 'deploymentStep', 'causeCode'];
+const ALLOWED = [
+  'stage',
+  'substage',
+  'code',
+  'reason',
+  'step',
+  'deploymentStep',
+  'causeCode',
+  'causeStage',
+];
 function assertBounded(result, diagnostic) {
   // The returned value keeps its closed shape for every existing caller.
   expect(Reflect.ownKeys(result)).toEqual(['status', 'stage']);

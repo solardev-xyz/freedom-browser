@@ -2499,6 +2499,8 @@ const PROBES = {
       step: 'deployment',
       deploymentStep: 'code-proxy',
       causeCode: 'PRIVATE_RPC_INVALID',
+      // Identifier-shaped but outside the closed transport stages: dropped.
+      causeStage: 'socket-maybe',
       message: 'secret /Users/someone/identity-data',
       stack: 'Error: secret\n    at /Users/someone/x.js:1:1',
       nullifier: hash('01'),
@@ -2559,6 +2561,33 @@ const PROBES = {
     await m.spend(sent.ctx, 'transfer');
     expect(sent.calls.diagnosticReads).toHaveLength(0);
     expect(sent.ctx.report.submission).not.toHaveProperty('diagnostic');
+  },
+  // The report allowlist admits exactly the six transport stages, nothing
+  // merely shaped like one, and only as the production transport names them.
+  'diagnostic-cause-stages': async (m) => {
+    const { REQUEST_FAILURE_STAGES } = require('../src/main/networks/wallet-tor-transport');
+    expect(m.DIAGNOSTIC_CAUSE_STAGES).toEqual([
+      'connect',
+      'tls',
+      'socket-new',
+      'socket-reused',
+      'response',
+      'unclassified',
+    ]);
+    expect(m.DIAGNOSTIC_CAUSE_STAGES).toEqual(REQUEST_FAILURE_STAGES);
+    for (const causeStage of REQUEST_FAILURE_STAGES)
+      expect(m.summarizeSubmissionDiagnostic({ causeStage })).toEqual({ causeStage });
+    for (const causeStage of [
+      'socket',
+      'socket-maybe',
+      'tor-circuit',
+      'xconnect',
+      'connectx',
+      'tls|response',
+      'Connect',
+      '',
+    ])
+      expect(m.summarizeSubmissionDiagnostic({ causeStage })).toEqual({});
   },
   'poi-admission': async (m) => {
     const { ctx, calls } = world({ step: 'poi', records: [settledTransfer(null)] });
@@ -2990,6 +3019,15 @@ const PROBES = {
       [{ reason: 'mismatch', step: 'deployment', deploymentStep: 'slot-paused' }, 'not-queried'],
       [{ reason: 'refused', step: 'artifacts' }, 'not-queried'],
       [{ reason: 'rpc', step: 'rootHistory', causeCode: 'TOR_REQUEST_FAILED' }, 'not-queried'],
+      [
+        {
+          reason: 'rpc',
+          step: 'rootHistory',
+          causeCode: 'TOR_REQUEST_FAILED',
+          causeStage: 'socket-new',
+        },
+        'not-queried',
+      ],
       [{ reason: 'mismatch', step: 'unshieldFee' }, 'not-queried'],
       [{ reason: 'mismatch', step: 'verifier' }, 'not-queried'],
       [{ reason: 'inactive', step: 'nullifiers' }, 'possibly-queried'],
@@ -4465,6 +4503,24 @@ const MUTATIONS = [
     'for (const [key, pattern] of Object.entries(DIAGNOSTIC_KEYS)) {',
     'for (const [key, pattern] of Object.keys(value).map((name) => [name, /[^]*/])) {',
     'spend-preflight-diagnostic',
+  ],
+  [
+    'cause stage reopened to a pattern',
+    "causeStage: new RegExp(`^(?:${DIAGNOSTIC_CAUSE_STAGES.join('|')})$`),",
+    'causeStage: /^[a-z][a-z-]{0,31}$/,',
+    'diagnostic-cause-stages',
+  ],
+  [
+    'cause stage match unanchored',
+    "causeStage: new RegExp(`^(?:${DIAGNOSTIC_CAUSE_STAGES.join('|')})$`),",
+    "causeStage: new RegExp(DIAGNOSTIC_CAUSE_STAGES.join('|')),",
+    'diagnostic-cause-stages',
+  ],
+  [
+    'cause stage list widened',
+    "  'unclassified',\n]);\n// The production refusal diagnostic",
+    "  'unclassified',\n  'tor-circuit',\n]);\n// The production refusal diagnostic",
+    'diagnostic-cause-stages',
   ],
   [
     'diagnostic read failure blocks readback',

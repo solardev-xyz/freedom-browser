@@ -130,6 +130,8 @@ const DIAGNOSTIC = Object.freeze({
     'anchor-recheck',
   ]),
   // Closed TOR_REQUEST_FAILED stages (wallet-tor-transport.js), on rpc refusals.
+  // Diagnostic only: socket-new and socket-reused never prove the request was
+  // not delivered, and no stage authorizes a retry or anything else.
   causeStage: Object.freeze([
     'connect',
     'tls',

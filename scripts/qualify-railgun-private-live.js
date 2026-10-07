@@ -941,6 +941,17 @@ function sanitizeFailure(stage, error) {
   };
 }
 
+// The closed TOR_REQUEST_FAILED stages (wallet-tor-transport.js), matched
+// exactly: a diagnostic only, which never proves non-delivery and never
+// authorizes a retry or anything else.
+const DIAGNOSTIC_CAUSE_STAGES = Object.freeze([
+  'connect',
+  'tls',
+  'socket-new',
+  'socket-reused',
+  'response',
+  'unclassified',
+]);
 // The production refusal diagnostic, checked again here: allow-listed keys with
 // identifier-shaped values only, never messages, payloads, paths or long hex.
 // An unavailable diagnostic is null and never blocks the journal readback.
@@ -952,7 +963,7 @@ const DIAGNOSTIC_KEYS = Object.freeze({
   step: /^[a-z][a-zA-Z-]{0,31}$/,
   deploymentStep: /^[a-z][a-zA-Z-]{0,31}$/,
   causeCode: /^[A-Z][A-Z0-9_]{0,79}$/,
-  causeStage: /^[a-z][a-z-]{0,31}$/,
+  causeStage: new RegExp(`^(?:${DIAGNOSTIC_CAUSE_STAGES.join('|')})$`),
 });
 function summarizeSubmissionDiagnostic(value) {
   if (!plainObject(value)) return null;
@@ -3093,6 +3104,7 @@ module.exports = {
   summarizeOwnedPoi,
   summarizePoiResponse,
   sanitizeFailure,
+  DIAGNOSTIC_CAUSE_STAGES,
   summarizeSubmissionDiagnostic,
   nullifierQuery,
   summarizePreflightObservation,
