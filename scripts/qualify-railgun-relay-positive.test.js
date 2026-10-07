@@ -68,7 +68,7 @@ test('Electron entry fallback activates only its exact filename', async () => {
     if (name === 'original-fs')
       return {
         realpathSync: (p) => p,
-        lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false }),
+        lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false, nlink: 1 }),
         readFileSync: () => isolated,
       };
     if (name === 'electron') return { app };
@@ -144,6 +144,7 @@ test.each(['physical', 'shared-package', 'shadow-entry', 'symlink-source', 'real
             lstatSync: () => ({
               isFile: () => true,
               isSymbolicLink: () => kind === 'symlink-source',
+              nlink: 1,
             }),
             readFileSync: read,
           }
@@ -173,3 +174,46 @@ test.each(['physical', 'shared-package', 'shadow-entry', 'symlink-source', 'real
     }
   }
 );
+
+// This exercises real inode/link metadata without touching an installed package.
+// The files are disposable public fixture bytes retained in the system temp tree.
+test('a real hardlink to transformed fixture bytes is refused before reading the source', () => {
+  const directory = fs.realpathSync(
+    fs.mkdtempSync(path.join(require('os').tmpdir(), 'railgun-poi-hardlink-'))
+  );
+  const packageRoot = path.join(directory, 'node_modules/@freedom/railgun-kohaku-adapter');
+  const sourceFile = path.join(packageRoot, 'src/data/railgun-poi-records.js');
+  fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+  fs.writeFileSync(sourceFile, api.deriveIsolatedPoiSource(original), { flag: 'wx' });
+  const read = jest.fn((filename) => fs.readFileSync(filename));
+  const req = (name) =>
+    name === 'fs'
+      ? {
+          realpathSync: fs.realpathSync,
+          lstatSync: fs.lstatSync,
+          readFileSync: read,
+        }
+      : require(name);
+  req.resolve = () => path.join(packageRoot, 'host-poi.cjs');
+  req.main = {};
+  const module = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(__filename.replace('.test.js', '.js'), 'utf8'), {
+    require: req,
+    module,
+    __dirname: path.join(directory, 'scripts'),
+    __filename: path.join(directory, 'scripts/qualify-railgun-relay-positive.js'),
+    Buffer,
+    process: { versions: {}, argv: [], env: {} },
+    console,
+  });
+  expect(() => module.exports.assertIsolation()).not.toThrow();
+  const alias = path.join(directory, 'shared-records.js');
+  fs.linkSync(sourceFile, alias);
+  const current = fs.lstatSync(sourceFile),
+    linked = fs.lstatSync(alias);
+  expect([current.dev, current.ino, current.nlink]).toEqual([linked.dev, linked.ino, 2]);
+  expect(fs.realpathSync(sourceFile)).toBe(sourceFile);
+  read.mockClear();
+  expect(() => module.exports.assertIsolation()).toThrow();
+  expect(read).not.toHaveBeenCalled();
+});

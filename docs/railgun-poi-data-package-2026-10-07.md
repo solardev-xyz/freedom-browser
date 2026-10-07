@@ -40,8 +40,29 @@ source tree, bind the original tar/source/npm inputs, replace only the reviewed
 `REQUIRED_LIST` literal in that copy's `src/data/railgun-poi-records.js`, and pin
 both original and transformed package inventories. Every main/job import must
 resolve that same copy. The qualifier refuses a shared/symlinked package root,
-a shadow entry, or an unchanged authentic list. Other installed dependencies,
+a shadow entry, a transformed source with an unknown or non-single link count,
+or an unchanged authentic list. Other installed dependencies,
 engine/prover archives and artifacts remain separately pinned inputs. No shared
 installation may be patched. Previous external launchers and native archives
 remain historical evidence for their original bytes, not authorization to run
 this adoption with their old copy rules.
+
+The builder must copy every package file to a fresh regular file and require
+`nlink === 1` across the copied package tree. Do not use `cp -al`,
+`rsync --link-dest`, or a hardlinked package store. Filesystem clones are suitable
+only when they have distinct inodes and a single link. Transform by writing a new
+temporary file with exclusive creation and atomically renaming it over the
+copy's target; never write in place. On a filesystem that provides reliable
+device/inode identities, compare the copied target's `(dev, ino)` pair with the
+authenticated original target and refuse equality. Capture the original identity
+before copying and recheck it afterward. A builder that cannot establish this
+identity separation must refuse qualification rather than assume isolation.
+
+After the build, rehash the original package inventory and require exact equality
+with its pre-build inventory; the original records file must still hash to
+`ORIGINAL_SHA`. Recheck the single-link property and original inventory after
+execution too. The qualifier's zero-argument `assertIsolation()` knows only its
+isolated checkout, not an authenticated original checkout path or inode. Its
+single-link check cannot prove that an original was never modified earlier;
+original/copy identity and original-byte preservation are therefore mandatory
+builder checks, not claims made by this local guard.

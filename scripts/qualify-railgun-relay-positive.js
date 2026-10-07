@@ -33,6 +33,8 @@ function assertIsolation() {
   assert.equal(fs.realpathSync(filename), filename);
   const stat = fs.lstatSync(filename);
   assert.ok(stat.isFile() && !stat.isSymbolicLink());
+  // Canonical paths alone do not distinguish an isolated copy from a hardlink.
+  assert.equal(stat.nlink, 1);
   assert.equal(sha(fs.readFileSync(filename)), ISOLATED_SHA);
   return { originalPoiSourceSha256: ORIGINAL_SHA, isolatedPoiSourceSha256: ISOLATED_SHA };
 }
