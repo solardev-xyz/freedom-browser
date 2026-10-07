@@ -1526,13 +1526,16 @@ test.each([false, true])(
 );
 
 // Review finding B under the review budget, for the held L-A transfer (a Shield
-// input). Authorities keep their own unrenewed ages: the proof 60 s after its
-// verifier exits, the POI (and, for Transact, root) receipt 60 s from its
-// acquisition start, the preflight 60 s from its acquisition start. The budget
-// offers a review of at most 30 s and at least 15 s that ends 10 s before the
-// first authority would, refusing before the nullifier query (35 s left) and
-// before any EOA request (20 s of review left) when that is out of reach.
-// Each read is one sequential Tor request.
+// input): budget arithmetic only. This suite mocks the transaction service and
+// network, so it pins where each budget boundary refuses and how long a review
+// is offered, but nothing after approval. Signing, history reconciliation,
+// journal begin and the raw send run against the production service, network
+// and journal in railgun-private-submission-boundaries.test.js; the nullifier
+// boundary inside the preflight in railgun-private-preflight.test.js.
+// Authorities keep their own unrenewed ages: the proof 60 s after its verifier
+// exits, the POI (and, for Transact, root) receipt 60 s from its acquisition
+// start, the preflight 60 s from its acquisition start. Each read is one
+// sequential Tor request.
 const TOR_READS = Object.freeze({
   preflight: 19, // 2 lazy chain-id checks, 12 deployment and 5 private reads
   eth_getCode: 2, // the transaction RPC's lazy chain-id check, then the EOA code
@@ -1541,12 +1544,12 @@ const TOR_READS = Object.freeze({
   eth_getTransactionCount: 1, // twice, in review setup
   eth_getBalance: 1,
 });
-// Transaction service before its review: lease eth_getCode, eth_gasPrice, nonce.
-const SERVICE_READS = 3;
+// Transaction service before its review, for a privacy context: eth_gasPrice
+// and the pending nonce (its submission lease reads nothing for this path).
+const SERVICE_READS = 2;
 // d1b/report.json: one POI acquisition plus membership over this transport.
 const D1B_POI_MS = 18587;
-const SEND_RESERVE_MS = 10000;
-function torTimeline({ type = 'Shield', read, poiMs = D1B_POI_MS, rootMs = 0, sendMs = 0 }) {
+function torTimeline({ type = 'Shield', read, poiMs = D1B_POI_MS, rootMs = 0 }) {
   mock.scope.close();
   setup('railgun-private-transfer', type);
   let wallStep = 0;
@@ -1569,50 +1572,49 @@ function torTimeline({ type = 'Shield', read, poiMs = D1B_POI_MS, rootMs = 0, se
   options.reviewTransaction = async (request) => {
     mock.events.push('transaction-review');
     seen.window = request.expiresAt - Date.now();
-    // The person approves at the last millisecond the review allows; a wall
-    // clock stepped back by stepWallBack hides that from Date.now() alone.
-    advance(seen.window - 1 + seen.stepWallBack);
-    wallStep -= seen.stepWallBack;
+    if (seen.stepWallBack) {
+      // The last millisecond before H, hidden from Date.now() by a wall clock
+      // stepped back: only the monotonic end can refuse it.
+      advance(seen.window - 1 + seen.stepWallBack);
+      wallStep -= seen.stepWallBack;
+    } else advance(3000);
     return true;
-  };
-  mock.hooks.broadcast = () => {
-    // Journal begin and the raw send, entirely after the review's end.
-    advance(sendMs);
-    authorize(
-      mock.networkHandle,
-      railgunTransactJournalIntent({ ...mock.stored.provedTransaction, from: mock.owner })
-    );
   };
   return seen;
 }
 const SENT = { transactionHash: hex(17), submissionStatus: 'acknowledged' };
-describe('recovered submission over Tor under the review budget', () => {
+describe('recovered review budget arithmetic over Tor (mocked service)', () => {
   // [ms per read, review offered]: d1b's 18,587 ms POI phase, then 19 preflight,
-  // 4 EOA, 3 service and 3 review-setup reads: the review is 31,412 - 29 x read ms.
+  // 4 EOA, 2 service and 3 review-setup reads: the review is 31,412 - 28 x read ms.
   test.each([
-    [150, 27062],
-    [300, 22712],
-    [500, 16912],
-  ])(
-    'the measured POI phase and %s ms reads reach a %s ms review; approval at its end still sends',
-    async (read, window) => {
-      const seen = torTimeline({ read, sendMs: SEND_RESERVE_MS - 2 });
-      const result = await submit(options);
-      expect(result).toEqual(SENT);
-      expect(diagnosticOf(result)).toBeNull();
-      expect(seen.window).toBe(window);
-      expect(seen.window).toBeGreaterThanOrEqual(15000);
-      expect(mock.events.filter((v) => v === 'sign')).toHaveLength(1);
-      expect(Math.max(...mock.proofMargins)).toBeLessThanOrEqual(40000);
-    }
-  );
+    [150, 27212],
+    [300, 23012],
+    [500, 17412],
+  ])('the measured POI phase and %s ms reads offer a %s ms review', async (read, window) => {
+    const seen = torTimeline({ read });
+    const result = await submit(options);
+    expect(result).toEqual(SENT);
+    expect(diagnosticOf(result)).toBeNull();
+    expect(seen.window).toBe(window);
+    expect(seen.window).toBeGreaterThanOrEqual(15000);
+    expect(Math.max(...mock.proofMargins)).toBeLessThanOrEqual(40000);
+  });
+  test('the preflight receives the nullifier disclosure deadline from the same estimate', async () => {
+    torTimeline({ read: 150 });
+    const verifierStart = mock.clock;
+    expect(await submit(options)).toEqual(SENT);
+    // The conservative estimate starts at C's verifier start (here also its
+    // exit); the deadline leaves the floor, the send reserve, the EOA
+    // allowance and the nullifier tail: 60 - (15 + 10 + 5 + 2) = 28 s.
+    expect(mock.preflightOptions.disclosureDeadline).toBe(verifierStart + 28000);
+  });
   test('a received-Transact input pays its root reads inside the same budget', async () => {
     const seen = torTimeline({ type: 'Transact', read: 150, rootMs: 3000 });
     expect(await submit(options)).toEqual(SENT);
     expect(seen.window).toBeGreaterThanOrEqual(15000);
     expect(mock.events).toContain('root');
   });
-  test('a POI phase that leaves under 35 s refuses at membership, before the nullifier query', async () => {
+  test('a POI phase that leaves under 35 s refuses at membership, before the preflight', async () => {
     torTimeline({ read: 150, poiMs: 25000 });
     const result = await submit(options);
     expect(result).toEqual({ status: 'recovery-required', stage: 'membership' });
@@ -1630,13 +1632,14 @@ describe('recovered submission over Tor under the review budget', () => {
     const result = await submit(options);
     expect(result).toEqual({ status: 'recovery-required', stage: 'eoa' });
     expect(diagnosticOf(result)).toEqual({ stage: 'eoa', code: 'RAILGUN_PRIVATE_REVIEW_BUDGET' });
-    // The nullifier query happened; the proved calldata was never simulated.
+    // This mocked preflight ignores its disclosure deadline, so the proved
+    // calldata is the only boundary pinned here: it was never simulated.
     expect(mock.events).toContain('preflight');
     expect(mock.events).not.toContain('eth_getCode');
     expect(mock.events).not.toContain('eth_estimateGas');
   });
   test('setup beyond the EOA allowance still refuses at review admission, not later', async () => {
-    // The allowance is an estimate: 10 reads at 600 ms exceed its 5 s, so the
+    // The allowance is an estimate: 9 reads at 600 ms exceed its 5 s, so the
     // calldata was simulated, but the caller's review never runs.
     torTimeline({ read: 600 });
     const result = await submit(options);
@@ -1644,11 +1647,6 @@ describe('recovered submission over Tor under the review budget', () => {
     expect(mock.events).toContain('eth_estimateGas');
     expect(mock.events).not.toContain('transaction-review');
     expect(mock.events).not.toContain('sign');
-  });
-  test('authorities are not renewed after approval: a send past the reserve finds them expired', async () => {
-    torTimeline({ read: 150, sendMs: SEND_RESERVE_MS + 2 });
-    expect(await submit(options)).toEqual({ status: 'recovery-required', stage: 'submission' });
-    expect(mock.events).toContain('sign');
   });
   test('a wall-clock step back cannot extend the recovered review past its monotonic end', async () => {
     const seen = torTimeline({ read: 150 });
