@@ -1,4 +1,4 @@
-const { observeRailgunJob } = require('./fixtures/railgun-job-observer');
+const { observeRailgunJob, createRailgunJobEvidence } = require('./fixtures/railgun-job-observer');
 /** Offline original-signature proof recovery over a disposable enrolled account.
  * Synthetic external services; real account, gates, signer, stores and recovery A/C.
  * electron script SOURCE NEW_DIR ENGINE PROVER ARTIFACTS BYTECODES
@@ -441,7 +441,9 @@ async function main() {
   };
   sessions.startRailgunSessionWorker = trackSession(originals.session, false);
   sessions.startRailgunReadOnlySessionWorker = trackSession(originals.readOnlySession, true);
+  const kernelEvidence = createRailgunJobEvidence();
   runtime.startRailgunProcess = (options) => {
+    const target = kernelEvidence.observe(options);
     const job = observeRailgunJob(options).name,
       launchPhase = phase;
     counts.childStarts++;
@@ -600,7 +602,7 @@ async function main() {
     observeClosed(task.closed, (result) => {
       children.delete(task);
       counts.childExits++;
-      childResults.push({ job, phase: launchPhase, ...result });
+      childResults.push({ job, phase: launchPhase, target, ...result });
     });
     return task;
   };
@@ -1286,6 +1288,7 @@ async function main() {
         filename: handoffFilename,
         value: {
           schema: 'railgun-proof-recovery-restart-handoff-v1',
+          kernelEvidence: kernelEvidence.report(),
           ...(forSubmission
             ? {
                 submissionBackend,
@@ -1920,6 +1923,7 @@ async function main() {
     if (forSubmission) fixtureChecks.assertEmpty();
     const report = {
       schema: 'railgun-proof-recovery-offline-v2',
+      kernelEvidence: kernelEvidence.report(),
       ...(forSubmission
         ? { submitterMetadataFixtureWritten: true, productionMetadataOnboardingQualified: false }
         : {}),
