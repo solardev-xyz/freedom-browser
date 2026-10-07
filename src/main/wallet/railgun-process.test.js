@@ -919,6 +919,9 @@ function kernelOptions(executionJob = 'private-prepare', changes = {}) {
 test.each([
   ['unknown', { executionJob: 'constructor' }],
   ['object', { executionJob: {} }],
+  ['undefined-job', { executionJob: undefined }],
+  ['undefined-filename', { filename: undefined }],
+  ['undefined-key', { binaryKey: undefined }],
   ['filename', { filename: '/tmp/reviewed-engine.js' }],
   ['key-true', { binaryKey: true }],
   ['key-false', { binaryKey: false }],
@@ -1008,5 +1011,10 @@ test('normalized and symlink aliases cannot re-enable a moved filename', () => {
     .spyOn(fs, 'realpathSync')
     .mockImplementation((file) => (file === '/tmp/kernel-alias.js' ? filename : real(file)));
   expect(() => startRailgunProcess({ ...args, filename: '/tmp/kernel-alias.js' })).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
+});
+
+test('an explicitly undefined kernel job cannot fall back to the legacy route', () => {
+  expect(() => startRailgunProcess({ ...args, executionJob: undefined })).toThrow();
   expect(mockFork).not.toHaveBeenCalled();
 });

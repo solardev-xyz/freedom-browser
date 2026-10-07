@@ -52,24 +52,25 @@ function isMovedJob(filename) {
 for (const filename of [...movedJobs]) movedJobs.add(require('fs').realpathSync(filename));
 const owners = new Set();
 const fail = (code) => Object.assign(new Error('Railgun process unavailable'), { code });
-function startRailgunProcess({
-  handle,
-  filename,
-  executionJob,
-  input,
-  storage,
-  createProvider,
-  broker,
-  storageWorker = false,
-  binaryKey: requestedBinaryKey,
-  startupMs = 30000,
-  lifetimeMs = 600000,
-  heapMb = 256,
-  rssMb = 768,
-}) {
+function startRailgunProcess(options) {
+  const {
+    handle,
+    filename,
+    executionJob,
+    input,
+    storage,
+    createProvider,
+    broker,
+    storageWorker = false,
+    binaryKey: requestedBinaryKey,
+    startupMs = 30000,
+    lifetimeMs = 600000,
+    heapMb = 256,
+    rssMb = 768,
+  } = options;
   const context = getPrivacyContext(handle);
   const { app, utilityProcess, MessageChannelMain } = require('electron');
-  const kernel = executionJob !== undefined;
+  const kernel = Object.hasOwn(options, 'executionJob');
   const specification =
     kernel && typeof executionJob === 'string' && Object.hasOwn(kernelJobs, executionJob)
       ? kernelJobs[executionJob]
@@ -83,8 +84,8 @@ function startRailgunProcess({
     !app.isReady() ||
     (kernel
       ? !specification ||
-        filename !== undefined ||
-        requestedBinaryKey !== undefined ||
+        Object.hasOwn(options, 'filename') ||
+        Object.hasOwn(options, 'binaryKey') ||
         !broker ||
         context.subject.protocol !== 'railgun' ||
         context.subject.chainId !== 11155111 ||
