@@ -24,9 +24,23 @@ const REVIEW_WINDOW_MS = 30000;
 // history reconciliation and journal begin must be admitted (the service's
 // review expiry, checked again before and after journal begin); and E, the
 // first genuine authority's own unrenewed age. H is offered only if
-// E >= F + sendReserveMs (the raw send and its acknowledgement). The
-// allowances refuse before the preflight, immediately before the nullifier
-// query and before any EOA request once the review floor is out of reach.
+// E >= F + sendReserveMs, the time left for the raw send and its
+// acknowledgement. The allowances refuse before the preflight, before the
+// nullifier query (enforced again at the RPC's transport admission) and
+// before any EOA request once the review floor is out of reach.
+//
+// The committed policy is H = F with a 10 s send reserve, a 15 s review
+// floor and the 30 s cap. The 10 s reserve is a tested availability
+// trade-off, not an assurance that a send finishes within it: against 20 s
+// it offers a recovered review more often, and in exchange raises the
+// chance that a send ends with an uncertain acknowledgement (a journaled
+// attempt cut off by E). The finite matrix in
+// railgun-private-submission-boundaries.test.js establishes neither an
+// optimal reserve nor a success rate. Known limitation: H = F leaves no
+// admission allowance after the person's deadline, so signing, the history
+// refresh and journal begin must also complete before H, and an approval
+// close to H can fail during signing or admission after the person
+// approved. No UX change is planned for it.
 const BUDGET = (() => {
   const value = require('./railgun-recovered-review-budget.json');
   const keys = [
