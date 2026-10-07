@@ -6,6 +6,7 @@ describe('MyotisProcess', () => {
   let processClient;
   let fork;
   let callbacks;
+  let recoverOwner;
   beforeEach(() => {
     jest.resetModules();
     jest.useFakeTimers();
@@ -18,6 +19,8 @@ describe('MyotisProcess', () => {
     child.stdin.end = jest.fn();
     fork = jest.fn(() => child);
     jest.doMock('child_process', () => ({ fork }));
+    recoverOwner = jest.fn().mockRejectedValue(new Error('still owned'));
+    jest.doMock('./ownership-recovery', () => ({ recoverOwner }));
     jest.doMock('fs', () => ({ existsSync: () => true, accessSync: jest.fn(), mkdirSync: jest.fn(), constants: { X_OK: 1 } }));
     const { MyotisProcess } = require('./myotis-process');
     callbacks = { onStatus: jest.fn(), onUnavailable: jest.fn(), onExit: jest.fn(), onLifecycle: jest.fn() };
@@ -315,6 +318,42 @@ describe('MyotisProcess', () => {
     await expect(processClient.stop()).resolves.toBe(false);
     expect(processClient.exited).toBe(false);
     expect(callbacks.onExit).not.toHaveBeenCalled();
+  });
+
+  test('a later retry rechecks native exit instead of caching a failed stop forever', async () => {
+    ready();
+    child.emit('exit', null, 'SIGKILL'); child.stdout.emit('end');
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(processClient.exited).toBe(false);
+    recoverOwner.mockResolvedValue();
+    await expect(processClient.stop()).resolves.toBe(true);
+    expect(recoverOwner).toHaveBeenLastCalledWith('/data');
+    expect(processClient.exited).toBe(true);
+    expect(callbacks.onExit).toHaveBeenCalledTimes(1);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  test('keeps the native helper verdict when exit recovery is refused', async () => {
+    ready();
+    recoverOwner.mockRejectedValue(Object.assign(new Error('reboot'), { code: 'CHECKPOINT_REBOOT_REQUIRED' }));
+    child.emit('exit', null, 'SIGKILL'); child.stdout.emit('end');
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(processClient.recoveryFailureCode).toBe('CHECKPOINT_REBOOT_REQUIRED');
+    recoverOwner.mockRejectedValue(Object.assign(new Error('owned'), { code: 'CHECKPOINT_OWNERSHIP' }));
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(processClient.recoveryFailureCode).toBe('CHECKPOINT_OWNERSHIP');
+    recoverOwner.mockRejectedValue(new Error('spawn failed'));
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(processClient.recoveryFailureCode).toBe('CHECKPOINT_OWNERSHIP');
+  });
+
+  test('reconciles a lost terminal report using native proof after supervisor exit', async () => {
+    ready();
+    recoverOwner.mockResolvedValue();
+    child.emit('exit', 74, null); child.stdout.emit('end');
+    await expect(processClient.stop()).resolves.toBe(true);
+    expect(callbacks.onLifecycle).toHaveBeenCalledWith(expect.objectContaining({ event: 'exit-recovered' }));
+    expect(callbacks.onExit).toHaveBeenCalledTimes(1);
   });
 
   test('propagates native anchor mismatch as a bounded storage error', () => {

@@ -45,7 +45,9 @@ describe.each(SUPERVISORS)('$name receipt reporting', ({ name, report }) => {
     const reaped = reportStatement(text, 'reaped');
     expect(reaped.start).toBeGreaterThan(owned.start);
     expect(reaped.statement).toContain(`write_all(${report}, receipt`);
-    const retirement = text.search(/record\(owner, "retired", generation\)/);
+    // Earlier retirements cover setup failures before any child exists. The
+    // terminal report must follow the retirement after the actual child wait.
+    const retirement = text.lastIndexOf('record(owner, "retired", generation)');
     expect(retirement).toBeGreaterThan(owned.start);
     expect(retirement).toBeLessThan(reaped.start);
   });

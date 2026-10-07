@@ -362,6 +362,10 @@ describe('classifyReadiness while Ant rediscovers batches (#510, #484)', () => {
     expect(held.message).toBe(
       'Looking for your existing storage… 42% checked. Storage plans appear if this wallet has none.'
     );
+    // The Storage screen shows no plans, so its wording promises none.
+    expect(held.scanMessage).toBe(
+      'Looking for your existing storage… 42% checked. Storage this wallet already owns is listed here once found.'
+    );
     // Full or expired batches are no proof either: the scan may add more.
     expect(
       classifyReadiness({

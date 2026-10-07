@@ -376,11 +376,18 @@ function classifyReadiness({
         { rediscovery: 'running', progress: null }
       );
     }
+    // The setup screen shows plans once the search ends empty; other
+    // surfaces (the Storage screen) show `scanMessage`, which promises none.
+    const searching = `Looking for your existing storage…${done}`;
     return result(
       'checking',
       'node-not-ready',
-      `Looking for your existing storage…${done} Storage plans appear if this wallet has none.`,
-      { rediscovery: 'running', progress }
+      `${searching} Storage plans appear if this wallet has none.`,
+      {
+        rediscovery: 'running',
+        progress,
+        scanMessage: `${searching} Storage this wallet already owns is listed here once found.`,
+      }
     );
   }
   if (probe.stamps.usable === 0) {

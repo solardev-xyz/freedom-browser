@@ -57,6 +57,7 @@ function unavailable(message, uncertain = false) {
 class MyotisProcess {
   constructor({ addonPath, network, dataDir, checkpoint = null, bootEnodes = [], onStatus, onUnavailable, onExit, onLifecycle = () => {} }) {
     this.generation = randomUUID();
+    this.dataDir = dataDir;
     this.onLifecycle = onLifecycle;
     this.lifecycleEvents = new Set();
     this.report('start-attempt');
@@ -259,6 +260,9 @@ class MyotisProcess {
 
   stop() {
     if (this.exited) return Promise.resolve(true);
+    // A previous timeout is not a permanent verdict. Once the supervisor has
+    // actually exited, native locks/receipts can establish the child's exit.
+    if (this.stopping && this.supervisorExit && this.receiptsEnded) return this.recoverExit();
     if (this.stopPromise) return this.stopPromise;
     this.report('stop-requested');
     this.stopping = true;
@@ -285,7 +289,7 @@ class MyotisProcess {
         resolve(true);
       });
     });
-    return this.stopPromise;
+    return this.supervisorExit && this.receiptsEnded ? this.recoverExit() : this.stopPromise;
   }
 
   finishExit() {
@@ -305,7 +309,34 @@ class MyotisProcess {
       this.didExit();
     } else {
       this.fail('Myotis supervisor exit unconfirmed; data directory quarantined');
+      this.recoverExit();
     }
+  }
+
+  recoverExit() {
+    if (this.exited) return Promise.resolve(true);
+    if (!this.supervisorExit || !this.receiptsEnded) return Promise.resolve(false);
+    if (this.recoveryExitPromise) return this.recoveryExitPromise;
+    // Lazy import avoids a module cycle: the helper launcher uses the trusted
+    // supervisor path/environment defined here. It never scans or kills PIDs.
+    const { recoverOwner } = require('./ownership-recovery');
+    const pending = recoverOwner(this.dataDir).then(() => {
+      this.recoveryFailureCode = null;
+      this.report('exit-recovered');
+      this.didExit();
+      return true;
+    }, (error) => {
+      // Keep the helper's verdict so a failed stop can say "restart the
+      // computer" rather than collapsing every refusal into ownership.
+      this.recoveryFailureCode = error?.code === 'CHECKPOINT_REBOOT_REQUIRED'
+        ? 'CHECKPOINT_REBOOT_REQUIRED' : 'CHECKPOINT_OWNERSHIP';
+      return false;
+    });
+    this.recoveryExitPromise = pending;
+    pending.finally(() => {
+      if (this.recoveryExitPromise === pending) this.recoveryExitPromise = null;
+    });
+    return pending;
   }
 
   didExit() {

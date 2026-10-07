@@ -365,6 +365,7 @@ describe('myotis-manager', () => {
     ['CHECKPOINT_MISMATCH', 'mismatch'], ['CHECKPOINT_QUORUM_CONFLICT', 'quorum-conflict'],
     ['CHECKPOINT_CLOCK', 'clock'], ['CHECKPOINT_STORAGE', 'storage'],
     ['CHECKPOINT_STORAGE_IO', 'storage-io'], ['CHECKPOINT_OWNERSHIP', 'ownership'],
+    ['CHECKPOINT_REBOOT_REQUIRED', 'reboot-required'],
     ['CHECKPOINT_INCOMPATIBLE', 'unsupported'],
   ])('failure %s stays blocked without automatic retries or a risk bypass', async (code, reason) => {
     const ctx = loadManager();
@@ -713,6 +714,29 @@ describe('myotis-manager', () => {
     expect(ctx.clients).toHaveLength(0);
   });
 
+  test.each([['checkpoint', 'reboot-required'], ['restart', 'reboot-required'], ['restart', 'ownership']])(
+    'a failed %s stop reports the native helper verdict (%s)', async (path, reason) => {
+      const ctx = loadManager();
+      let resolveProof;
+      if (path === 'checkpoint') {
+        ctx.acquireCheckpoint.mockImplementation(() => new Promise(resolve => { resolveProof = resolve; }));
+        ctx.status.beaconState = 'STALE_ANCHOR';
+      }
+      await ctx.mod.startMyotis({ chainId: 100 });
+      ctx.clients[0].stop.mockResolvedValue(false);
+      ctx.clients[0].recoveryFailureCode = reason === 'reboot-required' ? 'CHECKPOINT_REBOOT_REQUIRED' : 'CHECKPOINT_OWNERSHIP';
+      if (path === 'checkpoint') {
+        resolveProof(checkpoint); await flush();
+      } else {
+        ctx.clients[0].options.onUnavailable('native failure');
+        ctx.mod.registerMyotisIpc();
+        ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
+      }
+      expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', reason });
+      expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
+      expect(ctx.clients).toHaveLength(1);
+    });
+
   test('repair never replaces storage while its native child has unconfirmed exit', async () => {
     const ctx = loadManager(); await ctx.mod.startMyotis({ chainId: 100 });
     ctx.clients[0].options.onUnavailable('mismatch', 'CHECKPOINT_STORAGE');
@@ -814,7 +838,7 @@ describe('myotis-manager', () => {
     const details = ctx.clipboard.writeText.mock.calls[0][0];
     expect(details).toContain('Failure: ownership');
     expect(details).not.toMatch(/secret|profile|\/Users/);
-    expect(ctx.dialog.showMessageBox.mock.calls[0][1].detail).toContain('cannot clear an unconfirmed ownership record');
+    expect(ctx.dialog.showMessageBox.mock.calls[0][1].detail).toContain('Freedom will tell you if a computer restart is needed');
     expect(ctx.store.repairState).not.toHaveBeenCalled();
   });
 

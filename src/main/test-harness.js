@@ -513,6 +513,9 @@ function appFacts({ app, BrowserWindow }) {
     chrome: process.versions.chrome,
     packaged: app.isPackaged,
     execPath: process.execPath,
+    // Set by the AppImage runtime to the .AppImage file it mounted; null for
+    // every other package. An AppImage's execPath is inside the mount.
+    appImage: process.env.APPIMAGE || null,
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
     version: app.getVersion(),

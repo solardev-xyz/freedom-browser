@@ -1,0 +1,2 @@
+- Tor, Radicle, Ant and the Myotis light client start on a fresh Windows 11 install without the Visual C++ Redistributable ([#563](https://github.com/solardev-xyz/freedom-browser/issues/563))
+  - Before, they only worked on machines where another program had already installed the Visual C++ runtime; Freedom now ships the runtime file beside the components that need it

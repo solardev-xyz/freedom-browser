@@ -13,9 +13,9 @@
 // IPFS reports ephemeral native identity mode and does not need a binary
 // or running daemon for this regression.
 //
-// Unlike the safe/remote-signing fixtures, this one always SHOWS the window and
-// ignores FREEDOM_E2E_HEADED: a hidden window starves Playwright's actionability
-// checks of frames (#479, see the launch env below). A local run therefore pops
+// This fixture always SHOWS the window, even if the caller exported
+// FREEDOM_TEST_HIDE_WINDOW=1: a hidden window starves Playwright's
+// actionability checks of frames (#479, see the launch env below). A local run therefore pops
 // up a window; on Linux use `xvfb-run -a npm run test:e2e:onboarding` to keep it
 // on a virtual display.
 

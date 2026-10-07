@@ -40,9 +40,14 @@ function createMainWindow(initialUrl = null, options = {}) {
   // `frame` can't change on a live window, so this is read once at creation.
   const linuxFrameless = isLinux && loadSettings().tabsInTitlebar === true;
 
-  // Headless E2E: keep the window hidden so a local test run doesn't pop a
-  // window or steal focus. The renderer still loads and is fully driveable via
-  // Playwright (DOM/JS), it just never paints to screen.
+  // Opt-in test switch: keep the window hidden. The renderer still loads and
+  // is driveable via Playwright (DOM/JS), but a never-shown window has no
+  // reliable frame clock (~1 fps or none under xvfb), so Playwright's
+  // click/check actionability waits can stall and a click can land on the
+  // page under freshly-shown chrome (#479, #536). No e2e fixture sets this;
+  // several pin it to '0'. Only ci.yml's Myotis live step exports it, for a
+  // spec that never clicks. To avoid a popped-up window locally, run the
+  // suites under `xvfb-run -a` instead of setting this.
   const hideWindow = process.env.FREEDOM_TEST_HIDE_WINDOW === '1';
 
   const window = new BrowserWindow({

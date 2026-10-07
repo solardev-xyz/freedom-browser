@@ -399,6 +399,25 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
 
+      - name: Build ownership helper (POSIX)
+        if: runner.os != 'Windows'
+        run: npm run myotis:build-supervisor
+
+      - name: Build ownership helper (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          npm run myotis:build-supervisor -- x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check ownership recovery without networking
+        run: node scripts/check-myotis-owner-recovery.js
+
       - name: Load addon and verify ABI
         # The expected ABI comes from the release pin, not a literal repeated
         # here: on the v0.1.11 bump this step still said 26 and would have

@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixture.json'), 'utf8'));
-const MODES = new Set(['healthy', 'natural-exit', 'blocked-read', 'blocked-status', 'blocked-stop', 'startup-failure']);
+const MODES = new Set(['healthy', 'natural-exit', 'blocked-read', 'blocked-status', 'blocked-stop', 'startup-failure', 'orphan-window']);
 if (config.identity !== 'freedom-myotis-benign-v1' || !MODES.has(config.mode)) {
   throw new Error('Invalid qualification fixture');
 }
@@ -40,6 +40,16 @@ module.exports = {
   ethCallJson() {
     event('call');
     if (config.mode === 'blocked-read') block();
+    if (config.mode === 'orphan-window') {
+      // Prove the real Node process retained a read-only regular-file lease.
+      if (!fs.fstatSync(4).isFile()) throw new Error('Missing lifetime lease');
+      let refused = false;
+      try { fs.writeSync(4, Buffer.from('x')); } catch { refused = true; }
+      if (!refused) throw new Error('Lifetime lease was writable');
+      event('lease-held');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+      event('lease-window-finished');
+    }
     return Promise.resolve(JSON.stringify({ resultHex: '0x1234' }));
   },
   acceptStaleAnchor() { return false; },

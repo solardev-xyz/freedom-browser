@@ -85,7 +85,7 @@
   "build": {
     "appId": "baby.freedom.browser",
     "productName": "Freedom",
-    "afterPack": "./scripts/remove-locales.js",
+    "afterPack": "./scripts/after-pack.js",
     "electronFuses": {
       "runAsNode": true,
       "enableCookieEncryption": false,
@@ -183,6 +183,9 @@
           ]
         }
       ]
+    },
+    "toolsets": {
+      "appimage": "1.0.3"
     },
     "pacman": {
       "synopsis": "A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols",

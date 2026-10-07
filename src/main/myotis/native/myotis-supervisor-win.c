@@ -36,7 +36,7 @@ static int record(HANDLE owner, const char *state, const char *generation) {
   int size = snprintf(data, sizeof(data), "v1 %s %s\n", state, generation);
   LARGE_INTEGER zero; zero.QuadPart = 0;
   return SetFilePointerEx(owner, zero, NULL, FILE_BEGIN) && SetEndOfFile(owner) &&
-    write_all(owner, data, (DWORD)size) && FlushFileBuffers(owner);
+    write_all(owner, data, (DWORD)size) && FlushFileBuffers(owner) ? 0 : -1;
 }
 
 static int revoked(HANDLE control) {
@@ -44,7 +44,14 @@ static int revoked(HANDLE control) {
   return !PeekNamedPipe(control, NULL, 0, NULL, &available, NULL) || available != 0;
 }
 
+#include "myotis-owner-recovery.h"
+
 int wmain(int argc, wchar_t **argv) {
+  if (argc == 4 && !wcscmp(argv[1], L"--recover-owner") && wcslen(argv[3]) == 36) {
+    char id[37];
+    for (int i = 0; i <= 36; i++) { if (argv[3][i] > 127) return 64; id[i] = (char)argv[3][i]; }
+    return valid_generation(id) ? recover_owner(argv[2], id) : 64;
+  }
   if (argc != 5 || wcslen(argv[3]) != 36 || wcslen(argv[1]) > 16000 ||
       wcslen(argv[2]) > 16000 || wcslen(argv[4]) > 32000) return 64;
   char generation[37];
@@ -86,8 +93,10 @@ int wmain(int argc, wchar_t **argv) {
         memcmp(prior, "v1 retired ", 11) != 0 || prior[47] != '\n') return 67;
     prior[47] = 0;
     if (!valid_generation(prior + 11)) return 67;
-  }
-  if (!record(owner, "active", generation)) return 68;
+  } else if (record(owner, "retired", generation) < 0) return 68;
+  HANDLE lifetime = owner_open_mode(argv[4], OWNER_LIFETIME, 1, 1);
+  if (lifetime != OWNER_BAD && !SetHandleInformation(lifetime, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) return 68;
+  const char *active_state = lifetime != OWNER_BAD ? "leased" : "active";
 
   HANDLE job = CreateJobObjectW(NULL, NULL);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
@@ -108,26 +117,26 @@ int wmain(int argc, wchar_t **argv) {
   startup.StartupInfo.hStdInput = null_handle;
   startup.StartupInfo.hStdOutput = null_handle;
   startup.StartupInfo.hStdError = null_handle;
-  /* Node/libuv's CRT descriptor table: count, byte flags, HANDLEs. Only NUL
-   * stdio and fd3 IPC are present. Control, receipt, owner and job are absent.
+  /* Node/libuv's CRT descriptor table: count, byte flags, HANDLEs. fd4 is a
+   * read-only lifetime lease. Control, receipt, owner and job are absent.
    */
-  unsigned char descriptors[sizeof(int) + 4 + 4 * sizeof(HANDLE)];
-  int count = 4;
+  unsigned char descriptors[sizeof(int) + 5 + 5 * sizeof(HANDLE)];
+  int count = lifetime != OWNER_BAD ? 5 : 4;
   memcpy(descriptors, &count, sizeof(count));
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < count; i++) {
     descriptors[sizeof(int) + i] = (unsigned char)(i == 3 ? 0x09 : 0x41);
-    HANDLE value = i == 3 ? ipc : null_handle;
-    memcpy(descriptors + sizeof(int) + 4 + i * sizeof(HANDLE), &value, sizeof(value));
+    HANDLE value = i == 4 ? lifetime : i == 3 ? ipc : null_handle;
+    memcpy(descriptors + sizeof(int) + (size_t)count + i * sizeof(HANDLE), &value, sizeof(value));
   }
-  startup.StartupInfo.cbReserved2 = (WORD)sizeof(descriptors);
+  startup.StartupInfo.cbReserved2 = (WORD)(sizeof(int) + (size_t)count * (1 + sizeof(HANDLE)));
   startup.StartupInfo.lpReserved2 = descriptors;
   SIZE_T attribute_size = 0;
   InitializeProcThreadAttributeList(NULL, 2, 0, &attribute_size);
   startup.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size);
-  HANDLE inherited[] = { null_handle, ipc };
+  HANDLE inherited[] = { null_handle, ipc, lifetime };
   if (!startup.lpAttributeList || !InitializeProcThreadAttributeList(startup.lpAttributeList, 2, 0, &attribute_size) ||
       !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-        inherited, sizeof(inherited), NULL, NULL) ||
+        inherited, (lifetime != OWNER_BAD ? 3 : 2) * sizeof(HANDLE), NULL, NULL) ||
       !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
         &job, sizeof(job), NULL, NULL)) return 69;
   /* Paths cannot contain quotes on Windows; neither argument ends in a slash.
@@ -138,9 +147,17 @@ int wmain(int argc, wchar_t **argv) {
   if (swprintf(command, 32768, L"\"%ls\" \"%ls\"", argv[1], argv[2]) < 0 || revoked(control)) return 65;
   PROCESS_INFORMATION child;
   memset(&child, 0, sizeof(child));
+  /* Publish ownership only once setup is complete. On a creation failure no
+   * child exists, so retirement is known rather than left as quarantine. */
+  if (record(owner, active_state, generation) < 0) return 68;
+  char active_record[96];
+  int active_size = snprintf(active_record, sizeof(active_record), "v1 %s %s\n", active_state, generation);
+  (void)owner_stamp(argv[4], active_record, active_size);
   if (!CreateProcessW(argv[1], command, NULL, NULL, TRUE,
       EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
-      NULL, NULL, &startup.StartupInfo, &child)) return 69;
+      NULL, NULL, &startup.StartupInfo, &child)) {
+    (void)record(owner, "retired", generation); return 69;
+  }
   /* Job assignment was atomic with creation. Even a supervisor crash here
    * closes the sole job handle; no unassigned suspended-child window exists.
    */
@@ -171,7 +188,7 @@ int wmain(int argc, wchar_t **argv) {
   DWORD exit_code;
   if (!GetExitCodeProcess(child.hProcess, &exit_code)) return 72;
   CloseHandle(child.hProcess);
-  if (!record(owner, "retired", generation)) return 73;
+  if (record(owner, "retired", generation) < 0) return 73;
   length = snprintf(receipt, sizeof(receipt),
     "{\"type\":\"reaped\",\"generation\":\"%s\",\"exitCode\":%lu,\"signal\":0,\"forced\":%s}\n",
     generation, (unsigned long)exit_code, forced ? "true" : "false");

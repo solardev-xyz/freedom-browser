@@ -148,6 +148,7 @@ const recoveryFailureMessage = (reason) =>
     clock: 'Check your computer’s date and time, then retry.',
     storage: 'Local sync data is inconsistent. Repair sync data to start again; your old data will be kept.',
     'storage-io': 'Could not read or save sync data. Check disk space and folder permissions, then retry.',
+    'reboot-required': 'Restart your computer, then reopen Freedom to recover this node. Your old sync data will be kept.',
     ownership:
       'Could not confirm that the previous node stopped. Close other Freedom instances and retry. If this persists, choose Get help.',
     unsupported: 'Update or reinstall Freedom to recover this node.',
@@ -213,7 +214,7 @@ function updateRecovery(button, status, chainId) {
     button.textContent = button.disabled ? 'Starting…' : status?.recovery?.reason === 'storage' ? 'Repair sync data' : 'Retry sync';
   }
   const help = document.getElementById(chainId === 100 ? 'myotis-gnosis-recovery-help' : 'myotis-recovery-help');
-  if (help) help.hidden = !(blocked && ['storage', 'storage-io', 'ownership', 'installation', 'unsupported'].includes(status.recovery?.reason));
+  if (help) help.hidden = !(blocked && ['storage', 'storage-io', 'ownership', 'reboot-required', 'installation', 'unsupported'].includes(status.recovery?.reason));
   if (blocked || slow) {
     const key = slow ? 'slow' : `${status.recovery?.attempt}:${status.recovery?.reason}`;
     if (notifiedFailures.get(chainId) !== key) {

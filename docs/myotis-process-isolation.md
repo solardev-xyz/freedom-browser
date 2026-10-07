@@ -142,11 +142,13 @@ patched ABI 25 generations are preserved and replaced, not resumed under ABI 32.
 They cannot authorize a new recovery or be relabeled as quorum-verified. New
 recovery always requires v2 acquisition.
 Malformed records or unsafe state paths fail closed as storage failures.
-Native ownership quarantine is independent and is never cleared by this flow.
+Native ownership quarantine is independent of checkpoint verification.
 Every load or replacement also checks the legacy base-directory ownership
 record: an active, malformed or unknown record blocks migration to a fresh
-state directory. Only an absent record or a validated native-retired record
-permits migration. A new directory is not a way around an unconfirmed old exit.
+state directory. An absent record or a validated native-retired record permits
+migration. A native lifetime-lock or reboot receipt also permits replacement after the recovery
+checks described below; it never permits resuming interrupted snapshots. A new
+directory is not a way around an unconfirmed old exit.
 
 Service unavailability, a checkpoint changing during verification, and an
 outdated checkpoint retry after 15 seconds and 60 seconds, then every five minutes
@@ -191,7 +193,9 @@ Repair preserves every old generation and backs up the old pointer byte-for-byte
 then atomically selects a new bundled generation. It checks the base and **all**
 generation ownership records, including orphans, again immediately before the
 pointer switch. Linked or unknown generation paths, an unsafe pointer, and any
-active/unknown ownership prevent repair. No native ownership receipt is edited.
+active/unknown ownership prevent repair unless the native helper establishes
+exit through a lifetime lock or prior boot and records a replacement receipt.
+JavaScript never edits these receipts.
 If the bundled anchor is stale, the normal quorum and Colibri checks are required.
 The confirmation is single-flight and invalidated by stop, profile change or
 navigation away from browser chrome. Wallets and settings are untouched.
@@ -213,11 +217,12 @@ is still unreaped, permanently retires signal authority, then performs the sole
 `waitpid`. No handler or second thread reaps it. The child waits behind a gate;
 control and ownership exist before executable release. EOF/error on the parent
 control pipe revokes the child. Supervisor loss itself does not promise POSIX
-child cleanup; it leaves durable quarantine. Before creating an active record,
+child cleanup; its inherited lifetime lock keeps recovery blocked until the
+child actually exits. Before creating an active record,
 the supervisor ignores SIGINT, SIGTERM and SIGHUP so terminal/session group
 signals cannot kill the sole wait owner; the execution child resets them to
 default. Parent-control EOF still revokes the child. SIGKILL and other actual
-supervisor-loss cases still require quarantine.
+supervisor-loss cases require separate native exit proof.
 
 Windows supervisor spawn uses `detached: true` to avoid libuv's parent-owned
 kill-on-close job, retaining every pipe and the observed process handle without
@@ -239,8 +244,9 @@ successfully in PR CI for head `09989259`. A later
 passed under Node 22.23.2; Electron transport, real-addon behavior and the
 remaining startup/supervisor-loss/packaging gates remain separate.
 
-The addon child receives only null stdio and its Node IPC endpoint. It does not
-inherit the native receipt writer, control endpoint, ownership lock or Windows
+The addon child receives null stdio, its Node IPC endpoint and a read-only
+lifetime lease (fd 4). It does not inherit the native receipt writer, control
+endpoint, owner-record lock or Windows
 job handle. No signing keys or provider/model credentials are passed. Main uses
 an environment allowlist and an explicit Electron executable, with
 `ELECTRON_RUN_AS_NODE=1`; no host-Node fallback or inherited `NODE_OPTIONS`.
@@ -248,8 +254,9 @@ an environment allowlist and an explicit Electron executable, with
 The native supervisor locks the stable per-chain `.freedom-myotis-owner` file
 (POSIX `flock`; Windows exclusive write/delete sharing). The record is bounded,
 versioned, validates the entire generation, and is never renamed/replaced while
-locked. Native code durably writes `active` before releasing a child, and writes
-`retired` only after the actual direct-child wait. POSIX flushes the containing
+locked. Native code durably writes `leased` before creating a child on supported
+local storage (`active` for the legacy fallback). It writes `retired` after the
+actual direct-child wait, or before any child exists. POSIX flushes the containing
 directory when establishing the record; Windows uses write-through and
 `FlushFileBuffers`. Windows lacks the POSIX directory-flush step: new record creation durability
 assumes the local filesystem's journaling/write-through guarantees (qualify on
@@ -265,19 +272,23 @@ can quarantine the chain across browser
 restarts. No age, PID absence, or process-name scan clears quarantine. Native
 parent-loss cleanup may persist a valid retired record even if main is gone.
 
-The ownership **Retry sync** action rechecks the native ownership guard; it
-cannot establish a missing exit proof or clear permanent unknown quarantine.
-Closing another Freedom instance may allow that live owner to retire normally,
-but closing instances does not repair an active or corrupt record left after
-supervisor loss. The **Get help** dialog makes that limitation explicit and offers support details.
-**Repair sync data** cannot clear this quarantine either.
-An operator must first
-establish that the old child cannot still run, for example by a complete host
-reboot, then preserve the quarantined chain cache/record for investigation and
-explicitly provision a fresh chain cache. Merely restarting Freedom is not
-sufficient. Never remove or rewrite an active record to work around the guard
-while the old process's outcome is unknown. This conservative manual recovery
-requirement is a release limitation.
+The ownership **Retry sync** action first rechecks the native guard, including
+after an earlier stop attempt timed out. A live supervisor or node child
+holding its lifetime lease keeps recovery blocked. Once both are gone, the
+helper acquires both locks and writes an `orphaned` replacement receipt.
+This normal path recovers in the same boot, without a computer restart.
+
+For old `active` records without a child lifetime lease, the native helper
+can instead establish exit across a system restart using a machine-bound boot
+witness. A missing legacy witness
+is recorded without changing the owner; the UI then asks the user to restart
+the computer and reopen Freedom. Retrying within the same boot never clears
+it. A matching witness from a previous boot yields a distinct `rebooted`
+receipt, not a normal `retired` receipt. For either replacement receipt the store preserves that generation
+and creates a fresh one; it never resumes its potentially interrupted snapshot.
+See [ownership recovery](myotis-ownership-recovery.md) for platform evidence,
+filesystem restrictions, tests and limitations. No PID scan, age threshold,
+wall-clock subtraction or renderer consent substitutes for exit evidence.
 
 ## Build and signing
 

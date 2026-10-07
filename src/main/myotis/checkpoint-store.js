@@ -3,6 +3,7 @@ const { constants } = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { validateCheckpoint } = require('./checkpoint-verifier');
+const { recoverOwner } = require('./ownership-recovery');
 
 const SCHEMA_VERSION = 1;
 const POINTER = 'verified-sync.json';
@@ -10,11 +11,11 @@ const GENERATIONS = 'verified-sync';
 const OWNER = '.freedom-myotis-owner';
 // Match both native supervisors, whose receipt generation permits every
 // lowercase UUID-shaped value, not just UUIDv4 storage generation identifiers.
-const RETIRED_OWNER = /^v1 retired [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n$/;
+const TERMINAL_OWNER = /^v1 (retired|rebooted|orphaned) [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\n$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function classifyStorageError(error) {
-  if (error.code === 'CHECKPOINT_OWNERSHIP') return error;
+  if (['CHECKPOINT_OWNERSHIP', 'CHECKPOINT_REBOOT_REQUIRED'].includes(error.code)) return error;
   if (['ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EROFS', 'EIO', 'EMFILE', 'ENFILE'].includes(error.code)) {
     const failure = new Error('Could not access Myotis sync storage');
     failure.code = 'CHECKPOINT_STORAGE_IO';
@@ -41,7 +42,8 @@ function ownershipError() {
 // a new data directory. Native code writes retired only after waiting for its
 // direct child. This is a durable-record gate, not a PID probe or a substitute
 // for the browser profile lock and the supervisor's kernel ownership lock.
-async function requireRetiredOwner(dataDir) {
+// Native rebooted/orphaned receipts permit replacement only, never snapshot reuse.
+async function readTerminalOwner(dataDir) {
   const filename = path.join(dataDir, OWNER);
   let before;
   try {
@@ -52,7 +54,7 @@ async function requireRetiredOwner(dataDir) {
   }
   let handle;
   try {
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size !== 48) {
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || ![48, 49].includes(before.size)) {
       throw ownershipError();
     }
     handle = await fs.open(
@@ -63,22 +65,32 @@ async function requireRetiredOwner(dataDir) {
     if (
       !opened.isFile() ||
       opened.nlink !== 1 ||
-      opened.size !== 48 ||
+      ![48, 49].includes(opened.size) ||
       opened.dev !== before.dev ||
       opened.ino !== before.ino
     )
       throw ownershipError();
-    const bytes = Buffer.alloc(49);
+    const bytes = Buffer.alloc(50);
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
-    if (bytesRead !== 48 || !RETIRED_OWNER.test(bytes.toString('utf8', 0, bytesRead))) {
+    if (![48, 49].includes(bytesRead) || !TERMINAL_OWNER.test(bytes.toString('utf8', 0, bytesRead))) {
       throw ownershipError();
     }
     const after = await handle.stat();
-    if (after.size !== 48 || after.nlink !== 1) throw ownershipError();
+    if (after.size !== bytesRead || after.nlink !== 1) throw ownershipError();
+    return !bytes.toString('utf8', 0, bytesRead).startsWith('v1 retired ');
   } catch {
     throw ownershipError();
   } finally {
     if (handle) await handle.close();
+  }
+}
+
+async function requireRetiredOwner(dataDir) {
+  try { return await readTerminalOwner(dataDir); } catch (error) {
+    if (error.code !== 'CHECKPOINT_OWNERSHIP') throw error;
+    await recoverOwner(dataDir);
+    // Read the durable result again, including file type/identity checks.
+    return readTerminalOwner(dataDir);
   }
 }
 
@@ -160,7 +172,8 @@ async function requireCurrentOwnerRetired(baseDir, chainId) {
 
 // Repair cannot trust the pointer to identify the previous native child.
 // Inspect every generation, including orphans. Unknown entries and any active
-// or quarantined owner refuse repair; no ownership receipt is ever rewritten.
+// or quarantined owner refuse repair unless native exit proof permits
+// replacement. JavaScript never rewrites an ownership receipt.
 async function requireAllOwnersRetired(baseDir) {
   await directory(baseDir);
   await requireRetiredOwner(baseDir);
@@ -262,7 +275,11 @@ async function loadOrCreateState(baseDir, chainId) {
     validateIdentity(pointer, chainId);
     const dataDir = path.join(baseDir, GENERATIONS, pointer.generation);
     await directory(dataDir);
-    await requireRetiredOwner(dataDir);
+    if (await requireRetiredOwner(dataDir)) {
+      // Exit proof does not prove a completed snapshot write. Preserve this
+      // generation and start from a fresh anchor, inheriting only peer hints.
+      return await createState(baseDir, chainId);
+    }
     const record = await readJson(path.join(dataDir, 'anchor.json'));
     validateIdentity(record, chainId);
     if (record.generation !== pointer.generation ||

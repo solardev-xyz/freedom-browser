@@ -62,6 +62,7 @@ Freedom Browser is distributed as:
   - Ant (`antd`, Swarm node)
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
+- **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
 
 ---
 

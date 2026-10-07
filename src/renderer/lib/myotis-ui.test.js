@@ -542,6 +542,7 @@ describe('myotis-ui', () => {
     ['storage', 'inconsistent'],
     ['storage-io', 'disk space'],
     ['ownership', 'Close other Freedom instances and retry'],
+    ['reboot-required', 'Restart your computer'],
     ['unsupported', 'Update or reinstall Freedom'],
     ['installation', 'Update or reinstall Freedom'],
     ['startup', 'restart the node'],
