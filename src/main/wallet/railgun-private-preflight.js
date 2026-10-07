@@ -92,19 +92,26 @@ function createPreflight(options, relay = false) {
   check(options && !isProxy(options) && Object.getPrototypeOf(options) === Object.prototype);
   const descriptors = Object.getOwnPropertyDescriptors(options);
   const required = ['enrollment', 'input', 'artifactDirectory'];
-  const allowed = [...required, 'destinationConstraint', 'intentKind', 'disclosureDeadline'];
+  const allowed = [...required, 'destinationConstraint', 'intentKind', 'admissionDeadline'];
   check(required.every((key) => Object.hasOwn(descriptors, key)));
   check(Reflect.ownKeys(descriptors).every((key) => allowed.includes(key)));
   for (const descriptor of Object.values(descriptors))
     check(Object.hasOwn(descriptor, 'value') && descriptor.enumerable);
   const { enrollment, input, artifactDirectory, destinationConstraint, intentKind } = options;
-  // Private spend only: the last monotonic instant (performance.now()) at
-  // which the selected nullifier may be sent. Data, not authority: it can
+  // Private spend only: the nullifier admission deadline, a monotonic
+  // instant (performance.now()) from which the selected nullifier's request
+  // is not admitted to the private RPC transport. It bounds admission, not
+  // disclosure: on a reused keep-alive socket the bytes leave on the next
+  // tick, but on a new SOCKS+TLS connection they leave only after the Tor
+  // stream and TLS handshake, so the nullifier can leave after the deadline
+  // by that connect time. A recovered submission whose late read outruns its
+  // tail then refuses at its budget check before any EOA request: the
+  // nullifier was disclosed, nothing is sent. Data, not authority: it can
   // only refuse earlier, and receipt ages are unchanged.
-  const disclosureDeadline = options.disclosureDeadline;
+  const admissionDeadline = options.admissionDeadline;
   check(
-    !Object.hasOwn(descriptors, 'disclosureDeadline') ||
-      (!relay && Number.isFinite(disclosureDeadline))
+    !Object.hasOwn(descriptors, 'admissionDeadline') ||
+      (!relay && Number.isFinite(admissionDeadline))
   );
   check(
     !Object.hasOwn(descriptors, 'intentKind') ||
@@ -273,15 +280,14 @@ function createPreflight(options, relay = false) {
       }
       // Expose the selected nullifier only after deployment, fee, root and
       // verifier checks succeed; it can link this query to a later spend.
-      // The caller's deadline is checked here as an early refusal, but the
-      // read's own checks, the RPC's awaited chain-check promise and its
-      // serialization still run before the transport. The RPC therefore
+      // The caller's admission deadline is checked here as an early refusal,
+      // but the read's own checks, the RPC's awaited chain-check promise and
+      // its serialization still run before the transport. The RPC therefore
       // enforces the same deadline again at its last admission gate, for
       // this one request only; the anchor recheck after it is not bounded.
       step = 'nullifiers';
-      check(disclosureDeadline === undefined || performance.now() < disclosureDeadline, 'stale');
-      const admission =
-        disclosureDeadline === undefined ? undefined : { deadline: disclosureDeadline };
+      check(admissionDeadline === undefined || performance.now() < admissionDeadline, 'stale');
+      const admission = admissionDeadline === undefined ? undefined : { admissionDeadline };
       await getter('nullifiers', [selected.tree, selected.nullifier], false, admission);
       step = 'anchor-recheck';
       const reread = await read(

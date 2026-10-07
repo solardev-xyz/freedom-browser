@@ -1599,14 +1599,14 @@ describe('recovered review budget arithmetic over Tor (mocked service)', () => {
     expect(seen.window).toBeGreaterThanOrEqual(15000);
     expect(Math.max(...mock.proofMargins)).toBeLessThanOrEqual(40000);
   });
-  test('the preflight receives the nullifier disclosure deadline from the same estimate', async () => {
+  test('the preflight receives the nullifier admission deadline from the same estimate', async () => {
     torTimeline({ read: 150 });
     const verifierStart = mock.clock;
     expect(await submit(options)).toEqual(SENT);
     // The conservative estimate starts at C's verifier start (here also its
     // exit); the deadline leaves the floor, the send reserve, the EOA
     // allowance and the nullifier tail: 60 - (15 + 10 + 5 + 2) = 28 s.
-    expect(mock.preflightOptions.disclosureDeadline).toBe(verifierStart + 28000);
+    expect(mock.preflightOptions.admissionDeadline).toBe(verifierStart + 28000);
   });
   test('a received-Transact input pays its root reads inside the same budget', async () => {
     const seen = torTimeline({ type: 'Transact', read: 150, rootMs: 3000 });
@@ -1632,7 +1632,7 @@ describe('recovered review budget arithmetic over Tor (mocked service)', () => {
     const result = await submit(options);
     expect(result).toEqual({ status: 'recovery-required', stage: 'eoa' });
     expect(diagnosticOf(result)).toEqual({ stage: 'eoa', code: 'RAILGUN_PRIVATE_REVIEW_BUDGET' });
-    // This mocked preflight ignores its disclosure deadline, so the proved
+    // This mocked preflight ignores its admission deadline, so the proved
     // calldata is the only boundary pinned here: it was never simulated.
     expect(mock.events).toContain('preflight');
     expect(mock.events).not.toContain('eth_getCode');

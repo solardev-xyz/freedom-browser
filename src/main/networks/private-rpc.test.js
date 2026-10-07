@@ -685,7 +685,9 @@ describe('per-request admission deadline', () => {
   const methods = () =>
     mockRequest.mock.calls.map(([, , options]) => JSON.parse(options.body).method);
   const ask = (client, deadline, params = []) =>
-    client.request('eth_blockNumber', params, () => true, undefined, { deadline });
+    client.request('eth_blockNumber', params, () => true, undefined, {
+      admissionDeadline: deadline,
+    });
   beforeEach(() => {
     now = 1000;
     clock = jest.spyOn(performance, 'now').mockImplementation(() => now);
@@ -773,14 +775,18 @@ describe('per-request admission deadline', () => {
   });
   const getter = jest.fn(() => 2000);
   test.each([
-    ['NaN', { deadline: NaN }],
-    ['Infinity', { deadline: Infinity }],
-    ['a string', { deadline: '2000' }],
+    ['NaN', { admissionDeadline: NaN }],
+    ['Infinity', { admissionDeadline: Infinity }],
+    ['a string', { admissionDeadline: '2000' }],
     ['null', null],
-    ['an extra field', { deadline: 2000, signal: null }],
-    ['an accessor', Object.defineProperty({}, 'deadline', { enumerable: true, get: getter })],
-    ['a proxy', new Proxy({ deadline: 2000 }, {})],
-    ['an inherited prototype', Object.assign(Object.create({}), { deadline: 2000 })],
+    ['an extra field', { admissionDeadline: 2000, signal: null }],
+    ['the bare deadline key', { deadline: 2000 }],
+    [
+      'an accessor',
+      Object.defineProperty({}, 'admissionDeadline', { enumerable: true, get: getter }),
+    ],
+    ['a proxy', new Proxy({ admissionDeadline: 2000 }, {})],
+    ['an inherited prototype', Object.assign(Object.create({}), { admissionDeadline: 2000 })],
   ])('%s refuses before any transport work', async (_name, admission) => {
     const client = createPrivateRpc(handle, 'transaction-rpc');
     await expect(
@@ -792,7 +798,9 @@ describe('per-request admission deadline', () => {
   test('it is never combined with a read budget', async () => {
     const client = createPrivateRpc(handle, 'transaction-rpc');
     await expect(
-      client.request('eth_blockNumber', [], () => true, Object.freeze({}), { deadline: 2000 })
+      client.request('eth_blockNumber', [], () => true, Object.freeze({}), {
+        admissionDeadline: 2000,
+      })
     ).rejects.toMatchObject({ code: 'PRIVATE_RPC_ADMISSION_INVALID' });
     expect(mockRequest).not.toHaveBeenCalled();
   });

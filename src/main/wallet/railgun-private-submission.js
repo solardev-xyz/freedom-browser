@@ -27,8 +27,12 @@ const REVIEW_WINDOW_MS = 30000;
 // first genuine authority's own unrenewed age. H is offered only if
 // E >= F + sendReserveMs, the time left for the raw send and its
 // acknowledgement. The allowances refuse before the preflight, before the
-// nullifier query (enforced again at the RPC's transport admission) and
-// before any EOA request once the review floor is out of reach.
+// nullifier query is admitted to the transport (the preflight's nullifier
+// admission deadline, enforced again at the RPC's transport admission) and
+// before any EOA request once the review floor is out of reach. Admission is
+// not departure: on a new SOCKS+TLS connection the nullifier can leave after
+// its deadline by the connect time, and a read that outruns the tail then
+// ends in the refusal before any EOA request: disclosed, never sent.
 //
 // The committed policy is H = F with a 10 s send reserve, a 15 s review
 // floor and the 30 s cap. The 10 s reserve is a tested availability
@@ -289,12 +293,13 @@ async function submitFinal({
       ...(claim.destinationConstraints
         ? { destinationConstraint: claim.destinationConstraints.protocol }
         : {}),
-      // Recovered only: the preflight refuses immediately before it would send
-      // the selected nullifier once the review floor is out of reach (the
-      // nullifier read, its anchor recheck and the EOA reads still to come).
+      // Recovered only: the nullifier admission deadline. The preflight and
+      // its RPC refuse to admit the selected nullifier's request to the
+      // transport once the review floor is out of reach (the nullifier read,
+      // its anchor recheck and the EOA reads still to come).
       ...(lifetimeEnd
         ? {
-            disclosureDeadline:
+            admissionDeadline:
               lifetimeEnd() -
               (BUDGET.reviewMinMs +
                 BUDGET.admissionMs +

@@ -734,7 +734,7 @@ async function setup(kit, overrides = {}) {
     };
   };
   // Synchronous work (clock.block, no timer runs) at one point between the
-  // preflight's own nullifier deadline check and transport admission: in the
+  // preflight's own nullifier admission check and transport admission: in the
   // preflight's read path, after the RPC's awaited chain-check promise
   // (ready(), second activity check), or at the RPC's last activity check
   // after serialization (raw(), fourth).
@@ -1173,7 +1173,7 @@ describe('the monotonic admission deadline F against a backward wall-clock step'
   test.each(Object.keys(MONOTONIC))('%s', (name) => MONOTONIC[name]());
 });
 
-describe('the nullifier disclosure boundary', () => {
+describe('the nullifier admission boundary', () => {
   test('a stalled deployment read refuses immediately before the nullifier query', async () => {
     // probe-1 shape: the seventh deployment read stalls 10 s but completes.
     const seen = await run(DEFAULT, {
@@ -1209,6 +1209,23 @@ describe('the nullifier disclosure boundary', () => {
     const deadline = at('verifier-start') + 60000 - before;
     return { deadline, slack: deadline - baseline.nullifier.at };
   }
+  // Admission is not departure. A nullifier admitted 1 ms before the deadline
+  // whose bytes leave 1.5 s later (a new SOCKS+TLS connection still being
+  // set up) and whose reply outruns the 2 s tail is disclosed after the
+  // deadline; the budget check then refuses before any EOA request.
+  test('a nullifier admitted before the deadline but sent after it ends before any EOA request', async () => {
+    const { deadline, slack } = await slackFor();
+    const seen = await run(DEFAULT, {
+      read: (entry) => (entry.name === 'nullifiers' ? 3000 : stall(slack - 1)(entry)),
+    });
+    expect(seen.nullifier.at).toBe(deadline - 1);
+    expect(seen.nullifier.delivered).toBeGreaterThan(deadline);
+    expect(seen.outcome).toBe('refused-after-nullifier');
+    expect(seen.diagnostic).toEqual({ stage: 'eoa', code: 'RAILGUN_PRIVATE_REVIEW_BUDGET' });
+    expect(mock.requests.filter((v) => v.role === 'transaction-rpc')).toEqual([]);
+    expect(seen.attempts).toEqual([]);
+    expect(seen.sends).toEqual([]);
+  });
   test('the deadline is exact at the request: one millisecond later refuses it', async () => {
     const { deadline, slack } = await slackFor();
     const sent = await run(DEFAULT, { read: stall(slack - 1) });
@@ -1315,7 +1332,7 @@ describe('the refusal tuple through the live qualifier report', () => {
     expect(seen.diagnostic).toEqual(tuple);
     expect(qualifierReport(seen).report.submission.diagnostic).toEqual(tuple);
   });
-  test('a nullifier-deadline refusal is stale at nullifiers and never requests the nullifier', async () => {
+  test('a nullifier admission refusal is stale at nullifiers and never requests the nullifier', async () => {
     const seen = await run(DEFAULT, {
       resolved: 4,
       read: (entry) => (entry.role === 'protocol-rpc' && entry.roleIndex === 6 ? 10000 : 150),

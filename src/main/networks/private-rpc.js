@@ -395,20 +395,25 @@ function chargeBudget(state, method, params, consume = true) {
   }
 }
 
-// One request's admission deadline: the monotonic instant (performance.now())
-// from which that request must not reach the transport. Data that can only
-// refuse: it never cancels an admitted request, revokes the client or grants
-// method authority. Unbudgeted requests only; a read budget's own deadline
-// already gates its admission in chargeBudget().
+// One request's admission deadline ({ admissionDeadline }): the monotonic
+// instant (performance.now()) from which that request is not admitted to the
+// transport. It bounds admission, not when bytes leave: a request admitted
+// just before it on a reused keep-alive socket is written on the next tick,
+// but on a new SOCKS+TLS connection its bytes leave only once the Tor stream
+// and TLS handshake are up, after the deadline by up to that connect time.
+// Data that can only refuse: it never cancels an admitted request, revokes
+// the client or grants method authority (a destination constraint's deadline
+// is the one that aborts in-flight work). Unbudgeted requests only; a read
+// budget's own deadline already gates its admission in chargeBudget().
 function admissionDeadline(value, budget) {
   if (value === undefined) return;
   try {
-    plain(value, ['deadline']);
-    requireBudget(budget === undefined && Number.isFinite(value.deadline));
+    plain(value, ['admissionDeadline']);
+    requireBudget(budget === undefined && Number.isFinite(value.admissionDeadline));
   } catch {
     throw privacyError('PRIVATE_RPC_ADMISSION_INVALID', 'Invalid private RPC admission deadline');
   }
-  return value.deadline;
+  return value.admissionDeadline;
 }
 function admitBefore(deadline) {
   if (deadline !== undefined && !(performance.now() < deadline))

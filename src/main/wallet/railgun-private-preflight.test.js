@@ -317,7 +317,7 @@ test.each([undefined, null, '', '01x02', 'partial-unshield', 'railgun-partial-tr
     expect(mockRequest).not.toHaveBeenCalled();
   }
 );
-describe('caller nullifier disclosure deadline', () => {
+describe('caller nullifier admission deadline', () => {
   const sent = () =>
     mockRequest.mock.calls
       .filter(([method]) => method === 'eth_call')
@@ -336,7 +336,7 @@ describe('caller nullifier disclosure deadline', () => {
   test('refuses immediately before the nullifier request once the deadline is reached', async () => {
     source.close();
     slowReads();
-    source = open(input(), { disclosureDeadline: 4000 });
+    source = open(input(), { admissionDeadline: 4000 });
     await expect(source.acquire()).rejects.toMatchObject({
       code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
       reason: 'stale',
@@ -348,10 +348,10 @@ describe('caller nullifier disclosure deadline', () => {
   test('one millisecond before the deadline the nullifier is queried and the receipt is unchanged', async () => {
     source.close();
     slowReads();
-    source = open(input(), { disclosureDeadline: 4001 });
+    source = open(input(), { admissionDeadline: 4001 });
     const acquired = await source.acquire();
     expect(sent()).toEqual(['rootHistory', 'unshieldFee', 'getVerificationKey', 'nullifiers']);
-    expect(Object.hasOwn(acquired.observation, 'disclosureDeadline')).toBe(false);
+    expect(Object.hasOwn(acquired.observation, 'admissionDeadline')).toBe(false);
     expect(assertRailgunPrivatePreflight(source, acquired.receipt, mockEnrollment)).toBe(
       acquired.observation
     );
@@ -362,12 +362,12 @@ describe('caller nullifier disclosure deadline', () => {
   test('only the nullifier request carries the deadline to the RPC admission gate', async () => {
     source.close();
     slowReads();
-    source = open(input(), { disclosureDeadline: 4001 });
+    source = open(input(), { admissionDeadline: 4001 });
     await source.acquire();
     const nullifier = abi.getFunction('nullifiers').selector;
     for (const call of mockRequest.mock.calls) {
       if (call[0] === 'eth_call' && call[1][0].data.startsWith(nullifier))
-        expect(call.slice(3)).toEqual([undefined, { deadline: 4001 }]);
+        expect(call.slice(3)).toEqual([undefined, { admissionDeadline: 4001 }]);
       else expect(call).toHaveLength(3);
     }
     expect(sent()).toContain('nullifiers');
@@ -375,7 +375,7 @@ describe('caller nullifier disclosure deadline', () => {
   test('an RPC admission refusal at the nullifier request is stale, not a transport failure', async () => {
     source.close();
     slowReads();
-    source = open(input(), { disclosureDeadline: 4001 });
+    source = open(input(), { admissionDeadline: 4001 });
     const reply = mockRequest.getMockImplementation();
     mockRequest.mockImplementation(async (method, params, ...rest) => {
       if (rest.length > 1)
@@ -410,15 +410,15 @@ describe('caller nullifier disclosure deadline', () => {
   });
   test.each([NaN, Infinity, '4000', null, {}])(
     'a non-finite deadline %p refuses before transport construction',
-    (disclosureDeadline) => {
+    (admissionDeadline) => {
       mockRpcOptions.mockClear();
-      expect(() => open(input(), { disclosureDeadline })).toThrow(
+      expect(() => open(input(), { admissionDeadline })).toThrow(
         'Railgun private preflight unavailable'
       );
       expect(mockRpcOptions).not.toHaveBeenCalled();
     }
   );
-  test('the relay preflight accepts no disclosure deadline', () => {
+  test('the relay preflight accepts no admission deadline', () => {
     mockRelay = true;
     mockRpcOptions.mockClear();
     expect(() =>
@@ -426,7 +426,7 @@ describe('caller nullifier disclosure deadline', () => {
         enrollment: mockEnrollment,
         input: input(),
         artifactDirectory: '/fixture/artifacts',
-        disclosureDeadline: Number.MAX_SAFE_INTEGER,
+        admissionDeadline: Number.MAX_SAFE_INTEGER,
       })
     ).toThrow('Railgun private preflight unavailable');
     expect(mockRpcOptions).not.toHaveBeenCalled();

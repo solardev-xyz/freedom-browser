@@ -27,7 +27,7 @@ jest.mock('./railgun-private-preflight', () => ({
   createRailgunPrivatePreflight: (options) => {
     const { input, destinationConstraint, intentKind } = options;
     // The warm path carries no recovered review budget.
-    mock.preflightDeadline = Object.hasOwn(options, 'disclosureDeadline');
+    mock.preflightDeadline = Object.hasOwn(options, 'admissionDeadline');
     mock.preflightKind = intentKind;
     mock.preflightConstraint = destinationConstraint;
     mock.step('preflight-open');
