@@ -75,12 +75,20 @@ function createPreflight(options, relay = false) {
   check(options && !isProxy(options) && Object.getPrototypeOf(options) === Object.prototype);
   const descriptors = Object.getOwnPropertyDescriptors(options);
   const required = ['enrollment', 'input', 'artifactDirectory'];
-  const allowed = [...required, 'destinationConstraint', 'intentKind'];
+  const allowed = [...required, 'destinationConstraint', 'intentKind', 'disclosureDeadline'];
   check(required.every((key) => Object.hasOwn(descriptors, key)));
   check(Reflect.ownKeys(descriptors).every((key) => allowed.includes(key)));
   for (const descriptor of Object.values(descriptors))
     check(Object.hasOwn(descriptor, 'value') && descriptor.enumerable);
   const { enrollment, input, artifactDirectory, destinationConstraint, intentKind } = options;
+  // Private spend only: the last monotonic instant (performance.now()) at
+  // which the selected nullifier may be sent. Data, not authority: it can
+  // only refuse earlier, and receipt ages are unchanged.
+  const disclosureDeadline = options.disclosureDeadline;
+  check(
+    !Object.hasOwn(descriptors, 'disclosureDeadline') ||
+      (!relay && Number.isFinite(disclosureDeadline))
+  );
   check(
     !Object.hasOwn(descriptors, 'intentKind') ||
       (!relay &&
@@ -236,6 +244,10 @@ function createPreflight(options, relay = false) {
       }
       // Expose the selected nullifier only after deployment, fee, root and
       // verifier checks succeed; it can link this query to a later spend.
+      // The caller's deadline is checked here, at the disclosure boundary:
+      // only synchronous admission checks run between it and the transport.
+      step = 'nullifiers';
+      check(disclosureDeadline === undefined || performance.now() < disclosureDeadline, 'stale');
       await getter('nullifiers', [selected.tree, selected.nullifier], false);
       step = 'anchor-recheck';
       const reread = await read(

@@ -24,7 +24,10 @@ jest.mock('./railgun-private-proof', () => ({
   },
 }));
 jest.mock('./railgun-private-preflight', () => ({
-  createRailgunPrivatePreflight: ({ input, destinationConstraint, intentKind }) => {
+  createRailgunPrivatePreflight: (options) => {
+    const { input, destinationConstraint, intentKind } = options;
+    // The warm path carries no recovered review budget.
+    mock.preflightDeadline = Object.hasOwn(options, 'disclosureDeadline');
     mock.preflightKind = intentKind;
     mock.preflightConstraint = destinationConstraint;
     mock.step('preflight-open');
@@ -230,6 +233,7 @@ test('claims internally, reattests under exclusion, verifies C then preflight be
   ];
   expect(mock.events.filter((v) => ordered.includes(v))).toEqual(ordered);
   expect(mock.preflightInput.minimumBlock).toBe(10);
+  expect(mock.preflightDeadline).toBe(false);
   expect(() => authorize(mock.handle, mock.intent)).toThrow();
   expect((await submit(options)).status).toBe('recovery-required');
   expect(mock.events.filter((v) => v === 'broadcast')).toHaveLength(1);

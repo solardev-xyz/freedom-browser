@@ -317,6 +317,69 @@ test.each([undefined, null, '', '01x02', 'partial-unshield', 'railgun-partial-tr
     expect(mockRequest).not.toHaveBeenCalled();
   }
 );
+describe('caller nullifier disclosure deadline', () => {
+  const sent = () =>
+    mockRequest.mock.calls
+      .filter(([method]) => method === 'eth_call')
+      .map(([, params]) => abi.parseTransaction(params[0]).name);
+  // Each simulated read takes 1,000 ms: the nullifier boundary is reached at
+  // 4,000 ms, after the rootHistory, unshieldFee and verifier reads.
+  function slowReads() {
+    let now = 1000;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const reply = mockRequest.getMockImplementation();
+    mockRequest.mockImplementation(async (...args) => {
+      now += 1000;
+      return reply(...args);
+    });
+  }
+  test('refuses immediately before the nullifier request once the deadline is reached', async () => {
+    source.close();
+    slowReads();
+    source = open(input(), { disclosureDeadline: 4000 });
+    await expect(source.acquire()).rejects.toMatchObject({
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'stale',
+      step: 'nullifiers',
+    });
+    expect(sent()).toEqual(['rootHistory', 'unshieldFee', 'getVerificationKey']);
+    expect(mockDeployment.close).toHaveBeenCalled();
+  });
+  test('one millisecond before the deadline the nullifier is queried and the receipt is unchanged', async () => {
+    source.close();
+    slowReads();
+    source = open(input(), { disclosureDeadline: 4001 });
+    const acquired = await source.acquire();
+    expect(sent()).toEqual(['rootHistory', 'unshieldFee', 'getVerificationKey', 'nullifiers']);
+    expect(Object.hasOwn(acquired.observation, 'disclosureDeadline')).toBe(false);
+    expect(assertRailgunPrivatePreflight(source, acquired.receipt, mockEnrollment)).toBe(
+      acquired.observation
+    );
+  });
+  test.each([NaN, Infinity, '4000', null, {}])(
+    'a non-finite deadline %p refuses before transport construction',
+    (disclosureDeadline) => {
+      mockRpcOptions.mockClear();
+      expect(() => open(input(), { disclosureDeadline })).toThrow(
+        'Railgun private preflight unavailable'
+      );
+      expect(mockRpcOptions).not.toHaveBeenCalled();
+    }
+  );
+  test('the relay preflight accepts no disclosure deadline', () => {
+    mockRelay = true;
+    mockRpcOptions.mockClear();
+    expect(() =>
+      createRailgunRelayPreflight({
+        enrollment: mockEnrollment,
+        input: input(),
+        artifactDirectory: '/fixture/artifacts',
+        disclosureDeadline: Number.MAX_SAFE_INTEGER,
+      })
+    ).toThrow('Railgun private preflight unavailable');
+    expect(mockRpcOptions).not.toHaveBeenCalled();
+  });
+});
 test.each(['getter', 'proxy', 'variant', 'outputs', 'symbol'])(
   'closed constructor refuses %s without evaluating caller code or opening RPC',
   (kind) => {

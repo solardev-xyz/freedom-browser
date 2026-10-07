@@ -17,18 +17,47 @@ const fail = () =>
   Object.assign(new Error('Railgun private submission unavailable'), {
     code: 'RAILGUN_PRIVATE_SUBMISSION_REFUSED',
   });
-// Recovered review budget. Every authority keeps its own unrenewed age; these
-// only split what is left between the review and the post-approval send.
-// The review never exceeds the existing 30 s cap and is offered only if every
-// authority outlives its deadline by SEND_RESERVE_MS (signing, journal begin
-// and the raw send). The allowances refuse before the nullifier query or the
-// calldata simulation when the floor is already out of reach.
+// The warm review window, and the cap no recovered review may exceed.
 const REVIEW_WINDOW_MS = 30000;
-const REVIEW_MIN_MS = 15000;
-const SEND_RESERVE_MS = 10000;
-const EOA_ALLOWANCE_MS = 5000;
-const PREFLIGHT_ALLOWANCE_MS = 5000;
+// Recovered review budget: a pinned policy, never caller data. Three clocks:
+// H, the person's review deadline; F = H + admissionMs, by which signing,
+// history reconciliation and journal begin must be admitted (the service's
+// review expiry, checked again before and after journal begin); and E, the
+// first genuine authority's own unrenewed age. H is offered only if
+// E >= F + sendReserveMs (the raw send and its acknowledgement). The
+// allowances refuse before the preflight, immediately before the nullifier
+// query and before any EOA request once the review floor is out of reach.
+const BUDGET = (() => {
+  const value = require('./railgun-recovered-review-budget.json');
+  const keys = [
+    'admissionMs',
+    'disclosureTailMs',
+    'eoaAllowanceMs',
+    'preflightAllowanceMs',
+    'reviewMinMs',
+    'reviewWindowMs',
+    'sendReserveMs',
+  ];
+  assert.deepEqual(Object.keys(value).sort(), keys);
+  for (const key of keys) assert.ok(Number.isSafeInteger(value[key]) && value[key] >= 0);
+  assert.ok(
+    value.reviewWindowMs <= REVIEW_WINDOW_MS &&
+      value.reviewMinMs > 0 &&
+      value.reviewMinMs <= value.reviewWindowMs &&
+      value.sendReserveMs > 0 &&
+      value.reviewWindowMs + value.admissionMs + value.sendReserveMs < 60000 &&
+      value.reviewMinMs +
+        value.admissionMs +
+        value.sendReserveMs +
+        value.preflightAllowanceMs +
+        value.eoaAllowanceMs <
+        60000
+  );
+  return Object.freeze({ ...value });
+})();
 // railgun-private-proof.js: a receipt lives 60 s after its verifier exits.
+// The caller's estimate starts before the verifier runs, so it is earlier
+// than the genuine expiry by the verifier's own duration (conservative).
 const PROOF_RECEIPT_MS = 60000;
 const budgetFail = () =>
   Object.assign(new Error('Railgun private review budget unavailable'), {
@@ -232,6 +261,20 @@ async function submitFinal({
       ...(claim.destinationConstraints
         ? { destinationConstraint: claim.destinationConstraints.protocol }
         : {}),
+      // Recovered only: the preflight refuses immediately before it would send
+      // the selected nullifier once the review floor is out of reach (the
+      // nullifier read, its anchor recheck and the EOA reads still to come).
+      ...(lifetimeEnd
+        ? {
+            disclosureDeadline:
+              lifetimeEnd() -
+              (BUDGET.reviewMinMs +
+                BUDGET.admissionMs +
+                BUDGET.sendReserveMs +
+                BUDGET.eoaAllowanceMs +
+                BUDGET.disclosureTailMs),
+          }
+        : {}),
     });
     const stop = () => preflight.close();
     const signal = AbortSignal.any([claim.signal, context.signal]);
@@ -295,19 +338,30 @@ async function submitFinal({
     assert.equal(intent.intentDigest, snapshot.entry.facts.intentDigest);
     submissions.set(handle, { intent, assertCurrent });
     state.stage = 'eoa';
-    const reviewStarted = performance.now();
-    let reviewMs = REVIEW_WINDOW_MS;
+    const wallStarted = Date.now(),
+      monoStarted = performance.now();
+    let reviewMs = REVIEW_WINDOW_MS,
+      admissionMs = 0;
     if (lifetimeEnd) {
-      // Shorten, never renew: the review ends SEND_RESERVE_MS before the
+      // Shorten, never renew: H ends admissionMs + sendReserveMs before the
       // first authority would. Refused here, before any EOA request
       // discloses the proved calldata, unless the floor remains reachable.
       const end = Math.min(lifetimeEnd(), preflightStarted + PREFLIGHT_MAX_AGE_MS);
-      reviewMs = Math.min(REVIEW_WINDOW_MS, leftUntil(end) - SEND_RESERVE_MS);
-      if (!(reviewMs >= REVIEW_MIN_MS + EOA_ALLOWANCE_MS)) throw budgetFail();
-      assertCurrent(reviewMs + SEND_RESERVE_MS);
+      admissionMs = BUDGET.admissionMs;
+      reviewMs = Math.min(
+        BUDGET.reviewWindowMs,
+        leftUntil(end) - admissionMs - BUDGET.sendReserveMs
+      );
+      if (!(reviewMs >= BUDGET.reviewMinMs + BUDGET.eoaAllowanceMs)) throw budgetFail();
+      assertCurrent(reviewMs + admissionMs + BUDGET.sendReserveMs);
     }
-    const reviewDeadline = Date.now() + reviewMs;
-    const reviewEnd = reviewStarted + reviewMs;
+    // H (the person's deadline) and F (signing and journal admission) on
+    // both clocks, fixed before any EOA request and never renewed. The warm
+    // path keeps F = H: one 30 s deadline for review, signing and begin.
+    const reviewDeadline = wallStarted + reviewMs,
+      reviewEnd = monoStarted + reviewMs;
+    const admissionDeadline = reviewDeadline + admissionMs,
+      admissionEnd = reviewEnd + admissionMs;
     await network.assertCanSubmit(scope.signal);
     assert.equal(
       (await network.request(pins.chainId, 'eth_getCode', [owner, 'pending'])).result,
@@ -334,14 +388,15 @@ async function submitFinal({
         signingAttempted = true;
         await attest();
         assertCurrent();
-        // A wall-clock step cannot extend a recovered review past its
+        // A wall-clock step cannot extend recovered admission past its
         // monotonic end, which the send reserve was measured against.
-        if (lifetimeEnd) assert.ok(performance.now() < reviewEnd);
+        if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);
         const signed = await signer.signTransaction(transaction);
         // Signing may be held across durable history changes. Re-read both
         // private records before exposing signed bytes to raw submission.
         await attest();
         assertCurrent();
+        if (lifetimeEnd) assert.ok(performance.now() < admissionEnd);
         return signed;
       }),
     });
@@ -357,7 +412,9 @@ async function submitFinal({
       {
         privacyContext: handle,
         intent,
-        reviewExpiresAt: reviewDeadline,
+        // The service's single expiry is F: it bounds the review step,
+        // signing, and the checks before and after journal begin.
+        reviewExpiresAt: admissionDeadline,
         review: track(async (request) => {
           await attest();
           assertCurrent();
@@ -387,16 +444,18 @@ async function submitFinal({
             .then(() => {
               // This is admission to the actual review callback, after every
               // setup await. Do not renew the service's existing review clock.
-              // A recovered review needs its floor left, and every authority
-              // must outlive the review's end by the post-approval reserve.
+              // A recovered review needs its floor left before H, and every
+              // authority must outlive F by the send reserve.
               if (lifetimeEnd) {
                 const left = leftUntil(reviewEnd);
-                if (!(left >= REVIEW_MIN_MS)) throw budgetFail();
-                assertCurrent(left + SEND_RESERVE_MS);
+                if (!(left >= BUDGET.reviewMinMs)) throw budgetFail();
+                assertCurrent(left + admissionMs + BUDGET.sendReserveMs);
               } else assertCurrent();
               return review(
                 Object.freeze({
                   ...request,
+                  // The person's deadline is H, never the later admission F.
+                  expiresAt: reviewDeadline,
                   intent,
                   operation: intent.operation,
                   // The signed capsule's own foreign destination, never caller data.
@@ -417,6 +476,7 @@ async function submitFinal({
             });
           await attest();
           assertCurrent();
+          // Approval counts only before H, on both clocks.
           assert.ok(Date.now() < reviewDeadline);
           if (lifetimeEnd) assert.ok(performance.now() < reviewEnd);
           return approved === true;
@@ -1221,7 +1281,9 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
               clearTimeout(rootTimer);
             }
           }
-          // Conservative: the genuine receipts below remain the authority.
+          // Conservative: each start was taken before its acquisition (C before
+          // the verifier ran, so earlier than its genuine expiry by the
+          // verifier's duration). The genuine receipts remain the authority.
           const lifetimeEnd = () =>
             Math.min(
               deadline,
@@ -1230,9 +1292,16 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
               poiStarted + require('./railgun-poi-source').MAX_AGE_MS,
               rootPoint ? rootStarted + require('./railgun-txid-root').MAX_AGE_MS : Infinity
             );
-          // Before the nullifier query: refuse once the review floor, the send
-          // reserve and the expected preflight and EOA reads cannot all fit.
-          const early = REVIEW_MIN_MS + SEND_RESERVE_MS + PREFLIGHT_ALLOWANCE_MS + EOA_ALLOWANCE_MS;
+          // Before any preflight read: refuse once the review floor, admission,
+          // the send reserve and the expected preflight and EOA reads cannot
+          // all fit. An early hint only: the preflight itself enforces the
+          // nullifier boundary against the same estimate.
+          const early =
+            BUDGET.reviewMinMs +
+            BUDGET.admissionMs +
+            BUDGET.sendReserveMs +
+            BUDGET.preflightAllowanceMs +
+            BUDGET.eoaAllowanceMs;
           if (!(leftUntil(lifetimeEnd()) >= early)) throw budgetFail();
           live(early);
           await attest();
