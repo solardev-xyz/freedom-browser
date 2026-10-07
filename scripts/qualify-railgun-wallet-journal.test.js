@@ -135,8 +135,8 @@ test('public adapter inventory adds exact evidence paths only when selected', ()
     'scripts/qualify-railgun-wallet-journal.test.js',
   ]);
   expect(selected.filter((name) => !additions.includes(name))).toEqual(baseline);
-  expect(new Set(baseline).size).toBe(193);
-  expect(new Set(selected).size).toBe(201);
+  expect(new Set(baseline).size).toBe(194);
+  expect(new Set(selected).size).toBe(202);
   expect(baseline).toEqual(
     expect.arrayContaining([
       'scripts/fixtures/railgun-transact-staging-source.js',
@@ -145,6 +145,8 @@ test('public adapter inventory adds exact evidence paths only when selected', ()
       'src/main/wallet/railgun-note-provenance-job.js',
       'src/main/wallet/railgun-txid-note-witness.js',
       'src/main/wallet/railgun-txid-root.js',
+      // Loaded by railgun-private-submission.js at module load.
+      'src/main/wallet/railgun-recovered-review-budget.json',
     ])
   );
   expect(baseline).toContain('scripts/fixtures/railgun-kohaku-contract-observer.js');
