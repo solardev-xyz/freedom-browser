@@ -5,10 +5,18 @@ const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
 
 const PACKAGE = '@freedom/railgun-kohaku-adapter';
-const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.1.0.tgz';
+const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.2.0.tgz';
 const root = path.resolve(__dirname, '../../..');
 const installed = path.join(root, 'node_modules', PACKAGE);
 const modules = {
+  'railgun-private-policy': [
+    PACKAGE + '/host/data',
+    ['TRANSACT_ABI', 'BOUND_PARAMS', 'validateRailgunPrivateTransaction'],
+  ],
+  'railgun-private-intent': [
+    PACKAGE + '/host/data',
+    ['validateRailgunPrivateSigningIntent', 'matchRailgunPrivateProvedTransaction'],
+  ],
   'railgun-kohaku-private-adapter': [
     PACKAGE,
     ['createRailgunKohakuPrivateAdapter', 'createRailgunKohakuPrivateAdapterBroadcaster'],
@@ -55,7 +63,9 @@ test.each(Object.entries(modules))(
     expect(Object.getPrototypeOf(freedom)).toBe(Object.prototype);
     expect(Object.keys(freedom)).toEqual(keys);
     for (const key of keys) {
-      expect(typeof upstream[key]).toBe('function');
+      expect(typeof upstream[key]).toBe(
+        ['TRANSACT_ABI', 'BOUND_PARAMS'].includes(key) ? 'string' : 'function'
+      );
       expect(freedom[key]).toBe(upstream[key]);
     }
   }
@@ -90,6 +100,11 @@ test('the package resolves to one installed copy from the wallet modules', () =>
     [
       'index.cjs',
       'read.cjs',
+      'host-data.cjs',
+      'src/data/railgun-private-policy.js',
+      'src/data/railgun-private-intent.js',
+      'src/data/railgun-private-offer.js',
+      'src/data/railgun-private-capsule.js',
       'src/railgun-kohaku-private-adapter.js',
       'src/railgun-kohaku-public-adapter.js',
       'src/railgun-kohaku-read-data.js',
@@ -112,7 +127,7 @@ test('the installed package is the committed tarball the lockfile names', () => 
   expect(entry.resolved).toBe('file:' + TARBALL);
   expect(entry.integrity).toBe('sha512-' + createHash('sha512').update(bytes).digest('base64'));
   expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-    '3f352523e95a9af07ae3713e6ba0ad98c547537c7aa32eec1029bfc773f12f92'
+    '752ace2fbd3fa08a5ec036aa688021e322785ff7903da7555082f88d92b4c610'
   );
   const files = untar(bytes);
   expect(Object.keys(files).sort()).toEqual(
@@ -124,7 +139,20 @@ test('the installed package is the committed tarball the lockfile names', () => 
       'index.mjs',
       'package.json',
       'read.cjs',
+      'host-data.cjs',
+      'src/data/railgun-private-policy.js',
+      'src/data/railgun-private-intent.js',
+      'src/data/railgun-private-offer.js',
+      'src/data/railgun-private-capsule.js',
       'read.mjs',
+      'data.cjs',
+      'data.mjs',
+      'host-data.mjs',
+      'src/data/index.js',
+      'types/data.d.ts',
+      'types/data.d.mts',
+      'types/host-data.d.ts',
+      'types/host-data.d.mts',
       'src/railgun-kohaku-private-adapter.js',
       'src/railgun-kohaku-public-adapter.js',
       'src/railgun-kohaku-read-data.js',
@@ -160,5 +188,16 @@ test('the installed package is the committed tarball the lockfile names', () => 
 test('Freedom keeps the shield pins the package adapters read, byte for byte', () => {
   expect(fs.readFileSync(path.join(__dirname, 'railgun-shield-pins.json'))).toEqual(
     fs.readFileSync(path.join(installed, 'src/railgun-shield-pins.json'))
+  );
+});
+
+test('Freedom retains owned preparation and new-capsule checks around host data exports', () => {
+  const host = require(PACKAGE + '/host/data');
+  const capsule = require('./railgun-private-capsule');
+  expect(capsule.normalizeRailgunPrivateCapsule).toBe(host.normalizeRailgunPrivateCapsule);
+  expect(capsule.digestRailgunPrivateCapsule).toBe(host.digestRailgunPrivateCapsule);
+  expect(typeof capsule.normalizeRailgunNewCapsule).toBe('function');
+  expect(require('./railgun-private-preparation').normalizeRailgunPrivateOffer).toBe(
+    host.normalizeRailgunPrivateOffer
   );
 });

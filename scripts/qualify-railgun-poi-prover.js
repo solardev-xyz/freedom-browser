@@ -18,6 +18,7 @@ async function main() {
   app.dock?.hide();
   await app.whenReady();
   const files = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-poi-prover.js',
     'scripts/fixtures/railgun-poi-prover-job.js',
     'scripts/fixtures/railgun-poi-witness-data.js',

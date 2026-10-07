@@ -14,6 +14,7 @@ async function main() {
   app.dock?.hide();
   await app.whenReady();
   const files = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-poi-shield-selector.js',
     'scripts/fixtures/railgun-poi-shield-selector-input-job.js',
     'scripts/fixtures/railgun-own-txid-data.js',

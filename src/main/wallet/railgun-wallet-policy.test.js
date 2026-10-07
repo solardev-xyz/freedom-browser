@@ -66,9 +66,15 @@ test('an unauthenticated archive cannot obtain a wallet policy', () => {
 test.each([
   'package.json',
   'read.cjs',
+  'host-data.cjs',
+  'src/data/railgun-private-policy.js',
+  'src/data/railgun-private-intent.js',
+  'src/data/railgun-private-offer.js',
+  'src/data/railgun-private-capsule.js',
+  'src/railgun-shield-pins.json',
   'src/railgun-kohaku-read-data.js',
   'src/railgun-kohaku-read-dispatch.js',
-])('policy binds the installed adapter %s that the read-data re-export loads', (name) => {
+])('policy binds the installed adapter %s that Freedom data wrappers load', (name) => {
   const first = getRailgunWalletPolicy('/first/engine.asar');
   const filename = path.join(adapter, name);
   const original = fs.readFileSync;
@@ -107,10 +113,10 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     expect(included.has(filename)).toBe(true);
     const text = fs.readFileSync(filename, 'utf8');
     for (const [, name] of text.matchAll(
-      /require\(['"]((?:\.\/|@freedom\/railgun-kohaku-adapter)[^'"]*)['"]\)/g
+      /require\(['"]((?:\.\.?\/|@freedom\/railgun-kohaku-adapter)[^'"]*)['"]\)/g
     )) {
       // Package re-exports are traversed into the installed files they load.
-      const dependency = name.startsWith('./')
+      const dependency = name.startsWith('.')
         ? require.resolve(path.resolve(path.dirname(filename), name))
         : require.resolve(name, { paths: [path.dirname(filename)] });
       if (path.dirname(dependency) === __dirname || dependency.startsWith(adapter + path.sep))
@@ -136,11 +142,21 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-relay-proof',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(60);
+  expect(visited.size).toBe(66);
   expect([...visited].filter((name) => name.startsWith(adapter + path.sep)).sort()).toEqual(
-    ['read.cjs', 'src/railgun-kohaku-read-data.js', 'src/railgun-kohaku-read-dispatch.js'].map(
-      (name) => path.join(adapter, name)
-    )
+    [
+      'read.cjs',
+      'src/railgun-kohaku-read-data.js',
+      'src/railgun-kohaku-read-dispatch.js',
+      'host-data.cjs',
+      'src/data/railgun-private-policy.js',
+      'src/data/railgun-private-intent.js',
+      'src/data/railgun-private-offer.js',
+      'src/data/railgun-private-capsule.js',
+      'src/railgun-shield-pins.json',
+    ]
+      .map((name) => path.join(adapter, name))
+      .sort()
   );
   // The exports map in package.json selects which installed file runs.
   expect(included.has(path.join(adapter, 'package.json'))).toBe(true);

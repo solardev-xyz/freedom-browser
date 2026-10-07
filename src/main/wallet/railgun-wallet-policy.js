@@ -67,13 +67,19 @@ const sources = [
   'railgun-scan-journal',
   'railgun-public-records',
 ];
-// railgun-kohaku-read-data re-exports @freedom/railgun-kohaku-adapter/read, so
+// Read projections and private data validation re-export the installed adapter, so
 // the installed package bytes it loads (and the exports map that selects them)
 // bind host validation just as wallet modules do.
 const adapter = '@freedom/railgun-kohaku-adapter';
 const adapterSources = [
   'package.json',
   'read.cjs',
+  'host-data.cjs',
+  'src/data/railgun-private-policy.js',
+  'src/data/railgun-private-intent.js',
+  'src/data/railgun-private-offer.js',
+  'src/data/railgun-private-capsule.js',
+  'src/railgun-shield-pins.json',
   'src/railgun-kohaku-read-data.js',
   'src/railgun-kohaku-read-dispatch.js',
 ];

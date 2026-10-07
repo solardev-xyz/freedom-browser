@@ -21,6 +21,7 @@ async function main() {
     { openRailgunAccountEnrollment } = require('../src/main/wallet/railgun-account-enrollment'),
     { openRailgunAccountStore } = require('../src/main/wallet/railgun-account-store');
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-enrollment.js',
     'src/main/wallet/railgun-account-enrollment.js',
     'src/main/wallet/railgun-account-fence.js',

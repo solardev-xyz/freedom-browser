@@ -110,6 +110,7 @@ async function main() {
     require('../docs/qualification/railgun-public-generations-2026-10-03.json').sourceSha256
   );
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     ...new Set([
       ...qualifiedSources,
       'scripts/qualify-railgun-live.js',

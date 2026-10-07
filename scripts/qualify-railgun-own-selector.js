@@ -11,6 +11,7 @@ const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
 const { deriveRailgunOwnSelector } = require('../src/main/wallet/railgun-own-selector');
 const { extractRailgunTransactIntent } = require('../src/main/wallet/railgun-transact-intent');
 const sources = [
+  ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   'scripts/qualify-railgun-own-selector.js',
   'scripts/fixtures/railgun-own-txid-job.js',
   'scripts/fixtures/railgun-own-txid-data.js',

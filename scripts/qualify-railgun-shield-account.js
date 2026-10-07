@@ -23,6 +23,7 @@ async function main() {
   await app.whenReady();
   const vault = require('../src/main/identity/vault');
   const names = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-shield-account.js',
     'scripts/qualify-ppv2-live.js',
     'src/main/wallet/railgun-shield-pins.json',

@@ -48,6 +48,7 @@ async function main() {
   await app.whenReady();
   const names = [
     ...new Set([
+      ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
       ...Object.keys(
         require('../docs/qualification/railgun-shield-account-2026-10-03.json').sourceSha256
       ),

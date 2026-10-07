@@ -18,6 +18,7 @@ async function main() {
   app.dock?.hide();
   await app.whenReady();
   const files = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-poi-reconstruction.js',
     'scripts/fixtures/railgun-poi-reconstruction-job.js',
     'src/main/wallet/railgun-poi-reconstruct.js',

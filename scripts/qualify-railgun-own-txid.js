@@ -10,6 +10,7 @@ const { createPrivacyScope } = require('../src/main/networks/privacy-context');
 const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
 const { verifyRailgunOwnTxid } = require('../src/main/wallet/railgun-own-txid-verifier');
 const sources = [
+  ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
   'scripts/qualify-railgun-own-txid.js',
   'scripts/fixtures/railgun-own-txid-job.js',
   'scripts/fixtures/railgun-own-txid-data.js',

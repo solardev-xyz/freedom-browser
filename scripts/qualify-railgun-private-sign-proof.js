@@ -28,6 +28,7 @@ async function main() {
     .map(hex);
   fixtureKey.fill(0);
   const sourceFiles = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-private-sign-proof.js',
     'scripts/fixtures/railgun-private-sign-proof-job.js',
     'scripts/fixtures/railgun-private-recovery-job.js',

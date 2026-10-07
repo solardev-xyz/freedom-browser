@@ -19,7 +19,7 @@ test('pins this list, the lockfile and every installed adapter file that can loa
     expect(path.isAbsolute(name) || name.split('/').includes('..')).toBe(false);
     expect(fs.statSync(path.join(root, name)).isFile()).toBe(true);
   }
-  // Everything the five Freedom re-exports load, in a real Node module cache.
+  // Every installed file reached by the Freedom adapter and private-data wrappers.
   const loaded = JSON.parse(
     execFileSync(
       process.execPath,
@@ -27,6 +27,8 @@ test('pins this list, the lockfile and every installed adapter file that can loa
         '-e',
         `for (const name of ['private-adapter', 'public-adapter', 'snapshot-plugin', 'read-data',
           'read-dispatch']) require('./src/main/wallet/railgun-kohaku-' + name);
+        for (const name of ['policy', 'intent', 'capsule', 'preparation'])
+          require('./src/main/wallet/railgun-private-' + name);
         process.stdout.write(JSON.stringify(Object.keys(require.cache)));`,
       ],
       { cwd: root, encoding: 'utf8' }
@@ -34,7 +36,7 @@ test('pins this list, the lockfile and every installed adapter file that can loa
   )
     .filter((file) => file.startsWith(installed + path.sep))
     .map((file) => path.relative(root, file));
-  expect(loaded.length).toBe(8);
+  expect(loaded.length).toBe(13);
   // The exports map in package.json decides which installed file runs.
   expect(SOURCES.slice(2).sort()).toEqual(
     [...loaded, path.relative(root, path.join(installed, 'package.json'))].sort()

@@ -15,6 +15,7 @@ const {
   installIdentityObserver,
   verifyInputs,
 } = require('./qualify-railgun-cooperative-enrollment');
+const { SOURCES } = require('./fixtures/railgun-kohaku-adapter-sources');
 const generation = 'a'.repeat(64);
 const policy = '2'.repeat(64);
 const refused = () =>
@@ -183,6 +184,7 @@ function inputFixture({ linked = false } = {}) {
     output = '/private/tmp/unit-cooperative';
   const data = Buffer.from('public source-only dummy');
   const names = [
+    ...SOURCES,
     'scripts/qualify-railgun-cooperative-enrollment.js',
     'src/main/wallet/railgun-account-enrollment.js',
     'src/main/wallet/railgun-account-fence.js',
@@ -291,6 +293,28 @@ test('child refuses source drift and profile inventory injection', () => {
       runtimeInputs: {
         ...config.runtimeInputs,
         [config.output + '/writer-fence.sqlite']: { bytes: 1, sha256: '0'.repeat(64) },
+      },
+    })
+  ).toThrow();
+});
+
+test.each(SOURCES)('child requires the shared source pin %s', (name) => {
+  const { config } = inputFixture();
+  const sources = { ...config.sources };
+  delete sources[name];
+  expect(() => verifyInputs({ ...config, sources })).toThrow();
+  expect(() =>
+    verifyInputs({ ...config, sources: { ...config.sources, [name]: '0'.repeat(64) } })
+  ).toThrow();
+});
+test('shared package allowance does not admit unrelated installed dependencies', () => {
+  const { config } = inputFixture();
+  expect(() =>
+    verifyInputs({
+      ...config,
+      sources: {
+        ...config.sources,
+        'node_modules/unrelated/index.js': '0'.repeat(64),
       },
     })
   ).toThrow();

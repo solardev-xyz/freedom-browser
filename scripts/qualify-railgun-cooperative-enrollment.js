@@ -7,6 +7,7 @@ const { createHash } = require('crypto');
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const modes = ['create', 'cold', 'legacy'];
 const policy = '2'.repeat(64);
+const { SOURCES } = require('./fixtures/railgun-kohaku-adapter-sources');
 
 function verifyInputs(config) {
   assert.equal(config.approvedForNative, true);
@@ -18,7 +19,9 @@ function verifyInputs(config) {
   const observedLinks = {};
   for (const [name, digest] of Object.entries(config.sources)) {
     assert.ok(
-      /^(src|scripts)\//.test(name) || ['package.json', 'package-lock.json'].includes(name)
+      /^(src|scripts)\//.test(name) ||
+        ['package.json', 'package-lock.json'].includes(name) ||
+        SOURCES.includes(name)
     );
     assert.equal(path.posix.normalize(name), name);
     assert.ok(!name.split('/').includes('..'));
@@ -40,7 +43,10 @@ function verifyInputs(config) {
     assert.equal(sha(fs.readFileSync(file)), digest);
   }
   assert.deepEqual(observedLinks, config.sourceLinks);
+  // New caller configs must pin the installed compatibility closure as well as
+  // application sources; historical archived configs remain historical evidence.
   for (const needed of [
+    ...SOURCES,
     'scripts/qualify-railgun-cooperative-enrollment.js',
     'src/main/wallet/railgun-account-enrollment.js',
     'src/main/wallet/railgun-account-fence.js',

@@ -225,6 +225,7 @@ async function main() {
     viewingFixture.fill(0);
   }
   const sources = [
+    ...require('./fixtures/railgun-kohaku-adapter-sources').SOURCES,
     'scripts/qualify-railgun-private-policy.js',
     'scripts/railgun-fixture-integrity.js',
     'src/main/wallet/railgun-private-policy.js',
