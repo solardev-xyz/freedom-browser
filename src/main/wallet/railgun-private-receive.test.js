@@ -14,13 +14,17 @@ jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) =
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
 }));
-jest.mock('./railgun-private-intent', () => ({
-  validateRailgunPrivateSigningIntent: (tx, expected) => {
-    if (!['railgun-private-transfer', 'railgun-partial-unshield'].includes(expected.kind))
-      throw Error('kind');
-    return { ...expected, digest: tx.data };
-  },
-}));
+// Mock the shared intent implementation, leaving both host and result checks on one seam.
+jest.mock(
+  '../../../node_modules/@freedom/railgun-kohaku-adapter/src/data/railgun-private-intent',
+  () => ({
+    validateRailgunPrivateSigningIntent: (tx, expected) => {
+      if (!['railgun-private-transfer', 'railgun-partial-unshield'].includes(expected.kind))
+        throw Error('kind');
+      return { ...expected, digest: tx.data };
+    },
+  })
+);
 jest.mock('./railgun-identity', () => ({
   quarantineRailgunIdentityCredentials: (...args) => mockQuarantine(...args),
   assertRailgunIdentity: (v) => {
@@ -117,6 +121,16 @@ beforeEach(() => {
       },
     };
   });
+});
+test('host intent checks and guarded results use the same extracted data implementation', () => {
+  const local = require('./railgun-private-intent');
+  const shared = require('../../../node_modules/@freedom/railgun-kohaku-adapter/src/data/railgun-private-intent');
+  const results = require('./railgun-private-results');
+  const host = require('@freedom/railgun-kohaku-adapter/host/data');
+  expect(local.validateRailgunPrivateSigningIntent).toBe(
+    shared.validateRailgunPrivateSigningIntent
+  );
+  expect(results.normalizeRailgunPrivateReceiver).toBe(host.normalizeRailgunPrivateReceiver);
 });
 test('returns intent-bound cryptographic data only after exit and never serializes the viewing key', async () => {
   const pending = verifyRailgunPrivateReceiver(args);
