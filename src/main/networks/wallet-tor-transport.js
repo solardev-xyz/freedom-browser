@@ -116,17 +116,54 @@ function createWalletTorTransport({
         privacyConnectTimeoutMs: options.privacyConnectTimeoutMs,
         privacyDeadline: options.privacyDeadline,
         privacyTimeout: options.privacyTimeout,
+        privacyFailConnection: options.privacyFailConnection,
       });
       return addRequest.call(this, req, options);
     };
     const createSocket = agent.createSocket;
     agent.createSocket = function (req, options, callback) {
-      const owned = requestOptions.get(req);
-      if (!owned) {
-        callback(privacyError('PRIVACY_REQUEST_ABORTED', 'Private request unavailable'));
-        return;
-      }
-      return createSocket.call(this, req, { ...options, ...owned }, callback);
+      const visited = new Set();
+      const usable = (request) => {
+        const owned = requestOptions.get(request);
+        if (
+          !owned ||
+          !(owned.privacySignal instanceof AbortSignal) ||
+          !(owned.privacyTimeout instanceof AbortController) ||
+          !Number.isFinite(owned.privacyDeadline)
+        )
+          return false;
+        if (owned.privacyDeadline <= performance.now()) owned.privacyTimeout.abort();
+        return !request.destroyed && !owned.privacySignal.aborted;
+      };
+      // Node retains destroyed queue heads until a replacement socket emits
+      // free. Do not modify its queue: let Node skip those heads, but bind the
+      // setup to the first surviving request it will actually serve.
+      const next = () => {
+        if (
+          closed ||
+          group.closed ||
+          group.endpoint.signal.aborted ||
+          group.context.signal.aborted
+        ) {
+          callback(privacyError('PRIVACY_REQUEST_ABORTED', 'Private request unavailable'));
+          return;
+        }
+        const owner = usable(req) ? req : this.requests[this.getName(options)]?.find(usable);
+        if (!owner || visited.has(owner) || visited.size >= 32) {
+          callback(privacyError('PRIVACY_REQUEST_ABORTED', 'Private request unavailable'));
+          return;
+        }
+        visited.add(owner);
+        const owned = requestOptions.get(owner);
+        return createSocket.call(this, req, { ...options, ...owned }, (error, socket) => {
+          // Serve a different owner only when the setup owner died. Finish
+          // abort propagation first; never retry a still-live owner's failure.
+          if (error && !usable(owner)) return queueMicrotask(next);
+          if (error && owner !== req) owned.privacyFailConnection();
+          callback(error, socket);
+        });
+      };
+      return next();
     };
     agent.createConnection = (options, callback) => {
       connections += 1;
@@ -429,6 +466,11 @@ function createWalletTorTransport({
             privacyConnectTimeoutMs: connectTimeoutMs,
             privacyDeadline: deadline,
             privacyTimeout: timeout,
+            privacyFailConnection: () => {
+              const error = failure();
+              finish(error);
+              req.destroy(error);
+            },
           },
           (response) => {
             receivedResponse = response;

@@ -400,7 +400,8 @@ function chargeBudget(state, method, params, consume = true) {
 // transport. It bounds admission, not when bytes leave: a request admitted
 // just before it on a reused keep-alive socket is written on the next tick,
 // but on a new SOCKS+TLS connection its bytes leave only once the Tor stream
-// and TLS handshake are up, after the deadline by up to that connect time.
+// and TLS handshake are up, after the deadline by the agent queue wait plus
+// that connect time. The sequential private preflight does not queue reads.
 // Data that can only refuse: it never cancels an admitted request, revokes
 // the client or grants method authority (a destination constraint's deadline
 // is the one that aborts in-flight work). Unbudgeted requests only; a read

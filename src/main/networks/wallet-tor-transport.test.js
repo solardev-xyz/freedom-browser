@@ -257,6 +257,199 @@ describe('wallet Tor transport', () => {
     expect([3, 4]).toContain(socks.records.length);
   });
 
+  test.each(['abort', 'expiry'])(
+    'a queued %s leaves a later live request serviceable after both sockets close',
+    async (reason) => {
+      const responses = [];
+      let occupied;
+      const both = new Promise((resolve) => {
+        occupied = resolve;
+      });
+      server.removeAllListeners('request');
+      server.on('request', (req, res) => {
+        seen.push(req.url);
+        res.setHeader('Connection', 'close');
+        if (req.url === '/survivor') return res.end('ok');
+        responses.push(res);
+        if (responses.length === 2) occupied();
+      });
+      const handle = context();
+      const first = [0, 1].map((n) =>
+        transport.request(handle, `http://rpc.example.test/first-${n}`, { timeoutMs: 3000 })
+      );
+      await both;
+      const caller = new AbortController();
+      const dead = transport.request(handle, 'http://rpc.example.test/dead', {
+        signal: caller.signal,
+        timeoutMs: reason === 'expiry' ? 100 : 2000,
+      });
+      const deadResult = expect(dead).rejects.toMatchObject({
+        code: reason === 'expiry' ? 'TOR_REQUEST_TIMEOUT' : 'PRIVACY_REQUEST_ABORTED',
+      });
+      const survivor = transport.request(handle, 'http://rpc.example.test/survivor', {
+        timeoutMs: 3000,
+      });
+      if (reason === 'abort') caller.abort();
+      await deadResult;
+      responses.forEach((res) => res.end('ok'));
+      expect((await survivor).status).toBe(200);
+      await Promise.all(first);
+      expect(seen.sort()).toEqual(['/first-0', '/first-1', '/survivor']);
+      expect(socks.records.length).toBeGreaterThan(2);
+      expect(socks.records.length).toBeLessThanOrEqual(4);
+    }
+  );
+
+  test('a cancelled queue with no live successor creates no replacement connection', async () => {
+    const responses = [];
+    let occupied;
+    const both = new Promise((resolve) => {
+      occupied = resolve;
+    });
+    server.removeAllListeners('request');
+    server.on('request', (_req, res) => {
+      res.setHeader('Connection', 'close');
+      responses.push(res);
+      if (responses.length === 2) occupied();
+    });
+    const handle = context();
+    const first = [0, 1].map((n) => transport.request(handle, `http://rpc.example.test/${n}`));
+    await both;
+    const caller = new AbortController();
+    const queued = transport.request(handle, 'http://rpc.example.test/dead', {
+      signal: caller.signal,
+    });
+    const rejected = expect(queued).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+    caller.abort();
+    await rejected;
+    responses.forEach((res) => res.end('ok'));
+    await Promise.all(first);
+    transport.close();
+    await transport.closed;
+    expect(socks.records).toHaveLength(2);
+    expect(responses).toHaveLength(2);
+  });
+
+  test.each(['abort', 'release', 'endpoint', 'context'])(
+    '%s cancels the queued owner during replacement setup',
+    async (reason) => {
+      await socks.close();
+      socks = await proxy(server.address().port, 'normal', { connectDelayMs: 200 });
+      const responses = [];
+      let occupied;
+      const both = new Promise((resolve) => {
+        occupied = resolve;
+      });
+      server.removeAllListeners('request');
+      server.on('request', (req, res) => {
+        seen.push(req.url);
+        res.setHeader('Connection', 'close');
+        responses.push(res);
+        if (responses.length === 2) occupied();
+      });
+      const handle = context();
+      const first = [0, 1].map((n) => transport.request(handle, `http://rpc.example.test/${n}`));
+      await both;
+      const caller = new AbortController();
+      const queued = transport.request(handle, 'http://rpc.example.test/cancelled', {
+        signal: caller.signal,
+      });
+      const rejected = expect(queued).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+      responses.forEach((res) => res.end('ok'));
+      await Promise.all(first);
+      while (socks.records.length < 3) await new Promise((resolve) => setImmediate(resolve));
+      if (reason === 'release') transport.release(handle);
+      else if (reason === 'endpoint') socks.controller.abort();
+      else if (reason === 'context') scope.close();
+      else caller.abort();
+      await rejected;
+      transport.close();
+      await transport.closed;
+      expect(seen.sort()).toEqual(['/0', '/1']);
+    }
+  );
+
+  test('cancelling a replacement setup serves its next live queued owner without retrying the cancelled request', async () => {
+    await socks.close();
+    socks = await proxy(server.address().port, 'normal', { connectDelayMs: 200 });
+    const responses = [];
+    let occupied;
+    const both = new Promise((resolve) => {
+      occupied = resolve;
+    });
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      seen.push(req.url);
+      res.setHeader('Connection', 'close');
+      if (req.url === '/survivor') return res.end('ok');
+      responses.push(res);
+      if (responses.length === 2) occupied();
+    });
+    const handle = context();
+    const first = [0, 1].map((n) => transport.request(handle, `http://rpc.example.test/${n}`));
+    await both;
+    const caller = new AbortController();
+    const cancelled = transport.request(handle, 'http://rpc.example.test/cancelled', {
+      signal: caller.signal,
+    });
+    const rejected = expect(cancelled).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+    const survivor = transport.request(handle, 'http://rpc.example.test/survivor', {
+      timeoutMs: 3000,
+    });
+    responses.forEach((res) => res.end('ok'));
+    await Promise.all(first);
+    while (socks.records.length < 3) await new Promise((resolve) => setImmediate(resolve));
+    caller.abort();
+    await rejected;
+    expect((await survivor).status).toBe(200);
+    transport.close();
+    await transport.closed;
+    expect(seen.sort()).toEqual(['/0', '/1', '/survivor']);
+    expect(socks.records.length).toBeLessThanOrEqual(6);
+  });
+
+  test('a replacement failure reaches the live owner behind a cancelled head without retrying it', async () => {
+    await socks.close();
+    socks = await proxy(server.address().port, 'fail-replacements');
+    const responses = [];
+    let occupied;
+    const both = new Promise((resolve) => {
+      occupied = resolve;
+    });
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      seen.push(req.url);
+      res.setHeader('Connection', 'close');
+      responses.push(res);
+      if (responses.length === 2) occupied();
+    });
+    const handle = context();
+    const first = [0, 1].map((n) => transport.request(handle, `http://rpc.example.test/${n}`));
+    await both;
+    const caller = new AbortController();
+    const dead = transport.request(handle, 'http://rpc.example.test/dead', {
+      signal: caller.signal,
+    });
+    const deadResult = expect(dead).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+    const survivor = transport.request(handle, 'http://rpc.example.test/survivor', {
+      timeoutMs: 3000,
+    });
+    const refused = expect(survivor).rejects.toMatchObject({
+      code: 'TOR_REQUEST_FAILED',
+      stage: 'connect',
+    });
+    caller.abort();
+    await deadResult;
+    responses.forEach((res) => res.end('ok'));
+    await Promise.all(first);
+    await refused;
+    transport.close();
+    await transport.closed;
+    expect(socks.records.length).toBeGreaterThan(2);
+    expect(socks.records.length).toBeLessThanOrEqual(4);
+    expect(seen.sort()).toEqual(['/0', '/1']);
+  });
+
   test('outage aborts active responses and refuses new requests without direct fallback', async () => {
     await transport.request(context(), 'http://rpc.example.test/');
     const arrived = once(server, 'request');

@@ -8,6 +8,13 @@ const { isDeepStrictEqual } = require('util');
 const NAME = 'metadata-repair-1';
 const FAILED_REPORT_SHA256 = 'd425fd977c56305a4ba1044804ab78b69edcf7ab5c6460482c054e14f9e0b8b0';
 const FAILED_PROBE_SHA256 = '335bd2809ac5b4295d5e39b76a91514bc4d1471cf477efc681ef6bed0ecefd99';
+const ORIGINAL_MANIFEST_SHA256 = '51165a2f58ab9c2777aaffe3172ddc9705bd2ed168ae817cc7660f9d1c3ad524';
+const PREPARATION_REPORTS = Object.freeze({
+  'rounds/round-1-prep/scan/report.json':
+    '55d797adc340e7f014a03eb5ff8e1d61dc0be0a186c3f3e77587b4cf0db0e8b5',
+  'remaining-rounds/round-1-prep/scan/report.json':
+    'fe5955f24bf9435533fccb935d72b0928db07efe8807359dc046da2efa23e332',
+});
 const SHA256 = /^[a-f0-9]{64}$/;
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const NOT_SENT = Object.freeze({
@@ -37,8 +44,9 @@ function continuationDirectory(base) {
 }
 
 // The manifest is frozen by the operator before the first new probe. Its
-// source commit must equal this run's clean source baseline. A new commit does
-// not create a new allowance: the single continuation filename never changes.
+// source commit must equal this run's clean source baseline, unless the one
+// explicit transport-fix revision binds the preserved original manifest and
+// both failed preparations. This never creates another recovery allowance.
 function admitMetadataContinuation(ctx, originalHeader, readRecoveryLedger) {
   let stage = 'MANIFEST';
   try {
@@ -49,7 +57,42 @@ function admitMetadataContinuation(ctx, originalHeader, readRecoveryLedger) {
     const manifest = read(fs, path.join(campaign, 'continuation.json'));
     const m = manifest.value;
     check(m.name === NAME && m.profile === ctx.args.profile && m.profileId === ctx.profileId);
-    check(m.sourceCommit === ctx.sourceCommit && /^[a-f0-9]{40}$/.test(m.sourceCommit));
+    check(/^[a-f0-9]{40}$/.test(m.sourceCommit));
+    let sourceRevision;
+    const revisionFile = path.join(campaign, 'tor-setup-source-revision.json');
+    let revisionExists = false;
+    try {
+      fs.lstatSync(revisionFile);
+      revisionExists = true;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (revisionExists) sourceRevision = read(fs, revisionFile);
+    if (sourceRevision) {
+      stage = 'SOURCE_REVISION';
+      const r = sourceRevision.value;
+      check(manifest.digest === ORIGINAL_MANIFEST_SHA256);
+      check(
+        isDeepStrictEqual(
+          Object.keys(r).sort(),
+          [
+            'name',
+            'originalManifestSha256',
+            'preparationReports',
+            'remainingRounds',
+            'sourceCommit',
+            'version',
+          ].sort()
+        )
+      );
+      check(r.name === 'tor-setup-1' && r.version === 1 && r.remainingRounds === 1);
+      check(r.originalManifestSha256 === manifest.digest);
+      check(/^[a-f0-9]{40}$/.test(r.sourceCommit));
+      check(r.sourceCommit === ctx.sourceCommit && r.sourceCommit !== m.sourceCommit);
+      check(isDeepStrictEqual(r.preparationReports, PREPARATION_REPORTS));
+      for (const [name, digest] of Object.entries(PREPARATION_REPORTS))
+        read(fs, path.join(campaign, name), digest);
+    } else check(m.sourceCommit === ctx.sourceCommit);
     check(m.failedReportSha256 === FAILED_REPORT_SHA256);
     check(SHA256.test(m.previousLedgerSha256) && SHA256.test(m.repairReportSha256));
 
@@ -124,6 +167,7 @@ function admitMetadataContinuation(ctx, originalHeader, readRecoveryLedger) {
         previousReportSha256: FAILED_REPORT_SHA256,
         repairReportSha256: m.repairReportSha256,
         manifestSha256: manifest.digest,
+        ...(sourceRevision ? { sourceRevisionSha256: sourceRevision.digest } : {}),
         holdIdSha256: old.finished.holdIdSha256,
       },
     };
@@ -139,6 +183,8 @@ module.exports = {
   NAME,
   FAILED_REPORT_SHA256,
   FAILED_PROBE_SHA256,
+  ORIGINAL_MANIFEST_SHA256,
+  PREPARATION_REPORTS,
   continuationDirectory,
   admitMetadataContinuation,
 };

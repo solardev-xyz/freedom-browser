@@ -19,6 +19,38 @@ const denied = () =>
     'Metadata recovery continuation refused'
   );
 
+function sourceRevision() {
+  const originalManifestSha256 = sha(fs.readFileSync(path.join(campaign, 'continuation.json')));
+  let source = fs
+    .readFileSync(require.resolve('./railgun-metadata-continuation'), 'utf8')
+    .replace(api.FAILED_REPORT_SHA256, manifest.failedReportSha256)
+    .replace(api.ORIGINAL_MANIFEST_SHA256, originalManifestSha256);
+  const preparationReports = {};
+  for (const [name, digest] of Object.entries(api.PREPARATION_REPORTS)) {
+    const file = path.join(campaign, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    json(file, { passed: false, fixture: name });
+    preparationReports[name] = sha(fs.readFileSync(file));
+    source = source.replace(digest, preparationReports[name]);
+  }
+  // Test-only historical evidence pins; there is no production override.
+  const compiled = { exports: {} };
+  new Function('require', 'module', 'exports', source)(require, compiled, compiled.exports);
+  m = compiled.exports;
+  ctx.sourceCommit = 'b'.repeat(40);
+  const revision = {
+    version: 1,
+    name: 'tor-setup-1',
+    originalManifestSha256,
+    preparationReports,
+    sourceCommit: ctx.sourceCommit,
+    remainingRounds: 1,
+  };
+  const file = path.join(campaign, 'tor-setup-source-revision.json');
+  json(file, revision);
+  return { file, revision };
+}
+
 beforeEach(() => {
   base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'metadata-continuation-')));
   const profile = path.join(base, 'profile');
@@ -224,38 +256,103 @@ test('another campaign or symlinked original is refused', () => {
   denied();
 });
 
-test('the real qualifier reserves the fixed continuation once and preserves its predecessor', () => {
-  const probe = sha('fresh probe');
-  const scan = sha('fresh scan');
-  Object.assign(ctx.args, {
-    previousSha: probe,
-    scanSha: scan,
-    output: path.join(campaign, 'recover-submit-' + probe),
-    previousFile: 'synthetic-probe',
-  });
-  ctx.chain = {
-    heldTransfer: { reportSha256: qualifier.HELD_TRANSFER_REPORT_SHA256, probeReportSha256: probe },
-  };
-  Object.assign(ctx.previous, { observedAt: new Date().toISOString(), scan: { sha256: scan } });
-  ctx.scan = { anchor: { number: 11864000, hash: '0x' + 'ab'.repeat(32) } };
-  const previousBytes = fs.readFileSync(original);
-  const spy = jest
-    .spyOn(api, 'admitMetadataContinuation')
-    .mockImplementation(m.admitMetadataContinuation);
-  try {
-    expect(qualifier.assertRecoveryAdmissible(ctx)).toBeUndefined();
-    const reservation = qualifier.reserveRecoveryAttempt(ctx);
-    expect(reservation.header.continuation).toBe(api.NAME);
-    expect(ctx.continuationHoldIdSha256).toBe(sha('held'));
-    expect(fs.readFileSync(original)).toEqual(previousBytes);
-    const pending = qualifier.readRecoveryLedger(fs, reservation.file, reservation.header);
-    expect(pending.finished).toBeNull();
-    expect(pending.pending.binding.sourceCommit).toBe(ctx.sourceCommit);
-    expect(() => qualifier.reserveRecoveryAttempt(ctx)).toThrow();
-    expect(() => qualifier.assertRecoveryAdmissible(ctx)).toThrow();
-  } finally {
-    spy.mockRestore();
+test.each(['original', 'revised'])(
+  'the real qualifier reserves the %s continuation once and preserves its predecessor',
+  (version) => {
+    const revision = version === 'revised' ? sourceRevision() : undefined;
+    const probe = sha('fresh probe');
+    const scan = sha('fresh scan');
+    Object.assign(ctx.args, {
+      previousSha: probe,
+      scanSha: scan,
+      output: path.join(campaign, 'recover-submit-' + probe),
+      previousFile: 'synthetic-probe',
+    });
+    ctx.chain = {
+      heldTransfer: {
+        reportSha256: qualifier.HELD_TRANSFER_REPORT_SHA256,
+        probeReportSha256: probe,
+      },
+    };
+    Object.assign(ctx.previous, { observedAt: new Date().toISOString(), scan: { sha256: scan } });
+    ctx.scan = { anchor: { number: 11864000, hash: '0x' + 'ab'.repeat(32) } };
+    const previousBytes = fs.readFileSync(original);
+    const spy = jest
+      .spyOn(api, 'admitMetadataContinuation')
+      .mockImplementation(m.admitMetadataContinuation);
+    try {
+      expect(qualifier.assertRecoveryAdmissible(ctx)).toBeUndefined();
+      const reservation = qualifier.reserveRecoveryAttempt(ctx);
+      expect(reservation.header.continuation).toBe(api.NAME);
+      if (revision)
+        expect(reservation.header.sourceRevisionSha256).toBe(sha(fs.readFileSync(revision.file)));
+      expect(ctx.continuationHoldIdSha256).toBe(sha('held'));
+      expect(fs.readFileSync(original)).toEqual(previousBytes);
+      const pending = qualifier.readRecoveryLedger(fs, reservation.file, reservation.header);
+      expect(pending.finished).toBeNull();
+      expect(pending.pending.binding.sourceCommit).toBe(ctx.sourceCommit);
+      expect(() => qualifier.reserveRecoveryAttempt(ctx)).toThrow();
+      expect(() => qualifier.assertRecoveryAdmissible(ctx)).toThrow();
+    } finally {
+      spy.mockRestore();
+    }
   }
+);
+
+test('the revision preserves the original manifest and cannot select the old or another source', () => {
+  const before = fs.readFileSync(path.join(campaign, 'continuation.json'));
+  const { file } = sourceRevision();
+  const admitted = m.admitMetadataContinuation(ctx, header, qualifier.readRecoveryLedger);
+  expect(admitted.header.manifestSha256).toBe(sha(before));
+  expect(admitted.header.sourceRevisionSha256).toBe(sha(fs.readFileSync(file)));
+  expect(admitted.file).toBe(path.join(directory, 'recover-submit.metadata-repair-1.jsonl'));
+  expect(fs.readFileSync(path.join(campaign, 'continuation.json'))).toEqual(before);
+  ctx.sourceCommit = manifest.sourceCommit;
+  denied();
+  ctx.sourceCommit = 'c'.repeat(40);
+  denied();
+});
+
+test.each([
+  'version',
+  'name',
+  'originalManifestSha256',
+  'preparationReports',
+  'sourceCommit',
+  'remainingRounds',
+  'extra',
+])('a changed revision %s refuses without reserving anything', (key) => {
+  const { file, revision } = sourceRevision();
+  revision[key] = 'changed';
+  json(file, revision);
+  denied();
+  expect(fs.readdirSync(directory)).toEqual(['recover-submit.jsonl']);
+});
+
+test.each(Object.keys(api.PREPARATION_REPORTS))(
+  'changed preserved preparation %s refuses',
+  (name) => {
+    sourceRevision();
+    fs.appendFileSync(path.join(campaign, name), '\n');
+    denied();
+  }
+);
+
+test.each(['torn', 'symlink', 'missing'])('a %s revision refuses the new source', (state) => {
+  const { file } = sourceRevision();
+  if (state === 'torn') fs.writeFileSync(file, '{');
+  else {
+    fs.renameSync(file, file + '.retained');
+    if (state === 'symlink') fs.symlinkSync(file + '.absent', file);
+  }
+  denied();
+});
+
+test('rewriting the original manifest cannot authorize the revision', () => {
+  sourceRevision();
+  manifest.sourceCommit = ctx.sourceCommit;
+  json(path.join(campaign, 'continuation.json'), manifest);
+  denied();
 });
 
 test('CLI accepts only the explicit fixed continuation for recover-submit', () => {

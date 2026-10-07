@@ -62,6 +62,20 @@ socket's options. Private request metadata is now recorded by request identity a
 request therefore cannot inherit the prior request's setup budget, diagnostic
 record or cancellation signal. No private Node symbols are used.
 
+The inherited-options defect also exists in the live baseline `2867c4fa`.
+Cancelling a queued request there did not cancel its replacement setup, and a
+setup failure could be attributed to the retired request. Agents remain isolated
+by context, so this did not mix context identities.
+
+Review of the first candidate found that refusing a destroyed queue head could
+strand live requests behind it. The revised candidate reads Node's queue without
+modifying it and binds setup to the first live owner. Expired owners are aborted
+before being skipped. If that owner dies during setup, selection continues on a
+microtask, with explicit group-liveness checks, a visited-owner set and a maximum
+of 32 owners. A still-live owner's setup failure is delivered to that owner and
+never retried. The original Agent callback receives one final result. Each
+connection attempt and abandoned socket remains tracked through the close barrier.
+
 ## Validation
 
 - Six focused suites: 345 tests pass, covering real HTTP/TLS/SOCKS setup beyond
@@ -75,8 +89,39 @@ record or cancellation signal. No private Node symbols are used.
   the timer-tie regression and the outdated controlled fixture are recorded
   separately from passing runs.
 
+The original 506 tests also passed under Electron 44.5.1's Node 24.21.0. This
+includes real same-origin replacement tests exercising the wrapped Agent methods.
+The subsequent queue fix adds regression cases for cancelled and expired heads,
+no live successor, cancellation during replacement, group revocation and delivery
+of setup failures to a live owner behind a destroyed head.
+The combined queue fix and continuation source-binding change pass 886 tests in
+12 suites under Electron, including the private submission and qualifier tests.
+
+One public-only run at `ec873815` used three successive contexts with distinct
+SOCKS isolation tokens. Their setup times were 11,045 ms, 293 ms and 862 ms; all
+three public chain checks and finalized-header reads passed. Source hashes match
+that commit and the original Tor-state files were unchanged. The first setup
+demonstrates useful work beyond the old 10-second cap. Distinct tokens do not
+prove distinct Tor circuits, and this was not a funded wallet qualification.
+
 These are source and controlled-network results. The candidate has not been used
 for the funded continuation. A longer first public connection can still exhaust
 the unchanged 20-second preflight acquisition budget; it cannot guarantee recovery
-or POI service acceptance. Real per-context timing and reviewer closure remain
-before considering live use.
+or POI service acceptance. Reviewer closure on the queue fix and preserving the
+remaining live attempt's source binding are required before live use.
+
+## Preserving the unused continuation
+
+The original `continuation.json` remains unchanged. An optional, fixed
+`tor-setup-source-revision.json` binds its exact digest, both failed preparation
+reports, the reviewed source commit and one remaining round. When this file is
+present, the helper refuses the old source and any different source. Missing or
+altered historical evidence refuses admission. The repair writer and metadata
+hash checks remain mandatory.
+
+The recovery ledger filename remains `recover-submit.metadata-repair-1.jsonl`.
+Any existing file there, even torn or pending, still consumes the allowance.
+The new header includes the original manifest digest and the source revision
+digest. The revision creates no second recovery attempt and changes no send,
+fee, disclosure, receipt or retry limit. Probe scheduling and reservation of
+the one remaining preparation are enforced separately by the operator guard.
