@@ -195,6 +195,14 @@ function refusalResult(state, extra = {}) {
 function getRailgunPrivateSubmissionDiagnostic(result) {
   return (result && typeof result === 'object' && diagnostics.get(result)) || null;
 }
+// Recovered submissions only, keyed the same way and for every result: the
+// review window the budget offered (H minus the EOA stage start) and the
+// proof verifier's duration, in whole milliseconds, or null if not reached.
+// Aggregate timings only; neither decides anything.
+const timings = new WeakMap();
+function getRailgunPrivateSubmissionTiming(result) {
+  return (result && typeof result === 'object' && timings.get(result)) || null;
+}
 // The same bounded tuple for one preflight run outside a submission (the live
 // qualifier's read-only probe). Reads the error's own data properties only.
 function getRailgunPrivatePreflightDiagnostic(substage, error) {
@@ -385,6 +393,7 @@ async function submitFinal({
         leftUntil(end) - admissionMs - BUDGET.sendReserveMs
       );
       if (!(reviewMs >= BUDGET.reviewMinMs + BUDGET.eoaAllowanceMs)) throw budgetFail();
+      state.reviewWindowMs = reviewMs;
       assertCurrent(reviewMs + admissionMs + BUDGET.sendReserveMs);
     }
     // H (the person's deadline) and F (signing and journal admission) on
@@ -1243,6 +1252,7 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
             signal: phaseSignal,
             timeoutMs: phaseBudget(60000, 80000),
           });
+          state.verifierMs = Math.round(performance.now() - proofStarted);
           await attest();
           eligibilityScope = createPrivacyScope({
             profileId: getPrivacyContext(parent).profileId,
@@ -1446,9 +1456,17 @@ async function submitRailgunRecoveredPrivateTransaction(options) {
     }
     if (claimed && !provenanceExitUnknown) recoveredBusy.delete(enrollment);
   }
-  return state.outcome
+  const result = state.outcome
     ? Object.freeze(state.outcome)
     : refusalResult(state, sourceOutcome ? { sourceOutcome } : {});
+  timings.set(
+    result,
+    Object.freeze({
+      reviewWindowMs: state.reviewWindowMs ?? null,
+      verifierMs: state.verifierMs ?? null,
+    })
+  );
+  return result;
 }
 
 module.exports = {
@@ -1456,5 +1474,6 @@ module.exports = {
   submitRailgunRecoveredPrivateTransaction,
   assertRailgunPrivateSubmission,
   getRailgunPrivateSubmissionDiagnostic,
+  getRailgunPrivateSubmissionTiming,
   getRailgunPrivatePreflightDiagnostic,
 };

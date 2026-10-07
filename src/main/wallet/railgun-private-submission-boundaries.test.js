@@ -874,6 +874,7 @@ async function run(budget, overrides) {
     before,
     after,
     diagnostic: kit.submission.getRailgunPrivateSubmissionDiagnostic(result),
+    timing: kit.submission.getRailgunPrivateSubmissionTiming(result),
     attempts,
     sends: named('eth_sendRawTransaction'),
     nullifier: named('nullifiers')[0],
@@ -1346,6 +1347,8 @@ describe('the refusal tuple through the live qualifier report', () => {
     };
     expect(seen.result).toEqual({ status: 'recovery-required', stage: 'preflight' });
     expect(seen.diagnostic).toEqual(tuple);
+    // Refused before the EOA stage: no review window was offered.
+    expect(seen.timing).toEqual({ reviewWindowMs: null, verifierMs: BASE.verifierMs });
     // The root, fee and verifier reads ran; the nullifier never reached the transport.
     const names = mock.requests.filter((v) => v.role === 'protocol-rpc').map((v) => v.name);
     expect(names).toEqual(expect.arrayContaining(['rootHistory', 'unshieldFee']));
@@ -1376,6 +1379,11 @@ describe('the conservative proof estimate', () => {
       expect(mock.proof.deadline - (H + BUDGET.admissionMs)).toBe(
         BUDGET.sendReserveMs + 1 + verifier
       );
+      // The timing beside the result: the verifier's duration, and the
+      // window offered at the EOA stage, before the EOA reads shortened it.
+      expect(value.timing.verifierMs).toBe(verifier);
+      expect(value.timing.reviewWindowMs).toBeGreaterThan(value.review.window);
+      expect(value.timing.reviewWindowMs).toBeLessThanOrEqual(BUDGET.reviewWindowMs);
       seen.push({ window: value.review.window, verifier });
     }
     for (const value of seen.slice(1))

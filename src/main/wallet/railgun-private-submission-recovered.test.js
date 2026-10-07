@@ -268,6 +268,7 @@ const {
   submitRailgunRecoveredPrivateTransaction: submit,
   assertRailgunPrivateSubmission: authorize,
   getRailgunPrivateSubmissionDiagnostic: diagnosticOf,
+  getRailgunPrivateSubmissionTiming: timingOf,
 } = require('./railgun-private-submission');
 const copy = (v) => JSON.parse(JSON.stringify(v));
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
@@ -1007,6 +1008,9 @@ test('forged source error does not become authenticated outcome', async () => {
   expect(result).toEqual({ status: 'recovery-required', stage: 'source' });
   // Only the bounded stage and code, never the forged reason or message.
   expect(diagnosticOf(result)).toEqual({ stage: 'source', code: 'UNCLASSIFIED' });
+  // Refused before the verifier and the EOA stage: neither timing exists.
+  expect(timingOf(result)).toEqual({ reviewWindowMs: null, verifierMs: null });
+  expect(timingOf({ status: 'recovery-required', stage: 'source' })).toBeNull();
 });
 test('cold preflight refusal keeps its bounded diagnostic outside the result shape', async () => {
   mock.preflight.acquire = async () => {
@@ -1632,6 +1636,8 @@ describe('recovered review budget arithmetic over Tor (mocked service)', () => {
     const result = await submit(options);
     expect(result).toEqual({ status: 'recovery-required', stage: 'eoa' });
     expect(diagnosticOf(result)).toEqual({ stage: 'eoa', code: 'RAILGUN_PRIVATE_REVIEW_BUDGET' });
+    // The verifier ran; the budget refused before a window was offered.
+    expect(timingOf(result)).toEqual({ reviewWindowMs: null, verifierMs: expect.any(Number) });
     // This mocked preflight ignores its admission deadline, so the proved
     // calldata is the only boundary pinned here: it was never simulated.
     expect(mock.events).toContain('preflight');
