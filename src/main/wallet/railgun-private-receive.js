@@ -177,8 +177,7 @@ async function verify(options) {
     active();
     task = startRailgunProcess({
       handle,
-      binaryKey: true,
-      filename: require.resolve('./railgun-private-receive-job'),
+      executionJob: 'private-receive',
       startupMs: 30000,
       lifetimeMs: 60000,
       input: JSON.stringify({

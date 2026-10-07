@@ -205,3 +205,96 @@ test('local wallet job and host validation dependencies are pinned or cross expl
   // The exports map in package.json selects which installed file runs.
   expect(included.has(path.join(adapter, 'package.json'))).toBe(true);
 });
+
+// The extraction is staged: main/legacy helpers and kernel helpers are separate
+// implementations with disjoint issuers, both bound by this derived-cache policy.
+const provenance = JSON.parse(
+  fs.readFileSync(path.join(adapter, 'docs/execution/PROVENANCE.json'), 'utf8')
+);
+const hash = (bytes) => require('crypto').createHash('sha256').update(bytes).digest('hex');
+test('all forty retained source and installed destination pins match the reviewed staged provenance', () => {
+  expect(provenance.files).toHaveLength(40);
+  expect(provenance.freedomIntegrationBasis.revision).toBe(
+    '0f2616b28062d5b107a361bfa0e9fdb876f8def9'
+  );
+  expect(
+    provenance.files.filter((row) => row.integrationSourceChange === 'existing .3/.4 data wrapper')
+  ).toHaveLength(6);
+  const read = jest.spyOn(fs, 'readFileSync');
+  getRailgunWalletPolicy('/engine.asar');
+  const included = new Set(read.mock.calls.map(([name]) => name));
+  read.mockRestore();
+  for (const row of provenance.files) {
+    const local = path.resolve(__dirname, '../../..', row.source);
+    const installed = path.join(adapter, row.destination);
+    expect(included.has(local)).toBe(true);
+    expect(included.has(installed)).toBe(true);
+    expect(hash(fs.readFileSync(local))).toBe(row.integrationSourceSha256);
+    expect(hash(fs.readFileSync(installed))).toBe(row.sha256);
+  }
+});
+test.each(provenance.files.map((row) => [row.source, row]))(
+  'policy binds both staged implementations of %s',
+  (_name, row) => {
+    const original = fs.readFileSync,
+      first = getRailgunWalletPolicy('/engine.asar');
+    for (const file of [
+      path.resolve(__dirname, '../../..', row.source),
+      path.join(adapter, row.destination),
+    ]) {
+      const read = jest
+        .spyOn(fs, 'readFileSync')
+        .mockImplementation((name, ...args) =>
+          name === file ? Buffer.from('changed staged implementation') : original(name, ...args)
+        );
+      try {
+        expect(getRailgunWalletPolicy('/engine.asar')).not.toBe(first);
+      } finally {
+        read.mockRestore();
+      }
+    }
+  }
+);
+test('installed kernel fixed bootstrap and job imports remain inside the pinned package closure', () => {
+  const read = jest.spyOn(fs, 'readFileSync');
+  getRailgunWalletPolicy('/engine.asar');
+  const included = new Set(read.mock.calls.map(([name]) => name));
+  read.mockRestore();
+  const visited = new Set();
+  function walk(file) {
+    if (visited.has(file)) return;
+    visited.add(file);
+    expect(included.has(file)).toBe(true);
+    const text = fs.readFileSync(file, 'utf8');
+    for (const [, name] of text.matchAll(/require\(['"](\.\.?\/[^'"]*)['"]\)/g)) {
+      const target = require.resolve(path.resolve(path.dirname(file), name));
+      expect(target.startsWith(adapter + path.sep)).toBe(true);
+      walk(target);
+    }
+  }
+  walk(require.resolve('@freedom/railgun-kohaku-adapter/host/bootstrap'));
+  walk(require.resolve('@freedom/railgun-kohaku-adapter/host/execution'));
+  const locate = require('@freedom/railgun-kohaku-adapter/host/execution').getRailgunExecutionJob;
+  for (const purpose of [
+    'spending-public',
+    'viewing-identity',
+    'spending-sign',
+    'wallet-viewing',
+    'private-prepare',
+    'private-operate',
+    'private-recover',
+    'private-receive',
+    'private-verify',
+  ])
+    walk(locate(purpose));
+  expect(visited.has(path.join(adapter, 'src/execution/host-bindings.js'))).toBe(true);
+  expect(visited.has(path.join(adapter, 'src/execution/railgun-artifacts.js'))).toBe(true);
+  expect(visited.has(path.join(adapter, 'src/execution/railgun-private-reconstruct.js'))).toBe(
+    true
+  );
+  expect(visited.has(path.join(adapter, 'src/data/railgun-private-signature.js'))).toBe(true);
+  // Dynamic authenticated archive entries are covered by their unchanged fixed
+  // engine/prover manifests and loaders, not treated as local literal imports.
+  expect(visited.has(path.join(adapter, 'src/execution/railgun-engine-manifest.json'))).toBe(true);
+  expect(visited.has(path.join(adapter, 'src/execution/railgun-prover-manifest.json'))).toBe(true);
+});
