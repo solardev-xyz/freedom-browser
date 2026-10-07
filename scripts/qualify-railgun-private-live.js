@@ -663,6 +663,38 @@ function sanitizeFailure(stage, error) {
   };
 }
 
+// The production refusal diagnostic, checked again here: allow-listed keys with
+// identifier-shaped values only, never messages, payloads, paths or long hex.
+// An unavailable diagnostic is null and never blocks the journal readback.
+const DIAGNOSTIC_KEYS = Object.freeze({
+  stage: /^[a-z][a-z-]{0,31}$/,
+  substage: /^[a-z][a-z-]{0,31}$/,
+  code: /^[A-Z][A-Z0-9_]{0,79}$/,
+  reason: /^[a-z][a-z-]{0,31}$/,
+  step: /^[a-z][a-zA-Z-]{0,31}$/,
+  deploymentStep: /^[a-z][a-zA-Z-]{0,31}$/,
+  causeCode: /^[A-Z][A-Z0-9_]{0,79}$/,
+});
+function summarizeSubmissionDiagnostic(value) {
+  if (!plainObject(value)) return null;
+  const summary = {};
+  for (const [key, pattern] of Object.entries(DIAGNOSTIC_KEYS)) {
+    const item = value[key];
+    if (typeof item === 'string' && pattern.test(item) && !/[0-9a-fA-F]{16}/.test(item))
+      summary[key] = item;
+  }
+  return summary;
+}
+function readSubmissionDiagnostic(ctx, result) {
+  try {
+    return summarizeSubmissionDiagnostic(
+      ctx.load('wallet/railgun-private-submission').getRailgunPrivateSubmissionDiagnostic(result)
+    );
+  } catch {
+    return null;
+  }
+}
+
 // Redaction backstop for every report write. Public hashes only under fixed keys.
 const FORBIDDEN_KEYS = new Set([
   'nullifier',
@@ -1451,14 +1483,16 @@ async function spendSteps(ctx, step, onHold) {
         return true;
       },
     });
+  const status =
+    typeof result?.hash === 'string'
+      ? 'acknowledged'
+      : typeof result?.transactionHash === 'string'
+        ? 'unknown'
+        : 'refused';
   report.submission = {
-    status:
-      typeof result?.hash === 'string'
-        ? 'acknowledged'
-        : typeof result?.transactionHash === 'string'
-          ? 'unknown'
-          : 'refused',
+    status,
     ...(typeof result?.stage === 'string' ? { stage: result.stage } : {}),
+    ...(status === 'refused' ? { diagnostic: readSubmissionDiagnostic(ctx, result) } : {}),
     reviews,
     elapsedMs: Math.round(performance.now() - submitStarted),
   };
@@ -1871,6 +1905,7 @@ module.exports = {
   summarizeOwnedPoi,
   summarizePoiResponse,
   sanitizeFailure,
+  summarizeSubmissionDiagnostic,
   assertAggregateReport,
   renderReport,
   assessPoiSubmission,
