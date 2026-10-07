@@ -164,6 +164,7 @@ const BUDGET = require('./railgun-recovered-review-budget.json');
 const {
   createRailgunLegacyCapsuleData,
 } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+const live = require('../../../scripts/qualify-railgun-private-live');
 
 const realFsync = fs.fsyncSync;
 const WALLET = new Wallet(`0x${'1'.repeat(64)}`); // Public synthetic fixture only.
@@ -378,6 +379,12 @@ async function transport(handle, _url, options) {
   if (call.method === 'eth_sendRawTransaction')
     entry.hash = Transaction.from(call.params[0]).hash.toLowerCase();
   const s = mock.scenario;
+  // A transport failure, shaped as the Tor transport rejects: no response.
+  const failure = s.fail?.(entry);
+  if (failure) {
+    mock.requests.push({ ...entry, outcome: failure.code, end: mock.clock.now() });
+    throw failure;
+  }
   return wire(
     entry,
     options.signal,
@@ -1057,6 +1064,102 @@ describe('the nullifier disclosure boundary', () => {
       step: 'nullifiers',
     });
     expect(mock.requests.filter((v) => v.role === 'transaction-rpc')).toEqual([]);
+  });
+});
+
+// The bounded refusal tuple end to end: the real recovered submission, private
+// preflight and private RPC produce it; the live qualifier's own allowlist,
+// nullifier classification and redaction turn it into the publishable report.
+describe('the refusal tuple through the live qualifier report', () => {
+  function qualifierReport(seen) {
+    const diagnostic = live.summarizeSubmissionDiagnostic(seen.diagnostic);
+    const report = {
+      journey: live.JOURNEY,
+      version: 1,
+      mode: 'recover-submit',
+      passed: false,
+      submission: {
+        status: 'refused',
+        stage: seen.result.stage,
+        diagnostic,
+        reviews: { disclosure: 1, transaction: 0 },
+        elapsedMs: 1,
+      },
+    };
+    expect(live.assertAggregateReport(report)).toBe(true);
+    expect(JSON.parse(live.renderReport(report))).toEqual(report);
+    return { report, nullifierQuery: live.nullifierQuery({ passed: false, diagnostic }) };
+  }
+  const rootHistoryFailure = (stage) => (entry) =>
+    entry.role === 'protocol-rpc' && entry.name === 'rootHistory'
+      ? Object.assign(
+          mock.kit.privacy.privacyError('TOR_REQUEST_FAILED', 'Private HTTP request failed'),
+          { stage }
+        )
+      : undefined;
+  test.each(live.DIAGNOSTIC_CAUSE_STAGES)(
+    'a rootHistory transport failure at stage %s reaches the result and the report',
+    async (causeStage) => {
+      const seen = await run(DEFAULT, { resolved: 4, fail: rootHistoryFailure(causeStage) });
+      const tuple = {
+        stage: 'preflight',
+        substage: 'acquire',
+        code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+        reason: 'rpc',
+        step: 'rootHistory',
+        causeCode: 'TOR_REQUEST_FAILED',
+        causeStage,
+      };
+      expect(seen.result).toEqual({ status: 'recovery-required', stage: 'preflight' });
+      expect(seen.diagnostic).toEqual(tuple);
+      // The failed read reached the transport once; nothing after it did.
+      expect(mock.requests.filter((v) => v.name === 'rootHistory')).toHaveLength(1);
+      expect(seen.nullifier).toBeUndefined();
+      expect(mock.requests.filter((v) => v.role === 'transaction-rpc')).toEqual([]);
+      expect(seen.attempts).toEqual([]);
+      const { report, nullifierQuery } = qualifierReport(seen);
+      expect(report.submission.diagnostic).toEqual(tuple);
+      expect(nullifierQuery).toBe('not-queried');
+    }
+  );
+  test('an unlisted transport stage is dropped from the result and the report', async () => {
+    const seen = await run(DEFAULT, { resolved: 4, fail: rootHistoryFailure('socket-maybe') });
+    const tuple = {
+      stage: 'preflight',
+      substage: 'acquire',
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'rpc',
+      step: 'rootHistory',
+      causeCode: 'TOR_REQUEST_FAILED',
+    };
+    expect(seen.diagnostic).toEqual(tuple);
+    expect(qualifierReport(seen).report.submission.diagnostic).toEqual(tuple);
+  });
+  test('a nullifier-deadline refusal is stale at nullifiers and never requests the nullifier', async () => {
+    const seen = await run(DEFAULT, {
+      resolved: 4,
+      read: (entry) => (entry.role === 'protocol-rpc' && entry.roleIndex === 6 ? 10000 : 150),
+    });
+    const tuple = {
+      stage: 'preflight',
+      substage: 'acquire',
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'stale',
+      step: 'nullifiers',
+    };
+    expect(seen.result).toEqual({ status: 'recovery-required', stage: 'preflight' });
+    expect(seen.diagnostic).toEqual(tuple);
+    // The root, fee and verifier reads ran; the nullifier never reached the transport.
+    const names = mock.requests.filter((v) => v.role === 'protocol-rpc').map((v) => v.name);
+    expect(names).toEqual(expect.arrayContaining(['rootHistory', 'unshieldFee']));
+    expect(names).not.toContain('nullifiers');
+    expect(seen.nullifier).toBeUndefined();
+    expect(mock.requests.filter((v) => v.role === 'transaction-rpc')).toEqual([]);
+    const { report, nullifierQuery } = qualifierReport(seen);
+    expect(report.submission.diagnostic).toEqual(tuple);
+    // The report stays conservative: a stale refusal at this step cannot by
+    // itself show whether the query left, though here the transport shows it did not.
+    expect(nullifierQuery).toBe('possibly-queried');
   });
 });
 
