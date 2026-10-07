@@ -1,3 +1,4 @@
+const { observeRailgunJob, isRailgunWalletJob } = require('./railgun-job-observer');
 /** Opt-in public synthetic-list Shield composition. This runs only from the
  * reviewed isolated source copy; real cryptographic checks and owners remain. */
 const native = require('./railgun-native-assertions');
@@ -465,14 +466,12 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
   const observed = function (options, ...rest) {
     const input = JSON.parse(options.input);
     let role;
-    if (options.filename === require.resolve(wallet + 'railgun-identity-job')) role = input.purpose;
-    else if (options.filename === require.resolve(wallet + 'railgun-public-job'))
-      role = 'public-' + input.mode;
-    else if (options.filename === require.resolve(wallet + 'railgun-wallet-job'))
+    if (isRailgunWalletJob(options, 'railgun-identity-job.js')) role = input.purpose;
+    else if (isRailgunWalletJob(options, 'railgun-public-job.js')) role = 'public-' + input.mode;
+    else if (isRailgunWalletJob(options, 'railgun-wallet-job.js'))
       role = input.restore ? 'wallet-restore' : 'wallet-scan';
-    else if (options.filename === require.resolve(wallet + 'railgun-relay-quote-job'))
-      role = 'quote';
-    else if (options.filename === require.resolve(wallet + 'railgun-relay-wallet-job'))
+    else if (isRailgunWalletJob(options, 'railgun-relay-quote-job.js')) role = 'quote';
+    else if (isRailgunWalletJob(options, 'railgun-relay-wallet-job.js'))
       role = input.relayRequest ? 'construct' : 'reconstruct';
     else if (options.filename === require.resolve('./railgun-relay-positive-membership-job'))
       role = 'membership-fixture';
@@ -480,10 +479,10 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
       role = 'audit-' + input.auditCase;
     else if (options.filename === require.resolve('./railgun-transact-staging-row'))
       role = 'txid-row-fixture';
-    else if (options.filename === require.resolve(wallet + 'railgun-txid-job')) {
+    else if (isRailgunWalletJob(options, 'railgun-txid-job.js')) {
       assert.match(input.mode, /^[a-z-]{1,32}$/);
       role = 'txid-' + input.mode;
-    } else if (options.filename === require.resolve(wallet + 'railgun-note-provenance-job'))
+    } else if (isRailgunWalletJob(options, 'railgun-note-provenance-job.js'))
       role = 'note-provenance';
     else {
       const fixed = {
@@ -494,9 +493,9 @@ function installJobs(onDraft = () => {}, onSigningReply = () => {}, roles = expe
         'railgun-relay-prove-job.js': 'proof-A',
         'railgun-relay-verify-job.js': 'dual-proof-C',
       };
-      role = fixed[path.basename(options.filename)];
+      role = fixed[observeRailgunJob(options).name];
       assert.ok(role);
-      assert.equal(options.filename, require.resolve(wallet + path.basename(options.filename)));
+      assert.equal(options.filename, require.resolve(wallet + observeRailgunJob(options).name));
     }
     assert.ok(roles[rows.length] === role, 'Unexpected original utility order: ' + role);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);
@@ -2024,15 +2023,17 @@ async function qualify({
 
 // Publication-time main cache observation only. It cannot recover modules
 // removed earlier or observe imports inside utility processes.
-function collectMainModuleCache({ root, cache, electron }) {
+function collectMainModuleCache({ root, cache, electron, executable }) {
   assert.ok(path.isAbsolute(root) && path.normalize(root) === root);
   assert.equal(fs.realpathSync(root), root);
   assert.ok(fs.lstatSync(root).isDirectory());
   const mount = path.join(root, 'node_modules');
-  assert.ok(fs.lstatSync(mount).isSymbolicLink());
+  assert.ok(
+    fs.lstatSync(mount).isDirectory() && !fs.lstatSync(mount).isSymbolicLink(),
+    'Physical dependency directory required'
+  );
   const dependencyRoot = fs.realpathSync(mount);
-  assert.equal(fs.readlinkSync(mount), dependencyRoot);
-  assert.ok(fs.lstatSync(dependencyRoot).isDirectory());
+  assert.equal(dependencyRoot, mount);
   const within = (base, name) => {
     const relative = path.relative(base, name);
     return (
@@ -2042,18 +2043,21 @@ function collectMainModuleCache({ root, cache, electron }) {
       !path.isAbsolute(relative)
     );
   };
-  assert.ok(
-    !within(root, dependencyRoot) && !within(dependencyRoot, root) && root !== dependencyRoot
-  );
+  assert.ok(path.isAbsolute(executable) && path.normalize(executable) === executable);
+  assert.equal(fs.realpathSync(executable), executable);
+  assert.ok(fs.lstatSync(executable).isFile());
+  assert.equal(path.basename(executable), 'Electron');
+  const contents = path.dirname(path.dirname(executable));
+  assert.equal(path.basename(path.dirname(executable)), 'MacOS');
+  assert.equal(path.basename(contents), 'Contents');
+  assert.equal(path.basename(path.dirname(contents)), 'Electron.app');
+  assert.ok(!within(root, executable), 'Electron runtime must be outside the physical copy');
   const extraApplication = new Set([
     'package.json', // src/main/index.js's literal require.
     'docs/qualification/railgun-poi-read-2026-10-03.json', // relay-core-data.js.
   ]);
   const virtual = new Set(['electron', 'electron/common', 'electron/main']);
-  const bootstrapContainer = path.join(
-    dependencyRoot,
-    'electron/dist/Electron.app/Contents/Resources/default_app.asar'
-  );
+  const bootstrapContainer = path.join(contents, 'Resources/default_app.asar');
   const bootstrapEntry = bootstrapContainer + '/package.json';
   let bootstrapObserved = false;
   const modules = [],
@@ -2077,8 +2081,9 @@ function collectMainModuleCache({ root, cache, electron }) {
     }
     assert.equal(path.normalize(filename), filename);
     if (filename === bootstrapEntry) {
-      // Qualification-only exception observed with this pinned Electron 44.5.1
-      // CLI. original-fs observes the real container, never an ASAR member.
+      // Qualification-only exception pinned for Electron 44.6.0 (same container as 44.5.1).
+      // The fixed inspector passes process.execPath; the outer runner pins the
+      // original executable. original-fs reads the container, never an ASAR member.
       const originalFs = require('original-fs');
       assert.equal(originalFs.realpathSync(bootstrapContainer), bootstrapContainer);
       const before = originalFs.lstatSync(bootstrapContainer);
@@ -2112,23 +2117,36 @@ function collectMainModuleCache({ root, cache, electron }) {
     }
     assert.ok(!filename.split(path.sep).some((part) => part.endsWith('.asar')));
     let classification, relativePath;
-    if (within(root, filename)) {
+    if (within(dependencyRoot, filename)) {
+      relativePath = path.relative(dependencyRoot, filename);
+      classification = 'dependency';
+    } else {
+      assert.ok(within(root, filename), 'Main module outside declared roots');
       relativePath = path.relative(root, filename);
+      assert.ok(
+        !relativePath.split(path.sep).includes('node_modules') &&
+          !relativePath.startsWith(
+            'scripts' + path.sep + 'fixtures' + path.sep + 'railgun-engine' + path.sep
+          ),
+        'Copied engine or nested dependency is not application source'
+      );
       assert.ok(
         relativePath.startsWith('src' + path.sep) ||
           relativePath.startsWith('scripts' + path.sep) ||
           extraApplication.has(relativePath)
       );
       classification = 'application';
-    } else {
-      assert.ok(within(dependencyRoot, filename), 'Main module outside declared roots');
-      relativePath = path.relative(dependencyRoot, filename);
-      classification = 'dependency';
     }
     // No module alias may turn copied source into an original-root fallback.
     assert.equal(fs.realpathSync(filename), filename);
     const before = fs.lstatSync(filename);
-    assert.ok(before.isFile() && !before.isSymbolicLink() && before.size <= 256 * 1024 * 1024);
+    assert.ok(
+      before.isFile() &&
+        !before.isSymbolicLink() &&
+        before.nlink === 1 &&
+        before.size <= 256 * 1024 * 1024,
+      'Cache module must be a bounded single-link regular file'
+    );
     const bytes = fs.readFileSync(filename);
     const after = fs.lstatSync(filename);
     assert.equal(bytes.length, before.size);
@@ -2160,6 +2178,7 @@ function inspectMainModuleCache() {
     root: path.resolve(__dirname, '../..'),
     cache: require.cache,
     electron,
+    executable: process.execPath,
   });
 }
 

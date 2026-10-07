@@ -469,21 +469,22 @@ test.each(['storage', 'provider', 'worker', 'no-signal', 'no-dispatch'])(
 );
 
 test.each([
-  ['keystore', 'spending-public', './railgun-identity-job'],
-  ['keystore', 'spending-sign', './railgun-spend-sign-job'],
+  ['keystore', 'spending-public', null],
+  ['keystore', 'viewing-identity', null],
+  ['keystore', 'spending-sign', null],
   ['keystore', 'relay-sign', './railgun-relay-sign-job'],
-  ['engine', 'wallet-viewing', './railgun-wallet-job'],
-  ['engine', 'private-prepare', './railgun-private-prepare-job'],
+  ['engine', 'wallet-viewing', null],
+  ['engine', 'private-prepare', null],
   ['engine', 'poi-prove', './railgun-own-poi-prove-job'],
   ['engine', 'poi-output-recover', './railgun-poi-output-recover-job'],
   ['engine', 'poi-transact-selector', './railgun-poi-transact-selector-job'],
-  ['engine', 'private-operate', './railgun-private-operate-job'],
-  ['engine', 'private-recover', './railgun-private-recover-job'],
+  ['engine', 'private-operate', null],
+  ['engine', 'private-recover', null],
   ['engine', 'relay-pre-poi', './railgun-relay-pre-poi-job'],
   ['engine', 'relay-prove-local', './railgun-relay-prove-job'],
   ['engine', 'relay-prepare', './railgun-relay-wallet-job'],
   ['engine', 'relay-reconstruct', './railgun-relay-wallet-job'],
-  ['engine', 'private-receive', './railgun-private-receive-job'],
+  ['engine', 'private-receive', null],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
 ])(
   'only dedicated %s/%s job can receive one binary key, and the supervisor wipes it',
@@ -501,9 +502,8 @@ test.each([
         role,
         operation: purpose,
       }),
-      filename: require.resolve(job),
+      ...(job ? { filename: require.resolve(job), binaryKey: true } : { executionJob: purpose }),
       input: '{}',
-      binaryKey: true,
       broker: { signal: controller.signal, dispatch: async () => bytes },
     };
     expect(() => startRailgunProcess({ ...identityArgs, filename: '/tmp/arbitrary.js' })).toThrow();
@@ -511,6 +511,14 @@ test.each([
     task = startRailgunProcess(identityArgs);
     mockPort.postMessage.mockImplementation((value) => replyCopies.push(structuredClone(value)));
     child.emit('spawn');
+    expect(mockFork.mock.calls[0][0]).toBe(
+      require.resolve(job ? './railgun-process-entry' : './railgun-kernel-entry')
+    );
+    expect(JSON.parse(child.postMessage.mock.calls[0][0])).toEqual(
+      job
+        ? { type: 'init', filename: require.resolve(job), input: '{}' }
+        : { type: 'init', job: purpose, input: '{}' }
+    );
     message({
       type: 'command',
       wire: JSON.stringify({ id: 1, method: 'key', purpose }),
@@ -641,9 +649,8 @@ test('a 32-byte view over a larger backing buffer is never copied to a child', a
       role: 'keystore',
       operation: 'spending-public',
     }),
-    filename: require.resolve('./railgun-identity-job'),
+    executionJob: 'spending-public',
     input: '{}',
-    binaryKey: true,
     broker: { signal: scope.signal, dispatch: async () => bytes },
   });
   child.emit('spawn');
@@ -886,4 +893,128 @@ test('relay-sign supervisor refuses old spending-sign purpose and wipes the retu
   expect([...bytes]).toEqual(Array(32).fill(0));
   child.emit('exit', 1);
   expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
+});
+
+function kernelOptions(executionJob = 'private-prepare', changes = {}) {
+  const subject = {
+    kind: 'private-account',
+    principal: 'railgun:0',
+    protocol: 'railgun',
+    deployment: 'sepolia',
+    chainId: 11155111,
+    role: executionJob === 'private-verify' ? 'prover' : 'engine',
+    operation: executionJob,
+    ...changes,
+  };
+  return {
+    handle: scope.getContext(subject),
+    executionJob,
+    input: '{}',
+    broker: {
+      signal: scope.signal,
+      dispatch: jest.fn(async () => JSON.stringify({ id: 1, value: null })),
+    },
+  };
+}
+test.each([
+  ['unknown', { executionJob: 'constructor' }],
+  ['object', { executionJob: {} }],
+  ['undefined-job', { executionJob: undefined }],
+  ['undefined-filename', { filename: undefined }],
+  ['undefined-key', { binaryKey: undefined }],
+  ['filename', { filename: '/tmp/reviewed-engine.js' }],
+  ['key-true', { binaryKey: true }],
+  ['key-false', { binaryKey: false }],
+  ['no-broker', { broker: undefined }],
+])('kernel rejects caller route/capability override %s before fork', (_name, delta) => {
+  expect(() => startRailgunProcess({ ...kernelOptions(), ...delta })).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
+});
+test.each([
+  ['role', 'keystore'],
+  ['operation', 'private-operate'],
+  ['protocol', 'ppv2'],
+  ['deployment', 'mainnet'],
+  ['chainId', 1],
+])('kernel refuses subject cross-pairing %s', (field, value) => {
+  expect(() => startRailgunProcess(kernelOptions('private-prepare', { [field]: value }))).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
+});
+test.each(['private-recover', 'private-verify'])(
+  'kernel preserves exact account kind for %s',
+  (purpose) => {
+    expect(() => startRailgunProcess(kernelOptions(purpose, { kind: 'service' }))).toThrow();
+    expect(mockFork).not.toHaveBeenCalled();
+  }
+);
+test('keyless private verifier uses enum wire and cannot receive a broker key', async () => {
+  const bytes = Buffer.alloc(32, 9),
+    options = kernelOptions('private-verify');
+  options.broker.dispatch.mockResolvedValue(bytes);
+  task = startRailgunProcess(options);
+  child.emit('spawn');
+  expect(mockFork.mock.calls[0][0]).toBe(require.resolve('./railgun-kernel-entry'));
+  expect(JSON.parse(child.postMessage.mock.calls[0][0])).toEqual({
+    type: 'init',
+    job: 'private-verify',
+    input: '{}',
+  });
+  message({
+    type: 'command',
+    wire: JSON.stringify({ id: 1, method: 'key', purpose: 'private-verify' }),
+  });
+  await Promise.resolve();
+  expect(bytes.equals(Buffer.alloc(32))).toBe(true);
+  expect(mockPort.postMessage).not.toHaveBeenCalled();
+  child.emit('exit', 1);
+  expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
+});
+test.each([
+  'railgun-identity-job',
+  'railgun-spend-sign-job',
+  'railgun-wallet-job',
+  'railgun-private-prepare-job',
+  'railgun-private-operate-job',
+  'railgun-private-recover-job',
+  'railgun-private-receive-job',
+  'railgun-private-verify-job',
+])('moved local entry %s refuses even without binary capability', (name) => {
+  expect(() => startRailgunProcess({ ...args, filename: require.resolve('./' + name) })).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
+});
+test.each([
+  'spending-public',
+  'viewing-identity',
+  'spending-sign',
+  'wallet-viewing',
+  'private-prepare',
+  'private-operate',
+  'private-recover',
+  'private-receive',
+  'private-verify',
+])('installed entry %s cannot bypass enum admission', (purpose) => {
+  const filename = require('@freedom/railgun-kohaku-adapter/host/execution').getRailgunExecutionJob(
+    purpose
+  );
+  expect(() => startRailgunProcess({ ...args, filename })).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
+});
+test('normalized and symlink aliases cannot re-enable a moved filename', () => {
+  const path = require('path'),
+    fs = require('fs');
+  const filename = require.resolve('./railgun-wallet-job');
+  const normalized = path.dirname(filename) + '/../wallet/' + path.basename(filename);
+  expect(() => startRailgunProcess({ ...args, filename: normalized })).toThrow();
+  // Simulated realpath response exercises the filesystem alias admission without creating files.
+  const real = fs.realpathSync;
+  jest
+    .spyOn(fs, 'realpathSync')
+    .mockImplementation((file) => (file === '/tmp/kernel-alias.js' ? filename : real(file)));
+  expect(() => startRailgunProcess({ ...args, filename: '/tmp/kernel-alias.js' })).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
+});
+
+test('an explicitly undefined kernel job cannot fall back to the legacy route', () => {
+  expect(() => startRailgunProcess({ ...args, executionJob: undefined })).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
 });

@@ -415,8 +415,9 @@ async function jobHarness({
       };
     const returned = runtime.startRailgunProcess({
       input: JSON.stringify(input),
-      filename,
-      binaryKey: identity || restore,
+      ...(identity || restore
+        ? { executionJob: identity ? role : 'wallet-viewing' }
+        : { filename, binaryKey: false }),
       startupMs: 60000,
       lifetimeMs: 60000,
       broker,
@@ -887,3 +888,31 @@ test('cold log replies keep original transaction and log indexes', () => {
     ['0x0', '0x1'],
   ]);
 });
+
+test.each(['legacy-filename', 'mixed-route'])(
+  'cold observer refuses an extracted identity %s before original launch',
+  (kind) => {
+    const original = jest.fn();
+    jest.doMock(wallet + 'railgun-process', () => ({ startRailgunProcess: original }));
+    jest.doMock(wallet + 'railgun-session-worker', () => ({
+      startRailgunSessionWorker: jest.fn(),
+      startRailgunReadOnlySessionWorker: jest.fn(),
+    }));
+    const observer = load().installJobs(digest),
+      runtime = require(wallet + 'railgun-process');
+    observer.deadline(performance.now() + 180000);
+    try {
+      expect(() =>
+        runtime.startRailgunProcess({
+          filename: require.resolve(wallet + 'railgun-identity-job'),
+          input: JSON.stringify({ purpose: 'spending-public' }),
+          broker: { dispatch: jest.fn() },
+          ...(kind === 'mixed-route' ? { executionJob: 'spending-public' } : {}),
+        })
+      ).toThrow();
+      expect(original).not.toHaveBeenCalled();
+    } finally {
+      observer.restore();
+    }
+  }
+);

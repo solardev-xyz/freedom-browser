@@ -1,3 +1,4 @@
+const { isRailgunWalletJob } = require('./fixtures/railgun-job-observer');
 /** Durable wallet checkpoint and interrupted recovery over synthetic public history. */
 const { app } = require('electron');
 const nativeAssertions = require('./fixtures/railgun-native-assertions');
@@ -265,17 +266,14 @@ async function main() {
     const runtime = require('../src/main/wallet/railgun-process'),
       originalStart = runtime.startRailgunProcess;
     runtime.startRailgunProcess = (options) => {
-      if (
-        stagingGuard &&
-        options.filename === require.resolve('../src/main/wallet/railgun-spend-sign-job')
-      ) {
+      if (stagingGuard && isRailgunWalletJob(options, 'railgun-spend-sign-job.js')) {
         forbiddenStaging.signerLaunches++;
         assert.ok(
           transactControllerKind && forbiddenStaging.signerLaunches === 1,
           'Signer forbidden during synthetic staging'
         );
       }
-      if (options.filename === require.resolve('../src/main/wallet/railgun-wallet-job'))
+      if (isRailgunWalletJob(options, 'railgun-wallet-job.js'))
         walletRestores.push(JSON.parse(options.input).restore);
       if (!options.broker) return originalStart(options);
       const original = options.broker;
@@ -309,7 +307,7 @@ async function main() {
               privateReceiveKeys++;
             if (
               failReadOnlyRestore &&
-              options.filename === require.resolve('../src/main/wallet/railgun-wallet-job') &&
+              isRailgunWalletJob(options, 'railgun-wallet-job.js') &&
               JSON.parse(options.input).restore === true &&
               message.method === 'key'
             ) {
@@ -348,7 +346,7 @@ async function main() {
             }
             if (
               failPublicCommit &&
-              options.filename === require.resolve('../src/main/wallet/railgun-public-job') &&
+              isRailgunWalletJob(options, 'railgun-public-job.js') &&
               message.method === 'txCommit'
             ) {
               failPublicCommit = false;
@@ -367,7 +365,7 @@ async function main() {
         },
       });
       task.closed.then((result) => {
-        if (options.filename === require.resolve('../src/main/wallet/railgun-private-operate-job'))
+        if (isRailgunWalletJob(options, 'railgun-private-operate-job.js'))
           privateOperationJobs.push(result);
         if (cancelledThisTask) {
           cancelledViewingMessages = messages;

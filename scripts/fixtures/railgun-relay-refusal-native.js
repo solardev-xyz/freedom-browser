@@ -1,3 +1,4 @@
+const { observeRailgunJob, isRailgunWalletJob } = require('./railgun-job-observer');
 /** Default-off disposable Shield refusal campaign. All service responses are
  * synthetic in-memory fixtures. Production trust pins and owner APIs are unchanged. */
 const native = require('./railgun-native-assertions');
@@ -235,16 +236,14 @@ function installJobs() {
   const observed = function (options, ...rest) {
     const input = JSON.parse(options.input);
     let role;
-    if (options.filename === require.resolve(wallet + 'railgun-identity-job')) role = input.purpose;
-    else if (options.filename === require.resolve(wallet + 'railgun-public-job'))
-      role = 'public-' + input.mode;
-    else if (options.filename === require.resolve(wallet + 'railgun-wallet-job'))
+    if (isRailgunWalletJob(options, 'railgun-identity-job.js')) role = input.purpose;
+    else if (isRailgunWalletJob(options, 'railgun-public-job.js')) role = 'public-' + input.mode;
+    else if (isRailgunWalletJob(options, 'railgun-wallet-job.js'))
       role = input.restore ? 'wallet-restore' : 'wallet-scan';
-    else if (options.filename === require.resolve(wallet + 'railgun-relay-quote-job'))
-      role = 'quote';
-    else if (options.filename === require.resolve(wallet + 'railgun-relay-wallet-job'))
+    else if (isRailgunWalletJob(options, 'railgun-relay-quote-job.js')) role = 'quote';
+    else if (isRailgunWalletJob(options, 'railgun-relay-wallet-job.js'))
       role = input.relayRequest ? 'construct' : 'reconstruct';
-    else assert.fail('Unexpected utility: ' + path.basename(options.filename));
+    else assert.fail('Unexpected utility: ' + observeRailgunJob(options).name);
     assert.ok(expectedRoles()[rows.length] === role, 'Unexpected original utility order: ' + role);
     if (rows.length) assert.equal(rows.at(-1).closedObserved, true);
     const row = {

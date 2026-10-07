@@ -12,28 +12,88 @@ const path = require('path');
 const { getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunSession } = require('./railgun-session');
 const { startRailgunSessionWorker } = require('./railgun-session-worker');
+const { getRailgunExecutionJob } = require('@freedom/railgun-kohaku-adapter/host/execution');
+// The enum, not a caller boolean/path, determines the kernel key capability.
+// Actual identity/permit/loan authority stays with the existing main owners.
+const kernelJobs = Object.freeze({
+  'spending-public': Object.freeze({ role: 'keystore', key: true }),
+  'viewing-identity': Object.freeze({ role: 'keystore', key: true }),
+  'spending-sign': Object.freeze({ role: 'keystore', key: true }),
+  'wallet-viewing': Object.freeze({ role: 'engine', key: true }),
+  'private-prepare': Object.freeze({ role: 'engine', key: true }),
+  'private-operate': Object.freeze({ role: 'engine', key: true }),
+  'private-recover': Object.freeze({ role: 'engine', key: true, kind: 'private-account' }),
+  'private-receive': Object.freeze({ role: 'engine', key: true }),
+  'private-verify': Object.freeze({ role: 'prover', key: false, kind: 'private-account' }),
+});
+const movedJobs = new Set([
+  ...Object.keys(kernelJobs).map(getRailgunExecutionJob),
+  ...[
+    'railgun-identity-job',
+    'railgun-spend-sign-job',
+    'railgun-wallet-job',
+    'railgun-private-prepare-job',
+    'railgun-private-operate-job',
+    'railgun-private-recover-job',
+    'railgun-private-receive-job',
+    'railgun-private-verify-job',
+  ].map((name) => require.resolve('./' + name)),
+]);
+function isMovedJob(filename) {
+  const absolute = path.resolve(filename);
+  if (movedJobs.has(absolute)) return true;
+  try {
+    return movedJobs.has(require('fs').realpathSync(absolute));
+  } catch {
+    // Existing legacy qualification filenames can be checked only by the child.
+    return false;
+  }
+}
+for (const filename of [...movedJobs]) movedJobs.add(require('fs').realpathSync(filename));
 const owners = new Set();
 const fail = (code) => Object.assign(new Error('Railgun process unavailable'), { code });
-function startRailgunProcess({
-  handle,
-  filename,
-  input,
-  storage,
-  createProvider,
-  broker,
-  storageWorker = false,
-  binaryKey = false,
-  startupMs = 30000,
-  lifetimeMs = 600000,
-  heapMb = 256,
-  rssMb = 768,
-}) {
+function startRailgunProcess(options) {
+  const {
+    handle,
+    filename,
+    executionJob,
+    input,
+    storage,
+    createProvider,
+    broker,
+    storageWorker = false,
+    binaryKey: requestedBinaryKey,
+    startupMs = 30000,
+    lifetimeMs = 600000,
+    heapMb = 256,
+    rssMb = 768,
+  } = options;
   const context = getPrivacyContext(handle);
   const { app, utilityProcess, MessageChannelMain } = require('electron');
+  const kernel = Object.hasOwn(options, 'executionJob');
+  const specification =
+    kernel && typeof executionJob === 'string' && Object.hasOwn(kernelJobs, executionJob)
+      ? kernelJobs[executionJob]
+      : undefined;
+  const binaryKey = kernel
+    ? specification?.key
+    : requestedBinaryKey === undefined
+      ? false
+      : requestedBinaryKey;
   if (
     !app.isReady() ||
-    typeof filename !== 'string' ||
-    !path.isAbsolute(filename) ||
+    (kernel
+      ? !specification ||
+        Object.hasOwn(options, 'filename') ||
+        Object.hasOwn(options, 'binaryKey') ||
+        !broker ||
+        context.subject.protocol !== 'railgun' ||
+        context.subject.chainId !== 11155111 ||
+        context.subject.deployment !== 'sepolia' ||
+        context.subject.role !== specification.role ||
+        context.subject.operation !== executionJob ||
+        (specification.kind !== undefined && context.subject.kind !== specification.kind)
+      : typeof filename !== 'string' || !path.isAbsolute(filename) || isMovedJob(filename)) ||
     typeof input !== 'string' ||
     Buffer.byteLength(input) > 65536 ||
     typeof storageWorker !== 'boolean' ||
@@ -43,61 +103,40 @@ function startRailgunProcess({
         context.subject.protocol !== 'railgun' ||
         context.subject.chainId !== 11155111 ||
         context.subject.deployment !== 'sepolia' ||
-        !(
-          (context.subject.role === 'keystore' &&
-            ['spending-public', 'viewing-identity'].includes(context.subject.operation) &&
-            filename === require.resolve('./railgun-identity-job')) ||
-          (context.subject.role === 'keystore' &&
-            context.subject.operation === 'spending-sign' &&
-            filename === require.resolve('./railgun-spend-sign-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'keystore' &&
-            context.subject.operation === 'relay-sign' &&
-            filename === require.resolve('./railgun-relay-sign-job')) ||
-          (context.subject.role === 'engine' &&
-            context.subject.operation === 'private-receive' &&
-            filename === require.resolve('./railgun-private-receive-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'engine' &&
-            context.subject.operation === 'relay-pre-poi' &&
-            filename === require.resolve('./railgun-relay-pre-poi-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'engine' &&
-            context.subject.operation === 'relay-prove-local' &&
-            filename === require.resolve('./railgun-relay-prove-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'engine' &&
-            ['relay-prepare', 'relay-reconstruct'].includes(context.subject.operation) &&
-            filename === require.resolve('./railgun-relay-wallet-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'engine' &&
-            context.subject.operation === 'private-recover' &&
-            filename === require.resolve('./railgun-private-recover-job')) ||
-          (context.subject.role === 'engine' &&
-            context.subject.operation === 'private-operate' &&
-            filename === require.resolve('./railgun-private-operate-job')) ||
-          (context.subject.role === 'engine' &&
-            context.subject.operation === 'private-prepare' &&
-            filename === require.resolve('./railgun-private-prepare-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'engine' &&
-            context.subject.operation === 'poi-prove' &&
-            filename === require.resolve('./railgun-own-poi-prove-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'engine' &&
-            context.subject.operation === 'poi-transact-selector' &&
-            filename === require.resolve('./railgun-poi-transact-selector-job')) ||
-          (context.subject.role === 'engine' &&
-            context.subject.operation === 'poi-output-recover' &&
-            filename === require.resolve('./railgun-poi-output-recover-job')) ||
-          (context.subject.role === 'engine' &&
-            context.subject.operation === 'wallet-viewing' &&
-            filename === require.resolve('./railgun-wallet-job')) ||
-          (context.subject.kind === 'private-account' &&
-            context.subject.role === 'engine' &&
-            context.subject.operation === 'shield-receive' &&
-            filename === require.resolve('./railgun-shield-receive-job'))
-        ))) ||
+        (!kernel &&
+          !(
+            (context.subject.kind === 'private-account' &&
+              context.subject.role === 'keystore' &&
+              context.subject.operation === 'relay-sign' &&
+              filename === require.resolve('./railgun-relay-sign-job')) ||
+            (context.subject.kind === 'private-account' &&
+              context.subject.role === 'engine' &&
+              context.subject.operation === 'relay-pre-poi' &&
+              filename === require.resolve('./railgun-relay-pre-poi-job')) ||
+            (context.subject.kind === 'private-account' &&
+              context.subject.role === 'engine' &&
+              context.subject.operation === 'relay-prove-local' &&
+              filename === require.resolve('./railgun-relay-prove-job')) ||
+            (context.subject.kind === 'private-account' &&
+              context.subject.role === 'engine' &&
+              ['relay-prepare', 'relay-reconstruct'].includes(context.subject.operation) &&
+              filename === require.resolve('./railgun-relay-wallet-job')) ||
+            (context.subject.kind === 'private-account' &&
+              context.subject.role === 'engine' &&
+              context.subject.operation === 'poi-prove' &&
+              filename === require.resolve('./railgun-own-poi-prove-job')) ||
+            (context.subject.kind === 'private-account' &&
+              context.subject.role === 'engine' &&
+              context.subject.operation === 'poi-transact-selector' &&
+              filename === require.resolve('./railgun-poi-transact-selector-job')) ||
+            (context.subject.role === 'engine' &&
+              context.subject.operation === 'poi-output-recover' &&
+              filename === require.resolve('./railgun-poi-output-recover-job')) ||
+            (context.subject.kind === 'private-account' &&
+              context.subject.role === 'engine' &&
+              context.subject.operation === 'shield-receive' &&
+              filename === require.resolve('./railgun-shield-receive-job'))
+          )))) ||
     (broker !== undefined &&
       (!broker ||
         typeof broker.dispatch !== 'function' ||
@@ -278,13 +317,17 @@ function startRailgunProcess({
       finish();
     } else {
       channel = new MessageChannelMain();
-      child = utilityProcess.fork(path.join(__dirname, 'railgun-process-entry.js'), [], {
-        env: Object.fromEntries(Object.keys(process.env).map((key) => [key, ''])),
-        cwd: app.getPath('temp'),
-        stdio: 'ignore',
-        execArgv: [`--max-old-space-size=${heapMb}`],
-        serviceName: 'Freedom Railgun engine',
-      });
+      child = utilityProcess.fork(
+        path.join(__dirname, kernel ? 'railgun-kernel-entry.js' : 'railgun-process-entry.js'),
+        [],
+        {
+          env: Object.fromEntries(Object.keys(process.env).map((key) => [key, ''])),
+          cwd: app.getPath('temp'),
+          stdio: 'ignore',
+          execArgv: [`--max-old-space-size=${heapMb}`],
+          serviceName: 'Freedom Railgun engine',
+        }
+      );
       child.once('exit', finish);
       child.once('error', () => stop('RAILGUN_PROCESS_FAILED'));
       child.once('spawn', () => {
@@ -295,7 +338,14 @@ function startRailgunProcess({
         }
         try {
           getPrivacyContext(handle);
-          child.postMessage(JSON.stringify({ type: 'init', filename, input }), [channel.port2]);
+          child.postMessage(
+            JSON.stringify(
+              kernel
+                ? { type: 'init', job: executionJob, input }
+                : { type: 'init', filename, input }
+            ),
+            [channel.port2]
+          );
           sampleMemory();
         } catch {
           stop('RAILGUN_PROCESS_FAILED');

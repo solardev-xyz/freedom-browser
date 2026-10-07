@@ -79,7 +79,7 @@ async function verify({
     active();
     task = startRailgunProcess({
       handle: scope.getContext(context.subject),
-      filename: require.resolve('./railgun-private-verify-job'),
+      executionJob: 'private-verify',
       input: JSON.stringify({
         archive: proverArchive,
         artifactDirectory,

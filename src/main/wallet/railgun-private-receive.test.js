@@ -66,10 +66,11 @@ beforeEach(() => {
     recipient: 'self',
     amount: '1000',
   };
-  mockStart.mockImplementation(({ broker, input, filename, binaryKey }) => {
+  mockStart.mockImplementation(({ broker, input, filename, binaryKey, executionJob }) => {
     mockInput = JSON.parse(input);
-    expect(binaryKey).toBe(true);
-    expect(filename).toBe(require.resolve('./railgun-private-receive-job'));
+    expect(binaryKey).toBeUndefined();
+    expect(filename).toBeUndefined();
+    expect(executionJob).toBe('private-receive');
     const closed = new Promise((resolve) => {
       mockExit = () => resolve({ code: 'RAILGUN_PROCESS_CLOSED' });
     });
@@ -582,9 +583,10 @@ test.each(['missing', 'throwing-getter'])(
 describe('foreign full-value transfer sent-output check', () => {
   const OTHER = '0zk1' + 'p'.repeat(123);
   function foreignStart(change = (value) => value) {
-    mockStart.mockImplementation(({ broker, input, filename, binaryKey }) => {
-      expect(binaryKey).toBe(true);
-      expect(filename).toBe(require.resolve('./railgun-private-receive-job'));
+    mockStart.mockImplementation(({ broker, input, filename, binaryKey, executionJob }) => {
+      expect(binaryKey).toBeUndefined();
+      expect(filename).toBeUndefined();
+      expect(executionJob).toBe('private-receive');
       mockInput = JSON.parse(input);
       const exit = deferred();
       const ready = Promise.resolve().then(async () => {

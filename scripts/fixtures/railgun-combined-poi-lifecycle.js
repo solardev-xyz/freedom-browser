@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./railgun-job-observer');
 /** Connected, disposable partial lifecycle. Every admission/receipt/record is
  * production-issued; service replies and the two review callbacks are fixtures.
  * Same-process encrypted reopen is not process restart or change eligibility. */
@@ -54,7 +55,7 @@ exports.createAudit = () => {
       fault = value;
     },
     start(options) {
-      const job = path.basename(options.filename);
+      const job = observeRailgunJob(options).name;
       facts.starts[job] = (facts.starts[job] || 0) + 1;
       if (job === 'railgun-txid-job.js') {
         const mode = JSON.parse(options.input).mode;

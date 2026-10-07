@@ -102,9 +102,8 @@ function job(purpose, closed) {
   const dispatch = jest.fn(() => reply);
   return {
     options: {
-      filename: require.resolve('../src/main/wallet/railgun-identity-job'),
+      executionJob: purpose,
       input: JSON.stringify({ purpose }),
-      binaryKey: true,
       broker: { dispatch },
     },
     task: { closed },

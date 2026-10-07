@@ -1,3 +1,4 @@
+const { observeRailgunJob } = require('./fixtures/railgun-job-observer');
 /** Offline completed-only wallet restoration over a genuinely enrolled scan.
  * electron script SOURCE NEW_DIRECTORY ENGINE ARTIFACTS BYTECODES
  * Public vector, simulated wire/Tor endpoints; no funded profile or live RPC.
@@ -138,7 +139,7 @@ async function main() {
     return result;
   };
   runtime.startRailgunProcess = (options) => {
-    const job = path.basename(options.filename);
+    const job = observeRailgunJob(options).name;
     if (qualification && !['railgun-public-job.js', 'railgun-wallet-job.js'].includes(job)) {
       counters.forbiddenJobs++;
       throw Error('Unexpected completed-wallet utility');

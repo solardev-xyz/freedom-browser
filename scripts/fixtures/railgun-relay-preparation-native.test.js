@@ -45,8 +45,8 @@ function load(overrides, cached = []) {
       : Object.hasOwn(overrides, name)
         ? overrides[name]
         : require(name);
-  req.resolve = (name) => name;
-  req.cache = Object.fromEntries(cached.map((name) => [w + name, {}]));
+  req.resolve = (name) => require.resolve(name);
+  req.cache = Object.fromEntries(cached.map((name) => [require.resolve(w + name), {}]));
   const module = { exports: {} };
   Function('require', 'module', 'structuredClone', source)(req, module, clone);
   return { ...module.exports, errors };
@@ -74,7 +74,7 @@ function observer(cached) {
   const delegate = runtime.startRailgunProcess;
   const probe = loaded.install();
   const quote = {
-    filename: w + 'railgun-relay-quote-job',
+    filename: require.resolve(w + 'railgun-relay-quote-job'),
     binaryKey: false,
     startupMs: 15000,
     lifetimeMs: 15000,
@@ -82,7 +82,7 @@ function observer(cached) {
     broker: { dispatch: jest.fn(async () => '{}') },
   };
   const relay = (construct = true) => ({
-    filename: w + 'railgun-relay-wallet-job',
+    filename: require.resolve(w + 'railgun-relay-wallet-job'),
     binaryKey: true,
     startupMs: 30000,
     lifetimeMs: 30000,
@@ -544,4 +544,19 @@ test.each(['added', 'removed'])('counter schema %s cannot escape deltas', async 
     else delete f.activity.workerStarts;
   };
   await expect(f.run()).rejects.toThrow();
+});
+
+test('observer refuses the old identity route rather than forwarding it as unrelated work', async () => {
+  const f = observer();
+  try {
+    expect(() =>
+      f.runtime.startRailgunProcess({
+        filename: require.resolve(w + 'railgun-identity-job'),
+        input: JSON.stringify({ purpose: 'spending-public' }),
+      })
+    ).toThrow();
+    expect(f.delegate).not.toHaveBeenCalled();
+  } finally {
+    await f.probe.resources.close();
+  }
 });

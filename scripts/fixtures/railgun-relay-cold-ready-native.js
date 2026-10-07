@@ -1,3 +1,4 @@
+const { observeRailgunJob, isRailgunWalletJob } = require('./railgun-job-observer');
 /** Fixed second-main qualification of one PUBLIC disposable ready-local record.
  * Process history is an outer-owned attestation, not authenticated by this file. */
 const fs = require('fs');
@@ -467,24 +468,21 @@ function installJobs(firstRecordSha256, mode = 'ready') {
   const guards = require('../qualify-railgun-relay-proof').EXPECTED_GUARDS;
   const start = function (options, ...rest) {
     const input = JSON.parse(options.input),
-      filename = options.filename;
+      observedJob = observeRailgunJob(options);
     let role;
-    if (filename === require.resolve(wallet + 'railgun-identity-job')) role = input.purpose;
-    else if (filename === require.resolve(wallet + 'railgun-public-job')) {
+    if (isRailgunWalletJob(options, 'railgun-identity-job.js')) role = input.purpose;
+    else if (isRailgunWalletJob(options, 'railgun-public-job.js')) {
       assert.equal(input.mode, 'plan');
       role = 'public-plan';
-    } else if (filename === require.resolve(wallet + 'railgun-wallet-job')) {
+    } else if (isRailgunWalletJob(options, 'railgun-wallet-job.js')) {
       assert.equal(input.restore, true);
       assert.equal(input.privateIntent, undefined);
       assert.equal(input.privateOperation, undefined);
       role = 'wallet-restore';
-    } else if (
-      mode === 'signed' &&
-      filename === require.resolve(wallet + 'railgun-relay-prove-job')
-    ) {
+    } else if (mode === 'signed' && isRailgunWalletJob(options, 'railgun-relay-prove-job.js')) {
       role = 'proof-A';
     } else {
-      assert.equal(filename, require.resolve(wallet + 'railgun-relay-verify-job'));
+      assert.equal(isRailgunWalletJob(options, 'railgun-relay-verify-job.js'), true);
       role = 'dual-proof-C';
     }
     assert.equal(role, expectedRoles[rows.length]);
@@ -495,7 +493,8 @@ function installJobs(firstRecordSha256, mode = 'ready') {
       'wallet-restore': 'wallet-viewing',
       'proof-A': 'relay-prove-local',
     }[role];
-    assert.equal(options.binaryKey === true, !!expectedKey);
+    if (observedJob.route === 'kernel') assert.equal(observedJob.executionJob, expectedKey);
+    else assert.equal(options.binaryKey === true, !!expectedKey);
     if (role === 'dual-proof-C') {
       assert.ok(Number.isFinite(deadline) && deadline - performance.now() > 15000);
       assert.ok(options.startupMs > 0 && options.startupMs <= 60000);

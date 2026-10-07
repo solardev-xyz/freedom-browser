@@ -5,7 +5,7 @@ const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
 
 const PACKAGE = '@freedom/railgun-kohaku-adapter';
-const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.4.0.tgz';
+const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.5.0.tgz';
 const root = path.resolve(__dirname, '../../..');
 const installed = path.join(root, 'node_modules', PACKAGE);
 const modules = {
@@ -240,11 +240,51 @@ test('the installed package is the committed tarball the lockfile names', () => 
   expect(entry.resolved).toBe('file:' + TARBALL);
   expect(entry.integrity).toBe('sha512-' + createHash('sha512').update(bytes).digest('base64'));
   expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-    '35ea07c1f9c64926c94a0b24f39333db75412a7771eae78675743bcae2a6a0a1'
+    '190ec1f2225afca9663fbd67ac1b3b8601071c58db9119961797e7ebdd03ab52'
   );
   const files = untar(bytes);
   expect(Object.keys(files).sort()).toEqual(
     [
+      'docs/execution/INTEGRATION.md',
+      'docs/execution/PROVENANCE.json',
+      'host-bootstrap.cjs',
+      'host-execution.cjs',
+      'host-execution.mjs',
+      'src/execution/host-bindings.js',
+      'src/execution/job-locations.js',
+      'src/execution/railgun-artifacts.js',
+      'src/execution/railgun-engine-manifest.json',
+      'src/execution/railgun-engine-runtime.js',
+      'src/execution/railgun-identity-job.js',
+      'src/execution/railgun-private-capsule.js',
+      'src/execution/railgun-private-operate-job.js',
+      'src/execution/railgun-private-prepare-job.js',
+      'src/execution/railgun-private-prover.js',
+      'src/execution/railgun-private-receive-job.js',
+      'src/execution/railgun-private-reconstruct.js',
+      'src/execution/railgun-private-recover-job.js',
+      'src/execution/railgun-private-verify-job.js',
+      'src/execution/railgun-private-witness.js',
+      'src/execution/railgun-process-guards.js',
+      'src/execution/railgun-prover-manifest.json',
+      'src/execution/railgun-prover-runtime.js',
+      'src/execution/railgun-relay-capsule.js',
+      'src/execution/railgun-relay-intent.js',
+      'src/execution/railgun-relay-poi-history.js',
+      'src/execution/railgun-relay-pre-poi-data.js',
+      'src/execution/railgun-relay-quote-data.js',
+      'src/execution/railgun-relay-record-stream.js',
+      'src/execution/railgun-relay-recovery-data.js',
+      'src/execution/railgun-relay-transaction.js',
+      'src/execution/railgun-relay-wallet-data.js',
+      'src/execution/railgun-remote.js',
+      'src/execution/railgun-spend-sign-job.js',
+      'src/execution/railgun-wallet-job.js',
+      'src/execution/railgun-wallet-records.js',
+      'src/execution/railgun-wallet-scan.js',
+      'types/host-bootstrap.d.ts',
+      'types/host-execution.d.mts',
+      'types/host-execution.d.ts',
       'LICENSE',
       'NOTICE.md',
       'README.md',

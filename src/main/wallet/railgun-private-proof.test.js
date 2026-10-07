@@ -129,6 +129,8 @@ test('issues exact account-bound evidence only after verifier exit and passes no
   ).toThrow();
   const job = startRailgunProcess.mock.calls[0][0];
   expect(job.binaryKey).toBeUndefined();
+  expect(job.filename).toBeUndefined();
+  expect(job.executionJob).toBe('private-verify');
   expect(Object.keys(JSON.parse(job.input)).sort()).toEqual([
     'archive',
     'artifactDirectory',

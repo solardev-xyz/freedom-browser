@@ -89,3 +89,19 @@ isolated checkout, not an authenticated original checkout path or inode. Its
 single-link check cannot prove that an original was never modified earlier;
 original/copy identity and original-byte preservation are therefore mandatory
 builder checks, not claims made by this local guard.
+
+The positive/cold fixture's publication-time main cache collector now requires a
+physical `node_modules` directory and classifies its files as dependencies before
+checking the surrounding application tree. Every observed application/dependency
+file must be a canonical, single-link regular file. Original-root fallbacks,
+application rows under nested `node_modules`, and the copied fixture engine
+distribution refuse before their source is read. Cold uses the same collector.
+
+The collector derives the one bootstrap archive location from the actual external
+Electron executable passed by its fixed inspector. For the pinned macOS Electron
+44.6.0 runtime, read-only input inspection found the same exact `default_app.asar`
+and `package.json` member bytes as 44.5.1; the executable and framework have new
+pins. Only that member and the three exact Electron virtual aliases are admitted.
+These source checks do not establish a new native loader observation, full import
+coverage, or a positive/cold campaign outcome. The physical builder and final
+original-process driver still require their own reviewed input bindings.

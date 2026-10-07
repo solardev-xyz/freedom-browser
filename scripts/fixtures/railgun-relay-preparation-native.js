@@ -1,3 +1,4 @@
+const { isRailgunWalletJob } = require('./railgun-job-observer');
 /** Default-off disposable account probe; original utility tasks remain authoritative. */
 const native = require('./railgun-native-assertions');
 const { assert } = native;
@@ -44,8 +45,8 @@ function install() {
   let restored = false;
   const observed = function (...args) {
     const options = args[0];
-    const quote = options.filename === require.resolve(wallet + 'railgun-relay-quote-job');
-    const relay = options.filename === require.resolve(wallet + 'railgun-relay-wallet-job');
+    const quote = isRailgunWalletJob(options, 'railgun-relay-quote-job.js');
+    const relay = isRailgunWalletJob(options, 'railgun-relay-wallet-job.js');
     if (!quote && !relay) return Reflect.apply(original, this, args);
     assert.equal(restored, false);
     const input = JSON.parse(options.input);

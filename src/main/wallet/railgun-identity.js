@@ -147,8 +147,7 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
     const keyPath = `m/${purpose === 'spending-public' ? 44 : 420}'/1984'/0'/0'/${accountIndex}'`;
     task = startRailgunProcess({
       handle: scope.getContext({ ...subject, operation: purpose }),
-      filename: require.resolve('./railgun-identity-job'),
-      binaryKey: true,
+      executionJob: purpose,
       input: JSON.stringify({
         archive,
         purpose,
@@ -353,9 +352,8 @@ async function signPrivateIntent({
   try {
     task = startRailgunProcess({
       handle,
-      filename: require.resolve('./railgun-spend-sign-job'),
+      executionJob: 'spending-sign',
       input: JSON.stringify(payload),
-      binaryKey: true,
       startupMs: Math.min(30000, timeoutMs),
       lifetimeMs: timeoutMs,
       heapMb: 128,

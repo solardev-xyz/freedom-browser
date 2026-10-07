@@ -89,17 +89,16 @@ jest.mock('./railgun-process', () => ({
                 : 'wallet-viewing',
         })
       );
-      expect(options.binaryKey).toBe(true);
-      expect(options.filename).toBe(
-        require.resolve(
-          mockInput.privateRecovery
-            ? './railgun-private-recover-job'
-            : mockInput.privateOperation
-              ? './railgun-private-operate-job'
-              : mockInput.privateIntent
-                ? './railgun-private-prepare-job'
-                : './railgun-wallet-job'
-        )
+      expect(options.binaryKey).toBeUndefined();
+      expect(options.filename).toBeUndefined();
+      expect(options.executionJob).toBe(
+        mockInput.privateRecovery
+          ? 'private-recover'
+          : mockInput.privateOperation
+            ? 'private-operate'
+            : mockInput.privateIntent
+              ? 'private-prepare'
+              : 'wallet-viewing'
       );
       expect(bytes.byteLength).toBe(32);
       expect(bytes.byteOffset).toBe(0);

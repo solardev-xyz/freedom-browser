@@ -1,3 +1,4 @@
+const { observeRailgunJob, isRailgunWalletJob } = require('./fixtures/railgun-job-observer');
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
@@ -446,7 +447,7 @@ async function main() {
     'eth_blockNumber',
   ];
   const pendingUtilityName = (options) => {
-    const file = path.basename(options.filename ?? '');
+    const file = observeRailgunJob(options).name;
     if (file === 'railgun-own-selector-job.js') return 'ownSelector';
     if (file === 'railgun-own-txid-job.js') return 'ownTxid';
     if (file === 'railgun-txid-job.js' || file === 'railgun-public-job.js') {
@@ -1050,23 +1051,16 @@ async function main() {
       if (options.binaryKey) attemptWork.utilityKeyHandoffs++;
       throw Error('Unexpected durable-attempt utility');
     }
-    const recoveringOutput =
-      options.filename === require.resolve('../src/main/wallet/railgun-poi-output-recover-job');
+    const recoveringOutput = isRailgunWalletJob(options, 'railgun-poi-output-recover-job.js');
     const coldVerifying =
-      coldValidationActive &&
-      options.filename === require.resolve('../src/main/wallet/railgun-poi-verify-job');
+      coldValidationActive && isRailgunWalletJob(options, 'railgun-poi-verify-job.js');
     const outputOwnSelector =
-      outputRecoveryActive &&
-      options.filename === require.resolve('../src/main/wallet/railgun-own-selector-job');
+      outputRecoveryActive && isRailgunWalletJob(options, 'railgun-own-selector-job.js');
     const outputOwnTxid =
-      outputRecoveryActive &&
-      options.filename === require.resolve('../src/main/wallet/railgun-own-txid-job');
-    const outputMirror =
-      outputRecoveryActive &&
-      options.filename === require.resolve('../src/main/wallet/railgun-txid-job');
+      outputRecoveryActive && isRailgunWalletJob(options, 'railgun-own-txid-job.js');
+    const outputMirror = outputRecoveryActive && isRailgunWalletJob(options, 'railgun-txid-job.js');
     const outputPublicPlan =
-      outputRecoveryActive &&
-      options.filename === require.resolve('../src/main/wallet/railgun-public-job');
+      outputRecoveryActive && isRailgunWalletJob(options, 'railgun-public-job.js');
     const refuseOutputUtility = () => {
       outputRecoveryJobs.unexpected++;
       let mode, operation;
@@ -1080,7 +1074,7 @@ async function main() {
       } catch {
         operation = undefined;
       }
-      const basename = path.basename(options.filename ?? '');
+      const basename = observeRailgunJob(options).name;
       process.stderr.write(
         JSON.stringify({
           refusedOutputUtility: /^[a-z-]+\.js$/.test(basename) ? basename : 'unrecognized',
@@ -1200,10 +1194,8 @@ async function main() {
         assert.equal(input.binding.payloadSha256, savedProof.payloadSha256);
       }
     } else assert.equal(recoveringOutput, false);
-    const proving =
-      options.filename === require.resolve('../src/main/wallet/railgun-own-poi-prove-job');
-    const verifying =
-      options.filename === require.resolve('../src/main/wallet/railgun-poi-verify-job');
+    const proving = isRailgunWalletJob(options, 'railgun-own-poi-prove-job.js');
+    const verifying = isRailgunWalletJob(options, 'railgun-poi-verify-job.js');
     if (checksActive) {
       if (options.binaryKey) checksForbiddenJobs.binaryKey++;
       if (proving) checksForbiddenJobs.poiProver++;
@@ -1237,15 +1229,11 @@ async function main() {
       assert.ok(proofMode && proofActive && !options.binaryKey);
       proofJobs.verification++;
     }
-    const membership = options.filename === require.resolve('../src/main/wallet/railgun-poi-job');
-    const selectorJob =
-      options.filename === require.resolve('../src/main/wallet/railgun-poi-shield-selector-job');
+    const membership = isRailgunWalletJob(options, 'railgun-poi-job.js');
+    const selectorJob = isRailgunWalletJob(options, 'railgun-poi-shield-selector-job.js');
     const checksOwnSelector =
-      checksActive &&
-      options.filename === require.resolve('../src/main/wallet/railgun-own-selector-job');
-    const checksOwnTxid =
-      checksActive &&
-      options.filename === require.resolve('../src/main/wallet/railgun-own-txid-job');
+      checksActive && isRailgunWalletJob(options, 'railgun-own-selector-job.js');
+    const checksOwnTxid = checksActive && isRailgunWalletJob(options, 'railgun-own-txid-job.js');
     if (checksOwnSelector || checksOwnTxid) {
       assert.ok(!options.binaryKey);
       const context = getPrivacyContext(options.handle);

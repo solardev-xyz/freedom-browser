@@ -19,8 +19,8 @@ function load(overrides = {}, cached = []) {
       : Object.hasOwn(overrides, name)
         ? overrides[name]
         : require(name);
-  req.resolve = (name) => name;
-  req.cache = Object.fromEntries(cached.map((v) => [w + v, {}]));
+  req.resolve = (name) => require.resolve(name);
+  req.cache = Object.fromEntries(cached.map((v) => [require.resolve(w + v), {}]));
   const module = { exports: {} };
   Function(
     'require',
@@ -255,7 +255,10 @@ test('observer refuses an unplanned signer before invoking its original launcher
   const f = load({ [w + 'railgun-process']: runtime });
   const observer = f.installJobs();
   expect(() =>
-    runtime.startRailgunProcess({ filename: w + 'railgun-relay-sign-job', input: '{}' })
+    runtime.startRailgunProcess({
+      filename: require.resolve(w + 'railgun-relay-sign-job'),
+      input: '{}',
+    })
   ).toThrow();
   expect(original).not.toHaveBeenCalled();
   observer.restore();
@@ -301,7 +304,12 @@ test('observer preserves original task/reply identities and exact predeclared 68
     const dispatch = jest.fn((wire) =>
       JSON.parse(wire).method === 'key' ? keyReply : resultReply
     );
-    const options = { filename: w + filename, input: JSON.stringify(input), broker: { dispatch } };
+    const route = ['spending-public', 'viewing-identity'].includes(role)
+      ? { executionJob: role }
+      : role.startsWith('wallet-')
+        ? { executionJob: 'wallet-viewing' }
+        : { filename: require.resolve(w + filename) };
+    const options = { ...route, input: JSON.stringify(input), broker: { dispatch } };
     expect(runtime.startRailgunProcess(options)).toBe(next);
     const forwarded = original.mock.calls.at(-1)[0];
     expect(options.broker.dispatch).toBe(dispatch);
@@ -343,7 +351,7 @@ test('observer closure without a result remains a sticky qualification failure',
   const f = load({ [w + 'railgun-process']: runtime }),
     observer = f.installJobs();
   runtime.startRailgunProcess({
-    filename: w + 'railgun-identity-job',
+    executionJob: 'spending-public',
     input: JSON.stringify({ purpose: 'spending-public' }),
     broker: { dispatch: async () => 'original' },
   });
@@ -384,3 +392,25 @@ test.each([
   expect(() => f.installServices([], () => null, 'unrelated-history')).toThrow();
   expect(factory).not.toHaveBeenCalled();
 });
+
+test.each(['legacy-filename', 'mixed-route'])(
+  'observer rejects an extracted identity %s before original launch',
+  (kind) => {
+    const original = jest.fn(),
+      runtime = { startRailgunProcess: original };
+    const f = load({ [w + 'railgun-process']: runtime }),
+      observer = f.installJobs();
+    const options = {
+      filename: require.resolve(w + 'railgun-identity-job'),
+      input: JSON.stringify({ purpose: 'spending-public' }),
+      broker: { dispatch: jest.fn() },
+      ...(kind === 'mixed-route' ? { executionJob: 'spending-public' } : {}),
+    };
+    try {
+      expect(() => runtime.startRailgunProcess(options)).toThrow();
+      expect(original).not.toHaveBeenCalled();
+    } finally {
+      observer.restore();
+    }
+  }
+);
