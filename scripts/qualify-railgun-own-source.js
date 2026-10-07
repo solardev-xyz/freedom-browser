@@ -164,6 +164,7 @@ const sources = [
   'src/main/networks/wallet-tor-transport.js',
   'src/main/networks/network-registry.js',
   'src/main/settings-store.js',
+  'src/main/swarm/ant-cache.js',
   'src/main/tor-manager.js',
   'src/main/wallet/railgun-shield-receipt.js',
 ];

@@ -47,6 +47,7 @@ async function main() {
     'src/main/networks/network-registry.js',
     'src/main/identity/vault.js',
     'src/main/settings-store.js',
+    'src/main/swarm/ant-cache.js',
     'src/main/networks/private-rpc.js',
     'src/main/networks/wallet-tor-transport.js',
     'src/main/networks/isolated-socks.js',
