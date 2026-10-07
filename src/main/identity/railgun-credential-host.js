@@ -137,7 +137,7 @@ function createRailgunCredentialHost() {
           // root loan settles; its original context abort owns MAC-key wiping.
           profileGuard = createPrivacyProfileGuard({ handle, profile: profileSnapshot, seed });
         } finally {
-          seed.fill(0);
+          Reflect.apply(fill, seed, [0]);
         }
       } else {
         const keystore = (
