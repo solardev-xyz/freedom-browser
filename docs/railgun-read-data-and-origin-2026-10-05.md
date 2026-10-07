@@ -102,8 +102,8 @@ used by these tests.
 
 At source commit `6c845e5c37610f878b3cb4c3d377ce79892b82f3`, all fifteen
 fresh Electron processes and the original campaign driver exit zero. The
-[aggregate](qualification/railgun-kohaku-read-data-2026-10-05.json) and
-[audit](qualification/railgun-kohaku-read-data-audit-2026-10-05.md)
+[aggregate](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-read-data-2026-10-05.json) and
+[audit](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-read-data-audit-2026-10-05.md)
 record eight actual adapter cases, ordinary-wallet compatibility, and two
 three-process public-deposit recovery sequences. The adapter cases retain
 924 checked reads and six synthetic Ethereum sends across acknowledged,

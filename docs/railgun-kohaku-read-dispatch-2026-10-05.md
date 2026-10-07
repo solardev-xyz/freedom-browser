@@ -76,5 +76,5 @@ above apply to these sources. The prior full regression and cold restart campaig
 remain historical. No new full suite or cold sequence was run for this refactor.
 
 Raw reports, selected hashes and observed process evidence are published in
-[the evidence index](qualification/railgun-kohaku-dispatch-2026-10-05/INDEX.json).
+[the evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-dispatch-2026-10-05/INDEX.json).
 Claude reviewed the launcher, exporter and final evidence.

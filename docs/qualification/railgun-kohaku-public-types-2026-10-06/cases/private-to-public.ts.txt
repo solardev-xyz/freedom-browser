@@ -1,5 +1,0 @@
-import type {PublicAdapterSubmitter} from 'freedom-public-contract';
-import type {PrivateOperation} from 'freedom-private-contract';
-declare const submitter: PublicAdapterSubmitter;
-declare const operation: PrivateOperation;
-submitter.submit(operation);

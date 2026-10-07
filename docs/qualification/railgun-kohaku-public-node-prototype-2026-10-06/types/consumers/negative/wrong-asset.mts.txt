@@ -1,2 +1,0 @@
-import type {PublicShieldInput} from '@freedom/restricted-railgun-node-prototype';
-const value: PublicShieldInput = {asset:{__type:'erc20'},amount:1n};

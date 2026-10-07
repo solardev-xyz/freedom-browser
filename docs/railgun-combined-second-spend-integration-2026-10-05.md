@@ -53,7 +53,7 @@ against the same 860 source hashes, with 295 utility children and 28 storage
 workers. The default case passes its original seventeen stages in 85,359 ms,
 with 289 utilities and 25 storage workers. Second spending stays disabled in
 both compatibility cases; the default case also omits the change scan. The
-[evidence index](qualification/railgun-combined-second-spend-integration-2026-10-05.json)
+[evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-combined-second-spend-integration-2026-10-05.json)
 records the final reports, source inventories, commands and diagnostic hashes.
 The seven focused suites pass 132 tests in 8.043 seconds; the subsequent overlapping
 two-suite check passes 46 tests in 1.44 seconds after the last result-shape fix.

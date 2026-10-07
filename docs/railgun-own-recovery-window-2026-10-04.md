@@ -48,8 +48,8 @@ No live query or transaction is introduced here.
 
 ## Qualification
 
-The final [transfer report](qualification/railgun-own-recovery-transfer-2026-10-04.json)
-and [unshield report](qualification/railgun-own-recovery-unshield-2026-10-04.json)
+The final [transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-recovery-transfer-2026-10-04.json)
+and [unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-recovery-unshield-2026-10-04.json)
 each pass seven retained-recovery scenarios and all 17 existing membership
 scenarios, with 169 matching source hashes. They complete in 42,310 and 41,575
 ms. The new cases exercise fresh reattestation, revoked methods, routine journal

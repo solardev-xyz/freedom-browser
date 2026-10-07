@@ -5,7 +5,7 @@ short-lived Electron utility processes under the existing heap, sampled RSS,
 egress and lifetime guards. Main owns the source ledger, storage worker and scan
 journal throughout. This extends the [Node coordinator qualification](railgun-coordinated-replay-2026-10-02.md).
 
-[The source-bound report](qualification/railgun-coordinated-electron-2026-10-02.json)
+[The source-bound report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-coordinated-electron-2026-10-02.json)
 records all 121 archived Sepolia ranges and exact final/cold public state:
 10,194 commitments, 5,614 nullifiers and 2,546 unshields. The engine is killed after
 nullifier writes in the range ending at block7,099,999; reopening with a different

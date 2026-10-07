@@ -116,10 +116,10 @@ transient IPC memory.
 Reports are byte-identical copies of the successful runs, with every recorded
 source SHA-256 checked against this slice before copying:
 
-- [Vault identity and spending-key interruption](qualification/railgun-vault-identity-2026-10-03.json).
-- [Eight account scan windows and viewing-key interruption](qualification/railgun-vault-wallet-2026-10-03.json).
-- [Thirteen wallet recovery cases](qualification/railgun-vault-wallet-recovery-2026-10-03.json).
-- [Six proof regression jobs](qualification/railgun-vault-proof-regression-2026-10-03.json).
+- [Vault identity and spending-key interruption](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-vault-identity-2026-10-03.json).
+- [Eight account scan windows and viewing-key interruption](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-vault-wallet-2026-10-03.json).
+- [Thirteen wallet recovery cases](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-vault-wallet-recovery-2026-10-03.json).
+- [Six proof regression jobs](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-vault-proof-regression-2026-10-03.json).
 
 The guard addition passes 75 focused tests; lint passes. The final native
 regression passes 7,808 tests / 33 skipped across 371 suites after the native-loader

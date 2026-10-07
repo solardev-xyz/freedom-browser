@@ -44,12 +44,12 @@ revocation, concurrent requests and cancellation with process-exit drain.
 Claude reviewed the implementation and the negative fixtures. The wallet cache
 policy is unchanged because this verifier does not derive wallet state.
 
-The [synthetic report](qualification/railgun-private-receiver-2026-10-03.json)
+The [synthetic report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-receiver-2026-10-03.json)
 records three successful receiver suites and three valid-unshield refusals across
 the eighteen enrolled cases. All 71 recorded source hashes matched the tested
 tree. Regression: 8,619 tests passed, 33 skipped; lint clean.
 
-The [live report](qualification/railgun-private-receiver-live-2026-10-03.json)
+The [live report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-receiver-live-2026-10-03.json)
 also passes: the receiver independently recovers a locally prepared self-transfer
 from the funded Sepolia note at finalized anchor 11,834,513. All recorded source
 hashes matched. This is a diagnostic preparation, not an on-chain transfer. The

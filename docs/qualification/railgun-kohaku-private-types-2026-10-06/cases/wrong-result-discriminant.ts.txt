@@ -1,2 +1,0 @@
-import type { PrivateSubmissionOutcome } from 'freedom-private-contract';
-const result: PrivateSubmissionOutcome = {transactionHash:'0x01',submissionStatus:'submitted'};

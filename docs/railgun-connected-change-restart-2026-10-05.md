@@ -2,7 +2,7 @@
 
 Both original input histories now pass the complete two-process lifecycle on merged commit `4ab31ac1bc88a8e7e07475d5a2ea62e5c9d425fd`: a partial withdrawal, durable combined POI attempt, normal change scan and disposable list acceptance in the first process; restoration, a fresh second spend and terminal balance ingestion in the next. All four compatibility modes also pass. Every run uses the same 902 source hashes. External chain, receipt, finality and list-service responses remain simulated; this is not a live private withdrawal.
 
-The [evidence index](qualification/railgun-connected-change-restart-2026-10-05.json) and [independent audit](qualification/railgun-connected-change-restart-audit-2026-10-05.md) link the exact raw reports. The earlier [implementation checkpoint](railgun-connected-restart-implementation-2026-10-05.md) records failed bringup separately. The [main synchronization report](privacy-main-sync-2026-10-05.md) records the merge and explicit bundled-node refresh.
+The [evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-connected-change-restart-2026-10-05.json) and [independent audit](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-connected-change-restart-audit-2026-10-05.md) link the exact raw reports. The earlier [implementation checkpoint](railgun-connected-restart-implementation-2026-10-05.md) records failed bringup separately. The [main synchronization report](privacy-main-sync-2026-10-05.md) records the merge and explicit bundled-node refresh.
 
 ## Native results
 

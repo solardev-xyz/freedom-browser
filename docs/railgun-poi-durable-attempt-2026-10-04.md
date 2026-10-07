@@ -105,8 +105,8 @@ synthetic services and a disposable public identity, not a full browser restart
 or a live submission.
 
 Both frozen native runs pass with 202 matching source hashes each:
-[transfer](qualification/railgun-poi-attempt-transfer-2026-10-04.json) in
-116,582 ms and [unshield](qualification/railgun-poi-attempt-unshield-2026-10-04.json)
+[transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-attempt-transfer-2026-10-04.json) in
+116,582 ms and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-attempt-unshield-2026-10-04.json)
 in 119,881 ms. Each has eleven attempt scenarios, alongside seventeen membership,
 seven recovery, thirteen proof, eight checks and six storage scenarios. The
 attempt phase adds zero utilities, utility-key handoffs or service queries;

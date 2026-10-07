@@ -1,6 +1,0 @@
-{
-  "frozenByAuthor": true,
-  "authorFile": "<DECLARATION_CANDIDATE>/scripts/fixtures/railgun-kohaku-private-contract.d.ts",
-  "sha256": "ef7f1c9e1b2a8811eb1b5c774e41d53625419deca896e8a03ff8f24f94d4f4f9",
-  "intendedRepositoryPath": "scripts/fixtures/railgun-kohaku-private-contract.d.ts"
-}

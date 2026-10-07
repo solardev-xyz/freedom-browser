@@ -1,4 +1,0 @@
-import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
-declare const source: Omit<SnapshotReadPlugin, 'notes'>;
-const target: SnapshotReadPlugin = source;
-export { target };

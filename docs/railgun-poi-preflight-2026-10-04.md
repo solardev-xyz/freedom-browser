@@ -31,8 +31,8 @@ No dependency, policy, key-release, renderer/IPC or top-level responsibility cha
 
 ## Evidence
 
-The new [transfer](qualification/railgun-poi-preflight-transfer-2026-10-04.json) and
-[unshield](qualification/railgun-poi-preflight-unshield-2026-10-04.json) native runs
+The new [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-preflight-transfer-2026-10-04.json) and
+[unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-preflight-unshield-2026-10-04.json) native runs
 pass ten scenarios each, taking 15,307 ms and 15,127 ms with 153 matching source
 hashes. They use real enrollment, encrypted reservation/capsule/journal storage,
 keyless TXID verification and combined source capture. In-memory assertions compare
@@ -41,8 +41,8 @@ preparation-shape, classification and disclosure checks are assertions in the ha
 qualifier; the report entries retain the existing redacted scenario fields.
 
 Both existing preflight exports were also requalified after the shared function
-changed: [transfer](qualification/railgun-own-preflight-transfer-2026-10-04-poi-regression.json)
-takes 14,928 ms and [unshield](qualification/railgun-own-preflight-unshield-2026-10-04-poi-regression.json)
+changed: [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-preflight-transfer-2026-10-04-poi-regression.json)
+takes 14,928 ms and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-preflight-unshield-2026-10-04-poi-regression.json)
 14,802 ms. Each passes ten scenarios with 146 matching source hashes. These cover
 active/archived recovery, store reopening, wrong selector, root refusal, archive
 finality lag and unresolved journal conflicts. No live RPC or POI requests occur.

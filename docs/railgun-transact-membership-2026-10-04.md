@@ -100,10 +100,10 @@ Four native combinations each preserve 11 creator-preflight groups and pass
 
 | Own operation | Creator | Duration | Report |
 | --- | --- | ---: | --- |
-| Transfer | Self | 69,872 ms | [Report](qualification/railgun-transact-membership-transfer-self-2026-10-04.json) |
-| Transfer | Foreign received | 76,257 ms | [Report](qualification/railgun-transact-membership-transfer-foreign-2026-10-04.json) |
-| Unshield | Self | 74,826 ms | [Report](qualification/railgun-transact-membership-unshield-self-2026-10-04.json) |
-| Unshield | Foreign received | 75,343 ms | [Report](qualification/railgun-transact-membership-unshield-foreign-2026-10-04.json) |
+| Transfer | Self | 69,872 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-membership-transfer-self-2026-10-04.json) |
+| Transfer | Foreign received | 76,257 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-membership-transfer-foreign-2026-10-04.json) |
+| Unshield | Self | 74,826 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-membership-unshield-self-2026-10-04.json) |
+| Unshield | Foreign received | 75,343 ms | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-membership-unshield-foreign-2026-10-04.json) |
 
 Every run has six healthy membership results and five refusals: fifth-root
 rejection, wrong signed event type, invalid signature, changed path and rejected
@@ -131,10 +131,10 @@ setup attempt was excluded after finding a fixture-only nonexistent worker
 filename in the inventory; the corrected `railgun-poi-job.js` inventory and
 counter produced the four completed reports above.
 
-Legacy Shield [transfer](qualification/railgun-transact-membership-shield-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-transact-membership-shield-unshield-2026-10-04.json)
+Legacy Shield [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-membership-shield-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-membership-shield-unshield-2026-10-04.json)
 pass in 51,337 / 50,566 ms, each with 211 matching hashes, 19 membership and seven
-recovery groups. The healthy [foreign-input selector diagnostic](qualification/railgun-transact-membership-selector-transfer-foreign-2026-10-04.json)
+recovery groups. The healthy [foreign-input selector diagnostic](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-membership-selector-transfer-foreign-2026-10-04.json)
 passes in 55,208 ms with 178 matching hashes, 11 preflight and six selector groups.
 It retains the four-root-pair diagnostic contract and sanitized output.
 

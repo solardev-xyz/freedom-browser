@@ -8,8 +8,8 @@ combined POI remain closed. No live private spend is qualified here.
 
 ## Connected received-input evidence
 
-The [Transact report](qualification/railgun-partial-transact-controller-native-2026-10-05.json)
-records final run D, **33,497 ms**. The [Shield compatibility report](qualification/railgun-partial-shield-controller-native-2026-10-05.json)
+The [Transact report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-transact-controller-native-2026-10-05.json)
+records final run D, **33,497 ms**. The [Shield compatibility report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-shield-controller-native-2026-10-05.json)
 records final run F, **22,722 ms**. Both contain the same **522 source/test/fixture
 hashes**, verified unchanged during each run and before copying the reports.
 

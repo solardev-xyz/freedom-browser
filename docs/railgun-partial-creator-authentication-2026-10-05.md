@@ -49,7 +49,7 @@ its previous restriction. Both behaviors have regression tests.
 
 ## Final evidence
 
-The [qualification index](qualification/railgun-creator-authentication-2026-10-05.json)
+The [qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-creator-authentication-2026-10-05.json)
 records exact report hashes and all changed JavaScript hashes. Reports are copied
 byte-for-byte from native runs. All inventories matched before publication.
 

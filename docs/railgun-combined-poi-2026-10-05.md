@@ -40,7 +40,7 @@ wallet/public/TXID derived-cache policy input; no cache rebuild is required.
 
 ## Qualification
 
-The [complete native report](qualification/railgun-combined-poi-native-2026-10-05.json)
+The [complete native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-combined-poi-native-2026-10-05.json)
 records four passing cases with 465 unchanged JavaScript/JSON hashes:
 
 | Operation | Input creator | Total milliseconds | Reconstruction refusals |
@@ -59,7 +59,7 @@ The mandatory `npm test` run passes 1,697 tests across 14 suites in 129.025 seco
 The Transact membership fixture was then strengthened to demonstrate a structurally
 coherent partial input; its full 37-test suite passed again, without changing the
 count or production code. The native report above was refreshed after that change.
-Lint is clean. The [qualification index](qualification/railgun-combined-poi-2026-10-05.json)
+Lint is clean. The [qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-combined-poi-2026-10-05.json)
 records exact evidence hashes and limits. Full repository regression was not rerun;
 the preceding 14,483-test result belongs to the earlier merged checkpoint.
 

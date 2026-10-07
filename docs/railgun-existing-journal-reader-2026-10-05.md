@@ -30,7 +30,7 @@ historical source scope; no preserved PPv2 or funded Railgun profile was opened.
 
 The exact six-file candidate was tested against the merged main dependencies,
 then imported after verifying its complete frozen package and current base bytes.
-[The evidence index](qualification/railgun-existing-journal-reader-2026-10-05.json)
+[The evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-existing-journal-reader-2026-10-05.json)
 records source and result hashes.
 
 - Broad regression: **16,899 passed, 33 skipped**, 571 passing and five skipped

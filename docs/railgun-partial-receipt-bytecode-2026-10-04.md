@@ -4,7 +4,7 @@ Read-only local inspection on 2026-10-04. No repository edits, network requests,
 
 ## Inputs and integrity
 
-- Capture: [public bytecode capture](qualification/railgun-public-contract-bytecodes-2026-10-04.json).
+- Capture: [public bytecode capture](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-contract-bytecodes-2026-10-04.json).
 - Capture SHA-256: `a1f3a1c51c6272eca7940313bf3b8d6b8229527db3aaf3334acc76d8314c0427` (verified).
 - Capture block: 11834513; recorded source: `https://sepolia.rpc.sentio.xyz`.
 - Local artifact: [upstream WETH9 creation artifact](https://github.com/Railgun-Privacy/contract/blob/36bcf5ed7cf94bfafb6e1a303e1832c769c16780/externalArtifacts/WETH9.json), byte-identical to commit `36bcf5ed7cf94bfafb6e1a303e1832c769c16780`.

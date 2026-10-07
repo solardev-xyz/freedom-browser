@@ -7,7 +7,7 @@ at `67612a75`, following the failed first attempt and stream correction recorded
 below. It uses actual engine cryptography with synthetic chain data and a public
 fixture quote; it does not qualify a live broadcaster or private spending.
 
-The [retained native evidence](qualification/railgun-unsigned-relay-preparation-2026-10-06/OVERVIEW.md)
+The [retained native evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-unsigned-relay-preparation-2026-10-06/OVERVIEW.md)
 includes the exact report, public synthetic input and separate failed-attempt
 record, with source and runtime provenance.
 

@@ -1,5 +1,0 @@
-import type {PublicAdapterSubmitter} from '@freedom/restricted-railgun-node-prototype';
-import type {PrivateOperation} from '@freedom/restricted-railgun-node-prototype';
-declare const submitter: PublicAdapterSubmitter;
-declare const operation: PrivateOperation;
-submitter.submit(operation);

@@ -1,7 +1,0 @@
-import type { PrivateCapabilities, PrivateInput } from 'freedom-private-contract';
-import type { PluginInstance } from 'kohaku-plugin-base';
-type InvalidInput = Omit<PrivateInput, 'amount'> & { amount: number };
-type InvalidCapabilities = Omit<PrivateCapabilities, 'assetAmounts'> & {
-  assetAmounts: Omit<PrivateCapabilities['assetAmounts'], 'internal'> & { internal: InvalidInput };
-};
-type InvalidTarget = PluginInstance<string, InvalidCapabilities>;

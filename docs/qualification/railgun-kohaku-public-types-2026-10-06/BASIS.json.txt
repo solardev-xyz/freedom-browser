@@ -1,7 +1,0 @@
-{
-  "authorFreezeSha256": "2d3a8624a496101b3dce23263f5294545fce8b75f7488dae17c32397769774b6",
-  "originalDeclarationPath": "<PUBLIC_ADAPTER_CANDIDATE>/candidate/scripts/fixtures/railgun-kohaku-public-contract.d.ts",
-  "declarationSha256": "04d6a865e641ea70cb84c489068886340bffc6a0122bbaf1a810c6ba14da4269",
-  "declarationChanged": false,
-  "intendedRepositoryPath": "scripts/fixtures/railgun-kohaku-public-contract.d.ts"
-}

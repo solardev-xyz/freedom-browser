@@ -92,8 +92,8 @@ copied-owner/observation and policy refusal, close/reopen and Tor replacement to
 the six existing capture/cancellation/storage-failure scenarios. This slice does
 not improve those existing cancellation semantics.
 
-Native [transfer](qualification/railgun-source-destination-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-source-destination-unshield-2026-10-04.json)
+Native [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-source-destination-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-source-destination-unshield-2026-10-04.json)
 each pass six existing and three destination groups with 140 matching source
 hashes in 1,857/1,825 ms. Each constructs two real clients and dispatches two
 chain-ID requests, 92 header requests and two log requests. The original client
@@ -101,15 +101,15 @@ uses its retained path for 76 requests, including after registry selection
 changes; the reopened client uses the newly selected path for 20 requests.
 These single offline timings overlap other verification and are not guarantees.
 
-Fresh retained-history [transfer](qualification/railgun-source-destination-history-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-source-destination-history-unshield-2026-10-04.json)
+Fresh retained-history [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-source-destination-history-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-source-destination-history-unshield-2026-10-04.json)
 pass 17 scenarios each with 204 matching hashes in 133,178/131,420 ms. They
 exercise the substituted historical-root refusal and healthy retry through
 actual proof/recovery composition with simulated RPC and service observations.
 Their destination identity remains explicitly fixture-simulated; these runs do
 not replace the real-RPC binding evidence above.
 
-The [enrolled staging rerun](qualification/railgun-source-destination-staging-2026-10-04.json)
+The [enrolled staging rerun](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-source-destination-staging-2026-10-04.json)
 passes all 19 surrounding cases with 130 matching hashes and records the new
 public policy. Its handoff step takes 4,262 ms, restores the checkpoint and
 recovers the same owned test note, observes detached utility exit and refuses

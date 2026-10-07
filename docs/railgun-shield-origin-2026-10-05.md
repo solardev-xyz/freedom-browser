@@ -30,8 +30,8 @@ journal storage key; the diagnostic issues no additional Railgun key loan.
 
 ## Native results
 
-The [index](qualification/railgun-shield-origin-2026-10-05.json) links all fifteen
-byte-exact reports. The [audit](qualification/railgun-shield-origin-audit-2026-10-05.md)
+The [index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-origin-2026-10-05.json) links all fifteen
+byte-exact reports. The [audit](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-origin-audit-2026-10-05.md)
 lists actual PIDs, per-case work and resource limits.
 
 - Nine adapter/ordinary-wallet compatibility cases preserve Shield and received
@@ -72,7 +72,7 @@ tests across thirteen suites pass in 15.216 seconds, also with natural exit.
 Full lint passes; formatting of the thirteen changed source/test files passes. Repository tests include public Safe RPC/local
 Anvil and disposable real Ant integration; they are not entirely offline.
 
-The [source record](qualification/railgun-shield-origin-source-hashes-2026-10-05.json)
+The [source record](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-origin-source-hashes-2026-10-05.json)
 distinguishes the 5,561-file selected union (179 contract; 5,551 cold) from the
 11,524-file outer inventory with fifteen source symlinks. These are inventories,
 not execution coverage. Ten external inputs and twenty-five inherited prover

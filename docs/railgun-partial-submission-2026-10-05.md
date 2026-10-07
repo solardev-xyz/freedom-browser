@@ -81,7 +81,7 @@ actual offset and clock-patch duration. This is not a fresh-process capture test
 The original private signature, capsule, proof and signing reservation remain
 unchanged. All utility/storage-worker exits are observed, key loans are wiped
 and pending transport counts reach zero. The
-[qualification index](qualification/railgun-partial-submission-2026-10-05.json)
+[qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-submission-2026-10-05.json)
 binds six raw reports, log hashes, runtime hashes and the same **528 source hashes**,
 rechecked against the final source tree.
 

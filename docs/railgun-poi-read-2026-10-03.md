@@ -42,7 +42,7 @@ guard attempts, and waits for utility exit before issuing an opaque membership
 receipt. That receipt remains tied to its originating service receipt: a refresh,
 scope closure, endpoint change, or the 60-second lifetime invalidates it.
 
-The [actual qualification report](qualification/railgun-poi-read-2026-10-03.json)
+The [actual qualification report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-read-2026-10-03.json)
 passes using the public Sepolia event at index zero. The initial signed-event
 fixture was captured through direct public HTTPS with no account information.
 The qualifier reacquires the proof, signed event and root acceptance over Tor,

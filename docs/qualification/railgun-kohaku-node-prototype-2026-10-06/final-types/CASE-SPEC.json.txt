@@ -1,8 +1,0 @@
-{
-  "positives": [
-    "consumer-cjs/positive.cts",
-    "consumer-esm/positive.mts",
-    "consumer-mixed/mixed.mts"
-  ],
-  "negatives": []
-}

@@ -39,7 +39,7 @@ has no stored ID; publication binds it to the validated wallet journal's store I
 still bound by the scan journal before a coordinator is granted. Opening a store
 alone gives no scan readiness, balance, POI, signing or spending authorization.
 
-[The source-bound Electron report](qualification/railgun-account-store-2026-10-03.json)
+[The source-bound Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-account-store-2026-10-03.json)
 uses a disposable public vault and the real engine identity. The helper initializes
 all three encrypted stores, automatically registers them, closes workers, then
 reopens after vault lock/unlock with matching IDs. The fresh run leaves no staging

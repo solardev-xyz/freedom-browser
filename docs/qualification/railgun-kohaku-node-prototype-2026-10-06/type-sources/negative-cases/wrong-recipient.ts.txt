@@ -1,4 +1,0 @@
-import type { PrivateAdapter, PrivateInput } from '@freedom/restricted-railgun-node-prototype';
-declare const adapter: PrivateAdapter;
-declare const value: PrivateInput;
-adapter.prepareTransfer(value, 4);

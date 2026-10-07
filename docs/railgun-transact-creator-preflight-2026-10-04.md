@@ -72,10 +72,10 @@ Each report has 159 matching source hashes and eight healthy captures:
 
 | Operation / sender | Elapsed ms | Report                                                                            |
 | ------------------ | ---------: | --------------------------------------------------------------------------------- |
-| Transfer / self    |     40,359 | [Native](qualification/railgun-transact-creator-transfer-self-2026-10-04.json)    |
-| Transfer / foreign |     44,151 | [Native](qualification/railgun-transact-creator-transfer-foreign-2026-10-04.json) |
-| Unshield / self    |     43,551 | [Native](qualification/railgun-transact-creator-unshield-self-2026-10-04.json)    |
-| Unshield / foreign |     43,669 | [Native](qualification/railgun-transact-creator-unshield-foreign-2026-10-04.json) |
+| Transfer / self    |     40,359 | [Native](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-transfer-self-2026-10-04.json)    |
+| Transfer / foreign |     44,151 | [Native](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-transfer-foreign-2026-10-04.json) |
+| Unshield / self    |     43,551 | [Native](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-unshield-self-2026-10-04.json)    |
+| Unshield / foreign |     43,669 | [Native](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-unshield-foreign-2026-10-04.json) |
 
 Recorded source-return-to-completion times across healthy and refusal invocations
 range from 121 to 1,553 ms. These are intercepted-fixture measurements.
@@ -107,13 +107,13 @@ complete method deltas are compared. Initial/final root refusals also assert the
 reached RPC and service counts. These are fixture-specific wire counts, not a
 universal packet, connection, Tor circuit or minimum recovery-cost bound.
 
-The existing Shield base membership [transfer](qualification/railgun-transact-creator-shield-transfer-2026-10-04.json) / [unshield](qualification/railgun-transact-creator-shield-unshield-2026-10-04.json) pair passes 17 membership plus seven recovery
+The existing Shield base membership [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-shield-transfer-2026-10-04.json) / [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-shield-unshield-2026-10-04.json) pair passes 17 membership plus seven recovery
 scenarios with 209 matching hashes each (44,825/44,109 ms). The legacy attempted-output
-[transfer](qualification/railgun-transact-creator-attempt-transfer-2026-10-04.json) / [unshield](qualification/railgun-transact-creator-attempt-unshield-2026-10-04.json) pair passes in 125,778/120,606 ms with 209 hashes each, retaining exactly 34 block
+[transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-attempt-transfer-2026-10-04.json) / [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-attempt-unshield-2026-10-04.json) pair passes in 125,778/120,606 ms with 209 hashes each, retaining exactly 34 block
 headers, one receipt/transaction/log request, two height reads and three latest /
 three validate requests per attempted-output invocation. Transfer retains one
 viewing release; unshield retains none. Prepared-entry refusal performs zero work.
-The existing enrolled Transact [staging fixture](qualification/railgun-transact-creator-staging-2026-10-04.json) also passes 19 scenarios with 130 matching hashes, including two controlled refusals and two synthetic operation proofs. Its spending keys are synthetic fixture keys, not vault spending keys.
+The existing enrolled Transact [staging fixture](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-creator-staging-2026-10-04.json) also passes 19 scenarios with 130 matching hashes, including two controlled refusals and two synthetic operation proofs. Its spending keys are synthetic fixture keys, not vault spending keys.
 These compatibility reports retain their own fixture/signature-trust limitations.
 
 Bring-up runs are excluded: initial missing inventory and unsorted expected-key

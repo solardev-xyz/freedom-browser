@@ -25,8 +25,8 @@ No key-release allowlist, account policy, dependency, renderer or IPC changed.
 
 ## Evidence
 
-The [Transact report](qualification/railgun-poi-transact-reconstruction-2026-10-04.json)
-and [Shield compatibility report](qualification/railgun-poi-shield-reconstruction-2026-10-04.json)
+The [Transact report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-transact-reconstruction-2026-10-04.json)
+and [Shield compatibility report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-shield-reconstruction-2026-10-04.json)
 each cover transfer and unshield, with 41 matching source hashes. Transact runs
 refuse 13 direct reconstruction controls each; Shield runs refuse ten each. Every
 control first normalizes its capsule. The foreign-recipient control additionally

@@ -1,3 +1,0 @@
-import type { PrivateOperation } from 'freedom-private-contract';
-declare const op: PrivateOperation;
-const wrong: PrivateOperation = {...op,__type:'publicOperation'};

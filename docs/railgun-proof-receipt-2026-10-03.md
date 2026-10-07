@@ -15,7 +15,7 @@ No key or wallet database enters the verifier. All verification errors are
 sanitized. This remains in main's wallet subsystem with no renderer API, dependency
 or package-boundary change.
 
-[Actual Electron evidence](qualification/railgun-proof-receipt-2026-10-03.json)
+[Actual Electron evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-proof-receipt-2026-10-03.json)
 contains 87 matching source hashes and 19 enrolled recovery runs. Both synthetic
 self-transfer and unshield prove and independently verify after the preparing
 utility exits. The main-owned receipt checks include a forged receipt, a non-enrollment

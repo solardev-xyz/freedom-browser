@@ -27,7 +27,7 @@ These checks belong to the main-process wallet persistence layer because main
 owns paths, keys and process lifetimes; no renderer or protocol SDK authority is
 introduced.
 
-[The Electron report](qualification/railgun-wallet-retirement-2026-10-03.json)
+[The Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-wallet-retirement-2026-10-03.json)
 contains the earlier twelve scan/recovery cases plus a twelve-rebuild series and
 viewing-key cancellation. The series finishes with 14 retired and 3 listed
 generations, retains every retired directory and validates the profile inventory.

@@ -1,3 +1,0 @@
-import type { PrivateSubmissionOutcome } from '@freedom/restricted-railgun-node-prototype';
-declare const outcome: PrivateSubmissionOutcome;
-if ('status' in outcome) outcome.hash;

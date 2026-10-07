@@ -25,7 +25,7 @@ renderer API, new dependency or package boundary.
 
 ## Qualification
 
-[The retained report](qualification/railgun-private-capsule-2026-10-03.json)
+[The retained report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-capsule-2026-10-03.json)
 records 26 source hashes, six actual proofs and no network requests. The ordinary
 transfer and unshield runs compare reconstructed private inputs to the original
 SDK request. Four cold runs use note position 10,245 to exercise nonzero Merkle-path indices.

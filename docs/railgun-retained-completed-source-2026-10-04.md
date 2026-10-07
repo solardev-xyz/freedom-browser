@@ -106,8 +106,8 @@ Native Electron reports:
 
 | Kind | Elapsed | Base scenarios | Source hashes | Report |
 | --- | ---: | ---: | ---: | --- |
-| Transfer | 136,464 ms | 17 | 207 | [Report](qualification/railgun-retained-completed-transfer-2026-10-04.json) |
-| Unshield | 134,446 ms | 17 | 207 | [Report](qualification/railgun-retained-completed-unshield-2026-10-04.json) |
+| Transfer | 136,464 ms | 17 | 207 | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-completed-transfer-2026-10-04.json) |
+| Unshield | 134,446 ms | 17 | 207 | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-completed-unshield-2026-10-04.json) |
 
 Each also preserves seven recovery and thirteen proof exercises and runs two
 retained-history cases: a different valid historical root refuses, then healthy
@@ -140,12 +140,12 @@ one planner per retained-history invocation, preserving the legacy restriction.
 Those runs are excluded. The frozen reports above include the complete passing
 executions and exact source inventories.
 
-[Legacy Stage A transfer](qualification/railgun-retained-legacy-stage-a-2026-10-04.json)
+[Legacy Stage A transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-legacy-stage-a-2026-10-04.json)
 passes in 130,792 ms with 207 hashes. Invalid SNARK input refuses before history,
 then healthy validation succeeds. Its source remains cold only on the first
 reopen: 34 then 22 total headers, one then zero logs requests. This distinguishes
 legacy behavior from the always-cold retained-history path.
-[Legacy unshield checks](qualification/railgun-retained-legacy-checks-2026-10-04.json)
+[Legacy unshield checks](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-retained-legacy-checks-2026-10-04.json)
 passes in 122,273 ms with 207 hashes and eight checks exercises. Both retain the
 17 base scenarios and positive setup counters. These final reports supersede
 passing `-b` runs before the positive-counter assertions were added.

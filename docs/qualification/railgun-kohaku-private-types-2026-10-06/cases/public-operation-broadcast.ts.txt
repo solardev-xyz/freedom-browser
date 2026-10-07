@@ -1,3 +1,0 @@
-import type { PrivateAdapterBroadcaster } from 'freedom-private-contract';
-declare const broadcaster: PrivateAdapterBroadcaster;
-broadcaster.broadcast({__type:'publicOperation'});

@@ -55,7 +55,7 @@ page, cold reopens after two early pages and at the final checkpoint, then close
 TXID before opening the wallet again. Each open, advance and close has a
 qualification-only ten-minute watchdog.
 
-The [enrolled live run](qualification/railgun-account-txid-live-2026-10-03.json)
+The [enrolled live run](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-account-txid-live-2026-10-03.json)
 passed all 43 pages / 4,230 rows, reaching the live service index 4,229 and root
 `17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da`.
 Its row transcript matches the earlier independently reconstructed capture.

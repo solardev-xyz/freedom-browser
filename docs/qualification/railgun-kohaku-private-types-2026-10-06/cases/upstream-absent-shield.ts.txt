@@ -1,3 +1,0 @@
-import type { PinnedPrivateTarget } from 'freedom-private-contract';
-declare const target: PinnedPrivateTarget;
-target.prepareShield;

@@ -1,6 +1,0 @@
-{
-  "reportSha256": "a91dfefaea8e52e9bfc985880f77b09afa951e10c2d496649b75f8ba88355e90",
-  "positivePassed": true,
-  "negativeCases": 21,
-  "unmatched": []
-}

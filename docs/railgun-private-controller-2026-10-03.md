@@ -40,8 +40,8 @@ and internal results, never public reports.
 
 ## Evidence and limits
 
-The [transfer report](qualification/railgun-private-controller-transfer-2026-10-03.json)
-and [unshield report](qualification/railgun-private-controller-unshield-2026-10-03.json)
+The [transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-controller-transfer-2026-10-03.json)
+and [unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-controller-unshield-2026-10-03.json)
 each record 94 matching source hashes, the existing 19 enrolled recovery runs,
 and an additional production-controller run. The controller portion completes in
 4,005 ms and 3,358 ms respectively. Each uses a disposable public-test-mnemonic

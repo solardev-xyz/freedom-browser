@@ -40,7 +40,7 @@ when the synchronous broker close is removed in a temporary in-memory transform:
 the verifier incorrectly returns comparison evidence despite the fixture swallowing
 the earlier rejection. No production source is changed by the mutation control.
 
-The [guarded Electron qualification](qualification/railgun-note-provenance-hardening-2026-10-04.json)
+The [guarded Electron qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-note-provenance-hardening-2026-10-04.json)
 passes all eight existing synthetic path/event scenarios in 1,206 ms with 20
 matching source hashes. It preserves healthy cryptographic verification and seven
 corruption refusals, with explicit false-authority assertions. Exceptional callback

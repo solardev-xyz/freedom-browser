@@ -82,9 +82,9 @@ remain evidence for their dated revisions, not this modified source tree.
 ## Qualification
 
 Both offline native runs pass with 200 source hashes matching the frozen tree:
-[transfer](qualification/railgun-poi-retained-history-transfer-2026-10-04.json)
+[transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-retained-history-transfer-2026-10-04.json)
 in 132,029 ms and
-[unshield](qualification/railgun-poi-retained-history-unshield-2026-10-04.json)
+[unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-retained-history-unshield-2026-10-04.json)
 in 130,003 ms. Each retains 17 membership, seven recovery, 13 proof, eight checks
 and six prepared-store scenarios, and adds substituted-root refusal followed by a
 healthy history validation after enrollment/store reopen.

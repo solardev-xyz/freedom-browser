@@ -31,8 +31,8 @@ in a temporary in-memory module produces twelve expected failures of the
 zero-admission assertion in 0.213 seconds. The old source's eventual refusal
 cannot conceal an already-admitted request. No live transport is used.
 
-Native Shield [transfer](qualification/railgun-poi-parent-context-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-poi-parent-context-unshield-2026-10-04.json)
+Native Shield [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-parent-context-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-parent-context-unshield-2026-10-04.json)
 compatibility pass in 49,133 / 48,449 ms. Both preserve 19 membership and seven
 recovery scenarios, 211 source hashes, the keyless selector and genuine local
 membership verification. The reports are byte-for-byte copies of the completed

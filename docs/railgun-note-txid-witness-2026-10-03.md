@@ -39,13 +39,13 @@ switch. This composition is still open.
 
 ## Qualification
 
-[Guarded Electron projection](qualification/railgun-note-witness-projection-2026-10-03.json)
+[Guarded Electron projection](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-note-witness-projection-2026-10-03.json)
 reconstructs the archived 4,230-row service tree and matches four sampled public
 note selectors to existing independently checked paths. A changed note hash
 and corrupted root refuse. Three ordinary lookups take about 3.5 seconds each; the first reported
 6.9-second interval also includes the negative lookup. Guard violations are zero.
 
-[Encrypted worker qualification](qualification/railgun-note-witness-storage-2026-10-03.json)
+[Encrypted worker qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-note-witness-storage-2026-10-03.json)
 reconstructs the same tree, exercises cold reopen and journal-free page replay,
 then obtains a note witness through the actual brokered read-only job in 4.421
 seconds. Closing the worker revokes its receipt. This uses archived public data
@@ -61,7 +61,7 @@ mirror files remain retained; a fresh mirror is required under the new policy.
 The public-history and wallet-derived-cache policies are unchanged. Earlier
 qualification reports retain their original source hashes and are historical
 evidence, not current-source scan authorization. A subsequent [live policy
-refresh](qualification/railgun-witness-policy-refresh-2026-10-03.json) completed the
+refresh](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-witness-policy-refresh-2026-10-03.json) completed the
 new retained 4,230-row mirror, event coverage and wallet restore at block
 11,834,513, recovering one asset. It makes no owned-note POI requests and does
 not call the new account witness methods; those wrappers remain unit-tested.

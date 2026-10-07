@@ -12,13 +12,13 @@ contents remain encrypted.
 
 ## Funding evidence
 
-[The send report](qualification/railgun-funding-send-2026-10-03.json) records one
+[The send report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-funding-send-2026-10-03.json) records one
 broadcast attempt over the qualification Tor transport. The transaction is
 `0x431f109703f7c100c54c3c17c59897f718243d69dabe6312e34e2b544cfd67d9`,
 from `0x6d7d00e435919ead9845f25e2c2f85b969d2c331` to the dedicated vault-derived
 Railgun funding EOA `0xc08016f92e3bcee92e8d723eec9af1ac19b1dc6e`.
 
-[The finality report](qualification/railgun-funding-finality-2026-10-03.json)
+[The finality report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-funding-finality-2026-10-03.json)
 records inclusion in block 11,834,322 and explicit resolution at 75 confirmations,
 after the RPC's finalized height covered inclusion. Earlier observations at
 7, 52 and 62 confirmations correctly left it unresolved. This is unverified
@@ -55,13 +55,13 @@ its recipient, current deployment, nonce, balance and reviewed bytes.
 The first two check runs stopped before signing at the original 750,000 gas
 cap; the second measured 877,565 gas. The controller limit was raised to
 1,100,000 (about 25% headroom) while keeping the 0.002 ETH maximum gas cost.
-[Check run `c`](qualification/railgun-shield-live-check-2026-10-03.json) passed
+[Check run `c`](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-live-check-2026-10-03.json) passed
 with an 882,668 gas estimate, 939,609,142 wei gas price and the expected 0.01 ETH
 balance. Check mode performs a live funded simulation without signing. Shield mode
 permits at most one journaled shield attempt across active and archived journal records;
 an uncertain attempt requires observation, not an automatic resend. Recovery
 works after restart through the dedicated shield matcher and finalized review.
-[The actual send report](qualification/railgun-shield-live-send-2026-10-03.json)
+[The actual send report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-live-send-2026-10-03.json)
 records acknowledged transaction
 `0x5b935d5592e32807135e39d3770a5cd6e40343c682454d83c472dba8d17cda57`,
 nonce 0, with 7.955 seconds of preparation and 8.736 seconds in submission.
@@ -69,10 +69,10 @@ It used the genuine vault signer and live Tor through the qualification Arti
 endpoint shim. Expected note value is
 0.0009975 WETH after the 0.0000025 WETH protocol fee. A subsequent local, unpublished recovery run observed inclusion at block 11,834,494 with ten
 confirmations and matched the exact Shield at tree 0, position 10,245. Net value
-and fee matched with no deviation. [Finality run `d`](qualification/railgun-shield-live-finality-2026-10-03.json)
+and fee matched with no deviation. [Finality run `d`](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-live-finality-2026-10-03.json)
 subsequently resolved the matched outcome at 97 confirmations, with the
 finalized checkpoint at block 11,834,513.
-[The subsequent wallet scan](qualification/railgun-shield-wallet-recovery-2026-10-03.json)
+[The subsequent wallet scan](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-wallet-recovery-2026-10-03.json)
 advanced the same public generation to that checkpoint, reconstructed 10,246
 commitments and recovered one asset. The report records the aggregate asset count;
 it does not report the token, amount or wallet generation ID. Nullifier and

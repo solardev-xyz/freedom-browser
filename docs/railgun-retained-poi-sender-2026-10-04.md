@@ -157,12 +157,12 @@ crypto/source validation, store authority and root/POST transport. The separate
 store tests execute actual encryption and atomic writes. Static call-site tests
 are regression guards, not protection against hostile trusted-main code.
 
-Native sender [transfer](qualification/railgun-poi-sender-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-poi-sender-unshield-2026-10-04.json) pass in
+Native sender [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-sender-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-sender-unshield-2026-10-04.json) pass in
 146,006 / 142,310 ms with 209 matching hashes each. Each preserves 17 base
 scenarios, seven recovery and thirteen proof exercises, plus two historical-root
-refusal/recovery cases and four sender/reopen cases. Durable-attempt compatibility [transfer](qualification/railgun-poi-sender-attempt-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-poi-sender-attempt-unshield-2026-10-04.json)
+refusal/recovery cases and four sender/reopen cases. Durable-attempt compatibility [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-sender-attempt-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-sender-attempt-unshield-2026-10-04.json)
 also pass, in 124,983 / 123,950 ms with 209 matching hashes and eleven attempt
 cases each. Exact envelope/revision/reserves survive reopen; all existing prepared
 consumers still refuse attempted entries before queries or key work. Full combined regression passes 12,398 tests with 33 skipped across 488 passing

@@ -1,4 +1,0 @@
-import type {PublicAdapter,PublicShieldInput} from 'freedom-public-contract';
-declare const adapter: PublicAdapter;
-declare const value: PublicShieldInput;
-adapter.prepareShield(value,1);

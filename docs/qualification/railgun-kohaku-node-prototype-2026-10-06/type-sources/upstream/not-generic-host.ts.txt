@@ -1,4 +1,0 @@
-import type { RestrictedPrivateHost } from '@freedom/restricted-railgun-node-prototype';
-import type { Host } from 'kohaku-plugin-host';
-declare const restricted: RestrictedPrivateHost;
-const generic: Host = restricted;

@@ -59,8 +59,8 @@ modules, with no package boundary or dependency change.
 The optional `cancellation` mode of `qualify-railgun-own-witness.js` adds five
 scenario groups to its eight existing witness cases. Both transfer and unshield
 pass with 143 matching source hashes in 11,847 and 11,790 ms respectively.
-The [transfer report](qualification/railgun-txid-cancellation-transfer-2026-10-04.json)
-and [unshield report](qualification/railgun-txid-cancellation-unshield-2026-10-04.json)
+The [transfer report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-cancellation-transfer-2026-10-04.json)
+and [unshield report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-cancellation-unshield-2026-10-04.json)
 preserve the exact observations. These
 are single offline fixture timings, not latency guarantees.
 
@@ -106,8 +106,8 @@ The first retained-history rerun completed its behavior assertions but refused
 the final source-inventory comparison: its inventory includes a test file still
 being finalized during the run. It is not counted as passed. The reruns start
 after the full source/test freeze. Retained-history
-[transfer](qualification/railgun-txid-cancel-history-transfer-2026-10-04.json) and
-[unshield](qualification/railgun-txid-cancel-history-unshield-2026-10-04.json) pass
+[transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-cancel-history-transfer-2026-10-04.json) and
+[unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-cancel-history-unshield-2026-10-04.json) pass
 in 131,323 and 130,641 ms with 204 matching hashes each. Both exercise a substituted
 historical root refusal followed by healthy validation, alongside the existing
 membership, recovery, proof and intent scenarios. These runs bind cold-validation
@@ -116,7 +116,7 @@ synthetic and establish no live root acceptance.
 
 The frozen full regression passes 11,755 tests / 33 skipped across 474 passing
 suites in 400.581 seconds (native access; existing OpenLV exclusion).
-The [enrolled staging rerun](qualification/railgun-txid-cancel-staging-2026-10-04.json)
+The [enrolled staging rerun](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-cancel-staging-2026-10-04.json)
 passes all 19 existing surrounding cases with 130 matching hashes. Its staging
 step takes 3,968 ms, restores the checkpoint through the actual phase handoff,
 recovers the same owned note, observes detached verifier exit and refuses staging

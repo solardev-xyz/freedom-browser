@@ -4,7 +4,7 @@
 transaction digest and reconstructed message hash in its exact binary-key request.
 Main matches both before any key copy or future durable signing transition. The
 normalizer returns data only; operation ownership, fresh gates and one-use release
-remain mandatory. [The updated synthetic qualification](qualification/railgun-signer-request-2026-10-03.json)
+remain mandatory. [The updated synthetic qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-signer-request-2026-10-03.json)
 passes all six ordinary/cold proofs and rejects two altered key-request fields with
 zero key transfers. Forty-eight focused signer/result/policy tests pass; lint is
 clean. This does not add a production vault-signing controller or change the wallet
@@ -54,7 +54,7 @@ package change is introduced.
 
 ## Qualification
 
-[The source-bound Electron report](qualification/railgun-private-sign-proof-2026-10-03.json)
+[The source-bound Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-sign-proof-2026-10-03.json)
 records both synthetic transfer and unshield cases using the packed engine and
 independent prover. Preparation receives only a synthetic spending public key
 and its synthetic viewing material. It builds the real SDK transaction request,

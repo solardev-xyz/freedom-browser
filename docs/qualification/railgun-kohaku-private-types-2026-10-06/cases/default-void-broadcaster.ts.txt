@@ -1,4 +1,0 @@
-import type { PrivateOperation, PrivateAdapterBroadcaster } from 'freedom-private-contract';
-import type { Broadcaster } from 'kohaku-broadcaster-base';
-declare const specialized: PrivateAdapterBroadcaster;
-const defaultResult: Broadcaster<PrivateOperation> = specialized;

@@ -60,7 +60,7 @@ checks input/binding digests and engine inventory, and waits for observed child
 exit on success and cancellation. Production limits are 64 KiB input and 16 KiB
 result; no key, storage or network broker is supplied.
 
-[Actual Electron qualification](qualification/railgun-own-txid-2026-10-03.json)
+[Actual Electron qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-own-txid-2026-10-03.json)
 passes eight synthetic cases in 1,666 ms, with 37 matching source hashes. Transfer,
 unshield and archived-unshield pass. A wrong-value commitment passes the structural
 matcher but fails real preimage verification; changed sibling, TXID, leaf and row

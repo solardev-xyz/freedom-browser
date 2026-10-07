@@ -2,7 +2,7 @@
 
 A standalone Node prototype now packages the restricted Kohaku snapshot and private-operation adapters without importing Freedom's wallet engine, proof runtime, account owners, storage or RPC clients. It can be consumed by an independent application that supplies a trusted host. It is an unpublished prototype, not a production SDK release or a generic Kohaku Host implementation.
 
-The source checkpoint is `f84da57a8ef9234d63447774c240ce4dfeb92f6b`. The [audit archive](qualification/railgun-kohaku-node-prototype-2026-10-06/README.md) preserves the reviewed artifact and verification evidence, distinguishing exact payloads from explicitly normalized publication copies. An exact local package is retained under `tmp/privacy-build/railgun-kohaku-node-prototype-oct6`; that ignored build directory is not a checked-in package or an npm publication.
+The source checkpoint is `f84da57a8ef9234d63447774c240ce4dfeb92f6b`. The [audit archive](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-node-prototype-2026-10-06/README.md) preserves the reviewed artifact and verification evidence, distinguishing exact payloads from explicitly normalized publication copies. An exact local package is retained under `tmp/privacy-build/railgun-kohaku-node-prototype-oct6`; that ignored build directory is not a checked-in package or an npm publication.
 
 This is the historical three-factory artifact. The [later five-factory prototype](railgun-kohaku-public-node-prototype-2026-10-06.md) adds public Shield preparation/submission and the private Promise-observation correction. Its evidence and local artifact have separate locations; nothing below is relabeled as a run of the newer source.
 

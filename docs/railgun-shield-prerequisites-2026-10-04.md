@@ -63,13 +63,13 @@ offline deployment fixture. Cases include malformed broker traffic followed by a
 valid message, held credentials and callbacks, cancellation between preparation
 and receiver verification, stale protocol and transaction destinations separately,
 cleanup failures, callback-forged outcomes, and durable recovery after closure.
-Repository lint passes. The [full regression](qualification/railgun-shield-prerequisites-regression-2026-10-04.json)
+Repository lint passes. The [full regression](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-prerequisites-regression-2026-10-04.json)
 passes **13,658 tests / 33 skipped**, across **501 passing suites / five skipped**,
 in **510.538 seconds**. All 1,489 source/test/configuration hashes remain unchanged.
 It uses native permissions, the existing OpenLV exclusion and explicit force-exit;
 this does not prove natural application-handle drainage.
 
-The [native report](qualification/railgun-shield-prerequisites-2026-10-04.json)
+The [native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-shield-prerequisites-2026-10-04.json)
 records 60 source hashes, verified again against the final sources. Four cases
 pass in one disposable Electron profile. Offline mode supplies genuine constraints
 for both roles on every operation open and a fresh transaction constraint on

@@ -23,7 +23,7 @@ public gross withdrawal. Both token transfers are required even for a zero fee
 or when recipient equals treasury.
 
 The [captured bytecode analysis](railgun-partial-receipt-bytecode-2026-10-04.md)
-and retained [raw capture](qualification/railgun-public-contract-bytecodes-2026-10-04.json)
+and retained [raw capture](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-contract-bytecodes-2026-10-04.json)
 support this bounded event policy. They are static inspection, not EVM execution,
 canonical inclusion or a source-recompilation equivalence claim.
 
@@ -53,7 +53,7 @@ result for partial and full withdrawals. Legacy transfer/full-unshield results
 remain byte-compatible.
 
 The first native partial-TXID run exposed a remaining full-only host result
-expectation. Its [refusal report](qualification/railgun-partial-own-txid-initial-refusal-2026-10-04.json)
+expectation. Its [refusal report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-own-txid-initial-refusal-2026-10-04.json)
 is retained. The fixed host has positive and false-result refusal tests for both
 withdrawal shapes, followed by fresh passing native runs.
 
@@ -68,7 +68,7 @@ migration; simply changing the current baseline would invalidate old resolutions
 
 ## Qualification
 
-The [native index](qualification/railgun-partial-receipt-native-2026-10-04.json)
+The [native index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-partial-receipt-native-2026-10-04.json)
 links complete byte-exact reports:
 
 | Run                       | Groups |     Time | Source hashes |

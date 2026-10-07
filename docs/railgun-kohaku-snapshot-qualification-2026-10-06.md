@@ -36,7 +36,7 @@ within the original exact expectations and timing/RSS allowances, apart from the
 new probe report and selected source inventory.
 The original Electron process `11711` and launcher handle `54098` both exited
 zero. All source/runtime pins were checked before and after execution. The
-[native evidence](qualification/railgun-kohaku-snapshot-native-2026-10-06/INDEX.json)
+[native evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-snapshot-native-2026-10-06/INDEX.json)
 preserves the raw report and distinguishes the 152 selected files from the broad
 source inventory; neither is an execution-coverage count.
 
@@ -67,7 +67,7 @@ note capability as `unknown`; Freedom supplies the concrete `ReadNote` shape.
 Installed `ox` is 0.14.45, while the pinned provider requests `^0.12.0`, so this is
 not an upstream lockfile build. Historical syntax-only comments and contract flags
 remain unchanged; the new check applies to the restricted read declaration only.
-The [type evidence and reproduction archive](qualification/railgun-kohaku-snapshot-types-2026-10-06/INDEX.json)
+The [type evidence and reproduction archive](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-kohaku-snapshot-types-2026-10-06/INDEX.json)
 keeps author and root runs separate and preserves inspectable harness inputs.
 Its map distinguishes 37 byte-exact payloads from six path-normalized derivatives;
 original and published hashes are separate, and reproduction requires fresh path

@@ -30,10 +30,10 @@ production public coordinator with structural synthetic history:
 
 | Operation / creator | Report | Time | Completed source visits |
 | --- | --- | ---: | ---: |
-| Transfer / Shield | [Report](qualification/railgun-poi-source-transfer-shield-2026-10-04.json) | 2,026 ms | 9 |
-| Transfer / Transact | [Report](qualification/railgun-poi-source-transfer-transact-2026-10-04.json) | 1,944 ms | 9 |
-| Unshield / Shield | [Report](qualification/railgun-poi-source-unshield-shield-2026-10-04.json) | 1,926 ms | 8 |
-| Unshield / Transact | [Report](qualification/railgun-poi-source-unshield-transact-2026-10-04.json) | 1,890 ms | 9 |
+| Transfer / Shield | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-source-transfer-shield-2026-10-04.json) | 2,026 ms | 9 |
+| Transfer / Transact | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-source-transfer-transact-2026-10-04.json) | 1,944 ms | 9 |
+| Unshield / Shield | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-source-unshield-shield-2026-10-04.json) | 1,926 ms | 8 |
+| Unshield / Transact | [Report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-source-unshield-transact-2026-10-04.json) | 1,890 ms | 9 |
 
 All match 142 source hashes. Each passes eight scenario groups: ordinary capture,
 later-snapshot revocation, three early refusals without a source visit, own-source

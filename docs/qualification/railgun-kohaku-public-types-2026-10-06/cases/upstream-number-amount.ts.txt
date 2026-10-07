@@ -1,5 +1,0 @@
-import type {PublicCapabilities,PublicShieldInput} from 'freedom-public-contract';
-import type {PluginInstance} from 'kohaku-plugin-base';
-type InvalidInput = Omit<PublicShieldInput,'amount'> & {amount:number};
-type InvalidCapabilities = Omit<PublicCapabilities,'assetAmounts'> & {assetAmounts:Omit<PublicCapabilities['assetAmounts'],'input'> & {input:InvalidInput}};
-type Invalid = PluginInstance<string,InvalidCapabilities>;

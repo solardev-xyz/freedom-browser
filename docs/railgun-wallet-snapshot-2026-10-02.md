@@ -7,14 +7,14 @@ not product balances, a durable wallet-coverage grant or a funded Railgun run.
 
 ## Qualified behavior
 
-[Full-history evidence](qualification/railgun-wallet-snapshot-2026-10-02.json)
+[Full-history evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-wallet-snapshot-2026-10-02.json)
 records a scan of all 10,194 commitments in the previously qualified Sepolia
 capture, followed by a fresh wallet utility and derived-store worker reopening
 that cache. Both runs scan the complete public history and validate the recovered
 record sets. No received/sent records are accepted for this public viewing vector. Seventy
 Transact ciphertexts authenticate only in the sent direction but do not match
 their public commitments. They are recorded separately as unrecoverable sent
-history, with zero receive-note quarantine entries. A [differential check](qualification/railgun-transact-classification-2026-10-02.json)
+history, with zero receive-note quarantine entries. A [differential check](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-transact-classification-2026-10-02.json)
 compares every one with the pinned SDK: its reconstructed hashes equal the
 preflight hashes, all differ from their commitments, and its own unguarded
 `scanLeaves` emits zero record writes to an isolated in-memory sink. None
@@ -27,8 +27,8 @@ They take 2.529 and 2.409 seconds on this macOS arm64/Electron 44.4.5 runtime,
 with ten public header requests per window. Maximum sampled utility RSS is about
 170.5 MiB; that excludes main and the three storage workers.
 
-[Positive synthetic evidence](qualification/railgun-wallet-synthetic-2026-10-02.json)
-uses [public-vector events](qualification/railgun-wallet-synthetic-source-2026-10-02.json)
+[Positive synthetic evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-wallet-synthetic-2026-10-02.json)
+uses [public-vector events](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-wallet-synthetic-source-2026-10-02.json)
 through the real source ledger, independent planner, coordinator, public engine
 apply and guarded wallet utility. Six successful windows cover:
 

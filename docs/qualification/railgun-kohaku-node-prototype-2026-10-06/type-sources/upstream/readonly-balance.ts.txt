@@ -1,5 +1,0 @@
-import type {PinnedPrivateTarget} from './bridge';
-import type { PrivateAdapter, ReadAmount } from '@freedom/restricted-railgun-node-prototype';
-declare const adapter: PrivateAdapter;
-declare const amounts: readonly ReadAmount[];
-const target: PinnedPrivateTarget = {...adapter,balance:async()=>amounts};

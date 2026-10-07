@@ -22,7 +22,7 @@ controller; the current operation path still requires the current captured root.
 
 ## Evidence
 
-[The actual Electron report](qualification/railgun-capsule-handoff-2026-10-03.json)
+[The actual Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-capsule-handoff-2026-10-03.json)
 records 86 matching source hashes and the existing 19 enrolled recovery runs.
 Its restored viewing wallet offers both a self-transfer and unshield after the
 self-reconstruction check. Refusal returns normally without a signature; both

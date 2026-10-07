@@ -1,6 +1,6 @@
 # Enrolled live event coverage — October 3, 2026
 
-[The completed report](qualification/railgun-live-event-coverage-2026-10-03.json)
+[The completed report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-live-event-coverage-2026-10-03.json)
 qualifies the current enrolled public/TXID/wallet composition through block
 11,833,631. Source acquisition used managed Tor and one RPC provider, Sentio.
 The public generation reconstructed 10,245 commitments, 5,635 nullifiers and

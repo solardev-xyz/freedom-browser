@@ -48,14 +48,14 @@ the native run below does not simulate an unknown physical child exit.
 
 ## Qualification
 
-The [recorded manifest](qualification/railgun-completed-wallet-2026-10-05.json)
+The [recorded manifest](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-wallet-2026-10-05.json)
 binds the changed source/test files, logs, policies and three native reports.
 All **849 tests across 14 suites pass** in **41.197 seconds**, including storage,
 coverage, journal, account, identity, receiver, runner and existing private/staging
 and Kohaku consumers. `npm run lint` is clean. This refreshes the listed suites,
 not the full repository regression.
 
-The [completed-wallet native run](qualification/railgun-completed-wallet-native-2026-10-05.json)
+The [completed-wallet native run](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-wallet-native-2026-10-05.json)
 passes **12 measured groups in 26,031 ms**, with **531 unchanged source hashes**.
 It creates a disposable public-vector account through genuine enrollment and
 public/wallet scanning, then exercises missing state, cancellation, expiry,
@@ -85,8 +85,8 @@ not physical Tor/socket behavior. Byte snapshots begin after enrollment and
 public-owner opening; those ordinary setup paths are not claimed to be read-only.
 Reopening occurs in the same application process, not a fresh process restart.
 
-The [Shield compatibility run](qualification/railgun-completed-wallet-shield-compatibility-2026-10-05.json)
-and [received-Transact compatibility run](qualification/railgun-completed-wallet-transact-compatibility-2026-10-05.json)
+The [Shield compatibility run](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-wallet-shield-compatibility-2026-10-05.json)
+and [received-Transact compatibility run](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-completed-wallet-transact-compatibility-2026-10-05.json)
 pass the existing real internal partial signing/proving/reopening journey in
 **22,910 / 33,010 ms**, each with **522 unchanged hashes**. Their simulated
 chain/service/list trust and creator limitations remain those of the

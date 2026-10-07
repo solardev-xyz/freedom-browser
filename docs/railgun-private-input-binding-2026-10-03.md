@@ -58,7 +58,7 @@ inputs from Shield inputs; `creatingTxidVerified` remains false.
 
 ## Qualification and limits
 
-[The engine differential](qualification/railgun-private-policy-2026-10-03.json)
+[The engine differential](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-policy-2026-10-03.json)
 uses integrity-checked SDK code, synthetic notes and viewing material in Node.
 It constructs a real engine self-transfer and full-value WETH unshield, serializes
 dummy proofs through the official ABI and validates both with the host policy.
@@ -77,14 +77,14 @@ stub checks the requested token hash exactly.
 
 The input-selection wrapper has unit coverage for foreign owners, incorrect
 nullifiers/roots/amounts, unavailable or spent notes, lifetime changes and the
-separate creating-TXID gate. [Sixteen synthetic enrolled Electron recovery cases](qualification/railgun-private-input-wallet-2026-10-03.json)
+separate creating-TXID gate. [Sixteen synthetic enrolled Electron recovery cases](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-input-wallet-2026-10-03.json)
 requalify the changed projection and captured roots; it does not call the new private
 selection wrapper or prove a funded operation. The wallet policy changes and
 requires a retained wallet-generation rebuild. Public-history and TXID policies
-remain unchanged by this slice. The [live retained wallet rebuild](qualification/railgun-private-input-live-refresh-2026-10-03.json)
+remain unchanged by this slice. The [live retained wallet rebuild](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-private-input-live-refresh-2026-10-03.json)
 completed at block 11,834,513 and recovered one asset, with all 4,230 mirrored
 rows still covered. It sends no owned-note POI request and does not exercise the
-private-selection wrapper. The [public projection vector](qualification/railgun-owned-nullifier-projection-vector-2026-10-03.json)
+private-selection wrapper. The [public projection vector](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-owned-nullifier-projection-vector-2026-10-03.json)
 still matches the signed event; its placeholder nullifier is explicitly not
 qualification of the real public note’s nullifier.
 

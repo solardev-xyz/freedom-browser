@@ -20,7 +20,7 @@ controller/key-release surface is deferred until its separate gates are ready.
 
 ## Native qualification
 
-The [redacted native report](qualification/railgun-poi-reconstruction-2026-10-04.json)
+The [redacted native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-reconstruction-2026-10-04.json)
 records fourteen fresh utility processes with twenty matching source hashes. Each
 uses production hardened derivation from the public test mnemonic, the pinned
 engine ASAR, pinned serial prover and authenticated 01x01/POI_3x3 artifacts. Each

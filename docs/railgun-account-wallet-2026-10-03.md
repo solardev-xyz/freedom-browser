@@ -62,7 +62,7 @@ label must be selected before transaction construction.
 
 ## Evidence and remaining work
 
-[The actual Electron report](qualification/railgun-account-wallet-2026-10-03.json)
+[The actual Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-account-wallet-2026-10-03.json)
 uses a disposable public vault and synthetic public history. Eight windows cover
 receive/spent/self-transfer, cold restores and rebuild, with observed balances
 3,000 → 2,000 → 2,700 fixture units. Closed views refuse subsequent reads.
@@ -83,7 +83,7 @@ is performed. These runs do not establish complete funded-account recovery.
 The report is copied byte-for-byte from the successful run, with every recorded
 source hash verified. Fifty-three focused tests pass across composition, policy,
 catalog and coordinator authority; lint passes. The full native regression passes 7,864 tests with 33 skipped. The separate
-[13-case lower-level wallet recovery baseline](qualification/railgun-account-wallet-baseline-2026-10-03.json) also passes. Earlier reports remain
+[13-case lower-level wallet recovery baseline](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-account-wallet-baseline-2026-10-03.json) also passes. Earlier reports remain
 historical evidence for their exact sources, including the coordinator/catalog
 versions that predate this slice.
 

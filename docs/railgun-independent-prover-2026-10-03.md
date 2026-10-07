@@ -27,7 +27,7 @@ produced identical **1,613,882-byte** containers:
 
 `dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab`
 
-[The reproducibility report](qualification/railgun-prover-build-2026-10-03.json)
+[The reproducibility report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-prover-build-2026-10-03.json)
 records both digests. Its checker also authenticates the previous PPv2 archive
 and compares the generated `groth16Verify` function body byte for byte: identical,
 SHA-256 `3bc48b0cbfc4b85b4ed0c881da8c52ada20f49489c7162ae8fd3a3843036da9d`.
@@ -52,7 +52,7 @@ Immutable authenticated application resources remain a production requirement.
 
 ## Actual proof results
 
-[Six guarded Electron jobs](qualification/railgun-independent-prover-2026-10-03.json)
+[Six guarded Electron jobs](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-independent-prover-2026-10-03.json)
 verify with the new archive and report its actual archive, input-inventory and
 builder digests. Every job rejects a changed root; transaction jobs additionally
 reject changed bound parameters. All jobs report zero egress attempts, zero POI

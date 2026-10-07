@@ -15,7 +15,7 @@ Runner receipts, coverage, journal and wallet catalog all use this policy; the
 base policy API remains available for low-level qualification. This belongs in
 main's account composition; neither the engine nor renderer chooses generations.
 
-[Actual Electron evidence](qualification/railgun-wallet-public-binding-2026-10-03.json)
+[Actual Electron evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-wallet-public-binding-2026-10-03.json)
 adds a completed-but-unpublished wallet candidate before public cutover. Its old
 journal and SQLite bytes remain unchanged, `active` and `pending` refuse, `new`
 recovers the synthetic 2,700-unit balance at block 40, and cold reopen preserves the
@@ -25,7 +25,7 @@ cancellation. Validation: 39 focused tests, 7,943 full native regression tests
 
 ## First live transport baseline
 
-[The live report](qualification/railgun-live-transport-2026-10-03.json) records
+[The live report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-live-transport-2026-10-03.json) records
 actual enrollment and managed Tor RPC acquisition in a separate, newly provisioned
 disposable Railgun Sepolia profile. Two ranges, blocks 0–199,999, completed and
 persisted. These precede deployment and contain no Railgun events: this qualifies

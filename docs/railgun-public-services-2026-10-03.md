@@ -34,15 +34,15 @@ packed engine recomputes the exact POI checkpoint root at index 4,229:
 However, the indexer's verification-hash chain breaks once at index 4,188.
 **Root agreement does not establish complete chain history.**
 
-[The final public capture](qualification/railgun-public-services-2026-10-03.json)
+[The final public capture](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-services-2026-10-03.json)
 also records the node accepting the independently computed root at index 4,187,
 immediately before the break, and at index 4,229. The 43 public page files remain
-local and are bound by hashes in that report. The [pre-break reconstruction](qualification/railgun-txid-prebreak-root-2026-10-03.json)
-is its root-validation input; [recomputation against the final capture](qualification/railgun-txid-tree-2026-10-03.json)
+local and are bound by hashes in that report. The [pre-break reconstruction](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-prebreak-root-2026-10-03.json)
+is its root-validation input; [recomputation against the final capture](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-tree-2026-10-03.json)
 reproduces the same result. Both tree reports explicitly record `passed: false`
 and `globalTxidCompleteness: false` because the hash chain is incomplete.
 
-[The independent RPC-event comparison](qualification/railgun-txid-history-2026-10-03.json) covers 4,214 indexed rows through archived
+[The independent RPC-event comparison](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-history-2026-10-03.json) covers 4,214 indexed rows through archived
 anchor 11,829,346; 16 newer rows remain outside that comparison. All compared rows
 match the checked nullifier groups, inserted commitments and positions, and
 unshield recipient/token/amount-plus-fee. The reverse comparison finds one omitted
@@ -124,11 +124,11 @@ eight active connections. All event headers must validate before ledger staging;
 range/deadline/evidence-age limits remain unchanged. There is no automatic retry or
 direct fallback.
 
-[A separate disposable Railgun profile completed 65 live ranges](qualification/railgun-live-deployment-ranges-2026-10-03.json)
+[A separate disposable Railgun profile completed 65 live ranges](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-live-deployment-ranges-2026-10-03.json)
 through block 5,859,999. It opened a fresh public generation because the scanner
 source change altered the public data policy. Run `c` continues the full scan from
 that persisted active generation; at this documentation checkpoint it is beyond
-9.2 million blocks, not yet complete. [The actual-engine recovery series](qualification/railgun-source-concurrency-2026-10-03.json)
+9.2 million blocks, not yet complete. [The actual-engine recovery series](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-source-concurrency-2026-10-03.json)
 also passes with the concurrent source. The
 original funded PPv2 profile remains untouched by Railgun qualifications.
 

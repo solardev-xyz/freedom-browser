@@ -89,7 +89,7 @@ observation and retained exclusion. Distinguishing mutations exercise truthy
 approval, early busy release, missing post-review authentication and leaked
 handoff ownership. These use controlled owners and are not native evidence.
 
-The [two-case native qualification](qualification/railgun-exact-relay-review-2026-10-06/README.md)
+The [two-case native qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-exact-relay-review-2026-10-06/README.md)
 now passes at `98cbfd77`. Separate disposable accounts exercise accepted review
 and close while the original review callback remains pending. Each uses the
 actual engine, three original utility closures, two viewing-key loans, 84 broker

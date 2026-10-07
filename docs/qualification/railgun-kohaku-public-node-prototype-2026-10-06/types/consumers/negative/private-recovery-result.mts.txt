@@ -1,2 +1,0 @@
-import type {PublicShieldAcknowledgement} from '@freedom/restricted-railgun-node-prototype';
-const result: PublicShieldAcknowledgement = {status:'recovery-required',stage:'submission'};

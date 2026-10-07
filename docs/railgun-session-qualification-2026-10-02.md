@@ -23,7 +23,7 @@ Run after installing the approved scripts-disabled fixture:
 node scripts/qualify-railgun-session.js /absolute/fresh/output-directory
 ```
 
-[The corrected report](qualification/railgun-session-review-2026-10-02.json) (superseding [the initial report](qualification/railgun-session-runtime-2026-10-02.json)) records source hashes and four separate engine 9.6.0 processes on macOS arm64, each with the authenticated installed-tree digest `d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420`:
+[The corrected report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-session-review-2026-10-02.json) (superseding [the initial report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-session-runtime-2026-10-02.json)) records source hashes and four separate engine 9.6.0 processes on macOS arm64, each with the authenticated installed-tree digest `d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420`:
 
 | Process       | Observation                                                                                                                                                                                                                                   |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

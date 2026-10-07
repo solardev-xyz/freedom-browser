@@ -126,7 +126,7 @@ does not distinguish those checks because the feed already rejects on abort.
 
 ### Actual utility and encrypted-storage evidence
 
-The [historical-prefix report](qualification/railgun-txid-historical-prefix-2026-10-04.json)
+The [historical-prefix report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-historical-prefix-2026-10-04.json)
 passes in 55,024 ms with 46 matching source hashes. It builds a fresh encrypted
 mirror from 4,230 pinned public captured rows, saving 21 append checkpoint roots
 before historical computation; the saved pre-omission root also matches the
@@ -150,7 +150,7 @@ promise. The fixture records zero RPC attempts, live queries, enrolled accounts
 and submissions. It qualifies the worker/runner computation, not the enrolled
 account wrapper, a host journal or OS-wide egress isolation.
 
-The [journal recovery report](qualification/railgun-txid-historical-journal-2026-10-04.json)
+The [journal recovery report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-historical-journal-2026-10-04.json)
 passes with 23 matching hashes and actual encrypted worker/journal reopen. In
 addition to the existing after-prepare and after-apply interruptions, it injects
 forbidden broker traffic after a real storage operation completes but before its
@@ -169,7 +169,7 @@ live root acceptance or enrollment. The injected forbidden message is a fixture
 mechanism for testing immediate refusal at those exact storage boundaries; no
 claim is made that a normal engine sends that message.
 
-The [coverage rerun](qualification/railgun-txid-historical-coverage-2026-10-04.json)
+The [coverage rerun](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-txid-historical-coverage-2026-10-04.json)
 passes with 79 matching hashes under the changed shared runner. It compares
 4,214 rows / 4,103 Ethereum transactions within the captured boundary, preserving
 the known omission and 16 rows beyond that boundary. Cold restore, unchanged

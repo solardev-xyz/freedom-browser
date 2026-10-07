@@ -55,7 +55,7 @@ exit before releasing the account owner. Repeated old closes cannot release a ne
 owner. Public and viewing jobs wrap shared/frozen failures without mutating their
 causes. One full account uses all three current storage-worker slots.
 
-[The twelve-case enrolled Electron report](qualification/railgun-account-public-2026-10-03.json)
+[The twelve-case enrolled Electron report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-account-public-2026-10-03.json)
 covers eight scan/restore/rebuild windows and four recovery cases: interruption after the first acknowledged storage commit
 in the stage-30 public apply, journal-complete-before-wallet-publication,
 interrupted wallet advance, and obsolete wallet candidate replacement. The first
@@ -66,7 +66,7 @@ remain 3,000 → 2,000 → 2,700 units.
 
 The full native regression passes 7,904 tests with 33 skipped; 97 focused tests
 and lint pass. Claude reviewed the implementation and interruption semantics.
-[The full archived replay](qualification/railgun-packed-public-history-2026-10-03.json)
+[The full archived replay](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-packed-public-history-2026-10-03.json)
 passes all 121 ranges and matches the earlier independently projected 14,822-log
 history: 10,194 leaves, 5,614 nullifiers, 2,546 unshields, the exact tree root and
 full cold-restored state. This confirms equivalent decoding with the archive

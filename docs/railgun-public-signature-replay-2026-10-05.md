@@ -45,7 +45,7 @@ public wire and authenticate private facts through the genuine encrypted stores.
 It must never serialize an acceptance capability or carry the disposable private
 key across the process boundary.
 
-The [evidence index](qualification/railgun-public-signature-replay-2026-10-05.json)
+The [evidence index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-signature-replay-2026-10-05.json)
 records exact source/dependency hashes and local test/control provenance. No
 native Electron account restart, new live request, funded operation or fresh full
 regression is claimed. Claude reviewed the corrected implementation and tests;

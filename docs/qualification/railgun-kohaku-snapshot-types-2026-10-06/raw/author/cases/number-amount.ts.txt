@@ -1,2 +1,0 @@
-import type { SnapshotHost, SnapshotReadPlugin, PinnedReadTarget, ReadAmount, ReadAsset, ReadNote, SnapshotExtras } from 'freedom-snapshot-contract';
-export const wrong: ReadAmount = { asset: {__type:'native'}, amount: 1, tag:'unverified' };

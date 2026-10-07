@@ -1,2 +1,0 @@
-import type {PublicShieldOperation} from '@freedom/restricted-railgun-node-prototype';
-const token: PublicShieldOperation = {__type:'publicOperation'};

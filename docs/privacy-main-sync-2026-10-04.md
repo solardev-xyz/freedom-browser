@@ -162,8 +162,8 @@ mac-arm64. No npm dependency reinstall or upstream pin upgrade was needed.
 The receipt milestone was committed as `9571b0b8` before this merge. None of the
 merged files intersects its eight source inventories; all hashes still match.
 Its full regression of 11,812 tests remains explicitly pre-merge evidence. Separate
-merged-tree [transfer](qualification/railgun-receipt-destination-merged-transfer-2026-10-04.json)
-and [unshield](qualification/railgun-receipt-destination-merged-unshield-2026-10-04.json)
+merged-tree [transfer](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-destination-merged-transfer-2026-10-04.json)
+and [unshield](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-receipt-destination-merged-unshield-2026-10-04.json)
 receipt reruns each pass nine existing and seven prepared-reader groups with 146
 matching hashes in 2,138/2,004 ms. Their chain, registry and transport are simulated.
 Public/TXID policy inputs are unchanged by the merge. The merged full regression

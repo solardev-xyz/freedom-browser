@@ -73,7 +73,7 @@ performs no POI/TXID service query, consensus verification or live eligibility c
 
 ## Corrupted source control
 
-The [aggregate negative evidence](qualification/railgun-public-cold-corrupted-source-control-2026-10-05.json)
+The [aggregate negative evidence](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-cold-corrupted-source-control-2026-10-05.json)
 records a separately frozen copied runtime that completed setup with exit zero, then flipped
 one bit in the newly appended Shield ciphertext after healthy receipt resolution
 and recovery closure. The matched synthetic receipt and transaction stayed
@@ -94,7 +94,7 @@ The mutated source tree and disposable profile are not publication inputs.
 
 ## Validation and source scope
 
-The [qualification index](qualification/railgun-public-facade-cold-credit-index-2026-10-05.md)
+The [qualification index](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-public-facade-cold-credit-index-2026-10-05.md)
 links the six exact reports and their independent audit. The final root unit run passes 684 tests across 13 suites; full lint and scoped
 formatting pass. The native campaign uses the r1 fixture with reviewed r2 address
 normalization, r3 worker accounting and r4 Electron virtual-cache classification.

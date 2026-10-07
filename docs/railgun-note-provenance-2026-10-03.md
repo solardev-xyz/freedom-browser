@@ -27,7 +27,7 @@ focused verifier/projection/witness tests. Repository lint is clean. The
 user-created Codex reviewer independently approved the diagnostic boundary and
 verified all 19 report hashes; no blocking findings remained.
 
-The [actual Electron qualification](qualification/railgun-note-provenance-2026-10-03.json)
+The [actual Electron qualification](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-note-provenance-2026-10-03.json)
 records eight runs, 19 matching source hashes and 1,211 ms elapsed. The valid
 synthetic witness passes through the guarded utility. Changed sibling, index,
 row hash and Railgun TXID reach cryptographic verification and refuse. A changed

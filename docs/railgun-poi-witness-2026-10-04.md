@@ -23,7 +23,7 @@ IPC or production key-release allowlist changed.
 
 ## Evidence
 
-The [native report](qualification/railgun-poi-witness-2026-10-04.json) has 33 matching
+The [native report](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/377c2a5d1aca18f0ed328dfdda955bd7d1ba271c/docs/freedom-qualification/railgun-poi-witness-2026-10-04.json) has 33 matching
 source hashes. Transfer and full unshield pass in 6,289 ms and 6,215 ms respectively.
 Both use a real synthetic transaction proof and a seven-row production TXID
 projection, selecting leaf five under checkpoint six. The simulated mined receipt
