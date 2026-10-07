@@ -71,6 +71,13 @@ test.each([
   'src/data/railgun-private-intent.js',
   'src/data/railgun-private-offer.js',
   'src/data/railgun-private-capsule.js',
+  'src/data/railgun-private-destination.js',
+  'src/data/railgun-private-signature.js',
+  'src/data/railgun-private-preparation.js',
+  'src/data/railgun-private-results.js',
+  'src/data/railgun-private-recovery-data.js',
+  'src/railgun-engine-manifest.json',
+  'src/railgun-prover-manifest.json',
   'src/railgun-shield-pins.json',
   'src/railgun-kohaku-read-data.js',
   'src/railgun-kohaku-read-dispatch.js',
@@ -142,7 +149,7 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-relay-proof',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(66);
+  expect(visited.size).toBe(73);
   expect([...visited].filter((name) => name.startsWith(adapter + path.sep)).sort()).toEqual(
     [
       'read.cjs',
@@ -153,6 +160,13 @@ test('local wallet job and host validation dependencies are pinned or cross expl
       'src/data/railgun-private-intent.js',
       'src/data/railgun-private-offer.js',
       'src/data/railgun-private-capsule.js',
+      'src/data/railgun-private-destination.js',
+      'src/data/railgun-private-signature.js',
+      'src/data/railgun-private-preparation.js',
+      'src/data/railgun-private-results.js',
+      'src/data/railgun-private-recovery-data.js',
+      'src/railgun-engine-manifest.json',
+      'src/railgun-prover-manifest.json',
       'src/railgun-shield-pins.json',
     ]
       .map((name) => path.join(adapter, name))
