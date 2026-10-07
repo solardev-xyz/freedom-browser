@@ -395,6 +395,26 @@ function chargeBudget(state, method, params, consume = true) {
   }
 }
 
+// One request's admission deadline: the monotonic instant (performance.now())
+// from which that request must not reach the transport. Data that can only
+// refuse: it never cancels an admitted request, revokes the client or grants
+// method authority. Unbudgeted requests only; a read budget's own deadline
+// already gates its admission in chargeBudget().
+function admissionDeadline(value, budget) {
+  if (value === undefined) return;
+  try {
+    plain(value, ['deadline']);
+    requireBudget(budget === undefined && Number.isFinite(value.deadline));
+  } catch {
+    throw privacyError('PRIVATE_RPC_ADMISSION_INVALID', 'Invalid private RPC admission deadline');
+  }
+  return value.deadline;
+}
+function admitBefore(deadline) {
+  if (deadline !== undefined && !(performance.now() < deadline))
+    throw privacyError('PRIVATE_RPC_ADMISSION_EXPIRED', 'Private RPC admission deadline passed');
+}
+
 function createPrivateRpc(handle, role, { signal, destinationConstraint: constraint } = {}) {
   const context = getPrivacyContext(handle);
   const restriction = destinationConstraint(constraint, context, role);
@@ -486,7 +506,7 @@ function createPrivateRpc(handle, role, { signal, destinationConstraint: constra
       throw privacyError('PRIVACY_REQUEST_ABORTED', 'Private RPC lifetime ended');
     }
   }
-  async function raw(method, params, budgetState, shared) {
+  async function raw(method, params, budgetState, shared, deadline) {
     const failed = (failure) => {
       if (shared) shared.failure = strongerFailure(shared.failure, failure);
       if (budgetState) fatalBudget(budgetState, failure);
@@ -531,6 +551,10 @@ function createPrivateRpc(handle, role, { signal, destinationConstraint: constra
         throw error;
       }
     }
+    // An unbudgeted request's admission deadline is checked last: the awaited
+    // ready(), the factory, serialization and every check above may cross it.
+    // Nothing but the transport call follows, synchronously.
+    admitBefore(deadline);
     if (shared) shared.admitted = true;
     let response;
     try {
@@ -620,7 +644,10 @@ function createPrivateRpc(handle, role, { signal, destinationConstraint: constra
       if (budgetState) shared.joined.delete(budgetState);
     }
   }
-  async function request(method, params, validate, budget) {
+  async function request(method, params, validate, budget, admission) {
+    // Refused on entry too, so a passed deadline sends no hidden chain-ID.
+    const deadline = admissionDeadline(admission, budget);
+    admitBefore(deadline);
     let state;
     if (budget !== undefined) {
       state = readBudgets.get(budget);
@@ -642,7 +669,7 @@ function createPrivateRpc(handle, role, { signal, destinationConstraint: constra
       }
       await ready(state);
       if (state) currentBudget(state);
-      const result = await raw(method, params, state);
+      const result = await raw(method, params, state, undefined, deadline);
       // Even canceled operations validate admitted replies before local currency.
       if (state) {
         try {

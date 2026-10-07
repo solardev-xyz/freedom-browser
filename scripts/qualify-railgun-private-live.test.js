@@ -35,6 +35,22 @@ describe('pinned constants', () => {
     for (const name of [...api.FIXED_SOURCES, ...api.SOURCE_DIRECTORIES])
       expect(fs.existsSync(path.join(__dirname, '..', name))).toBe(true);
   });
+  test('every fixed qualification inventory that binds the submission binds its review budget', () => {
+    // Directory-listing inventories (this qualifier, proof recovery, partial
+    // submission, combined POI) take src/main/wallet/*.json already.
+    const submission = "'src/main/wallet/railgun-private-submission.js',";
+    const budget = "'src/main/wallet/railgun-recovered-review-budget.json',";
+    const fixed = fs
+      .readdirSync(__dirname)
+      .filter((name) => /^qualify-.*\.js$/.test(name) && !name.endsWith('.test.js'))
+      .filter((name) => fs.readFileSync(path.join(__dirname, name), 'utf8').includes(submission));
+    expect(fixed).toHaveLength(11);
+    for (const name of fixed) {
+      const lines = fs.readFileSync(path.join(__dirname, name), 'utf8').split('\n');
+      const at = lines.findIndex((line) => line.trim() === submission);
+      expect([name, lines[at + 1].trim()]).toEqual([name, budget]);
+    }
+  });
   test('the production submission keeps the same gas and fee bounds', () => {
     const source = fs.readFileSync(
       path.join(__dirname, '../src/main/wallet/railgun-private-submission.js'),
@@ -2168,6 +2184,8 @@ const PROBES = {
       'src/main/wallet/remote/signer.js',
       'src/main/wallet/ledger/signer.js',
       'src/main/wallet/railgun-private-destination.js',
+      // The recovered review budget, loaded by the submission at module load.
+      'src/main/wallet/railgun-recovered-review-budget.json',
     ])
       expect(listed).toContain(name);
     expect(listed.filter((name) => /__tests__|__fixtures__|\.test\.js$/.test(name))).toEqual([]);

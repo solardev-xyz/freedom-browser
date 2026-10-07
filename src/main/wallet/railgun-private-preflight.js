@@ -75,12 +75,20 @@ function createPreflight(options, relay = false) {
   check(options && !isProxy(options) && Object.getPrototypeOf(options) === Object.prototype);
   const descriptors = Object.getOwnPropertyDescriptors(options);
   const required = ['enrollment', 'input', 'artifactDirectory'];
-  const allowed = [...required, 'destinationConstraint', 'intentKind'];
+  const allowed = [...required, 'destinationConstraint', 'intentKind', 'disclosureDeadline'];
   check(required.every((key) => Object.hasOwn(descriptors, key)));
   check(Reflect.ownKeys(descriptors).every((key) => allowed.includes(key)));
   for (const descriptor of Object.values(descriptors))
     check(Object.hasOwn(descriptor, 'value') && descriptor.enumerable);
   const { enrollment, input, artifactDirectory, destinationConstraint, intentKind } = options;
+  // Private spend only: the last monotonic instant (performance.now()) at
+  // which the selected nullifier may be sent. Data, not authority: it can
+  // only refuse earlier, and receipt ages are unchanged.
+  const disclosureDeadline = options.disclosureDeadline;
+  check(
+    !Object.hasOwn(descriptors, 'disclosureDeadline') ||
+      (!relay && Number.isFinite(disclosureDeadline))
+  );
   check(
     !Object.hasOwn(descriptors, 'intentKind') ||
       (!relay &&
@@ -183,15 +191,22 @@ function createPreflight(options, relay = false) {
       active();
       fresh();
       check(artifacts.variant === circuit.variant, 'mismatch');
-      const read = async (method, params, validate) => {
+      const read = async (method, params, validate, admission) => {
         active();
         fresh();
         assertRailgunShieldPreflight(deployment, base.receipt, enrollment);
         let response;
         try {
-          response = await rpc.request(method, params, validate);
+          response = await rpc.request(
+            method,
+            params,
+            validate,
+            ...(admission ? [undefined, admission] : [])
+          );
         } catch (error) {
           active();
+          // The RPC's own admission gate refused: the request never left.
+          if (admission && error?.code === 'PRIVATE_RPC_ADMISSION_EXPIRED') throw fail('stale');
           throw Object.assign(fail('rpc'), {
             causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code ?? '')
               ? error.code
@@ -203,12 +218,13 @@ function createPreflight(options, relay = false) {
         check(validate(response.result), 'rpc');
         return response.result;
       };
-      const getter = async (name, args, expected) => {
+      const getter = async (name, args, expected, admission) => {
         step = name;
         const encoded = await read(
           'eth_call',
           [{ to: pins.proxy, data: abi.encodeFunctionData(name, args) }, block],
-          hash
+          hash,
+          admission
         );
         const value = abi.decodeFunctionResult(name, encoded);
         check(abi.encodeFunctionResult(name, value).toLowerCase() === encoded, 'mismatch');
@@ -236,7 +252,16 @@ function createPreflight(options, relay = false) {
       }
       // Expose the selected nullifier only after deployment, fee, root and
       // verifier checks succeed; it can link this query to a later spend.
-      await getter('nullifiers', [selected.tree, selected.nullifier], false);
+      // The caller's deadline is checked here as an early refusal, but the
+      // read's own checks, the RPC's awaited chain-check promise and its
+      // serialization still run before the transport. The RPC therefore
+      // enforces the same deadline again at its last admission gate, for
+      // this one request only; the anchor recheck after it is not bounded.
+      step = 'nullifiers';
+      check(disclosureDeadline === undefined || performance.now() < disclosureDeadline, 'stale');
+      const admission =
+        disclosureDeadline === undefined ? undefined : { deadline: disclosureDeadline };
+      await getter('nullifiers', [selected.tree, selected.nullifier], false, admission);
       step = 'anchor-recheck';
       const reread = await read(
         'eth_getBlockByNumber',

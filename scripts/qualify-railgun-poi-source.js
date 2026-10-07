@@ -47,6 +47,7 @@ const sources = [
   'scripts/fixtures/railgun-enrolled-signing.js',
   'scripts/fixtures/railgun-enrolled-submission.js',
   'src/main/wallet/railgun-private-submission.js',
+  'src/main/wallet/railgun-recovered-review-budget.json',
   'src/main/wallet/private-transaction-intent.js',
   'src/main/wallet/private-submission-journal.js',
   'src/main/wallet/private-submission-reconciler.js',

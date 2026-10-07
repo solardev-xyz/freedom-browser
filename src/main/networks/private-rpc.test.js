@@ -676,3 +676,124 @@ test('expiry while a response is admitted rejects after response drain without a
     grant.close();
   }
 });
+
+// One request's admission deadline: data that can only refuse, checked on
+// entry and again as the last gate before transport admission.
+describe('per-request admission deadline', () => {
+  let now, clock;
+  const expired = { code: 'PRIVATE_RPC_ADMISSION_EXPIRED' };
+  const methods = () =>
+    mockRequest.mock.calls.map(([, , options]) => JSON.parse(options.body).method);
+  const ask = (client, deadline, params = []) =>
+    client.request('eth_blockNumber', params, () => true, undefined, { deadline });
+  beforeEach(() => {
+    now = 1000;
+    clock = jest.spyOn(performance, 'now').mockImplementation(() => now);
+  });
+  afterEach(() => clock.mockRestore());
+  test('admits one millisecond before the deadline and refuses at it', async () => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    await client.ready();
+    mockRequest.mockClear();
+    await expect(ask(client, 1001)).resolves.toMatchObject({ result: '0x1' });
+    await expect(ask(client, 1000)).rejects.toMatchObject(expired);
+    expect(methods()).toEqual(['eth_blockNumber']);
+  });
+  test('a deadline passed on entry sends no hidden chain-ID', async () => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    await expect(ask(client, 1000)).rejects.toMatchObject(expired);
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+  test('serialization that crosses it after every activity check admits nothing and revokes nothing', async () => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    await client.ready();
+    mockRequest.mockClear();
+    const params = {
+      toJSON() {
+        now = 2000;
+        return [];
+      },
+    };
+    await expect(ask(client, 2000, params)).rejects.toMatchObject(expired);
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(client.signal.aborted).toBe(false);
+    await expect(client.request('eth_blockNumber', [], () => true)).resolves.toMatchObject({
+      result: '0x1',
+    });
+  });
+  test('a deadline crossed after the awaited, already settled chain check is refused', async () => {
+    let cross = false;
+    const owner = createPrivacyScope({
+      profileId: 'rpc-destination-fixture',
+      signal: scope.signal,
+      isCurrent: () => {
+        if (cross) now = 1500;
+        return true;
+      },
+    });
+    try {
+      const local = owner.getContext({
+        kind: 'public-address',
+        principal: '0x' + '1'.repeat(40),
+        chainId: 11155111,
+        role: 'transaction-rpc',
+      });
+      const client = createPrivateRpc(local, 'transaction-rpc');
+      await client.ready();
+      mockRequest.mockClear();
+      const pending = ask(client, 1500);
+      // Runs after the entry check, while ready() awaits the settled check.
+      cross = true;
+      await expect(pending).rejects.toMatchObject(expired);
+      expect(mockRequest).not.toHaveBeenCalled();
+    } finally {
+      owner.close();
+    }
+  });
+  test('a deadline crossed while the shared chain check is in flight sends only the chain check', async () => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    const normal = mockRequest.getMockImplementation();
+    mockRequest.mockImplementationOnce(async (...args) => {
+      now = 1500;
+      return normal(...args);
+    });
+    await expect(ask(client, 1500)).rejects.toMatchObject(expired);
+    expect(methods()).toEqual(['eth_chainId']);
+    expect(client.signal.aborted).toBe(false);
+  });
+  test('a request admitted before it is not cut short by a reply after it', async () => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    await client.ready();
+    const normal = mockRequest.getMockImplementation();
+    mockRequest.mockImplementationOnce(async (...args) => {
+      now = 5000;
+      return normal(...args);
+    });
+    await expect(ask(client, 1001)).resolves.toMatchObject({ result: '0x1' });
+  });
+  const getter = jest.fn(() => 2000);
+  test.each([
+    ['NaN', { deadline: NaN }],
+    ['Infinity', { deadline: Infinity }],
+    ['a string', { deadline: '2000' }],
+    ['null', null],
+    ['an extra field', { deadline: 2000, signal: null }],
+    ['an accessor', Object.defineProperty({}, 'deadline', { enumerable: true, get: getter })],
+    ['a proxy', new Proxy({ deadline: 2000 }, {})],
+    ['an inherited prototype', Object.assign(Object.create({}), { deadline: 2000 })],
+  ])('%s refuses before any transport work', async (_name, admission) => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    await expect(
+      client.request('eth_blockNumber', [], () => true, undefined, admission)
+    ).rejects.toMatchObject({ code: 'PRIVATE_RPC_ADMISSION_INVALID' });
+    expect(getter).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+  test('it is never combined with a read budget', async () => {
+    const client = createPrivateRpc(handle, 'transaction-rpc');
+    await expect(
+      client.request('eth_blockNumber', [], () => true, Object.freeze({}), { deadline: 2000 })
+    ).rejects.toMatchObject({ code: 'PRIVATE_RPC_ADMISSION_INVALID' });
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+});

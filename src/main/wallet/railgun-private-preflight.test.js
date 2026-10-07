@@ -317,6 +317,121 @@ test.each([undefined, null, '', '01x02', 'partial-unshield', 'railgun-partial-tr
     expect(mockRequest).not.toHaveBeenCalled();
   }
 );
+describe('caller nullifier disclosure deadline', () => {
+  const sent = () =>
+    mockRequest.mock.calls
+      .filter(([method]) => method === 'eth_call')
+      .map(([, params]) => abi.parseTransaction(params[0]).name);
+  // Each simulated read takes 1,000 ms: the nullifier boundary is reached at
+  // 4,000 ms, after the rootHistory, unshieldFee and verifier reads.
+  function slowReads() {
+    let now = 1000;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const reply = mockRequest.getMockImplementation();
+    mockRequest.mockImplementation(async (...args) => {
+      now += 1000;
+      return reply(...args);
+    });
+  }
+  test('refuses immediately before the nullifier request once the deadline is reached', async () => {
+    source.close();
+    slowReads();
+    source = open(input(), { disclosureDeadline: 4000 });
+    await expect(source.acquire()).rejects.toMatchObject({
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'stale',
+      step: 'nullifiers',
+    });
+    expect(sent()).toEqual(['rootHistory', 'unshieldFee', 'getVerificationKey']);
+    expect(mockDeployment.close).toHaveBeenCalled();
+  });
+  test('one millisecond before the deadline the nullifier is queried and the receipt is unchanged', async () => {
+    source.close();
+    slowReads();
+    source = open(input(), { disclosureDeadline: 4001 });
+    const acquired = await source.acquire();
+    expect(sent()).toEqual(['rootHistory', 'unshieldFee', 'getVerificationKey', 'nullifiers']);
+    expect(Object.hasOwn(acquired.observation, 'disclosureDeadline')).toBe(false);
+    expect(assertRailgunPrivatePreflight(source, acquired.receipt, mockEnrollment)).toBe(
+      acquired.observation
+    );
+  });
+  // Work after the check above (the read's own checks, the RPC's awaited
+  // chain check, serialization) can cross the deadline, so the RPC enforces
+  // it again at transport admission for the nullifier request alone.
+  test('only the nullifier request carries the deadline to the RPC admission gate', async () => {
+    source.close();
+    slowReads();
+    source = open(input(), { disclosureDeadline: 4001 });
+    await source.acquire();
+    const nullifier = abi.getFunction('nullifiers').selector;
+    for (const call of mockRequest.mock.calls) {
+      if (call[0] === 'eth_call' && call[1][0].data.startsWith(nullifier))
+        expect(call.slice(3)).toEqual([undefined, { deadline: 4001 }]);
+      else expect(call).toHaveLength(3);
+    }
+    expect(sent()).toContain('nullifiers');
+  });
+  test('an RPC admission refusal at the nullifier request is stale, not a transport failure', async () => {
+    source.close();
+    slowReads();
+    source = open(input(), { disclosureDeadline: 4001 });
+    const reply = mockRequest.getMockImplementation();
+    mockRequest.mockImplementation(async (method, params, ...rest) => {
+      if (rest.length > 1)
+        throw Object.assign(Error('admission'), { code: 'PRIVATE_RPC_ADMISSION_EXPIRED' });
+      return reply(method, params, ...rest);
+    });
+    const error = await source.acquire().catch((value) => value);
+    expect(error).toMatchObject({
+      code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+      reason: 'stale',
+      step: 'nullifiers',
+    });
+    expect(error).not.toHaveProperty('causeCode');
+    expect(mockDeployment.close).toHaveBeenCalled();
+  });
+  test('without a caller deadline the same RPC code stays an RPC failure', async () => {
+    const reply = mockRequest.getMockImplementation();
+    mockRequest.mockImplementation(async (method, params, validate) => {
+      if (
+        method === 'eth_call' &&
+        params[0].data.startsWith(abi.getFunction('nullifiers').selector)
+      )
+        throw Object.assign(Error('admission'), { code: 'PRIVATE_RPC_ADMISSION_EXPIRED' });
+      return reply(method, params, validate);
+    });
+    await expect(source.acquire()).rejects.toMatchObject({
+      reason: 'rpc',
+      step: 'nullifiers',
+      causeCode: 'PRIVATE_RPC_ADMISSION_EXPIRED',
+    });
+    expect(mockRequest.mock.calls.every((call) => call.length === 3)).toBe(true);
+  });
+  test.each([NaN, Infinity, '4000', null, {}])(
+    'a non-finite deadline %p refuses before transport construction',
+    (disclosureDeadline) => {
+      mockRpcOptions.mockClear();
+      expect(() => open(input(), { disclosureDeadline })).toThrow(
+        'Railgun private preflight unavailable'
+      );
+      expect(mockRpcOptions).not.toHaveBeenCalled();
+    }
+  );
+  test('the relay preflight accepts no disclosure deadline', () => {
+    mockRelay = true;
+    mockRpcOptions.mockClear();
+    expect(() =>
+      createRailgunRelayPreflight({
+        enrollment: mockEnrollment,
+        input: input(),
+        artifactDirectory: '/fixture/artifacts',
+        disclosureDeadline: Number.MAX_SAFE_INTEGER,
+      })
+    ).toThrow('Railgun private preflight unavailable');
+    expect(mockRpcOptions).not.toHaveBeenCalled();
+  });
+});
 test.each(['getter', 'proxy', 'variant', 'outputs', 'symbol'])(
   'closed constructor refuses %s without evaluating caller code or opening RPC',
   (kind) => {
@@ -584,6 +699,8 @@ function openRelay(options = {}) {
 test('relay preflight selects 01x02 and cannot be consumed as a private receipt', async () => {
   source = openRelay();
   const { receipt } = await source.acquire();
+  // The private-only admission deadline never reaches a relay request.
+  expect(mockRequest.mock.calls.every((call) => call.length === 3)).toBe(true);
   const observation = assertRailgunRelayPreflight(source, receipt, mockEnrollment);
   expect(observation.intentKind).toBe('railgun-relay-self-transfer');
   expect(observation.signingEnabled).toBe(false);
