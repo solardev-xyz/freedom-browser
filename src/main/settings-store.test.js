@@ -327,6 +327,24 @@ describe('settings-store', () => {
     expect(persisted).not.toHaveProperty('extra');
   });
 
+  // #579: the Swarm cache size is one of a fixed set; null until chosen.
+  test('the Swarm cache size starts unset and stores only a size Freedom offers', () => {
+    const GIB = 1024 * 1024 * 1024;
+    const { mod } = loadSettingsStore({ userDataDir });
+    const persisted = () =>
+      JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+
+    expect(mod.loadSettings().antCacheCapacityBytes).toBeNull();
+
+    expect(mod.saveSettings({ antCacheCapacityBytes: 5 * GIB })).toBe(true);
+    expect(persisted().antCacheCapacityBytes).toBe(5 * GIB);
+
+    for (const bad of [3 * GIB, '1073741824', -1, 1.5, { bytes: GIB }]) {
+      expect(mod.saveSettings({ antCacheCapacityBytes: bad, theme: 'light' })).toBe(true);
+      expect(persisted().antCacheCapacityBytes).toBe(5 * GIB);
+    }
+  });
+
   test('saveSettings rebuilds the adblock engine only when an adblock key changes', () => {
     const refreshEngine = jest.fn(() => Promise.resolve());
     const { mod } = loadSettingsStore({

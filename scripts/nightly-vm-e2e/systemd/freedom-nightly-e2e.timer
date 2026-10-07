@@ -1,0 +1,13 @@
+# The nightly is scheduled for 22:07 UTC but GitHub has started it up to ~5h
+# late, so it has been published anywhere between ~22:45 and ~09:00 UTC.
+# Checking hourly through that window costs one `gh release view` per hour;
+# run-nightly.sh skips a version it has already tested.
+[Unit]
+Description=Check hourly for a new Freedom nightly to E2E-test
+
+[Timer]
+OnCalendar=*-*-* 00..11:20:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,6 @@
 # Ant chain transport through Freedom
 
-Freedom runs Ant v0.5.59 as a separate `antd` process. The host callback added
+Freedom runs Ant v0.5.61 as a separate `antd` process. The host callback added
 in ant#77 is for embedded FFI consumers; the daemon can already use an HTTP
 JSON-RPC endpoint. The main-process Swarm service therefore owns a private
 loopback bridge to the existing chain-data router. No native patch, dependency
@@ -46,12 +46,12 @@ The router (`chain-data-router.js`) keeps one capability descriptor per read
 source, `SOURCE_CAPABILITIES`, and consults it before trying a source
 ([#497](https://github.com/solardev-xyz/freedom-browser/issues/497)):
 
-| | Myotis | Colibri | RPC quorum | direct RPC | Blockscout (opt-in) |
-|---|---|---|---|---|---|
-| never serves | filters, `web3_*` | filters, `web3_*`, `eth_getLogs` | filters, `web3_*` | — | everything but `eth_getLogs` |
-| `eth_getLogs` span | — | 10,000 (upstream; unused) | learned per endpoint | not tracked | full history |
-| log answer may be cut short | — | yes | yes | yes | no: paged, a capped page is read on |
-| cost | serialized | proof | fan-out | single | paired: Blockscout + one RPC + a quorum for the newest blocks |
+|                             | Myotis            | Colibri                          | RPC quorum           | direct RPC  | Blockscout (opt-in)                                           |
+| --------------------------- | ----------------- | -------------------------------- | -------------------- | ----------- | ------------------------------------------------------------- |
+| never serves                | filters, `web3_*` | filters, `web3_*`, `eth_getLogs` | filters, `web3_*`    | —           | everything but `eth_getLogs`                                  |
+| `eth_getLogs` span          | —                 | 10,000 (upstream; unused)        | learned per endpoint | not tracked | full history                                                  |
+| log answer may be cut short | —                 | yes                              | yes                  | yes         | no: paged, a capped page is read on                           |
+| cost                        | serialized        | proof                            | fan-out              | single      | paired: Blockscout + one RPC + a quorum for the newest blocks |
 
 - **Methods.** A source that never serves a method is left out of that
   request before routing starts, together with the caller's own
@@ -62,7 +62,11 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
   direct RPC serves them. What depends on the request rather than the method
   is still refused by the source's adapter and reported as that source's
   failure: Myotis serves only the methods its addon version implements, at
-  `latest`, with the call fields it can honour.
+  `latest`, without state overrides or blob fields. Since v0.1.13 it takes the
+  whole call object and refuses a malformed or contradictory one itself; that
+  refusal (`-32602`), an infeasible call or estimate (`-32000`) and a rejected
+  send end the request like a revert does rather than moving to the next
+  source.
 - **Opt-in.** Blockscout is in no read order: only a caller that names it in
   `includeSources` (the bridge, for Ant's `eth_getLogs`) is routed to it,
   right before the quorum, and only while the read order keeps `quorum`. It
@@ -126,7 +130,7 @@ block-range caps:
   out on for 30 s only: a busy server is no range limit to hold every later
   scan window to for half an hour;
 - a cap on results, logs or response size (`query returned more than 10000
-  results`) is not learned at all. It depends on the filter, not on the
+results`) is not learned at all. It depends on the filter, not on the
   endpoint, so a sparse filter over the same range is still asked. Ant still
   halves the window it was refused.
 
@@ -203,13 +207,21 @@ Blockscout unreachable, rate limited (it is then left alone for the reset it
 names, at least a minute and at most 15), answering out of shape, or
 disagreeing with the RPC (left alone for 5 minutes); no endpoint whose cap
 covers the span, or that endpoint failing (learned from like a quorum
-member's failure); the quorum failing the newest blocks. The request goes on
+member's failure) or answering an entry not in the exact shape Ant reads (a
+32-byte `blockHash` and `transactionHash`, not `removed`, a value of exactly
+one 32-byte word, zero-padded address topics; checked before Blockscout is
+asked, which is then not left alone for it; the answer is not credited as
+covering the span, the next endpoint whose cap covers it is tried, and that
+endpoint is not asked to pair again for 30 minutes); the quorum failing the
+newest blocks, or answering them with an entry not in that same shape (its
+members agreeing does not make an entry well formed). The request goes on
 to the quorum, which refuses the span with the widest one it can verify, and
 Ant halves its window as it did. These failures are not ranked for Ant: they
 say nothing about its query. The whole source gets one scan budget (30 s):
 the pairing, the RPC and every Blockscout page together, runs inside it less
 the configured quorum timeout, which is held back for the newest blocks'
-quorum, so the quorum after it still fits the bridge's 120 s deadline. A
+quorum, whose rounds share what is left of the budget, so the quorum after
+it still fits the bridge's 120 s deadline. A
 Blockscout too slow for that budget, or still reading when the caller gives
 up, is left alone for a minute.
 
@@ -227,8 +239,19 @@ other address, no API key, no cookies or referrer. It is asked only for a scan
 the quorum cannot verify, at most a few times per first scan, and never for
 pages' `window.ethereum` requests, which do not opt in. The request goes to
 `gnosis.blockscout.com`, which redirects to `gnosisscan.io` (also Blockscout,
-as of 2026-10-05). Redirects are followed by hand, and a hop off https is
-refused before it is dialled, so the address never goes out in clear. Freedom does not pass
+as of 2026-10-05). Redirects are followed by hand, and a hop off https, or
+one that leaves the configured origin for a local host, is refused before it
+is dialled, so the address never goes out in clear nor to a service on the
+user's machine or LAN. A local host is `localhost`/`*.localhost`, a
+loopback, unspecified, private, link-local, CGNAT, benchmarking, multicast,
+reserved/broadcast, ULA or site-local address, one of the IPv4 ones written
+in IPv6 (IPv4-mapped, -compatible or -translated, NAT64 `64:ff9b::/96` or
+6to4 `2002::/16`) or under the local-use NAT64 prefix, or a DNS name
+(such as `127.0.0.1.nip.io`) that the system resolver answers with any such
+address; a name that does not resolve is refused too. The lookup is a
+check before the fetch's own: a name whose answer changes between the two
+(DNS rebinding) is not caught, and only TLS (a certificate valid for that
+name) then stands between it and a local service. Freedom does not pass
 ant#143's `--gnosis-unverified-logs-rpc-url`: every log Ant receives is still
 one two independent providers agreed on.
 
@@ -393,7 +416,7 @@ stop/restart. See the PR for measurements and current test results.
 
 The completed live run used the actual managed daemon, not an external node.
 Startup log scans (`eth_getLogs`) and `eth_blockNumber` went through Colibri
-(log scans no longer do since PR #494; see *Routing and authority*).
+(log scans no longer do since PR #494; see _Routing and authority_).
 `/wallet` returned HTTP 200 in **699 ms** using Colibri balance/contract calls;
 `/chainstate` returned HTTP 200 in **436 ms** using Colibri and RPC quorum.
 After stop/start, `/wallet` again returned HTTP 200. The whole campaign,

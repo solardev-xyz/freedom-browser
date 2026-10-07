@@ -5,6 +5,7 @@ const fs = require('fs');
 const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
 const { sanitizeOverrides } = require('../shared/shortcuts');
+const { normalizeCacheBytes } = require('./swarm/ant-cache');
 
 // Apply theme to nativeTheme so webviews get correct prefers-color-scheme
 function applyNativeTheme(theme) {
@@ -39,6 +40,13 @@ const DEFAULT_SETTINGS = {
   // tier. On by default, as in bee and Ant; the wallet sidebar's Nodes tab
   // switches it ("Pay peers from the chequebook") and restarts the node.
   antSwapEnable: true,
+  // The Swarm node's disk cache size in bytes (#579), one of the sizes in
+  // swarm/ant-cache.js. Null until chosen: the node's first start saves the
+  // default, or 10 GB for a profile whose node already has a cache from
+  // before this setting. ant-manager writes it into config.yaml for the next
+  // start; Settings → Nodes → Swarm cache size also applies a change to the
+  // running node live (Ant v0.5.61+, not persisted by Ant itself).
+  antCacheCapacityBytes: null,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,
   // Experimental: start the Myotis P2P Ethereum light client at launch.
@@ -325,6 +333,17 @@ function saveSettings(newSettings) {
           if (overridesChanged || Object.keys(dropped).length > 0) {
             revertedShortcutOverrides = dropped;
           }
+          continue;
+        }
+
+        // Only a size Freedom offers is stored; anything else leaves the
+        // setting as it was (config.yaml would resolve it to the default
+        // anyway, but the file shouldn't hold a value nothing can show).
+        if (
+          key === 'antCacheCapacityBytes' &&
+          newSettings[key] !== null &&
+          normalizeCacheBytes(newSettings[key]) === null
+        ) {
           continue;
         }
 

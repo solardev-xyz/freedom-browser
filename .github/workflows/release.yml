@@ -287,7 +287,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download Ant binaries
-        run: npm run ant:download
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -533,7 +540,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download Ant binaries
-        run: npm run ant:download
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -733,10 +747,9 @@ jobs:
           FREEDOM_E2E_NO_SANDBOX: '1'
         run: xvfb-run -a npm run test:e2e:packaged -- --output=test-results/deb
 
-      # No FUSE on the runner, so run the extracted tree rather than the
-      # self-mounting AppImage. `--appimage-extract-and-run` would do the same
-      # thing per launch; extracting once keeps every launch in this leg
-      # pointing at one binary.
+      # Extracted only to look inside (the Arti assertion below); the smoke
+      # test itself launches the .AppImage as shipped, through FUSE, the way
+      # users run it (#564).
       - name: Extract the AppImage
         run: |
           shopt -s nullglob
@@ -748,6 +761,7 @@ jobs:
           chmod +x "${images[0]}"
           "$(realpath "${images[0]}")" --appimage-extract >/dev/null
           test -x squashfs-root/freedom
+          echo "FREEDOM_APPIMAGE=$(realpath "${images[0]}")" >> "$GITHUB_ENV"
 
       # Same assertion as for the .deb: the two artifacts are packed
       # separately, so a missing binary can appear in either one alone.
@@ -762,11 +776,23 @@ jobs:
           fi
           echo "Bundled arti present ($(stat -c %s "$arti") bytes)"
 
+      # The static AppImage runtime (build.toolsets.appimage) links FUSE in, so
+      # it needs no libfuse2 — only the kernel's /dev/fuse and the fusermount3
+      # helper every desktop distro ships. The runner image may not carry the
+      # helper; libfuse2 is deliberately not installed, so a runtime that still
+      # needed it would fail here instead of on a user's machine.
+      - name: Install the FUSE mount helper
+        run: |
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install fuse3
+          ls -l /dev/fuse
+          command -v fusermount3
+
       - name: Smoke-test the AppImage
         env:
-          FREEDOM_E2E_EXECUTABLE: ${{ github.workspace }}/squashfs-root/freedom
           FREEDOM_E2E_NO_SANDBOX: '1'
-        run: xvfb-run -a npm run test:e2e:packaged -- --output=test-results/appimage
+        run: |
+          FREEDOM_E2E_EXECUTABLE="$FREEDOM_APPIMAGE" \
+            xvfb-run -a npm run test:e2e:packaged -- --output=test-results/appimage
 
       # Traces and screenshots are only written for failures, so this is
       # usually empty on a green run — hence `ignore` rather than `error`.
@@ -1118,7 +1144,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download Ant binaries
-        run: npm run ant:download
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -1352,6 +1385,14 @@ jobs:
 
       # No --no-sandbox here: Windows needs no sandbox opt-out, and passing one
       # would smoke-test a configuration no user runs.
+      # The runner has the Visual C++ Redistributable in System32, so the smoke
+      # test below would pass even if the package depended on it; a clean
+      # Windows 11 does not have it (#563). Read the installed binaries' import
+      # tables instead: whatever imports the runtime must ship it beside itself
+      # (scripts/after-pack.js places it).
+      - name: Assert the installed package ships the VC++ runtime it needs
+        run: node scripts/win-vcruntime.js --check "$(cygpath -w "$(dirname "$(cygpath -u "$FREEDOM_INSTALLED_EXE")")")"
+
       - name: Smoke-test the installed package
         env:
           FREEDOM_E2E_EXECUTABLE: ${{ env.FREEDOM_INSTALLED_EXE }}
@@ -1389,6 +1430,9 @@ jobs:
             exit 1
           fi
           echo "Bundled arti.exe present ($(stat -c %s "$arti") bytes)"
+
+      - name: Assert the portable zip ships the VC++ runtime it needs
+        run: node scripts/win-vcruntime.js --check "$(cygpath -w "$(dirname "$(cygpath -u "$FREEDOM_PORTABLE_EXE")")")"
 
       - name: Smoke-test the portable zip
         env:

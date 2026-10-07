@@ -57,11 +57,11 @@ describe('colibri-runtime disables the native addon before the package loads', (
     delete process.env.C4_DISABLE_NATIVE;
     expect(loadWithEnvProbe()).toBe('1');
     expect(process.env.C4_DISABLE_NATIVE).toBe('1');
-    expect(require('./colibri-runtime').clientVersion).toBe(196608);
+    expect(require('./colibri-runtime').clientVersion).toBe(196609);
   });
 
   test('refuses to encode a client version outside the upstream three-byte shape', () => {
-    // 196608 above is the installed 3.0.0 build's own
+    // 196609 above is the installed 3.0.1 build's own
     // `_c4w_get_current_version_number()`; the encoding only reproduces it for
     // `<major>.<minor>.<patch>` with every part <= 255. Any other shape must
     // fail closed (the checkpoint worker rejects a non-integer clientVersion)

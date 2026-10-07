@@ -25,6 +25,7 @@ const {
   formatAccelerator,
 } = require('../shared/shortcuts');
 const { loadSettings, saveSettings, getRevertedShortcutOverrides } = require('./settings-store');
+const { registerTabSwitchKeysIpc } = require('./tab-switch-keys');
 
 const getOverrides = () => loadSettings()?.shortcutOverrides || {};
 
@@ -153,6 +154,7 @@ function registerShortcutsIpc() {
   ipcMain.handle(IPC.SHORTCUTS_PREVIEW_BINDING, (_event, payload) => previewBinding(payload));
   ipcMain.handle(IPC.SHORTCUTS_SET_OVERRIDE, (_event, payload) => setOverride(payload));
   ipcMain.handle(IPC.SHORTCUTS_RESET, (_event, payload) => resetOverride(payload));
+  registerTabSwitchKeysIpc(ipcMain);
 }
 
 module.exports = {

@@ -1,0 +1,74 @@
+#cloud-config
+# Turns the Ubuntu 24.04 server cloud image into the desktop a tester would
+# have: GNOME on Wayland with auto-login, no screen lock, plus SSH and Node so
+# the host can drive the packaged suites. @SSH_PUBKEY@ is filled in by
+# provision-ubuntu.sh. Powers off when done; the provision script waits for it.
+hostname: freedom-e2e-ubuntu
+users:
+  - name: tester
+    gecos: Freedom E2E
+    shell: /bin/bash
+    groups: [sudo, adm]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - @SSH_PUBKEY@
+package_update: true
+package_upgrade: true
+packages:
+  - ubuntu-desktop-minimal
+  - openssh-server
+  - git
+  - curl
+  - xz-utils
+write_files:
+  # ubuntu-desktop-minimal recommends firefox, whose deb only installs the
+  # snap, and pulling snaps through the store can crawl for hours. Nothing
+  # here needs a browser besides the one under test.
+  - path: /etc/apt/preferences.d/no-firefox-snap
+    content: |
+      Package: firefox*
+      Pin: release *
+      Pin-Priority: -1
+  - path: /etc/gdm3/custom.conf
+    content: |
+      [daemon]
+      AutomaticLoginEnable=true
+      AutomaticLogin=tester
+  - path: /etc/dconf/profile/user
+    content: |
+      user-db:user
+      system-db:local
+  - path: /etc/dconf/db/local.d/00-freedom-e2e
+    content: |
+      [org/gnome/desktop/session]
+      idle-delay=uint32 0
+      [org/gnome/desktop/screensaver]
+      lock-enabled=false
+      [org/gnome/settings-daemon/plugins/power]
+      sleep-inactive-ac-type='nothing'
+  - path: /home/tester/.config/gnome-initial-setup-done
+    content: "yes"
+    owner: tester:tester
+    defer: true
+runcmd:
+  - dconf update
+  # Noble's update-notifier pops an "upgrade to the next LTS" dialog over the
+  # desktop the suites run on.
+  - sed -i 's/^Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades
+  - chown -R tester:tester /home/tester
+  - systemctl set-default graphical.target
+  # The nightly installs a .deb with apt; a background unattended-upgrade
+  # holding the dpkg lock would fail that install for reasons that are not the
+  # build's. The golden image is upgraded at provision time instead.
+  - systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service
+  - |
+    set -e
+    ver=$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | grep -o 'node-v24[^ ]*-linux-x64.tar.xz' | head -1)
+    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/latest-v24.x/$ver"
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+    rm /tmp/node.tar.xz
+  - touch /etc/cloud/cloud-init.disabled
+power_state:
+  mode: poweroff
+  timeout: 60

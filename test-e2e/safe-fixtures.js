@@ -169,7 +169,19 @@ const test = base.extend({
         FREEDOM_TEST_USER_DATA: userDataDir,
         FREEDOM_IDENTITY_DATA: identityDir,
         FREEDOM_RADICLE_DATA: radicleDir,
-        FREEDOM_TEST_HIDE_WINDOW: process.env.FREEDOM_E2E_HEADED === '1' ? '0' : '1',
+        // Shown, not hidden (#536; the onboarding fixture's #479 is the same
+        // bug). A never-shown window has no steady frame clock: probed
+        // 2026-10 under xvfb, the hidden window ran requestAnimationFrame at
+        // ~1 fps (60 fps shown), and on CI it intermittently stops. The
+        // sidebar opens by widening over the area the tab's <webview> had,
+        // and the browser routes a click by hit-testing the compositor's
+        // last *presented* frame (see clickOverGuest in fixtures.js), so
+        // with no new frame a click on #wallet-selector-btn can still go to
+        // the guest: Playwright's in-renderer checks pass, the click
+        // returns, and the selector never opens. Looped on CI 2026-10-06, retries
+        // off: a cold first launch failed that way 16 times in 40 hidden and
+        // 0 in 40 shown. '0' explicitly, so an inherited =1 can't re-hide it.
+        FREEDOM_TEST_HIDE_WINDOW: '0',
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
       },

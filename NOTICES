@@ -56,6 +56,13 @@ Arti (Tor client, macOS, Linux and Windows x64 builds)
   links the crate's dependency tree, which upstream distributes under
   permissive licenses.
 
+Microsoft Visual C++ runtime (Windows builds only)
+  vcruntime140.dll, and msvcp140.dll / vcruntime140_1.dll where needed
+  Copyright (c) Microsoft Corporation. All rights reserved.
+  Redistributed unmodified, beside the bundled binaries that import them,
+  as Distributable Code under the Microsoft Visual Studio license terms.
+  https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+
 == Bundled renderer libraries (src/renderer/vendor/) ==
 
 OpenLV (@openlv/core, @openlv/session, @openlv/signaling, @openlv/transport)

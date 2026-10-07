@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('../fixtures');
 const {
+  isAppImageRun,
   launchPackagedApp,
   packagedExecutable,
   packagedLaunchTarget,
@@ -66,8 +67,37 @@ function readFuses(file) {
   return { version, fuses };
 }
 
-test('the artifact carries the configured fuses', () => {
-  const { version, fuses } = readFuses(fuseFile(fs.realpathSync(packagedExecutable())));
+function testModeEnv(userDataDir) {
+  return {
+    ...process.env,
+    FREEDOM_TEST_MODE: '1',
+    FREEDOM_TEST_USER_DATA: userDataDir,
+    LANG: 'en_US.UTF-8',
+  };
+}
+
+// An AppImage's binary sits compressed inside its squashfs, so there are no
+// fuse bytes to find in the file itself. Start it and read the binary it
+// actually runs from the mount (appFacts().execPath) while it is up.
+async function readFusesFromRunningAppImage(userDataDir) {
+  const app = await launchPackagedApp({
+    ...packagedLaunchTarget(),
+    env: testModeEnv(userDataDir),
+    timeout: 45_000,
+  });
+  try {
+    await app.firstWindow();
+    const { execPath } = await app.appFacts();
+    return readFuses(execPath);
+  } finally {
+    await app.close();
+  }
+}
+
+test('the artifact carries the configured fuses', async ({ userDataDir }) => {
+  const { version, fuses } = isAppImageRun()
+    ? await readFusesFromRunningAppImage(userDataDir)
+    : readFuses(fuseFile(fs.realpathSync(packagedExecutable())));
   expect(version).toBe(1);
 
   const configured = Object.fromEntries(
@@ -99,12 +129,7 @@ test('--inspect does not open a main-process inspector', async ({ userDataDir })
   const app = await launchPackagedApp({
     ...target,
     args: [...target.args, '--inspect=0'],
-    env: {
-      ...process.env,
-      FREEDOM_TEST_MODE: '1',
-      FREEDOM_TEST_USER_DATA: userDataDir,
-      LANG: 'en_US.UTF-8',
-    },
+    env: testModeEnv(userDataDir),
     timeout: 45_000,
   });
   try {

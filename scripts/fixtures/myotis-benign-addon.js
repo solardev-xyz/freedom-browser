@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixture.json'), 'utf8'));
-const MODES = new Set(['healthy', 'natural-exit', 'blocked-read', 'blocked-status', 'blocked-stop', 'startup-failure']);
+const MODES = new Set(['healthy', 'natural-exit', 'blocked-read', 'blocked-status', 'blocked-stop', 'startup-failure', 'orphan-window']);
 if (config.identity !== 'freedom-myotis-benign-v1' || !MODES.has(config.mode)) {
   throw new Error('Invalid qualification fixture');
 }
@@ -20,7 +20,7 @@ function block() {
   process.exit(78);
 }
 module.exports = {
-  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 32; },
+  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 38; },
   create(network, dataDir) {
     if (network !== 'mainnet' || fs.realpathSync(dataDir) !== fs.realpathSync(path.join(__dirname, 'data'))) {
       throw new Error('Fixture path mismatch');
@@ -40,12 +40,25 @@ module.exports = {
   ethCallJson() {
     event('call');
     if (config.mode === 'blocked-read') block();
+    if (config.mode === 'orphan-window') {
+      // Prove the real Node process retained a read-only regular-file lease.
+      if (!fs.fstatSync(4).isFile()) throw new Error('Missing lifetime lease');
+      let refused = false;
+      try { fs.writeSync(4, Buffer.from('x')); } catch { refused = true; }
+      if (!refused) throw new Error('Lifetime lease was writable');
+      event('lease-held');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+      event('lease-window-finished');
+    }
     return Promise.resolve(JSON.stringify({ resultHex: '0x1234' }));
   },
   acceptStaleAnchor() { return false; },
   ensRecordJson() { return Promise.resolve('{}'); },
   requestAccountJson() { return Promise.resolve('{}'); },
-  estimateGasJson() { return Promise.resolve('{}'); },
+  ethCallTxJson() { return Promise.resolve('{}'); },
+  estimateGasTxJson() { return Promise.resolve('{}'); },
+  getCodeJson() { return Promise.resolve('{}'); },
+  getStorageAtJson() { return Promise.resolve('{}'); },
   feeEstimateJson() { return Promise.resolve('{}'); },
   sendRawTransactionJson() { return Promise.resolve('{}'); },
   drainLogs() { return ''; },

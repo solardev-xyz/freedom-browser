@@ -1,0 +1,2 @@
+- A local file opened from a `file://` address can be bookmarked ([#555](https://github.com/solardev-xyz/freedom-browser/issues/555))
+  - The bookmark star never appeared on such a page; it now does, and the bookmark opens the file again from the bookmarks bar, in a new tab or in a new window

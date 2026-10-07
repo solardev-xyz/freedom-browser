@@ -47,8 +47,10 @@ READ_METHODS.add('web3_sha3');
 //   ask the quorum only); this is the source's capability. A source not
 //   listed here serves the method as far as the router knows, and its adapter
 //   still refuses what depends on the request (Myotis: which methods its addon
-//   version serves, block tags other than `latest`, call fields it cannot
-//   honour; see requestMyotis), which is reported as that source's failure.
+//   version serves, block tags other than `latest`, state overrides, blob
+//   transactions; see requestMyotis), which is reported as that source's
+//   failure. A Myotis refusal of the request itself is not a source failure:
+//   it is the answer (see nativeResult).
 // - logSpan: the widest eth_getLogs block span the source serves.
 //   'learned-per-endpoint' means each RPC endpoint's cap is learned from its
 //   range-limit replies and the source asks only endpoints whose cap covers
@@ -210,6 +212,14 @@ const LOG_INDEX_DISAGREEMENT_COOLDOWN_MS = 5 * 60_000;
 const LOG_INDEX_ABORT_COOLDOWN_MS = 60_000;
 // chainId -> time until which the blockscout source is not asked.
 const logIndexCoolUntil = new Map();
+// How long an RPC endpoint is not asked to be Blockscout's pair after it
+// answered a span with an entry not in the exact shape Ant reads: every wide
+// window would otherwise re-spend a full-span eth_getLogs on it only to fall
+// through to the quorum again.
+const LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS = 30 * 60_000;
+// `${chainId}|${url}` -> time until which that endpoint is not a pair.
+const logIndexPairCoolUntil = new Map();
+const logIndexPairKey = (chainId, url) => `${chainId}|${url}`;
 
 class SourceUnavailableError extends Error {
   constructor(message, failureKind = null) {
@@ -437,6 +447,7 @@ function clearAdaptiveRoutingForTest() {
   colibriInFlightByRoute.clear();
   logRangeState.clear();
   logIndexCoolUntil.clear();
+  logIndexPairCoolUntil.clear();
 }
 
 function blockNumberOf(value) {
@@ -619,16 +630,15 @@ function quantity(value) {
   return `0x${BigInt(value || 0).toString(16)}`;
 }
 
-function decimal(value) {
-  if (value == null || value === '') return '0';
-  return BigInt(value).toString(10);
-}
-
 // Numeric fields of a JSON-RPC call object are QUANTITYs and have to travel as
 // hex. Internal callers work in decimal wei (ethers' parseUnits output), and a
 // raw decimal makes strict nodes answer -32602, which silently drops the read
 // out of the quorum tier. Normalise once here — the boundary every source
 // shares — so all endpoints also see a byte-identical body to agree on.
+// `chainId` and `type` are QUANTITYs too, and since ABI 34/35 the Myotis
+// engine applies them instead of dropping them: its parser accepts only
+// 0x-hex, and its -32602 refusal is final (no fallback), so a dApp's
+// `{ chainId: 1 }` or `{ type: 2 }` has to be hex by the time it gets there.
 const CALL_OBJECT_METHODS = new Set(['eth_call', 'eth_estimateGas']);
 const CALL_QUANTITY_FIELDS = [
   'value',
@@ -637,6 +647,8 @@ const CALL_QUANTITY_FIELDS = [
   'maxFeePerGas',
   'maxPriorityFeePerGas',
   'nonce',
+  'chainId',
+  'type',
 ];
 
 // `input` is the standardised calldata field of a call object and `data` the
@@ -686,20 +698,80 @@ function normalizeParams(method, params) {
   return [call, ...params.slice(1)];
 }
 
-function nativeResult(payload, ...keys) {
+// Myotis refusals that name a limit of this engine build rather than anything
+// wrong with the request: an executor whose fork table disagrees with the
+// verified header (ABI 33, EIP-7843 slot number), its own eth_call gas budget,
+// and blob transactions it does not execute. Another source can serve these.
+const MYOTIS_CAPABILITY_REFUSAL =
+  /EIP-7843|fork table|node's \d+-gas call budget|not supported by this node/i;
+const MAX_MYOTIS_REFUSAL_MESSAGE = 300;
+
+function myotisRefusalMessage(value, fallback) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim().replace(/\s+/g, ' ').slice(0, MAX_MYOTIS_REFUSAL_MESSAGE)
+    : fallback;
+}
+
+// A definite answer from verified state, served to the caller instead of being
+// retried elsewhere. `myotisRefusal` tells request() not to fall through.
+function myotisRefusal(kind, code, message) {
+  const error = new Error(message);
+  error.code = code;
+  error.myotisRefusal = kind;
+  return error;
+}
+
+// Throws for every Myotis payload that is not a served answer.
+function assertMyotisAnswer(payload) {
   if (payload?.status === 'revert') {
     const error = new Error('execution reverted');
     error.code = 3;
     error.data = typeof payload.dataHex === 'string' ? payload.dataHex : '0x';
     throw error;
   }
+  // ABI 33+: -32602 is a permanent refusal; no retry and no sync progress
+  // changes it. A refusal of the request itself (malformed or contradictory
+  // transaction object, chainId for another chain, bad address) goes to the
+  // caller as invalid params: a remote RPC that accepted it would do so by
+  // ignoring a field, which is how an estimate ends up too low to mine.
+  if (payload?.error && payload.code === -32602) {
+    const message = myotisRefusalMessage(payload.error, 'invalid params');
+    if (MYOTIS_CAPABILITY_REFUSAL.test(message)) {
+      throw new SourceUnavailableError(`Myotis cannot execute this request: ${message}`);
+    }
+    throw myotisRefusal('invalid-params', -32602, message);
+  }
+  // ABI 34/35: the call or estimate cannot succeed within the caller's own
+  // gas, fee cap or funds — geth's -32000 with its wording, like a revert an
+  // answer from verified state rather than a failure to answer.
+  if (payload?.status === 'infeasible') {
+    throw myotisRefusal('infeasible', -32000, myotisRefusalMessage(payload.reason, 'transaction is infeasible'));
+  }
   if (!payload || payload.error || ['error', 'unavailable'].includes(payload.status)) {
     throw new SourceUnavailableError('Myotis native read unavailable');
   }
+}
+
+function nativeResult(payload, ...keys) {
+  assertMyotisAnswer(payload);
   for (const key of keys) {
     if (payload[key] != null) return payload[key];
   }
   throw new Error('Myotis returned an unexpected response');
+}
+
+// The state reads (account, code, storage) answer with a full object even
+// when nothing was verified: their data keys are an answer only when
+// `verifyMethod` is set (myotis-node README, "Serve a state read only with its
+// verdict"). Without one there is no answer yet, so another source serves.
+function verifiedStateRead(payload) {
+  assertMyotisAnswer(payload);
+  if (typeof payload.verifyMethod !== 'string' || !payload.verifyMethod) {
+    throw new SourceUnavailableError(
+      `Myotis read has no verdict (${myotisRefusalMessage(payload.failReason, 'unverified')})`
+    );
+  }
+  return payload;
 }
 
 function optionalNativeResult(payload, ...keys) {
@@ -766,22 +838,22 @@ function assertMyotisBlockTag(method, blockTag) {
   throw new SourceUnavailableError(`Myotis cannot serve ${method} at block "${blockTag}"`);
 }
 
-// The engine executes a call as `from`/`to`/`data`/`value` against its verified
-// head, and the addon exposes no state-override entry point. Any call carrying
-// more than that has to go to a source that can honour it, rather than being
-// answered — as `verified` — from head state without it.
+// ABI 34/35: the engine takes the whole transaction object and applies every
+// field (gas, fees, nonce, accessList, authorizationList, chainId, type) or
+// refuses the request as a permanent -32602 — nothing is dropped any more, so
+// the object goes through as the caller sent it (after normalizeParams).
 //
-// ABI 27+ enforces the block selector; ABI 30+ serves `finalized` at the
-// finalized block instead of head state. Freedom still forwards only `latest`:
-// assertMyotisBlockTag refuses every other selector before calling the addon.
-// The additive blockNumber/verified envelope fields do not change nativeResult.
-const MYOTIS_UNSUPPORTED_CALL_FIELDS = [
-  'gas',
-  'gasPrice',
-  'maxFeePerGas',
-  'maxPriorityFeePerGas',
-  'nonce',
-  'accessList',
+// What stays with other sources is what the engine cannot honour: a block
+// selector other than `latest` (assertMyotisBlockTag), state overrides (the
+// addon takes them, but Freedom has not adopted that path yet), and blob
+// transactions, which the engine refuses as unsupported rather than invalid.
+const MYOTIS_BLOB_FIELDS = [
+  'blobVersionedHashes',
+  'maxFeePerBlobGas',
+  'blobs',
+  'commitments',
+  'proofs',
+  'sidecar',
 ];
 
 function assertMyotisCallShape(method, params) {
@@ -789,21 +861,12 @@ function assertMyotisCallShape(method, params) {
   if (params[2] != null) {
     throw new SourceUnavailableError(`Myotis cannot serve ${method} with state overrides`);
   }
-  const call = params[0] || {};
-  // A call carrying both calldata aliases with different payloads is ambiguous:
-  // strict nodes reject the pair outright, so pick neither here rather than
-  // executing one of them against head state and calling the answer verified.
-  const data = calldata(call.data);
-  const input = calldata(call.input);
-  if (data && input && data !== input) {
-    throw new SourceUnavailableError(
-      `Myotis cannot serve ${method} with conflicting "data" and "input" calldata`
-    );
-  }
-  for (const field of MYOTIS_UNSUPPORTED_CALL_FIELDS) {
+  const call = params[0];
+  if (!call || typeof call !== 'object' || Array.isArray(call)) return;
+  for (const field of MYOTIS_BLOB_FIELDS) {
     const value = call[field];
-    if (value == null || value === '') continue;
-    throw new SourceUnavailableError(`Myotis cannot serve ${method} with a "${field}" field`);
+    if (value == null || (Array.isArray(value) && value.length === 0)) continue;
+    throw new SourceUnavailableError(`Myotis cannot serve ${method} for a blob transaction ("${field}")`);
   }
 }
 
@@ -812,40 +875,49 @@ async function requestMyotis(chainId, method, params) {
 
   if (method === 'eth_getBalance' || method === 'eth_getTransactionCount') {
     assertMyotisBlockTag(method, params[1]);
-    const account = await myotis.getAccount(params[0], chainId);
+    const account = verifiedStateRead(await myotis.getAccount(params[0], chainId));
+    // A proven-absent account has `balanceWei: null` and `nonce: -1`.
+    if (account.exists === false) return '0x0';
     const value = method === 'eth_getBalance'
       ? nativeResult(account, 'balanceWei', 'balance')
       : nativeResult(account, 'nonce');
     return quantity(value);
   }
 
+  if (method === 'eth_getCode') {
+    assertMyotisBlockTag(method, params[1]);
+    const code = verifiedStateRead(await myotis.getCode(params[0], chainId));
+    const hex = nativeResult(code, 'codeHex');
+    if (typeof hex !== 'string' || !/^0x(?:[0-9a-f]{2})*$/i.test(hex)) {
+      throw new SourceUnavailableError('Myotis returned invalid code');
+    }
+    return hex.toLowerCase();
+  }
+
+  if (method === 'eth_getStorageAt') {
+    assertMyotisBlockTag(method, params[2]);
+    const slot = verifiedStateRead(await myotis.getStorageAt(params[0], params[1], chainId));
+    // `valueHex` drops leading zeros and is null for an empty slot; a JSON-RPC
+    // answer is the 32-byte word.
+    const value = slot.valueHex == null ? '0x0' : slot.valueHex;
+    if (typeof value !== 'string' || !/^0x[0-9a-f]{0,64}$/i.test(value)) {
+      throw new SourceUnavailableError('Myotis returned an invalid storage value');
+    }
+    return `0x${value.slice(2).toLowerCase().padStart(64, '0')}`;
+  }
+
   if (method === 'eth_call') {
     assertMyotisCallShape(method, params);
-    const call = params[0] || {};
-    const result = await myotis.ethCall({
-      chainId,
-      from: call.from || '',
-      to: call.to,
-      data: call.data || '0x',
-      value: decimal(call.value),
-      block: 'latest',
-    });
+    const result = await myotis.ethCallTx({ chainId, tx: params[0] || {}, block: 'latest' });
     return nativeResult(result, 'resultHex', 'result');
   }
 
   if (method === 'eth_estimateGas') {
     // Same constraint as the account reads and `eth_call`: the estimate is
-    // taken against the verified head with only from/to/data/value, so an
-    // explicit tag, state overrides or extra call fields cannot be honoured.
+    // taken against the verified head, so an explicit tag or state overrides
+    // go to a source that can honour them.
     assertMyotisCallShape(method, params);
-    const call = params[0] || {};
-    const result = await myotis.estimateGas({
-      chainId,
-      from: call.from || '',
-      to: call.to,
-      data: call.data || '0x',
-      value: decimal(call.value),
-    });
+    const result = await myotis.estimateGas({ chainId, tx: params[0] || {}, block: 'latest' });
     const gas = nativeResult(result, 'gas');
     if (!Number.isSafeInteger(gas) || gas < 0) throw new SourceUnavailableError('Myotis returned invalid gas');
     return quantity(gas);
@@ -1315,6 +1387,11 @@ async function requestQuorum(chainId, method, params, options = {}) {
     }
     return lastError || new SourceUnavailableError(`No RPC quorum available for ${method}`);
   };
+  // `endsAt` (a Date.now() instant) caps the rounds together rather than
+  // each: a later round runs only on what is left of it, and not at all once
+  // less than the configured quorum timeout is left (requestQuorumRound never
+  // runs a round shorter than that).
+  const { endsAt = null } = options;
   let asked = null;
   let lastError = null;
   for (let round = 1; round <= LOG_SCAN_QUORUM_ROUNDS; round += 1) {
@@ -1323,8 +1400,14 @@ async function requestQuorum(chainId, method, params, options = {}) {
       .filter((url) => servableLogSpan(chainId, url, now) >= logRange.span)
       .slice(0, k);
     if (urls.length < m || (asked && urls.every((url) => asked.includes(url)))) break;
+    let roundOptions = options;
+    if (endsAt !== null && round > 1) {
+      const leftMs = endsAt - now;
+      if (leftMs < configuredSourceTimeoutMs(chainId)) break;
+      roundOptions = { ...options, quorumTimeoutMs: leftMs };
+    }
     try {
-      return await askQuorum(urls);
+      return await requestQuorumRound(chainId, method, params, { ...roundOptions, keeper, urls });
     } catch (err) {
       asked = urls;
       lastError = err;
@@ -1382,7 +1465,11 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   const tail = Math.min(quorumSpan, LOG_INDEX_TAIL_BLOCKS);
   const pairTo = filter.toBlock - tail;
   const pairSpan = pairTo - filter.fromBlock + 1;
-  const pairUrls = endpoints.filter((url) => servableLogSpan(chainId, url, now) >= pairSpan);
+  const pairUrls = endpoints.filter(
+    (url) =>
+      servableLogSpan(chainId, url, now) >= pairSpan &&
+      (logIndexPairCoolUntil.get(logIndexPairKey(chainId, url)) || 0) <= now
+  );
   if (!pairUrls.length) {
     throw new SourceUnavailableError('no RPC endpoint serves this span to compare Blockscout with');
   }
@@ -1390,9 +1477,10 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   // One budget (the caller's widened quorum budget) covers the whole source:
   // the pair (the RPC, then every Blockscout page) runs inside it less the
   // configured quorum timeout, which is held back for the newest blocks'
-  // quorum (requestQuorum never runs one shorter than that). So the source
-  // costs at most one quorum budget before the quorum after it is asked,
-  // inside the bridge's own deadline.
+  // quorum (requestQuorum never runs one shorter than that), and that quorum's
+  // rounds share what is left (endsAt). So the source costs at most one
+  // quorum budget before the quorum after it is asked, inside the bridge's own
+  // deadline.
   const configuredMs = configuredSourceTimeoutMs(chainId);
   const budgetMs = Math.max(configuredMs, Number(quorumTimeoutMs) || 0);
   const startedAt = Date.now();
@@ -1402,20 +1490,36 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     if (left < 1000) throw new SourceUnavailableError('Blockscout pairing ran out of time');
     return left;
   };
+  // The RPC's entries are what Ant gets: an answer with one not in the exact
+  // shape Ant reads is not taken (nor credited as covering the span); that
+  // endpoint is not asked to pair again for a while
+  // (LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS) and the next one is tried. No
+  // Blockscout request is spent on it, and Blockscout, not at fault, is not
+  // left alone for it.
   const askPairRpc = async () => {
     let lastError;
     for (const url of pairUrls) {
       signal?.throwIfAborted();
+      let result;
       try {
-        const result = await requestRpcUrl(url, method, pairParams, remainingMs(), { signal });
-        noteLogRangeAnswer(chainId, url, pairSpan);
-        return { url, result };
+        result = await requestRpcUrl(url, method, pairParams, remainingMs(), { signal });
       } catch (err) {
         signal?.throwIfAborted();
         if (err instanceof SourceUnavailableError) throw err;
         lastError = err;
         noteLogRangeFailure(chainId, url, pairSpan, err, logRange, Date.now());
+        continue;
       }
+      if (!blockscoutLogs.rpcTransferLogsWellFormed(result)) {
+        logIndexPairCoolUntil.set(
+          logIndexPairKey(chainId, url),
+          Date.now() + LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS
+        );
+        lastError = new Error(`${endpointHost(url)} answered the span with a malformed log entry`);
+        continue;
+      }
+      noteLogRangeAnswer(chainId, url, pairSpan);
+      return { url, result };
     }
     throw lastError;
   };
@@ -1463,6 +1567,7 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       [{ ...params[0], fromBlock: blockHex(pairTo + 1) }],
       {
         quorumTimeoutMs: Math.max(configuredMs, leftMs()),
+        endsAt: startedAt + budgetMs,
         keeper: createErrorKeeper(logRange.rank),
         logRange: { ...logRange, span: tail },
       }
@@ -1476,6 +1581,13 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   signal?.throwIfAborted();
   if (!Array.isArray(newest)) {
     throw new SourceUnavailableError('RPC quorum answered the newest blocks without a log list');
+  }
+  // The quorum's entries reach Ant too, and agreement alone does not make
+  // them well formed: they meet the same shape as the pair's.
+  if (!blockscoutLogs.rpcTransferLogsWellFormed(newest)) {
+    throw new SourceUnavailableError(
+      `RPC quorum answered the newest ${tail} blocks with a malformed log entry`
+    );
   }
   const result = [...rpc.result, ...newest];
   if (!includeTrust) return result;
@@ -1892,7 +2004,10 @@ async function request(
       };
     } catch (err) {
       signal?.throwIfAborted();
-      if (source === 'myotis' && err.code === 3) throw err;
+      // A revert, a permanent -32602 refusal or an infeasible call is
+      // Myotis's answer from verified state: serve it, never retry it at a
+      // source that would have to ignore part of the request to differ.
+      if (source === 'myotis' && (err.code === 3 || err.myotisRefusal)) throw err;
       if (source === 'quorum') {
         if (err.directFallback) directFallback = err.directFallback;
         if (Array.isArray(err.directAttemptedUrls)) {
@@ -2006,7 +2121,10 @@ async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {})
       return { result, source };
     } catch (err) {
       signal?.throwIfAborted();
-      if (err.code === 'MYOTIS_BROADCAST_UNCERTAIN') throw err;
+      // Uncertain: the transaction may be out there. Rejected (ABI 36): Myotis
+      // judged it unpayable or its nonce used on verified state and sent
+      // nothing; another broadcaster would only add an unverified second opinion.
+      if (err.code === 'MYOTIS_BROADCAST_UNCERTAIN' || err.myotisRefusal) throw err;
       failures.push(`${source}: ${err.message}`);
       // A node rejection (`nonce too low`, `already known`, …) carries a
       // JSON-RPC code/data the wallet needs — surface the real error rather
@@ -2034,5 +2152,6 @@ module.exports = {
   LOG_SCAN_COOLDOWN_MS,
   LOG_INDEX_TAIL_BLOCKS,
   LOG_INDEX_DISAGREEMENT_COOLDOWN_MS,
+  LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS,
   clearAdaptiveRoutingForTest,
 };

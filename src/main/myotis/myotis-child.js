@@ -1,13 +1,19 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
-const EXPECTED_ABI = 32;
+const EXPECTED_ABI = 38;
 const seedPins = require('./seed-pins');
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
+// `call` (from/to/data/value only) stays for ENS contract reads. Wallet and
+// dApp calls/estimates use the ABI 34/35 transaction-object entry points, which
+// apply or refuse every field instead of dropping gas, fees, nonce and lists.
 const OPERATIONS = Object.freeze({
   ens: 'ensRecordJson',
   call: 'ethCallJson',
+  callTx: 'ethCallTxJson',
   account: 'requestAccountJson',
-  gas: 'estimateGasJson',
+  code: 'getCodeJson',
+  storage: 'getStorageAtJson',
+  estimateTx: 'estimateGasTxJson',
   fee: 'feeEstimateJson',
   broadcast: 'sendRawTransactionJson',
 });

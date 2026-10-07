@@ -115,6 +115,23 @@ describe('webcontents-setup', () => {
     jest.restoreAllMocks();
   });
 
+  // #556: Next/Previous Tab are claimed in before-input-event on the chrome
+  // window and on every tab webview (tab-switch-keys.js), so they work
+  // wherever focus is; nothing else (DevTools, …) gets the listener.
+  test('attaches the tab-switch key handler to chrome windows and tab webviews only', () => {
+    const ctx = loadWebContentsSetupModule();
+    ctx.mod.registerWebContentsHandlers();
+    const listensForKeys = (type, id) => {
+      const contents = createContentsMock({ id, type, url: 'file:///app/index.html' });
+      ctx.app.emit('web-contents-created', {}, contents);
+      return contents.on.mock.calls.some(([event]) => event === 'before-input-event');
+    };
+    expect(listensForKeys('window', 41)).toBe(true);
+    expect(listensForKeys('webview', 42)).toBe(true);
+    expect(listensForKeys('remote', 43)).toBe(false);
+    expect(listensForKeys('backgroundPage', 44)).toBe(false);
+  });
+
   test('injects light defaults for external webviews and clears active protocol bases on destroy', async () => {
     const ctx = loadWebContentsSetupModule();
     const contents = createContentsMock({

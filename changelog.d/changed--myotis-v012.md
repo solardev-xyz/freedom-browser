@@ -1,2 +1,0 @@
-- Updated bundled nodes:
-  - Myotis 0.1.12

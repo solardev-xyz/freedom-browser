@@ -55,7 +55,11 @@ static int valid_generation(const char *generation) {
   return 1;
 }
 
+#include "myotis-owner-recovery.h"
+
 int main(int argc, char **argv) {
+  if (argc == 4 && !strcmp(argv[1], "--recover-owner") && valid_generation(argv[3]))
+    return recover_owner(argv[2], argv[3]);
   if (argc != 5 || !valid_generation(argv[3]) || argv[1][0] != '/' || argv[2][0] != '/') return 64;
   const char *generation = argv[3];
   const char *node_mode = getenv("ELECTRON_RUN_AS_NODE");
@@ -95,14 +99,22 @@ int main(int argc, char **argv) {
     if (size != 48 || memcmp(prior, "v1 retired ", 11) != 0 || prior[47] != '\n') return 67;
     prior[47] = '\0';
     if (!valid_generation(prior + 11)) return 67;
-  }
-  if (record(owner, "active", generation) < 0 || fsync(directory) < 0) return 68;
+  } else if (record(owner, "retired", generation) < 0 || fsync(directory) < 0) return 68;
+  /* This read-only descriptor survives in the execution child. Unlike the
+   * receipt-writer lock, its lifetime covers an orphan after supervisor loss.
+   * Unsupported storage retains legacy quarantine rather than weakening it. */
+  int lifetime = owner_open_mode(argv[4], OWNER_LIFETIME, 1, 1);
+  const char *active_state = lifetime >= 0 ? "leased" : "active";
+  if (record(owner, active_state, generation) < 0 || fsync(directory) < 0) return 68;
   close(directory);
+  char active_record[96];
+  int active_size = snprintf(active_record, sizeof(active_record), "v1 %s %s\n", active_state, generation);
+  (void)owner_stamp(argv[4], active_record, active_size);
   int gate[2];
-  if (pipe(gate) < 0) return 68;
-  if (revoked(0)) return 65; /* Active record conservatively remains quarantined. */
+  if (pipe(gate) < 0) { (void)record(owner, "retired", generation); return 68; }
+  if (revoked(0)) { (void)record(owner, "retired", generation); return 65; }
   pid_t child = fork();
-  if (child < 0) return 69;
+  if (child < 0) { (void)record(owner, "retired", generation); return 69; }
   if (child == 0) {
     close(gate[1]);
     close(owner); /* No lock/reporting authority in the addon process. */
@@ -120,10 +132,12 @@ int main(int argc, char **argv) {
       if (number == SIGKILL || number == SIGSTOP) continue;
       if (signal(number, SIG_DFL) == SIG_ERR && errno != EINVAL) _exit(126);
     }
-    /* Only fd 3 (main/child IPC) and null stdio survive exec. */
+    /* fd 4 is only a read-only lifetime lease. No receipt-writing, control,
+     * or signalling authority is inherited. Preserve it across exec. */
+    if (lifetime >= 0 && dup2(lifetime, 4) < 0) _exit(126);
     long limit = sysconf(_SC_OPEN_MAX);
     if (limit < 0) _exit(126);
-    for (int fd = 4; fd < limit; fd++) close(fd);
+    for (int fd = lifetime >= 0 ? 5 : 4; fd < limit; fd++) close(fd);
     char *child_argv[] = { argv[1], argv[2], NULL };
     execv(argv[1], child_argv);
     _exit(127);

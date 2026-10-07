@@ -1,0 +1,2 @@
+- Publish setup no longer offers to buy storage while the Swarm node is still finding the storage a wallet already owns on its first start on a device, and shows how far that search has got ([#510](https://github.com/solardev-xyz/freedom-browser/issues/510), [#484](https://github.com/solardev-xyz/freedom-browser/issues/484))
+  - The Storage screen shows that search and its progress too, instead of saying you have no storage yet

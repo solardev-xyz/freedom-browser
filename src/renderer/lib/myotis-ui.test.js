@@ -38,7 +38,15 @@ async function loadMyotisUi(options = {}) {
     gnosisBlock: createElement('span'),
     gnosisVersion: createElement('span'),
     gnosisDivider: createElement('div'),
+    upgrade: createElement('p'),
+    upgradeText: createElement('span'),
+    upgradeDetail: createElement('span'),
+    gnosisUpgrade: createElement('p'),
+    gnosisUpgradeText: createElement('span'),
+    gnosisUpgradeDetail: createElement('span'),
   };
+  elements.upgrade.hidden = true;
+  elements.gnosisUpgrade.hidden = true;
   const document = createDocument({
     elementsById: {
       'myotis-toggle-btn': elements.button,
@@ -68,6 +76,12 @@ async function loadMyotisUi(options = {}) {
       'myotis-gnosis-finalized-block': elements.gnosisBlock,
       'myotis-gnosis-version-text': elements.gnosisVersion,
       'myotis-gnosis-divider': elements.gnosisDivider,
+      'myotis-upgrade-message': elements.upgrade,
+      'myotis-upgrade-text': elements.upgradeText,
+      'myotis-upgrade-detail': elements.upgradeDetail,
+      'myotis-gnosis-upgrade-message': elements.gnosisUpgrade,
+      'myotis-gnosis-upgrade-text': elements.gnosisUpgradeText,
+      'myotis-gnosis-upgrade-detail': elements.gnosisUpgradeDetail,
     },
   });
   let statusHandler;
@@ -149,6 +163,142 @@ describe('myotis-ui', () => {
     ctx.elements.button.dispatch('click');
     await flushMicrotasks();
     expect(ctx.api.stop).toHaveBeenCalled();
+  });
+
+  describe('fork-watch upgrade advisory', () => {
+    const NOW = Date.UTC(2026, 9, 7, 12, 0, 0);
+    const at = (days) => Math.floor((NOW + days * 86400000) / 1000);
+    // Local calendar date, as the UI prints it, so the test holds in any TZ.
+    const day = (days) => new Date(at(days) * 1000)
+      .toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    const ready = (upgradeAdvisory, extra = {}) => ({
+      supported: true, available: true, running: true, state: 'ready', chainId: 1, upgradeAdvisory, ...extra,
+    });
+    const advisory = (extra) => ({ phase: 'SCHEDULED', activationTime: 0, forkId: '0x6c1d9423', observedPeers: 4, ...extra });
+    let message;
+    beforeEach(async () => {
+      message = (await loadMyotisUi()).mod.upgradeAdvisoryMessage;
+    });
+
+    test('no advisory, or one with an unknown phase, says nothing', () => {
+      expect(message(ready(null), NOW)).toBeNull();
+      expect(message(ready(undefined), NOW)).toBeNull();
+      expect(message(ready(advisory({ phase: 'PANIC' })), NOW)).toBeNull();
+      expect(message(null, NOW)).toBeNull();
+    });
+
+    test('SCHEDULED with a known time names the days and the date', () => {
+      const view = message(ready(advisory({ activationTime: at(12.5) })), NOW, 'en-US');
+      expect(view.phase).toBe('SCHEDULED');
+      expect(view.text).toBe(
+        `An Ethereum network upgrade that this version of Freedom doesn’t know about is coming in 12 days (${day(12.5)}). ` +
+        'Update Freedom before then to keep verified reads. Update from the bottom of the main menu.'
+      );
+      expect(view.detail).toBe('Reported by 4 peer networks, not verified. It doesn’t change how Freedom checks answers.');
+      expect(message(ready(advisory({ activationTime: at(1) })), NOW, 'en-US').text).toContain(`coming in 1 day (${day(1)})`);
+      expect(message(ready(advisory({ activationTime: at(0.25) })), NOW, 'en-US').text)
+        .toContain(`coming in less than a day (${day(0.25)})`);
+    });
+
+    test('SCHEDULED past its time (upstream keeps it 6 h) says the upgrade is due now', () => {
+      const text = message(ready(advisory({ activationTime: at(-0.1) })), NOW, 'en-US').text;
+      expect(text).toContain(`doesn’t know about is due now (${day(-0.1)}).`);
+      expect(text).toContain('Update Freedom now to keep verified reads.');
+    });
+
+    test('SCHEDULED with an unknown time (0) says soon, never 1970', () => {
+      const text = message(ready(advisory({ activationTime: 0 })), NOW, 'en-US').text;
+      expect(text).toBe(
+        'An Ethereum network upgrade that this version of Freedom doesn’t know about is coming soon. ' +
+        'Update Freedom soon to keep verified reads. Update from the bottom of the main menu.'
+      );
+      expect(text).not.toMatch(/1970/);
+    });
+
+    test('ACTIVE on a node that still verifies says reads may stop', () => {
+      expect(message(ready(advisory({ phase: 'ACTIVE', observedPeers: 1 })), NOW)).toEqual({
+        phase: 'ACTIVE',
+        text: 'The Ethereum network has upgraded and this version of Freedom can’t follow it. ' +
+          'Verified reads may stop until you update. Update from the bottom of the main menu.',
+        detail: 'Reported by 1 peer network, not verified. It doesn’t change how Freedom checks answers.',
+      });
+    });
+
+    test.each(['syncing', 'recovering', 'recovery-blocked'])(
+      'ACTIVE on a node that is %s says it can’t verify and names the fallback',
+      (state) => {
+        const text = message(ready(advisory({ phase: 'ACTIVE' }), { state, chainId: 100 }), NOW).text;
+        expect(text).toBe(
+          'The Gnosis network has upgraded and this version of Freedom can’t follow it. ' +
+          'This node can’t verify until you update; Freedom uses your other Gnosis sources meanwhile. ' +
+          'Update from the bottom of the main menu.'
+        );
+      }
+    );
+
+    test('a blob-parameter-only fork (fork id 0x00000000) gets the same wording', () => {
+      for (const phase of ['SCHEDULED', 'ACTIVE']) {
+        const base = advisory({ phase, activationTime: at(3) });
+        expect(message(ready({ ...base, forkId: '0x00000000' }), NOW, 'en-US'))
+          .toEqual(message(ready(base), NOW, 'en-US'));
+      }
+    });
+
+    test('no notice names an update menu row label (the row relabels with update state)', async () => {
+      // The notice stays up while an update is checked, downloaded and made
+      // ready; naming one of the row's labels would point at a control that
+      // isn't there in the other states (#550 R2-M1, #587 R1-M1).
+      const { describeUpdateMenuItem } = await import('./update-status-ui.js');
+      const labels = new Set(
+        ['idle', 'checking', 'downloading', 'ready', 'up-to-date', 'error', 'unsupported']
+          .flatMap((status) => [
+            describeUpdateMenuItem({ status }).label,
+            describeUpdateMenuItem({ status, menuInstallLabel: 'Install Update and Close' }).label,
+          ])
+      );
+      expect(labels.size).toBeGreaterThan(3);
+      for (const phase of ['SCHEDULED', 'ACTIVE']) {
+        for (const state of ['ready', 'syncing', 'recovering']) {
+          for (const activationTime of [0, at(-0.1), at(3)]) {
+            const view = message(ready(advisory({ phase, activationTime }), { state }), NOW, 'en-US');
+            for (const label of labels) {
+              const stem = label.replace(/…$/, '').toLowerCase();
+              expect(view.text.toLowerCase()).not.toContain(stem);
+              expect(view.detail.toLowerCase()).not.toContain(stem);
+            }
+          }
+        }
+      }
+    });
+
+    test('renders on each chain’s Nodes card and clears when the advisory goes away', async () => {
+      const ctx = await loadMyotisUi();
+      ctx.mod.initMyotisUi();
+      const update = ctx.getStatusHandler();
+      update(ready(advisory({ phase: 'ACTIVE' })));
+      expect(ctx.elements.upgrade.hidden).toBe(false);
+      expect(ctx.elements.upgrade.dataset.phase).toBe('ACTIVE');
+      expect(ctx.elements.upgradeText.textContent).toContain('The Ethereum network has upgraded');
+      expect(ctx.elements.upgradeDetail.textContent).toContain('Reported by 4 peer networks, not verified');
+      expect(ctx.elements.gnosisUpgrade.hidden).toBe(true);
+
+      update(ready(advisory({ activationTime: 0 }), { chainId: 100 }));
+      expect(ctx.elements.gnosisUpgrade.hidden).toBe(false);
+      expect(ctx.elements.gnosisUpgradeText.textContent).toContain('A Gnosis network upgrade that this version of Freedom doesn’t know about is coming soon.');
+      expect(ctx.elements.upgrade.hidden).toBe(false);
+
+      update(ready(null));
+      expect(ctx.elements.upgrade.hidden).toBe(true);
+      expect(ctx.elements.upgradeText.textContent).toBe('');
+      update(ready(advisory(), { chainId: 100, state: 'disabled' }));
+      expect(ctx.elements.gnosisUpgrade.hidden).toBe(true);
+      // Turned off (client still exiting): no notice either.
+      update(ready(advisory(), { chainId: 1, state: 'off', running: false }));
+      expect(ctx.elements.upgrade.hidden).toBe(true);
+      expect(ctx.elements.upgradeText.textContent).toBe('');
+      // Recovery messages are untouched by the notice.
+      expect(ctx.elements.gnosisRecoveryMessage.hidden).not.toBe(false);
+    });
   });
 
   test('a running client with nothing to report shows the menu-wide placeholders', async () => {
@@ -542,6 +692,7 @@ describe('myotis-ui', () => {
     ['storage', 'inconsistent'],
     ['storage-io', 'disk space'],
     ['ownership', 'Close other Freedom instances and retry'],
+    ['reboot-required', 'Restart your computer'],
     ['unsupported', 'Update or reinstall Freedom'],
     ['installation', 'Update or reinstall Freedom'],
     ['startup', 'restart the node'],

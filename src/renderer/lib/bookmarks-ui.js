@@ -14,10 +14,36 @@ const electronAPI = window.electronAPI;
 let bookmarksBarVisible = false; // User preference for non-home pages
 let isOnHomePage = true; // Track if we're on the home page
 
+// The shell's own `pages/` directory (`file:///…/renderer/pages/`), resolved
+// the same way page-urls.js resolves every internal page. Null when there is
+// no shell location to resolve against.
+const shellPagesBase = () => {
+  try {
+    const href = window.location?.href;
+    return href ? new URL('pages/', href).toString() : null;
+  } catch {
+    return null;
+  }
+};
+
+// A local file the user opened (`file:///Users/me/notes.html`) is bookmarkable
+// like any web page (#555). The app's own chrome pages are file:// URLs too —
+// error page, interstitials (one carries a single-use approval token in its
+// query) — and must never become a bookmark, so anything under the shell's
+// `pages/` directory stays out (and, failing closed, so does every file:// URL
+// if that directory can't be resolved). The address bar shows those pages
+// under their freedom:// or user-facing names anyway; this is the fail-safe.
+const isBookmarkableFileUrl = (url) => {
+  if (!url.startsWith('file://')) return false;
+  const pagesBase = shellPagesBase();
+  return !!pagesBase && !url.startsWith(pagesBase);
+};
+
 // Check if a URL is bookmarkable
 const isBookmarkableUrl = (url) => {
   if (!url) return false;
   return (
+    isBookmarkableFileUrl(url) ||
     url.startsWith('bzz://') ||
     url.startsWith('ipfs://') ||
     url.startsWith('ipns://') ||

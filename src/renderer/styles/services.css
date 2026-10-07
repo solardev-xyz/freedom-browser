@@ -437,6 +437,15 @@
   padding-left: 8px;
 }
 
+/* Fork-watch "update Freedom" notice: the peer-count caveat sits under the
+   sentence as its own line, in the muted secondary tone. */
+.myotis-upgrade-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .myotis-checkpoint-retry {
   align-self: flex-start;
   margin-bottom: 6px;

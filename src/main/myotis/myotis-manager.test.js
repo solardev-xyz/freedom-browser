@@ -87,10 +87,45 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet', 'initial'), path.join(dataDir, 'gnosis', 'initial'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.12', abi: 32, snapPeers: 2, snapServingPeers: 1 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.14', abi: 38, snapPeers: 2, snapServingPeers: 1 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
+  });
+
+  test('carries the fork-watch advisory to the renderer without touching readiness', async () => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    expect(mod.publicStatus().upgradeAdvisory).toBeNull();
+    const advisory = { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000', observedPeers: 3 };
+    // The snapshot arriving here is already validated by myotis-process.js.
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    // Peer-reported and unverified: still ready, still routed to.
+    expect(mod.isReady()).toBe(true);
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', upgradeAdvisory: advisory });
+    // A node that also stopped syncing keeps the advisory on its not-ready status.
+    clients[0].options.onStatus({ ...status, beaconState: 'SYNCING', upgradeAdvisory: advisory });
+    expect(mod.isReady()).toBe(false);
+    expect(mod.publicStatus()).toMatchObject({ state: 'syncing', upgradeAdvisory: advisory });
+    clients[0].options.onStatus(status);
+    expect(mod.publicStatus().upgradeAdvisory).toBeNull();
+  });
+
+  test('a node being stopped drops the advisory before its client has exited', async () => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    const advisory = { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000', observedPeers: 3 };
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    let exit;
+    clients[0].stop.mockImplementation(() => new Promise((resolve) => { exit = resolve; }));
+    const stopping = mod.stopMyotis();
+    // Client still alive; a late snapshot from it must not resurrect the notice.
+    expect(clients[0].exited).toBe(false);
+    clients[0].options.onStatus({ ...status, upgradeAdvisory: advisory });
+    expect(mod.publicStatus()).toMatchObject({ state: 'off', running: false, upgradeAdvisory: null });
+    clients[0].exited = true; exit(true);
+    await stopping;
+    expect(mod.publicStatus().upgradeAdvisory ?? null).toBeNull();
   });
 
   test('status queries use cached snapshots and stale status removes readiness', async () => {
@@ -200,18 +235,50 @@ describe('myotis-manager', () => {
     await expect(ipcMain.invoke(IPC.MYOTIS_GET_STATUS)).resolves.toMatchObject({ state: 'off' });
   });
 
+  // ABI 36: the engine refused the transaction before broadcasting it. Nothing
+  // was sent, so this is a definite -32000 (geth's txpool wording), never the
+  // "outcome uncertain" a wallet would have to reconcile.
+  test('maps a rejected send to a definite -32000 refusal, not an uncertain broadcast', async () => {
+    const { mod, clients } = loadManager();
+    await mod.startMyotis({ chainId: 100 });
+    clients[0].request.mockImplementation(async (op) => op === 'broadcast'
+      ? { status: 'rejected', reason: 'nonce too low: next nonce 5, tx nonce 4' } : { result: op });
+    await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({
+      code: -32000, message: 'nonce too low: next nonce 5, tx nonce 4', myotisRefusal: 'rejected',
+    });
+    clients[0].request.mockImplementation(async () => ({ status: 'rejected', reason: `x${'\n'.repeat(3)}${'y'.repeat(900)}` }));
+    const bounded = await mod.sendRawTransaction('0xsigned', 100).catch((error) => error);
+    expect(bounded).toMatchObject({ code: -32000, myotisRefusal: 'rejected' });
+    expect(bounded.message).toMatch(/^x y+$/);
+    expect(bounded.message.length).toBeLessThanOrEqual(300);
+    clients[0].request.mockImplementation(async () => ({ status: 'rejected' }));
+    await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({
+      code: -32000, message: 'transaction rejected before broadcast',
+    });
+    // An engine error is still uncertain: the send may have reached a peer.
+    clients[0].request.mockImplementation(async () => ({ error: 'no peer reachable' }));
+    await expect(mod.sendRawTransaction('0xsigned', 100)).rejects.toMatchObject({ code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+  });
+
   test('sends only operation arguments, including already-signed broadcasts', async () => {
     const { mod, clients } = loadManager();
     await mod.startMyotis({ chainId: 100 });
     await mod.getAccount('0xabc', 100);
     await mod.ethCall({ to: '0xdef', chainId: 100 });
-    await mod.estimateGas({ to: '0xdef', chainId: 100 });
+    const tx = { to: '0xdef', gas: '0x5208', maxFeePerGas: '0x2', accessList: [], authorizationList: [] };
+    await mod.ethCallTx({ tx, chainId: 100 });
+    await mod.estimateGas({ tx, chainId: 100 });
+    await mod.getCode('0xdef', 100);
+    await mod.getStorageAt('0xdef', '0x0', 100);
     await mod.feeEstimate(100);
     await mod.sendRawTransaction('0xsigned', 100);
     await mod.resolveEnsRecord({ method: 'text', name: 'alice.eth', key: 'url' }, 100);
     expect(clients[0].request.mock.calls).toEqual(expect.arrayContaining([
       ['account', ['0xabc']], ['call', ['', '0xdef', '0x', '0', 'latest']],
-      ['gas', ['', '0xdef', '0x', '0']], ['fee', []], ['broadcast', ['0xsigned']],
+      // The whole transaction object crosses to the engine, every field intact.
+      ['callTx', [JSON.stringify(tx), 'latest', '']], ['estimateTx', [JSON.stringify(tx), 'latest', '']],
+      ['code', ['0xdef', 'latest']], ['storage', ['0xdef', '0x0', 'latest']],
+      ['fee', []], ['broadcast', ['0xsigned']],
       ['ens', [JSON.stringify({ method: 'text', name: 'alice.eth', key: 'url' })]],
     ]));
   });
@@ -229,6 +296,7 @@ describe('myotis-manager', () => {
   test('automatically verifies stale anchors and restarts in a fresh owned generation', async () => {
     const ctx = await parked();
     expect(ctx.mod.publicStatus(100)).toMatchObject({ running: true, state: 'recovering', recovery: { phase: 'checking' } });
+    expect(ctx.mod.publicStatus(100).upgradeAdvisory).toBeNull();
     expect(ctx.acquireCheckpoint).toHaveBeenCalledWith(100, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     await ctx.mod.stopMyotis(100);
     ctx.acquireCheckpoint.mockResolvedValue(checkpoint);
@@ -333,6 +401,7 @@ describe('myotis-manager', () => {
     ['CHECKPOINT_MISMATCH', 'mismatch'], ['CHECKPOINT_QUORUM_CONFLICT', 'quorum-conflict'],
     ['CHECKPOINT_CLOCK', 'clock'], ['CHECKPOINT_STORAGE', 'storage'],
     ['CHECKPOINT_STORAGE_IO', 'storage-io'], ['CHECKPOINT_OWNERSHIP', 'ownership'],
+    ['CHECKPOINT_REBOOT_REQUIRED', 'reboot-required'],
     ['CHECKPOINT_INCOMPATIBLE', 'unsupported'],
   ])('failure %s stays blocked without automatic retries or a risk bypass', async (code, reason) => {
     const ctx = loadManager();
@@ -591,9 +660,13 @@ describe('myotis-manager', () => {
 
   test('a slowly syncing node automatically recovers when its anchor later expires', async () => {
     const ctx = loadManager(); ctx.status.elReaderAvailable = false;
+    // A fork this build can't follow is the likeliest cause of such a stall,
+    // so the recovery status still carries the advisory.
+    ctx.status.upgradeAdvisory = { phase: 'ACTIVE', activationTime: 0, forkId: '0x00000000', observedPeers: 5 };
     await ctx.mod.startMyotis({ chainId: 100 });
     await jest.advanceTimersByTimeAsync(300000);
-    expect(ctx.mod.publicStatus(100).recovery.reason).toBe('stalled');
+    expect(ctx.mod.publicStatus(100)).toMatchObject({ state: 'recovery-blocked', recovery: { reason: 'stalled' },
+      upgradeAdvisory: ctx.status.upgradeAdvisory });
     ctx.status.beaconState = 'STALE_ANCHOR';
     ctx.clients[0].options.onStatus(ctx.status);
     expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(1);
@@ -680,6 +753,29 @@ describe('myotis-manager', () => {
     expect(ctx.store.repairState).not.toHaveBeenCalled();
     expect(ctx.clients).toHaveLength(0);
   });
+
+  test.each([['checkpoint', 'reboot-required'], ['restart', 'reboot-required'], ['restart', 'ownership']])(
+    'a failed %s stop reports the native helper verdict (%s)', async (path, reason) => {
+      const ctx = loadManager();
+      let resolveProof;
+      if (path === 'checkpoint') {
+        ctx.acquireCheckpoint.mockImplementation(() => new Promise(resolve => { resolveProof = resolve; }));
+        ctx.status.beaconState = 'STALE_ANCHOR';
+      }
+      await ctx.mod.startMyotis({ chainId: 100 });
+      ctx.clients[0].stop.mockResolvedValue(false);
+      ctx.clients[0].recoveryFailureCode = reason === 'reboot-required' ? 'CHECKPOINT_REBOOT_REQUIRED' : 'CHECKPOINT_OWNERSHIP';
+      if (path === 'checkpoint') {
+        resolveProof(checkpoint); await flush();
+      } else {
+        ctx.clients[0].options.onUnavailable('native failure');
+        ctx.mod.registerMyotisIpc();
+        ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
+      }
+      expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', reason });
+      expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
+      expect(ctx.clients).toHaveLength(1);
+    });
 
   test('repair never replaces storage while its native child has unconfirmed exit', async () => {
     const ctx = loadManager(); await ctx.mod.startMyotis({ chainId: 100 });
@@ -782,7 +878,7 @@ describe('myotis-manager', () => {
     const details = ctx.clipboard.writeText.mock.calls[0][0];
     expect(details).toContain('Failure: ownership');
     expect(details).not.toMatch(/secret|profile|\/Users/);
-    expect(ctx.dialog.showMessageBox.mock.calls[0][1].detail).toContain('cannot clear an unconfirmed ownership record');
+    expect(ctx.dialog.showMessageBox.mock.calls[0][1].detail).toContain('Freedom will tell you if a computer restart is needed');
     expect(ctx.store.repairState).not.toHaveBeenCalled();
   });
 

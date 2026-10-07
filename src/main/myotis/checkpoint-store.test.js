@@ -1,3 +1,5 @@
+jest.mock('./ownership-recovery', () => ({ recoverOwner: jest.fn() }));
+const { recoverOwner } = require('./ownership-recovery');
 const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
@@ -39,6 +41,7 @@ describe('checkpoint generation store on the real filesystem', () => {
   let baseDir;
 
   beforeEach(async () => {
+    recoverOwner.mockReset().mockRejectedValue(Object.assign(new Error('unconfirmed'), { code: 'CHECKPOINT_OWNERSHIP' }));
     temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'freedom-checkpoint-store-'));
     baseDir = path.join(temporary, 'myotis');
     jest.spyOn(Date, 'now').mockReturnValue(NOW);
@@ -555,7 +558,49 @@ describe('checkpoint generation store on the real filesystem', () => {
       }
     );
 
-    test('valid native retired history permits migration and remains unchanged', async () => {
+  test.each([[1, 'rebooted'], [100, 'rebooted'], [1, 'orphaned'], [100, 'orphaned']])(
+    'chain %i replaces a %s generation and preserves interrupted snapshots', async (chainId, receipt) => {
+    const original = await replaceCheckpoint(baseDir, chainId, checkpoint(chainId));
+    const owner = path.join(original.dataDir, ownerName);
+    await fs.writeFile(owner, active);
+    await fs.writeFile(path.join(original.dataDir, 'sync-state.snapshot'), 'interrupted');
+    recoverOwner.mockImplementation(async (dir) => {
+      expect(dir).toBe(original.dataDir);
+      await fs.writeFile(owner, retired.replace('retired', receipt));
+    });
+    const fresh = await loadOrCreateState(baseDir, chainId);
+    expect(fresh.generation).not.toBe(original.generation);
+    expect(fresh.origin).toBe('bundled');
+    expect(await fs.readFile(path.join(original.dataDir, 'sync-state.snapshot'), 'utf8')).toBe('interrupted');
+    expect(await fs.readdir(fresh.dataDir)).toEqual(['anchor.json']);
+    expect((await loadOrCreateState(baseDir, chainId)).generation).toBe(fresh.generation);
+  });
+
+  test('a rebooted receipt survives interruption before pointer publication', async () => {
+    const original = await replaceCheckpoint(baseDir, 1, checkpoint());
+    await fs.writeFile(path.join(original.dataDir, ownerName), retired.replace('retired', 'rebooted'));
+    const fresh = await loadOrCreateState(baseDir, 1);
+    expect(fresh.generation).not.toBe(original.generation);
+    expect(recoverOwner).not.toHaveBeenCalled();
+  });
+
+  test('a reboot request preserves ownership and the pointer', async () => {
+    const original = await replaceCheckpoint(baseDir, 1, checkpoint());
+    const owner = path.join(original.dataDir, ownerName);
+    await fs.writeFile(owner, active);
+    recoverOwner.mockRejectedValue(Object.assign(new Error('reboot'), { code: 'CHECKPOINT_REBOOT_REQUIRED' }));
+    await expect(loadOrCreateState(baseDir, 1)).rejects.toMatchObject({ code: 'CHECKPOINT_REBOOT_REQUIRED' });
+    expect(await fs.readFile(owner, 'utf8')).toBe(active);
+    expect((await readJson(path.join(baseDir, 'verified-sync.json'))).generation).toBe(original.generation);
+  });
+
+  test('a helper success without a terminal record cannot clear ownership', async () => {
+    await fs.mkdir(baseDir); await fs.writeFile(path.join(baseDir, ownerName), active);
+    recoverOwner.mockResolvedValue();
+    await expect(loadOrCreateState(baseDir, 1)).rejects.toMatchObject({ code: 'CHECKPOINT_OWNERSHIP' });
+  });
+
+  test('valid native retired history permits migration and remains unchanged', async () => {
       await fs.mkdir(baseDir);
       const owner = path.join(baseDir, ownerName);
       await fs.writeFile(owner, retired);

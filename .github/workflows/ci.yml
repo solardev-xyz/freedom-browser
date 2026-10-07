@@ -399,6 +399,25 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
 
+      - name: Build ownership helper (POSIX)
+        if: runner.os != 'Windows'
+        run: npm run myotis:build-supervisor
+
+      - name: Build ownership helper (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          npm run myotis:build-supervisor -- x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check ownership recovery without networking
+        run: node scripts/check-myotis-owner-recovery.js
+
       - name: Load addon and verify ABI
         # The expected ABI comes from the release pin, not a literal repeated
         # here: on the v0.1.11 bump this step still said 26 and would have
@@ -600,6 +619,8 @@ jobs:
   # side of the same Myotis policy: synthetic checkpoint-recovery states drive
   # the real renderer, so the retry button's visibility while a background
   # retry waits and the notice clearing on success are asserted in CI.
+  # `myotis-upgrade-advisory.spec.js` does the same for the fork-watch
+  # "update Freedom" notice on the Nodes card and the Settings source badge.
   #
   # The other internal pages ride along: `internal-pages-csp.spec.js` drives
   # each page under `script-src 'self'` and fails on any CSP violation (#432),
@@ -614,6 +635,9 @@ jobs:
   # profile, with no engine cache, held behind the first ad-block engine build
   # (#524). Without the real lists that build takes milliseconds and the path
   # was only ever exercised by the nightly's full harness run.
+  # `swarm-cache.spec.js` (#579) covers Settings → Nodes → Swarm cache: its
+  # usage line, Clear cache and the live size change against a fake antd's
+  # `/debugstore` and `/v0/cache` routes, and its size picker.
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -653,10 +677,12 @@ jobs:
           test-e2e/settings-adblock.spec.js
           test-e2e/adblock-first-engine.spec.js
           test-e2e/myotis-recovery.spec.js
+          test-e2e/myotis-upgrade-advisory.spec.js
           test-e2e/internal-pages-csp.spec.js
           test-e2e/error-page.spec.js
           test-e2e/internal-page-theme.spec.js
           test-e2e/updates.spec.js
+          test-e2e/swarm-cache.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -801,6 +827,9 @@ jobs:
   # real click opens a popup, a script's window.open is blocked — and drives
   # the address-bar "Pop-up blocked" icon, a private window's session-only
   # allow and an allow that must survive a real app restart.
+  # `popup-close.spec.js` (#580) replays popupcheck.com's test against a local
+  # fixture with the same real input, and closes every popup it opens by its
+  # tab close button, Cmd/Ctrl+W, its window and its own `window.close()`.
   # `dweb-link-gesture.spec.js` covers the dweb-link side of the same gate
   # (#443), which now asks the main-process popup blocker instead of keeping
   # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
@@ -831,7 +860,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + ant-api-guard E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -844,6 +873,7 @@ jobs:
             test-e2e/external-protocol.spec.js \
             test-e2e/dweb-link-gesture.spec.js \
             test-e2e/popup-blocker.spec.js \
+            test-e2e/popup-close.spec.js \
             test-e2e/ant-api-guard.spec.js
 
       - name: Upload Playwright traces and screenshots
@@ -1267,7 +1297,14 @@ jobs:
 
       - name: Download Ant (antd) binary
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
-        run: npm run ant:download
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -1392,7 +1429,14 @@ jobs:
 
       - name: Download Ant (antd) binary
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
-        run: npm run ant:download
+        # Normally ~5 s. Run node directly, not `npm run ant:download`: npm
+        # ends itself with an unconditional process.exit(), the call that
+        # can hang forever on Node 24 (#544). hang-watchdog fails the step
+        # after 5 min with a process table and stack samples instead of a
+        # silent 20-minute job cancel; timeout-minutes is the backstop.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -1573,6 +1617,11 @@ jobs:
   # half runs on all three (that is where macOS and Windows/Linux differed);
   # the real-keypress half needs X11 key injection and runs on Linux only,
   # which is where the bug shipped.
+  #
+  # Issue #556 rides along: Next/Previous Tab must switch on every press from
+  # a focused page. Same shape — a main-process-delivered press on all three
+  # platforms (the leg that runs on macOS, where #556 was reported), real X11
+  # presses via xdotool on Linux.
   e2e-close-tab-shortcut:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1613,13 +1662,13 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
 
-      - name: Run close-tab shortcut E2E
+      - name: Run close-tab and tab-switch shortcut E2E
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+            xvfb-run -a npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
           else
-            npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+            npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js test-e2e/tab-switch-shortcut.spec.js
           fi
 
       - name: Upload Playwright traces and screenshots

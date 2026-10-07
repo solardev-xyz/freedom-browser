@@ -54,6 +54,14 @@ function isPackagedRun() {
   return packagedExecutable() !== '';
 }
 
+// True when the binary under test is a self-mounting AppImage. Its runtime
+// mounts the embedded squashfs and execs the real binary from the mount, so
+// the running app's execPath is /tmp/.mount_<id>/freedom, not this file, and
+// nothing inside it can be read from the (compressed) file on disk.
+function isAppImageRun() {
+  return /\.AppImage$/i.test(packagedExecutable());
+}
+
 // The electron.launch() options that differ between the two targets. A source
 // run passes `.` so Electron loads the repo as its app directory; a packaged
 // binary already embeds its app, so it gets no positional argument at all.
@@ -300,6 +308,7 @@ module.exports = {
   STABLE_TEXT_VAR,
   packagedExecutable,
   isPackagedRun,
+  isAppImageRun,
   packagedLaunchTarget,
   launchApp,
   launchPackagedApp,

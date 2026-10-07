@@ -10,7 +10,9 @@ const mockMyotis = {
   markUnhealthy: jest.fn(),
   getStatus: jest.fn(),
   getAccount: jest.fn(),
-  ethCall: jest.fn(),
+  ethCallTx: jest.fn(),
+  getCode: jest.fn(),
+  getStorageAt: jest.fn(),
   estimateGas: jest.fn(),
   feeEstimate: jest.fn(),
   sendRawTransaction: jest.fn(),
@@ -75,7 +77,7 @@ describe('chain-data-router', () => {
   });
 
   test('serves account balances from the matching Myotis chain', async () => {
-    mockMyotis.getAccount.mockResolvedValue({ status: 'ok', balanceWei: '42', nonce: 3 });
+    mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, balanceWei: '42', nonce: 3 });
 
     await expect(request(100, 'eth_getBalance', ['0xabc', 'latest'])).resolves.toEqual({
       result: '0x2a',
@@ -86,8 +88,69 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
+  // "Serve a state read only with its verdict" (myotis-node README, https://github.com/biafra23/myotis/pull/538):
+  // data keys without verifyMethod are no answer, however plausible.
+  test.each(['eth_getBalance', 'eth_getTransactionCount'])('does not serve an unverified %s', async (method) => {
+    mockMyotis.getAccount.mockResolvedValue({
+      verifyMethod: null, failReason: 'beaconNotSynced', exists: true, balanceWei: '42', nonce: 3,
+    });
+    mockRequestViaColibri.mockResolvedValue('0x7');
+    await expect(request(1, method, ['0xabc', 'latest'])).resolves.toMatchObject({ result: '0x7', source: 'colibri' });
+  });
+
+  test.each([['eth_getBalance'], ['eth_getTransactionCount']])('serves %s 0x0 for an account proven absent', async (method) => {
+    mockMyotis.getAccount.mockResolvedValue({
+      verifyMethod: 'headerChain', exists: false, balanceWei: null, nonce: -1,
+    });
+    await expect(request(1, method, ['0xabc', 'latest'])).resolves.toEqual({
+      result: '0x0', source: 'myotis', verified: true,
+    });
+  });
+
+  test('serves eth_getCode from Myotis with its verdict', async () => {
+    mockMyotis.getCode.mockResolvedValue({ verifyMethod: 'headerChain', codeHex: '0x6080ABCD' });
+    await expect(request(1, 'eth_getCode', ['0xabc', 'latest'])).resolves.toEqual({
+      result: '0x6080abcd', source: 'myotis', verified: true,
+    });
+    expect(mockMyotis.getCode).toHaveBeenCalledWith('0xabc', 1);
+    mockMyotis.getCode.mockResolvedValue({ verifyMethod: 'headerChain', codeHex: '0x' });
+    await expect(request(1, 'eth_getCode', ['0xabc'])).resolves.toMatchObject({ result: '0x', source: 'myotis' });
+  });
+
+  test.each([
+    [{ verifyMethod: null, failReason: 'noPeers', codeHex: '0x60' }],
+    [{ verifyMethod: 'headerChain', codeHex: '0x6' }],
+    [{ verifyMethod: 'headerChain', codeHex: null }],
+  ])('does not serve unverified or malformed code: %j', async (payload) => {
+    mockMyotis.getCode.mockResolvedValue(payload);
+    mockRequestViaColibri.mockResolvedValue('0x60');
+    await expect(request(1, 'eth_getCode', ['0xabc', 'latest'])).resolves.toMatchObject({ source: 'colibri' });
+  });
+
+  test('pads eth_getStorageAt to the 32-byte word and serves an empty slot as zero', async () => {
+    mockMyotis.getStorageAt.mockResolvedValue({ verifyMethod: 'headerChain', valueHex: '0x2A' });
+    await expect(request(100, 'eth_getStorageAt', ['0xabc', '0x0', 'latest'])).resolves.toEqual({
+      result: `0x${'0'.repeat(62)}2a`, source: 'myotis', verified: true,
+    });
+    expect(mockMyotis.getStorageAt).toHaveBeenCalledWith('0xabc', '0x0', 100);
+    mockMyotis.getStorageAt.mockResolvedValue({ verifyMethod: 'headerChain', valueHex: null });
+    await expect(request(100, 'eth_getStorageAt', ['0xabc', '0x0'])).resolves.toMatchObject({
+      result: `0x${'0'.repeat(64)}`, source: 'myotis',
+    });
+  });
+
+  test.each([
+    ['eth_getCode', ['0xabc', 'finalized']],
+    ['eth_getStorageAt', ['0xabc', '0x0', '0x10']],
+  ])('sends %s at a non-latest block to a source that honours the tag', async (method, params) => {
+    mockRequestViaColibri.mockResolvedValue('0x');
+    await expect(request(1, method, params)).resolves.toMatchObject({ source: 'colibri' });
+    expect(mockMyotis.getCode).not.toHaveBeenCalled();
+    expect(mockMyotis.getStorageAt).not.toHaveBeenCalled();
+  });
+
   test.each(['eth_call', 'eth_estimateGas'])('preserves verified %s revert data without another source', async (method) => {
-    const native = method === 'eth_call' ? mockMyotis.ethCall : mockMyotis.estimateGas;
+    const native = method === 'eth_call' ? mockMyotis.ethCallTx : mockMyotis.estimateGas;
     native.mockResolvedValue({ status: 'revert', dataHex: '0x08c379a0abcd' });
     global.fetch = jest.fn();
     await expect(request(1, method, [{ to: '0xabc' }])).rejects.toMatchObject({ code: 3, data: '0x08c379a0abcd' });
@@ -96,9 +159,21 @@ describe('chain-data-router', () => {
   });
 
   test.each([{ status: 'unavailable', reason: 'cancelled' }, { error: 'deadline exceeded' }])('falls through unavailable read shapes: %s', async (payload) => {
-    mockMyotis.ethCall.mockResolvedValue(payload);
+    mockMyotis.ethCallTx.mockResolvedValue(payload);
     mockRequestViaColibri.mockResolvedValue('0xfallback');
     await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({ source: 'colibri', result: '0xfallback' });
+  });
+
+  // ABI 36: nothing was sent, so this is neither uncertain nor worth a second
+  // broadcaster — the reason is geth's txpool verdict, served under -32000.
+  test('serves a rejected Myotis send as a definite error without another broadcaster', async () => {
+    const rejected = Object.assign(new Error('nonce too low: next nonce 5, tx nonce 4'), {
+      code: -32000, myotisRefusal: 'rejected',
+    });
+    mockMyotis.sendRawTransaction.mockRejectedValue(rejected);
+    global.fetch = jest.fn();
+    await expect(broadcastRawTransaction(1, '0xsigned')).rejects.toBe(rejected);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   test('does not retry an in-band failed broadcast at another broadcaster', async () => {
@@ -109,7 +184,7 @@ describe('chain-data-router', () => {
   });
 
   test('sends pending nonce reads to a source that honours the block tag', async () => {
-    mockMyotis.getAccount.mockResolvedValue({ status: 'ok', nonce: 3 });
+    mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, nonce: 3 });
     mockRequestViaColibri.mockResolvedValue('0x5');
 
     await expect(
@@ -127,7 +202,7 @@ describe('chain-data-router', () => {
   });
 
   test('sends historical balance reads to a source that honours the block tag', async () => {
-    mockMyotis.getAccount.mockResolvedValue({ status: 'ok', balanceWei: '42' });
+    mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, balanceWei: '42' });
     mockRequestViaColibri.mockResolvedValue('0x1');
 
     await expect(request(100, 'eth_getBalance', ['0xabc', '0x1234'])).resolves.toMatchObject({
@@ -148,17 +223,17 @@ describe('chain-data-router', () => {
   });
 
   test('sends historical eth_call to a source that honours the block tag', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0xhead' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0xhead' });
     mockRequestViaColibri.mockResolvedValue('0xhistoric');
 
     await expect(
       request(100, 'eth_call', [{ to: '0xabc', data: '0x70a08231' }, '0x10d4f00'])
     ).resolves.toEqual({ result: '0xhistoric', source: 'colibri', verified: true });
-    expect(mockMyotis.ethCall).not.toHaveBeenCalled();
+    expect(mockMyotis.ethCallTx).not.toHaveBeenCalled();
   });
 
   test('sends eth_call state overrides to a source that can apply them', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0xhead' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0xhead' });
     mockRequestViaColibri.mockResolvedValue('0xsimulated');
 
     await expect(
@@ -168,38 +243,135 @@ describe('chain-data-router', () => {
         { '0xabc': { balance: '0x1' } },
       ])
     ).resolves.toMatchObject({ result: '0xsimulated', source: 'colibri' });
-    expect(mockMyotis.ethCall).not.toHaveBeenCalled();
+    expect(mockMyotis.ethCallTx).not.toHaveBeenCalled();
   });
 
-  test('sends calls carrying gas/fee/nonce fields to a source that honours them', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0xhead' });
-    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
-    mockRequestViaColibri.mockResolvedValue('0xcapped');
+  // ABI 34/35: the engine applies or refuses every field, so a call carrying
+  // gas, fees, nonce, an access list or EIP-7702 authorizations is executed by
+  // Myotis with all of them — none is stripped on the way to the addon.
+  test('passes the whole transaction object, every field intact, to Myotis', async () => {
+    mockMyotis.ethCallTx.mockResolvedValue({ status: 'ok', resultHex: '0x2a' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 61000 });
+    const tx = {
+      from: '0x1111111111111111111111111111111111111111',
+      to: '0x2222222222222222222222222222222222222222',
+      data: '0x3e12cc2e',
+      value: '0x1',
+      gas: '0x5208',
+      maxFeePerGas: '0x3b9aca00',
+      maxPriorityFeePerGas: '0x1',
+      nonce: '0x7',
+      chainId: '0x64',
+      type: '0x4',
+      accessList: [{ address: '0x3333333333333333333333333333333333333333', storageKeys: [] }],
+      authorizationList: [{
+        address: '0x05ae73c5925d843864ae6f261f3175de2ebcd963',
+        nonce: '0x0', chainId: '0x64', yParity: '0x1', r: '0x9a3b', s: '0x0c5d',
+      }],
+    };
 
-    await expect(
-      request(100, 'eth_call', [{ to: '0xabc', data: '0x', gas: '0x5208' }, 'latest'])
-    ).resolves.toMatchObject({ source: 'colibri' });
-    await expect(
-      request(100, 'eth_estimateGas', [{ to: '0xabc', maxFeePerGas: '0x1' }])
-    ).resolves.toMatchObject({ source: 'colibri' });
-    expect(mockMyotis.ethCall).not.toHaveBeenCalled();
+    await expect(request(100, 'eth_call', [tx, 'latest'])).resolves.toEqual({
+      result: '0x2a', source: 'myotis', verified: true,
+    });
+    await expect(request(100, 'eth_estimateGas', [tx])).resolves.toMatchObject({
+      result: '0xee48', source: 'myotis',
+    });
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith({ chainId: 100, tx, block: 'latest' });
+    expect(mockMyotis.estimateGas).toHaveBeenCalledWith({ chainId: 100, tx, block: 'latest' });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+  });
+
+  // A refusal of the request itself is Myotis's answer: no retry, no remote
+  // fallback that might accept it by ignoring a field (an estimate without the
+  // authorization list is too low to mine), and no adaptive demotion.
+  test.each(['eth_call', 'eth_estimateGas'])('serves a permanent -32602 refusal of %s without falling back', async (method) => {
+    const native = method === 'eth_call' ? mockMyotis.ethCallTx : mockMyotis.estimateGas;
+    native.mockResolvedValue({
+      error: 'invalid transaction object: chainId 1 does not match this node\'s chain (100)',
+      code: -32602,
+    });
+    global.fetch = jest.fn();
+
+    await expect(request(100, method, [{ to: '0xabc', chainId: '0x1' }])).rejects.toMatchObject({
+      code: -32602,
+      message: 'invalid transaction object: chainId 1 does not match this node\'s chain (100)',
+      myotisRefusal: 'invalid-params',
+    });
+    expect(native).toHaveBeenCalledTimes(1);
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    // Not counted against the route: a valid request still goes to Myotis.
+    native.mockResolvedValue({ status: 'ok', resultHex: '0x2a', gas: 21000 });
+    await expect(request(100, method, [{ to: '0xabc' }])).resolves.toMatchObject({ source: 'myotis' });
+  });
+
+  test('serves a -32602 refusal of an account read without falling back', async () => {
+    mockMyotis.getAccount.mockResolvedValue({ error: 'invalid address (expected 20-byte hex)', code: -32602 });
+    global.fetch = jest.fn();
+    await expect(request(1, 'eth_getBalance', ['0xnot-an-address', 'latest'])).rejects.toMatchObject({
+      code: -32602, myotisRefusal: 'invalid-params',
+    });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+  });
+
+  // ABI 33: an executor whose fork table disagrees with the verified header,
+  // or a call above the engine's own gas budget, says nothing about the
+  // request — this build cannot run it, so the next source may.
+  test.each([
+    'block 23000000 carries an EIP-7843 slot number, so it is an Amsterdam block, but this build\'s fork table puts it before Amsterdam; refusing to run it under the older fork\'s rules',
+    'block 23000000 is an Amsterdam block but its header has no slot number (EIP-7843); refusing to run SLOTNUM against a made-up value',
+    'the call ran out of this node\'s 30000000-gas call budget, below the 50000000 gas it allows',
+  ])('falls back on a capability refusal: %s', async (error) => {
+    mockMyotis.ethCallTx.mockResolvedValue({ error, code: -32602 });
+    mockRequestViaColibri.mockResolvedValue('0xelsewhere');
+    await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({
+      result: '0xelsewhere', source: 'colibri',
+    });
+  });
+
+  test('sends blob transactions to another source instead of a Myotis refusal', async () => {
+    mockRequestViaColibri.mockResolvedValue('0x5208');
+    await expect(request(1, 'eth_estimateGas', [{
+      to: '0xabc', blobVersionedHashes: ['0x01' + '00'.repeat(31)], maxFeePerBlobGas: '0x1',
+    }])).resolves.toMatchObject({ source: 'colibri' });
     expect(mockMyotis.estimateGas).not.toHaveBeenCalled();
+    // An empty blob list is not a blob transaction.
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
+    await expect(request(1, 'eth_estimateGas', [{ to: '0xabc', blobVersionedHashes: [] }]))
+      .resolves.toMatchObject({ source: 'myotis' });
+  });
+
+  // ABI 34/35: geth's -32000 with its exact wording, a verified answer like a revert.
+  test.each([
+    ['eth_estimateGas', 'gas required exceeds allowance (21000)'],
+    ['eth_estimateGas', 'insufficient funds for transfer'],
+    ['eth_call', 'err: insufficient funds for gas * price + value: address 0x1111111111111111111111111111111111111111 have 0 want 21000 (supplied gas 21000)'],
+    ['eth_call', 'out of gas'],
+  ])('serves an infeasible %s as geth\'s -32000 "%s"', async (method, reason) => {
+    const native = method === 'eth_call' ? mockMyotis.ethCallTx : mockMyotis.estimateGas;
+    native.mockResolvedValue({ status: 'infeasible', reason });
+    global.fetch = jest.fn();
+    await expect(request(1, method, [{ to: '0xabc', gas: '0x5208' }])).rejects.toMatchObject({
+      code: -32000, message: reason, myotisRefusal: 'infeasible',
+    });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   test('still serves a plain head-state eth_call from Myotis', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0x2a' });
 
     await expect(
       request(100, 'eth_call', [{ to: '0xabc', data: '0x70a08231' }, 'latest'])
     ).resolves.toEqual({ result: '0x2a', source: 'myotis', verified: true });
-    expect(mockMyotis.ethCall).toHaveBeenCalledWith(
-      expect.objectContaining({ chainId: 100, to: '0xabc', block: 'latest' })
-    );
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith({
+      chainId: 100, tx: { to: '0xabc', data: '0x70a08231' }, block: 'latest',
+    });
     expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('includes source-specific trust evidence only when requested', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0x2a' });
 
     await expect(
       request(
@@ -230,7 +402,7 @@ describe('chain-data-router', () => {
     mockMyotis.getStatus
       .mockReturnValueOnce({ optimisticBlockNumber: 25_684_159 })
       .mockReturnValueOnce({ optimisticBlockNumber: 25_684_160 });
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0x2a' });
 
     const response = await request(
       1,
@@ -434,8 +606,43 @@ describe('chain-data-router', () => {
     await expect(
       request(100, 'eth_estimateGas', [{ to: '0xabc', value: '1000000000000000000' }])
     ).resolves.toMatchObject({ result: '0x5208', source: 'myotis' });
+    // The transaction object carries QUANTITYs, so the engine sees hex.
     expect(mockMyotis.estimateGas).toHaveBeenCalledWith(
-      expect.objectContaining({ value: '1000000000000000000' })
+      expect.objectContaining({ tx: { to: '0xabc', value: '0xde0b6b3a7640000' } })
+    );
+  });
+
+  // The engine's parser takes only 0x-hex for chainId/type and its -32602 is
+  // served as final, so a dApp sending them as a JSON number or a decimal
+  // string must reach Myotis already hex-encoded — not be refused outright.
+  test.each([
+    ['JSON numbers', { chainId: 100, type: 2 }],
+    ['decimal strings', { chainId: '100', type: '2' }],
+    ['zero-padded hex', { chainId: '0x064', type: '0x02' }],
+  ])('hex-encodes chainId and type given as %s before Myotis sees them', async (_label, fields) => {
+    mockMyotis.ethCallTx.mockResolvedValue({ status: 'ok', resultHex: '0x2a' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
+
+    await expect(
+      request(100, 'eth_call', [{ to: '0xabc', data: '0x70a08231', ...fields }, 'latest'])
+    ).resolves.toEqual({ result: '0x2a', source: 'myotis', verified: true });
+    await expect(
+      request(100, 'eth_estimateGas', [{ to: '0xabc', ...fields }])
+    ).resolves.toMatchObject({ result: '0x5208', source: 'myotis' });
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith(expect.objectContaining({
+      tx: { to: '0xabc', data: '0x70a08231', chainId: '0x64', type: '0x2' },
+    }));
+    expect(mockMyotis.estimateGas).toHaveBeenCalledWith(expect.objectContaining({
+      tx: { to: '0xabc', chainId: '0x64', type: '0x2' },
+    }));
+  });
+
+  test('hex-encodes a legacy type 0 rather than dropping it', async () => {
+    mockMyotis.ethCallTx.mockResolvedValue({ status: 'ok', resultHex: '0x2a' });
+
+    await request(1, 'eth_call', [{ to: '0xabc', type: 0 }, 'latest']);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith(
+      expect.objectContaining({ tx: { to: '0xabc', type: '0x0' } })
     );
   });
 
@@ -456,13 +663,13 @@ describe('chain-data-router', () => {
   });
 
   test('executes the standardized "input" calldata alias on the Myotis path', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0x2a' });
 
     await expect(
       request(1, 'eth_call', [{ to: '0xabc', input: '0x70a08231' }, 'latest'])
     ).resolves.toEqual({ result: '0x2a', source: 'myotis', verified: true });
-    expect(mockMyotis.ethCall).toHaveBeenCalledWith(
-      expect.objectContaining({ to: '0xabc', data: '0x70a08231' })
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith(
+      expect.objectContaining({ tx: expect.objectContaining({ to: '0xabc', data: '0x70a08231' }) })
     );
   });
 
@@ -473,7 +680,7 @@ describe('chain-data-router', () => {
       request(1, 'eth_estimateGas', [{ to: '0xabc', input: '0xa9059cbb' }])
     ).resolves.toMatchObject({ result: '0xd2f0', source: 'myotis' });
     expect(mockMyotis.estimateGas).toHaveBeenCalledWith(
-      expect.objectContaining({ to: '0xabc', data: '0xa9059cbb' })
+      expect.objectContaining({ tx: expect.objectContaining({ to: '0xabc', data: '0xa9059cbb' }) })
     );
   });
 
@@ -493,27 +700,35 @@ describe('chain-data-router', () => {
   });
 
   test('prefers "input" over an empty "data" placeholder', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0x2a' });
 
     await expect(
       request(1, 'eth_call', [{ to: '0xabc', data: '0x', input: '0x70a08231' }, 'latest'])
     ).resolves.toMatchObject({ source: 'myotis' });
-    expect(mockMyotis.ethCall).toHaveBeenCalledWith(
-      expect.objectContaining({ data: '0x70a08231' })
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith(
+      expect.objectContaining({ tx: expect.objectContaining({ data: '0x70a08231' }) })
     );
   });
 
-  test('sends calls with conflicting data/input calldata to a source that can reject them', async () => {
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0xhead' });
-    mockRequestViaColibri.mockResolvedValue('0xstrict');
+  // The engine refuses the ambiguous pair itself (permanent -32602, as strict
+  // nodes do), so both payloads reach it and the refusal is the answer.
+  test('lets Myotis refuse calls with conflicting data/input calldata', async () => {
+    mockMyotis.ethCallTx.mockResolvedValue({
+      error: "invalid transaction object: both 'data' and 'input' are set and not equal; use 'input'",
+      code: -32602,
+    });
+    mockRequestViaColibri.mockResolvedValue('0xlenient');
 
     await expect(
       request(100, 'eth_call', [
         { to: '0xabc', data: '0x70a08231', input: '0xa9059cbb' },
         'latest',
       ])
-    ).resolves.toMatchObject({ result: '0xstrict', source: 'colibri' });
-    expect(mockMyotis.ethCall).not.toHaveBeenCalled();
+    ).rejects.toMatchObject({ code: -32602, myotisRefusal: 'invalid-params' });
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledWith(expect.objectContaining({
+      tx: { to: '0xabc', data: '0x70a08231', input: '0xa9059cbb' },
+    }));
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('falls back to direct RPC when Myotis is not ready', async () => {
@@ -680,7 +895,7 @@ describe('chain-data-router', () => {
       quorum: { timeoutMs: 5000 },
     });
     const hangingRead = deferred();
-    mockMyotis.ethCall.mockReturnValue(hangingRead.promise);
+    mockMyotis.ethCallTx.mockReturnValue(hangingRead.promise);
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ result: '0xrpc' }),
@@ -699,7 +914,7 @@ describe('chain-data-router', () => {
       result: '0xrpc',
       source: 'direct',
     });
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(1);
 
     hangingRead.resolve({ resultHex: '0xlate' });
     await Promise.resolve();
@@ -711,7 +926,7 @@ describe('chain-data-router', () => {
       access: { readOrder: ['myotis', 'direct'] },
       quorum: { timeoutMs: 5000 },
     });
-    mockMyotis.ethCall.mockReturnValue(new Promise(() => {}));
+    mockMyotis.ethCallTx.mockReturnValue(new Promise(() => {}));
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ result: '0xrpc' }),
@@ -730,7 +945,7 @@ describe('chain-data-router', () => {
     const settled = await Promise.all(requests);
     expect(settled.map((entry) => entry.source)).toEqual(Array(6).fill('direct'));
     expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(1);
   });
 
   test('falls back at the caller deadline while a healthy Myotis read completes late', async () => {
@@ -740,7 +955,7 @@ describe('chain-data-router', () => {
       quorum: { timeoutMs: 5000 },
     });
     const slowRead = deferred();
-    mockMyotis.ethCall.mockReturnValueOnce(slowRead.promise)
+    mockMyotis.ethCallTx.mockReturnValueOnce(slowRead.promise)
       .mockResolvedValue({ resultHex: '0xverified' });
     global.fetch = jest.fn().mockResolvedValue({
       ok: true, json: async () => ({ result: '0xrpc' }),
@@ -756,11 +971,11 @@ describe('chain-data-router', () => {
     // first request actually settles, although its caller already has an answer.
     const second = read('0x2222222222222222222222222222222222222222');
     await jest.advanceTimersByTimeAsync(100);
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(1);
     slowRead.resolve({ resultHex: '0xlate' });
     await jest.advanceTimersByTimeAsync(0);
     await expect(second).resolves.toMatchObject({ source: 'myotis', result: '0xverified' });
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(2);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(2);
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
   });
@@ -772,7 +987,7 @@ describe('chain-data-router', () => {
     });
     const balanceRead = deferred();
     const decimalsRead = deferred();
-    mockMyotis.ethCall
+    mockMyotis.ethCallTx
       .mockReturnValueOnce(balanceRead.promise)
       .mockReturnValueOnce(decimalsRead.promise);
     global.fetch = jest.fn();
@@ -784,7 +999,7 @@ describe('chain-data-router', () => {
     const decimals = request(1, 'eth_call', [{ to: token, data: '0x313ce567' }, 'latest']);
 
     await flushMicrotasks();
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(1);
     balanceRead.resolve({ resultHex: '0x2a' });
     await expect(balance).resolves.toEqual({
       result: '0x2a',
@@ -799,7 +1014,7 @@ describe('chain-data-router', () => {
       source: 'myotis',
       verified: true,
     });
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(2);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(2);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -808,7 +1023,7 @@ describe('chain-data-router', () => {
       access: { readOrder: ['myotis'] },
       quorum: { timeoutMs: 5000 },
     });
-    mockMyotis.getAccount.mockResolvedValue({ status: 'ok', balanceWei: '42', nonce: 3 });
+    mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, balanceWei: '42', nonce: 3 });
 
     await expect(Promise.all([
       request(1, 'eth_getBalance', ['0xabc', 'latest']),
@@ -826,7 +1041,7 @@ describe('chain-data-router', () => {
       access: { readOrder: ['myotis', 'direct'] },
       quorum: { timeoutMs: 5000 },
     });
-    mockMyotis.ethCall.mockReturnValue(new Promise(() => {}));
+    mockMyotis.ethCallTx.mockReturnValue(new Promise(() => {}));
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ result: '0xrpc' }),
@@ -840,12 +1055,12 @@ describe('chain-data-router', () => {
       }, 'latest']));
 
     await expect(requests[17]).resolves.toMatchObject({ source: 'direct' });
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(1);
 
     await jest.advanceTimersByTimeAsync(5000);
     const settled = await Promise.all(requests);
     expect(settled.map((entry) => entry.source)).toEqual(Array(18).fill('direct'));
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(1);
   });
 
   test('releases the Myotis slot when the trust status binding throws synchronously', async () => {
@@ -856,7 +1071,7 @@ describe('chain-data-router', () => {
     mockMyotis.getStatus.mockImplementationOnce(() => {
       throw new Error('native getStatus binding failed');
     });
-    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0x2a' });
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ result: '0xrpc' }),
@@ -1199,7 +1414,7 @@ describe('chain-data-router', () => {
       quorum: { timeoutMs: 5000 },
     });
     const slowRead = deferred();
-    mockMyotis.ethCall.mockReturnValue(slowRead.promise);
+    mockMyotis.ethCallTx.mockReturnValue(slowRead.promise);
 
     const response = request(1, 'eth_call', [{ to: '0xabc' }, 'latest'], {
       routingContext: { origin: 'https://swap.example' },
@@ -1334,14 +1549,14 @@ describe('Ant bridge cancellation', () => {
     mockRegistry.getEndpoints.mockReturnValue(['https://one.example']);
     global.fetch.mockResolvedValue({ ok: true, json: async () => ({ result: '0xrpc' }) });
     const held = deferred();
-    mockMyotis.ethCall.mockReturnValueOnce(held.promise).mockResolvedValue({ resultHex: '0x2a' });
+    mockMyotis.ethCallTx.mockReturnValueOnce(held.promise).mockResolvedValue({ resultHex: '0x2a' });
     const call = [{ to: `0x${'1'.padStart(40, '0')}`, data: '0x1234' }, 'latest'];
     const wallet = request(100, 'eth_call', call);
     await flushMicrotasks();
     // The slot is busy: Ant's read skips Myotis at once instead of waiting.
     await expect(request(100, 'eth_call', call, { background: true }))
       .resolves.toMatchObject({ source: 'direct' });
-    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.ethCallTx).toHaveBeenCalledTimes(1);
     held.resolve({ resultHex: '0x1' });
     await expect(wallet).resolves.toMatchObject({ source: 'myotis' });
     // Nothing was left parked on the slot; an idle slot still serves Ant.
