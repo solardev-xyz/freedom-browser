@@ -39,8 +39,25 @@ const DEPLOYMENT_STEPS = Object.freeze([
   'getter-tokenBlocklist',
   'anchor-recheck',
 ]);
+// Closed TOR_REQUEST_FAILED stages from wallet-tor-transport.js, forwarded as
+// a refusal diagnostic only. Anything else is dropped, never echoed. A stage
+// never proves non-delivery and authorizes nothing, a retry included.
+const CAUSE_STAGES = Object.freeze([
+  'connect',
+  'tls',
+  'socket-new',
+  'socket-reused',
+  'response',
+  'unclassified',
+]);
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const sources = new WeakMap();
+// Own data properties only: no getter or proxy trap runs on a foreign error.
+const own = (value, key) => {
+  if (!value || typeof value !== 'object' || isProxy(value)) return;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+};
 const fail = (reason = 'refused') =>
   Object.assign(new Error('Railgun private preflight unavailable'), {
     code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
@@ -207,10 +224,14 @@ function createPreflight(options, relay = false) {
           active();
           // The RPC's own admission gate refused: the request never left.
           if (admission && error?.code === 'PRIVATE_RPC_ADMISSION_EXPIRED') throw fail('stale');
+          const stage = own(error, 'stage');
           throw Object.assign(fail('rpc'), {
             causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code ?? '')
               ? error.code
               : 'UNCLASSIFIED',
+            ...(own(error, 'code') === 'TOR_REQUEST_FAILED' && CAUSE_STAGES.includes(stage)
+              ? { causeStage: stage }
+              : {}),
           });
         }
         active();
@@ -312,6 +333,9 @@ function createPreflight(options, relay = false) {
                 ? error.causeCode
                 : 'UNCLASSIFIED',
             }
+          : {}),
+        ...(reason === 'rpc' && CAUSE_STAGES.includes(own(error, 'causeStage'))
+          ? { causeStage: own(error, 'causeStage') }
           : {}),
       });
     } finally {

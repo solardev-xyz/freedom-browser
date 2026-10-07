@@ -626,6 +626,23 @@ test.each(['deployment', 'private'])(
     expect(require('util').inspect(error)).not.toContain('secret');
   }
 );
+test.each([
+  ['a listed transport stage', 'TOR_REQUEST_FAILED', { value: 'connect' }, 'connect'],
+  ['an unlisted stage', 'TOR_REQUEST_FAILED', { value: 'https://secret.example' }, null],
+  ['a stage on another code', 'PRIVATE_RPC_INVALID', { value: 'connect' }, null],
+  ['an accessor stage', 'TOR_REQUEST_FAILED', { get: () => 'connect' }, null],
+])('%s is forwarded only as a closed causeStage', async (_label, code, descriptor, stage) => {
+  const cause = Object.assign(Error('secret'), { code });
+  mockRequest.mockRejectedValueOnce(
+    Object.defineProperty(cause, 'stage', { ...descriptor, enumerable: true })
+  );
+  const error = await source.acquire().catch((value) => value);
+  expect(error).toMatchObject({ reason: 'rpc', step: 'rootHistory', causeCode: code });
+  if (stage) expect(error.causeStage).toBe(stage);
+  else expect(Object.hasOwn(error, 'causeStage')).toBe(false);
+  // Forwarding the stage sends no second request.
+  expect(mockRequest).toHaveBeenCalledTimes(1);
+});
 test('untrusted RPC error codes are redacted', async () => {
   mockRequest.mockRejectedValueOnce(
     Object.assign(Error('secret'), { code: 'https://secret-endpoint.example' })
