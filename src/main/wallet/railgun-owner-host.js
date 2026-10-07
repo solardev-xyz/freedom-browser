@@ -71,6 +71,7 @@ function initializeRailgunOwner(...args) {
     ]),
     submissionJournal: fixed(require('./private-submission-journal'), [
       'getPrivateSubmissionJournal',
+      'readExistingPrivateSubmissionSnapshot',
     ]),
     journalRetention: fixed(require('./privacy-journal-retention'), ['validArchive']),
     transactions: fixed(require('./transaction-service'), ['signAndSendTransaction']),

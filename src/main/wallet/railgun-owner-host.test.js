@@ -28,7 +28,10 @@ const shape = {
     'getPrivateTransactionNetwork',
     'getPrivateTransactionNetworkDestination',
   ],
-  './private-submission-journal': ['getPrivateSubmissionJournal'],
+  './private-submission-journal': [
+    'getPrivateSubmissionJournal',
+    'readExistingPrivateSubmissionSnapshot',
+  ],
   './privacy-journal-retention': ['validArchive'],
   './transaction-service': ['signAndSendTransaction'],
 };
