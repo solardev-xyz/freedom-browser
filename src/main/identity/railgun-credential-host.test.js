@@ -572,7 +572,10 @@ test.each(['', null, undefined])(
 
 // Exact package-owned public vectors and repo-only harness; no runtime export.
 const publicCredentialVectors = require('./fixtures/railgun-credential-vectors.json');
-const { checkCredentialRow } = require('./fixtures/railgun-credential-conformance.cjs');
+const {
+  checkCredentialRow,
+  checkStorageRootDrain,
+} = require('./fixtures/railgun-credential-conformance.cjs');
 test.each(publicCredentialVectors.rows)(
   'normative host conformance for $profile.id account $accountIndex',
   async (row) => {
@@ -816,4 +819,44 @@ test('storage-root revocation before callback delivery still refuses', async () 
   });
   expect(consume).not.toHaveBeenCalled();
   expect(mockSeeds[0].every((byte) => byte === 0)).toBe(true);
+});
+
+test('package normative root-drain harness uses the genuine host context', async () => {
+  const row = publicCredentialVectors.rows[0];
+  mockProfile = { ...row.profile };
+  mockMnemonic = publicCredentialVectors.mnemonic;
+  const result = await checkStorageRootDrain({
+    host: port,
+    row,
+    createContext: (selected, purpose) => {
+      const genuine = createPrivacyScope({
+        profileId: selected.profileId,
+        signal: mockVault.signal,
+      });
+      const handle = genuine.getContext({
+        kind: 'private-account',
+        principal: `railgun:${selected.accountIndex}`,
+        protocol: 'railgun',
+        chainId: publicCredentialVectors.chainId,
+        deployment: publicCredentialVectors.deployment,
+        role: 'storage',
+        operation: 'railgun-account-enrollment-v1',
+      });
+      return {
+        request: {
+          handle,
+          vaultSession: mockVault.signal,
+          accountIndex: selected.accountIndex,
+          purpose,
+          signal: genuine.signal,
+        },
+        assertProfileGuard(guard) {
+          expect(mockGuardCalls.at(-1).handle).toBe(handle);
+          expect(() => guard.assert()).not.toThrow();
+        },
+        close: () => genuine.close(),
+      };
+    },
+  });
+  expect(result).toHaveLength(1);
 });

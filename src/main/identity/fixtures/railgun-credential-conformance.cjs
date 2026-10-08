@@ -15,9 +15,9 @@ const observe = (promise, fulfilled, rejected) => {
   assert.ok(types.isPromise(promise), "Original native promise required");
   return Reflect.apply(then, promise, [fulfilled, rejected]);
 };
-async function checkCredentialRow({ host, row, createContext }) {
+async function checkPurposes({ host, row, createContext }, purposes, drain) {
   const results = [];
-  for (const purpose of PURPOSES) {
+  for (const purpose of purposes) {
     const context = createContext(row, purpose);
     const { request } = context;
     assert.equal(request.accountIndex, row.accountIndex);
@@ -99,6 +99,24 @@ async function checkCredentialRow({ host, row, createContext }) {
         borrowed.some((byte) => byte !== 0),
         "Loan wiped before original settlement",
       );
+      if (drain) {
+        context.close();
+        assert.equal(
+          request.signal.aborted,
+          true,
+          "Root request must be revoked",
+        );
+        assert.ok(
+          borrowed.every((byte) => byte === 0),
+          "Revocation must immediately wipe the root loan",
+        );
+        await Promise.resolve();
+        assert.equal(
+          finished,
+          false,
+          "Revocation must not replace original settlement",
+        );
+      }
       release();
       assert.equal(await settled, undefined);
       assert.equal(calls, 1);
@@ -130,4 +148,14 @@ async function checkCredentialRow({ host, row, createContext }) {
   }
   return Object.freeze(results);
 }
-module.exports = Object.freeze({ PURPOSES, checkCredentialRow });
+function checkCredentialRow(input) {
+  return checkPurposes(input, PURPOSES, false);
+}
+function checkStorageRootDrain(input) {
+  return checkPurposes(input, ["storage-root"], true);
+}
+module.exports = Object.freeze({
+  PURPOSES,
+  checkCredentialRow,
+  checkStorageRootDrain,
+});
