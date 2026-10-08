@@ -1,1 +1,0 @@
-- Publishing right after buying storage no longer fails while the Swarm network catches up with the new batch ([#456](https://github.com/solardev-xyz/freedom-browser/pull/456))

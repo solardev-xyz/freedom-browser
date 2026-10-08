@@ -69,7 +69,7 @@ READ_METHODS.add('web3_sha3');
 //   'proof': a proof fetched from the prover and verified in a worker thread,
 //   with a bounded number in flight (Colibri). 'fanout': k RPC requests per
 //   read (quorum). 'single': one RPC request at a time (direct). 'paired':
-//   one log-index read (a page per 1,000 logs) plus one RPC request, and a
+//   one log-index read (a page per 50 transfers) plus one RPC request, and a
 //   quorum read for the newest blocks (blockscout).
 // - optIn: the source is in no read order. Only a caller that names it in
 //   includeSources is routed to it, right before the quorum, and only while
@@ -88,8 +88,8 @@ READ_METHODS.add('web3_sha3');
 // quorum itself, so a Blockscout a few blocks behind the head does not
 // disagree with the RPC (requestLogIndex).
 //   logSpan 'full-history': it serves any span in one answer.
-//   logResults 'paged': Blockscout caps an answer at 1,000 logs; a page at the
-//   cap is never taken as complete but read on by block. The RPC half of the
+//   logResults 'paged': Blockscout lists a wallet's transfers 50 to a page,
+//   read on until the span is covered or the list ends. The RPC half of the
 //   pair may cut a large answer short (#496); disagreeing with Blockscout's
 //   complete one then fails the pair, so neither half is checked by
 //   checkLogTruncation.
@@ -1427,10 +1427,11 @@ const blockHex = (block) => `0x${block.toString(16)}`;
 // endpoint whose cap covers it (in registry order; a failure is learned from
 // as a quorum member's is, and the next one is asked) and then, once one has
 // answered, from Blockscout. The two must list the same logs, identical in every field
-// Blockscout reports (blockscout-logs.js logsAgree); the RPC's entries are
-// what the caller gets. The newest `tail` blocks (at most
-// LOG_INDEX_TAIL_BLOCKS, and never more than the quorum can verify) are read
-// from the RPC quorum as an ordinary range-capped scan. Any failure is a
+// Blockscout reports (blockscout-logs.js logsAgree); the RPC's entries, cut
+// to exactly those fields (agreedRpcLogs: no transaction index, which
+// Blockscout does not report), are what the caller gets. The newest `tail`
+// blocks (at most LOG_INDEX_TAIL_BLOCKS, and never more than the quorum can
+// verify) are read from the RPC quorum as an ordinary range-capped scan. Any failure is a
 // SourceUnavailableError and the request goes on to the quorum exactly as
 // without this source: Blockscout down, rate limited or disagreeing (then it
 // is left alone for a while: logIndexCoolUntil), no endpoint to pair it with,
@@ -1490,9 +1491,9 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     if (left < 1000) throw new SourceUnavailableError('Blockscout pairing ran out of time');
     return left;
   };
-  // The RPC's entries are what Ant gets: an answer with one not in the exact
-  // shape Ant reads is not taken (nor credited as covering the span); that
-  // endpoint is not asked to pair again for a while
+  // The RPC's entries (cut by agreedRpcLogs) are what Ant gets: an answer
+  // with one not in the exact shape Ant reads is not taken (nor credited as
+  // covering the span); that endpoint is not asked to pair again for a while
   // (LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS) and the next one is tried. No
   // Blockscout request is spent on it, and Blockscout, not at fault, is not
   // left alone for it.
@@ -1523,8 +1524,8 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     }
     throw lastError;
   };
-  // The RPC first: Blockscout's keyless rate limit is tight (10 requests per
-  // window), so it is spent only on a span an RPC has already answered.
+  // The RPC first: Blockscout's keyless rate limit is shared by every page of
+  // its answer, so it is spent only on a span an RPC has already answered.
   let rpc;
   try {
     rpc = await askPairRpc();
@@ -1589,7 +1590,9 @@ async function requestLogIndex(chainId, method, params, options = {}) {
       `RPC quorum answered the newest ${tail} blocks with a malformed log entry`
     );
   }
-  const result = [...rpc.result, ...newest];
+  // Only what the pair compared is delivered as verified; the quorum's
+  // entries were compared whole by its members.
+  const result = [...blockscoutLogs.agreedRpcLogs(rpc.result), ...newest];
   if (!includeTrust) return result;
   const agreed = [blockscoutLogs.logIndexHost(chainId), endpointHost(rpc.url)].filter(Boolean);
   return {

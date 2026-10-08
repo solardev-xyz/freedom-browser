@@ -51,15 +51,16 @@
 // The baselines also assume a checkout *without* the bundled ad-block filter
 // lists (`assets/adblock/`, git-ignored, fetched by `npm run adblock:download`).
 // CI's screenshots job never downloads them, so `35-settings-privacy` (Ad
-// Blocking's panel, #268) and
+// Blocking's panel, #268), `40-settings-privacy-permissions` (which still
+// shows most of that panel above Site Permissions) and
 // `44-settings-search` (whose `block` query lists Ad Blocking rows) depict the
 // no-lists state: the section's single "cannot run" notice with its controls
 // inactive (#274). With the lists present — e.g. after running
-// `settings-adblock.spec.js`, which needs them — those two surfaces render
+// `settings-adblock.spec.js`, which needs them — those three surfaces render
 // live toggles, rule counts and a lists-present status line and fail with a
 // large diff unrelated to your change. Move `assets/adblock/` aside before
-// running or updating this spec locally, and never adopt those two baselines
-// from a run that had it.
+// running or updating this spec locally, and never adopt those three
+// baselines from a run that had it.
 //
 // Both npm scripts set `FREEDOM_E2E_STABLE_TEXT=1`, which launches Electron
 // with `--disable-lcd-text --disable-font-subpixel-positioning`. Without it
@@ -508,6 +509,24 @@ test.describe('renderer screenshots', () => {
             continue;
           }
           await shot(`${30 + i}-settings-${section}`);
+        }
+        // The routes that bring a panel below its entry's first one up
+        // (#268). `scrollToPanel` scrolled the whole settings document for
+        // them, which captured as a blank page (`networks/ens`) or one shifted
+        // down under a seam (#604) — and with no baseline for any of them,
+        // nothing noticed. It re-aligns for a second after the hash moves, so
+        // each is captured once that is over.
+        for (const [i, route] of [
+          'privacy/permissions',
+          'networks/rpc',
+          'networks/ens',
+          'nodes/startup',
+        ].entries()) {
+          await page.evaluate((hash) => {
+            location.hash = hash;
+          }, route);
+          await page.waitForTimeout(1_500);
+          await shot(`${40 + i}-settings-${route.replace('/', '-')}`);
         }
         // The page-wide search (#281): the sidebar field with a query, and
         // the result list that stands in for whichever section was open. The

@@ -1,2 +1,0 @@
-- The first launch after upgrading from a Bee-era version no longer stalls before the window opens ([#526](https://github.com/solardev-xyz/freedom-browser/issues/526))
-  - Old Bee node data (it can run to several GB) is now removed in a background thread once the window is up

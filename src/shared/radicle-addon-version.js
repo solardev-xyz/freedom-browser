@@ -1,4 +1,4 @@
-const RADICLE_ADDON_VERSION = '0.7.1';
+const RADICLE_ADDON_VERSION = '0.8.0';
 
 // Every function the app requires the addon to expose. Shared (not
 // main-process-only) so build/CI checks can verify a downloaded

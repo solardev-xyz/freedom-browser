@@ -2,6 +2,101 @@
 
 All notable changes to Freedom will be documented in this file.
 
+## [0.8.7] - 2026-10-08
+
+### Added
+
+- Browsing credit for the Swarm node: pay peers for faster downloads and for uploads ([#488](https://github.com/solardev-xyz/freedom-browser/issues/488)):
+  - In the wallet's Nodes tab, with credit left and recent spend
+  - Top up in xDAI, or switch paying peers off
+- Swarm cache size and Clear cache under Settings > Nodes ([#579](https://github.com/solardev-xyz/freedom-browser/issues/579))
+- Pop-up blocker ([#442](https://github.com/solardev-xyz/freedom-browser/issues/442)):
+  - One new tab per click or key press
+  - Address-bar icon to open a blocked pop-up or allow the site
+- Update progress in the browser menu and under Settings > About Freedom ([#87](https://github.com/solardev-xyz/freedom-browser/issues/87))
+- Myotis warns when a network upgrade needs a newer Freedom ([#586](https://github.com/solardev-xyz/freedom-browser/issues/586))
+
+### Changed
+
+- Publishing on Swarm takes one xDAI payment to your node ([#459](https://github.com/solardev-xyz/freedom-browser/pull/459)):
+  - Plans and upgrades priced in xDAI, paid from any wallet
+  - New storage is immutable: once full, it takes no more uploads
+- Settings regrouped into ten sections, in Chrome's order ([#551](https://github.com/solardev-xyz/freedom-browser/pull/551)):
+  - Ad Blocking and Site Permissions under Privacy and security
+  - Chains, RPC Providers and Name Resolution under Networks
+  - Experimental renamed Advanced
+- Network sources named in plain words, with the technical name under Advanced ([#549](https://github.com/solardev-xyz/freedom-browser/pull/549))
+- The first profile can be deleted once another profile exists ([#124](https://github.com/solardev-xyz/freedom-browser/issues/124))
+- The Swarm node reads chain data through Freedom's chain sources instead of a single RPC ([#419](https://github.com/solardev-xyz/freedom-browser/pull/419)):
+  - A custom Gnosis Chain setup needs at least two RPC endpoints
+  - Blockscout sees the node's wallet address
+- Video and other large files on Swarm start playing sooner ([#501](https://github.com/solardev-xyz/freedom-browser/pull/501))
+
+### Removed
+
+- Ankr from the default Ethereum and Gnosis Chain RPCs, as it now requires an API key ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))
+
+### Fixed
+
+- Fewer stalls that freeze every window ([#503](https://github.com/solardev-xyz/freedom-browser/issues/503)):
+  - Proof checks, `web3://` apps, Radicle files and browsing history
+  - Ad blocking, the IPFS node, Swarm messaging, profiles and Bee-era upgrades
+- Sending a transaction no longer closes the browser while it confirms ([#453](https://github.com/solardev-xyz/freedom-browser/issues/453))
+- Links such as `magnet:` and `mailto:` offer to open their app ([#406](https://github.com/solardev-xyz/freedom-browser/issues/406))
+- YouTube video ads are blocked with ad blocking on ([#410](https://github.com/solardev-xyz/freedom-browser/issues/410))
+- A page that closes itself closes its tab ([#580](https://github.com/solardev-xyz/freedom-browser/issues/580))
+- A local `file://` page can be bookmarked ([#555](https://github.com/solardev-xyz/freedom-browser/issues/555))
+- Remapped shortcuts no longer fire twice on German and other non-US keyboards ([#205](https://github.com/solardev-xyz/freedom-browser/issues/205)):
+  - A conflicting saved shortcut resets with a notice
+- The Windows tab strip no longer starts behind an empty gap ([#408](https://github.com/solardev-xyz/freedom-browser/issues/408))
+- A private window's address bar, find bar and bookmark fields stay readable in the light theme ([#605](https://github.com/solardev-xyz/freedom-browser/issues/605))
+- Tor, Radicle, Ant and Myotis start on Windows 11 without the Visual C++ Redistributable ([#563](https://github.com/solardev-xyz/freedom-browser/issues/563))
+- The Linux AppImage starts on Ubuntu 24.04 without `libfuse2`, and is 18 MB smaller ([#564](https://github.com/solardev-xyz/freedom-browser/issues/564))
+- On Wayland, Freedom's windows group under its launcher icon ([#470](https://github.com/solardev-xyz/freedom-browser/pull/470))
+- Tor starts on Macs without Homebrew's xz ([#460](https://github.com/solardev-xyz/freedom-browser/pull/460))
+- Offchain ENS names with a `.onion` gateway resolve over Tor ([#359](https://github.com/solardev-xyz/freedom-browser/issues/359))
+- Names with an offchain answer near the 4 MB limit keep resolving ([#478](https://github.com/solardev-xyz/freedom-browser/issues/478))
+- A log query matching too many logs fails with an error instead of a shortened answer ([#496](https://github.com/solardev-xyz/freedom-browser/issues/496))
+- The Nodes menu shows peers and bandwidth again for an external IPFS node ([#417](https://github.com/solardev-xyz/freedom-browser/issues/417))
+- Myotis answers verified reads within seconds of a cold start or recovery ([#389](https://github.com/solardev-xyz/freedom-browser/issues/389))
+- Myotis sync recovery keeps retrying through brief checkpoint outages, with Retry sync ([#413](https://github.com/solardev-xyz/freedom-browser/issues/413))
+- Myotis no longer stays stuck after Freedom quits unexpectedly ([#418](https://github.com/solardev-xyz/freedom-browser/issues/418))
+- Myotis gas estimates use every transaction field, and a refused transaction shows as not sent ([#557](https://github.com/solardev-xyz/freedom-browser/pull/557))
+- A `bzz://` address of raw data, such as a video segment, loads ([#477](https://github.com/solardev-xyz/freedom-browser/pull/477))
+- A `bzz://` address whose data isn't on Swarm fails sooner ([#482](https://github.com/solardev-xyz/freedom-browser/pull/482))
+- Swarm video no longer cuts off when loaded right after the node starts ([#487](https://github.com/solardev-xyz/freedom-browser/pull/487))
+- Swarm content loads within about half a minute of waking from sleep, not 15 minutes ([#501](https://github.com/solardev-xyz/freedom-browser/pull/501))
+- Large Swarm uploads no longer drop thousands of peer connections ([#501](https://github.com/solardev-xyz/freedom-browser/pull/501))
+- The Swarm node no longer dials peers' private network addresses ([#456](https://github.com/solardev-xyz/freedom-browser/pull/456))
+
+### Security
+
+- Web pages can no longer use your Swarm node's local API, which could spend its funds ([#428](https://github.com/solardev-xyz/freedom-browser/issues/428)):
+  - dApps using `localhost:1633` must switch to `window.swarm`
+- `bzz://` pages can't upload or control the node ([#429](https://github.com/solardev-xyz/freedom-browser/issues/429))
+- The wallet signs only the exact transaction or message you approved ([#434](https://github.com/solardev-xyz/freedom-browser/issues/434)):
+  - Touch ID keeps the vault password out of the browser window
+- A hijacked page can't reach wallet, identity, permission or publishing functions ([#420](https://github.com/solardev-xyz/freedom-browser/pull/420))
+- Site-supplied titles, filenames and payment details show only as text on internal pages ([#432](https://github.com/solardev-xyz/freedom-browser/issues/432))
+- Packaged builds ignore debugging flags and load only their own app code ([#425](https://github.com/solardev-xyz/freedom-browser/issues/425))
+- Sites can't open network shares, directory servers or system settings panes ([#436](https://github.com/solardev-xyz/freedom-browser/issues/436))
+- A site gets a TLS client certificate only if you pick one, never in a private window ([#437](https://github.com/solardev-xyz/freedom-browser/issues/437))
+- macOS builds drop two code-signing exceptions ([#438](https://github.com/solardev-xyz/freedom-browser/issues/438))
+- A permission prompt can be answered only from its own window ([#439](https://github.com/solardev-xyz/freedom-browser/issues/439))
+- External Swarm and IPFS nodes can't set cookies on the pages they serve ([#439](https://github.com/solardev-xyz/freedom-browser/issues/439))
+- Updated bundled nodes:
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.45 to 0.5.61
+  - [Arti](https://gitlab.torproject.org/tpo/core/arti) 2.6.0 to 2.7.0
+  - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.3 to 0.4.5
+  - [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 to 0.8.0
+  - [Myotis](https://github.com/biafra23/myotis) 0.1.11 to 0.1.14
+- Updated runtime dependencies:
+  - Electron 44.4.5 to 44.7.0 (Chromium 152.0.7977.130 and Node 24.21.0, unchanged)
+  - `@corpus-core/colibri-stateless` 3.0.0 to 3.0.2
+  - `@ledgerhq/hw-app-eth` 7.8.19 to 7.10.0
+  - `@x402/core` 2.27.0 to 2.28.0
+  - `@x402/evm` 2.27.0 to 2.28.0
+
 ## [0.8.6] - 2026-09-23
 
 ### Added

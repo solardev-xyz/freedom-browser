@@ -1,1 +1,0 @@
-- Video and other files on Swarm no longer cut off partway through when loaded right after the Swarm node starts ([#487](https://github.com/solardev-xyz/freedom-browser/pull/487))

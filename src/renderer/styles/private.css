@@ -42,6 +42,27 @@ body.private-window .tab.active .tab-corner {
   color: var(--toolbar);
 }
 
+/* The same goes for the chrome's text fields (#605): light-theme.css paints
+   the address bar, the find bar and the modal inputs near-white, while the
+   private --text above is light lavender, so a typed URL was barely legible.
+   Each field gets back the fill it has in a dark-theme private window,
+   focused or not. The modal fields are the bookmark and profile dialogs'
+   (`.modal-content`); onboarding's already paint from --bg. The extra
+   `.private-window` class out-specifies the light rules these answer:
+   `[data-theme='light'] .address-input:focus` is (0,3,0), the rule below
+   (0,3,1). */
+body.private-window .address-input,
+body.private-window .address-input:focus,
+body.private-window .modal-content .form-input,
+body.private-window .modal-content .form-input:focus {
+  /* theme-literal: the dark-theme fill toolbar.css and modal.css give these fields, kept in a light-theme private window */
+  background-color: #282828;
+}
+
+body.private-window .find-bar-input {
+  background: var(--bg);
+}
+
 /* "Private" label next to the navigation buttons, always visible in
    private windows (hidden attribute removed by index.js). */
 .private-badge {

@@ -1,1 +1,0 @@
-- Video and other large files on Swarm start sooner on a freshly started node, the first part arriving two to four times faster ([#501](https://github.com/solardev-xyz/freedom-browser/pull/501))

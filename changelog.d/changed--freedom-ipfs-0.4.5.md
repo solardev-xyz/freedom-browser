@@ -1,2 +1,0 @@
-- Updated bundled nodes:
-  - [freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.3 to 0.4.5 — starting and stopping the IPFS node, and quitting with it running, no longer stall the browser: the node's cache is now opened and closed in a background thread, where closing it after an unclean shutdown used to freeze every window for about 0.2 s ([#503](https://github.com/solardev-xyz/freedom-browser/issues/503))

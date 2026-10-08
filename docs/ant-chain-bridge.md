@@ -50,7 +50,7 @@ source, `SOURCE_CAPABILITIES`, and consults it before trying a source
 | --------------------------- | ----------------- | -------------------------------- | -------------------- | ----------- | ------------------------------------------------------------- |
 | never serves                | filters, `web3_*` | filters, `web3_*`, `eth_getLogs` | filters, `web3_*`    | —           | everything but `eth_getLogs`                                  |
 | `eth_getLogs` span          | —                 | 10,000 (upstream; unused)        | learned per endpoint | not tracked | full history                                                  |
-| log answer may be cut short | —                 | yes                              | yes                  | yes         | no: paged, a capped page is read on                           |
+| log answer may be cut short | —                 | yes                              | yes                  | yes         | no: paged, read on to the end of the span                     |
 | cost                        | serialized        | proof                            | fan-out              | single      | paired: Blockscout + one RPC + a quorum for the newest blocks |
 
 - **Methods.** A source that never serves a method is left out of that
@@ -183,24 +183,34 @@ when, and only when, the span is wider than the quorum can verify right now:
    disagree with the RPC.
 2. `[from, to − 1,000]` is asked of one RPC endpoint whose learned cap covers
    it (in practice the full-history one), then, once it has answered, of
-   Blockscout's Etherscan-compatible `module=logs&action=getLogs` API.
-   Blockscout's rate limit for keyless use is tight (10 requests, then a reset
-   of several minutes, measured 2026-10-05), so it is never asked for a span
-   no RPC answered.
-3. The two answers must list the same logs, identical in every field
-   Blockscout reports: address, topics, data, block number, transaction hash
-   and index, log index. Blockscout's rows map onto `eth_getLogs` entries
-   field for field (its topics are padded to four with `null`, and it reports
-   no `blockHash`); what Ant receives is the RPC's entries, followed by the
-   quorum's for the newest blocks. The answer is reported as verified, source
+   Blockscout's API v2 token-transfer list for the wallet
+   (`/api/v2/addresses/{wallet}/token-transfers?type=ERC-20&filter=from&token=…`,
+   or `filter=to` for a recipient scan). Blockscout's keyless rate limit is
+   shared by every page of its answer, so it is never asked for a span no RPC
+   answered.
+3. The two answers must list the same transfers, identical in every field
+   Blockscout reports: token, block number and hash, transaction hash, log
+   index, sender, recipient and value. Blockscout does not report the
+   transaction index, so nothing checks the RPC's: what Ant receives is the
+   RPC's entries cut to the compared fields (no `transactionIndex`, which
+   Ant's wallet scan does not read), followed by the quorum's entries, whole,
+   for the newest blocks. The answer is reported as verified, source
    `blockscout`.
 
-Blockscout caps an answer at 1,000 logs and ignores `page`/`offset`. A page
-at the cap is never taken as complete: the logs before its last block are
-kept and the next page is read from that block (at most five pages; a wallet
-with more sent transfers is read the slow way). A cap Blockscout lowered
-without saying so would still be caught: its answer would have fewer logs
-than the RPC's, and the pair would fail.
+The token-transfer list has no block-range filter. It lists transfers newest
+first, 50 to a page, and a request naming a block and log index lists only
+the transfers before them, so the read starts right after the span's last
+block and pages back until it passes the span's first one or the list ends
+(at most 40 pages; a wallet with more transfers in the span is read the slow
+way, as is one whose pages do not fit the scan budget below). A Blockscout
+that silently left transfers out would still be caught: its answer would
+differ from the RPC's, and the pair would fail.
+
+This used to be Blockscout's Etherscan-compatible `module=logs&action=getLogs`
+API. By 2026-10-07 it answered "No logs found" to any filter on the sender or
+recipient topic, even over blocks whose Transfer it lists unfiltered, so every
+pair disagreed and first scans of wallets with history fell back to the slow
+path ([#596](https://github.com/solardev-xyz/freedom-browser/issues/596)).
 
 Anything that goes wrong falls back to the quorum path exactly as before:
 Blockscout unreachable, rate limited (it is then left alone for the reset it
@@ -232,11 +242,12 @@ include two full-history RPCs never reaches Blockscout, since the quorum can
 verify the span itself, and neither does a routine scan of the newest blocks.
 
 **What Blockscout learns.** The same filter an RPC already receives for the
-scan: the node's wallet address (as the sender topic), the xBZZ token, the
-block range, and the request's IP address and timing, which tell it that this
-address belongs to a Swarm node scanning its history. Nothing else is sent: no
-other address, no API key, no cookies or referrer. It is asked only for a scan
-the quorum cannot verify, at most a few times per first scan, and never for
+scan: the node's wallet address (in the request path), the xBZZ token, the
+block the read starts before, and the request's IP address and timing, which
+tell it that this address belongs to a Swarm node scanning its history.
+Nothing else is sent: no other address, no API key, no cookies or referrer.
+It is asked only for a scan the quorum cannot verify, a few pages at a time,
+a few times per first scan, and never for
 pages' `window.ethereum` requests, which do not opt in. The request goes to
 `gnosis.blockscout.com`, which redirects to `gnosisscan.io` (also Blockscout,
 as of 2026-10-05). Redirects are followed by hand, and a hop off https, or

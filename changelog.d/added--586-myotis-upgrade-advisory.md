@@ -1,2 +1,0 @@
-- The Nodes menu tells you when Ethereum or Gnosis has an upgrade coming, or has already upgraded, that this version of Freedom doesn't support, and asks you to update Freedom ([#586](https://github.com/solardev-xyz/freedom-browser/issues/586))
-  - The notice shows the date when peers announce one, and says how many peer networks reported it; it never changes how Freedom verifies answers

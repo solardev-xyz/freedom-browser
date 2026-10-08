@@ -1,3 +1,0 @@
-- The Linux AppImage starts on Ubuntu 24.04 and other current distributions without installing anything first ([#564](https://github.com/solardev-xyz/freedom-browser/issues/564))
-  - Before, it stopped with "AppImages require FUSE to run" unless the old `libfuse2` library was installed, and Ubuntu has not shipped that by default since 22.04
-  - The AppImage download is also about 18 MB smaller

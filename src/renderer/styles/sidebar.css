@@ -6259,6 +6259,9 @@
 .dapp-sign-actions {
   display: flex;
   gap: 12px;
+  /* Same breathing room as `.dapp-tx-actions`: without it Reject/Sign sat
+     flush against the auto-approve checkbox above them (#606). */
+  margin-top: 16px;
 }
 
 .dapp-sign-reject-btn {

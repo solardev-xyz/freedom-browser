@@ -1,7 +1,7 @@
 {
   "project_license": "MPL-2.0",
-  "generated_at": "2026-09-23T00:00:00.000Z",
-  "audit_baseline": "0.8.6",
+  "generated_at": "2026-10-08T00:00:00.000Z",
+  "audit_baseline": "0.8.7",
   "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
@@ -26,7 +26,7 @@
   "dependencies": [
     {
       "name": "electron",
-      "version": "44.6.0",
+      "version": "44.7.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },
@@ -86,7 +86,7 @@
     },
     {
       "name": "libradicle",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/solardev-xyz/libradicle" },
@@ -103,7 +103,7 @@
       "issues": [
         {
           "kind": "notice",
-          "details": "The upstream repository publishes no LICENSE file; the MIT OR Apache-2.0 claim rests on the license field in its Cargo.toml, verified at tag v0.7.1. It statically links Radicle Heartwood (solardev-xyz/heartwood), also MIT OR Apache-2.0 per its workspace Cargo.toml.",
+          "details": "The upstream repository publishes no LICENSE file; the MIT OR Apache-2.0 claim rests on the license field in its Cargo.toml, verified at tag v0.8.0. It statically links Radicle Heartwood (solardev-xyz/heartwood), also MIT OR Apache-2.0 per its workspace Cargo.toml.",
           "recommended_fix": "Ask upstream to commit LICENSE-MIT and LICENSE-APACHE so the claim has a file to point at."
         }
       ]
@@ -134,7 +134,7 @@
     },
     {
       "name": "arti",
-      "version": "2.6.0",
+      "version": "2.7.0",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "crates.io", "url": "https://gitlab.torproject.org/tpo/core/arti" },
@@ -154,6 +154,32 @@
           "kind": "notice",
           "details": "Built from crates.io with `cargo install arti --locked`, so the shipped binary statically links the crate's whole dependency tree. Copyright 2019-2025, The Tor Project, Inc.",
           "recommended_fix": "Re-check the Cargo.lock license set on every ARTI_VERSION bump; upstream distributes the tree under permissive licenses."
+        }
+      ]
+    },
+    {
+      "name": "AppImage type2-runtime",
+      "version": "20251108",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github-release",
+        "url": "https://github.com/AppImage/type2-runtime"
+      },
+      "license": {
+        "spdx": ["MIT", "LGPL-2.1-only", "BSD-2-Clause", "BSD-3-Clause", "Zlib"],
+        "raw": "runtime MIT; statically links libfuse 3.15.0 (LGPL-2.1, patched by upstream), squashfuse 0.5.2 (BSD-2-Clause), musl (MIT), zstd (BSD-3-Clause OR GPL-2.0, used as BSD-3-Clause), zlib (Zlib) and mimalloc (MIT)",
+        "notice_required": true
+      },
+      "version_pin": "package.json build.toolsets.appimage (1.0.3), which electron-builder maps to appimage-tools-runtime-20251108",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "orange",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "Linux AppImage only. Since #566 every .AppImage starts with the static type-2 runtime as its ELF header; it mounts the squashfs image and execs Freedom, so Freedom is not linked to it. The runtime statically links libfuse 3.15.0 (LGPL-2.1) with upstream's patches/libfuse/mount.c.diff applied. The previous runtime (appimage-12.0.1) dlopen()ed the system libfuse.so.2 instead, so 0.8.7 is the first release whose AppImage carries LGPL-2.1 code. The .deb and pacman packages do not contain the runtime. Attribution is in NOTICES; until this revision none of the audit files recorded the runtime, because licenses-audit.test.js derives its inventory from build.extraResources and src/, and the runtime arrives through electron-builder's toolset instead.",
+          "recommended_fix": "Decided by the maintainer (2026-10-07): pointing to upstream's public source is sufficient. The runtime is a separate upstream program, unmodified by Freedom, and AppImage/type2-runtime publishes its complete source, build scripts and the libfuse patch at the pinned release 20251108 (libfuse 3.15.0 itself at libfuse/libfuse), which is what LGPL-2.1 section 6 needs for a user to rebuild and relink the runtime against a modified libfuse. NOTICES names that release and the libfuse version. Re-read the component list, and confirm the source stays published, on every build.toolsets.appimage or electron-builder bump."
         }
       ]
     },
@@ -398,7 +424,7 @@
     },
     {
       "name": "@corpus-core/colibri-stateless",
-      "version": "3.0.1",
+      "version": "3.0.2",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/corpus-core/c4" },
@@ -938,6 +964,11 @@
       "priority": "required",
       "action": "Keep shipping Electron's LICENSES.chromium.html on macOS",
       "details": "Linux and Windows packages inherit it from the Electron dist. macOS does not: electron-builder unlinks it, and the .dmg/-mac.zip carry only Freedom.app, so build.mac.extraResources copies it into Contents/Resources. Dropping that entry silently removes Chromium's third-party attribution from every macOS artifact; licenses-audit.test.js fails if it goes."
+    },
+    {
+      "priority": "required",
+      "action": "Keep the AppImage runtime's attribution and source pointer current",
+      "details": "The static AppImage runtime (AppImage/type2-runtime 20251108, via build.toolsets.appimage) links a patched libfuse 3.15.0 into every Linux .AppImage. The maintainer decided that NOTICES' pointer to upstream's published source meets LGPL-2.1 section 6. On every build.toolsets.appimage or electron-builder bump, re-read the runtime's component list and point NOTICES at the release that actually ships."
     },
     {
       "priority": "recommended",

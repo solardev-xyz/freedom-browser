@@ -20,10 +20,15 @@
         box-sizing: border-box;
       }
 
+      /* The document never scrolls; `.layout` does (#604). A scrolled
+         document painted Settings blank, or shifted down under a seam, in
+         the window's capture, and the page gradient, sized to the window,
+         repeated with a visible edge every window-height. */
       html,
       body {
         height: 100%;
         margin: 0;
+        overflow: hidden;
       }
 
       body {
@@ -40,7 +45,24 @@
       .layout {
         display: grid;
         grid-template-columns: 260px 1fr;
-        min-height: 100vh;
+        height: 100vh;
+        overflow-y: auto;
+      }
+
+      /* Focused programmatically so PageDown, Space and End scroll it before
+         the user has clicked into the page; not a control, so no ring. */
+      .layout:focus {
+        outline: none;
+      }
+
+      /* Print the whole section, not the first screen of the scroller. */
+      @media print {
+        html,
+        body,
+        .layout {
+          height: auto;
+          overflow: visible;
+        }
       }
 
       /* Sidebar */
@@ -1010,7 +1032,7 @@
     </style>
   </head>
   <body>
-    <div class="layout">
+    <div class="layout" tabindex="-1">
       <aside class="sidebar">
         <h2 class="sidebar-title">
           <svg
@@ -1413,7 +1435,7 @@
               placeholder="Search shortcuts…"
               spellcheck="false"
             />
-            <button type="button" class="btn" id="shortcuts-restore-defaults">
+            <button type="button" class="btn danger" id="shortcuts-restore-defaults">
               Restore defaults
             </button>
           </div>

@@ -443,12 +443,40 @@ const PANELS = Object.keys(PANEL_NAV);
 // grow after this runs — the chain list and RPC Providers paint from IPC a
 // beat later — so the panel is re-aligned a few times over the next second,
 // until the user scrolls or presses a key, which hands the scroll back.
+//
+// Only `.layout` scrolls, so the panel is aligned by setting that one
+// container's offset. `scrollIntoView` scrolled every scrollable ancestor,
+// the document included, which painted the page blank or shifted down
+// under a seam (#604).
+const contentScroller = document.querySelector('.layout') || document.scrollingElement;
+
+/* settings panel scroll: start */
+// Where `scroller` has to be for `panel` to sit at its top, keeping the
+// panel's `scroll-margin-top` above it as `scrollIntoView` did.
+const panelScrollTop = (panel, scroller) => {
+  const margin = parseFloat(getComputedStyle(panel).scrollMarginTop) || 0;
+  const offset = panel.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  return Math.max(0, Math.round(scroller.scrollTop + offset - margin));
+};
+
+// With the document no longer scrolling, Chromium sends PageDown, Space
+// and End nowhere until something inside `.layout` has focus. Give the
+// scroller focus whenever nothing else holds it: on a section change, once
+// the page has loaded, and when the tab gains focus. A field or nav button
+// that has focus keeps it.
+const focusScrollerIfIdle = () => {
+  if (document.activeElement && document.activeElement !== document.body) return;
+  contentScroller.focus({ preventScroll: true });
+};
+window.addEventListener('focus', focusScrollerIfIdle);
+window.addEventListener('load', () => setTimeout(focusScrollerIfIdle, 0));
+
 let stopPanelScroll = () => {};
 const scrollToPanel = (id) => {
   stopPanelScroll();
   const panel = document.getElementById(id);
   if (!panel) return;
-  const align = () => panel.scrollIntoView({ block: 'start' });
+  const align = () => contentScroller.scrollTo({ top: panelScrollTop(panel, contentScroller) });
   align();
   const timers = [100, 250, 500, 1000].map((ms) => setTimeout(align, ms));
   const userTookOver = new AbortController();
@@ -464,6 +492,7 @@ const scrollToPanel = (id) => {
     });
   }
 };
+/* settings panel scroll: end */
 
 const showSection = (route) => {
   const [section, sub] = String(route).split('/');
@@ -477,8 +506,9 @@ const showSection = (route) => {
   // Always scroll the content area to the top when switching — avoids a
   // stale scroll offset from a taller prior section.
   stopPanelScroll();
-  window.scrollTo({ top: 0 });
+  contentScroller.scrollTo({ top: 0 });
   if (sub && PANEL_NAV[sub] === section) scrollToPanel(sub);
+  focusScrollerIfIdle();
 };
 
 navItems.forEach((item) => {
@@ -874,7 +904,7 @@ const settingsSearchResets = [];
     panel.classList.remove('hidden');
     showing = true;
     syncSwarmCacheUsage();
-    window.scrollTo({ top: 0 });
+    contentScroller.scrollTo({ top: 0 });
   };
 
   const closeResults = ({ restoreSection = true } = {}) => {
@@ -2864,7 +2894,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       // updating is the one action that can end it; the Nodes card still
       // shows the recovery state next to the notice. Pinned by
       // test-e2e/myotis-upgrade-advisory.spec.js.
-      if (!['off', 'disabled'].includes(status.state) && ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase))
+      if (
+        !['off', 'disabled'].includes(status.state) &&
+        ['SCHEDULED', 'ACTIVE'].includes(status.upgradeAdvisory?.phase)
+      )
         return status.state === 'ready' ? 'Ready — update Freedom' : 'Update Freedom — open Nodes';
       if (status.state === 'ready') return 'Ready';
       if (status.state === 'syncing') return 'Syncing';

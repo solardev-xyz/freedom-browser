@@ -1,0 +1,36 @@
+name: Blockscout pair canary
+
+# Live check of the second source in Ant's first wallet scan (#529, #596):
+# reads one known wallet's xBZZ transfers from rpc.gnosischain.com and from
+# Blockscout and fails unless they agree (scripts/check-blockscout-pair.js).
+# Blockscout changing its API sends every first scan of a wallet with history
+# back to the window-by-window path without an error anyone sees, so this runs
+# nightly and on demand. It needs the network, so never per pull request.
+#
+# Locally: `node scripts/check-blockscout-pair.js`.
+
+on:
+  schedule:
+    # Daily, off the hour (GitHub delays on-the-hour schedules the most).
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  blockscout-pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check the Blockscout and RPC pair
+        run: node scripts/check-blockscout-pair.js

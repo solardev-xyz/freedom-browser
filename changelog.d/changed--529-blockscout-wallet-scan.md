@@ -1,3 +1,0 @@
-- The Swarm node's first scan of a wallet's history takes seconds instead of about 50 minutes, by checking Blockscout's index against a full-history Gnosis RPC ([#529](https://github.com/solardev-xyz/freedom-browser/issues/529))
-  - Reasoning: the RPCs that serve a whole history in one request share one backend, while Blockscout indexes the chain on its own
-  - Blockscout sees the node's wallet address, as the Gnosis RPCs already do

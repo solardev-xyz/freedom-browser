@@ -36,6 +36,8 @@ Both VMs are KVM guests on the e2e host, on libvirt's NAT network, so neither ca
    - On failure, it opens or comments on one `Nightly real-conditions E2E failed` issue (label `nightly`).
    - On a pass, it closes that issue.
 
+`run-nightly.sh --release <tag>` tests a tagged release the same way: a candidate such as `v0.8.7-rc.2`, or a final. The assets come from that release, the commit is the one the tag points at, and results go to `runs/<version>/` as for a nightly. A failing release opens (or comments on) its own `Real-conditions E2E failed on v<version>` issue. A passing one reports nothing. `--release latest` picks the newest published release other than `nightly`.
+
 No PR code runs on the host. Only published release assets and the commit they were built from are used, so this does not need a self-hosted Actions runner on a public repo.
 
 ## Setup (once per host)
@@ -50,7 +52,7 @@ sudo install -d -o "$USER" -g "$USER" /var/lib/freedom-nightly-e2e
 
 scripts/nightly-vm-e2e/provision-ubuntu.sh    # ~15 min
 scripts/nightly-vm-e2e/provision-windows.sh   # ~30-45 min
-scripts/nightly-vm-e2e/install-timer.sh       # hourly 00:20-11:20 UTC
+scripts/nightly-vm-e2e/install-timer.sh       # nightly: hourly 00:20-11:20 UTC; releases: hourly
 ```
 
 Each guest needs about 8 GB RAM and 4 vCPUs while it runs. The disks take ~10 GB (Ubuntu) and ~25 GB (Windows), plus the per-run overlays.
@@ -60,6 +62,7 @@ Each guest needs about 8 GB RAM and 4 vCPUs while it runs. The disks take ~10 GB
 ```sh
 scripts/nightly-vm-e2e/run-nightly.sh --force --no-report        # both VMs
 scripts/nightly-vm-e2e/run-nightly.sh --force --no-report --vm ubuntu
+scripts/nightly-vm-e2e/run-nightly.sh --release v0.8.7-rc.2       # a candidate
 journalctl -u freedom-nightly-e2e.service                         # timer runs
 ```
 
@@ -67,7 +70,7 @@ To watch a guest, use `virsh vncdisplay freedom-e2e-win11`. VNC only listens on 
 
 ## Timer
 
-`install-timer.sh` installs `freedom-nightly-e2e.timer` and `.service` into `/etc/systemd/system/` and enables the timer. The service runs `run-nightly.sh` as the user who installed it. Once that user has tested a version, the timer skips that version on later runs, so firing hourly costs one `gh release view` per hour.
+`install-timer.sh` installs `freedom-nightly-e2e.timer` and `.service`, and `freedom-release-e2e.timer` and `.service`, into `/etc/systemd/system/` and enables both timers. The release timer fires hourly at :50 and runs `run-nightly.sh --release latest`, so every candidate and release is tested once, within about an hour of being published. Both share one lock: a release check that finds a nightly run in progress skips that hour and tries again at the next one. The service runs `run-nightly.sh` as the user who installed it. Once that user has tested a version, the timer skips that version on later runs, so firing hourly costs one `gh release view` per hour.
 
 ```sh
 systemctl list-timers freedom-nightly-e2e.timer               # enabled? next run?
@@ -79,7 +82,7 @@ sudo systemctl stop freedom-nightly-e2e.service               # abort a run in p
 
 Stopping a run in progress can leave a VM running. `virsh destroy <vm>` shuts it down. Nothing is lost, because the next run starts from a fresh overlay anyway.
 
-To remove the timer completely, run `sudo systemctl disable --now freedom-nightly-e2e.timer`, then `sudo rm /etc/systemd/system/freedom-nightly-e2e.{timer,service}` and `sudo systemctl daemon-reload`.
+To remove a timer completely, run `sudo systemctl disable --now freedom-nightly-e2e.timer` (or `freedom-release-e2e.timer`), then `sudo rm /etc/systemd/system/freedom-nightly-e2e.{timer,service}` (or the `freedom-release-e2e` pair) and `sudo systemctl daemon-reload`.
 
 ## Maintenance
 

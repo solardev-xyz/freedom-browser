@@ -1,1 +1,0 @@
-- Gnosis Chain reads stop asking Ankr's public RPC, which now turns away requests without an API key ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))

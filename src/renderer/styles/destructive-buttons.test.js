@@ -99,6 +99,19 @@ describe('destructive controls', () => {
     expect(ruleFor('.wallet-settings-delete-btn:hover')).toBeUndefined();
   });
 
+  test('"Clear All" is red at rest on every list page (#606)', () => {
+    // Payments only turned it red on hover, so its one destructive button
+    // looked like the ordinary secondary actions beside it while History's
+    // and Downloads' did not.
+    for (const page of ['history.html', 'downloads.html', 'payments.html']) {
+      const html = fs.readFileSync(path.join(STYLES_DIR, '..', 'pages', page), 'utf8');
+      expect(html).toMatch(/<button class="btn danger" id="clear-btn">/);
+      const rest = rulesOf(html).find((rule) => rule.selector === '.btn.danger');
+      expect(rest).toBeDefined();
+      expect(declaration(rest.body, 'color')).toBe('var(--danger)');
+    }
+  });
+
   test('the sweep can tell a filled button from an outlined one', () => {
     // Mutation check for the guard above: the shapes it must catch and the
     // ones it must leave alone.

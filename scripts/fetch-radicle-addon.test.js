@@ -78,12 +78,12 @@ const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex'
 // The SHA256SUMS asset published with the pinned libradicle release,
 // verbatim. Its digest is what PINNED_SHA256SUMS.digest records.
 const RELEASE_SHA256SUMS = [
-  '0c9817a029365e8e754aa85b4d19a1584e0951dd02454fb5f7684110fafb95ca  libradicle-linux-arm64.node',
-  '439fce8049718484cadb2176102739b6229d81540b01ac56e90aa5d0445aefff  libradicle-linux-x64.node',
-  '807ef2c0679ee3cedebf9ef2f9f4c012f921b2f43bdcba52d3715a35e6d4d210  libradicle-mac-arm64.node',
-  '9bc1f1746485d4fd1075611f1e71430f5acf1b146aff0f3c62687fb6f10cb65c  libradicle-mac-x64.node',
-  '9e0f08c7a2403101efd76a65d23fce8e2407d365a124195250ddb7504ec57041  libradicle-win-arm64.node',
-  '710c0b0beae606da80884eec9f87d4995449f67862431da4eb62609ce12eb650  libradicle-win-x64.node',
+  '614035a01605399d51dded052a7ca32abcd9f93deff6bac11233e303acda8951  libradicle-linux-arm64.node',
+  'ef1ad8a108075c024d0acd79149e8d4749d1f3f4149dc41c8d0c6e56116a5b7e  libradicle-linux-x64.node',
+  '3ca9d5c284aea789b0a31d2c5159daaa82503f2fe4b359db42ef6723303159d8  libradicle-mac-arm64.node',
+  '59340bd994da8075f377a3f5a0baedb2e71575342d6c1a735d840279fc070832  libradicle-mac-x64.node',
+  '69f33ae008b09c720ef3d01ac444de82a1c3392d003e918ed6ac025463c340bd  libradicle-win-arm64.node',
+  '5c7c74af630068f3ad7584030c19abeeeff8e9d8a287a5bd0156e8b3f6813556  libradicle-win-x64.node',
   '',
 ].join('\n');
 

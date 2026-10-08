@@ -43,15 +43,15 @@ const { withRetry, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
 
 // Pin a known-good Arti release. Bump deliberately and re-test the SOCKS flags
 // (`arti proxy -c <config>`) and the `arti.toml` keys tor-manager.js writes.
-const PINNED_ARTI_VERSION = '2.6.0';
+const PINNED_ARTI_VERSION = '2.7.0';
 const ARTI_VERSION = process.env.ARTI_VERSION || PINNED_ARTI_VERSION;
-// MSRV of PINNED_ARTI_VERSION only (Arti 2.6.0 raised it to 1.91) — bump it in
+// MSRV of PINNED_ARTI_VERSION only (Arti 2.7.0 raised it to 1.92) — bump it in
 // the same commit as the pin. Checked up front because `cargo install` only
 // reports a too-old toolchain after it has resolved and started compiling the
 // dependency tree, minutes into the build. An ARTI_VERSION override has its own
 // MSRV, which this script does not know, so the check downgrades to a warning
 // there rather than blocking a build cargo may well accept.
-const MIN_RUST_VERSION = '1.91.0';
+const MIN_RUST_VERSION = '1.92.0';
 const CARGO_BIN = process.env.CARGO_BIN || 'cargo';
 
 const OUTPUT_DIR = path.join(__dirname, '..', 'arti-bin');

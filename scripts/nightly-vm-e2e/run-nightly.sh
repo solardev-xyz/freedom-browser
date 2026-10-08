@@ -3,6 +3,12 @@
 # on clean Ubuntu and Windows VMs and runs the packaged suites against it.
 #
 #   scripts/nightly-vm-e2e/run-nightly.sh [--force] [--vm ubuntu|windows] [--no-report]
+#                                         [--release <tag>|latest]
+#
+# --release tests a tagged release instead: a candidate such as v0.8.7-rc.2,
+# or a final. `latest` picks the newest published (non-draft) release other
+# than `nightly`, which is what the release timer runs. A failing release gets
+# its own issue; a passing one reports nothing.
 #
 # Without --force a version that already has a result is skipped, so the timer
 # can fire hourly through the window the nightly usually lands in. Results go
@@ -11,12 +17,13 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/lib.sh"
 
-force=0 report=1 only=''
+force=0 report=1 only='' release=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --force) force=1 ;;
     --no-report) report=0 ;;
     --vm) only="$2"; shift ;;
+    --release) release="$2"; shift ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -25,11 +32,28 @@ done
 exec 9>"$STATE_DIR/run.lock"
 flock -n 9 || { log "another run holds $STATE_DIR/run.lock"; exit 0; }
 
-release_json="$(gh release view nightly --repo "$REPO_SLUG" --json body,assets)"
-body="$(jq -r .body <<<"$release_json")"
-version="$(sed -n 's/^version: //p' <<<"$body" | head -1)"
-commit="$(sed -n 's/^commit: //p' <<<"$body" | head -1)"
-[ -n "$version" ] && [ -n "$commit" ] || die "no version/commit line in the nightly release notes"
+if [ -z "$release" ]; then
+  kind=Nightly
+  release_json="$(gh release view nightly --repo "$REPO_SLUG" --json body,assets)"
+  body="$(jq -r .body <<<"$release_json")"
+  version="$(sed -n 's/^version: //p' <<<"$body" | head -1)"
+  commit="$(sed -n 's/^commit: //p' <<<"$body" | head -1)"
+  [ -n "$version" ] && [ -n "$commit" ] || die "no version/commit line in the nightly release notes"
+else
+  kind=Release
+  if [ "$release" = latest ]; then
+    release="$(gh release list --repo "$REPO_SLUG" --exclude-drafts --limit 20 --json tagName,publishedAt \
+      -q '[.[] | select(.tagName != "nightly")] | sort_by(.publishedAt) | last | .tagName')"
+    [ -n "$release" ] || die "no published release besides nightly"
+  fi
+  release_json="$(gh release view "$release" --repo "$REPO_SLUG" --json assets,isDraft)"
+  [ "$(jq -r .isDraft <<<"$release_json")" = false ] || die "$release is a draft"
+  version="${release#v}"
+  # The commit the tag points at, through an annotated tag; the guest checks
+  # it out to run the suites from the same source the release was built from.
+  commit="$(gh api "repos/$REPO_SLUG/commits/$release" -q .sha)"
+  [ -n "$commit" ] || die "could not resolve the commit of $release"
+fi
 # x64 assets only: the arm64 AppImage is `...-arm64.AppImage`, the x64 one
 # has no arch in its name.
 asset() {
@@ -129,7 +153,7 @@ describe() { # dir
 
 overall=pass
 {
-  echo "Nightly \`$version\` (commit $commit)"
+  echo "$kind \`$version\` (commit $commit)"
   echo
   for leg in ubuntu windows; do
     [ -d "$out/$leg" ] || continue
@@ -147,6 +171,18 @@ echo "$overall" >"$out/result"
 cat "$out/summary.md"
 
 [ $report -eq 1 ] || exit 0
+if [ "$kind" = Release ]; then
+  # One issue per failing release; a passing release needs no issue.
+  [ "$overall" = fail ] || exit 0
+  title="Real-conditions E2E failed on v$version"
+  issue="$(gh issue list --repo "$REPO_SLUG" --state open --search "in:title \"$title\"" --json number -q '.[0].number')"
+  if [ -n "$issue" ]; then
+    gh issue comment "$issue" --repo "$REPO_SLUG" --body-file "$out/summary.md" >/dev/null
+  else
+    gh issue create --repo "$REPO_SLUG" --title "$title" --body-file "$out/summary.md" >/dev/null
+  fi
+  exit 0
+fi
 title='Nightly real-conditions E2E failed'
 issue="$(gh issue list --repo "$REPO_SLUG" --label nightly --state open --search "in:title \"$title\"" --json number -q '.[0].number')"
 if [ "$overall" = fail ]; then

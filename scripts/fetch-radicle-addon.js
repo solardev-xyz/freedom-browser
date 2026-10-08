@@ -34,8 +34,8 @@ const RELEASE_BASE = `https://github.com/solardev-xyz/libradicle/releases/downlo
 // checksums are trusted. Bump alongside RADICLE_ADDON_VERSION:
 //   curl -sL <release>/SHA256SUMS | sha256sum
 const PINNED_SHA256SUMS = {
-  tag: 'v0.7.1',
-  digest: 'aa6b92f357984d8cfaa6e4f551da8794fe6f9dc613d13c9bbbdaffce2aa459b3',
+  tag: 'v0.8.0',
+  digest: 'fa2470da0d768b2af48dce0c601897bc61ebb5789c259e1b34f77d39ff733654',
 };
 
 function platformKey(

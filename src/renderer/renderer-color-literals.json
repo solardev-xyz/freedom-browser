@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 261,
+  "total": 258,
   "files": {
     "pages/downloads.html": [
       "background: #388bfd33",
@@ -38,14 +38,11 @@
       "background: #8b949e",
       "background: #d29922",
       "background: #f85149",
-      "background: #f8514915",
       "background: rgba(110, 118, 129, 0.18)",
       "background: rgba(245, 158, 11, 0.12)",
       "background: rgba(248, 81, 73, 0.12)",
       "background: rgba(76, 175, 80, 0.12)",
-      "border-color: #f85149",
-      "color: #6e7681",
-      "color: #f85149"
+      "color: #6e7681"
     ],
     "pages/private.html": [
       "background: #241d31",

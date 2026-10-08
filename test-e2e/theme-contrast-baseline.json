@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 64,
+  "total": 66,
   "gaps": [
     {
       "surface": "Swarm connect approval",
@@ -264,6 +264,22 @@
       "el": "div.permission-popover-row-status",
       "text": "Allowed",
       "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "private bookmark dialog",
+      "theme": "dark",
+      "el": "button#bookmark-submit-btn.primary-btn",
+      "text": "Add Bookmark",
+      "ratio": 2.4,
+      "bar": 4.5
+    },
+    {
+      "surface": "private bookmark dialog",
+      "theme": "light",
+      "el": "button#bookmark-submit-btn.primary-btn",
+      "text": "Add Bookmark",
+      "ratio": 2.4,
       "bar": 4.5
     },
     {
