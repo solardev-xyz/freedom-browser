@@ -551,3 +551,61 @@ describe.each(['public', 'relay'])('%s history retention', (kind) => {
       expect(await journal.list()).toHaveLength(2);
     });
 });
+
+// Preserve the host validArchive predicate assertions formerly embedded in
+// shield/transact recovery campaigns. These are public structural records;
+// receipt matching and genuine recovery authorization remain package tests.
+test('matched Shield archive rejects an out-of-range note position', () => {
+  const { validArchive } = require('./privacy-journal-retention');
+  const fixture = require('../../../test/fixtures/railgun/public-shield-host-intent.json');
+  const intent = structuredClone(fixture.record.intent);
+  const blockHash = '0x' + 'b'.repeat(64);
+  const noteValue = (BigInt(intent.noteValue) - 1n).toString();
+  const archive = [
+    {
+      hash: fixture.record.hash,
+      nonce: fixture.record.nonce,
+      intent,
+      status: 'included',
+      blockNumber: 16,
+      blockHash,
+      archivedAt: 1,
+      finalized: { blockNumber: 16, blockHash },
+      railgun: {
+        outcome: 'matched',
+        finalizedBlockNumber: 16,
+        finalizedBlockHash: blockHash,
+        shield: {
+          status: 'matched',
+          transactionHash: fixture.record.hash,
+          blockHash,
+          blockNumber: '0x10',
+          logIndex: '0x0',
+          tree: 0,
+          position: 123,
+          npk: intent.npk,
+          token: intent.token,
+          amount: intent.amount,
+          noteValue,
+          fee: (BigInt(intent.amount) - BigInt(noteValue)).toString(),
+          feeDeviation: true,
+          trust: 'unverified-rpc',
+          spendingEnabled: false,
+        },
+      },
+    },
+  ];
+  expect(validArchive(archive, 'public')).toBe(true);
+  const changed = structuredClone(archive);
+  changed[0].railgun.shield.position = 65536;
+  expect(validArchive(changed, 'public')).toBe(false);
+});
+test('matched Transact archive rejects an out-of-range output position', () => {
+  const { validArchive } = require('./privacy-journal-retention');
+  const fixture = require('../../../test/fixtures/railgun/railgun-journal-histories.json');
+  const archive = [structuredClone(fixture['railgun-private-transfer:true'].record)];
+  expect(validArchive(archive, 'public')).toBe(true);
+  const changed = structuredClone(archive);
+  changed[0].railgun.transact.output.position = 65536;
+  expect(validArchive(changed, 'public')).toBe(false);
+});

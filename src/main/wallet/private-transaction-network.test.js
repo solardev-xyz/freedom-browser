@@ -951,3 +951,110 @@ test.each([null, false, 0, {}, new Proxy({}, {})])(
     }
   }
 );
+
+// Genuine host network + reconciler, with explicitly mocked public authority
+// and journal persistence. This checks routing/order, not authorization issuance.
+const mockRailgunResolutionAuthority = {};
+test.each(['railgun-native-shield', 'railgun-transact'])(
+  'reconciliation wires %s through the installed public authority bridge before and after review',
+  async (kind) => {
+    const moduleName = '@freedom/railgun-kohaku-adapter/host/owner-authority';
+    const actual = jest.requireActual(moduleName);
+    const selected =
+      kind === 'railgun-transact'
+        ? 'authorizeRailgunTransactResolution'
+        : 'authorizeRailgunShieldResolution';
+    const other =
+      kind === 'railgun-transact'
+        ? 'authorizeRailgunShieldResolution'
+        : 'authorizeRailgunTransactResolution';
+    expect(typeof actual[selected]).toBe('function');
+    expect(() => actual[selected](handle, { intent: { kind } }, false)).toThrow();
+    const permit = Object.freeze({ fixture: 'mock journal wiring only' });
+    const calls = [];
+    const authority = {
+      [selected]: jest.fn((context, record, completed) => {
+        expect(context).toBe(handle);
+        calls.push(completed ? 'authorize-complete' : 'authorize-review');
+        expect(record.intent.kind).toBe(kind);
+        return completed ? permit : undefined;
+      }),
+      [other]: jest.fn(() => {
+        throw Error('wrong authority branch');
+      }),
+    };
+    let record = { hash: '0x' + 'a'.repeat(64), nonce: 0, revision: 0, intent: { kind } };
+    const wiringJournal = {
+      list: async () => [record],
+      observe: jest.fn(async (hash, observation, revision) => {
+        expect(hash).toBe(record.hash);
+        expect(revision).toBe(record.revision);
+        record = { ...record, observation, revision: revision + 1 };
+        return record;
+      }),
+      resolve: jest.fn(async (...args) => {
+        calls.push('journal-resolve');
+        expect(args).toEqual([record.hash, record.revision, 2, permit]);
+        return record;
+      }),
+    };
+    mockJournals.set(handle, wiringJournal);
+    receipt = {
+      transactionHash: record.hash,
+      from: wallet.address,
+      status: '0x1',
+      blockHash: canonical.hash,
+      blockNumber: canonical.number,
+    };
+    Object.assign(mockRailgunResolutionAuthority, authority);
+    jest.doMock(moduleName, () => mockRailgunResolutionAuthority);
+    try {
+      await network.resolveSubmission(record.hash, {
+        minimumConfirmations: 2,
+        review: async () => {
+          calls.push('review');
+          return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
+        },
+      });
+      expect(calls).toEqual([
+        'authorize-review',
+        'review',
+        'authorize-complete',
+        'journal-resolve',
+      ]);
+      expect(authority[selected].mock.calls.map((args) => args[2])).toEqual([false, true]);
+      expect(authority[other]).not.toHaveBeenCalled();
+      expect(wiringJournal.observe).toHaveBeenCalledTimes(2);
+      expect(authority[selected]).toHaveBeenNthCalledWith(
+        1,
+        handle,
+        await wiringJournal.observe.mock.results[0].value,
+        false
+      );
+      expect(authority[selected]).toHaveBeenNthCalledWith(
+        2,
+        handle,
+        await wiringJournal.observe.mock.results[1].value,
+        true
+      );
+      for (const completed of [false, true]) {
+        const refusal = new Error('mock authority refuses');
+        authority[selected].mockImplementation((_context, _record, phase) => {
+          if (phase === completed) throw refusal;
+        });
+        wiringJournal.resolve.mockClear();
+        const review = jest.fn(async () => ({
+          allowNextTransaction: true,
+          acceptedEvidence: 'unverified-rpc',
+        }));
+        await expect(
+          network.resolveSubmission(record.hash, { minimumConfirmations: 2, review })
+        ).rejects.toBe(refusal);
+        expect(review).toHaveBeenCalledTimes(completed ? 1 : 0);
+        expect(wiringJournal.resolve).not.toHaveBeenCalled();
+      }
+    } finally {
+      jest.dontMock(moduleName);
+    }
+  }
+);

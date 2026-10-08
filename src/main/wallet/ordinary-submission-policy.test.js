@@ -63,3 +63,45 @@ test('classification reevaluates deployment targets without rewriting encrypted 
 test('refusal set covers all twelve current deployment addresses', () => {
   expect(new Set(targets).size).toBe(12);
 });
+
+// Original host assertions from railgun-shield-intent.test.js; protocol calldata
+// is an existing public fixture, with no owner or signing initialization.
+const railgunPins = require('../../../test/fixtures/railgun/host-target-pins.json');
+const shieldTransaction = {
+  ...require('../../../test/fixtures/railgun/public-shield-host-intent.json').prepared,
+  chainId: 11155111,
+  from: new (require('ethers').Wallet)('0x' + '11'.repeat(32)).address,
+};
+test.each([railgunPins.proxy, railgunPins.implementation, railgunPins.relayAdapt])(
+  'pinned Railgun target %s cannot be disguised as PPv2 or ordinary',
+  (to) => {
+    expect(() =>
+      require('./private-transaction-intent').transactionIntent('ppv2-native-deposit', {
+        ...shieldTransaction,
+        to,
+      })
+    ).toThrow();
+    expect(() => assertOrdinaryRequest({ ...shieldTransaction, to })).toThrow();
+    expect(
+      isClassifiedOrdinary({
+        route: 'ordinary',
+        ordinary: {
+          to,
+          selector: shieldTransaction.data.slice(0, 10),
+          type: 0,
+          senderCode: '0x',
+          trust: 'unverified-rpc',
+        },
+      })
+    ).toBe(false);
+  }
+);
+test('ordinary WETH transfer remains distinct from a RelayAdapt shield', () => {
+  expect(() =>
+    assertOrdinaryRequest({
+      ...shieldTransaction,
+      to: railgunPins.wrappedNative,
+      data: '0xa9059cbb',
+    })
+  ).not.toThrow();
+});
