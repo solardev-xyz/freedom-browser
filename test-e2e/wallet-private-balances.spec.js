@@ -161,7 +161,7 @@ test('experimental balance IPC isolates accounts and handles outage, restart and
   }
 });
 
-test('qualification gate and experimental setting render in both themes', async ({
+test('qualification gate and advanced setting render in both themes', async ({
   window,
   electronApp,
 }, testInfo) => {
@@ -185,14 +185,19 @@ test('qualification gate and experimental setting render in both themes', async 
   for (const theme of ['dark', 'light']) {
     await window.evaluate((theme) => window.electronAPI.saveSettings({ theme }), theme);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await expect(page.locator('#wallet-tor-help')).toBeVisible();
     await expect(page.locator('#wallet-tor-balance-reads')).toBeDisabled();
     await expect(page.locator('#wallet-tor-help')).toContainText('qualification');
-    await expect(page.locator('#swarm-publishing-row')).toBeVisible();
+    await expect(page.locator('#swarm-publishing-row')).toBeHidden();
     await expect(page.locator('#swarm-mode-row')).toHaveCount(0);
     await page.locator('#wallet-tor-help').scrollIntoViewIfNeeded();
     await page.screenshot({
       path: testInfo.outputPath(`wallet-privacy-${theme}.png`),
       animations: 'disabled',
     });
+    // Main moved publishing from Advanced to Nodes; keep checking its real location.
+    await page.locator('.nav-item[data-target="nodes"]').click();
+    await expect(page.locator('#swarm-publishing-row')).toBeVisible();
+    await page.locator('.nav-item[data-target="advanced"]').click();
   }
 });
