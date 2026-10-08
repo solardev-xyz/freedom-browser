@@ -6,12 +6,12 @@ const { FIELD, NATIVE } = require('./ppv2-deposit-policy');
 const {
   railgunTransactJournalIntent,
   validRailgunTransactIntent,
-} = require('./railgun-transact-intent');
+} = require('@freedom/railgun-kohaku-adapter/host/journal-data');
 const {
   shieldIntentBinding,
   validShieldIntent,
   isRailgunTarget,
-} = require('./railgun-shield-intent');
+} = require('@freedom/railgun-kohaku-adapter/host/journal-data');
 const exitABI = new Interface([RAGEQUIT_ABI]);
 const isExitIntent = (value) =>
   ['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(value?.kind);

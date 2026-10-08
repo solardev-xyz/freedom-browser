@@ -17,11 +17,11 @@ const { validOrdinaryFacts } = require('./ordinary-submission-policy');
 const {
   validRailgunShieldResolution,
   freezeRailgunShieldResolution,
-} = require('./railgun-shield-resolution');
+} = require('@freedom/railgun-kohaku-adapter/host/journal-data');
 const {
   validRailgunTransactResolution,
   freezeRailgunTransactResolution,
-} = require('./railgun-transact-resolution');
+} = require('@freedom/railgun-kohaku-adapter/host/journal-data');
 const unresolved = (records) => records.some((record) => !record.resolution);
 function snapshot(record) {
   if (record.intent) Object.freeze(record.intent);
@@ -417,12 +417,12 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
           throw invalid();
         const railgun =
           record.intent?.kind === 'railgun-transact'
-            ? require('./railgun-transact-recovery').assertRailgunTransactResolution(
+            ? require('@freedom/railgun-kohaku-adapter/host/owner-authority').assertRailgunTransactResolution(
                 railgunPermit,
                 record
               )
             : record.intent?.kind === 'railgun-native-shield'
-              ? require('./railgun-shield-recovery').assertRailgunShieldResolution(
+              ? require('@freedom/railgun-kohaku-adapter/host/owner-authority').assertRailgunShieldResolution(
                   railgunPermit,
                   record
                 )

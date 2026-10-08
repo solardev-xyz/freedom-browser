@@ -89,9 +89,11 @@ function getPrivateTransactionNetwork(handle, options = {}) {
       assertActive,
       authorizeRailgun: (record, completed) =>
         (record.intent?.kind === 'railgun-transact'
-          ? require('./railgun-transact-recovery')
-          : require('./railgun-shield-recovery')
-        ).authorizeRailgunResolution(handle, record, completed),
+          ? require('@freedom/railgun-kohaku-adapter/host/owner-authority')
+              .authorizeRailgunTransactResolution
+          : require('@freedom/railgun-kohaku-adapter/host/owner-authority')
+              .authorizeRailgunShieldResolution
+        )(handle, record, completed),
     }));
   async function assertCanSubmit(signal) {
     assertActive();
@@ -225,11 +227,11 @@ function getPrivateTransactionNetwork(handle, options = {}) {
     const admitted = intent;
     const assertAdmitted = () =>
       admitted.kind === 'railgun-transact'
-        ? require('./railgun-private-submission').assertRailgunPrivateSubmission(handle, admitted)
+        ? require('@freedom/railgun-kohaku-adapter/host/owner-authority').assertRailgunPrivateSubmission(handle, admitted)
         : undefined;
     assertAdmitted();
     if (intent.kind === 'railgun-native-shield')
-      require('./railgun-shield-operation').assertRailgunShieldSubmission(handle, intent);
+      require('@freedom/railgun-kohaku-adapter/host/owner-authority').assertRailgunShieldSubmission(handle, intent);
     // Derive all reservation metadata from signed bytes, never caller fields.
     intent = transactionIntent(intent.kind, transaction);
     const txHash = transaction.hash.toLowerCase();

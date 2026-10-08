@@ -4,8 +4,8 @@
 const { privacyError } = require('../networks/privacy-context');
 const { validIntent, isExitIntent } = require('./private-transaction-intent');
 const { validOrdinaryFacts, isClassifiedOrdinary } = require('./ordinary-submission-policy');
-const { validRailgunShieldResolution } = require('./railgun-shield-resolution');
-const { validRailgunTransactResolution } = require('./railgun-transact-resolution');
+const { validRailgunShieldResolution } = require('@freedom/railgun-kohaku-adapter/host/journal-data');
+const { validRailgunTransactResolution } = require('@freedom/railgun-kohaku-adapter/host/journal-data');
 const ARCHIVE_MAX = 1024;
 const MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
 const HASH = /^0x[0-9a-f]{64}$/;
