@@ -637,3 +637,183 @@ test('normative vector fixture is byte-pinned with boundary account indices', ()
     0, 1, 65535, 0, 1, 65535,
   ]);
 });
+
+test('storage-root teardown observes the original callback after context revocation', async () => {
+  const input = request('storage-root');
+  input.signal = scope.signal;
+  let borrowed,
+    release,
+    settled = false;
+  const original = new Promise((resolve) => {
+    release = resolve;
+  });
+  const pending = port.withMaterial(input, (loan) => {
+    borrowed = loan.bytes;
+    return original;
+  });
+  pending.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await turn();
+  expect(borrowed.some((byte) => byte !== 0)).toBe(true);
+  scope.close();
+  expect(borrowed.every((byte) => byte === 0)).toBe(true);
+  await turn();
+  expect(settled).toBe(false);
+  release();
+  await expect(pending).resolves.toBeUndefined();
+  expect(settled).toBe(true);
+  expect(() => getPrivacyContext(input.handle)).toThrow();
+});
+
+test.each(['operation-only', 'context-only'])(
+  'storage-root teardown still refuses %s',
+  async (mode) => {
+    const input = request('storage-root');
+    let release;
+    const original = new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = port.withMaterial(input, () => original);
+    const observed = expect(pending).rejects.toMatchObject({ code: 'RAILGUN_CREDENTIAL_REFUSED' });
+    await turn();
+    if (mode === 'operation-only') operation.abort();
+    else scope.close();
+    release();
+    await observed;
+  }
+);
+test.each(['reject', 'non-void'])(
+  'storage-root teardown preserves the callback failure: %s',
+  async (mode) => {
+    const input = request('storage-root');
+    input.signal = scope.signal;
+    const failure = Object.assign(new Error('original cleanup failed'), {
+      code: 'RAILGUN_WALLET_EXIT_UNOBSERVED',
+    });
+    let release, reject;
+    const original = new Promise((yes, no) => {
+      release = yes;
+      reject = no;
+    });
+    const pending = port.withMaterial(input, () => original);
+    const observed =
+      mode === 'reject'
+        ? expect(pending).rejects.toBe(failure)
+        : expect(pending).rejects.toMatchObject({ code: 'RAILGUN_CREDENTIAL_REFUSED' });
+    await turn();
+    scope.close();
+    if (mode === 'reject') reject(failure);
+    else release({ notAuthority: true });
+    await observed;
+  }
+);
+
+test.each(['viewing', 'spending-public', 'spending-sign'])(
+  'root-drain exception never applies to %s',
+  async (purpose) => {
+    const input = request(purpose);
+    input.signal = scope.signal;
+    let release;
+    const original = new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = port.withMaterial(input, () => original);
+    const observed = expect(pending).rejects.toMatchObject({ code: 'RAILGUN_CREDENTIAL_REFUSED' });
+    await turn();
+    scope.close();
+    release();
+    await observed;
+  }
+);
+
+test.each(['vault-lock', 'vault-replace', 'profile-change'])(
+  'storage-root has a drained void result after revoked teardown: %s',
+  async (mode) => {
+    const input = request('storage-root');
+    input.signal = scope.signal;
+    let borrowed, release;
+    const original = new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = port.withMaterial(input, (loan) => {
+      borrowed = loan.bytes;
+      return original;
+    });
+    await turn();
+    if (mode === 'vault-lock') mockVault.abort();
+    else scope.close();
+    if (mode === 'vault-replace') mockVault = new AbortController();
+    if (mode === 'profile-change') mockProfile = { ...mockProfile, id: 'new-profile' };
+    expect(borrowed.every((byte) => byte === 0)).toBe(true);
+    release();
+    await expect(pending).resolves.toBeUndefined();
+    expect(() => getPrivacyContext(input.handle)).toThrow();
+  }
+);
+test.each(['vault-replace', 'profile-change'])(
+  'storage-root still rejects currency changes without revoked teardown: %s',
+  async (mode) => {
+    const input = request('storage-root');
+    let release;
+    const original = new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = port.withMaterial(input, () => original);
+    const observed = expect(pending).rejects.toMatchObject({ code: 'RAILGUN_CREDENTIAL_REFUSED' });
+    await turn();
+    if (mode === 'vault-replace') mockVault = new AbortController();
+    else mockProfile = { ...mockProfile, id: 'new-profile' };
+    release();
+    await observed;
+  }
+);
+
+test('storage-root teardown never fabricates settlement of an unobservable callback', async () => {
+  const input = request('storage-root');
+  input.signal = scope.signal;
+  let borrowed,
+    settled = false;
+  const original = Promise.resolve();
+  Object.defineProperty(original, 'constructor', {
+    get() {
+      throw new Error('unobservable');
+    },
+  });
+  const pending = port.withMaterial(input, (loan) => {
+    borrowed = loan.bytes;
+    return original;
+  });
+  pending.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await turn();
+  scope.close();
+  await turn();
+  expect(borrowed.every((byte) => byte === 0)).toBe(true);
+  expect(settled).toBe(false);
+});
+test('storage-root revocation before callback delivery still refuses', async () => {
+  const input = request('storage-root');
+  input.signal = scope.signal;
+  mockGuard = () => {
+    scope.close();
+    return Object.freeze({});
+  };
+  const consume = jest.fn(async () => {});
+  await expect(port.withMaterial(input, consume)).rejects.toMatchObject({
+    code: 'RAILGUN_CREDENTIAL_REFUSED',
+  });
+  expect(consume).not.toHaveBeenCalled();
+  expect(mockSeeds[0].every((byte) => byte === 0)).toBe(true);
+});

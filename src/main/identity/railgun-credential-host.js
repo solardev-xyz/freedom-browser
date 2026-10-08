@@ -160,8 +160,18 @@ function createRailgunCredentialHost() {
         Object.freeze(purpose === 'storage-root' ? { bytes, profileGuard } : { bytes })
       );
       const result = await observe(original, wipe);
-      active();
       check(result === undefined);
+      // Enrollment retains its root loan until close: it first revokes the
+      // genuine context and wipes material, then releases this original callback.
+      // Observed void settlement is drainage, not renewed storage authority.
+      // A vault lock/profile switch may cause this teardown too. Rechecking
+      // currency after it would quarantine a fully drained account until restart.
+      if (!(
+        purpose === 'storage-root' &&
+        Reflect.apply(aborted, signal, []) &&
+        Reflect.apply(aborted, context.signal, [])
+      ))
+        active();
     } finally {
       wipe();
       for (const value of signals) Reflect.apply(removeListener, value, ['abort', wipe]);
