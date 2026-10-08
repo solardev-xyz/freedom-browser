@@ -569,3 +569,71 @@ test.each(['', null, undefined])(
     expect(mockGuardCalls).toHaveLength(0);
   }
 );
+
+// Exact package-owned public vectors and repo-only harness; no runtime export.
+const publicCredentialVectors = require('./fixtures/railgun-credential-vectors.json');
+const { checkCredentialRow } = require('./fixtures/railgun-credential-conformance.cjs');
+test.each(publicCredentialVectors.rows)(
+  'normative host conformance for $profile.id account $accountIndex',
+  async (row) => {
+    mockProfile = { ...row.profile };
+    mockMnemonic = publicCredentialVectors.mnemonic;
+    expect(hash(JSON.stringify([mockProfile.id, mockProfile.userDataDir]))).toBe(row.profileId);
+    const results = await checkCredentialRow({
+      host: port,
+      row,
+      createContext: (selected, purpose) => {
+        const genuine = createPrivacyScope({
+          profileId: selected.profileId,
+          signal: mockVault.signal,
+        });
+        const handle = genuine.getContext({
+          kind: 'private-account',
+          principal: `railgun:${selected.accountIndex}`,
+          protocol: 'railgun',
+          chainId: publicCredentialVectors.chainId,
+          deployment: publicCredentialVectors.deployment,
+          role: purpose === 'storage-root' ? 'storage' : 'keystore',
+          operation:
+            purpose === 'storage-root'
+              ? 'railgun-account-enrollment-v1'
+              : purpose === 'viewing'
+                ? 'viewing-identity'
+                : purpose,
+        });
+        return {
+          request: {
+            handle,
+            vaultSession: mockVault.signal,
+            accountIndex: selected.accountIndex,
+            purpose,
+            signal: operation.signal,
+          },
+          assertProfileGuard(guard) {
+            expect(mockGuardCalls.at(-1).handle).toBe(handle);
+            expect(mockGuardCalls.at(-1).profile).toEqual(row.profile);
+            expect(mockSeeds.at(-1).every((byte) => byte === 0)).toBe(true);
+            expect(() => guard.assert()).not.toThrow();
+          },
+          close: () => genuine.close(),
+        };
+      },
+    });
+    expect(results).toHaveLength(4);
+    expect(
+      results.every(
+        (result) =>
+          result.vectorMatched && result.borrowedBufferWiped && result.originalPromiseRetained
+      )
+    ).toBe(true);
+  }
+);
+test('normative vector fixture is byte-pinned with boundary account indices', () => {
+  const fs = require('fs');
+  expect(hash(fs.readFileSync(require.resolve('./fixtures/railgun-credential-vectors.json')))).toBe(
+    'b8a307b09928447bded772da46de8826e597ce013d80e4a51458a1d9946cd1af'
+  );
+  expect(publicCredentialVectors.rows.map((row) => row.accountIndex)).toEqual([
+    0, 1, 65535, 0, 1, 65535,
+  ]);
+});
