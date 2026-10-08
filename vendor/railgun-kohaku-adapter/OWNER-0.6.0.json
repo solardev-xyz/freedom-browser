@@ -1,12 +1,12 @@
 {
-  "packageSource": "99d80f1e28977f3edb14939d5170c1ad2ab05642",
+  "packageSource": "9231d71718a63634b6a4f66df8a5e64ac079e197",
   "registryPublished": false,
   "tarball": "vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
-  "sha256": "daf4fb1521e11e504a9b4bb116eb1e750f4c57cfa8bd9cb0f497ca114bb5cda8",
-  "integrity": "sha512-UmNJwqT0HNkKXMPNFrbP+9UFyGTh6Qc15gcsQINyqi91RvGRcOH28ufxlXLTXkr4m9aYz7n7SnxciViiaMD0/g==",
+  "sha256": "2ad2b4ad09f84c80936a78dbcbb5a2441ba53a863e9f8570a53ce80a78986f80",
+  "integrity": "sha512-s2YoSOJ3BrvjQL5CMUfRSSO5zoMhlyA1aPZ+ih5zsMLQ5Tw3G8a/BhmYXt7VP2tY8tMOvfthuPQYIz0qemufuQ==",
   "files": 280,
   "nativeIntegrationQualified": false,
-  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads; final native qualification on this host identity pending",
+  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description; final native qualification on this host identity pending",
   "previousCandidate": {
     "packageSource": "fb3add6aa411375b42ed84735d4901bbc491c68e",
     "registryPublished": false,
@@ -316,5 +316,5 @@
     "types/read.d.mts",
     "types/read.d.ts"
   ],
-  "packageRuntimeSource": "3b32b4a04591526d49cd12046f14b5d3421bda0d"
+  "packageRuntimeSource": "008d671b65d8d8a8959d6ebc94fdb6b2176f4701"
 }

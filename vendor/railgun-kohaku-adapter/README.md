@@ -6,10 +6,10 @@ Freedom installs `@freedom/railgun-kohaku-adapter@0.6.0` from the committed
 The source repository is https://github.com/solardev-xyz/railgun-kohaku-adapter.
 The package is MPL-2.0, private in npm metadata, and has not been published to npm.
 
-This artifact was packed from `99d80f1e28977f3edb14939d5170c1ad2ab05642` with
+This artifact was packed from `9231d71718a63634b6a4f66df8a5e64ac079e197` with
 Node 24.18.1 and npm 11.16.0. Its SHA-256 is
-`daf4fb1521e11e504a9b4bb116eb1e750f4c57cfa8bd9cb0f497ca114bb5cda8`. The packed
-files equal those of `3b32b4a04591526d49cd12046f14b5d3421bda0d`; the later commit
+`2ad2b4ad09f84c80936a78dbcbb5a2441ba53a863e9f8570a53ce80a78986f80`. The packed
+files equal those of `008d671b65d8d8a8959d6ebc94fdb6b2176f4701`; the later commit
 adds only unpublished qualification tools.
 
 Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
@@ -18,7 +18,8 @@ Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
 - `session.openSubmissionRecovery`: observe or resolve the exact journaled own
   EOA submission of one held private operation, bound by its signing digest,
   nullifier, tree and operation, across the journal and its archive. Consent
-  names the actual transaction endpoint.
+  names the actual transaction endpoint. A local `describe` returns the held
+  input note and a transfer's own-instance recipient and amount.
   The lane never signs, sends, retries or releases the hold.
 - `openAccount({ publicCache: 'new' | 'pending' })`: an explicit public-cache
   rebuild or resume for accounts whose public generation belongs to another

@@ -50,8 +50,8 @@ test('the installed owner package exactly matches the reviewed tarball and lock'
     lock = require('../../../package-lock.json');
   const entry = lock.packages['node_modules/' + PACKAGE];
   const bytes = fs.readFileSync(path.join(root, record.tarball));
-  expect(record.packageSource).toBe('99d80f1e28977f3edb14939d5170c1ad2ab05642');
-  expect(record.sha256).toBe('daf4fb1521e11e504a9b4bb116eb1e750f4c57cfa8bd9cb0f497ca114bb5cda8');
+  expect(record.packageSource).toBe('9231d71718a63634b6a4f66df8a5e64ac079e197');
+  expect(record.sha256).toBe('2ad2b4ad09f84c80936a78dbcbb5a2441ba53a863e9f8570a53ce80a78986f80');
   expect(record.files).toBe(280);
   expect(pkg.dependencies[PACKAGE]).toBe('file:' + record.tarball);
   expect(entry.resolved).toBe('file:' + record.tarball);
