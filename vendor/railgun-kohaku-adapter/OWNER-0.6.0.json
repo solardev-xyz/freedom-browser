@@ -1,0 +1,10 @@
+{
+  "packageSource": "133e88cce2e1a37288e4f0bb61bb6d8c726ed6ef",
+  "registryPublished": false,
+  "tarball": "vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
+  "sha256": "c0217e23804e9ec3871977fc8a802be5e087565225aa493b217240ac8e9a467c",
+  "integrity": "sha512-xPaSezDf/jkP3cqBxVf7oogVIGXd7OQCDpREiTYUeShcPtbee/K0MWH+TddOIUL6XmHIeRASln/0kvH7yf0xUw==",
+  "files": 278,
+  "nativeIntegrationQualified": false,
+  "status": "candidate; installed host checks passed; native and packaged acceptance pending"
+}

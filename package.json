@@ -315,7 +315,7 @@
     "@corpus-core/colibri-stateless": "3.0.1",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",
-    "@freedom/railgun-kohaku-adapter": "file:vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.5.0.tgz",
+    "@freedom/railgun-kohaku-adapter": "file:vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
     "@ghostery/adblocker": "^2.18.1",
     "@ledgerhq/hw-app-eth": "^7.10.0",
     "@ledgerhq/hw-transport-node-hid": "^6.33.5",

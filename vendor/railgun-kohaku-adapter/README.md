@@ -86,3 +86,25 @@ inventory before execution is claimed qualified. Historical 0.2 qualification
 and old 0.4 package evidence do not qualify this new kernel route. No engine or
 prover archive, production key, live-service result or signing permission is
 included in this tarball.
+
+## Owner extraction candidate 0.6.0
+
+The candidate dependency now uses `freedom-railgun-kohaku-adapter-0.6.0.tgz`
+from source commit `133e88cce2e1a37288e4f0bb61bb6d8c726ed6ef`.
+`OWNER-0.6.0.json` records its 278-file pack, SHA-256 and lockfile integrity.
+The source commit is currently local; publication and integration acceptance
+remain pending. The 0.5.0 record above is retained as historical provenance.
+
+This candidate moves the main-process protocol owners, stores, recovery lanes
+and worker dispatch into the package behind fixed host ports. Freedom supplies
+its vault credential primitive, genuine privacy contexts, transport, runtime
+locations and Electron process handles. The package owns the credential schedule
+and its public conformance vectors. The installed dependency has one physical
+copy and uses Freedom's existing SQLite version.
+
+The package's 169 suites (7,132 tests), strict declarations, and Freedom's
+13 affected host suites (476 tests) pass. Native execution through the installed
+public facade and packaged application acceptance are still pending. Earlier
+0.5.0 evidence does not qualify this owner extraction. Legacy Freedom owner files
+remain during this acceptance stage; the native cache check must refuse loading
+any of them.
