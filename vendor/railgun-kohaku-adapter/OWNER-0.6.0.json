@@ -5,8 +5,8 @@
   "sha256": "6169f7445db3306feae9a16f35d6665e9f767e59b071a41a05e5f14fef02c59c",
   "integrity": "sha512-Hgrzfzlhq+sA+d7SES9bX622RgGObK5xVVEUOX01mYGS5jJPoGGoHS3ULyQKA8EnYtmQERasGfwnh4R9SBBvYg==",
   "files": 279,
-  "nativeIntegrationQualified": false,
-  "status": "final runtime candidate; native results at prior tar C are separately scoped; final installed acceptance pending",
+  "nativeIntegrationQualified": true,
+  "status": "installed private preparation/refusal/restart and unsigned packaged initialization qualified on cleaned host dcd242f1; synthetic scope, not live or all protocol paths",
   "previousCandidate": {
     "packageSource": "133e88cce2e1a37288e4f0bb61bb6d8c726ed6ef",
     "registryPublished": false,
@@ -298,5 +298,21 @@
     "types/railgun-kohaku-snapshot-contract.d.ts",
     "types/read.d.mts",
     "types/read.d.ts"
-  ]
+  ],
+  "qualification": {
+    "hostCommit": "dcd242f13da2a1e9b49a1ac092ba42ef45f1be20",
+    "packageEvidenceCommit": "018d98a8f68e6d43b99c7a57b97fd7be6f774541",
+    "nativeArchive": "docs/qualification/installed-owner-final-tar-d-0.6.0-2026-10-08",
+    "packagedArchive": "docs/qualification/installed-owner-packaged-final-0.6.0-2026-10-08",
+    "cases": [
+      "prepare",
+      "unchanged-list",
+      "stored-proof-cold",
+      "signed-unfinished",
+      "signed-proof-cold"
+    ],
+    "live": false,
+    "packagedProofExecution": false,
+    "retainedPoiFacadeNative": false
+  }
 }

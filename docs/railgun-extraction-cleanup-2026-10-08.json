@@ -25,7 +25,16 @@
       "tests": 432,
       "result": "passed"
     },
-    "nativeAndPackaged": "pending on this committed source"
+    "nativeAndPackaged": {
+      "hostCommit": "dcd242f13da2a1e9b49a1ac092ba42ef45f1be20",
+      "packageEvidenceCommit": "018d98a8f68e6d43b99c7a57b97fd7be6f774541",
+      "privateSyntheticCases": 5,
+      "qualified": true,
+      "originalMainsAndDriversNaturalExitZero": true,
+      "inputPostchecksUnchanged": true,
+      "unsignedPackagedInitialization": "passed; earlier sandbox abort preserved separately",
+      "live": false
+    }
   },
   "earlierAttempt": {
     "outcome": "interrupted by operator after sandbox listen EPERM failures",

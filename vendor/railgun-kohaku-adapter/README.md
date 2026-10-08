@@ -6,10 +6,10 @@ Freedom installs `@freedom/railgun-kohaku-adapter@0.6.0` from the committed
 The source repository is https://github.com/solardev-xyz/railgun-kohaku-adapter.
 The package is MPL-2.0, private in npm metadata, and has not been published to npm.
 
-This candidate was packed from `fb3add6aa411375b42ed84735d4901bbc491c68e` with
+This artifact was packed from `fb3add6aa411375b42ed84735d4901bbc491c68e` with
 Node 24.18.1 and npm 11.16.0. Its SHA-256 is
 `6169f7445db3306feae9a16f35d6665e9f767e59b071a41a05e5f14fef02c59c`.
-Publication of that source and final installed acceptance are still pending.
+The source and evidence are published in the dedicated repository. Five final installed private preparation/refusal/restart cases and unsigned packaged initialization pass on cleaned host `dcd242f1`; `OWNER-0.6.0.json` pins the exact evidence commit and scope.
 
 The package owns the Railgun protocol algorithms, account stores, scan and proof
 jobs, disclosure plans, recovery lanes and Kohaku adapters. Freedom supplies the
@@ -40,8 +40,12 @@ ordinary unit tests do not establish those results.
 The preceding tar C candidate at `133e88cc` passed installed read, private
 preparation, unchanged-production-list rejection, stored-proof restart and unsigned
 packaged initialization checks. Those reports retain their exact source and tar
-pins. This candidate adds the separately reviewed retained-POI and owned-POI
-interfaces, so those earlier reports are not relabelled as final-tar qualification.
+pins. This artifact adds the separately reviewed retained-POI and owned-POI
+interfaces. The new final-tar campaign is separate from tar C and does not
+exercise those additional POI facade methods. Transact staging, foreign-recipient
+and relay native paths retain their earlier package pins. The signed-stop case is
+controlled cancellation, not crash recovery; the packaged probe is initialization,
+not packaged utility/proof execution or a full ordinary application launch.
 The current extraction does not constitute a completed live Sepolia spend or
 production UX integration.
 
