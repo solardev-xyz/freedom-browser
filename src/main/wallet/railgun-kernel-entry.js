@@ -1,6 +1,6 @@
 /** Fixed private-kernel entry. Install guards before importing host services.
  * Initialization is synchronous so the first parent init cannot miss its listener.
- * Legacy relay/POI jobs retain their separate, unchanged process entry.
+ * The installed owner uses this same fixed entry for its closed private job enum.
  */
 const {
   installRailgunExecutionBootstrap,

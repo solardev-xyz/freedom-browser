@@ -1,6 +1,6 @@
-/** Main-only OS port for the future Railgun owner. No protocol, key admission,
- * broker, deadline or closure claims live here. Entry stubs are deliberately not
- * supplied in this prerequisite: absent fixed entries fail closed at spawn.
+/** Main-only OS port for the installed Railgun owner. No protocol, key admission,
+ * broker, deadline or closure claims live here. Fixed package bootstraps own
+ * utility and storage-worker initialization; callers cannot select source files.
  */
 const path = require('path');
 const { types } = require('util');
