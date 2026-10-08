@@ -9,7 +9,7 @@
 // preload + the main-side sender policy) into updater.js, where the harness's
 // recorder stands in for the network and for quitting the app.
 
-const { test, expect, waitForPopoverFrame } = require('./fixtures');
+const { test, expect, clickOverGuest } = require('./fixtures');
 
 const dispatch = (app, event) =>
   app.evaluate((_electron, ev) => globalThis.__FREEDOM_TEST_HARNESS__.dispatchUpdate(ev), event);
@@ -35,8 +35,6 @@ async function openSettingsUpdates(window, electronApp) {
 async function openMenu(window) {
   await window.click('#menu-button');
   await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
-  // Submit the menu frame before a synthetic row click can reach the guest below it.
-  await waitForPopoverFrame(window);
 }
 
 test('without a running updater both surfaces say so instead of offering a dead button', async ({
@@ -59,7 +57,7 @@ test('without a running updater both surfaces say so instead of offering a dead 
   // Clicking it explains why, in Settings → About Freedom's Updates panel,
   // rather than doing nothing.
   await window.locator('[data-test="address-input"]').evaluate((el) => el.blur());
-  await row.click();
+  await clickOverGuest(row);
   await expect(window.locator('#menu-dropdown')).not.toHaveClass(/open/);
   await expect(window.locator('[data-test="address-input"]')).toHaveValue(
     'freedom://settings/about/updates'
@@ -140,7 +138,7 @@ test('check → download → ready walks both surfaces, and the actions reach th
   await openMenu(window);
   await expect(window.locator('#update-menu-label')).toHaveText('Install Update and Close');
   await expect(window.locator('#update-menu-status')).toHaveText('v9.9.9');
-  await window.locator('#check-updates-btn').click();
+  await clickOverGuest(window.locator('#check-updates-btn'));
   await expect.poll(() => requests(electronApp)).toEqual(['check', 'install', 'install']);
 });
 
