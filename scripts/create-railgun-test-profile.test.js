@@ -8,7 +8,8 @@ const { provisionTestProfileVault } = require('./create-railgun-test-profile');
 const identity = require('../src/main/identity');
 const identityManager = require('../src/main/identity-manager');
 const signers = require('../src/main/wallet/signers');
-const { readRailgunSubmitterMetadata } = require('../src/main/wallet/railgun-private-submission');
+const { readMetadata: readRailgunSubmitterMetadata } =
+  require('../src/main/identity/railgun-submitter-host').createRailgunSubmitterHost();
 const submitterMetadata = require('./write-railgun-submitter-metadata');
 
 const PASSWORD = 'q'.repeat(44);

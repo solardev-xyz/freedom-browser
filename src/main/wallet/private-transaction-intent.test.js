@@ -103,3 +103,29 @@ test('Railgun host intent fixtures retain their original source projections', ()
   );
   expect(createHash('sha256').update(bytes).digest('hex')).toBe(source.sha256);
 });
+
+// The historical public-cold fixture passed an actual signed transaction into
+// this host boundary. Receipt/event matching is package-owned, not exercised here.
+test('signed public Shield fixture keeps the exact host journal intent', async () => {
+  const { Wallet, Transaction } = require('ethers');
+  const fixture = require('../../../test/fixtures/railgun/public-shield-host-intent.json');
+  const wallet = new Wallet('0x' + '01'.repeat(32));
+  const tx = Transaction.from(
+    await wallet.signTransaction({
+      chainId: 11155111,
+      ...fixture.prepared,
+      nonce: 0,
+      gasLimit: 500000,
+      gasPrice: 100,
+    })
+  );
+  const input = { from: wallet.address, ...tx.toJSON() };
+  expect(input).toEqual(fixture.expectedPublicTransaction);
+  expect({
+    hash: tx.hash,
+    nonce: 0,
+    state: 'attempted',
+    intent: transactionIntent('railgun-native-shield', input),
+  }).toEqual(fixture.record);
+  expect(validIntent(fixture.record.intent)).toBe(true);
+});

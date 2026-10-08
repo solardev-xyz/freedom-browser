@@ -1,0 +1,148 @@
+{
+  "schema": "freedom-retained-host-script-tests-v1",
+  "sourceCommit": "9603b6dbf9df1c7646f9cf44ed35cb1f185a29ca",
+  "sourcePins": {
+    "scripts/create-railgun-test-profile.js": {
+      "sha256": "24a8e02a5822c23647a93d28d258fd338bf537bb4df6a611d92b108744bc71d6",
+      "gitBlob": "fe8dcb44ea47b228317733872e7ae85e2f106aa4",
+      "bytes": 3779
+    },
+    "scripts/create-railgun-test-profile.test.js": {
+      "sha256": "b0afc834033f0b3c827ae83e14797603378aa1544ee9794f77edf712b2a92c49",
+      "gitBlob": "e2cf1bd3d599b25f6bbe5f79bdfb08ebed4c8d34",
+      "bytes": 4367
+    },
+    "scripts/write-railgun-submitter-metadata.js": {
+      "sha256": "9b1818a37600a505a92e4b1852d36f4e89294a2100a09eaf26c2b7eff5cd3039",
+      "gitBlob": "eb3f4f70167b1df34f2df4126e654908765cdd4e",
+      "bytes": 16841
+    },
+    "scripts/write-railgun-submitter-metadata.test.js": {
+      "sha256": "328b294ea5499311030f6d35b73710c7d0561c1d8b917df094150b21504403e2",
+      "gitBlob": "183b2bda90912fb897ff5ff0cf81377c29be3906",
+      "bytes": 19824
+    },
+    "scripts/lib/railgun-vault-meta.js": {
+      "sha256": "a4c63fcf0386316708710ab3e74003ed842cb5ee2714eb4509f07cf323b3403e",
+      "gitBlob": "f7335a2a5ca5a0238e21a949d192d3c864bfe8aa",
+      "bytes": 2450
+    },
+    "scripts/lib/railgun-vault-meta.test.js": {
+      "sha256": "ac98ba517159a5464a8a4f157aa22cf6b7872329147275ce0300f8b99d7cd71a",
+      "gitBlob": "7af0519beaa6dbca4a1a99286d3e1b097694c5d2",
+      "bytes": 2900
+    },
+    "scripts/lib/railgun-metadata-continuation.js": {
+      "sha256": "9ca870d85b5348a87fc32cc74c7738b2cb0a69c6b12d7d9c436d0199372733bd",
+      "gitBlob": "50610d5532bda1febad403b85f79380d90d0df48",
+      "bytes": 8202
+    },
+    "scripts/fixtures/railgun-combined-poi-second-chain.test.js": {
+      "sha256": "bb83080aae78f0dce0043be6568002f2d884f96b1f5f3283cd2d432a43938283",
+      "gitBlob": "524ac8451fe1422795324f293a467aced3fd8593",
+      "bytes": 13942
+    },
+    "scripts/fixtures/railgun-relay-positive-native.test.js": {
+      "sha256": "f2ef434ecb31cea591658d623789ea1bfb1bd74eb69260d43e8b4c59859aeb6c",
+      "gitBlob": "541c8ff48f54aa90b6af0fdff57a975d05e3ec05",
+      "bytes": 65607
+    },
+    "scripts/fixtures/railgun-relay-cold-ready-native.test.js": {
+      "sha256": "88dd172f0b254b7772a3f9bdf82698cb366cee7e805fb48ed6388b878add6806",
+      "gitBlob": "4eab071a49fc7dbd3e29f02bbae503690abcf2a1",
+      "bytes": 32710
+    },
+    "scripts/fixtures/railgun-combined-poi-restart-storage.test.js": {
+      "sha256": "99cf5c1e8ea429bf96fc06edafdd217209e01e4e8e091283ab4f7efb418766cd",
+      "gitBlob": "b33389c227dc9884b23ac4074799e22cdf31a652",
+      "bytes": 11847
+    },
+    "scripts/fixtures/railgun-public-cold-data.test.js": {
+      "sha256": "7782319fe15b304a334f616a90c9332c426927fd49f93a0c46f10a162cc9b2ac",
+      "gitBlob": "90cdbd4cd0ec6fb23f2d5802b4c2a8a0b8e98e7f",
+      "bytes": 6059
+    },
+    "scripts/railgun-settings-source-closure.test.js": {
+      "sha256": "30f588d7317264a7923252685e2f036b295e058a53aca3e6c5346e844cbcf1ce",
+      "gitBlob": "c845e5cdfb53e1514fb28ff353cbc771d1cd6a60",
+      "bytes": 5043
+    },
+    "docs/qualification/railgun-shield-account-2026-10-03.json": {
+      "sha256": "dcf38019860d50b75100527e8f9e72da11b5870f0d029cb9d4bf29758305f044",
+      "gitBlob": "c3edf9ad9ba73cd7db2b56612e2c7ff8ab99f502",
+      "bytes": 9189
+    }
+  },
+  "retainedHostTools": [
+    "scripts/create-railgun-test-profile.js",
+    "scripts/create-railgun-test-profile.test.js",
+    "scripts/write-railgun-submitter-metadata.js",
+    "scripts/write-railgun-submitter-metadata.test.js",
+    "scripts/lib/railgun-vault-meta.js",
+    "scripts/lib/railgun-vault-meta.test.js"
+  ],
+  "unchangedLibraryBytes": [
+    "scripts/lib/railgun-vault-meta.js",
+    "scripts/lib/railgun-vault-meta.test.js"
+  ],
+  "changes": [
+    {
+      "from": [
+        "scripts/create-railgun-test-profile.js",
+        "scripts/create-railgun-test-profile.test.js",
+        "scripts/write-railgun-submitter-metadata.js",
+        "scripts/write-railgun-submitter-metadata.test.js"
+      ],
+      "to": [
+        "scripts/create-railgun-test-profile.js",
+        "scripts/create-railgun-test-profile.test.js",
+        "scripts/write-railgun-submitter-metadata.js",
+        "scripts/write-railgun-submitter-metadata.test.js"
+      ],
+      "scope": "Only production metadata reader rebound to fixed retained createRailgunSubmitterHost().readMetadata; exact original reader address checks remain. CLI repair output path inlined identically, with source parity control. No execution of CLI/funded repair."
+    },
+    {
+      "from": "scripts/fixtures/railgun-combined-poi-second-chain.test.js",
+      "to": "src/main/wallet/private-submission-reconciler.test.js",
+      "scope": "Four actual canonical refreshes, revision progression,33confirmations,preserved original resolution and one canonical query per refresh. Genuine encrypted journal replaces old journal observer mock. Synthetic send ordering remains historical."
+    },
+    {
+      "from": [
+        "scripts/fixtures/railgun-relay-positive-native.test.js",
+        "scripts/fixtures/railgun-relay-cold-ready-native.test.js"
+      ],
+      "to": "src/main/networks/private-rpc-read-budget.test.js",
+      "scope": "Genuine privacy context, exact provider URL/host, identity-bound destination/copied-client refusal,budget,two reads sharing single chain handshake and original budget drain. Native campaign observers remain historical."
+    },
+    {
+      "from": "scripts/fixtures/railgun-combined-poi-restart-storage.test.js",
+      "to": "src/main/wallet/privacy-storage-restart.test.js",
+      "scope": "Two exited Node processes, genuine encrypted store, callback exactly once, rejected callback preserving ciphertext, committed lease/counter/data preservation, unchanged floor, pending-to-completed update, reopen/data absence in ciphertext. Old campaign phase/record allowlists and wrapper restoration are archived subject-specific assertions, not claimed preserved by host storage test."
+    },
+    {
+      "from": "scripts/fixtures/railgun-public-cold-data.test.js",
+      "to": "src/main/wallet/private-transaction-intent.test.js",
+      "scope": "Actual signed public Shield transaction reaches real host transactionIntent and compares exact frozen public transcript. Receipt/event/credit matching remains package-owned and old fixture-specific; no full suite parity claim."
+    },
+    {
+      "from": "scripts/railgun-settings-source-closure.test.js",
+      "to": "src/main/settings-source-closure.test.js",
+      "scope": "Exact original AST eager import/relative closure traversal retained. Only old qualifier enumeration/source-list assertions removed from successor because their campaign subjects leave Freedom."
+    }
+  ],
+  "publicFixture": {
+    "path": "test/fixtures/railgun/public-shield-host-intent.json",
+    "sha256": "c908f26269ff28fbe4b446ba25264e8fdb2f1001d6cc0e6b411792a35537df3a",
+    "bytes": 4744,
+    "generation": "Original public-cold-data signing recipe with public dummy 0x01 repeated32 key; original prepared[0] source; deterministic ethers transaction and genuine host transactionIntent. Contains public signature values, no user credentials."
+  },
+  "excludedHistoricalDependencies": [
+    "scripts/lib/railgun-metadata-continuation.js",
+    "scripts/lib/railgun-metadata-continuation.test.js",
+    "scripts/qualify-railgun-private-live.js"
+  ],
+  "runtimeSurfaceChanged": false,
+  "dependenciesChanged": false,
+  "nativeCampaignExecuted": false,
+  "newPrivateGetter": false
+}
