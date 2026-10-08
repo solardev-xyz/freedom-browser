@@ -81,8 +81,7 @@ test('multiple adapters cannot race past the durable reservation, even with diff
 });
 
 test('a partial public intent survives reopening and retains its unresolved nonce without private amounts', async () => {
-  const { record, transaction } =
-    require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial();
+  const { record, transaction } = journalFixture('railgun-partial-unshield', false);
   const owner = { ...subject, principal: transaction.from };
   scope.close();
   ({ scope, handle } = open('fixture', owner));
@@ -366,29 +365,37 @@ function railgunIntent(kind, { tree = 0, nullifier = word(10) } = {}) {
   const {
     createRailgunPartialCapsuleData,
     createRailgunLegacyCapsuleData,
-  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  } = require('./fixtures/railgun-journal-capsule.fixture');
   const f =
     kind === 'railgun-partial-unshield'
       ? createRailgunPartialCapsuleData()
       : createRailgunLegacyCapsuleData(kind);
   f.inner.boundParams.treeNumber = tree;
   f.inner.nullifiers = [nullifier];
-  return require('./railgun-transact-intent').railgunTransactJournalIntent({
+  return require('@freedom/railgun-kohaku-adapter/host/journal-data').railgunTransactJournalIntent({
     ...f.capsule.preparation.transaction,
     from: subject.principal,
     data: f.encode(),
   });
 }
+// The unchanged structural projections belong to this host-journal boundary.
+// Full protocol generators and proof fixtures live in the standalone package.
+const journalFixtureRows = require('./fixtures/railgun-journal-histories.json');
+function journalFixture(kind, archived) {
+  const row = journalFixtureRows[`${kind}:${archived}`];
+  expect(row).toBeDefined();
+  return structuredClone(row);
+}
+test('retained journal fixture projections preserve their public source bytes', () => {
+  const fs = require('fs');
+  const { createHash } = require('crypto');
+  const provenance = require('./fixtures/railgun-journal-fixture-source.json');
+  const bytes = fs.readFileSync(require.resolve('./fixtures/railgun-journal-histories.json'));
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(provenance.historiesSha256);
+  expect(Object.keys(journalFixtureRows)).toHaveLength(6);
+});
 function railgunHistory(kind, archived, reverted = false) {
-  const record =
-    kind === 'railgun-partial-unshield'
-      ? require('../../../scripts/fixtures/railgun-partial-own-txid-data').samplePartial({
-          archived,
-        }).record
-      : require('../../../scripts/fixtures/railgun-own-txid-data').sample(
-          kind === 'railgun-token-unshield',
-          archived
-        ).record;
+  const { record } = journalFixture(kind, archived);
   if (reverted) {
     if (archived) record.status = 'reverted';
     else record.observation.status = 'reverted';
@@ -673,7 +680,7 @@ test.each(['ppv2', 'ordinary', 'unclassified', 'shield'])(
         kind: 'railgun-native-shield',
         digest: word(501),
         npk: old.intent.nullifier,
-        token: require('./railgun-shield-pins.json').wrappedNative,
+        token: require('./fixtures/railgun-journal-pins.json').wrappedNative,
         amount: '1000',
         noteValue: '998',
       };
@@ -692,7 +699,7 @@ test.each([false, true])(
       kind: 'railgun-native-shield',
       digest: word(501),
       npk: candidate.nullifier,
-      token: require('./railgun-shield-pins.json').wrappedNative,
+      token: require('./fixtures/railgun-journal-pins.json').wrappedNative,
       amount: '1000',
       noteValue: '998',
     };
