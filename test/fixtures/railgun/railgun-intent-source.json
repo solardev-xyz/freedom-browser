@@ -1,0 +1,7 @@
+{
+  "sourceCommit": "8285fb804c82011abd4fcc38ccc00d66b27132e3",
+  "source": "scripts/fixtures/railgun-transact-data.js",
+  "sourceSha256": "eb96647d3e82fe5d6995d125284c8bf43817180184be80890cf5e4c4c7ef0afb",
+  "projection": "fixture(false|true).transaction(); exact plain JSON fields, public dummy proof and ciphertext",
+  "sha256": "e0266e1fb1318e23253816d0aa612412ab8b3b1b9d2b1883bd912f7c83ca7f94"
+}

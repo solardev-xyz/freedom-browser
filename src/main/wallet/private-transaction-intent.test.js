@@ -80,9 +80,11 @@ test('a ragequit cannot be disguised as a non-exit intent', () => {
 test.each([false, true])(
   'Railgun private %s uses full calldata metadata and refuses other labels',
   (unshield) => {
-    const transaction = require('../../../scripts/fixtures/railgun-transact-data')
-      .fixture(unshield)
-      .transaction();
+    const transaction = structuredClone(
+      require('../../../test/fixtures/railgun/railgun-intent-transactions.json').find(
+        (row) => row.unshield === unshield
+      ).transaction
+    );
     const classified = transactionIntent('railgun-transact', transaction);
     expect(validIntent(classified)).toBe(true);
     expect(validIntent({ kind: classified.kind, digest: classified.digest })).toBe(false);
@@ -91,3 +93,13 @@ test.each([false, true])(
     expect(() => transactionIntent('railgun-transact', tx)).toThrow();
   }
 );
+
+test('Railgun host intent fixtures retain their original source projections', () => {
+  const fs = require('fs');
+  const { createHash } = require('crypto');
+  const source = require('../../../test/fixtures/railgun/railgun-intent-source.json');
+  const bytes = fs.readFileSync(
+    require.resolve('../../../test/fixtures/railgun/railgun-intent-transactions.json')
+  );
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(source.sha256);
+});

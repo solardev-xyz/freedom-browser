@@ -365,7 +365,7 @@ function railgunIntent(kind, { tree = 0, nullifier = word(10) } = {}) {
   const {
     createRailgunPartialCapsuleData,
     createRailgunLegacyCapsuleData,
-  } = require('./fixtures/railgun-journal-capsule.fixture');
+  } = require('../../../test/fixtures/railgun/railgun-journal-capsule.fixture');
   const f =
     kind === 'railgun-partial-unshield'
       ? createRailgunPartialCapsuleData()
@@ -380,7 +380,7 @@ function railgunIntent(kind, { tree = 0, nullifier = word(10) } = {}) {
 }
 // The unchanged structural projections belong to this host-journal boundary.
 // Full protocol generators and proof fixtures live in the standalone package.
-const journalFixtureRows = require('./fixtures/railgun-journal-histories.json');
+const journalFixtureRows = require('../../../test/fixtures/railgun/railgun-journal-histories.json');
 function journalFixture(kind, archived) {
   const row = journalFixtureRows[`${kind}:${archived}`];
   expect(row).toBeDefined();
@@ -389,8 +389,10 @@ function journalFixture(kind, archived) {
 test('retained journal fixture projections preserve their public source bytes', () => {
   const fs = require('fs');
   const { createHash } = require('crypto');
-  const provenance = require('./fixtures/railgun-journal-fixture-source.json');
-  const bytes = fs.readFileSync(require.resolve('./fixtures/railgun-journal-histories.json'));
+  const provenance = require('../../../test/fixtures/railgun/railgun-journal-fixture-source.json');
+  const bytes = fs.readFileSync(
+    require.resolve('../../../test/fixtures/railgun/railgun-journal-histories.json')
+  );
   expect(createHash('sha256').update(bytes).digest('hex')).toBe(provenance.historiesSha256);
   expect(Object.keys(journalFixtureRows)).toHaveLength(6);
 });
@@ -680,7 +682,7 @@ test.each(['ppv2', 'ordinary', 'unclassified', 'shield'])(
         kind: 'railgun-native-shield',
         digest: word(501),
         npk: old.intent.nullifier,
-        token: require('./fixtures/railgun-journal-pins.json').wrappedNative,
+        token: require('../../../test/fixtures/railgun/railgun-journal-pins.json').wrappedNative,
         amount: '1000',
         noteValue: '998',
       };
@@ -699,7 +701,7 @@ test.each([false, true])(
       kind: 'railgun-native-shield',
       digest: word(501),
       npk: candidate.nullifier,
-      token: require('./fixtures/railgun-journal-pins.json').wrappedNative,
+      token: require('../../../test/fixtures/railgun/railgun-journal-pins.json').wrappedNative,
       amount: '1000',
       noteValue: '998',
     };
