@@ -881,3 +881,23 @@ test('outcome accessor actively detects expiry and finalizes idle state without 
   clock.mockRestore();
   expect(outcome(value).reason).toBe('expired');
 });
+
+// Retained from the positive and cold relay fixture host acceptance cases.
+test('genuine provider identity and destination budget share one original chain handshake', async () => {
+  const destination = api.getPrivateRpcDestination(client, handle);
+  expect(api.assertPrivateRpcDestination(client, handle, destination)).toBe(destination);
+  expect(api.getPrivateRpcDestinationDetails(destination).url).toBe(mockUrls[0]);
+  expect(client.trust.queried).toEqual(['rpc.example.test']);
+  expect(() => api.getPrivateRpcDestination({ ...client }, handle)).toThrow();
+  const value = make({ envelope: { headers: [{ tag: 'finalized', maxRequests: 2 }] } });
+  for (let i = 0; i < 2; i++) await read(value, 'finalized', (result) => result.number === '0x1');
+  expect(methods()).toEqual(['eth_chainId', 'eth_getBlockByNumber', 'eth_getBlockByNumber']);
+  expect(
+    mockRequest.mock.calls.every(
+      ([actualHandle, url]) => actualHandle === handle && url === mockUrls[0]
+    )
+  ).toBe(true);
+  value.close();
+  await value.closed;
+  client.release();
+});

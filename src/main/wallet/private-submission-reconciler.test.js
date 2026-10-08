@@ -361,3 +361,30 @@ test('an aborted compact refresh cannot commit a delayed block response', async 
   await expect(pending).rejects.toMatchObject({ code: 'PRIVATE_RECONCILIATION_UNAVAILABLE' });
   expect(await journal.list()).toEqual(before);
 });
+
+// Retained canonical-refresh assertions from the second-chain campaign; this
+// successor uses the genuine encrypted host journal as well as the reconciler.
+test('four canonical refreshes preserve the resolution while advancing each original revision', async () => {
+  included();
+  await reconciler.resolve(hash, { minimumConfirmations: 3, review: accept });
+  const original = structuredClone((await journal.list())[0]);
+  responses.eth_blockNumber = '0x30';
+  rpc.request.mockClear();
+  for (let i = 0; i < 4; i++) {
+    await reconciler.refreshResolved();
+    const current = (await journal.list())[0];
+    expect(current.revision).toBe(original.revision + i + 1);
+    expect(current.observation.confirmations).toBe(33);
+    expect(current.resolution).toEqual(original.resolution);
+    expect(current.hash).toBe(original.hash);
+    await expect(journal.assertCanSubmit()).resolves.toBeUndefined();
+  }
+  expect(rpc.request.mock.calls.map(([method]) => method)).toEqual(
+    Array.from({ length: 4 }, () => ['eth_blockNumber', 'eth_getBlockByNumber']).flat()
+  );
+  expect(
+    rpc.request.mock.calls
+      .filter(([method]) => method === 'eth_getBlockByNumber')
+      .every(([, params]) => params[0] === '0x10' && params[1] === false)
+  ).toBe(true);
+});

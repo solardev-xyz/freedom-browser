@@ -30,8 +30,9 @@ async function provisionTestProfileVault(identityDir, password, now = new Date()
       vaultMetaRecord(keys, { userKnowsPassword: false, createdAt: now.toISOString() })
     )
   );
-  const submitter =
-    require('../src/main/wallet/railgun-private-submission').readRailgunSubmitterMetadata();
+  const submitter = require('../src/main/identity/railgun-submitter-host')
+    .createRailgunSubmitterHost()
+    .readMetadata();
   assert.equal(submitter.address, keys.userWallet.address.toLowerCase());
 }
 async function main() {

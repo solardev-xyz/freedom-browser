@@ -104,7 +104,9 @@ function snapshotIdentity(fsImpl, identityDir, root = true) {
 }
 function readSubmitterMetadata() {
   try {
-    return require('../src/main/wallet/railgun-private-submission').readRailgunSubmitterMetadata();
+    return require('../src/main/identity/railgun-submitter-host')
+      .createRailgunSubmitterHost()
+      .readMetadata();
   } catch {
     return null;
   }
@@ -426,9 +428,7 @@ if (
   const release = () => {
     if (lock) require('../src/main/profile-lock').releaseProfileLock(lock);
   };
-  const evidence = require('./lib/railgun-metadata-continuation').continuationDirectory(
-    path.join(__dirname, '..')
-  );
+  const evidence = path.join(__dirname, '..', 'tmp/privacy-research-oct7-l-a', 'metadata-repair-1');
   Promise.resolve()
     .then(() => {
       validateRepairArguments();

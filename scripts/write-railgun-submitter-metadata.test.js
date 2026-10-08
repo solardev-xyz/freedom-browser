@@ -10,7 +10,8 @@ const api = require('./write-railgun-submitter-metadata');
 const identity = require('../src/main/identity');
 const identityManager = require('../src/main/identity-manager');
 const signers = require('../src/main/wallet/signers');
-const { readRailgunSubmitterMetadata } = require('../src/main/wallet/railgun-private-submission');
+const { readMetadata: readRailgunSubmitterMetadata } =
+  require('../src/main/identity/railgun-submitter-host').createRailgunSubmitterHost();
 
 const PASSWORD = 'p'.repeat(32);
 const NOW = new Date('2026-10-07T20:00:00.000Z');
@@ -488,4 +489,15 @@ test('main refuses bad arguments before any profile, Electron readiness or vault
     jest.dontMock('electron');
     jest.dontMock('../src/main/profile-resolver');
   }
+});
+
+test('fixed host repair output keeps its historical directory without importing the removed campaign', () => {
+  const source = fs.readFileSync(require.resolve('./write-railgun-submitter-metadata'), 'utf8');
+  const expression = /const evidence = (path\.join\([\s\S]*?\));/.exec(source);
+  expect(expression).not.toBeNull();
+  const actual = Function('path', '__dirname', `return ${expression[1]};`)(path, __dirname);
+  expect(actual).toBe(
+    path.join(__dirname, '..', 'tmp/privacy-research-oct7-l-a', 'metadata-repair-1')
+  );
+  expect(source).not.toContain("require('./lib/railgun-metadata-continuation')");
 });
