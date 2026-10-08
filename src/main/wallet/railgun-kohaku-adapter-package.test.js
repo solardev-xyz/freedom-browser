@@ -5,130 +5,14 @@ const { createHash } = require('crypto');
 const { execFileSync } = require('child_process');
 
 const PACKAGE = '@freedom/railgun-kohaku-adapter';
-const TARBALL = 'vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.5.0.tgz';
 const root = path.resolve(__dirname, '../../..');
 const installed = path.join(root, 'node_modules', PACKAGE);
-const modules = {
-  'railgun-private-destination': [
-    PACKAGE + '/host/data',
-    [
-      'isRailgunForeignTransfer',
-      'assertRailgunPrivateTransferRecipient',
-      'decodeRailgunForeignDestination',
-      'verifyRailgunForeignOutput',
-    ],
-  ],
-  'railgun-private-signature': [PACKAGE + '/host/data', ['normalizeRailgunSignature']],
-  'railgun-private-preparation': [
-    PACKAGE + '/host/data',
-    [
-      'selectRailgunPrivatePreparation',
-      'normalizeRailgunPrivatePreparation',
-      'normalizeRailgunPrivateOffer',
-      'normalizeRailgunPrivateOperation',
-    ],
-  ],
-  'railgun-private-results': [
-    PACKAGE + '/host/data',
-    [
-      'normalizeRailgunSignature',
-      'normalizeRailgunSpendSignature',
-      'normalizeRailgunSpendKeyRequest',
-      'normalizeRailgunPrivateVerification',
-      'normalizeRailgunPrivateReceiver',
-    ],
-  ],
-  'railgun-private-recovery-data': [
-    PACKAGE + '/host/data',
-    ['normalizeRailgunPrivateRecoveryInput', 'normalizeRailgunPrivateRecoveryResult'],
-  ],
+const record = require('../../../vendor/railgun-kohaku-adapter/OWNER-0.6.0.json');
 
-  'railgun-private-policy': [
-    PACKAGE + '/host/data',
-    ['TRANSACT_ABI', 'BOUND_PARAMS', 'validateRailgunPrivateTransaction'],
-  ],
-  'railgun-private-intent': [
-    PACKAGE + '/host/data',
-    ['validateRailgunPrivateSigningIntent', 'matchRailgunPrivateProvedTransaction'],
-  ],
-  'railgun-kohaku-private-adapter': [
-    PACKAGE,
-    ['createRailgunKohakuPrivateAdapter', 'createRailgunKohakuPrivateAdapterBroadcaster'],
-  ],
-  'railgun-kohaku-public-adapter': [
-    PACKAGE,
-    ['createRailgunKohakuPublicAdapter', 'createRailgunKohakuPublicAdapterSubmitter'],
-  ],
-  'railgun-kohaku-snapshot-plugin': [PACKAGE, ['createRailgunKohakuSnapshotPlugin']],
-  'railgun-kohaku-read-data': [
-    PACKAGE + '/read',
-    [
-      'normalizeRailgunKohakuReadFilter',
-      'projectRailgunKohakuBalance',
-      'projectRailgunKohakuNotes',
-    ],
-  ],
-  'railgun-kohaku-read-dispatch': [PACKAGE + '/read', ['dispatchRailgunKohakuRead']],
-};
-modules['railgun-poi-records'] = [
-  PACKAGE + '/host/poi',
-  [
-    'REQUIRED_LIST',
-    'MAX_NOTES',
-    'normalizePoiNotes',
-    'normalizePoiStatuses',
-    'normalizePoiProofs',
-    'verifyPoiMembership',
-    'verifyPoiEvent',
-  ],
-];
-modules['railgun-poi-payload'] = [PACKAGE + '/host/poi', ['normalizeRailgunPoiPayload']];
-modules['railgun-poi-creator-data'] = [
-  PACKAGE + '/host/poi',
-  [
-    'assertRailgunPoiCreatorEvents',
-    'normalizeRailgunPoiCreatorWitness',
-    'assertRailgunPoiCreatorVerification',
-  ],
-];
-modules['railgun-poi-shield-selector-data'] = [
-  PACKAGE + '/host/poi',
-  ['normalizeRailgunPoiShieldFacts', 'normalizeRailgunPoiShieldInput'],
-];
-modules['railgun-poi-transact-selector-data'] = [
-  PACKAGE + '/host/poi',
-  ['prepareRailgunPoiTransactSelectorInput', 'normalizeRailgunPoiTransactSelectorInput'],
-];
-modules['railgun-own-poi-binding'] = [
-  PACKAGE + '/host/poi',
-  ['assertRailgunOwnPoiCapture', 'assertRailgunOwnPoiStableCapture'],
-];
-modules['railgun-own-poi-shape-data'] = [
-  PACKAGE + '/host/poi',
-  ['getRailgunOwnPoiShape', 'assertRailgunOwnPoiPayloadShape'],
-];
-modules['railgun-owned-poi-records'] = [
-  PACKAGE + '/host/poi',
-  ['projectRailgunOwnedPoiRecord', 'normalizeRailgunOwnedPoiRecords', 'POI_LAUNCH_BLOCK'],
-];
-modules['railgun-poi-submit-data'] = [
-  PACKAGE + '/host/poi',
-  ['prepareRailgunPoiSubmission', 'normalizeRailgunPoiSubmission', 'inspectRailgunPoiResponse'],
-];
-modules['railgun-txid-note-witness'] = [
-  PACKAGE + '/host/poi',
-  ['findRailgunNoteTxidWitness', 'normalizeRailgunTxidWitness', 'normalizeRailgunNoteTxidWitness'],
-];
-modules['railgun-txid-projection'] = [
-  PACKAGE + '/host/poi',
-  ['createRailgunTxidProjection', 'validateRailgunTxidRow'],
-];
-modules['railgun-txid-omissions'] = [PACKAGE + '/host/poi', ['classifyRailgunTxidContinuity']];
-
-// npm pack output: plain ustar entries under package/, gzip-compressed.
-function untar(bytes) {
+// Parse reviewed npm pack bytes; refuse aliases, duplicate or nonordinary members.
+function unpack(bytes) {
   const tar = zlib.gunzipSync(bytes),
-    files = {};
+    files = new Map();
   for (let offset = 0; offset + 512 <= tar.length;) {
     const header = tar.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
@@ -136,263 +20,121 @@ function untar(bytes) {
       header.subarray(start, end).toString('utf8').replace(/\0.*$/s, '');
     expect(field(156, 157)).toMatch(/^0?$/);
     const name = [field(345, 500), field(0, 100)].filter(Boolean).join('/');
+    expect(name.startsWith('package/')).toBe(true);
+    expect(name.split('/').some((part) => part === '..' || part === '')).toBe(false);
+    expect(files.has(name.slice(8))).toBe(false);
     const size = parseInt(field(124, 136).trim(), 8);
-    expect(Object.hasOwn(files, name)).toBe(false);
-    files[name] = tar.subarray(offset + 512, offset + 512 + size);
+    expect(Number.isSafeInteger(size) && size >= 0).toBe(true);
+    expect(offset + 512 + size).toBeLessThanOrEqual(tar.length);
+    files.set(name.slice(8), tar.subarray(offset + 512, offset + 512 + size));
     offset += 512 + Math.ceil(size / 512) * 512;
   }
   return files;
 }
+function installedFiles(directory, prefix = '') {
+  return fs
+    .readdirSync(directory)
+    .flatMap((name) => {
+      const file = path.join(directory, name),
+        stat = fs.lstatSync(file);
+      expect(stat.isSymbolicLink()).toBe(false);
+      if (stat.isDirectory()) return installedFiles(file, prefix + name + '/');
+      expect(stat.isFile()).toBe(true);
+      return [prefix + name];
+    })
+    .sort();
+}
 
-test.each(Object.entries(modules))(
-  '%s keeps its export shape and re-exports the package function objects',
-  (name, [specifier, keys]) => {
-    const freedom = require('./' + name);
-    const upstream = require(specifier);
-    expect(Object.getPrototypeOf(freedom)).toBe(Object.prototype);
-    expect(Object.keys(freedom)).toEqual(keys);
-    for (const key of keys) {
-      expect(typeof upstream[key]).toBe(
-        ['TRANSACT_ABI', 'BOUND_PARAMS', 'REQUIRED_LIST'].includes(key)
-          ? 'string'
-          : ['MAX_NOTES', 'POI_LAUNCH_BLOCK'].includes(key)
-            ? 'number'
-            : 'function'
-      );
-      expect(freedom[key]).toBe(upstream[key]);
-    }
-  }
-);
+test('the installed owner package exactly matches the reviewed tarball and lock', () => {
+  const pkg = require('../../../package.json'),
+    lock = require('../../../package-lock.json');
+  const entry = lock.packages['node_modules/' + PACKAGE];
+  const bytes = fs.readFileSync(path.join(root, record.tarball));
+  expect(record.packageSource).toBe('fb3add6aa411375b42ed84735d4901bbc491c68e');
+  expect(record.sha256).toBe('6169f7445db3306feae9a16f35d6665e9f767e59b071a41a05e5f14fef02c59c');
+  expect(record.files).toBe(279);
+  expect(pkg.dependencies[PACKAGE]).toBe('file:' + record.tarball);
+  expect(entry.resolved).toBe('file:' + record.tarball);
+  expect(entry.version).toBe('0.6.0');
+  expect(entry.integrity).toBe(record.integrity);
+  expect(entry.integrity).toBe('sha512-' + createHash('sha512').update(bytes).digest('base64'));
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(record.sha256);
+  const files = unpack(bytes);
+  expect([...files.keys()].sort()).toEqual(record.members);
+  expect(files.size).toBe(record.files);
+  expect(installedFiles(installed)).toEqual(record.members);
+  for (const [name, content] of files)
+    expect(fs.readFileSync(path.join(installed, name))).toEqual(content);
+  const manifest = JSON.parse(files.get('package.json'));
+  expect([manifest.name, manifest.version, manifest.license, manifest.private]).toEqual([
+    PACKAGE,
+    '0.6.0',
+    'MPL-2.0',
+    true,
+  ]);
+  expect(manifest.peerDependencies).toEqual({ ethers: '^6.17.0', 'better-sqlite3': '13.0.3' });
+  expect(manifest.peerDependenciesMeta).toEqual({ 'better-sqlite3': { optional: true } });
+});
 
-test('the package resolves to one installed copy from the wallet modules', () => {
-  expect(require.resolve(PACKAGE, { paths: [__dirname] })).toBe(path.join(installed, 'index.cjs'));
-  expect(require.resolve(PACKAGE + '/read', { paths: [__dirname] })).toBe(
-    path.join(installed, 'read.cjs')
-  );
-  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+test('main imports resolve one package with identical CJS and ESM public functions', () => {
+  const lock = require('../../../package-lock.json');
   expect(
     Object.keys(lock.packages).filter((key) => key.endsWith('node_modules/' + PACKAGE))
   ).toEqual(['node_modules/' + PACKAGE]);
-  // Real Node module cache, not Jest's per-file registry: every loaded package
-  // file comes from one directory, each implementation file exactly once.
-  const loaded = JSON.parse(
+  const entries = ['', '/read', '/host/data', '/host/poi', '/host/owner', '/host/journal-data'];
+  const result = JSON.parse(
     execFileSync(
       process.execPath,
       [
         '-e',
-        `for (const name of ${JSON.stringify(Object.keys(modules))}) require(${JSON.stringify(
-          __dirname
-        )} + '/' + name);
-        process.stdout.write(JSON.stringify(Object.keys(require.cache).filter((file) =>
-          file.includes('railgun-kohaku-adapter'))));`,
+        `
+    const assert = require('assert/strict');
+    (async () => {
+      const specs = ${JSON.stringify(entries)}.map(s => ${JSON.stringify(PACKAGE)} + s);
+      for (const spec of specs) {
+        const cjs = require(spec), esm = await import(spec);
+        for (const [key, value] of Object.entries(cjs)) assert.equal(esm[key], value);
+      }
+      assert.deepEqual(Object.keys(require(specs[4])), ['initializeRailgunMain']);
+      const files = Object.keys(require.cache).filter(p => p.includes('/railgun-kohaku-adapter/'));
+      process.stdout.write(JSON.stringify({ entries: specs.map(s => require.resolve(s)), files }));
+    })().catch(e => { console.error(e); process.exitCode = 1; });
+  `,
       ],
       { cwd: root, encoding: 'utf8' }
     )
   );
-  expect(loaded.sort()).toEqual(
+  expect(result.entries).toEqual(
     [
       'index.cjs',
       'read.cjs',
       'host-data.cjs',
       'host-poi.cjs',
-      'src/data/railgun-poi-records.js',
-      'src/data/railgun-poi-payload.js',
-      'src/data/railgun-poi-creator-data.js',
-      'src/data/railgun-poi-shield-selector-data.js',
-      'src/data/railgun-poi-transact-selector-data.js',
-      'src/data/railgun-own-poi-binding.js',
-      'src/data/railgun-own-poi-shape-data.js',
-      'src/data/railgun-owned-poi-records.js',
-      'src/data/railgun-poi-submit-data.js',
-      'src/data/railgun-txid-note-witness.js',
-      'src/data/railgun-txid-projection.js',
-      'src/data/railgun-txid-omissions.js',
-      'src/data/railgun-own-poi-payload-binding.js',
-
-      'src/data/railgun-private-policy.js',
-      'src/data/railgun-private-intent.js',
-      'src/data/railgun-private-offer.js',
-      'src/data/railgun-private-capsule.js',
-      'src/data/railgun-private-destination.js',
-      'src/data/railgun-private-signature.js',
-      'src/data/railgun-private-preparation.js',
-      'src/data/railgun-private-results.js',
-      'src/data/railgun-private-recovery-data.js',
-      'src/railgun-kohaku-private-adapter.js',
-      'src/railgun-kohaku-public-adapter.js',
-      'src/railgun-kohaku-read-data.js',
-      'src/railgun-kohaku-read-dispatch.js',
-      'src/railgun-kohaku-snapshot-plugin.js',
-      'src/railgun-shield-pins.json',
-    ]
-      .map((name) => path.join(installed, name))
-      .sort()
+      'host-owner.cjs',
+      'host-journal-data.cjs',
+    ].map((name) => path.join(installed, name))
   );
-});
-
-test('the installed package is the committed tarball the lockfile names', () => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  expect(pkg.dependencies[PACKAGE]).toBe('file:' + TARBALL);
-  const entry = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).packages[
-    'node_modules/' + PACKAGE
-  ];
-  const bytes = fs.readFileSync(path.join(root, TARBALL));
-  expect(entry.resolved).toBe('file:' + TARBALL);
-  expect(entry.integrity).toBe('sha512-' + createHash('sha512').update(bytes).digest('base64'));
-  expect(createHash('sha256').update(bytes).digest('hex')).toBe(
-    '190ec1f2225afca9663fbd67ac1b3b8601071c58db9119961797e7ebdd03ab52'
-  );
-  const files = untar(bytes);
-  expect(Object.keys(files).sort()).toEqual(
-    [
-      'docs/execution/INTEGRATION.md',
-      'docs/execution/PROVENANCE.json',
-      'host-bootstrap.cjs',
-      'host-execution.cjs',
-      'host-execution.mjs',
-      'src/execution/host-bindings.js',
-      'src/execution/job-locations.js',
-      'src/execution/railgun-artifacts.js',
-      'src/execution/railgun-engine-manifest.json',
-      'src/execution/railgun-engine-runtime.js',
-      'src/execution/railgun-identity-job.js',
-      'src/execution/railgun-private-capsule.js',
-      'src/execution/railgun-private-operate-job.js',
-      'src/execution/railgun-private-prepare-job.js',
-      'src/execution/railgun-private-prover.js',
-      'src/execution/railgun-private-receive-job.js',
-      'src/execution/railgun-private-reconstruct.js',
-      'src/execution/railgun-private-recover-job.js',
-      'src/execution/railgun-private-verify-job.js',
-      'src/execution/railgun-private-witness.js',
-      'src/execution/railgun-process-guards.js',
-      'src/execution/railgun-prover-manifest.json',
-      'src/execution/railgun-prover-runtime.js',
-      'src/execution/railgun-relay-capsule.js',
-      'src/execution/railgun-relay-intent.js',
-      'src/execution/railgun-relay-poi-history.js',
-      'src/execution/railgun-relay-pre-poi-data.js',
-      'src/execution/railgun-relay-quote-data.js',
-      'src/execution/railgun-relay-record-stream.js',
-      'src/execution/railgun-relay-recovery-data.js',
-      'src/execution/railgun-relay-transaction.js',
-      'src/execution/railgun-relay-wallet-data.js',
-      'src/execution/railgun-remote.js',
-      'src/execution/railgun-spend-sign-job.js',
-      'src/execution/railgun-wallet-job.js',
-      'src/execution/railgun-wallet-records.js',
-      'src/execution/railgun-wallet-scan.js',
-      'types/host-bootstrap.d.ts',
-      'types/host-execution.d.mts',
-      'types/host-execution.d.ts',
-      'LICENSE',
-      'NOTICE.md',
-      'README.md',
-      'index.cjs',
-      'index.mjs',
-      'package.json',
-      'read.cjs',
-      'host-data.cjs',
-      'host-poi.cjs',
-      'src/data/railgun-poi-records.js',
-      'src/data/railgun-poi-payload.js',
-      'src/data/railgun-poi-creator-data.js',
-      'src/data/railgun-poi-shield-selector-data.js',
-      'src/data/railgun-poi-transact-selector-data.js',
-      'src/data/railgun-own-poi-binding.js',
-      'src/data/railgun-own-poi-shape-data.js',
-      'src/data/railgun-owned-poi-records.js',
-      'src/data/railgun-poi-submit-data.js',
-      'src/data/railgun-txid-note-witness.js',
-      'src/data/railgun-txid-projection.js',
-      'src/data/railgun-txid-omissions.js',
-      'src/data/railgun-own-poi-payload-binding.js',
-
-      'src/data/railgun-private-policy.js',
-      'src/data/railgun-private-intent.js',
-      'src/data/railgun-private-offer.js',
-      'src/data/railgun-private-capsule.js',
-      'src/data/railgun-private-destination.js',
-      'src/data/railgun-private-signature.js',
-      'src/data/railgun-private-preparation.js',
-      'src/data/railgun-private-results.js',
-      'src/data/railgun-private-recovery-data.js',
-      'src/railgun-engine-manifest.json',
-      'src/railgun-prover-manifest.json',
-      'read.mjs',
-      'data.cjs',
-      'data.mjs',
-      'host-data.mjs',
-      'host-poi.mjs',
-      'types/host-poi.d.ts',
-      'types/host-poi.d.mts',
-      'src/data/index.js',
-      'types/data.d.ts',
-      'types/data.d.mts',
-      'types/host-data.d.ts',
-      'types/host-data.d.mts',
-      'src/railgun-kohaku-private-adapter.js',
-      'src/railgun-kohaku-public-adapter.js',
-      'src/railgun-kohaku-read-data.js',
-      'src/railgun-kohaku-read-dispatch.js',
-      'src/railgun-kohaku-snapshot-plugin.js',
-      'src/railgun-shield-pins.json',
-      'types/index.d.mts',
-      'types/index.d.ts',
-      'types/railgun-kohaku-private-contract.d.ts',
-      'types/railgun-kohaku-public-contract.d.ts',
-      'types/railgun-kohaku-read-contract.d.ts',
-      'types/railgun-kohaku-snapshot-contract.d.ts',
-      'types/read.d.mts',
-      'types/read.d.ts',
-    ]
-      .map((name) => 'package/' + name)
-      .sort()
-  );
-  for (const [name, content] of Object.entries(files))
-    expect([name, fs.readFileSync(path.join(installed, name.slice('package/'.length)))]).toEqual([
-      name,
-      content,
-    ]);
-  const manifest = JSON.parse(files['package/package.json']);
-  expect([manifest.name, manifest.version, manifest.license]).toEqual([
-    PACKAGE,
-    entry.version,
-    'MPL-2.0',
-  ]);
-  expect(manifest.peerDependencies).toEqual({ ethers: '^6.17.0' });
-});
-
-test('Freedom keeps the shield pins the package adapters read, byte for byte', () => {
-  expect(fs.readFileSync(path.join(__dirname, 'railgun-shield-pins.json'))).toEqual(
-    fs.readFileSync(path.join(installed, 'src/railgun-shield-pins.json'))
-  );
-});
-
-test('Freedom keeps new-capsule creation while sharing preparation and recovery data', () => {
-  const host = require(PACKAGE + '/host/data');
-  const capsule = require('./railgun-private-capsule');
-  expect(capsule.normalizeRailgunPrivateCapsule).toBe(host.normalizeRailgunPrivateCapsule);
-  expect(capsule.digestRailgunPrivateCapsule).toBe(host.digestRailgunPrivateCapsule);
-  expect(typeof capsule.normalizeRailgunNewCapsule).toBe('function');
-  expect(require('./railgun-private-preparation').normalizeRailgunPrivateOffer).toBe(
-    host.normalizeRailgunPrivateOffer
-  );
-});
-
-// Result validators and runtime authentication must bind the same build.
-test.each(['engine', 'prover'])(
-  'package %s manifest matches the authenticated Freedom runtime',
-  (name) => {
-    expect(fs.readFileSync(path.join(__dirname, `railgun-${name}-manifest.json`))).toEqual(
-      fs.readFileSync(path.join(installed, `src/railgun-${name}-manifest.json`))
-    );
+  expect(result.files.length).toBeGreaterThan(0);
+  expect(new Set(result.files).size).toBe(result.files.length);
+  for (const file of result.files) {
+    expect(file.startsWith(installed + path.sep)).toBe(true);
+    expect(record.members).toContain(path.relative(installed, file));
   }
-);
+});
 
-test('only the pure own-POI binder moves; host launch helpers stay local', () => {
-  const local = require('./railgun-own-poi-proof-data');
-  expect(local.bindRailgunOwnPoiPayload).toBe(
-    require(PACKAGE + '/host/poi').bindRailgunOwnPoiPayload
-  );
+test('package internals cannot be loaded through application package subpaths', () => {
+  for (const name of [
+    'src/owners/host-bindings.js',
+    'src/owners/railgun-account-wallet.js',
+    'src/execution/railgun-private-operate-job.js',
+    'package.json',
+  ])
+    expect(() => require.resolve(PACKAGE + '/' + name)).toThrow();
+});
+
+test('trusted owner authority refuses fabricated receipts before initialization', () => {
+  const authority = require(PACKAGE + '/host/owner-authority');
+  expect(Object.keys(authority)).toHaveLength(6);
+  for (const assertReceipt of Object.values(authority))
+    expect(() => assertReceipt(Object.freeze({}))).toThrow();
 });
