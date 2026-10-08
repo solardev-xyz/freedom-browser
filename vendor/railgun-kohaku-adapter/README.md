@@ -2,14 +2,29 @@
 
 Freedom installs `@freedom/railgun-kohaku-adapter@0.6.0` from the committed
 `freedom-railgun-kohaku-adapter-0.6.0.tgz`. The lockfile binds its SHA-512 integrity;
-`OWNER-0.6.0.json` records the source commit, SHA-256 and exact 279-file membership.
+`OWNER-0.6.0.json` records the source commit, SHA-256 and exact 280-file membership.
 The source repository is https://github.com/solardev-xyz/railgun-kohaku-adapter.
 The package is MPL-2.0, private in npm metadata, and has not been published to npm.
 
-This artifact was packed from `fb3add6aa411375b42ed84735d4901bbc491c68e` with
+This artifact was packed from `cfc47ae3076ebce5fc6cbed949ee54eccb253bab` with
 Node 24.18.1 and npm 11.16.0. Its SHA-256 is
-`6169f7445db3306feae9a16f35d6665e9f767e59b071a41a05e5f14fef02c59c`.
-The source and evidence are published in the dedicated repository. Five final installed private preparation/refusal/restart cases and unsigned packaged initialization pass on cleaned host `dcd242f1`; `OWNER-0.6.0.json` pins the exact evidence commit and scope.
+`9584f3756ea49430b1bc6adc40dd401c06d2f6001c4b609be2dda286a5c63f35`. The packed
+files equal those of `1f6c66e7b17a4ed3ec6f2d93a10d3c153fdf6a97`; the later commit
+adds only unpublished qualification tools.
+
+Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
+`previousCandidate` with its qualification scope), it adds:
+
+- `session.openSubmissionRecovery`: observe or resolve the exact journaled own
+  EOA submission of one held private operation, bound by its signing digest,
+  nullifier, tree and operation. Consent names the actual transaction endpoint.
+  The lane never signs, sends, retries or releases the hold.
+- `openAccount({ publicCache: 'new' | 'pending' })`: an explicit public-cache
+  rebuild or resume for accounts whose public generation belongs to another
+  source policy, including earlier package builds and legacy Freedom profiles.
+
+Its synthetic native acceptance on this host identity is recorded separately.
+It is not a live Sepolia result.
 
 The package owns the Railgun protocol algorithms, account stores, scan and proof
 jobs, disclosure plans, recovery lanes and Kohaku adapters. Freedom supplies the

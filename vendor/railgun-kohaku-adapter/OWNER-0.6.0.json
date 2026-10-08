@@ -1,22 +1,38 @@
 {
-  "packageSource": "fb3add6aa411375b42ed84735d4901bbc491c68e",
+  "packageSource": "cfc47ae3076ebce5fc6cbed949ee54eccb253bab",
   "registryPublished": false,
   "tarball": "vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
-  "sha256": "6169f7445db3306feae9a16f35d6665e9f767e59b071a41a05e5f14fef02c59c",
-  "integrity": "sha512-Hgrzfzlhq+sA+d7SES9bX622RgGObK5xVVEUOX01mYGS5jJPoGGoHS3ULyQKA8EnYtmQERasGfwnh4R9SBBvYg==",
-  "files": 279,
-  "nativeIntegrationQualified": true,
-  "status": "installed private preparation/refusal/restart and unsigned packaged initialization qualified on cleaned host dcd242f1; synthetic scope, not live or all protocol paths",
+  "sha256": "9584f3756ea49430b1bc6adc40dd401c06d2f6001c4b609be2dda286a5c63f35",
+  "integrity": "sha512-PZZyeECuxxxsixtvXAYomvow+vegjy6xGSvFJAUSuT/SDdhPKqXtir8nDOzbgxQjMvq/O/TqZuQdyEtG4a7Diw==",
+  "files": 280,
+  "nativeIntegrationQualified": false,
+  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding; final native qualification on this host identity pending",
   "previousCandidate": {
-    "packageSource": "133e88cce2e1a37288e4f0bb61bb6d8c726ed6ef",
+    "packageSource": "fb3add6aa411375b42ed84735d4901bbc491c68e",
     "registryPublished": false,
     "tarball": "vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
-    "sha256": "c0217e23804e9ec3871977fc8a802be5e087565225aa493b217240ac8e9a467c",
-    "integrity": "sha512-xPaSezDf/jkP3cqBxVf7oogVIGXd7OQCDpREiTYUeShcPtbee/K0MWH+TddOIUL6XmHIeRASln/0kvH7yf0xUw==",
-    "files": 278,
-    "nativeIntegrationQualified": false,
-    "status": "candidate; installed host checks passed; native and packaged acceptance pending",
-    "freedomGitBlob": "cff766bf07b3825de70e982ed4330f837111b62d"
+    "sha256": "6169f7445db3306feae9a16f35d6665e9f767e59b071a41a05e5f14fef02c59c",
+    "integrity": "sha512-Hgrzfzlhq+sA+d7SES9bX622RgGObK5xVVEUOX01mYGS5jJPoGGoHS3ULyQKA8EnYtmQERasGfwnh4R9SBBvYg==",
+    "files": 279,
+    "nativeIntegrationQualified": true,
+    "status": "installed private preparation/refusal/restart and unsigned packaged initialization qualified on cleaned host dcd242f1; synthetic scope, not live or all protocol paths",
+    "freedomGitBlob": "a39e7e82e6ec0007b99f43b08d5d895a7725f7bc",
+    "qualification": {
+      "hostCommit": "dcd242f13da2a1e9b49a1ac092ba42ef45f1be20",
+      "packageEvidenceCommit": "018d98a8f68e6d43b99c7a57b97fd7be6f774541",
+      "nativeArchive": "docs/qualification/installed-owner-final-tar-d-0.6.0-2026-10-08",
+      "packagedArchive": "docs/qualification/installed-owner-packaged-final-0.6.0-2026-10-08",
+      "cases": [
+        "prepare",
+        "unchanged-list",
+        "stored-proof-cold",
+        "signed-unfinished",
+        "signed-proof-cold"
+      ],
+      "live": false,
+      "packagedProofExecution": false,
+      "retainedPoiFacadeNative": false
+    }
   },
   "members": [
     "LICENSE",
@@ -108,6 +124,7 @@
     "src/owners/host-bindings.js",
     "src/owners/operational-facade.js",
     "src/owners/operational-poi-lane.js",
+    "src/owners/operational-submission-lane.js",
     "src/owners/process-jobs.js",
     "src/owners/railgun-account-enrollment.js",
     "src/owners/railgun-account-fence.js",
@@ -299,20 +316,5 @@
     "types/read.d.mts",
     "types/read.d.ts"
   ],
-  "qualification": {
-    "hostCommit": "dcd242f13da2a1e9b49a1ac092ba42ef45f1be20",
-    "packageEvidenceCommit": "018d98a8f68e6d43b99c7a57b97fd7be6f774541",
-    "nativeArchive": "docs/qualification/installed-owner-final-tar-d-0.6.0-2026-10-08",
-    "packagedArchive": "docs/qualification/installed-owner-packaged-final-0.6.0-2026-10-08",
-    "cases": [
-      "prepare",
-      "unchanged-list",
-      "stored-proof-cold",
-      "signed-unfinished",
-      "signed-proof-cold"
-    ],
-    "live": false,
-    "packagedProofExecution": false,
-    "retainedPoiFacadeNative": false
-  }
+  "packageRuntimeSource": "1f6c66e7b17a4ed3ec6f2d93a10d3c153fdf6a97"
 }
