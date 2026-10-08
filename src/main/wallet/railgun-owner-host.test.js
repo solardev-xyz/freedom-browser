@@ -35,6 +35,7 @@ const shape = {
   './privacy-journal-retention': ['validArchive'],
   './transaction-service': ['signAndSendTransaction'],
 };
+const runtime = Object.freeze({ archive: '/public/engine.js', proverArchive: '/public/prover.js', artifactDirectory: '/public/artifacts' });
 const refused = expect.objectContaining({ code: 'RAILGUN_OWNER_COMPOSITION_REFUSED' });
 function load(options = {}) {
   const imports = [],
@@ -70,13 +71,14 @@ function load(options = {}) {
     module = { exports: {} };
   vm.runInNewContext(source, {
     module,
+    Object,
     process: { type: options.realm },
     require(name) {
       imports.push(name);
       if (name === 'worker_threads') return { isMainThread: options.mainThread !== false };
-      if (name === 'util') return require('util');
+      if (name === 'util' || name === 'path') return require(name);
       if (name === '@freedom/railgun-kohaku-adapter/host/owner')
-        return { initializeRailgunOwnerHost: initialize };
+        return { initializeRailgunMain: initialize };
       if (factories[name]) return factories[name];
       if (modules[name]) return modules[name];
       throw new Error('Unexpected import');
@@ -95,12 +97,12 @@ function load(options = {}) {
 }
 test('captures fixed host families once with platform startup first and no returned authority', () => {
   const m = load();
-  expect(m.imports).toEqual(['worker_threads', 'util']);
-  expect(m.start()).toBeUndefined();
-  expect(m.imports[2]).toBe('./railgun-platform-host');
+  expect(m.imports).toEqual(['worker_threads', 'util', 'path']);
+  expect(m.start(runtime)).toBeUndefined();
+  expect(m.imports[3]).toBe('./railgun-platform-host');
   expect(m.imports.at(-1)).toBe('@freedom/railgun-kohaku-adapter/host/owner');
   expect(m.initialize).toHaveBeenCalledTimes(1);
-  const binding = m.initialize.mock.calls[0][0];
+  const binding = m.initialize.mock.calls[0][0].host;
   expect(Object.keys(binding)).toEqual([
     'context',
     'artifacts',
@@ -130,7 +132,7 @@ test('captures fixed host families once with platform startup first and no retur
   expect(binding.submitter).toBe(m.submitter);
   for (const entry of Object.values(m.factories))
     expect(Object.values(entry)[0].mock.calls).toEqual([[]]);
-  expect(() => m.start()).toThrow(refused);
+  expect(() => m.start(runtime)).toThrow(refused);
   expect(m.initialize).toHaveBeenCalledTimes(1);
 });
 test('host calls retain original receiver, arguments, native promise and thrown error', () => {
@@ -138,8 +140,8 @@ test('host calls retain original receiver, arguments, native promise and thrown 
     original = m.modules['../networks/private-rpc'].createPrivateRpc;
   const promise = Promise.resolve('public synthetic');
   original.mockReturnValue(promise);
-  m.start();
-  const port = m.initialize.mock.calls[0][0].rpc;
+  m.start(runtime);
+  const port = m.initialize.mock.calls[0][0].host.rpc;
   m.modules['../networks/private-rpc'].createPrivateRpc = () => {
     throw new Error('replacement');
   };
@@ -158,14 +160,14 @@ test.each([{ realm: 'renderer' }, { realm: 'utility' }, { mainThread: false }])(
   'wrong realm cannot capture host services: %p',
   (options) => {
     const m = load(options);
-    expect(() => m.start()).toThrow(refused);
-    expect(m.imports).toEqual(['worker_threads', 'util']);
+    expect(() => m.start(runtime)).toThrow(refused);
+    expect(m.imports).toEqual(['worker_threads', 'util', 'path']);
   }
 );
 test('an injected binding is rejected before host or package access', () => {
   const m = load();
   expect(() => m.start({ credentials: {} })).toThrow(refused);
-  expect(m.imports).toEqual(['worker_threads', 'util']);
+  expect(m.imports).toEqual(['worker_threads', 'util', 'path']);
 });
 test('failed package initialization cannot be retried through this composition', () => {
   const error = new Error('preempted'),
@@ -173,18 +175,18 @@ test('failed package initialization cannot be retried through this composition',
       throw error;
     }),
     m = load({ initialize });
-  expect(() => m.start()).toThrow(error);
-  expect(() => m.start()).toThrow(refused);
+  expect(() => m.start(runtime)).toThrow(error);
+  expect(() => m.start(runtime)).toThrow(refused);
   expect(initialize).toHaveBeenCalledTimes(1);
 });
 test('missing or accessor host methods refuse without invoking the accessor', () => {
   const m = load(),
     getter = jest.fn();
   Object.defineProperty(m.modules['./signers'], 'getSigner', { get: getter });
-  expect(() => m.start()).toThrow(refused);
+  expect(() => m.start(runtime)).toThrow(refused);
   expect(getter).not.toHaveBeenCalled();
   expect(m.initialize).not.toHaveBeenCalled();
-  expect(() => m.start()).toThrow(refused);
+  expect(() => m.start(runtime)).toThrow(refused);
 });
 function nodes(tree, visit) {
   if (!tree || typeof tree !== 'object') return;
@@ -282,4 +284,37 @@ test('the staged composition and its authority hosts remain unreachable from pro
   }
   scan(root);
   expect(violations).toEqual([]);
+});
+
+
+test('returns only the original closed facade and captures runtime data without getters or overrides', () => {
+  const facade = Object.freeze({ createAccount: jest.fn(), openAccount: jest.fn() });
+  const initialize = jest.fn(() => facade);
+  const m = load({ initialize });
+  const input = { ...runtime };
+  expect(m.start(input)).toBe(facade);
+  const captured = initialize.mock.calls[0][0].runtime;
+  expect(captured).toEqual(runtime);
+  expect(captured).not.toBe(input);
+  expect(Object.isFrozen(captured)).toBe(true);
+  input.archive = '/changed/engine.js';
+  expect(captured.archive).toBe(runtime.archive);
+});
+test.each([
+  null, {}, { ...runtime, filename: '/override.js' }, { ...runtime, archive: 'relative.js' },
+  { ...runtime, archive: '/bad\0path' }, { ...runtime, proverArchive: () => {} },
+])('refuses malformed fixed runtime before host startup: %p', (value) => {
+  const m = load();
+  expect(() => m.start(value)).toThrow(refused);
+  expect(m.imports).toEqual(['worker_threads', 'util', 'path']);
+});
+test('runtime accessor and proxy cannot execute before composition admission', () => {
+  const getter = jest.fn();
+  const value = { ...runtime };
+  Object.defineProperty(value, 'archive', { get: getter });
+  expect(() => load().start(value)).toThrow(refused);
+  expect(getter).not.toHaveBeenCalled();
+  const trap = jest.fn();
+  expect(() => load().start(new Proxy(runtime, { get: trap }))).toThrow(refused);
+  expect(trap).not.toHaveBeenCalled();
 });

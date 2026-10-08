@@ -4,6 +4,7 @@
  */
 const { isMainThread } = require('worker_threads');
 const { types } = require('util');
+const path = require('path');
 const apply = Reflect.apply;
 let attempted = false;
 const fail = () =>
@@ -21,10 +22,24 @@ function fixed(receiver, names) {
   }
   return Object.freeze(methods);
 }
-function initializeRailgunOwner(...args) {
-  if (args.length || !isMainThread || (process.type !== undefined && process.type !== 'browser'))
+function initializeRailgunOwner(runtime, ...extra) {
+  if (extra.length || !isMainThread || (process.type !== undefined && process.type !== 'browser'))
     throw fail();
   if (attempted) throw fail();
+  if (!runtime || types.isProxy(runtime) || Object.getPrototypeOf(runtime) !== Object.prototype)
+    throw fail();
+  const fields = Object.getOwnPropertyDescriptors(runtime);
+  const names = ['archive', 'proverArchive', 'artifactDirectory'];
+  if (Reflect.ownKeys(fields).length !== names.length) throw fail();
+  const capturedRuntime = {};
+  for (const name of names) {
+    const field = fields[name];
+    if (!field || !Object.hasOwn(field, 'value') || !field.enumerable ||
+        typeof field.value !== 'string' || field.value.length > 4096 ||
+        field.value.includes('\0') || !path.isAbsolute(field.value)) throw fail();
+    capturedRuntime[name] = field.value;
+  }
+  Object.freeze(capturedRuntime);
   attempted = true;
   // Capture actual application shutdown first, before loading other host services.
   const platform = require('./railgun-platform-host').createRailgunPlatformHost();
@@ -81,6 +96,9 @@ function initializeRailgunOwner(...args) {
   });
   // The package initializer owns its global single-instance marker and captures
   // these same context/artifact capabilities for its existing execution helpers.
-  require('@freedom/railgun-kohaku-adapter/host/owner').initializeRailgunOwnerHost(bindings);
+  return require('@freedom/railgun-kohaku-adapter/host/owner').initializeRailgunMain({
+    host: bindings,
+    runtime: capturedRuntime,
+  });
 }
 module.exports = { initializeRailgunOwner };
