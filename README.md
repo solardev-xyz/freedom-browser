@@ -61,6 +61,14 @@ The main process handles `bzz:`, `ipfs:`, `ipns:`, `web3:`, `rad:`, and `.onion`
 
 Contributors changing process responsibilities or adding IPC channels must follow the [architecture boundaries](docs/agent-playbooks/architecture-boundaries.md).
 
+The experimental Railgun wallet backend is maintained in the separate
+[`railgun-kohaku-adapter`](https://github.com/solardev-xyz/railgun-kohaku-adapter)
+repository. Freedom supplies fixed main-process host contracts for its vault,
+privacy transport, journal and Electron process lifecycle; protocol owners and
+proof jobs live in the installed package. See the [dependency provenance](vendor/railgun-kohaku-adapter/README.md)
+for the exact source and artifact pins. This backend is not yet a user-facing
+wallet feature.
+
 ## Security model
 
 - Electron runs with context isolation enabled and Node integration disabled in web content.

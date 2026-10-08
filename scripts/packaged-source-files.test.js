@@ -11,10 +11,15 @@ const included = (relative) => {
   return filter(filename, fs.statSync(filename));
 };
 
-test('packaging excludes the pinned obsolete reader and its tests while retaining the current store', () => {
-  expect(included('src/main/wallet/railgun-poi-intent-store-old-reader.fixture.js')).toBe(false);
-  expect(included('src/main/wallet/railgun-poi-intent-store.test.js')).toBe(false);
-  expect(included('src/main/wallet/railgun-poi-intent-store.js')).toBe(true);
-  expect(included('src/main/wallet/railgun-own-poi-shape-data.js')).toBe(true);
+// This checks the top-level source allowlist, not the merged platform matcher.
+// Actual dependency membership and asar loading have separate installed checks.
+test('the source allowlist includes Railgun host composition and excludes its test fixtures', () => {
+  expect(included('src/main/wallet/railgun-owner-host.js')).toBe(true);
+  expect(included('src/main/wallet/railgun-platform-host.js')).toBe(true);
+  expect(included('src/main/identity/railgun-credential-host.js')).toBe(true);
+  expect(included('src/main/wallet/railgun-owner-host.test.js')).toBe(false);
+  expect(included('test/fixtures/railgun/railgun-journal-histories.json')).toBe(false);
+  expect(included('test/fixtures/railgun/railgun-credential-vectors.json')).toBe(false);
+  expect(included('test/fixtures/railgun/railgun-credential-conformance.cjs')).toBe(false);
   expect(included('package.json')).toBe(true);
 });

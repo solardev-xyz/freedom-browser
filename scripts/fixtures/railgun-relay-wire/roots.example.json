@@ -1,9 +1,0 @@
-{
-  "engineSource": "<existing local engineSource>",
-  "walletSource": "<existing local walletSource>",
-  "sharedModelsSource": "<existing local sharedModelsSource>",
-  "clientSource": "<existing local clientSource>",
-  "serverSource": "<existing local serverSource>",
-  "engineDependencies": "<existing local engineDependencies>",
-  "buildTools": "<existing local buildTools>"
-}

@@ -1,9 +1,0 @@
-{
-  "name": "freedom-railgun-engine-qualification",
-  "private": true,
-  "version": "0.0.0",
-  "description": "Isolated Railgun engine qualification fixture; install with npm ci --ignore-scripts",
-  "dependencies": {
-    "@railgun-community/engine": "9.6.0"
-  }
-}

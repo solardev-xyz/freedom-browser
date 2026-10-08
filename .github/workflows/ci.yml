@@ -608,7 +608,6 @@ jobs:
   # #319 lesson: specs no job listed shipped their regressions green). Keep
   # the `e2e-not-in-ci:` prefix; the guard reads these lines.
   #
-  # e2e-not-in-ci: kohaku-runtime.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
   # e2e-not-in-ci: ppv2-deposit.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
   # e2e-not-in-ci: ppv2-exit-circuits.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
   # e2e-not-in-ci: ppv2-lifecycle.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified

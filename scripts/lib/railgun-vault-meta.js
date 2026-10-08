@@ -2,7 +2,7 @@
  * (createNewVault, importExistingMnemonic): the wallet addresses it shows
  * without unlock. Production's recovered submission binds a held proof's
  * submitter to its wallet-0 address before any disclosure
- * (railgun-private-submission.js readRailgunSubmitterMetadata), so a disposable
+ * (identity/railgun-submitter-host.js readMetadata), so a disposable
  * Railgun profile needs the same record. These helpers build it field for field
  * and create it exclusively; they never replace or rewrite an existing file.
  */

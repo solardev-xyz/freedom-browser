@@ -15,6 +15,29 @@ const cases = [
     false,
   ],
 ];
+test('Freedom retains only the fixed Railgun host composition and realm entries', () => {
+  const main = path.resolve(__dirname, '..');
+  const files = fs
+    .readdirSync(main, { recursive: true })
+    .filter(
+      (name) =>
+        path.basename(name).startsWith('railgun-') &&
+        /\.(?:js|json)$/.test(name) &&
+        !name.endsWith('.test.js')
+    )
+    .map((name) => name.split(path.sep).join('/'))
+    .sort();
+  expect(files).toEqual([
+    'identity/railgun-credential-host.js',
+    'identity/railgun-key-derivation.js',
+    'identity/railgun-submitter-host.js',
+    'wallet/railgun-kernel-entry.js',
+    'wallet/railgun-owner-host.js',
+    'wallet/railgun-owner-storage-entry.js',
+    'wallet/railgun-platform-host.js',
+    'wallet/railgun-source-identity-host.js',
+  ]);
+});
 test.each(cases)(
   '%s initializes the fixed realm before host imports and never accepts worker data',
   (filename, packagePath, installName, artifacts) => {

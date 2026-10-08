@@ -571,11 +571,11 @@ test.each(['', null, undefined])(
 );
 
 // Exact package-owned public vectors and repo-only harness; no runtime export.
-const publicCredentialVectors = require('./fixtures/railgun-credential-vectors.json');
+const publicCredentialVectors = require('../../../test/fixtures/railgun/railgun-credential-vectors.json');
 const {
   checkCredentialRow,
   checkStorageRootDrain,
-} = require('./fixtures/railgun-credential-conformance.cjs');
+} = require('../../../test/fixtures/railgun/railgun-credential-conformance.cjs');
 test.each(publicCredentialVectors.rows)(
   'normative host conformance for $profile.id account $accountIndex',
   async (row) => {
@@ -633,9 +633,13 @@ test.each(publicCredentialVectors.rows)(
 );
 test('normative vector fixture is byte-pinned with boundary account indices', () => {
   const fs = require('fs');
-  expect(hash(fs.readFileSync(require.resolve('./fixtures/railgun-credential-vectors.json')))).toBe(
-    'b8a307b09928447bded772da46de8826e597ce013d80e4a51458a1d9946cd1af'
-  );
+  expect(
+    hash(
+      fs.readFileSync(
+        require.resolve('../../../test/fixtures/railgun/railgun-credential-vectors.json')
+      )
+    )
+  ).toBe('b8a307b09928447bded772da46de8826e597ce013d80e4a51458a1d9946cd1af');
   expect(publicCredentialVectors.rows.map((row) => row.accountIndex)).toEqual([
     0, 1, 65535, 0, 1, 65535,
   ]);

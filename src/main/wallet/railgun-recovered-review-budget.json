@@ -1,9 +1,0 @@
-{
-  "reviewWindowMs": 30000,
-  "reviewMinMs": 15000,
-  "admissionMs": 0,
-  "sendReserveMs": 10000,
-  "preflightAllowanceMs": 5000,
-  "disclosureTailMs": 2000,
-  "eoaAllowanceMs": 5000
-}
