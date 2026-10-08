@@ -4,6 +4,7 @@ const path = require('path');
 jest.mock('electron', () => Object.freeze({}));
 
 test('shared transaction modules load only the package data closure', () => {
+  require('./ordinary-submission-policy');
   require('./privacy-journal-retention');
   require('./private-submission-journal');
   require('./private-transaction-intent');

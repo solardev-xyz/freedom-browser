@@ -5,7 +5,7 @@
 const { Transaction } = require('ethers');
 const { privacyError } = require('../networks/privacy-context');
 const pins = require('./ppv2-sepolia-pins.json');
-const { isRailgunTarget } = require('./railgun-shield-intent');
+const { isRailgunTarget } = require('@freedom/railgun-kohaku-adapter/host/journal-data');
 const address = (value) => typeof value === 'string' && /^0x[0-9a-f]{40}$/.test(value);
 function targets() {
   return new Set(
