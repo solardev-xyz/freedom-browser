@@ -434,8 +434,18 @@ function startDisabledTor() {
 // and an errored external node may still be inside its health-check retry.
 function syncProfileMode() {
   if (currentState !== STATUS.STOPPED) return;
+  clearTorServiceEntry();
+}
+
+// Clear the Tor registry entry, but keep publishing `disabled` for a stopped
+// Tor whose profile is set to Disabled. Every path that ends a node in
+// STOPPED goes through here rather than a bare clearService('tor'): the
+// profile may have been switched to Disabled while Tor was running (which
+// syncProfileMode() leaves alone), and once it stops the menu still needs the
+// mode so the toggle stays clickable on a build with no Arti bundled (#377).
+function clearTorServiceEntry() {
   clearService('tor');
-  if (isDisabledTorConfig()) {
+  if (currentState === STATUS.STOPPED && isDisabledTorConfig()) {
     updateService('tor', { socks: null, mode: MODE.DISABLED });
   }
 }
@@ -677,7 +687,7 @@ async function startTor(opts = {}) {
       setErrorState('tor', `Tor exited unexpectedly (code ${code})`);
     } else {
       updateState(STATUS.STOPPED);
-      clearService('tor');
+      clearTorServiceEntry();
     }
 
     if (pendingStart) {
@@ -745,7 +755,7 @@ function stopTor(options = {}) {
         forceKillTimeout = null;
       }
       if (!preserveOnionRouting) clearOnionRouting().catch(() => {});
-      clearService('tor');
+      clearTorServiceEntry();
       artiBootstrapped = false;
       artiOutputBuffer = '';
       resolve();

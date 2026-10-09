@@ -498,6 +498,48 @@ describe('tor-manager profile mode sync (#377)', () => {
     expect(torEntry().statusMessage).toBeNull();
   });
 
+  test('a running Tor switched to disabled publishes the mode once it stops', async () => {
+    const activeProfile = {
+      metadata: {
+        nodes: { tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' } },
+      },
+    };
+    const { mod } = loadTorManager({
+      activeProfile,
+      enableTorIntegration: true,
+      socksProbeResult: true,
+    });
+
+    await mod.startTor();
+    expect(torEntry().mode).toBe('external');
+
+    // Saved while running: syncProfileMode() leaves the live entry alone.
+    activeProfile.metadata.nodes.tor = { mode: 'disabled' };
+    mod.syncProfileMode();
+    expect(torEntry().mode).toBe('external');
+
+    await mod.stopTor();
+    expect(torEntry().mode).toBe('disabled');
+    expect(torEntry().statusMessage).toBeNull();
+  });
+
+  test('stopping a Tor whose profile is not disabled leaves no mode behind', async () => {
+    const activeProfile = {
+      metadata: {
+        nodes: { tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' } },
+      },
+    };
+    const { mod } = loadTorManager({
+      activeProfile,
+      enableTorIntegration: true,
+      socksProbeResult: true,
+    });
+
+    await mod.startTor();
+    await mod.stopTor();
+    expect(torEntry().mode).not.toBe('disabled');
+  });
+
   test('IPC registration publishes a profile that launches with Tor disabled', () => {
     const activeProfile = { metadata: { nodes: { tor: { mode: 'disabled' } } } };
     const { mod } = loadTorManager({ activeProfile, enableTorIntegration: true });
