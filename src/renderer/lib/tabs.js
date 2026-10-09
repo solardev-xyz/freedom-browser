@@ -1477,12 +1477,6 @@ const resolveInternalPageUrl = (url) => {
   return target.subPath ? `${pageUrl}#${target.subPath}` : pageUrl;
 };
 
-// Create a new tab.
-//
-// `options.background` leaves the current tab active and keeps its keyboard
-// focus — Chrome's disposition for Ctrl/Cmd+click and middle-click on a link
-// (#303). The tab is still created, appended and navigated; only the switch is
-// skipped. Everything else opens in the foreground, as before.
 // Run `fn` once `webview`'s guest is attached. Navigation methods
 // (`loadURL`) need the guest; called before it exists, the load is dropped.
 // Electron throws from `getWebContentsId()` until then, which is how an
@@ -1506,6 +1500,12 @@ const whenWebviewAttached = (webview, fn) => {
   webview.addEventListener('dom-ready', onReady);
 };
 
+// Create a new tab.
+//
+// `options.background` leaves the current tab active and keeps its keyboard
+// focus — Chrome's disposition for Ctrl/Cmd+click and middle-click on a link
+// (#303). The tab is still created, appended and navigated; only the switch is
+// skipped. Everything else opens in the foreground, as before.
 export const createTab = (url = null, options = {}) => {
   const tabId = tabState.nextTabId++;
   // Direct loads: empty/null (use homeUrl), http(s), about:blank, and
