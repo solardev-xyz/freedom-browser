@@ -162,8 +162,13 @@ const setToggleDisabled = (disabled) => {
   }
 };
 
+// The bundled binary only matters to a profile that would run it. External
+// mode dials someone else's node, and a profile with Tor disabled never starts
+// one; its click has to stay live so startDisabledTor() can say why (#377).
+const needsBundledBinary = () => !isExternalTorMode() && !isDisabledForProfile();
+
 const updateTorToggleAvailability = () => {
-  setToggleDisabled(!torBinaryAvailable && !isExternalTorMode());
+  setToggleDisabled(!torBinaryAvailable && needsBundledBinary());
 };
 
 const refreshTorBinaryAvailability = () => {
@@ -226,7 +231,7 @@ export const initTorUi = () => {
 
   torToggleBtn?.addEventListener('click', () => {
     if (!state.enableTorIntegration) return;
-    if (!torBinaryAvailable && !isExternalTorMode()) return;
+    if (!torBinaryAvailable && needsBundledBinary()) return;
 
     if (state.currentTorStatus === 'running' || state.currentTorStatus === 'starting') {
       state.suppressTorRunningStatus = true;

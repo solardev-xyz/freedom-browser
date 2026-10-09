@@ -128,6 +128,18 @@ test('node config: a Tor-disabled profile says why the Tor toggle will not start
   // strip the row.
   await window.waitForTimeout(6_000);
   expect(await torSection()).toEqual(refused);
+
+  // Switching the mode back takes the notice down without another start click.
+  const restored = await settingsEval(
+    window,
+    `window.freedomAPI.updateProfileNodeConfig('tor', { mode: 'managed' })`
+  );
+  expect(restored?.success).toBe(true);
+  await expect
+    .poll(torSection)
+    .toEqual({ on: false, statusShown: false, statusText: '', versionShown: false });
+  await window.waitForTimeout(6_000);
+  expect((await torSection()).statusShown).toBe(false);
 });
 
 // Settings → Nodes commits on change like every other section (#271). Lives

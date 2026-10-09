@@ -416,6 +416,30 @@ function startDisabledTor() {
   log.info('[Tor] Disabled for active profile');
 }
 
+// Settings > Nodes saved a new Tor mode for the active profile. Nothing is
+// started or stopped here (the new mode applies on the next start), but a
+// stopped Tor's registry entry has to follow the profile, because the Nodes
+// menu reads the mode and the status message from it:
+//
+// - switched away from `disabled`, the "Tor disabled for this profile" notice
+//   a refused start left behind, and the `disabled` mode that hides the bundled
+//   version row, have to go, or they stay up until the next start click (#377);
+// - switched to `disabled`, the menu has to know before the first click, so
+//   the toggle stays clickable on a build with no Arti bundled and the click
+//   reaches startDisabledTor() to say why it will not start.
+//
+// Called once at IPC registration too, so a profile launched with Tor already
+// disabled publishes that mode before any click. A running, starting, stopping
+// or errored node is left alone: its entry describes the node it actually is,
+// and an errored external node may still be inside its health-check retry.
+function syncProfileMode() {
+  if (currentState !== STATUS.STOPPED) return;
+  clearService('tor');
+  if (isDisabledTorConfig()) {
+    updateService('tor', { socks: null, mode: MODE.DISABLED });
+  }
+}
+
 function checkBinary() {
   return fs.existsSync(getArtiBinaryPath());
 }
@@ -802,6 +826,8 @@ function registerTorIpc() {
     }
     return getArtiVersion();
   });
+
+  syncProfileMode();
 }
 
 module.exports = {
@@ -816,5 +842,6 @@ module.exports = {
   getTorDataPath,
   writeArtiConfig,
   checkBinary,
+  syncProfileMode,
   STATUS,
 };
