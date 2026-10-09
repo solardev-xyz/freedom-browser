@@ -1822,7 +1822,11 @@
    Stamp Manager
    ============================================ */
 
-/* Batch list */
+/* Batch list; the loading line borrows the Connect Ledger status spinner */
+.connect-ledger-status.stamp-list-loading {
+  margin: 0 0 12px 0;
+}
+
 .stamp-batch-list {
   display: flex;
   flex-direction: column;

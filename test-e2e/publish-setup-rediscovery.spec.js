@@ -432,6 +432,10 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await expect(window.locator('#stamp-scan-status')).toBeHidden();
     await expect(empty).toBeHidden();
     await expect(cards).toHaveCount(0);
+    // A first visit shows the spinner in place of the list (#595).
+    const loading = window.locator('#stamp-list-loading');
+    await expect(loading).toBeVisible();
+    await expect(loading).toHaveText('Loading your storage…');
     await shoot(window, 'storage-loading');
 
     await electronApp.evaluate(() => {
@@ -439,8 +443,30 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     });
     await expect(cards).toHaveCount(1);
     await expect(empty).toBeHidden();
+    await expect(loading).toBeHidden();
     await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
     await shoot(window, 'storage-loaded');
+
+    // A return visit lists the cached batches at once, under the spinner.
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(cards).toHaveCount(1);
+    await expect(empty).toBeHidden();
+    await expect(loading).toHaveText('Checking for changes…');
+    await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
+    await shoot(window, 'storage-refreshing');
+
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(1);
   });
 
   test('the storage screen shows the stalled-scan warning over the empty state', async ({

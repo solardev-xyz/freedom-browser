@@ -21,6 +21,8 @@ let stampManagerScreen;
 let stampManagerBackBtn;
 let batchListContainer;
 let emptyText;
+let loadingStatus;
+let loadingText;
 let scanStatus;
 let scanWarning;
 let scanWarningText;
@@ -30,16 +32,30 @@ let depositTopUpBtn;
 
 let isOpen = false;
 let setupState = null;
-// Batches in the list last rendered; null until this visit's getStamps lands.
+// Batches in the list last rendered; null until this visit has a list to
+// show (the cached one, or its own getStamps).
 let batchCount = null;
 let loadedKey = null;
 let loadRequestId = 0;
+// True while this visit's getStamps is in flight: the spinner line shows.
+let refreshing = false;
+// What the rendered cards were built from, so a refresh that brings the same
+// list leaves them (and any open extension form) alone.
+let renderedSignature = null;
+// The last non-empty list getStamps returned, and for which node wallet. A
+// return visit shows it at once while the fresh list loads (#595). Profiles
+// run in their own processes, so this never crosses one.
+let cachedBatches = null;
+// The node wallet the last state with an account named.
+let knownWallet = null;
 
 export function initStampManager() {
   stampManagerScreen = document.getElementById('sidebar-stamp-manager');
   stampManagerBackBtn = document.getElementById('stamp-manager-back');
   batchListContainer = document.getElementById('stamp-batch-list');
   emptyText = document.getElementById('stamp-list-empty');
+  loadingStatus = document.getElementById('stamp-list-loading');
+  loadingText = document.getElementById('stamp-list-loading-text');
   scanStatus = document.getElementById('stamp-scan-status');
   scanWarning = document.getElementById('stamp-scan-warning');
   scanWarningText = document.getElementById('stamp-scan-warning-text');
@@ -57,11 +73,13 @@ export function initStampManager() {
   depositTopUpBtn?.addEventListener('click', () => startOperation({ kind: 'deposit' }));
 
   window.publishSetup?.onState((state) => {
-    setupState = state;
+    const walletChanged = adoptState(state);
     if (!isOpen) return;
+    // Another wallet's cards must not stay up while its own list loads.
+    if (walletChanged) clearBatchList();
     renderDepositWarning();
     renderScanStatus();
-    if (stampsKey(state) !== loadedKey) loadBatchList();
+    if (walletChanged || stampsKey(state) !== loadedKey) loadBatchList();
   });
 }
 
@@ -73,17 +91,24 @@ export async function openStampManager() {
   isOpen = true;
   loadedKey = null;
   clearBatchList();
+  const cached = cachedStampsForWallet();
+  if (cached) renderBatchList(cached);
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
   renderScanStatus();
   loadBatchList();
+  let walletChanged = false;
   try {
-    setupState = (await window.publishSetup?.getState()) || setupState;
+    walletChanged = adoptState((await window.publishSetup?.getState()) || setupState);
   } catch {
     // The push subscription fills it in.
   }
   if (isOpen) {
+    if (walletChanged) {
+      clearBatchList();
+      loadBatchList();
+    }
     renderDepositWarning();
     renderScanStatus();
   }
@@ -95,6 +120,30 @@ export function closeStampManager() {
   clearBatchList();
   stampManagerScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
+}
+
+function walletKey() {
+  return setupState?.account?.walletAddress || null;
+}
+
+// Takes a publish-setup state; true when it names a different node wallet
+// than the last one, which drops the cached list. A state with no account
+// says nothing about which wallet it is.
+function adoptState(state) {
+  setupState = state;
+  const wallet = walletKey();
+  if (wallet === null) return false;
+  const changed = knownWallet !== null && wallet !== knownWallet;
+  knownWallet = wallet;
+  if (changed) cachedBatches = null;
+  // A list that landed before any state named the wallet is this one's.
+  else if (cachedBatches?.wallet === null) cachedBatches.wallet = wallet;
+  return changed;
+}
+
+function cachedStampsForWallet() {
+  const wallet = walletKey();
+  return wallet && cachedBatches?.wallet === wallet ? cachedBatches.stamps : null;
 }
 
 // A finished purchase or a change in the node's batches reloads the list.
@@ -149,29 +198,57 @@ function renderEmptyText() {
   );
 }
 
-// Nothing is listed until a visit's getStamps lands: the cards, the count and
-// the buy button's wording go together, so a previous visit's cards never
-// show, and neither does the empty text until this visit knows it is empty.
-// The button stays (with the neutral "Buy Storage") so a slow or stuck
-// /stamps never leaves the screen without a way to buy.
+// The cards, the count and the buy button's wording go together, so they are
+// only ever set as one snapshot: this wallet's cached list, or this visit's
+// getStamps. Clearing drops all three, so the empty text stays hidden until a
+// visit knows the list is empty. The button stays (with the neutral "Buy
+// Storage") so a slow or stuck /stamps never leaves the screen without a way
+// to buy.
 function clearBatchList() {
   if (batchListContainer) batchListContainer.innerHTML = '';
   batchCount = null;
+  renderedSignature = null;
+  refreshing = false;
+  renderLoadingStatus();
   if (buyMoreBtn) buyMoreBtn.textContent = 'Buy Storage';
+}
+
+// The spinner line while /stamps loads: in place of the list on a first
+// visit, over the cached cards on a return one.
+function renderLoadingStatus() {
+  const show = isOpen && refreshing;
+  loadingStatus?.classList.toggle('hidden', !show);
+  if (loadingText) {
+    loadingText.textContent = !show
+      ? ''
+      : batchCount > 0
+        ? 'Checking for changes…'
+        : 'Loading your storage…';
+  }
 }
 
 async function loadBatchList() {
   const requestId = ++loadRequestId;
   loadedKey = stampsKey(setupState);
+  refreshing = true;
+  renderLoadingStatus();
+  let stamps;
   try {
     const result = await window.swarmNode?.getStamps();
     if (!isOpen || requestId !== loadRequestId) return;
-    const stamps = result?.success ? result.stamps : [];
-    renderBatchList(stamps);
+    if (result?.success) {
+      stamps = result.stamps || [];
+      // A wallet change starts a new request, so this list is the current
+      // wallet's (or, before any state named one, the first wallet's).
+      cachedBatches = stamps.length > 0 ? { wallet: knownWallet, stamps } : null;
+    }
   } catch {
     if (!isOpen || requestId !== loadRequestId) return;
-    renderBatchList([]);
   }
+  // A failed refresh keeps this wallet's cached list rather than claiming
+  // it has no storage.
+  refreshing = false;
+  renderBatchList(stamps ?? cachedStampsForWallet() ?? []);
 }
 
 async function startOperation(request) {
@@ -190,9 +267,16 @@ async function startOperation(request) {
 function renderBatchList(stamps) {
   if (!batchListContainer) return;
 
-  batchListContainer.innerHTML = '';
+  const signature = JSON.stringify([stamps, setupState?.canBuy, setupState?.plans]);
   batchCount = stamps.length;
+  renderLoadingStatus();
   renderEmptyText();
+  // Nothing changed since the cards were drawn: keep them, and with them any
+  // extension form the user opened during the refresh.
+  if (signature === renderedSignature) return;
+  renderedSignature = signature;
+
+  batchListContainer.innerHTML = '';
   if (buyMoreBtn) buyMoreBtn.textContent = stamps.length > 0 ? 'Buy More Storage' : 'Buy Storage';
   buyMoreBtn?.classList.toggle('hidden', setupState?.canBuy === false);
 

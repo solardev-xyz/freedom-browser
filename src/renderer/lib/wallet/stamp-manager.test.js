@@ -2,7 +2,8 @@
  * The storage screen while Ant looks for storage this wallet already owns
  * (#510, /health.walletScan): the search and its progress in place of the
  * empty state, the stalled warning once publish setup gives up on it, and
- * the normal empty state as soon as the hold ends.
+ * the normal empty state as soon as the hold ends. Also the loading line and
+ * the cached list a return visit shows while /stamps refreshes (#595).
  */
 
 class FakeClassList {
@@ -286,5 +287,164 @@ describe('the storage screen during the wallet-history search', () => {
     expect(visible('stamp-list-empty')).toBe(false);
     expect(elements['stamp-batch-list'].children).toHaveLength(1);
     expect(elements['stamp-buy-another-btn'].textContent).toBe('Buy More Storage');
+  });
+});
+
+describe('the storage screen while /stamps loads (#595)', () => {
+  const WALLET = '0x' + '1'.repeat(40);
+  const OTHER_WALLET = '0x' + '2'.repeat(40);
+  const withWallet = (state, walletAddress = WALLET) => ({
+    ...state,
+    account: { walletAddress, chequebook: null },
+  });
+  const slowStamps = () => {
+    const pending = {};
+    global.window.swarmNode.getStamps.mockImplementation(
+      () => new Promise((resolve) => (pending.resolve = resolve))
+    );
+    return pending;
+  };
+  const reopen = async (mod) => {
+    mod.closeStampManager();
+    await mod.openStampManager();
+    await flush();
+  };
+
+  test('a first visit shows the spinner in place of the list, then the list', async () => {
+    // The first load found nothing, so there is nothing cached to show.
+    const { elements, visible, mod } = await load({ state: withWallet(needsStorage()) });
+    expect(visible('stamp-list-loading')).toBe(false);
+    const pending = slowStamps();
+    await reopen(mod);
+    expect(visible('stamp-list-loading')).toBe(true);
+    expect(elements['stamp-list-loading-text'].textContent).toBe('Loading your storage…');
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    expect(visible('stamp-list-empty')).toBe(false);
+
+    pending.resolve({ success: true, stamps: [BATCH] });
+    await flush();
+    expect(visible('stamp-list-loading')).toBe(false);
+    expect(elements['stamp-list-loading-text'].textContent).toBe('');
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+  });
+
+  test('a return visit shows the cached batches at once, with a spinner', async () => {
+    const { elements, visible, mod } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    expect(visible('stamp-list-loading')).toBe(false);
+    const pending = slowStamps();
+    await reopen(mod);
+
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+    expect(elements['stamp-buy-another-btn'].textContent).toBe('Buy More Storage');
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(visible('stamp-list-loading')).toBe(true);
+    expect(elements['stamp-list-loading-text'].textContent).toBe('Checking for changes…');
+    const card = elements['stamp-batch-list'].children[0];
+
+    // Nothing changed: the spinner goes and the same cards stay.
+    pending.resolve({ success: true, stamps: [BATCH] });
+    await flush();
+    expect(visible('stamp-list-loading')).toBe(false);
+    expect(elements['stamp-batch-list'].children[0]).toBe(card);
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+  });
+
+  test('a refresh that brings a different list swaps it in', async () => {
+    const { elements, visible, mod } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    const pending = slowStamps();
+    await reopen(mod);
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+
+    const second = { ...BATCH, batchId: 'b'.repeat(64) };
+    pending.resolve({ success: true, stamps: [BATCH, second] });
+    await flush();
+    expect(visible('stamp-list-loading')).toBe(false);
+    expect(elements['stamp-batch-list'].children).toHaveLength(2);
+  });
+
+  test('a failed refresh keeps the cached batches, never "no storage yet"', async () => {
+    const { elements, visible, mod } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    const pending = slowStamps();
+    await reopen(mod);
+
+    pending.resolve({ success: false, error: 'node unreachable' });
+    await flush();
+    expect(visible('stamp-list-loading')).toBe(false);
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+    expect(elements['stamp-buy-another-btn'].textContent).toBe('Buy More Storage');
+  });
+
+  test('a refresh that finds the batches gone drops the cache', async () => {
+    const { elements, visible, mod } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    const pending = slowStamps();
+    await reopen(mod);
+    pending.resolve({ success: true, stamps: [] });
+    await flush();
+    expect(visible('stamp-list-empty')).toBe(true);
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+
+    slowStamps();
+    await reopen(mod);
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    expect(elements['stamp-list-loading-text'].textContent).toBe('Loading your storage…');
+  });
+
+  test("another wallet's state drops the cache before the next visit", async () => {
+    const { elements, visible, mod, emit } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    mod.closeStampManager();
+    await emit(withWallet(needsStorage(), OTHER_WALLET));
+    slowStamps();
+    global.window.publishSetup.getState.mockResolvedValue(withWallet(needsStorage(), OTHER_WALLET));
+    await mod.openStampManager();
+    await flush();
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(visible('stamp-list-loading')).toBe(true);
+    expect(elements['stamp-list-loading-text'].textContent).toBe('Loading your storage…');
+  });
+
+  test("a wallet change while open clears the previous wallet's cards and reloads", async () => {
+    const { elements, visible, emit } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+    const pending = slowStamps();
+    await emit(withWallet(ready(), OTHER_WALLET));
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    expect(visible('stamp-list-loading')).toBe(true);
+
+    pending.resolve({ success: true, stamps: [] });
+    await flush();
+    expect(visible('stamp-list-empty')).toBe(true);
+  });
+
+  test('cached batches show beside the wallet-history search', async () => {
+    const { elements, visible, mod } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    slowStamps();
+    global.window.publishSetup.getState.mockResolvedValue(withWallet(held(SCANNING)));
+    await reopen(mod);
+    expect(visible('stamp-scan-status')).toBe(true);
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
   });
 });
