@@ -56,9 +56,40 @@ log.info('[updater] User-Agent:', userAgent);
 // server from `npm run serve:updates`; ENABLE_DEV_UPDATER=<http(s) URL> uses
 // that feed instead, so a signed build can be pointed at any feed (#611).
 const DEV_UPDATE_FEED_URL = 'http://localhost:8765';
+const DEV_UPDATER_FLAG_VALUES = /^(true|1|yes|on)$/i;
+
+// Resolves the feed for an ENABLE_DEV_UPDATER value. A plain on-flag (or no
+// value, under NODE_ENV=development) means the local server. Anything else
+// must parse as an http(s) URL with a host; it is checked here, with the same
+// WHATWG parser electron-updater's GenericProvider runs, because an
+// unparsable URL would otherwise throw from setFeedURL while this module
+// loads and take the whole main process down at startup. A value that is
+// neither falls back to the local server with a warning (warn reaches the
+// terminal in packaged builds too, info only the log file), so a typo such as
+// a missing scheme isn't silently swapped for localhost.
+function resolveDevFeedUrl(value) {
+  const raw = (value || '').trim();
+  if (!raw || DEV_UPDATER_FLAG_VALUES.test(raw)) return { url: DEV_UPDATE_FEED_URL };
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    parsed = null;
+  }
+  if (parsed && (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.hostname) {
+    return { url: parsed.href };
+  }
+  return {
+    url: DEV_UPDATE_FEED_URL,
+    warning:
+      `ENABLE_DEV_UPDATER=${JSON.stringify(value)} is neither "true" nor a valid ` +
+      `http(s) URL (e.g. https://updates.example.org/feed); falling back to ${DEV_UPDATE_FEED_URL}`,
+  };
+}
+
 if (process.env.NODE_ENV === 'development' || process.env.ENABLE_DEV_UPDATER) {
-  const override = process.env.ENABLE_DEV_UPDATER;
-  const feedUrl = /^https?:\/\//i.test(override || '') ? override : DEV_UPDATE_FEED_URL;
+  const { url: feedUrl, warning } = resolveDevFeedUrl(process.env.ENABLE_DEV_UPDATER);
+  if (warning) log.warn('[updater]', warning);
 
   // Only a source checkout needs dev-app-update.yml: a packaged app ships
   // app-update.yml (the download reads its updaterCacheDirName), and app.asar
@@ -70,8 +101,14 @@ if (process.env.NODE_ENV === 'development' || process.env.ENABLE_DEV_UPDATER) {
     log.info('[updater] Dev mode: Using local update config at', devUpdateConfig);
   }
 
-  autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
-  log.info('[updater] Dev mode: Update server at', feedUrl);
+  // The URL is pre-validated above; this guard only keeps a provider-side
+  // throw from crashing startup, leaving the shipped feed in place.
+  try {
+    autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
+    log.info('[updater] Dev mode: Update server at', feedUrl);
+  } catch (err) {
+    log.error('[updater] Dev mode: could not use update feed', feedUrl, err);
+  }
 }
 
 let updateCheckInProgress = false;

@@ -10,7 +10,7 @@ function loadUpdaterModule(activeProfile, options = {}) {
   autoUpdater.requestHeaders = null;
   autoUpdater.quitAndInstall = jest.fn();
   autoUpdater.checkForUpdates = jest.fn(() => Promise.resolve());
-  autoUpdater.setFeedURL = jest.fn();
+  autoUpdater.setFeedURL = options.setFeedURL || jest.fn();
   if (options.isUpdaterActive) autoUpdater.isUpdaterActive = options.isUpdaterActive;
 
   const logger = {
@@ -70,6 +70,7 @@ function loadUpdaterModule(activeProfile, options = {}) {
     webContentsList,
     dialog,
     setAutoUpdate,
+    logger,
   };
 }
 
@@ -262,6 +263,77 @@ describe('ENABLE_DEV_UPDATER feed (#611)', () => {
       provider: 'generic',
       url: 'https://updates.example.test/feed',
     });
+  });
+
+  test('a URL value is trimmed before use', () => {
+    process.env.ENABLE_DEV_UPDATER = '  https://updates.example.test/feed\n';
+    const { autoUpdater, logger } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+    expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: 'generic',
+      url: 'https://updates.example.test/feed',
+    });
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  test.each(['http://', 'https:// updates.example.test/feed', 'https://'])(
+    'an unparsable URL %j warns and uses the local feed instead of crashing at load',
+    (value) => {
+      process.env.ENABLE_DEV_UPDATER = value;
+      let loaded;
+      expect(() => {
+        loaded = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+      }).not.toThrow();
+      expect(loaded.autoUpdater.setFeedURL).toHaveBeenCalledWith({
+        provider: 'generic',
+        url: 'http://localhost:8765',
+      });
+      expect(loaded.logger.warn).toHaveBeenCalledWith(
+        '[updater]',
+        expect.stringContaining('valid http(s) URL')
+      );
+    }
+  );
+
+  test.each(['updates.example.test/feed', 'ftp://updates.example.test/feed', 'false'])(
+    'a non-flag, non-http(s) value %j warns before falling back to the local feed',
+    (value) => {
+      process.env.ENABLE_DEV_UPDATER = value;
+      const { autoUpdater, logger } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+      expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+        provider: 'generic',
+        url: 'http://localhost:8765',
+      });
+      expect(logger.warn).toHaveBeenCalledWith('[updater]', expect.stringContaining(JSON.stringify(value)));
+    }
+  );
+
+  test.each(['true', '1', 'TRUE', ' on '])('the on-flag %j uses the local feed silently', (value) => {
+    process.env.ENABLE_DEV_UPDATER = value;
+    const { autoUpdater, logger } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+    expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: 'generic',
+      url: 'http://localhost:8765',
+    });
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  test('a provider throw from setFeedURL is logged, not fatal at load', () => {
+    process.env.ENABLE_DEV_UPDATER = 'true';
+    let loaded;
+    expect(() => {
+      loaded = loadUpdaterModule(DEFAULT_PROFILE, {
+        isPackaged: true,
+        setFeedURL: jest.fn(() => {
+          throw new TypeError('Invalid URL');
+        }),
+      });
+    }).not.toThrow();
+    expect(loaded.autoUpdater.setFeedURL).toHaveBeenCalled();
+    expect(loaded.logger.error).toHaveBeenCalledWith(
+      '[updater] Dev mode: could not use update feed',
+      'http://localhost:8765',
+      expect.any(TypeError)
+    );
   });
 });
 
