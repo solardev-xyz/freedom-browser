@@ -715,6 +715,74 @@ describe('the storage screen while /stamps loads (#595)', () => {
     expect(visible('stamp-list-stale')).toBe(true);
   });
 
+  test('a list that fails before getState answers never reads "no storage yet"', async () => {
+    const { elements, visible, mod } = await load({ state: withWallet(ready()), stamps: [BATCH] });
+    mod.closeStampManager();
+    let answer;
+    global.window.publishSetup.getState.mockImplementation(
+      () => new Promise((resolve) => (answer = resolve))
+    );
+    const pending = slowStamps();
+    const opening = mod.openStampManager();
+    pending.resolve({ success: false, error: 'node unreachable' });
+    await flush();
+    // The cache may be this wallet's: still loading, never "no storage".
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(visible('stamp-list-loading')).toBe(true);
+    expect(elements['stamp-list-loading-text'].textContent).toBe('Loading your storage…');
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    answer(withWallet(ready()));
+    await opening;
+    await flush();
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(visible('stamp-list-loading')).toBe(false);
+  });
+
+  test('a list that failed while getState failed shows the cache once a state is pushed', async () => {
+    const { elements, visible, emit, mod } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    mod.closeStampManager();
+    global.window.publishSetup.getState.mockRejectedValue(new Error('ipc gone'));
+    global.window.swarmNode.getStamps.mockResolvedValue({ success: false, error: 'down' });
+    await mod.openStampManager();
+    await flush();
+    // Nothing knows the wallet: no cards, no "no storage yet", and a line
+    // saying the list couldn't be checked rather than an endless spinner.
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(visible('stamp-list-loading')).toBe(false);
+    expect(visible('stamp-list-stale')).toBe(true);
+
+    // The same wallet's state arrives with an unchanged stamps key, so no
+    // reload runs: the cache is drawn from the push alone.
+    await emit(withWallet(ready()));
+    expect(elements['stamp-batch-list'].children).toHaveLength(1);
+    expect(visible('stamp-list-empty')).toBe(false);
+    expect(visible('stamp-list-stale')).toBe(true);
+    expect(actionButtons(elements).every((btn) => btn.disabled)).toBe(true);
+  });
+
+  test('a pushed state with no cache for its wallet settles a held failure as empty', async () => {
+    const { elements, visible, emit, mod } = await load({
+      state: withWallet(ready()),
+      stamps: [BATCH],
+    });
+    mod.closeStampManager();
+    global.window.publishSetup.getState.mockRejectedValue(new Error('ipc gone'));
+    global.window.swarmNode.getStamps.mockResolvedValue({ success: false, error: 'down' });
+    await mod.openStampManager();
+    await flush();
+    expect(visible('stamp-list-empty')).toBe(false);
+    // Another wallet: its own list loads (and fails again); no old cards.
+    await emit(withWallet(needsStorage(), OTHER_WALLET));
+    expect(elements['stamp-batch-list'].children).toHaveLength(0);
+    expect(visible('stamp-list-empty')).toBe(true);
+    expect(visible('stamp-list-stale')).toBe(false);
+  });
+
   test('cached batches show beside the wallet-history search', async () => {
     const { elements, visible, mod } = await load({
       state: withWallet(ready()),

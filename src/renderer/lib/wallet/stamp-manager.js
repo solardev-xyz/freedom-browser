@@ -52,6 +52,11 @@ let listFresh = false;
 // Whether the card actions (and an open extension form's presets) may start
 // an operation.
 let actionsLive = false;
+// This visit's getStamps failed before the wallet was confirmed while a cached
+// list exists: it may be this wallet's, so the screen neither draws it nor
+// says "no storage yet" until a state names the wallet. 'waiting' keeps the
+// loading line up; 'unknown' (getState failed) shows the stale line instead.
+let failedBeforeWallet = null;
 // Whether this visit has heard which node wallet is current (getState, or a
 // state pushed while open). Until then the cache is not drawn: the wallet may
 // have changed while the screen was closed and nothing pushed a state.
@@ -93,6 +98,7 @@ export function initStampManager() {
     walletConfirmed = true;
     // Another wallet's cards must not stay up while its own list loads.
     if (walletChanged) clearBatchList();
+    else showCachedList();
     renderDepositWarning();
     renderScanStatus();
     if (walletChanged || stampsKey(state) !== loadedKey) loadBatchList();
@@ -115,24 +121,26 @@ export async function openStampManager() {
   loadBatchList();
   let walletChanged = false;
   let confirmed = false;
+  let failed = false;
   try {
     const state = await window.publishSetup?.getState();
     confirmed = Boolean(state);
     walletChanged = adoptState(state || setupState);
   } catch {
     // The push subscription fills it in.
+    failed = true;
   }
   if (isOpen) {
     if (confirmed) walletConfirmed = true;
     if (walletChanged) {
       clearBatchList();
       loadBatchList();
-    }
-    // The wallet is known now, so its cached list can show, unless this
-    // visit's own list has already landed (a failed one gives way to it).
-    if (walletConfirmed && !listFresh) {
-      const cached = cachedStampsForWallet();
-      if (cached) renderBatchList(cached, { stale: true });
+    } else showCachedList();
+    // No answer, and none may be pushed: a list that failed meanwhile stops
+    // reading "loading" and says it couldn't be checked.
+    if (failed && !walletConfirmed && failedBeforeWallet === 'waiting') {
+      failedBeforeWallet = 'unknown';
+      renderLoadingStatus();
     }
     renderDepositWarning();
     renderScanStatus();
@@ -164,6 +172,17 @@ function adoptState(state) {
   // A list that landed before any state named the wallet is this one's.
   else if (cachedBatches?.wallet === null) cachedBatches.wallet = wallet;
   return changed;
+}
+
+// The wallet is known now, so its cached list can show, unless this visit's
+// own list has already landed. A list that failed before the wallet was
+// known gives way to the cache, or, with none for this wallet, to the empty
+// state it held back.
+function showCachedList() {
+  if (!walletConfirmed || listFresh) return;
+  const cached = cachedStampsForWallet();
+  if (cached) renderBatchList(cached, { stale: true });
+  else if (failedBeforeWallet && !refreshing) renderBatchList([], { stale: true });
 }
 
 // This wallet's cached list, its time remaining counted down by the time
@@ -247,6 +266,7 @@ function clearBatchList() {
   listStale = false;
   listFresh = false;
   actionsLive = false;
+  failedBeforeWallet = null;
   renderLoadingStatus();
   if (buyMoreBtn) buyMoreBtn.textContent = 'Buy Storage';
 }
@@ -254,7 +274,7 @@ function clearBatchList() {
 // The spinner line while /stamps loads: in place of the list on a first
 // visit, over the cached cards on a return one.
 function renderLoadingStatus() {
-  const show = isOpen && refreshing;
+  const show = isOpen && (refreshing || failedBeforeWallet === 'waiting');
   loadingStatus?.classList.toggle('hidden', !show);
   if (loadingText) {
     // Any list on screen, even an empty one, is being checked; only a screen
@@ -267,13 +287,17 @@ function renderLoadingStatus() {
   }
   // Cached cards left after a refresh that failed: they may be out of date
   // (a batch expired or topped up since), and their actions are off.
-  staleNotice?.classList.toggle('hidden', !(isOpen && !refreshing && listStale));
+  staleNotice?.classList.toggle(
+    'hidden',
+    !(isOpen && !refreshing && (listStale || failedBeforeWallet === 'unknown'))
+  );
 }
 
 async function loadBatchList() {
   const requestId = ++loadRequestId;
   loadedKey = stampsKey(setupState);
   refreshing = true;
+  failedBeforeWallet = null;
   renderLoadingStatus();
   let stamps;
   try {
@@ -292,8 +316,18 @@ async function loadBatchList() {
   // A failed refresh keeps this wallet's cached list rather than claiming
   // it has no storage; its cards stay without actions, as they may be stale.
   refreshing = false;
-  if (stamps) renderBatchList(stamps);
-  else renderBatchList(cachedStampsForWallet() ?? [], { stale: true });
+  if (stamps) return renderBatchList(stamps);
+  const cached = cachedStampsForWallet();
+  if (cached) return renderBatchList(cached, { stale: true });
+  // A cached list nobody has matched to a wallet yet: drawing it could show
+  // another wallet's cards, and drawing nothing would say "no storage yet"
+  // for a wallet that has some. Wait for the wallet (showCachedList).
+  if (!walletConfirmed && cachedBatches) {
+    failedBeforeWallet = 'waiting';
+    renderLoadingStatus();
+    return;
+  }
+  renderBatchList([], { stale: true });
 }
 
 async function startOperation(request) {
@@ -343,6 +377,7 @@ function renderBatchList(stamps, { stale = false } = {}) {
     (setupState?.plans || []).map((plan) => plan.depth),
   ]);
   batchCount = stamps.length;
+  failedBeforeWallet = null;
   listStale = stale && stamps.length > 0;
   listFresh = !stale;
   renderLoadingStatus();
