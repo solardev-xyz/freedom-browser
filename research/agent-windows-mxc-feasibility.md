@@ -1,6 +1,6 @@
 # Windows Agent: MXC feasibility
 
-Date: 2026-10-09
+Date: 2026-10-09; updated 2026-10-10
 Branch: `experiment/agent-windows-mxc`
 Product baseline: `b97afeb3` (`feature/freedom-automation-kernel`)
 
@@ -11,7 +11,9 @@ BaseContainer backend is available on the test machine, and basic filesystem
 restrictions work. The user's interactive-desktop follow-up successfully ran
 Node with `ui.disable: false`, while `true` still caused native initialization
 failure. SSH runs failed with either value. The host also lacks the capability
-for explicit host-loopback ingress. Workload/UI qualification and preview
+for explicit host-loopback ingress. Adding a read-only volume-root grant lets
+Node/npm run, but also permits reads of ungranted synthetic files. That candidate
+policy is rejected. Filesystem confidentiality, UI qualification and preview
 connectivity remain separate gates.
 
 No Freedom runtime code or dependencies changed. Windows workspace execution
@@ -65,7 +67,7 @@ The following checks ran over SSH, before the desktop comparison below:
 | Node launched through contained `cmd.exe` | Same failure |
 | Windows PowerShell 5.1 harmless output command | Same failure |
 | Node without an explicit UI policy | Same failure |
-| Node with explicit Windows/runtime read grants and root metadata access | Same failure |
+| Node with explicit Windows/runtime read grants and a read-only root grant | Same failure |
 | Native capture with `mode: 'block'` | Same failure; zero recorded denials |
 | Explicit localhost preview ingress policy | Rejected by request-specific probe |
 
@@ -133,14 +135,59 @@ minimal environment. It checks request-specific BaseContainer support without
 ACL augmentation, then attempts JavaScript file checks, npm `--version`, and a
 two-second timeout of an idle Node process. It saves results to a fresh
 `desktop-workload-*\results.jsonl` and modifies only synthetic scratch files.
-From the same terminal, run `node desktop-workload.mjs`. Desktop results are
-pending; process-tree cancellation and UI isolation are not tested by it.
+The user's desktop run reached Node's JavaScript module loader but all three
+workloads exited 1 with `EPERM: lstat 'C:\\'` during `realpathSync`. Neither the
+file-check script nor npm nor the idle script executed. Unchanged sentinels
+therefore do not establish confinement for this policy, and timeout behavior
+was not exercised.
+
+### Read-only root grant: rejected after confidentiality check
+
+The follow-up added the working volume root to `readonlyPaths` and reported
+`lstat` results for the known workspace/runtime ancestors. The user observed:
+
+| Check | Desktop result with root read grant |
+| --- | --- |
+| Metadata for workspace/runtime ancestors | All accessible |
+| JavaScript workspace write/read | Passed |
+| Ungranted outside sentinel read | **Allowed: confidentiality check failed** |
+| Ungranted outside sentinel write | Denied, `EPERM` |
+| Explicitly denied `.git` read/write | Both denied, `EPERM` |
+| npm `--version` | Exit 0, `11.19.0` |
+| Idle Node two-second timeout | Printed `started`, `timedOut: true`, exit -1 |
+| Sentinels unchanged | True; does not negate the unauthorized read |
+
+An independent SSH reproduction (`root-grant-check.mjs` and its `.log`) uses
+contained `cmd.exe` and two synthetic files: a workspace sibling and a file in
+a separate directory under `C:\freedom-test`. With otherwise identical policies,
+neither file is readable without the root grant; both become readable after
+adding `C:\` to `readonlyPaths`. This removes Node and the interactive session
+as necessary causes of the read exposure. It does not establish access to all
+host files: only these synthetic files were tested, and no personal files were
+read. No host ACL changes were used.
+
+**Correction:** the previous report called this a non-recursive metadata grant.
+That assurance was unsupported. The v1.0.0 schema's root exception specifically
+describes `readwritePaths`; it cannot establish safe `readonlyPaths` behavior.
+Observed results take precedence over that earlier interpretation. Do not adopt
+this root read grant in Freedom or paper over it with a snapshot denylist of
+currently existing host files. The scratch fixture remains a rejected-policy
+reproducer, not a candidate production configuration.
+
+The upstream [root/ancestor issue](https://github.com/microsoft/mxc/issues/1109)
+contains a matching npm error. Enumeration-only grants, the relevant narrower
+primitive, are unavailable on this host. A supported way to resolve script paths
+while keeping ungranted content unreadable is still required. npm startup and
+single-process timeout passed only under the rejected filesystem policy;
+builds, process-tree cancellation and UI isolation remain unqualified.
 
 ## Next gates
 
-1. Run the prepared desktop workload follow-up, then qualify the narrower UI
-   policy rather than assuming `ui.disable` simply hides windows. Preserve the
-   published SDK and OS baseline; investigate SSH-session startup separately.
+1. Resolve the filesystem blocker before integrating this backend: qualify a
+   metadata/enumeration-only primitive on a supported OS, or evaluate a different
+   containment design. Retain the paired allowed-workspace/denied-outside checks.
+   Preserve the published SDK and OS baseline for the existing reproduction;
+   investigate SSH-session startup and the narrower UI policy separately.
 2. Establish a supported localhost-preview route, or identify the specific OS
    capability/update required. Do not assume a newer SDK provides an absent OS
    feature. Published SDK 1.0.0 and GitHub main already differ.

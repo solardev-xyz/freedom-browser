@@ -1,14 +1,14 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-09
+Last updated: 2026-10-10
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-10-09
+## Current working status — 2026-10-10
 
 ### Native Windows preparation and MXC spike — 2026-10-09
 
@@ -24,8 +24,14 @@ resources. Explicit host-loopback preview ingress is unsupported on this OS
 build. A subsequent user-run desktop matrix succeeded with Node when
 `ui.disable: false` and failed with `true`; SSH failed with both. Released MXC
 source confirms that flag blocks Win32k system calls rather than merely hiding
-windows. A narrower UI policy and real Node/npm workload checks are the next
-qualification step; the SSH difference and preview route remain unresolved.
+windows. The desktop follow-up reached the script loader but required volume-root
+metadata for path resolution. A root read grant then enabled Node/npm and an idle
+process timeout, but also allowed reading an ungranted outside sentinel. A paired
+`cmd.exe` reproduction over SSH confirmed that adding the grant made two
+otherwise unreadable synthetic files readable. **That policy is rejected**;
+the earlier assumption that the root read grant was non-recursive was not borne
+out. A narrower filesystem primitive or different containment design is needed;
+the SSH startup difference, UI qualification and preview route remain unresolved.
 Windows workspace execution remains unsupported and fails closed; no production
 backend was added.
 
