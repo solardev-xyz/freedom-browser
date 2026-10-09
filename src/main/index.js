@@ -86,13 +86,18 @@ const {
   requestProfileFocusSync,
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
+const { extractLaunchUrls, sanitizeLaunchUrls } = require('./launch-urls');
+// Links this launch was given (an OS link handler, `freedom <url>`), checked
+// against the schemes Freedom opens. A cold start opens them in its first
+// window; a second launch of an already-open profile hands them over below.
+const launchUrls = extractLaunchUrls(process.argv);
 let activeProfileLock = null;
 try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
 } catch (error) {
   if (isLockUnavailableError(error)) {
     const profileName = activeProfile.displayName || activeProfile.id || 'selected';
-    const focusResult = requestProfileFocusSync(activeProfile);
+    const focusResult = requestProfileFocusSync(activeProfile, { urls: launchUrls });
     if (!focusResult.ok) {
       dialog.showErrorBox(
         'Freedom profile is already open',
@@ -116,7 +121,11 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
       if (typeof focusCurrentProfileWindow !== 'function') {
         throw new Error('Main window focus handler is not ready');
       }
-      return focusCurrentProfileWindow(request?.openSettings ? PROFILE_SETTINGS_DEEPLINK : null);
+      // The request file is only a transport: re-check the URLs it carries.
+      const urls = request?.openSettings
+        ? [PROFILE_SETTINGS_DEEPLINK]
+        : sanitizeLaunchUrls(request?.urls);
+      return focusCurrentProfileWindow(urls);
     }),
   {
     logger: console,
@@ -129,6 +138,22 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
     },
   }
 );
+
+// macOS hands a link to the running app through `open-url` rather than argv,
+// including the one that launches it, which can arrive before `ready`. Those
+// wait for the first window, which opens them; later ones get a new tab.
+const pendingOpenUrls = [];
+let firstWindowCreated = false;
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const urls = sanitizeLaunchUrls([url]);
+  if (urls.length === 0) return;
+  if (!firstWindowCreated || typeof focusCurrentProfileWindow !== 'function') {
+    pendingOpenUrls.push(...urls);
+    return;
+  }
+  focusCurrentProfileWindow(urls);
+});
 
 const { version } = require('../../package.json');
 const iconPath = app.isPackaged
@@ -577,8 +602,12 @@ async function bootstrap() {
   const settings = loadSettings();
   // A profile cold-started from another window's "edit" button (Profiles
   // manager) carries --open-settings; land its first tab on Profile settings.
-  const coldStartUrl = process.argv.includes('--open-settings') ? PROFILE_SETTINGS_DEEPLINK : null;
-  const mainWindow = createMainWindow(coldStartUrl);
+  // Otherwise the first window opens the links the launch was given, if any.
+  const coldStartUrls = process.argv.includes('--open-settings')
+    ? [PROFILE_SETTINGS_DEEPLINK]
+    : [...launchUrls, ...pendingOpenUrls.splice(0)];
+  const mainWindow = createMainWindow(coldStartUrls.length > 0 ? coldStartUrls : null);
+  firstWindowCreated = true;
   // One-off big deletes wait until the window is up, so an upgrade never
   // shows up as a slow launch (#526). Interrupted purges (quit before it
   // finished) are picked up on the next launch.

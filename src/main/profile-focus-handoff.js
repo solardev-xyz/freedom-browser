@@ -63,6 +63,9 @@ function requestProfileFocusSync(profile, options = {}) {
     profileId: profile.id || null,
     requestedAtMs: Date.now(),
     pid: process.pid,
+    // URLs a second launch was given (launch-urls.js), opened by the running
+    // process in new tabs. It re-validates them: the file is only a transport.
+    ...(Array.isArray(options.urls) && options.urls.length > 0 ? { urls: options.urls } : {}),
   };
 
   try {

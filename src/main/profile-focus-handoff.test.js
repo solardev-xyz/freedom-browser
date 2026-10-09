@@ -76,6 +76,63 @@ describe('profile focus handoff', () => {
     });
   });
 
+  test('a focus request carries the URLs a second launch was given (#597)', () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const paths = getProfileFocusPaths(profile);
+
+    requestProfileFocusSync(profile, {
+      nonce: 'focus-urls',
+      timeoutMs: 20,
+      pollIntervalMs: 5,
+      urls: ['freedom://settings', 'https://freedombrowser.eth.limo/'],
+    });
+
+    expect(readJson(paths.requestPath)).toMatchObject({
+      type: 'focus-window',
+      nonce: 'focus-urls',
+      urls: ['freedom://settings', 'https://freedombrowser.eth.limo/'],
+    });
+  });
+
+  test('a focus request without URLs carries no urls field', () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const paths = getProfileFocusPaths(profile);
+
+    requestProfileFocusSync(profile, {
+      nonce: 'focus-no-urls',
+      timeoutMs: 20,
+      pollIntervalMs: 5,
+      urls: [],
+    });
+
+    expect(readJson(paths.requestPath)).not.toHaveProperty('urls');
+  });
+
+  test('focus watcher passes the request, URLs included, to its handler (#597)', async () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const paths = getProfileFocusPaths(profile);
+    const onFocusWindow = jest.fn().mockResolvedValue(undefined);
+    trackWatcher(startProfileFocusRequestWatcher(profile, onFocusWindow, { pollIntervalMs: 10 }));
+
+    fs.writeFileSync(
+      paths.requestPath,
+      JSON.stringify({
+        type: 'focus-window',
+        nonce: 'focus-urls-watch',
+        profileId: 'work',
+        requestedAtMs: Date.now(),
+        urls: ['bzz://ab12cd34/'],
+      }),
+      'utf-8'
+    );
+
+    await waitFor(() => fs.existsSync(paths.ackPath));
+
+    expect(onFocusWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ nonce: 'focus-urls-watch', urls: ['bzz://ab12cd34/'] })
+    );
+  });
+
   test('async-await focus request resolves ok once the watcher acks', async () => {
     const profile = trackProfile(makeTempProfile('work'));
     const onFocusWindow = jest.fn().mockResolvedValue(undefined);

@@ -26,6 +26,13 @@ function getIconPath() {
   return iconPath;
 }
 
+// `initialUrl` arguments take one URL or a list of them (launch-urls.js).
+function toUrlList(urls) {
+  return (Array.isArray(urls) ? urls : [urls]).filter(
+    (url) => typeof url === 'string' && url.length > 0
+  );
+}
+
 function createMainWindow(initialUrl = null, options = {}) {
   // Private windows carry their non-persisted partition name; it reaches
   // the renderer as a query parameter (same channel as initialUrl) so
@@ -95,14 +102,16 @@ function createMainWindow(initialUrl = null, options = {}) {
     },
   });
 
-  // Load index.html with optional initial URL / private partition as query
-  // parameters
+  // Load index.html with optional initial URL(s) / private partition as query
+  // parameters. Several URLs (a launch given more than one link) repeat
+  // `initialUrl`; the renderer opens each in its own tab.
   const indexPath = path.join(__dirname, '..', '..', 'renderer', 'index.html');
-  const query = {};
-  if (initialUrl) query.initialUrl = initialUrl;
-  if (privatePartition) query.privatePartition = privatePartition;
-  if (Object.keys(query).length > 0) {
-    window.loadFile(indexPath, { query });
+  const query = new URLSearchParams();
+  for (const url of toUrlList(initialUrl)) query.append('initialUrl', url);
+  if (privatePartition) query.append('privatePartition', privatePartition);
+  const search = query.toString();
+  if (search) {
+    window.loadFile(indexPath, { search });
   } else {
     window.loadFile(indexPath);
   }
@@ -219,14 +228,18 @@ function focusBrowserWindow(window) {
 }
 
 function focusOrCreateMainWindow(initialUrl = null) {
+  const urls = toUrlList(initialUrl);
   let window = [...mainWindows].find((candidate) => !candidate.isDestroyed());
   if (!window) {
-    window = createMainWindow(initialUrl);
-  } else if (initialUrl) {
+    window = createMainWindow(urls.length > 0 ? urls : null);
+  } else {
     // A window already exists, so createMainWindow's initialUrl path doesn't
-    // run — open the target in a new tab on the existing window instead (e.g.
-    // the Profiles manager's edit button focusing an already-running profile).
-    window.webContents.send('tab:new-with-url', initialUrl);
+    // run — open each target in a new tab on the existing window instead (e.g.
+    // the Profiles manager's edit button focusing an already-running profile,
+    // or a second launch handing over the links it was started with).
+    for (const url of urls) {
+      window.webContents.send('tab:new-with-url', url);
+    }
   }
   focusBrowserWindow(window);
   return window;

@@ -2590,7 +2590,9 @@ export const initTabs = async () => {
 
   // Create initial tab - check for initialUrl query parameter (from "open in new window")
   const urlParams = new URLSearchParams(window.location.search);
-  const initialUrl = urlParams.get('initialUrl');
+  // A launch given several links (src/main/launch-urls.js) repeats the
+  // parameter: the first takes the initial tab, the rest open after it.
+  const [initialUrl, ...moreInitialUrls] = urlParams.getAll('initialUrl');
   if (initialUrl) {
     // Create tab with about:blank to avoid home page flash, then navigate to target
     const tab = createTab('about:blank');
@@ -2601,7 +2603,12 @@ export const initTabs = async () => {
         addressInput.value = initialUrl;
       }
       // Use loadTarget for proper URL resolution (handles dweb URLs, ENS, etc.)
-      setTimeout(() => onLoadTarget(initialUrl), 50);
+      // Name the webview: the tabs opened below take over as active tab.
+      setTimeout(() => onLoadTarget(initialUrl, null, tab.webview), 50);
+      // A timer of their own, so a throw while loading the first cannot stop them.
+      setTimeout(() => {
+        for (const url of moreInitialUrls) openInNewTabWithTarget(url, null);
+      }, 50);
     }
   } else {
     createTab(defaultNewTabUrl());
