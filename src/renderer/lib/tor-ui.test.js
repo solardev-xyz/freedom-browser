@@ -293,6 +293,53 @@ describe('tor-ui info block visibility (#349)', () => {
     expect(ctx.elements.torVersionText.textContent).toBe('');
   });
 
+  test('a start refused by a Tor-disabled profile says why beneath the toggle (#377)', async () => {
+    // Settings > Nodes > Tor mode is `disabled`. A start click lands in
+    // startDisabledTor() (tor-manager.js), which publishes mode `disabled` and
+    // "Tor disabled for this profile" to the registry and reports `stopped`
+    // rather than `error`. That message used to be written into the status row
+    // and then hidden by the `stopped` branch, leaving nothing beneath an off
+    // toggle.
+    const ctx = await loadTorModule({ currentTorStatus: 'stopped' });
+    ctx.torApi.start.mockImplementation(async () => {
+      ctx.state.registry.tor.mode = 'disabled';
+      ctx.state.registry.tor.statusMessage = 'Tor disabled for this profile';
+      return { status: 'stopped', error: null };
+    });
+
+    ctx.mod.initTorUi();
+    await flushMicrotasks();
+    expect(infoVisible(ctx)).toBe(false);
+
+    ctx.elements.torToggleBtn.dispatch('click');
+    await flushMicrotasks();
+
+    expect(ctx.torApi.start).toHaveBeenCalled();
+    expect(ctx.elements.torToggleSwitch.classList.contains('running')).toBe(false);
+    expect(infoVisible(ctx)).toBe(true);
+    expect(ctx.elements.torStatusRow.classList.contains('visible')).toBe(true);
+    expect(ctx.elements.torStatusLabel.textContent).toBe('Tor disabled for this profile');
+    expect(ctx.elements.torStatusValue.textContent).toBe('');
+    // A node this profile does not run has no bundled version to report.
+    expect(ctx.elements.torVersionRow.hidden).toBe(true);
+
+    // The 5s status poll re-runs the `stopped` path; the notice has to survive it.
+    ctx.mod.updateTorUi('stopped');
+    expect(infoVisible(ctx)).toBe(true);
+    expect(ctx.elements.torStatusRow.classList.contains('visible')).toBe(true);
+  });
+
+  test('a Tor-disabled profile with no message to show renders nothing', async () => {
+    const ctx = await loadTorModule({ currentTorStatus: 'stopped', mode: 'disabled' });
+
+    ctx.mod.initTorUi();
+    await flushMicrotasks();
+    ctx.mod.updateTorUi('stopped');
+
+    expect(infoVisible(ctx)).toBe(false);
+    expect(ctx.elements.torStatusRow.classList.contains('visible')).toBe(false);
+  });
+
   test('toggling the node off from the menu takes the block down with it', async () => {
     const ctx = await loadTorModule({
       currentTorStatus: 'running',

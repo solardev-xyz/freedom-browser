@@ -24,6 +24,14 @@ let torVersionFetched = false;
 let torVersionValue = '';
 
 const isExternalTorMode = () => state.registry?.tor?.mode === 'external';
+const isDisabledForProfile = () => state.registry?.tor?.mode === 'disabled';
+
+// A stopped Tor whose profile has it disabled, with the registry's refusal
+// message to show for it.
+const isProfileDisabledRefusal = () =>
+  state.currentTorStatus === 'stopped' &&
+  isDisabledForProfile() &&
+  Boolean(getDisplayMessage('tor'));
 
 // Sole writer of `.tor-info`'s `visible` class, and the only thing that decides
 // whether anything renders beneath the Tor toggle.
@@ -33,21 +41,19 @@ const isExternalTorMode = () => state.registry?.tor?.mode === 'external';
 // Ethereum, Gnosis and Radicle all show nothing beneath an off toggle (#349).
 // It now follows the node's run state, like the Radicle/IPFS info panels.
 //
-// `error` is the one state that keeps the block, and only while the registry
-// has something to put in it ("Tor failed to start", "External Tor
-// unreachable"): that message is the user's only in-menu sign that a start
-// attempt failed. An errored node with nothing to say renders
-// nothing, same as a stopped one — never a lone version row, which is the shape
-// this issue was about.
+// Two states that are not simply "off" keep the block, and only while the
+// registry has something to put in it, because that message is the user's only
+// in-menu sign that a start attempt did not start the node:
 //
-// Known gap, tracked in #377: one refusal path reports STOPPED rather than
-// `error` and so loses its message here — a profile with Tor mode `disabled`
-// answers a start click via `startDisabledTor()` (tor-manager.js), which sets
-// "Tor disabled for this profile" with STATUS.STOPPED. That predates this gate
-// (the pre-existing `stopped` branch in `updateTorUi` already stripped the
-// status row's `visible` class), and closing it means changing what the main
-// process reports or adding a second writer here, so it is deliberately not
-// carved out below.
+// - `error` ("Tor failed to start", "External Tor unreachable");
+// - `stopped` on a profile whose Tor mode is `disabled` ("Tor disabled for this
+//   profile"). `startDisabledTor()` (tor-manager.js) answers a start click with
+//   STATUS.STOPPED, not `error`, because a node the user turned off on purpose
+//   is not a failure. Without this carve-out the toggle flipped on, snapped
+//   back, and nothing beneath it said why (#377).
+//
+// A node in either state with nothing to say renders nothing, same as a stopped
+// one: never a lone version row, which is the shape #349 was about.
 const updateTorInfoVisibility = () => {
   if (!torInfoPanel) return;
   const status = state.currentTorStatus;
@@ -55,12 +61,16 @@ const updateTorInfoVisibility = () => {
     state.enableTorIntegration === true &&
     (status === 'running' ||
       status === 'starting' ||
-      (status === 'error' && Boolean(getDisplayMessage('tor'))));
+      (status === 'error' && Boolean(getDisplayMessage('tor'))) ||
+      isProfileDisabledRefusal());
   torInfoPanel.classList.toggle('visible', visible);
 };
 
 const renderTorVersionLine = () => {
-  const showBundledVersion = state.enableTorIntegration === true && !isExternalTorMode();
+  // Neither someone else's node nor one this profile does not run has a
+  // bundled Arti version to report.
+  const showBundledVersion =
+    state.enableTorIntegration === true && !isExternalTorMode() && !isDisabledForProfile();
   if (torVersionRow) torVersionRow.hidden = !showBundledVersion;
   if (!torVersionText) return;
   torVersionText.textContent = showBundledVersion ? versionText(torVersionValue) : '';
@@ -134,7 +144,7 @@ export const updateTorUi = (status, error) => {
     case 'stopping':
     case 'stopped':
     default:
-      if (torStatusRow) torStatusRow.classList.remove('visible');
+      if (torStatusRow && !isProfileDisabledRefusal()) torStatusRow.classList.remove('visible');
       break;
   }
 };
