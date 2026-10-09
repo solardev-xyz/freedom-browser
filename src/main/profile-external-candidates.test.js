@@ -1,10 +1,14 @@
 const { EventEmitter } = require('events');
+const fs = require('fs');
 const http = require('http');
+const os = require('os');
+const path = require('path');
 const {
   DEFAULT_EXTERNAL_NODE_CANDIDATES,
   EXTERNAL_CANDIDATE_PROMPT_KEY,
   detectDefaultExternalCandidates,
   applyExternalCandidateDecisions,
+  getLegacyExternalCandidateChoice,
   presentExternalCandidatesInWindow,
   probeEndpoint,
   promptForDefaultExternalCandidateProtocol,
@@ -30,6 +34,84 @@ function createProfile(nodes = {}) {
 }
 
 describe('profile external candidates', () => {
+  describe('legacy profiles (#218)', () => {
+    let userDataDir;
+
+    beforeEach(() => {
+      userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-legacy-profile-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    });
+
+    const legacyProfile = (source = 'test-user-data') => ({
+      id: 'test',
+      displayName: 'Test',
+      source,
+      userDataDir,
+      metadata: null,
+    });
+
+    test.each(['test-user-data', 'profile-dir'])(
+      'asks about a Swarm node on the default port for a %s launch',
+      async (source) => {
+        const profile = legacyProfile(source);
+        const presentCandidates = jest.fn().mockResolvedValue({ bee: 'managed' });
+
+        const decisions = await promptForDefaultExternalCandidates(profile, {
+          enabledProtocols: { bee: true, ipfs: true, tor: true },
+          logger: { info: jest.fn() },
+          now: '2026-10-09T00:00:00.000Z',
+          presentCandidates,
+          probeEndpoint: jest.fn().mockResolvedValue(true),
+        });
+
+        // Only Swarm: legacy launches never adopt an IPFS or Tor node on
+        // their own, so there is nothing to ask about for those.
+        expect(presentCandidates.mock.calls[0][1].map((c) => c.protocol)).toEqual(['bee']);
+        expect(decisions).toEqual([
+          { protocol: 'bee', choice: 'managed', endpoints: ['http://127.0.0.1:1633'] },
+        ]);
+        expect(getLegacyExternalCandidateChoice(profile, 'bee')).toBe('managed');
+        expect(
+          JSON.parse(fs.readFileSync(path.join(userDataDir, 'external-node-decisions.json'), 'utf-8'))
+        ).toEqual({
+          bee: {
+            choice: 'managed',
+            checkedAt: '2026-10-09T00:00:00.000Z',
+            endpoints: ['http://127.0.0.1:1633'],
+          },
+        });
+      }
+    );
+
+    test('keeps an external choice and does not ask again', async () => {
+      const profile = legacyProfile();
+      const options = {
+        enabledProtocols: { bee: true },
+        logger: { info: jest.fn() },
+        presentCandidates: jest.fn().mockResolvedValue({ bee: 'external' }),
+        probeEndpoint: jest.fn().mockResolvedValue(true),
+      };
+
+      await promptForDefaultExternalCandidates(profile, options);
+      expect(getLegacyExternalCandidateChoice(profile, 'bee')).toBe('external');
+
+      const again = await promptForDefaultExternalCandidates(profile, options);
+      expect(again).toEqual([]);
+      expect(options.presentCandidates).toHaveBeenCalledTimes(1);
+      expect(shouldPromptForProtocol(profile, 'bee')).toBe(false);
+    });
+
+    test('has no saved choice before the prompt, or for catalog profiles', () => {
+      expect(getLegacyExternalCandidateChoice(legacyProfile(), 'bee')).toBeNull();
+      expect(getLegacyExternalCandidateChoice(createProfile(), 'bee')).toBeNull();
+      expect(shouldPromptForProtocol(legacyProfile(), 'bee')).toBe(true);
+      expect(shouldPromptForProtocol(legacyProfile(), 'ipfs')).toBe(false);
+    });
+  });
+
   test('detects compatible default-port nodes only for unprompted managed protocols', async () => {
     const profile = createProfile({
       radicle: {

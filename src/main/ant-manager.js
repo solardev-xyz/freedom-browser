@@ -25,6 +25,7 @@ const {
   clearService,
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
+const { getLegacyExternalCandidateChoice } = require('./profile-external-candidates');
 const { antApiGet } = require('./swarm/ant-api-chrome');
 const { loadSettings, saveSettings } = require('./settings-store');
 const antCache = require('./swarm/ant-cache');
@@ -632,10 +633,27 @@ async function startAnt() {
     return;
   }
 
-  // Step 1: Legacy/profile-dir launches may still opt into a system daemon.
-  const existing = managedProfileNode ? { found: false } : await detectExistingDaemon();
+  // Step 1: Legacy/profile-dir launches may still opt into a system daemon,
+  // as answered in the launch prompt (profile-external-candidates.js, #218).
+  const legacyChoice = managedProfileNode
+    ? null
+    : getLegacyExternalCandidateChoice(getActiveProfile(), 'bee');
+  let existing = managedProfileNode ? { found: false } : await detectExistingDaemon();
 
   if (generation !== startGeneration) return;
+
+  // Kept managed: the node on the default port is somebody else's, so start
+  // the bundled one beside it, clear of both of its ports.
+  const keepLegacyManaged = existing.found && legacyChoice === 'managed';
+  if (keepLegacyManaged) {
+    log.info('[Ant] Not reusing the node on port', existing.port, '(profile keeps its own node)');
+    existing = { found: false, conflict: true, port: existing.port };
+  } else if (existing.found && legacyChoice !== 'external') {
+    log.warn(
+      '[Ant] Reusing a node on port', existing.port,
+      'without a saved choice for this profile; Swarm requests will go through it'
+    );
+  }
 
   if (existing.found) {
     // Reuse existing daemon
@@ -722,9 +740,14 @@ async function startAnt() {
     apiPort = newApiPort;
   }
 
-  const managedP2pPortBusy = managedProfileNode ? await isPortOpen(p2pPort) : false;
+  const managedP2pPortBusy = managedProfileNode || keepLegacyManaged
+    ? await isPortOpen(p2pPort)
+    : false;
   if (managedP2pPortBusy) {
-    const newP2pPort = await findAvailablePort(p2pPort + 1, DEFAULTS.ant.fallbackRange, {
+    // Search above the API port too: with the defaults (1633/1634) both taken
+    // the API moves to 1635, which is still free until antd binds it.
+    const p2pSearchStart = Math.max(p2pPort, apiPort) + 1;
+    const newP2pPort = await findAvailablePort(p2pSearchStart, DEFAULTS.ant.fallbackRange, {
       reservedPorts: reservedProfilePorts,
     });
     if (!newP2pPort) {

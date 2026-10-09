@@ -299,6 +299,9 @@ function loadAntManagerModule(options = {}) {
       }),
       [require.resolve('./logger')]: () => log,
       [require.resolve('./swarm/ant-api-guard')]: () => ({ noteAntApiUrl }),
+      [require.resolve('./profile-external-candidates')]: () => ({
+        getLegacyExternalCandidateChoice: jest.fn(() => options.legacyExternalChoice || null),
+      }),
       [require.resolve('./migrate-user-data')]: () => ({
         isBeeDataMigrationPending: options.isBeeDataMigrationPending || jest.fn(() => false),
       }),
@@ -561,6 +564,85 @@ describe('ant-manager', () => {
 
     expect(clearIntervalSpy).toHaveBeenCalledWith(123);
     expect(ctx.clearService).toHaveBeenCalledWith('ant');
+  });
+
+  describe('legacy profile with a Swarm node on the default port (#218)', () => {
+    const nodeOnDefaultPorts = (port) => port === 1633 || port === 1634;
+    const healthyOnDefaultPort = (url) => (
+      url === 'http://127.0.0.1:1633/health' || url === 'http://127.0.0.1:1635/health'
+        ? { statusCode: 200, body: { version: '2.8.2' } }
+        : { statusCode: 500, body: '' }
+    );
+
+    test('starts the bundled node beside it when the profile chose to keep its own', async () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', metadata: null },
+        legacyExternalChoice: 'managed',
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      await jest.advanceTimersByTimeAsync(1000);
+      await flushMicrotasks();
+
+      expect(ctx.spawnedProcesses).toHaveLength(1);
+      expect(ctx.mod.getActivePort()).toBe(1635);
+      expect(ctx.updateService).not.toHaveBeenCalledWith('ant', expect.objectContaining({
+        mode: 'reused',
+      }));
+      const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
+      expect(configContent).toContain('api-addr: 127.0.0.1:1635');
+      expect(configContent).toContain('p2p-addr: :1636');
+      // Nothing to persist: a legacy profile has no catalog entry.
+      expect(ctx.updateActiveProfileNodeConfig).not.toHaveBeenCalled();
+
+      const stopPromise = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stopPromise;
+    });
+
+    test('reuses it when the profile chose the external node', async () => {
+      jest.spyOn(global, 'setInterval').mockReturnValue(123);
+      jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', metadata: null },
+        legacyExternalChoice: 'external',
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+
+      expect(ctx.spawn).not.toHaveBeenCalled();
+      expect(ctx.mod.getActivePort()).toBe(1633);
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      await ctx.mod.stopAnt();
+    });
+
+    test('warns when it reuses the node without a saved choice', async () => {
+      jest.spyOn(global, 'setInterval').mockReturnValue(123);
+      jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', metadata: null },
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+
+      expect(ctx.spawn).not.toHaveBeenCalled();
+      expect(ctx.mod.getActivePort()).toBe(1633);
+      expect(ctx.log.warn).toHaveBeenCalledWith(
+        '[Ant] Reusing a node on port', 1633,
+        'without a saved choice for this profile; Swarm requests will go through it'
+      );
+      await ctx.mod.stopAnt();
+    });
   });
 
   test('starts a managed profile daemon on the profile port without reusing defaults', async () => {

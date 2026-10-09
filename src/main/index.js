@@ -590,7 +590,7 @@ async function bootstrap() {
     await promptForDefaultExternalCandidates(activeProfile, {
       window: mainWindow,
       enabledProtocols: {
-        bee: settings.startBeeAtLaunch !== false,
+        bee: settings.startAntAtLaunch !== false,
         ipfs: settings.startIpfsAtLaunch !== false,
         tor: settings.enableTorIntegration === true && settings.startTorAtLaunch === true,
       },

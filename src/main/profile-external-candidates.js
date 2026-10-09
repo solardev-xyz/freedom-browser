@@ -1,6 +1,8 @@
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { updateActiveProfileNodeConfigWhenIdle } = require('./profile-resolver');
@@ -12,6 +14,14 @@ const {
 } = require('./ipfs/ipfs-gateway-probe');
 
 const EXTERNAL_CANDIDATE_PROMPT_KEY = 'externalCandidatePrompt';
+
+// Legacy launches (FREEDOM_TEST_USER_DATA, --profile-dir) have no catalog
+// entry to keep node config in. Of their nodes only Swarm adopts a node on the
+// default port (ant-manager.js), so only it is asked about, and the answer is
+// kept in a file in the profile directory (#218).
+const LEGACY_PROFILE_SOURCES = new Set(['test-user-data', 'profile-dir']);
+const LEGACY_PROMPT_PROTOCOLS = new Set(['bee']);
+const LEGACY_DECISIONS_FILE = 'external-node-decisions.json';
 
 const DEFAULT_EXTERNAL_NODE_CANDIDATES = {
   bee: {
@@ -158,7 +168,44 @@ function probeEndpoint(probe, options = {}) {
   });
 }
 
+function isLegacyProfile(profile) {
+  return LEGACY_PROFILE_SOURCES.has(profile?.source) && Boolean(profile?.userDataDir);
+}
+
+function getLegacyDecisionsPath(profile) {
+  return path.join(profile.userDataDir, LEGACY_DECISIONS_FILE);
+}
+
+function readLegacyDecisions(profile) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getLegacyDecisionsPath(profile), 'utf-8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// The saved "use the node already on the default port?" answer of a legacy
+// profile, or null when it was never asked (or the profile is a catalog one,
+// which keeps its answer in the catalog).
+function getLegacyExternalCandidateChoice(profile, protocol) {
+  if (!isLegacyProfile(profile)) return null;
+  const choice = readLegacyDecisions(profile)[protocol]?.choice;
+  return choice === 'external' || choice === 'managed' ? choice : null;
+}
+
+function saveLegacyDecision(profile, protocol, updates) {
+  const decisions = readLegacyDecisions(profile);
+  decisions[protocol] = updates[EXTERNAL_CANDIDATE_PROMPT_KEY];
+  fs.mkdirSync(profile.userDataDir, { recursive: true });
+  fs.writeFileSync(getLegacyDecisionsPath(profile), JSON.stringify(decisions, null, 2), 'utf-8');
+}
+
 function shouldPromptForProtocol(profile, protocol) {
+  if (isLegacyProfile(profile)) {
+    return LEGACY_PROMPT_PROTOCOLS.has(protocol)
+      && !getLegacyExternalCandidateChoice(profile, protocol);
+  }
   const config = profile?.metadata?.nodes?.[protocol];
   return config?.mode === 'managed' && !config?.[EXTERNAL_CANDIDATE_PROMPT_KEY]?.choice;
 }
@@ -334,7 +381,16 @@ async function presentExternalCandidatesInWindow(profile, candidates, options = 
 }
 
 async function promptForDefaultExternalCandidates(profile, options = {}) {
-  if (!profile || profile.source !== 'catalog') return [];
+  if (!profile) return [];
+  if (isLegacyProfile(profile)) {
+    options = {
+      ...options,
+      updateNodeConfig: options.updateNodeConfig
+        || ((protocol, updates) => saveLegacyDecision(profile, protocol, updates)),
+    };
+  } else if (profile.source !== 'catalog') {
+    return [];
+  }
 
   const logger = options.logger || console;
   const dialog = options.dialog || require('electron').dialog;
@@ -391,6 +447,7 @@ module.exports = {
   applyExternalCandidateDecisions,
   buildPromptMarker,
   detectDefaultExternalCandidates,
+  getLegacyExternalCandidateChoice,
   probeEndpoint,
   presentExternalCandidatesInWindow,
   promptForDefaultExternalCandidateProtocol,
