@@ -21,8 +21,11 @@ selected. Official Codex 0.162.1 is checksum-verified in Windows scratch, with a
 separate home and no model requests. Added a reusable reference qualification
 script for write boundaries, builds, network, preview and launcher cleanup.
 Initial SSH tests reproduce Node's `0xC0000142` in both MXC and unelevated modes;
-MXC `cmd.exe` succeeds. Desktop comparison and administrator provisioning for the
-elevated backend are pending. Freedom's production Windows executor remains
+both run Node/npm builds successfully in the standard user's desktop. Their
+outside, `.git` and junction write checks pass. MXC denies raw network access
+but its preview server is unreachable from the host; unelevated serves previews
+but raw sockets bypass its disabled-network posture. Administrator provisioning
+and qualification of the preferred elevated backend are pending. Freedom's production Windows executor remains
 unsupported until a tested adapter is implemented.
 
 Started `experiment/agent-windows-mxc` from feature/main-refresh `b97afeb3`.

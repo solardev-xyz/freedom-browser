@@ -26,8 +26,9 @@ reads are now accepted, while write containment, UI qualification and preview
 connectivity remain gates.
 
 No Freedom runtime code or dependencies changed. Windows workspace execution
-continues to fail closed. No host-preparation script, ACL modification, elevated
-execution, audit/allow mode, or OS update was performed.
+continues to fail closed. The initial MXC SDK spike made no host ACL changes.
+The later Codex unelevated comparison uses Codex's scoped ACL setup in synthetic
+workspaces. Elevated provisioning is pending; no OS update was performed.
 
 ## Environment and sync
 
@@ -65,8 +66,41 @@ or OpenAI authentication is involved in sandbox CLI probes.
 
 Initial SSH probes: MXC `cmd.exe` echo succeeds; Node returns `0xC0000142` in
 both MXC and unelevated mode, including unelevated with private desktop disabled.
-The failure is therefore not unique to MXC. Desktop comparison and elevated
-provisioning are still required before drawing a compatibility conclusion.
+Both backends run Node successfully in the test user's existing desktop session.
+The failure is therefore not unique to MXC or a general Node incompatibility;
+its exact SSH/session initialization cause remains unproven.
+
+The desktop comparison ran through the on-demand scheduled task
+`Freedom-Codex-Reference-Oct10`, with `InteractiveToken` and `LeastPrivilege` for
+the standard test user. It has no automatic trigger. Task Scheduler's CLI worked
+over SSH after the PowerShell CIM API denied access. Scripts and logs reside in
+`C:\freedom-test\codex-oct10`; the task runs the GitHub-synchronized suite.
+
+| Desktop check | Codex MXC | Codex unelevated |
+| --- | --- | --- |
+| Workspace write and broad outside read | Passed | Passed |
+| Outside write blocked, sentinel unchanged | Passed | Passed |
+| `.git` write blocked, sentinel unchanged | Passed | Passed |
+| Write through host-created junction blocked | Passed | Passed |
+| Node 24.21 startup | Passed | Passed |
+| Synthetic npm build with Node child process | Passed | Passed |
+| Direct TCP denied with networking disabled | Passed (`EACCES`) | **Failed: socket connected** |
+| Direct TCP allowed with networking enabled | Passed | Passed |
+| Host HTTP connection to localhost preview | **Failed: server starts but is unreachable** | Passed |
+| Abrupt launcher exit | Separate heartbeat check below | Initial HTTP check passed |
+
+These findings support testing the **elevated** fallback rather than adopting
+unelevated mode. MXC's write/network enforcement works for these cases, but the
+preview transport remains blocked on this host. The synthetic npm build does
+not establish third-party dependency-install or full Next.js compatibility.
+
+Initial desktop artifacts: `desktop-runs\mxc-EjP94C` and
+`desktop-runs\unelevated-GlnDV8`. The first SSH run's junction assertion was too
+narrow: Windows reported an untrusted mount point instead of ordinary access
+denial. The updated harness recognizes both explicit denials. Its independent
+heartbeat shutdown check avoids treating failed HTTP preview access as evidence
+that cancellation failed or succeeded, and rejects observations after the server
+watchdog could have fired.
 
 The reusable reference suite is `scripts/qualify-codex-windows-sandbox.js`.
 It retains unique synthetic workspaces and JSONL results, tests broad reads,

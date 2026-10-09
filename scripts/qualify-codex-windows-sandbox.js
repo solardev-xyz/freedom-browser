@@ -95,7 +95,8 @@ async function main() {
   for (const [name, target] of [['outside-write', outsideFile], ['git-write', gitFile],
     ['junction-write', path.join(work, 'outside-junction', 'sentinel.txt')]]) {
     await cmd(name, `echo tampered> "${target}"`, r =>
-      r.code === 1 && /access is denied/i.test(r.stderr) && fs.readFileSync(target, 'utf8') === 'untouched');
+      r.code === 1 && /access is denied|untrusted mount point/i.test(r.stderr) &&
+        fs.readFileSync(target, 'utf8') === 'untouched');
   }
   const version = await sandbox([process.execPath, '--version']).done;
   record('node-start', { ...version, passed: version.code === 0 && version.stdout === process.version });
@@ -131,10 +132,15 @@ socket.once('error', e => console.log('blocked:' + e.code));`;
         (enabled ? result.stdout === 'connected' : /^(blocked:|timeout)/.test(result.stdout)) });
   }
   const serverScript = path.join(work, 'server.cjs');
+  const heartbeatFile = path.join(work, 'server-heartbeat.txt');
   fs.writeFileSync(serverScript, `const http = require('node:http');
+const fs = require('node:fs');
+fs.writeFileSync('server-heartbeat.txt', 'started');
+setInterval(() => fs.writeFileSync('server-heartbeat.txt', String(Date.now())), 100);
 const server = http.createServer((req,res) => res.end('freedom-preview-probe'));
 server.listen(0, '127.0.0.1', () => console.log('PORT=' + server.address().port));
 setTimeout(() => process.exit(0), 15000);`);
+  const serverStarted = Date.now();
   const server = sandbox([process.execPath, serverScript], true);
   let port;
   for (let i = 0; i < 50; i++) {
@@ -148,7 +154,11 @@ setTimeout(() => process.exit(0), 15000);`);
   server.child.kill();
   const ended = await server.done;
   await delay(500);
-  record('launcher-termination', { ...ended, passed: reachable && !(await request(port)),
+  const heartbeat = fs.existsSync(heartbeatFile) ? fs.readFileSync(heartbeatFile, 'utf8') : null;
+  await delay(500);
+  const stopped = heartbeat !== null && fs.readFileSync(heartbeatFile, 'utf8') === heartbeat;
+  record('launcher-termination', { ...ended, passed: stopped && Date.now() - serverStarted < 12000 &&
+    (!reachable || !(await request(port))),
     scope: 'abrupt launcher exit; graceful cancellation is a separate integration gate' });
   // The bounded server watchdog prevents a surviving probe becoming a permanent service.
   record('sentinels', { passed: [outsideFile, gitFile].every(file => fs.readFileSync(file, 'utf8') === 'untouched') });
