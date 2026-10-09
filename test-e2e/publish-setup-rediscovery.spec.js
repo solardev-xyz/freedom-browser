@@ -508,6 +508,33 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await expect(stale).toContainText('may be out of date');
     await expect(keepLonger).toBeDisabled();
     await shoot(window, 'storage-stale');
+
+    // getState fails before the list does: nothing is left to name the
+    // wallet, so the screen says the list couldn't be checked instead of
+    // loading forever (and draws no cards it can't match to a wallet).
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await electronApp.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('swarm:setup-get-state');
+      ipcMain.handle('swarm:setup-get-state', () => {
+        throw new Error('setup state unavailable');
+      });
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(loading).toHaveText('Loading your storage…');
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(0);
+    await expect(empty).toBeHidden();
+    await expect(stale).toBeVisible();
+    await shoot(window, 'storage-state-failed');
   });
 
   test('the storage screen shows the stalled-scan warning over the empty state', async ({

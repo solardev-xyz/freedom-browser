@@ -765,6 +765,66 @@ describe('the storage screen while /stamps loads (#595)', () => {
     expect(actionButtons(elements).every((btn) => btn.disabled)).toBe(true);
   });
 
+  for (const [label, settle] of [
+    ['rejects', (getState) => getState.mockRejectedValue(new Error('ipc gone'))],
+    ['answers nothing', (getState) => getState.mockResolvedValue(null)],
+  ]) {
+    test(`a list that fails after getState ${label} says it couldn't be checked`, async () => {
+      const { elements, visible, emit, mod } = await load({
+        state: withWallet(ready()),
+        stamps: [BATCH],
+      });
+      mod.closeStampManager();
+      settle(global.window.publishSetup.getState);
+      const pending = slowStamps();
+      await mod.openStampManager();
+      await flush();
+      // getState is done, /stamps still loading: the spinner is right.
+      expect(visible('stamp-list-loading')).toBe(true);
+      pending.resolve({ success: false, error: 'node unreachable' });
+      await flush();
+      // No hand-off is left to run, so no endless "Loading your storage…".
+      expect(elements['stamp-batch-list'].children).toHaveLength(0);
+      expect(visible('stamp-list-empty')).toBe(false);
+      expect(visible('stamp-list-loading')).toBe(false);
+      expect(visible('stamp-list-stale')).toBe(true);
+
+      await emit(withWallet(ready()));
+      expect(elements['stamp-batch-list'].children).toHaveLength(1);
+      expect(visible('stamp-list-stale')).toBe(true);
+      expect(actionButtons(elements).every((btn) => btn.disabled)).toBe(true);
+    });
+  }
+
+  test("a getState from an earlier visit doesn't settle this one", async () => {
+    const { visible, mod } = await load({ state: withWallet(ready()), stamps: [BATCH] });
+    mod.closeStampManager();
+    let reject;
+    global.window.publishSetup.getState.mockImplementationOnce(
+      () => new Promise((_, rej) => (reject = rej))
+    );
+    slowStamps();
+    const first = mod.openStampManager();
+    mod.closeStampManager();
+    let answer;
+    global.window.publishSetup.getState.mockImplementationOnce(
+      () => new Promise((resolve) => (answer = resolve))
+    );
+    const pending = slowStamps();
+    const second = mod.openStampManager();
+    reject(new Error('ipc gone'));
+    await first;
+    pending.resolve({ success: false, error: 'node unreachable' });
+    await flush();
+    // This visit's getState is still out: keep waiting for it.
+    expect(visible('stamp-list-loading')).toBe(true);
+    expect(visible('stamp-list-stale')).toBe(false);
+    answer(withWallet(ready()));
+    await second;
+    await flush();
+    expect(visible('stamp-list-loading')).toBe(false);
+  });
+
   test('a pushed state with no cache for its wallet settles a held failure as empty', async () => {
     const { elements, visible, emit, mod } = await load({
       state: withWallet(ready()),

@@ -61,6 +61,12 @@ let failedBeforeWallet = null;
 // state pushed while open). Until then the cache is not drawn: the wallet may
 // have changed while the screen was closed and nothing pushed a state.
 let walletConfirmed = false;
+// This visit's getState settled without naming a state (it threw or answered
+// nothing), so only a push can confirm the wallet now. A list that fails
+// after that says it couldn't be checked rather than holding the spinner.
+let stateUnanswered = false;
+// Bumped on every open, so a getState from an earlier visit lands on nothing.
+let openVisit = 0;
 // The last non-empty list getStamps returned, when, and for which node
 // wallet. A return visit shows it at once while the fresh list loads (#595).
 // Profiles run in their own processes, so this never crosses one.
@@ -113,6 +119,8 @@ export async function openStampManager() {
   isOpen = true;
   loadedKey = null;
   walletConfirmed = false;
+  stateUnanswered = false;
+  const visit = ++openVisit;
   clearBatchList();
   void window.publishSetup?.watch('storage', true);
 
@@ -121,24 +129,24 @@ export async function openStampManager() {
   loadBatchList();
   let walletChanged = false;
   let confirmed = false;
-  let failed = false;
   try {
     const state = await window.publishSetup?.getState();
     confirmed = Boolean(state);
     walletChanged = adoptState(state || setupState);
   } catch {
     // The push subscription fills it in.
-    failed = true;
   }
-  if (isOpen) {
+  if (isOpen && visit === openVisit) {
     if (confirmed) walletConfirmed = true;
+    else stateUnanswered = true;
     if (walletChanged) {
       clearBatchList();
       loadBatchList();
     } else showCachedList();
     // No answer, and none may be pushed: a list that failed meanwhile stops
-    // reading "loading" and says it couldn't be checked.
-    if (failed && !walletConfirmed && failedBeforeWallet === 'waiting') {
+    // reading "loading" and says it couldn't be checked. (One that fails
+    // later sees stateUnanswered in loadBatchList.)
+    if (!confirmed && !walletConfirmed && failedBeforeWallet === 'waiting') {
       failedBeforeWallet = 'unknown';
       renderLoadingStatus();
     }
@@ -322,8 +330,11 @@ async function loadBatchList() {
   // A cached list nobody has matched to a wallet yet: drawing it could show
   // another wallet's cards, and drawing nothing would say "no storage yet"
   // for a wallet that has some. Wait for the wallet (showCachedList).
+  // If getState has already settled without a state, nothing but a push will
+  // confirm the wallet, so say the list couldn't be checked instead of
+  // holding a spinner no hand-off will ever clear.
   if (!walletConfirmed && cachedBatches) {
-    failedBeforeWallet = 'waiting';
+    failedBeforeWallet = stateUnanswered ? 'unknown' : 'waiting';
     renderLoadingStatus();
     return;
   }
