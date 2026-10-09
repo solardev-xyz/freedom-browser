@@ -405,22 +405,26 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
       ipcMain.handle('swarm:get-stamps', () => {
         return new Promise((resolve) => {
           globalThis.__heldStamps.push(() =>
-            resolve({
-              success: true,
-              stamps: [
-                {
-                  batchId: 'aa'.repeat(32),
-                  usable: true,
-                  sizeBytes: 1e9,
-                  usagePercent: 0,
-                  // Drifts like stamp-service's normalizeBatch: a lower ttl
-                  // and a fresh expiry estimate on every call.
-                  ttlSeconds: 30 * 86400 + 3600 - globalThis.__heldStamps.length,
-                  expiresApprox: new Date().toISOString(),
-                  depth: 20,
-                },
-              ],
-            })
+            resolve(
+              globalThis.__failStamps
+                ? { success: false, error: 'node unreachable' }
+                : {
+                    success: true,
+                    stamps: [
+                      {
+                        batchId: 'aa'.repeat(32),
+                        usable: true,
+                        sizeBytes: 1e9,
+                        usagePercent: 0,
+                        // Drifts like stamp-service's normalizeBatch: a lower ttl
+                        // and a fresh expiry estimate on every call.
+                        ttlSeconds: 30 * 86400 + 3600 - globalThis.__heldStamps.length,
+                        expiresApprox: new Date().toISOString(),
+                        depth: 20,
+                      },
+                    ],
+                  }
+            )
           );
         });
       });
@@ -477,6 +481,33 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     // The same list came back: the card stays (it is not rebuilt), now live.
     await expect(keepLonger).toBeEnabled();
     expect(await card.evaluate((node) => node.isConnected)).toBe(true);
+    const stale = window.locator('#stamp-list-stale');
+    await expect(stale).toBeHidden();
+
+    // A return visit whose refresh fails keeps the cached card, says the
+    // list may be out of date, and leaves its actions off.
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await electronApp.evaluate(() => {
+      globalThis.__failStamps = true;
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(stale).toBeHidden();
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(1);
+    await expect(empty).toBeHidden();
+    await expect(stale).toBeVisible();
+    await expect(stale).toContainText('may be out of date');
+    await expect(keepLonger).toBeDisabled();
+    await shoot(window, 'storage-stale');
   });
 
   test('the storage screen shows the stalled-scan warning over the empty state', async ({

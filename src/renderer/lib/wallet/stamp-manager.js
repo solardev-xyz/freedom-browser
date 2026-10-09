@@ -23,6 +23,7 @@ let batchListContainer;
 let emptyText;
 let loadingStatus;
 let loadingText;
+let staleNotice;
 let scanStatus;
 let scanWarning;
 let scanWarningText;
@@ -42,6 +43,19 @@ let refreshing = false;
 // What the rendered cards show, so a refresh that brings the same list leaves
 // them (and any open extension form) alone.
 let renderedSignature = null;
+// True while the cards on screen are the cache rather than this visit's
+// getStamps: their actions are off, and once no refresh is running a line
+// says the list may be out of date.
+let listStale = false;
+// True once this visit's own getStamps list is on screen.
+let listFresh = false;
+// Whether the card actions (and an open extension form's presets) may start
+// an operation.
+let actionsLive = false;
+// Whether this visit has heard which node wallet is current (getState, or a
+// state pushed while open). Until then the cache is not drawn: the wallet may
+// have changed while the screen was closed and nothing pushed a state.
+let walletConfirmed = false;
 // The last non-empty list getStamps returned, when, and for which node
 // wallet. A return visit shows it at once while the fresh list loads (#595).
 // Profiles run in their own processes, so this never crosses one.
@@ -56,6 +70,7 @@ export function initStampManager() {
   emptyText = document.getElementById('stamp-list-empty');
   loadingStatus = document.getElementById('stamp-list-loading');
   loadingText = document.getElementById('stamp-list-loading-text');
+  staleNotice = document.getElementById('stamp-list-stale');
   scanStatus = document.getElementById('stamp-scan-status');
   scanWarning = document.getElementById('stamp-scan-warning');
   scanWarningText = document.getElementById('stamp-scan-warning-text');
@@ -75,6 +90,7 @@ export function initStampManager() {
   window.publishSetup?.onState((state) => {
     const walletChanged = adoptState(state);
     if (!isOpen) return;
+    walletConfirmed = true;
     // Another wallet's cards must not stay up while its own list loads.
     if (walletChanged) clearBatchList();
     renderDepositWarning();
@@ -90,24 +106,33 @@ export async function openStampManager() {
   stampManagerScreen?.classList.remove('hidden');
   isOpen = true;
   loadedKey = null;
+  walletConfirmed = false;
   clearBatchList();
-  const cached = cachedStampsForWallet();
-  if (cached) renderBatchList(cached, { stale: true });
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
   renderScanStatus();
   loadBatchList();
   let walletChanged = false;
+  let confirmed = false;
   try {
-    walletChanged = adoptState((await window.publishSetup?.getState()) || setupState);
+    const state = await window.publishSetup?.getState();
+    confirmed = Boolean(state);
+    walletChanged = adoptState(state || setupState);
   } catch {
     // The push subscription fills it in.
   }
   if (isOpen) {
+    if (confirmed) walletConfirmed = true;
     if (walletChanged) {
       clearBatchList();
       loadBatchList();
+    }
+    // The wallet is known now, so its cached list can show, unless this
+    // visit's own list has already landed (a failed one gives way to it).
+    if (walletConfirmed && !listFresh) {
+      const cached = cachedStampsForWallet();
+      if (cached) renderBatchList(cached, { stale: true });
     }
     renderDepositWarning();
     renderScanStatus();
@@ -143,14 +168,17 @@ function adoptState(state) {
 
 // This wallet's cached list, its time remaining counted down by the time
 // since it was fetched, so a days-old list doesn't show its old expiry.
+// A batch whose time ran out since then is shown as not usable rather than
+// with its old "Usable" badge. Nothing until this visit knows the wallet.
 function cachedStampsForWallet() {
   const wallet = walletKey();
-  if (!wallet || cachedBatches?.wallet !== wallet) return null;
+  if (!walletConfirmed || !wallet || cachedBatches?.wallet !== wallet) return null;
   const elapsed = Math.max(0, Math.floor((Date.now() - cachedBatches.fetchedAt) / 1000));
-  return cachedBatches.stamps.map((batch) => ({
-    ...batch,
-    ttlSeconds: Math.max(0, (batch.ttlSeconds || 0) - elapsed),
-  }));
+  return cachedBatches.stamps.map((batch) => {
+    const ttlSeconds = Math.max(0, (batch.ttlSeconds || 0) - elapsed);
+    const ranOut = batch.ttlSeconds > 0 && ttlSeconds === 0;
+    return { ...batch, ttlSeconds, ...(ranOut ? { usable: false, pending: false } : {}) };
+  });
 }
 
 // A finished purchase or a change in the node's batches reloads the list.
@@ -216,6 +244,9 @@ function clearBatchList() {
   batchCount = null;
   renderedSignature = null;
   refreshing = false;
+  listStale = false;
+  listFresh = false;
+  actionsLive = false;
   renderLoadingStatus();
   if (buyMoreBtn) buyMoreBtn.textContent = 'Buy Storage';
 }
@@ -234,6 +265,9 @@ function renderLoadingStatus() {
         ? 'Loading your storage…'
         : 'Checking for changes…';
   }
+  // Cached cards left after a refresh that failed: they may be out of date
+  // (a batch expired or topped up since), and their actions are off.
+  staleNotice?.classList.toggle('hidden', !(isOpen && !refreshing && listStale));
 }
 
 async function loadBatchList() {
@@ -309,6 +343,8 @@ function renderBatchList(stamps, { stale = false } = {}) {
     (setupState?.plans || []).map((plan) => plan.depth),
   ]);
   batchCount = stamps.length;
+  listStale = stale && stamps.length > 0;
+  listFresh = !stale;
   renderLoadingStatus();
   renderEmptyText();
   if (signature === renderedSignature) {
@@ -385,10 +421,16 @@ function renderBatchList(stamps, { stale = false } = {}) {
   setActionsLive(!stale);
 }
 
+// Covers an extension form opened while the list was live, too: a reload
+// that then fails must not leave its presets able to start an operation.
 function setActionsLive(live) {
+  actionsLive = live;
   batchListContainer?.querySelectorAll('.stamp-batch-action-btn').forEach((btn) => {
     btn.disabled = !live;
     btn.title = live ? '' : 'Available once your storage list is up to date.';
+  });
+  batchListContainer?.querySelectorAll('.stamp-extend-preset-btn').forEach((btn) => {
+    btn.disabled = !live || btn.dataset.quoted !== 'true';
   });
 }
 
@@ -475,7 +517,8 @@ async function loadExtensionOptions(form, presetRow, statusEl, batch, type) {
     btn.type = 'button';
     btn.className = 'stamp-extend-preset-btn';
     btn.textContent = option.quote ? `${label} · ${option.quote.price.display} xDAI` : label;
-    btn.disabled = !option.quote;
+    btn.dataset.quoted = option.quote ? 'true' : '';
+    btn.disabled = !option.quote || !actionsLive;
     btn.addEventListener('click', () => startOperation(request));
     presetRow.appendChild(btn);
   });
