@@ -1,0 +1,1 @@
+- A private window's menus and address suggestions stay readable in the light theme ([#609](https://github.com/solardev-xyz/freedom-browser/issues/609))

@@ -361,3 +361,95 @@ describe('the shared bound itself', () => {
     expect(STYLES_BUNDLE).toContain("@import './styles/popovers.css';");
   });
 });
+
+describe('popovers keep the private palette in a light-theme private window (#609)', () => {
+  const LIGHT_PREFIX = "[data-theme='light'] ";
+  const PRIVATE_PREFIX = 'body.private-window ';
+
+  /** `{ selector, declarations }` per selector of every rule in `css`. */
+  const selectorRules = (css) =>
+    rules(css).flatMap(({ prelude, declarations }) =>
+      prelude.split(',').map((selector) => ({ selector: selector.trim(), declarations }))
+    );
+
+  /** Light-theme selectors (prefix stripped) that set a background. */
+  const lightBackgrounds = CHROME_SHEETS.flatMap(({ css }) => selectorRules(css))
+    .filter(({ selector }) => selector.startsWith(LIGHT_PREFIX))
+    .filter(({ declarations }) => /(^|;|\s)background(-color)?\s*:/.test(declarations))
+    .map(({ selector, declarations }) => ({
+      selector: selector.slice(LIGHT_PREFIX.length),
+      declarations,
+    }));
+
+  /**
+   * Popovers whose light styling is a palette of its own rather than one
+   * surface, so routing the surface alone would not make it legible.
+   */
+  const OWN_LIGHT_PALETTE = {
+    'github-bridge-panel': 'buttons, rows and step markers all carry light literals',
+  };
+
+  test('a popover surface is painted from --menu-bg, never a light literal', () => {
+    // private.css redefines --menu-bg as the plum surface for both themes.
+    // A light rule that hardcodes white on the popover itself beats that, and
+    // the private --text (light lavender) then sat on white at about 1.4:1.
+    const literal = lightBackgrounds
+      .filter(({ selector }) =>
+        POPOVER_CLASSES.some((name) => selector === `.${name}` && !(name in OWN_LIGHT_PALETTE))
+      )
+      .filter(
+        ({ declarations }) => !/background(-color)?\s*:\s*var\(--menu-bg\)/.test(declarations)
+      )
+      .map(({ selector }) => selector);
+    expect(literal).toEqual([]);
+  });
+
+  test("every light overlay on a popover's rows has a private-window counterpart", () => {
+    // The rows' light hovers and dividers are black overlays that vanish on
+    // the plum surface; private.css hands back the dark-theme values.
+    // The menus' rows: the app and Nodes menus share `.menu-item`, the tab and
+    // page context menus `.context-menu-item`, plus the address suggestions
+    // and the bookmarks bar's overflow menu.
+    const rowPrefixes = [
+      'menu-item',
+      'menu-divider',
+      'context-menu-',
+      'autocomplete-',
+      'bookmarks-overflow-',
+    ];
+    const rowSelectors = lightBackgrounds
+      .map(({ selector }) => selector)
+      .filter((selector) => {
+        const first = classesIn(selector)[0];
+        return (
+          first &&
+          !POPOVER_CLASSES.includes(first) &&
+          rowPrefixes.some((prefix) => first.startsWith(prefix))
+        );
+      });
+    // The sweep reached the hamburger, context menu and suggestion rows.
+    expect(rowSelectors).toEqual(
+      expect.arrayContaining([
+        '.menu-item:hover:not(:disabled)',
+        '.context-menu-item:hover',
+        '.autocomplete-item.selected',
+        '.menu-divider',
+      ])
+    );
+
+    const privateSelectors = new Set(
+      selectorRules(read(STYLES_DIR, 'private.css'))
+        .filter(({ declarations }) => /background(-color)?\s*:/.test(declarations))
+        .map(({ selector }) => selector)
+    );
+    const missing = [...new Set(rowSelectors)].filter(
+      (selector) => !privateSelectors.has(PRIVATE_PREFIX + selector)
+    );
+    expect(missing).toEqual([]);
+  });
+
+  test('private.css comes after light-theme.css in the bundle', () => {
+    const order = CHROME_SHEETS.map(({ name }) => name);
+    expect(order.indexOf('private.css')).toBeGreaterThan(order.indexOf('light-theme.css'));
+  });
+});
