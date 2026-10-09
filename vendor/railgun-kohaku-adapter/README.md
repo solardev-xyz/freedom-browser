@@ -6,9 +6,9 @@ Freedom installs `@freedom/railgun-kohaku-adapter@0.6.0` from the committed
 The source repository is https://github.com/solardev-xyz/railgun-kohaku-adapter.
 The package is MPL-2.0, private in npm metadata, and has not been published to npm.
 
-This artifact was packed from `bcd860791926b38520a032814ac7ac59b9108c7c` with
+This artifact was packed from `7d75c1373a8afa3212cfe8ace1f784425e1057c5` with
 Node 24.18.1 and npm 11.16.0. Its SHA-256 is
-`c56eb6d160f16a9177eaa7b875c57bed7ab5c509b7259522faceb14b704d0fbc`.
+`eff8dc891345535bf27b1442a4157027fc976541a596e930a9adb6b525de2633`.
 
 Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
 `previousCandidate` with its qualification scope), it adds:
