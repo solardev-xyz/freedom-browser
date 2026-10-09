@@ -10,6 +10,10 @@ const path = require('path');
 // Everything outside node_modules must sit under one of these.
 const ALLOWED_TOP_LEVEL = new Set(['src', 'package.json', 'node_modules']);
 const TEST_FILE = /\.(test|spec)\.js$/;
+// Test-only directories: their helpers, probes and fixtures are not named
+// *.test.js (Safe test owners with hardhat keys, Electron probe scripts, JSON
+// fixtures) and nothing at runtime loads them.
+const TEST_DIR = /(^|\/)(__tests__|__fixtures__|__mocks__)\//;
 
 // The asar header is a pickled JSON string: an 8-byte size pickle, then a
 // 4-byte payload length and a 4-byte string length, then the JSON itself.
@@ -50,7 +54,9 @@ function findAsarProblems({ files, prebuilds = [], targets = [] }) {
     const top = file.split('/')[0];
     if (top === 'node_modules') continue;
     if (!ALLOWED_TOP_LEVEL.has(top)) strayTopLevel.add(top);
-    else if (TEST_FILE.test(file)) problems.push(`test file packed: ${file}`);
+    else if (TEST_FILE.test(file) || TEST_DIR.test(file)) {
+      problems.push(`test file packed: ${file}`);
+    }
   }
   for (const top of [...strayTopLevel].sort()) {
     problems.push(`unexpected top-level entry packed: ${top}`);

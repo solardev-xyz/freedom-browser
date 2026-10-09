@@ -49,6 +49,7 @@ describe('findAsarProblems', () => {
       'src/renderer/index.html',
       'node_modules/foo/index.js',
       'node_modules/foo/foo.test.js',
+      'node_modules/foo/__tests__/helper.js',
     ];
     expect(findAsarProblems({ files, prebuilds: ['linux-x64.node'], targets })).toEqual([]);
   });
@@ -81,6 +82,39 @@ describe('findAsarProblems', () => {
       'test file packed: src/main/foo.test.js',
       'test file packed: src/renderer/bar.spec.js',
     ]);
+  });
+
+  test('flags helpers, probes and fixtures in test-only directories under src', () => {
+    const files = [
+      'src/main/wallet/safe/__tests__/helpers/test-owners.js',
+      'src/main/__tests__/integration/ccip-proxy-electron-probe.js',
+      'src/main/networks/__fixtures__/blockscout-xbzz-transfers.json',
+      'src/renderer/__mocks__/electron.js',
+      'src/main/tests-helper.js',
+    ];
+    expect(findAsarProblems({ files, targets })).toEqual([
+      'test file packed: src/main/wallet/safe/__tests__/helpers/test-owners.js',
+      'test file packed: src/main/__tests__/integration/ccip-proxy-electron-probe.js',
+      'test file packed: src/main/networks/__fixtures__/blockscout-xbzz-transfers.json',
+      'test file packed: src/renderer/__mocks__/electron.js',
+    ]);
+  });
+
+  test('every test-only directory in src is excluded by the allowlist', () => {
+    // A non-test file under one of these would otherwise ship (#576 review).
+    const found = new Set();
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (/^__(tests|fixtures|mocks)__$/.test(entry.name)) found.add(entry.name);
+        walk(path.join(dir, entry.name));
+      }
+    };
+    walk(path.join(__dirname, '..', 'src'));
+    expect(found.size).toBeGreaterThan(0);
+    for (const name of found) {
+      expect(pkg.build.files).toContain(`!src/**/${name}/**`);
+    }
   });
 
   test('flags better-sqlite3 prebuilds for other targets', () => {
