@@ -294,7 +294,7 @@ describe('ENABLE_DEV_UPDATER feed (#611)', () => {
     }
   );
 
-  test.each(['updates.example.test/feed', 'ftp://updates.example.test/feed', 'false'])(
+  test.each(['updates.example.test/feed', 'ftp://updates.example.test/feed', 'disabled'])(
     'a non-flag, non-http(s) value %j warns before falling back to the local feed',
     (value) => {
       process.env.ENABLE_DEV_UPDATER = value;
@@ -316,6 +316,18 @@ describe('ENABLE_DEV_UPDATER feed (#611)', () => {
     });
     expect(logger.warn).not.toHaveBeenCalled();
   });
+
+  test.each(['0', 'false', ' OFF ', 'no', '', '  '])(
+    'the off-flag %j leaves the shipped config and feed alone, without a warning',
+    (value) => {
+      process.env.ENABLE_DEV_UPDATER = value;
+      const { autoUpdater, logger } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+      expect(autoUpdater.updateConfigPath).toBeUndefined();
+      expect(autoUpdater.forceDevUpdateConfig).toBeUndefined();
+      expect(autoUpdater.setFeedURL).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+    }
+  );
 
   test('a provider throw from setFeedURL is logged, not fatal at load', () => {
     process.env.ENABLE_DEV_UPDATER = 'true';
@@ -516,6 +528,19 @@ describe('update state broadcast and IPC (#87)', () => {
       message: 'Updates are off in development builds.',
     });
   });
+
+  test.each(['0', 'false'])(
+    'a dev checkout with ENABLE_DEV_UPDATER=%j keeps updates off',
+    (value) => {
+      process.env.NODE_ENV = 'development';
+      process.env.ENABLE_DEV_UPDATER = value;
+      const { mod, autoUpdater } = loadUpdaterModule(DEFAULT_PROFILE);
+      mod.initUpdater(null, null, { profile: DEFAULT_PROFILE });
+      expect(mod.getUpdateState()).toMatchObject({ status: 'unsupported', reason: 'development' });
+      jest.advanceTimersByTime(10000);
+      expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    }
+  );
 
   test('a non-owner profile is unsupported until it takes over the updater', () => {
     const profile = { ...DEFAULT_PROFILE, appRoot: '/tmp/freedom-app-root' };

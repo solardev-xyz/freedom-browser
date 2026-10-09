@@ -57,6 +57,17 @@ log.info('[updater] User-Agent:', userAgent);
 // that feed instead, so a signed build can be pointed at any feed (#611).
 const DEV_UPDATE_FEED_URL = 'http://localhost:8765';
 const DEV_UPDATER_FLAG_VALUES = /^(true|1|yes|on)$/i;
+// An explicit off-flag reads the same as leaving the variable unset, so
+// ENABLE_DEV_UPDATER=0 turns the dev updater off rather than (as any
+// non-empty string used to) on.
+const DEV_UPDATER_OFF_VALUES = /^(false|0|no|off)$/i;
+
+// The ENABLE_DEV_UPDATER value to act on, trimmed, or '' when it is unset,
+// blank or an off-flag. Every check of the variable goes through this.
+function devUpdaterSetting() {
+  const raw = (process.env.ENABLE_DEV_UPDATER || '').trim();
+  return DEV_UPDATER_OFF_VALUES.test(raw) ? '' : raw;
+}
 
 // Resolves the feed for an ENABLE_DEV_UPDATER value. A plain on-flag (or no
 // value, under NODE_ENV=development) means the local server. Anything else
@@ -67,8 +78,7 @@ const DEV_UPDATER_FLAG_VALUES = /^(true|1|yes|on)$/i;
 // neither falls back to the local server with a warning (warn reaches the
 // terminal in packaged builds too, info only the log file), so a typo such as
 // a missing scheme isn't silently swapped for localhost.
-function resolveDevFeedUrl(value) {
-  const raw = (value || '').trim();
+function resolveDevFeedUrl(raw) {
   if (!raw || DEV_UPDATER_FLAG_VALUES.test(raw)) return { url: DEV_UPDATE_FEED_URL };
   let parsed;
   try {
@@ -82,13 +92,13 @@ function resolveDevFeedUrl(value) {
   return {
     url: DEV_UPDATE_FEED_URL,
     warning:
-      `ENABLE_DEV_UPDATER=${JSON.stringify(value)} is neither "true" nor a valid ` +
+      `ENABLE_DEV_UPDATER=${JSON.stringify(raw)} is neither "true" nor a valid ` +
       `http(s) URL (e.g. https://updates.example.org/feed); falling back to ${DEV_UPDATE_FEED_URL}`,
   };
 }
 
-if (process.env.NODE_ENV === 'development' || process.env.ENABLE_DEV_UPDATER) {
-  const { url: feedUrl, warning } = resolveDevFeedUrl(process.env.ENABLE_DEV_UPDATER);
+if (process.env.NODE_ENV === 'development' || devUpdaterSetting()) {
+  const { url: feedUrl, warning } = resolveDevFeedUrl(devUpdaterSetting());
   if (warning) log.warn('[updater]', warning);
 
   // Only a source checkout needs dev-app-update.yml: a packaged app ships
@@ -102,7 +112,9 @@ if (process.env.NODE_ENV === 'development' || process.env.ENABLE_DEV_UPDATER) {
   }
 
   // The URL is pre-validated above; this guard only keeps a provider-side
-  // throw from crashing startup, leaving the shipped feed in place.
+  // throw from crashing startup. The feed then stays whatever the update
+  // config already names: the shipped app-update.yml in a packaged build,
+  // the dev-app-update.yml swapped in above in a source checkout.
   try {
     autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
     log.info('[updater] Dev mode: Update server at', feedUrl);
@@ -323,7 +335,7 @@ function checkForUpdates({ manual = false } = {}) {
   }
 
   // Allow testing in development with ENABLE_DEV_UPDATER=true
-  if (process.env.NODE_ENV === 'development' && !process.env.ENABLE_DEV_UPDATER) {
+  if (isDevModeWithoutUpdater()) {
     log.info('[updater] Skipping update check in development mode');
     return;
   }
@@ -484,7 +496,7 @@ function markUpdaterSupported() {
 }
 
 function isDevModeWithoutUpdater() {
-  return process.env.NODE_ENV === 'development' && !process.env.ENABLE_DEV_UPDATER;
+  return process.env.NODE_ENV === 'development' && !devUpdaterSetting();
 }
 
 // Manual update check (from menu)

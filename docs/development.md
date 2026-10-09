@@ -198,4 +198,4 @@ macOS (Squirrel.Mac) never installs an update into an unsigned app. To test the 
 ENABLE_DEV_UPDATER=https://updates.example.org/test-feed /Applications/Freedom.app/Contents/MacOS/Freedom
 ```
 
-Surrounding whitespace in the value is ignored. Any other value (a URL without `http://`/`https://`, one that doesn't parse) logs a warning, shown in the terminal and the log file, and falls back to `http://localhost:8765`.
+Surrounding whitespace in the value is ignored. `0`, `false`, `no`, `off` (any case) or an empty value read the same as leaving the variable unset: the dev updater stays off. Any other value (a URL without `http://`/`https://`, one that doesn't parse) logs a warning, shown in the terminal and the log file, and falls back to `http://localhost:8765`.
