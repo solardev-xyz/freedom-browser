@@ -1,4 +1,4 @@
 - A private window's menus, address suggestions and permission prompts stay readable in the light theme ([#609](https://github.com/solardev-xyz/freedom-browser/issues/609))
   - The permission prompt's Allow button no longer shows white text on the pale lavender accent
-  - Hovering a button in the permission prompt, the site-permissions popover or the pop-up blocker shows a highlight again
+  - Hovering a button in the permission prompt, the site-permissions popover or the pop-up blocker now shows a highlight
   - Switches in the Nodes menu and the sidebar look the same as in a dark private window
