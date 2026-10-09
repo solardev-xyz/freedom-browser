@@ -52,21 +52,26 @@ const userAgent = `Freedom/${app.getVersion()} (${process.platform}; ${process.a
 autoUpdater.requestHeaders = { 'User-Agent': userAgent };
 log.info('[updater] User-Agent:', userAgent);
 
-// Enable dev update config for testing
+// Point the updater at a test feed. ENABLE_DEV_UPDATER=true uses the local
+// server from `npm run serve:updates`; ENABLE_DEV_UPDATER=<http(s) URL> uses
+// that feed instead, so a signed build can be pointed at any feed (#611).
+const DEV_UPDATE_FEED_URL = 'http://localhost:8765';
 if (process.env.NODE_ENV === 'development' || process.env.ENABLE_DEV_UPDATER) {
-  const appPath = app.getAppPath();
-  const devUpdateConfig = path.join(appPath, 'dev-app-update.yml');
-  autoUpdater.updateConfigPath = devUpdateConfig;
-  autoUpdater.forceDevUpdateConfig = true;
+  const override = process.env.ENABLE_DEV_UPDATER;
+  const feedUrl = /^https?:\/\//i.test(override || '') ? override : DEV_UPDATE_FEED_URL;
 
-  // Set the feed URL to local test server
-  autoUpdater.setFeedURL({
-    provider: 'generic',
-    url: 'http://localhost:8765',
-  });
+  // Only a source checkout needs dev-app-update.yml: a packaged app ships
+  // app-update.yml (the download reads its updaterCacheDirName), and app.asar
+  // has no dev-app-update.yml to swap in.
+  if (!app.isPackaged) {
+    const devUpdateConfig = path.join(app.getAppPath(), 'dev-app-update.yml');
+    autoUpdater.updateConfigPath = devUpdateConfig;
+    autoUpdater.forceDevUpdateConfig = true;
+    log.info('[updater] Dev mode: Using local update config at', devUpdateConfig);
+  }
 
-  log.info('[updater] Dev mode: Using local update config at', devUpdateConfig);
-  log.info('[updater] Dev mode: Update server at http://localhost:8765');
+  autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
+  log.info('[updater] Dev mode: Update server at', feedUrl);
 }
 
 let updateCheckInProgress = false;

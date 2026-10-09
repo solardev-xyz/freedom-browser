@@ -181,3 +181,9 @@ npm run serve:updates
 # Terminal 2: Start app with updates enabled
 npm run start:test-updater
 ```
+
+From a source checkout the updater reads `dev-app-update.yml` in the repository root, but macOS (Squirrel.Mac) never installs an update into an unsigned app. To test the full download and install, run a signed, packaged build with `ENABLE_DEV_UPDATER` set. A packaged build keeps its shipped `app-update.yml` and only swaps the feed URL: `ENABLE_DEV_UPDATER=true` uses `http://localhost:8765` (the `serve:updates` server), and `ENABLE_DEV_UPDATER=<http(s) URL>` uses any other generic feed, for example:
+
+```bash
+ENABLE_DEV_UPDATER=https://updates.example.org/test-feed /Applications/Freedom.app/Contents/MacOS/Freedom
+```

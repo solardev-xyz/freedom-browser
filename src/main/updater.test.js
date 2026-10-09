@@ -25,7 +25,7 @@ function loadUpdaterModule(activeProfile, options = {}) {
   }));
 
   const app = {
-    ...createAppMock(),
+    ...createAppMock({ isPackaged: options.isPackaged }),
     getVersion: jest.fn(() => '0.0.0-test'),
     getAppPath: jest.fn(() => '/tmp/freedom-app'),
   };
@@ -202,6 +202,66 @@ describe('updater profile relaunch behavior', () => {
     await Promise.resolve();
 
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ENABLE_DEV_UPDATER feed (#611)', () => {
+  const savedEnv = {
+    NODE_ENV: process.env.NODE_ENV,
+    ENABLE_DEV_UPDATER: process.env.ENABLE_DEV_UPDATER,
+  };
+
+  beforeEach(() => {
+    delete process.env.NODE_ENV;
+    delete process.env.ENABLE_DEV_UPDATER;
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  test('without it the shipped config and feed are left alone', () => {
+    const { autoUpdater } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+    expect(autoUpdater.updateConfigPath).toBeUndefined();
+    expect(autoUpdater.forceDevUpdateConfig).toBeUndefined();
+    expect(autoUpdater.setFeedURL).not.toHaveBeenCalled();
+  });
+
+  test('a source checkout uses dev-app-update.yml and the local feed', () => {
+    process.env.ENABLE_DEV_UPDATER = 'true';
+    const { autoUpdater } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: false });
+    expect(autoUpdater.updateConfigPath).toBe(
+      require('path').join('/tmp/freedom-app', 'dev-app-update.yml')
+    );
+    expect(autoUpdater.forceDevUpdateConfig).toBe(true);
+    expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: 'generic',
+      url: 'http://localhost:8765',
+    });
+  });
+
+  test('a packaged build keeps its shipped app-update.yml and only swaps the feed', () => {
+    process.env.ENABLE_DEV_UPDATER = 'true';
+    const { autoUpdater } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+    // app.asar has no dev-app-update.yml; pointing at it broke the download.
+    expect(autoUpdater.updateConfigPath).toBeUndefined();
+    expect(autoUpdater.forceDevUpdateConfig).toBeUndefined();
+    expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: 'generic',
+      url: 'http://localhost:8765',
+    });
+  });
+
+  test('a URL value overrides the local feed', () => {
+    process.env.ENABLE_DEV_UPDATER = 'https://updates.example.test/feed';
+    const { autoUpdater } = loadUpdaterModule(DEFAULT_PROFILE, { isPackaged: true });
+    expect(autoUpdater.setFeedURL).toHaveBeenCalledWith({
+      provider: 'generic',
+      url: 'https://updates.example.test/feed',
+    });
   });
 });
 
