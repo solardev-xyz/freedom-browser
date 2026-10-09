@@ -12,6 +12,19 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ### Native Windows preparation and MXC spike — 2026-10-09
 
+**Updated decision, 2026-10-10:** the user accepts broad reads on Windows with
+narrow writes and controlled networking, matching Codex's practical baseline.
+Project-only read isolation is no longer a Windows release prerequisite. Follow
+Codex's MXC path on compatible hosts and investigate its elevated restricted-token
+backend as the preferred fallback; no separate AppContainer/VM design or fork is
+selected. Official Codex 0.162.1 is checksum-verified in Windows scratch, with a
+separate home and no model requests. Added a reusable reference qualification
+script for write boundaries, builds, network, preview and launcher cleanup.
+Initial SSH tests reproduce Node's `0xC0000142` in both MXC and unelevated modes;
+MXC `cmd.exe` succeeds. Desktop comparison and administrator provisioning for the
+elevated backend are pending. Freedom's production Windows executor remains
+unsupported until a tested adapter is implemented.
+
 Started `experiment/agent-windows-mxc` from feature/main-refresh `b97afeb3`.
 GitHub now synchronizes the Mac and physical Windows 11 checkout. Portable
 Node 24.21.0, dependency installation, lint, Electron 44.7.0 and SQLite runtime
@@ -28,9 +41,10 @@ windows. The desktop follow-up reached the script loader but required volume-roo
 metadata for path resolution. A root read grant then enabled Node/npm and an idle
 process timeout, but also allowed reading an ungranted outside sentinel. A paired
 `cmd.exe` reproduction over SSH confirmed that adding the grant made two
-otherwise unreadable synthetic files readable. **That policy is rejected**;
+otherwise unreadable synthetic files readable. **That policy was rejected under
+the earlier project-only read requirement**;
 the earlier assumption that the root read grant was non-recursive was not borne
-out. A narrower filesystem primitive or different containment design is needed;
+out. The updated broad-read policy supersedes that particular blocker;
 the SSH startup difference, UI qualification and preview route remain unresolved.
 Windows workspace execution remains unsupported and fails closed; no production
 backend was added.
@@ -39,8 +53,8 @@ Follow-up research (2026-10-10): prepared a read-only request-specific capabilit
 probe and confirmed metadata-only grants and localhost ingress are both rejected.
 Optional Windows update KB5124010 moves this host from `26200.9457` to
 `26200.9550`; upstream names the latter for Session Isolation but does not promise
-the two missing primitives. Recommend update/re-probe before selecting another
-backend; installation and reboot have not been performed. Ordinary WSL is not a
+the two missing primitives. An update is not an evidence-backed fix or prerequisite
+for the Codex reference investigation; installation and reboot have not been performed. Ordinary WSL is not a
 security boundary, and MXC's WSLC/Windows Sandbox adapters do not directly match
 our protected-path and network/preview requirements. The feasibility report
 records the alternatives and their product costs; no fallback has been selected.

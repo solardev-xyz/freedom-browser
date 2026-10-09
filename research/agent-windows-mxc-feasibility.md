@@ -6,6 +6,14 @@ Product baseline: `b97afeb3` (`feature/freedom-automation-kernel`)
 
 ## Result
 
+**Policy decision, 2026-10-10:** the user accepts Codex-style broad reads on
+Windows, with narrow writes and controlled networking. The project-only read
+requirement used in the initial spike below is superseded. This does not grant
+unrestricted writes or networking. The next reference is Codex's native MXC
+backend where compatible, with its elevated restricted-token sandbox as the
+preferred fallback. A separate AppContainer design, VM migration and MXC fork
+are not selected.
+
 MXC is not yet qualified as Freedom's Windows workspace executor. Its preferred
 BaseContainer backend is available on the test machine, and basic filesystem
 restrictions work. The user's interactive-desktop follow-up successfully ran
@@ -13,8 +21,9 @@ Node with `ui.disable: false`, while `true` still caused native initialization
 failure. SSH runs failed with either value. The host also lacks the capability
 for explicit host-loopback ingress. Adding a read-only volume-root grant lets
 Node/npm run, but also permits reads of ungranted synthetic files. That candidate
-policy is rejected. Filesystem confidentiality, UI qualification and preview
-connectivity remain separate gates.
+policy was rejected under the earlier project-only read requirement. Broader
+reads are now accepted, while write containment, UI qualification and preview
+connectivity remain gates.
 
 No Freedom runtime code or dependencies changed. Windows workspace execution
 continues to fail closed. No host-preparation script, ACL modification, elevated
@@ -36,6 +45,61 @@ execution, audit/allow mode, or OS update was performed.
   startup or full Windows unit/E2E suite was run.
 - `@microsoft/mxc-sdk@1.0.0` installed only in `C:\freedom-test\mxc-oct9`, with
   a scratch package-lock. It is not a Freedom dependency.
+
+## Codex reference qualification — 2026-10-10
+
+Reviewed local Codex source at `c9fecd3fa06af28011166207c596ad547e37abab` and
+current upstream at `4aa94dce270de668eff6e2fa8585c82385e84455`. The source-level
+`prefer_mxc` flag defaults off, but current product documentation says the desktop
+app prefers MXC for eligible consumer devices. The preferred legacy fallback is
+`elevated`: administrator-approved provisioning creates restricted accounts and
+network rules; workload commands do not run as administrator. `unelevated` has
+weaker network enforcement and is a comparison target, not the selected fallback.
+
+Downloaded the official Codex `0.162.1` Windows x64 standalone package into
+`C:\freedom-test\codex-oct10\package`, without global installation or Freedom
+dependency changes. The archive SHA256 matched GitHub release metadata:
+`3e993a82ff393f4530558dcaadb36bb4f0fd1ea7243e621348e40b469f900f6a`.
+The scratch Codex home is `C:\freedom-test\codex-oct10\home`. No model request
+or OpenAI authentication is involved in sandbox CLI probes.
+
+Initial SSH probes: MXC `cmd.exe` echo succeeds; Node returns `0xC0000142` in
+both MXC and unelevated mode, including unelevated with private desktop disabled.
+The failure is therefore not unique to MXC. Desktop comparison and elevated
+provisioning are still required before drawing a compatibility conclusion.
+
+The reusable reference suite is `scripts/qualify-codex-windows-sandbox.js`.
+It retains unique synthetic workspaces and JSONL results, tests broad reads,
+narrow writes (including `.git` and a host-created junction), npm build execution,
+raw outbound sockets with denied/allowed network profiles, HTTP preview access,
+and abrupt launcher termination. It does not qualify graceful Ctrl+C, detached
+server ownership, hostile process escape, packaged Freedom, or dependency
+installation. Network checks require a successful unsandboxed control probe;
+otherwise they fail rather than claim isolation. Servers have a 15-second
+watchdog. No synthetic files are automatically deleted.
+
+Run from a normal PowerShell as the test user, using the GitHub-synchronized
+checkout (replace `mxc` with `elevated` only after setup):
+
+```powershell
+& C:\freedom-test\toolchains\node-v24.21.0-win-x64\node.exe `
+  C:\dev\freedom-browser\scripts\qualify-codex-windows-sandbox.js `
+  --codex C:\freedom-test\codex-oct10\package\bin\codex.exe `
+  --home C:\freedom-test\codex-oct10\home `
+  --root C:\freedom-test\codex-oct10\runs --backend mxc
+```
+
+The administrator setup command, prepared as
+`C:\freedom-test\codex-oct10\setup-elevated.ps1`, invokes official
+`codex sandbox setup --elevated --user <standard-test-user> --codex-home <scratch-home>`.
+It requires an Administrator PowerShell because SSH uses a standard account.
+It creates machine-wide sandbox accounts/rules even though configuration is in
+scratch; it is not a portable/no-host-change installation. User execution was
+requested; successful provisioning has not yet been observed.
+
+Sources: [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.162.1),
+[MXC adapter](https://github.com/openai/codex/blob/4aa94dce270de668eff6e2fa8585c82385e84455/codex-rs/mxc-sandbox/README.md),
+[Windows sandbox modes](https://learn.chatgpt.com/docs/windows/windows-sandbox).
 
 ## Native capability report
 
