@@ -557,6 +557,36 @@ test('oversized and missing answers fail instead of producing partial data', asy
   expect((await post(bridge.url, rpc())).body.error.code).toBe(-32002);
 });
 
+test('a failed receipt lookup reaches Ant as "not mined yet" so it keeps polling (#614)', async () => {
+  const hash = `0x${'49'.repeat(32)}`;
+  router.request.mockRejectedValueOnce(
+    Object.assign(
+      new Error(
+        'Error in rpc call eth_getTransactionReceipt : HTTP error! Status: 500, Details: ' +
+          '{"error":"The Block after 48656190, which should contain the parentBeaconBlockRoot ' +
+          'for the data block can not be found in the execution layer!"}'
+      ),
+      { code: 4900 }
+    )
+  );
+  const response = await post(bridge.url, rpc('eth_getTransactionReceipt', [hash]));
+  expect(response).toEqual({ status: 200, body: { jsonrpc: '2.0', id: 7, result: null } });
+  expect(log.warn).toHaveBeenCalledWith(
+    '[Ant chain] eth_getTransactionReceipt failed, answered as not yet mined'
+  );
+
+  // The next poll, once the block after it exists, gets the receipt.
+  const receipt = { transactionHash: hash, status: '0x1', blockNumber: '0x2e66f7e', logs: [] };
+  router.request.mockResolvedValueOnce({ result: receipt, source: 'colibri' });
+  expect((await post(bridge.url, rpc('eth_getTransactionReceipt', [hash]))).body.result).toEqual(
+    receipt
+  );
+
+  // Other reads still report their failure.
+  router.request.mockRejectedValueOnce(Object.assign(new Error('boom'), { code: 4900 }));
+  expect((await post(bridge.url, rpc())).body.error.code).toBe(4900);
+});
+
 test('uncertain broadcasts and real RPC rejections are never retried by the bridge', async () => {
   await bridge.close();
   bridge = await startAntChainBridge({ router, log, allowBroadcast: true });

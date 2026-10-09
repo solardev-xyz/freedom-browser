@@ -407,7 +407,16 @@ async function startAntChainBridge({
       log.verbose(`[Ant chain] ${method} via ${source}`);
       send(res, 200, body);
     } catch (error) {
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && method === 'eth_getTransactionReceipt') {
+        // Ant v0.5.64 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
+        // on the first JSON-RPC error, even a passing one, and reports a
+        // transaction it already sent as failed (#614: Colibri cannot prove a
+        // receipt until the block after it exists). Null is "no receipt yet":
+        // Ant polls again with its own backoff until its deadline, and its
+        // one-shot receipt reads treat null and an error alike.
+        send(res, 200, { jsonrpc: '2.0', id, result: null });
+        log.warn('[Ant chain] eth_getTransactionReceipt failed, answered as not yet mined');
+      } else if (!controller.signal.aborted) {
         const { code, message, data } = antErrorReply(method, error);
         fail(code, message, data);
         log.warn(
