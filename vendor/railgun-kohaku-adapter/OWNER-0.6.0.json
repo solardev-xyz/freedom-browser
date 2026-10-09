@@ -1,12 +1,12 @@
 {
-  "packageSource": "3561269432e76e3b02241ef0bbcfbc2d5dc283b3",
+  "packageSource": "ee64dc06e7841219c68e4ebb4b39de206cae16a2",
   "registryPublished": false,
   "tarball": "vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
-  "sha256": "f3ce849cde073599a3dd2b4d80b38d19a29a05268369fb4e86cd00cdb3edf4c2",
-  "integrity": "sha512-hBAXwM3xnNnpI+G6iDtb8xNvov/70jJma0Hh7zV1uQoE3I5Hzi1/1EjfwYuXNC9CLMLVFZLEyILSvOeJQrSwsA==",
-  "files": 280,
+  "sha256": "860015b2880a301fff3f6ae19ec3a47d6502f3f436e2545c28e00f401df8d948",
+  "integrity": "sha512-1MQTEdqoF4gJuZDWGJlEUE3aSLH9ERPYZE7pCx5S5CxnzxslifW08bYMXFXZJPLyISwUIiyXIi84UBkkKMYaNg==",
+  "files": 281,
   "nativeIntegrationQualified": false,
-  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry and redacted POI error categories; final native qualification on this host identity pending",
+  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry, redacted POI error categories, the current POI_3x3 circuit and one replacement proof for a retired-circuit attempt; final native qualification on this host identity pending",
   "previousCandidate": {
     "packageSource": "fb3add6aa411375b42ed84735d4901bbc491c68e",
     "registryPublished": false,
@@ -93,6 +93,7 @@
     "src/execution/railgun-engine-manifest.json",
     "src/execution/railgun-engine-runtime.js",
     "src/execution/railgun-identity-job.js",
+    "src/execution/railgun-poi-retired-vkey.json",
     "src/execution/railgun-private-capsule.js",
     "src/execution/railgun-private-operate-job.js",
     "src/execution/railgun-private-prepare-job.js",
@@ -316,5 +317,5 @@
     "types/read.d.mts",
     "types/read.d.ts"
   ],
-  "packageRuntimeSource": "3561269432e76e3b02241ef0bbcfbc2d5dc283b3"
+  "packageRuntimeSource": "ee64dc06e7841219c68e4ebb4b39de206cae16a2"
 }
