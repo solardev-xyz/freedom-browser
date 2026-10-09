@@ -1,14 +1,31 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-06
+Last updated: 2026-10-09
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-10-06
+## Current working status — 2026-10-09
+
+### Native Windows preparation and MXC spike — 2026-10-09
+
+Started `experiment/agent-windows-mxc` from feature/main-refresh `b97afeb3`.
+GitHub now synchronizes the Mac and physical Windows 11 checkout. Portable
+Node 24.21.0, dependency installation, lint, Electron 44.7.0 and SQLite runtime
+checks passed on Windows. MXC 1.0.0 is installed only in scratch, not in Freedom.
+
+BaseContainer is available without ACL augmentation, and synthetic workspace /
+outside-path / protected `.git` checks passed. Node and Windows PowerShell fail
+with native initialization error `0xC0000142`; denial capture recorded no denied
+resources. Explicit host-loopback preview ingress is unsupported on this OS
+build. Neither cause nor workaround is established. Windows workspace execution
+remains unsupported and fails closed; no production backend was added.
+
+See [the feasibility report](agent-windows-mxc-feasibility.md) for exact versions,
+checks, desktop reproduction instructions and remaining implementation gates.
 
 ### Session privacy verification — experimental, 2026-10-06
 
