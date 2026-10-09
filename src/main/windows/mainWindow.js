@@ -7,8 +7,13 @@ const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
 
 let currentWindowTitle = 'Freedom';
 
-// Track all main browser windows we create
+// Track all main browser windows we create. Kept in focus order: a window is
+// moved to the end whenever it gains focus, so the last entry is the most
+// recently focused one (focusOrCreateMainWindow picks from the end).
 const mainWindows = new Set();
+// Private windows, so links handed over from outside (a second launch, macOS
+// open-url) never land in a private partition the user didn't open them in.
+const privateWindows = new WeakSet();
 
 // Get the app icon path (works in both dev and packaged)
 function getIconPath() {
@@ -118,6 +123,7 @@ function createMainWindow(initialUrl = null, options = {}) {
 
   // Track this window
   mainWindows.add(window);
+  if (privatePartition) privateWindows.add(window);
 
   // PRIVATE MODE GUARD (window title): `currentWindowTitle` is the shared
   // last-seen title, and private senders deliberately never seed it. Private
@@ -150,6 +156,13 @@ function createMainWindow(initialUrl = null, options = {}) {
 
   window.on('closed', () => {
     mainWindows.delete(window);
+  });
+
+  // Keep `mainWindows` in focus order (see its declaration).
+  window.on('focus', () => {
+    if (!mainWindows.has(window)) return;
+    mainWindows.delete(window);
+    mainWindows.add(window);
   });
 
   // Close renderer menus when window loses focus (e.g., clicking system menu)
@@ -229,7 +242,14 @@ function focusBrowserWindow(window) {
 
 function focusOrCreateMainWindow(initialUrl = null) {
   const urls = toUrlList(initialUrl);
-  let window = [...mainWindows].find((candidate) => !candidate.isDestroyed());
+  // Most recently focused window first. Links from outside (a second launch,
+  // macOS open-url, the Profiles manager) belong in a normal window, like
+  // Chrome: a private window's partition has no history or logins and is wiped
+  // on close. With no normal window open, they get a new one. A plain focus
+  // request (no URLs) raises whichever window the user used last.
+  const live = [...mainWindows].reverse().filter((candidate) => !candidate.isDestroyed());
+  let window =
+    urls.length === 0 ? live[0] : live.find((candidate) => !privateWindows.has(candidate));
   if (!window) {
     window = createMainWindow(urls.length > 0 ? urls : null);
   } else {

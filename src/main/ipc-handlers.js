@@ -519,7 +519,7 @@ async function ensureProfileClosedForDelete(profileId, options = {}) {
     // Prefer the definitive signal: the acking process has actually exited.
     let ack;
     try {
-      ack = readAck(target);
+      ack = readAck(target, quit?.nonce);
     } catch {
       ack = null;
     }

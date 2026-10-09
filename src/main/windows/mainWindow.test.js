@@ -112,12 +112,19 @@ describe('opening launch URLs', () => {
       constructor() {
         this.loadFile = jest.fn();
         this.webContents = { send: jest.fn(), on: jest.fn() };
+        this.handlers = {};
+        this.destroyed = false;
         windows.push(this);
       }
-      on() {}
+      on(event, handler) {
+        (this.handlers[event] ||= []).push(handler);
+      }
+      emit(event) {
+        for (const handler of this.handlers[event] || []) handler();
+      }
       once() {}
       isDestroyed() {
-        return false;
+        return this.destroyed;
       }
       isMinimized() {
         return false;
@@ -191,5 +198,58 @@ describe('opening launch URLs', () => {
     mod.createMainWindow();
     mod.focusOrCreateMainWindow(null);
     expect(windows[0].webContents.send).not.toHaveBeenCalled();
+  });
+
+  // R1-M1 (#630): links from outside go to the last-focused *normal* window,
+  // never into a private window's throwaway partition.
+  function close(win) {
+    win.destroyed = true;
+    win.emit('closed');
+  }
+
+  test('links skip a private window that is older than the normal one', () => {
+    const mod = load();
+    const a = mod.createMainWindow();
+    const p = mod.createMainWindow(null, { privatePartition: 'private-1' });
+    close(a);
+    const b = mod.createMainWindow();
+    mod.focusOrCreateMainWindow(['https://example.com/']);
+    expect(p.webContents.send).not.toHaveBeenCalled();
+    expect(b.webContents.send.mock.calls).toEqual([['tab:new-with-url', 'https://example.com/']]);
+  });
+
+  test('links go to the most recently focused normal window', () => {
+    const mod = load();
+    const a = mod.createMainWindow();
+    const b = mod.createMainWindow();
+    const p = mod.createMainWindow(null, { privatePartition: 'private-1' });
+    a.emit('focus');
+    p.emit('focus');
+    mod.focusOrCreateMainWindow(['https://example.com/']);
+    expect(a.webContents.send).toHaveBeenCalledWith('tab:new-with-url', 'https://example.com/');
+    expect(b.webContents.send).not.toHaveBeenCalled();
+    expect(p.webContents.send).not.toHaveBeenCalled();
+  });
+
+  test('links open a new normal window when only private windows are open', () => {
+    const mod = load();
+    const p = mod.createMainWindow(null, { privatePartition: 'private-1' });
+    mod.focusOrCreateMainWindow(['https://example.com/']);
+    expect(p.webContents.send).not.toHaveBeenCalled();
+    expect(windows).toHaveLength(2);
+    const params = new URLSearchParams(windows[1].loadFile.mock.calls[0][1].search);
+    expect(params.getAll('initialUrl')).toEqual(['https://example.com/']);
+    expect(params.get('privatePartition')).toBeNull();
+  });
+
+  test('a plain focus request raises the last-used window, private included', () => {
+    const mod = load();
+    const a = mod.createMainWindow();
+    const p = mod.createMainWindow(null, { privatePartition: 'private-1' });
+    p.emit('focus');
+    expect(mod.focusOrCreateMainWindow(null)).toBe(p);
+    a.emit('focus');
+    expect(mod.focusOrCreateMainWindow(null)).toBe(a);
+    expect(windows).toHaveLength(2);
   });
 });

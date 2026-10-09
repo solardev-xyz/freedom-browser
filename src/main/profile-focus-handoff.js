@@ -2,8 +2,22 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// Every request goes into its own file in FOCUS_REQUEST_DIR (named by its
+// nonce) and is answered in its own file in FOCUS_ACK_DIR, so two launches
+// racing each other (a mail client's "open all links", `xdg-open a; xdg-open b`)
+// can't overwrite one another's request or ack. The single FOCUS_REQUEST_FILE /
+// FOCUS_ACK_FILE pair is still written too, for a running process or requester
+// from an older build that only knows those; the watcher dedupes by nonce.
 const FOCUS_REQUEST_FILE = 'profile-focus-request.json';
 const FOCUS_ACK_FILE = 'profile-focus-ack.json';
+const FOCUS_REQUEST_DIR = 'profile-focus-requests';
+const FOCUS_ACK_DIR = 'profile-focus-acks';
+// Nonces name files, so only accept a shape that can't escape the directory.
+const NONCE_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+// Per-request acks a requester never collected (it timed out or died) are
+// swept once they are this old.
+const ACK_RETENTION_MS = 60000;
+const HANDLED_NONCE_MEMORY = 256;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_REQUEST_TIMEOUT_MS = 1800;
 const DEFAULT_MAX_REQUEST_AGE_MS = 10000;
@@ -16,7 +30,29 @@ function getProfileFocusPaths(profile) {
   return {
     requestPath: path.join(profile.userDataDir, FOCUS_REQUEST_FILE),
     ackPath: path.join(profile.userDataDir, FOCUS_ACK_FILE),
+    requestDir: path.join(profile.userDataDir, FOCUS_REQUEST_DIR),
+    ackDir: path.join(profile.userDataDir, FOCUS_ACK_DIR),
   };
+}
+
+function isValidNonce(nonce) {
+  return typeof nonce === 'string' && NONCE_PATTERN.test(nonce);
+}
+
+function requestFileFor(paths, nonce) {
+  return path.join(paths.requestDir, `${nonce}.json`);
+}
+
+function ackFileFor(paths, nonce) {
+  return path.join(paths.ackDir, `${nonce}.json`);
+}
+
+function removeFileQuietly(filePath) {
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Best effort; the watcher's sweep removes leftovers.
+  }
 }
 
 function readJsonFile(filePath) {
@@ -27,17 +63,27 @@ function readJsonFile(filePath) {
   }
 }
 
-// Read the most recent ack a profile process wrote (for either a focus or a
-// quit request). The ack carries the responding process's pid, which lets a
-// requester confirm that process has actually exited. Returns null when no ack
-// exists or it can't be parsed.
-function readProfileFocusAck(profile) {
-  return readJsonFile(getProfileFocusPaths(profile).ackPath);
+// Read the ack a profile process wrote (for either a focus or a quit request).
+// The ack carries the responding process's pid, which lets a requester confirm
+// that process has actually exited. With a nonce, the ack for that request:
+// its own per-request file, else the shared file if it still holds that nonce
+// (an older running build). Without one, the most recent shared ack. Returns
+// null when no such ack exists or it can't be parsed.
+function readProfileFocusAck(profile, nonce = null) {
+  const paths = getProfileFocusPaths(profile);
+  if (nonce == null) return readJsonFile(paths.ackPath);
+  if (!isValidNonce(nonce)) return null;
+  const own = readJsonFile(ackFileFor(paths, nonce));
+  if (own?.nonce === nonce) return own;
+  const shared = readJsonFile(paths.ackPath);
+  return shared?.nonce === nonce ? shared : null;
 }
 
+let tmpCounter = 0;
 function writeJsonAtomic(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  tmpCounter += 1;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${tmpCounter}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(value, null, 2), 'utf-8');
   fs.renameSync(tmpPath, filePath);
 }
@@ -50,6 +96,38 @@ function sleepSync(ms) {
 
 function makeNonce() {
   return crypto.randomBytes(16).toString('hex');
+}
+
+// Writes the request's own file (what this build's watcher reads), then the
+// shared legacy file (what an older running build reads). Only the first has
+// to succeed for the request to count as written.
+function writeRequest(paths, request) {
+  if (!isValidNonce(request.nonce)) {
+    throw new Error('Invalid focus request nonce');
+  }
+  writeJsonAtomic(requestFileFor(paths, request.nonce), request);
+  try {
+    writeJsonAtomic(paths.requestPath, request);
+  } catch {
+    // An older build won't see it; this build's watcher already can.
+  }
+}
+
+// The ack for `nonce`, if the target wrote one yet; collects (deletes) its
+// per-request file and the request file once found.
+function takeAck(paths, nonce) {
+  const own = readJsonFile(ackFileFor(paths, nonce));
+  if (own?.nonce === nonce) {
+    removeFileQuietly(ackFileFor(paths, nonce));
+    removeFileQuietly(requestFileFor(paths, nonce));
+    return own;
+  }
+  const shared = readJsonFile(paths.ackPath);
+  if (shared?.nonce === nonce) {
+    removeFileQuietly(requestFileFor(paths, nonce));
+    return shared;
+  }
+  return null;
 }
 
 function requestProfileFocusSync(profile, options = {}) {
@@ -69,7 +147,7 @@ function requestProfileFocusSync(profile, options = {}) {
   };
 
   try {
-    writeJsonAtomic(paths.requestPath, request);
+    writeRequest(paths, request);
   } catch (error) {
     return {
       ok: false,
@@ -81,8 +159,8 @@ function requestProfileFocusSync(profile, options = {}) {
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
-    const ack = readJsonFile(paths.ackPath);
-    if (ack?.nonce === nonce) {
+    const ack = takeAck(paths, nonce);
+    if (ack) {
       return {
         ok: ack.ok === true,
         requestWritten: true,
@@ -135,7 +213,7 @@ async function requestProfileFocusAsyncAwait(profile, options = {}) {
   };
 
   try {
-    writeJsonAtomic(paths.requestPath, request);
+    writeRequest(paths, request);
   } catch (error) {
     return {
       ok: false,
@@ -147,8 +225,8 @@ async function requestProfileFocusAsyncAwait(profile, options = {}) {
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
-    const ack = readJsonFile(paths.ackPath);
-    if (ack?.nonce === nonce) {
+    const ack = takeAck(paths, nonce);
+    if (ack) {
       return {
         ok: ack.ok === true,
         requestWritten: true,
@@ -186,7 +264,7 @@ function requestProfileQuitAsync(profile, options = {}) {
   };
 
   try {
-    writeJsonAtomic(paths.requestPath, request);
+    writeRequest(paths, request);
     return { ok: true, nonce };
   } catch (error) {
     return { ok: false, error: error.message || 'Quit request could not be written', nonce };
@@ -194,7 +272,7 @@ function requestProfileQuitAsync(profile, options = {}) {
 }
 
 function isFreshRequest(request, maxAgeMs) {
-  if (!request || !KNOWN_REQUEST_TYPES.has(request.type) || typeof request.nonce !== 'string') {
+  if (!request || !KNOWN_REQUEST_TYPES.has(request.type) || !isValidNonce(request.nonce)) {
     return false;
   }
 
@@ -215,32 +293,92 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
 
   let stopped = false;
   let handling = false;
-  let lastNonce = null;
-
-  const writeAck = (request, result) => {
-    try {
-      writeJsonAtomic(paths.ackPath, {
-        nonce: request.nonce,
-        ok: result.ok === true,
-        error: result.error || null,
-        handledAtMs: Date.now(),
-        pid: process.pid,
-      });
-    } catch (error) {
-      logger.warn?.('[profile-focus] Failed to write focus acknowledgement:', error.message);
+  // Nonces already handled, oldest first. A request can be seen twice: in its
+  // own file and in the shared legacy file, which also outlives the request.
+  const handledNonces = new Set();
+  const rememberNonce = (nonce) => {
+    handledNonces.add(nonce);
+    if (handledNonces.size > HANDLED_NONCE_MEMORY) {
+      handledNonces.delete(handledNonces.values().next().value);
     }
   };
 
-  const checkRequest = async () => {
-    if (stopped || handling) return;
-
-    const request = readJsonFile(paths.requestPath);
-    if (!isFreshRequest(request, maxRequestAgeMs) || request.nonce === lastNonce) {
-      return;
+  const writeAck = (request, result) => {
+    const ack = {
+      nonce: request.nonce,
+      ok: result.ok === true,
+      error: result.error || null,
+      handledAtMs: Date.now(),
+      pid: process.pid,
+    };
+    try {
+      writeJsonAtomic(ackFileFor(paths, request.nonce), ack);
+    } catch (error) {
+      logger.warn?.('[profile-focus] Failed to write focus acknowledgement:', error.message);
     }
+    // Shared copy for requesters from an older build, and for a reader that
+    // only wants "the latest ack".
+    try {
+      writeJsonAtomic(paths.ackPath, ack);
+    } catch (error) {
+      logger.warn?.('[profile-focus] Failed to write shared focus acknowledgement:', error.message);
+    }
+  };
 
-    handling = true;
-    lastNonce = request.nonce;
+  // Pending requests, oldest first: every per-request file plus the shared
+  // legacy file. Stale or malformed request files and uncollected old acks are
+  // removed on the way.
+  const collectRequests = () => {
+    const requests = [];
+    let names;
+    try {
+      names = fs.readdirSync(paths.requestDir);
+    } catch {
+      names = [];
+    }
+    for (const name of names) {
+      const filePath = path.join(paths.requestDir, name);
+      const request = name.endsWith('.json') ? readJsonFile(filePath) : null;
+      if (isFreshRequest(request, maxRequestAgeMs) && `${request.nonce}.json` === name) {
+        requests.push({ request, filePath });
+        continue;
+      }
+      // Stale, malformed, misnamed, or a temp file a crashed writer left
+      // behind: remove it once it is older than any request we would accept.
+      let ageMs = 0;
+      try {
+        ageMs = Date.now() - fs.statSync(filePath).mtimeMs;
+      } catch {
+        // Already gone.
+      }
+      if (ageMs > maxRequestAgeMs) removeFileQuietly(filePath);
+    }
+    const legacy = readJsonFile(paths.requestPath);
+    if (isFreshRequest(legacy, maxRequestAgeMs)) {
+      requests.push({ request: legacy, filePath: null });
+    }
+    requests.sort(
+      (left, right) => Number(left.request.requestedAtMs) - Number(right.request.requestedAtMs)
+    );
+
+    try {
+      for (const name of fs.readdirSync(paths.ackDir)) {
+        const filePath = path.join(paths.ackDir, name);
+        try {
+          if (Date.now() - fs.statSync(filePath).mtimeMs > ACK_RETENTION_MS) {
+            removeFileQuietly(filePath);
+          }
+        } catch {
+          // Collected by its requester meanwhile.
+        }
+      }
+    } catch {
+      // No ack directory yet.
+    }
+    return requests;
+  };
+
+  const handleRequest = async (request) => {
     try {
       if (request.type === 'quit-app') {
         // Ack before the process winds down so the requester gets a fast
@@ -256,6 +394,25 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
         ok: false,
         error: error.message || 'Profile request failed',
       });
+    }
+  };
+
+  const checkRequest = async () => {
+    if (stopped || handling) return;
+    handling = true;
+    try {
+      // Every pending request, one after another: concurrent launches each get
+      // their own ack.
+      for (const { request, filePath } of collectRequests()) {
+        if (stopped) break;
+        if (handledNonces.has(request.nonce)) {
+          if (filePath) removeFileQuietly(filePath);
+          continue;
+        }
+        rememberNonce(request.nonce);
+        await handleRequest(request);
+        if (filePath) removeFileQuietly(filePath);
+      }
     } finally {
       handling = false;
     }
@@ -279,6 +436,8 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
 
 module.exports = {
   DEFAULT_MAX_REQUEST_AGE_MS,
+  FOCUS_ACK_DIR,
+  FOCUS_REQUEST_DIR,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_REQUEST_TIMEOUT_MS,
   FOCUS_ACK_FILE,
