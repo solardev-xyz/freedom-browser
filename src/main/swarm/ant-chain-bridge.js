@@ -257,6 +257,16 @@ function antErrorReply(method, error) {
   return { code, message, data };
 }
 
+// How long a transaction's receipt lookups may fail and still reach Ant as
+// "not mined yet". Ant v0.5.64's `wait_for_receipt` polls for 60 s with a
+// backoff capped at 8 s, so past 40 s at least one more poll lands before its
+// deadline and gets the real chain error, instead of Ant reporting a mined
+// transaction as "never mined" after a lasting read outage. Measured from the
+// first lookup of the hash, which is when Ant's own deadline starts.
+const RECEIPT_GRACE_MS = 40000;
+const RECEIPT_TRACK_MS = 10 * 60 * 1000;
+const RECEIPT_TRACK_MAX = 64;
+
 // Private daemon transport, not a renderer/dApp RPC endpoint. The URL capability
 // is generated per start, passed only to our child, and never persisted.
 async function startAntChainBridge({
@@ -264,6 +274,8 @@ async function startAntChainBridge({
   router = require('../networks/chain-data-router'),
   log = require('../logger'),
   timeoutMs = 120000,
+  receiptGraceMs = RECEIPT_GRACE_MS,
+  now = Date.now,
 } = {}) {
   const token = randomBytes(32).toString('hex');
   const route = `/ant-chain/${token}`;
@@ -272,6 +284,20 @@ async function startAntChainBridge({
   let closePromise;
   let warnedNoLogQuorum = false;
   let authority;
+  // Transaction hash -> when Ant first asked for its receipt.
+  const receiptFirstAsked = new Map();
+  function receiptAskedAt(hash) {
+    const at = now();
+    for (const [key, first] of receiptFirstAsked) {
+      if (at - first > RECEIPT_TRACK_MS) receiptFirstAsked.delete(key);
+    }
+    if (!receiptFirstAsked.has(hash)) {
+      if (receiptFirstAsked.size >= RECEIPT_TRACK_MAX)
+        receiptFirstAsked.delete(receiptFirstAsked.keys().next().value);
+      receiptFirstAsked.set(hash, at);
+    }
+    return receiptFirstAsked.get(hash);
+  }
   function send(res, status, body) {
     if (res.destroyed || res.writableEnded) return;
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -304,6 +330,8 @@ async function startAntChainBridge({
     const controller = new AbortController();
     active.add(controller);
     let id = null;
+    let receiptHash = null;
+    let receiptFirstAt = 0;
     let method;
     const fail = (code, message, data) =>
       send(res, 200, {
@@ -379,6 +407,10 @@ async function startAntChainBridge({
           return;
         }
       }
+      if (method === 'eth_getTransactionReceipt' && typeof request.params[0] === 'string') {
+        receiptHash = request.params[0].toLowerCase();
+        receiptFirstAt = receiptAskedAt(receiptHash);
+      }
       controller.signal.throwIfAborted();
       const answer =
         method === 'eth_sendRawTransaction'
@@ -393,6 +425,8 @@ async function startAntChainBridge({
             });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');
+      if (receiptHash && answer.result !== null) receiptFirstAsked.delete(receiptHash);
+
       const body = { jsonrpc: '2.0', id, result: answer.result };
       if (Buffer.byteLength(JSON.stringify(body)) > MAX_RESPONSE) {
         fail(-32002, 'Chain response exceeds bridge limit');
@@ -407,15 +441,21 @@ async function startAntChainBridge({
       log.verbose(`[Ant chain] ${method} via ${source}`);
       send(res, 200, body);
     } catch (error) {
-      if (!controller.signal.aborted && method === 'eth_getTransactionReceipt') {
+      if (!controller.signal.aborted && receiptHash && now() - receiptFirstAt < receiptGraceMs) {
         // Ant v0.5.64 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
         // on the first JSON-RPC error, even a passing one, and reports a
         // transaction it already sent as failed (#614: Colibri cannot prove a
         // receipt until the block after it exists). Null is "no receipt yet":
-        // Ant polls again with its own backoff until its deadline, and its
-        // one-shot receipt reads treat null and an error alike.
+        // Ant polls again with its own backoff, and its one-shot receipt reads
+        // treat null and an error alike. Only for RECEIPT_GRACE_MS from the
+        // first lookup: after that the real error goes through (below), so a
+        // lasting outage reaches the user as the chain error rather than as
+        // Ant's "transaction never mined" for a transaction that was mined.
+        const { code } = antErrorReply(method, error);
         send(res, 200, { jsonrpc: '2.0', id, result: null });
-        log.warn('[Ant chain] eth_getTransactionReceipt failed, answered as not yet mined');
+        log.warn(
+          `[Ant chain] eth_getTransactionReceipt failed (${code}), answered as not yet mined`
+        );
       } else if (!controller.signal.aborted) {
         const { code, message, data } = antErrorReply(method, error);
         fail(code, message, data);
