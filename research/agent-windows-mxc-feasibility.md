@@ -8,9 +8,11 @@ Product baseline: `b97afeb3` (`feature/freedom-automation-kernel`)
 
 MXC is not yet qualified as Freedom's Windows workspace executor. Its preferred
 BaseContainer backend is available on the test machine, and basic filesystem
-restrictions work. Node and Windows PowerShell fail during native initialization;
-the host also lacks the capability for explicit host-loopback ingress. These are
-separate blockers, not a successful end-to-end Windows Agent qualification.
+restrictions work. The user's interactive-desktop follow-up successfully ran
+Node with `ui.disable: false`, while `true` still caused native initialization
+failure. SSH runs failed with either value. The host also lacks the capability
+for explicit host-loopback ingress. Workload/UI qualification and preview
+connectivity remain separate gates.
 
 No Freedom runtime code or dependencies changed. Windows workspace execution
 continues to fail closed. No host-preparation script, ACL modification, elevated
@@ -49,6 +51,8 @@ Freedom must not silently substitute broad network access for this missing
 permission. A future preview design needs a separately qualified route.
 
 ## Executed checks
+
+The following checks ran over SSH, before the desktop comparison below:
 
 | Check | Observed result |
 | --- | --- |
@@ -94,15 +98,49 @@ Set-Location C:\freedom-test\mxc-oct9
 node launch-matrix.mjs
 ```
 
-This comparison has not been run yet. It distinguishes an SSH-session-specific
-failure from one also reproducible on the interactive desktop; it does not
-diagnose the native failure by itself.
+### Interactive desktop follow-up
+
+The user ran that exact matrix in PowerShell 7.6.6 on the Windows desktop:
+
+| Program | `ui.disable` | Result |
+| --- | --- | --- |
+| cmd | false | Exit 0, `mxc-ok` |
+| cmd | true | Exit 0, `mxc-ok` |
+| Node 24.21.0 | false | Exit 0, `v24.21.0` |
+| Node 24.21.0 | true | Exit `0xC0000142`, no output |
+
+All four request probes selected BaseContainer. This rules out the broader
+claim that Node cannot run in MXC on this OS. It demonstrates a UI-policy
+dependency on the desktop and a separate session-dependent difference; the
+underlying SSH failure remains unexplained.
+
+The published v1.0.0 source maps `ui.disable` directly to
+`disallow_win32k_system_calls`. This is stronger than hiding windows: it blocks
+the Win32k system-call interface. The failure is consistent with a runtime DLL
+requiring that interface during initialization, but the responsible DLL has not
+been identified. Omitting UI policy also defaults to this lockdown.
+
+Setting `ui.disable: false` leaves the narrower clipboard, input injection,
+external UI object, atom namespace, desktop control, and system-setting
+restrictions independently configurable. It does not turn off filesystem or
+network containment. It does permit GUI capability within the remaining limits,
+so it is a candidate policy requiring qualification, not an equivalent no-UI
+guarantee or a production fix.
+
+The scratch `desktop-workload.mjs` follow-up explicitly retains those narrower
+restrictions, offline policy, workspace-only writes, protected `.git`, and a
+minimal environment. It checks request-specific BaseContainer support without
+ACL augmentation, then attempts JavaScript file checks, npm `--version`, and a
+two-second timeout of an idle Node process. It saves results to a fresh
+`desktop-workload-*\results.jsonl` and modifies only synthetic scratch files.
+From the same terminal, run `node desktop-workload.mjs`. Desktop results are
+pending; process-tree cancellation and UI isolation are not tested by it.
 
 ## Next gates
 
-1. Compare the same launch matrix in an interactive desktop session. Preserve
-   the exact published SDK and OS baseline; investigate native initialization
-   with upstream before changing containment policy.
+1. Run the prepared desktop workload follow-up, then qualify the narrower UI
+   policy rather than assuming `ui.disable` simply hides windows. Preserve the
+   published SDK and OS baseline; investigate SSH-session startup separately.
 2. Establish a supported localhost-preview route, or identify the specific OS
    capability/update required. Do not assume a newer SDK provides an absent OS
    feature. Published SDK 1.0.0 and GitHub main already differ.
@@ -118,6 +156,8 @@ diagnose the native failure by itself.
 - [MXC Node SDK](https://github.com/microsoft/mxc/blob/main/sdk/node/README.md)
 - [OS policy support](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/os-version-support.md)
 - [Schema and fallback policy](https://github.com/microsoft/mxc/blob/main/docs/schema.md)
+- [v1.0.0 Win32k mapping](https://github.com/microsoft/mxc/blob/v1.0.0/src/mxc-sdk/src/backends/process_container/common/base_container_helpers.rs)
+- [v1.0.0 independent UI restrictions](https://github.com/microsoft/mxc/blob/v1.0.0/src/mxc-sdk/src/core/mxc_common/ui_policy.rs)
 
 These moving references explain the design; the results above are specifically
 for the published npm SDK 1.0.0. No upstream issue was filed during this spike.

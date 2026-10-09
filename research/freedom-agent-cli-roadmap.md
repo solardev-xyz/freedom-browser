@@ -21,8 +21,13 @@ BaseContainer is available without ACL augmentation, and synthetic workspace /
 outside-path / protected `.git` checks passed. Node and Windows PowerShell fail
 with native initialization error `0xC0000142`; denial capture recorded no denied
 resources. Explicit host-loopback preview ingress is unsupported on this OS
-build. Neither cause nor workaround is established. Windows workspace execution
-remains unsupported and fails closed; no production backend was added.
+build. A subsequent user-run desktop matrix succeeded with Node when
+`ui.disable: false` and failed with `true`; SSH failed with both. Released MXC
+source confirms that flag blocks Win32k system calls rather than merely hiding
+windows. A narrower UI policy and real Node/npm workload checks are the next
+qualification step; the SSH difference and preview route remain unresolved.
+Windows workspace execution remains unsupported and fails closed; no production
+backend was added.
 
 See [the feasibility report](agent-windows-mxc-feasibility.md) for exact versions,
 checks, desktop reproduction instructions and remaining implementation gates.
