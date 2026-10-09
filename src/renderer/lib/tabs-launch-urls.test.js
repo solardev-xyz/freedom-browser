@@ -10,8 +10,21 @@ const originalDocument = global.document;
 
 const HOME_URL = 'file:///app/pages/home.html';
 
-const createWebview = (createdWebviews) => {
+const createWebview = (createdWebviews, { attachLate = false } = {}) => {
   const webview = createElement('webview');
+  if (attachLate) {
+    // Like Electron's <webview> before its guest attaches: navigation needs
+    // the guest, and `getWebContentsId()` throws until the first dom-ready.
+    let attached = false;
+    webview.getWebContentsId = jest.fn(() => {
+      if (!attached) throw new Error('The WebView must be attached to the DOM');
+      return 1;
+    });
+    webview.attach = () => {
+      attached = true;
+      webview.dispatch('dom-ready');
+    };
+  }
   webview.getURL = jest.fn(() => webview.src || 'about:blank');
   webview.canGoBack = jest.fn(() => false);
   webview.canGoForward = jest.fn(() => false);
@@ -20,7 +33,7 @@ const createWebview = (createdWebviews) => {
   return webview;
 };
 
-const loadTabs = async (search) => {
+const loadTabs = async (search, { attachLate = false } = {}) => {
   jest.resetModules();
 
   const createdWebviews = [];
@@ -35,7 +48,9 @@ const loadTabs = async (search) => {
       'address-input': addressInput,
     },
     createElementOverride: (tagName) =>
-      tagName === 'webview' ? createWebview(createdWebviews) : createElement(tagName),
+      tagName === 'webview'
+        ? createWebview(createdWebviews, { attachLate })
+        : createElement(tagName),
   });
 
   global.window = {
@@ -122,5 +137,38 @@ describe('initial URLs of a new window (#597)', () => {
       null,
       ctx.createdWebviews[0]
     );
+  });
+
+  test('a cold start loads the links once the guest is attached, not before', async () => {
+    // In a cold-started process the 50 ms dispatch beats the guest's attach;
+    // a load issued then is dropped and the tab stays on about:blank.
+    const search = `?${new URLSearchParams([
+      ['initialUrl', 'freedom://history'],
+      ['initialUrl', 'bzz://ab12cd34/'],
+    ])}`;
+    const ctx = await loadTabs(search, { attachLate: true });
+
+    expect(ctx.tabs.getTabs()).toHaveLength(2);
+    expect(ctx.loadTarget).not.toHaveBeenCalled();
+
+    ctx.createdWebviews[0].attach();
+    expect(ctx.loadTarget).toHaveBeenCalledTimes(1);
+    expect(ctx.loadTarget).toHaveBeenCalledWith('freedom://history', null, ctx.createdWebviews[0]);
+
+    // A dweb link in a later tab (createTab's resolution path) waits the same
+    // way, past its own 50 ms dispatch.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(ctx.loadTarget).toHaveBeenCalledTimes(1);
+    ctx.createdWebviews[1].attach();
+    expect(ctx.loadTarget).toHaveBeenCalledTimes(2);
+    expect(ctx.loadTarget).toHaveBeenLastCalledWith(
+      'bzz://ab12cd34/',
+      null,
+      ctx.createdWebviews[1]
+    );
+
+    // Only the first dom-ready triggers it: later page loads don't re-navigate.
+    ctx.createdWebviews[0].dispatch('dom-ready');
+    expect(ctx.loadTarget).toHaveBeenCalledTimes(2);
   });
 });

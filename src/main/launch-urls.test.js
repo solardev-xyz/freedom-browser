@@ -2,6 +2,7 @@ const {
   MAX_LAUNCH_URLS,
   MAX_LAUNCH_URL_LENGTH,
   buildColdStartUrls,
+  createFirstWindowLinkQueue,
   extractLaunchUrls,
   isAcceptedLaunchUrl,
   relaunchArgs,
@@ -191,6 +192,45 @@ describe('launch URLs (#597)', () => {
 
     test('tolerates a missing argv', () => {
       expect(relaunchArgs(undefined)).toEqual([]);
+    });
+  });
+
+  describe('createFirstWindowLinkQueue', () => {
+    // A second launch handed over while this process is still cold-starting
+    // must land in the first window, not open a racing window of its own.
+    test('queues links until the first window drains them', () => {
+      const queue = createFirstWindowLinkQueue();
+      expect(queue.queue(['https://second.example/'])).toBe(true);
+      expect(queue.queue(['freedom://history', 'bzz://ab12cd34/'])).toBe(true);
+      expect(queue.drainForFirstWindow()).toEqual([
+        'https://second.example/',
+        'freedom://history',
+        'bzz://ab12cd34/',
+      ]);
+    });
+
+    test('refuses links once drained, so the caller opens them itself', () => {
+      const queue = createFirstWindowLinkQueue();
+      expect(queue.drainForFirstWindow()).toEqual([]);
+      expect(queue.queue(['https://late.example/'])).toBe(false);
+      expect(queue.drainForFirstWindow()).toEqual([]);
+    });
+
+    test('a plain focus request (no links) is still held for the first window', () => {
+      const queue = createFirstWindowLinkQueue();
+      expect(queue.queue([])).toBe(true);
+      expect(queue.queue(undefined)).toBe(true);
+      expect(queue.drainForFirstWindow()).toEqual([]);
+    });
+
+    test('the drained links open after the launch’s own links', () => {
+      const queue = createFirstWindowLinkQueue();
+      queue.queue(['https://second.example/']);
+      expect(
+        buildColdStartUrls(['electron', '.', 'https://first.example/'], {
+          pendingOpenUrls: queue.drainForFirstWindow(),
+        })
+      ).toEqual(['https://first.example/', 'https://second.example/']);
     });
   });
 });

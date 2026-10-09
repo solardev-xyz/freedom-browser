@@ -79,8 +79,8 @@ function extractLaunchUrls(argv) {
 }
 
 // What the first window of a cold start opens: Profile settings for a launch
-// carrying --open-settings, else the argv links; then any macOS `open-url`
-// links that arrived before the window existed, which are opened either way.
+// carrying --open-settings, else the argv links; then any links that arrived
+// before the window existed (createFirstWindowLinkQueue), opened either way.
 function buildColdStartUrls(argv, { settingsUrl = null, pendingOpenUrls = [] } = {}) {
   const first =
     Array.isArray(argv) && argv.includes('--open-settings') && settingsUrl
@@ -92,6 +92,35 @@ function buildColdStartUrls(argv, { settingsUrl = null, pendingOpenUrls = [] } =
     if (!urls.includes(url)) urls.push(url);
   }
   return urls;
+}
+
+// Links that reach the process before its first window exists: a macOS
+// `open-url` that arrives early, or a second launch's focus request handed
+// over while this one is still cold-starting (two links opened back to back
+// with Freedom closed). Opening a window for them then would race bootstrap(),
+// which has not created its own window or registered its IPC handlers yet: a
+// second, half-set-up window whose tab never loads. They are queued instead
+// and the first window takes them as initial tabs.
+//
+// `queue(urls)` keeps the links and returns true while there is no window yet;
+// false once there is, meaning the caller opens them in a window itself.
+// `drainForFirstWindow()` hands the queue to the window being created and
+// from then on refuses new links in the same step, so none can be queued
+// after the drain and never opened.
+function createFirstWindowLinkQueue() {
+  const pending = [];
+  let drained = false;
+  return {
+    queue(urls) {
+      if (drained) return false;
+      if (Array.isArray(urls)) pending.push(...urls);
+      return true;
+    },
+    drainForFirstWindow() {
+      drained = true;
+      return pending.splice(0);
+    },
+  };
 }
 
 // One-shot launch instructions this process was started with: the links it
@@ -127,6 +156,7 @@ function relaunchArgs(argv) {
 module.exports = {
   LAUNCH_URL_PROTOCOLS,
   buildColdStartUrls,
+  createFirstWindowLinkQueue,
   MAX_LAUNCH_URLS,
   MAX_LAUNCH_URL_LENGTH,
   extractLaunchUrls,

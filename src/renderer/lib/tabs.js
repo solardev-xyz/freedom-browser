@@ -1483,6 +1483,29 @@ const resolveInternalPageUrl = (url) => {
 // focus — Chrome's disposition for Ctrl/Cmd+click and middle-click on a link
 // (#303). The tab is still created, appended and navigated; only the switch is
 // skipped. Everything else opens in the foreground, as before.
+// Run `fn` once `webview`'s guest is attached. Navigation methods
+// (`loadURL`) need the guest; called before it exists, the load is dropped.
+// Electron throws from `getWebContentsId()` until then, which is how an
+// attached webview is told apart; otherwise wait for its first `dom-ready`
+// (the about:blank / page it was created with), which only fires once attached.
+const whenWebviewAttached = (webview, fn) => {
+  let attached = true;
+  try {
+    webview.getWebContentsId?.();
+  } catch {
+    attached = false;
+  }
+  if (attached) {
+    fn();
+    return;
+  }
+  const onReady = () => {
+    webview.removeEventListener('dom-ready', onReady);
+    fn();
+  };
+  webview.addEventListener('dom-ready', onReady);
+};
+
 export const createTab = (url = null, options = {}) => {
   const tabId = tabState.nextTabId++;
   // Direct loads: empty/null (use homeUrl), http(s), about:blank, and
@@ -1548,7 +1571,11 @@ export const createTab = (url = null, options = {}) => {
   // the user is still looking at (#303).
   if (!isDirect) {
     setTimeout(() => {
-      if (onLoadTarget) onLoadTarget(url, null, webview);
+      // Same cold-start race as the initial tab (see initTabs): a window's
+      // first tabs can outrun their guest's attach.
+      whenWebviewAttached(webview, () => {
+        if (onLoadTarget) onLoadTarget(url, null, webview);
+      });
     }, 50);
   }
 
@@ -2604,7 +2631,13 @@ export const initTabs = async () => {
       }
       // Use loadTarget for proper URL resolution (handles dweb URLs, ENS, etc.)
       // Name the webview: the tabs opened below take over as active tab.
-      setTimeout(() => onLoadTarget(initialUrl, null, tab.webview), 50);
+      // In a cold-started process the guest is not attached yet after 50ms,
+      // and a `loadURL` then is simply lost (the tab stays on about:blank), so
+      // the load waits for the webview to be live.
+      setTimeout(
+        () => whenWebviewAttached(tab.webview, () => onLoadTarget(initialUrl, null, tab.webview)),
+        50
+      );
       // A timer of their own, so a throw while loading the first cannot stop them.
       setTimeout(() => {
         for (const url of moreInitialUrls) openInNewTabWithTarget(url, null);

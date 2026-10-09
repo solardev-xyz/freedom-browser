@@ -83,7 +83,12 @@ const {
   requestProfileFocusSync,
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
-const { buildColdStartUrls, extractLaunchUrls, sanitizeLaunchUrls } = require('./launch-urls');
+const {
+  buildColdStartUrls,
+  createFirstWindowLinkQueue,
+  extractLaunchUrls,
+  sanitizeLaunchUrls,
+} = require('./launch-urls');
 // Links this launch was given (an OS link handler, `freedom <url>`), checked
 // against the schemes Freedom opens. A cold start opens them in its first
 // window; a second launch of an already-open profile hands them over below.
@@ -111,19 +116,24 @@ try {
 // `--open-settings` launch flag); this is the only place it becomes a URL.
 const PROFILE_SETTINGS_DEEPLINK = 'freedom://settings/profile';
 let focusCurrentProfileWindow = null;
+// Links handed to this process before its first window exists (an early macOS
+// `open-url`, a second launch's focus request during cold start). bootstrap()
+// drains them into that window's initial tabs; see createFirstWindowLinkQueue.
+const firstWindowLinks = createFirstWindowLinkQueue();
 const profileFocusWatcher = startProfileFocusRequestWatcher(
   activeProfile,
-  (request) =>
-    app.whenReady().then(() => {
-      if (typeof focusCurrentProfileWindow !== 'function') {
-        throw new Error('Main window focus handler is not ready');
-      }
-      // The request file is only a transport: re-check the URLs it carries.
-      const urls = request?.openSettings
-        ? [PROFILE_SETTINGS_DEEPLINK]
-        : sanitizeLaunchUrls(request?.urls);
-      return focusCurrentProfileWindow(urls);
-    }),
+  (request) => {
+    // The request file is only a transport: re-check the URLs it carries.
+    const urls = request?.openSettings
+      ? [PROFILE_SETTINGS_DEEPLINK]
+      : sanitizeLaunchUrls(request?.urls);
+    // A handoff that lands while this process is still cold-starting goes to
+    // the first window bootstrap() is about to open (which comes up focused),
+    // not to a window of its own racing it. The ack can go out right away:
+    // the queue is drained into that window when it is created.
+    if (firstWindowLinks.queue(urls)) return Promise.resolve();
+    return app.whenReady().then(() => focusCurrentProfileWindow(urls));
+  },
   {
     logger: console,
     // Another Freedom process asked us to close — e.g. it is deleting this
@@ -139,16 +149,11 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
 // macOS hands a link to the running app through `open-url` rather than argv,
 // including the one that launches it, which can arrive before `ready`. Those
 // wait for the first window, which opens them; later ones get a new tab.
-const pendingOpenUrls = [];
-let firstWindowCreated = false;
 app.on('open-url', (event, url) => {
   event.preventDefault();
   const urls = sanitizeLaunchUrls([url]);
   if (urls.length === 0) return;
-  if (!firstWindowCreated || typeof focusCurrentProfileWindow !== 'function') {
-    pendingOpenUrls.push(...urls);
-    return;
-  }
+  if (firstWindowLinks.queue(urls)) return;
   focusCurrentProfileWindow(urls);
 });
 
@@ -600,14 +605,14 @@ async function bootstrap() {
   // A profile cold-started from another window's "edit" button (Profiles
   // manager) carries --open-settings; land its first tab on Profile settings.
   // Otherwise the first window opens the links the launch was given, if any.
-  // macOS `open-url` links that arrived before this window are opened either
-  // way, after the settings tab when there is one.
+  // Links that arrived before this window (an early macOS `open-url`, a second
+  // launch handed over during this cold start) are opened either way, after
+  // the settings tab when there is one.
   const coldStartUrls = buildColdStartUrls(process.argv, {
     settingsUrl: PROFILE_SETTINGS_DEEPLINK,
-    pendingOpenUrls: pendingOpenUrls.splice(0),
+    pendingOpenUrls: firstWindowLinks.drainForFirstWindow(),
   });
   const mainWindow = createMainWindow(coldStartUrls.length > 0 ? coldStartUrls : null);
-  firstWindowCreated = true;
   // One-off big deletes wait until the window is up, so an upgrade never
   // shows up as a slow launch (#526). Interrupted purges (quit before it
   // finished) are picked up on the next launch.
