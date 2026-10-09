@@ -252,4 +252,21 @@ describe('opening launch URLs', () => {
     expect(mod.focusOrCreateMainWindow(null)).toBe(a);
     expect(windows).toHaveLength(2);
   });
+
+  // R2-M1 (#630): menu actions fired from outside a main window use this.
+  test('getLastFocusedMainWindow follows focus and skips closed windows', () => {
+    const mod = load();
+    expect(mod.getLastFocusedMainWindow()).toBeNull();
+    const a = mod.createMainWindow();
+    const b = mod.createMainWindow();
+    expect(mod.getLastFocusedMainWindow()).toBe(b);
+    a.emit('focus');
+    expect(mod.getLastFocusedMainWindow()).toBe(a);
+    expect(mod.getMainWindows()).toEqual([b, a]);
+    a.destroyed = true;
+    expect(mod.getLastFocusedMainWindow()).toBe(b);
+    close(a);
+    close(b);
+    expect(mod.getLastFocusedMainWindow()).toBeNull();
+  });
 });

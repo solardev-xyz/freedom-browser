@@ -278,9 +278,17 @@ function isMainBrowserWindow(window) {
   return window && mainWindows.has(window);
 }
 
-// Get all main browser windows
+// Get all main browser windows, least recently focused first.
 function getMainWindows() {
   return [...mainWindows];
+}
+
+// The main browser window the user focused last (private included), or null.
+// For callers that act "on the window the user is in" while focus sits
+// somewhere else, e.g. a menu shortcut pressed in detached DevTools.
+function getLastFocusedMainWindow() {
+  const live = [...mainWindows].reverse().find((candidate) => !candidate.isDestroyed());
+  return live || null;
 }
 
 module.exports = {
@@ -291,4 +299,5 @@ module.exports = {
   getWindowTitle,
   isMainBrowserWindow,
   getMainWindows,
+  getLastFocusedMainWindow,
 };
