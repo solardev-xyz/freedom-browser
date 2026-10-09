@@ -25,7 +25,10 @@ both run Node/npm builds successfully in the standard user's desktop. Their
 outside, `.git` and junction write checks pass. MXC denies raw network access
 but its preview server is unreachable from the host; unelevated serves previews
 but raw sockets bypass its disabled-network posture. Administrator provisioning
-and qualification of the preferred elevated backend are pending. Freedom's production Windows executor remains
+and qualification of the preferred elevated backend are pending. The corrected
+desktop suite also fails MXC's abrupt-launcher-exit check; explicit process-owner
+integration remains necessary (this does not test Codex's interactive Stop).
+Freedom's production Windows executor remains
 unsupported until a tested adapter is implemented.
 
 Started `experiment/agent-windows-mxc` from feature/main-refresh `b97afeb3`.

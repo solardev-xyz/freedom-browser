@@ -87,7 +87,7 @@ over SSH after the PowerShell CIM API denied access. Scripts and logs reside in
 | Direct TCP denied with networking disabled | Passed (`EACCES`) | **Failed: socket connected** |
 | Direct TCP allowed with networking enabled | Passed | Passed |
 | Host HTTP connection to localhost preview | **Failed: server starts but is unreachable** | Passed |
-| Abrupt launcher exit | Separate heartbeat check below | Initial HTTP check passed |
+| Abrupt launcher exit | **Failed independent heartbeat/deadline check** | Passed heartbeat and HTTP checks |
 
 These findings support testing the **elevated** fallback rather than adopting
 unelevated mode. MXC's write/network enforcement works for these cases, but the
@@ -101,6 +101,14 @@ denial. The updated harness recognizes both explicit denials. Its independent
 heartbeat shutdown check avoids treating failed HTTP preview access as evidence
 that cancellation failed or succeeded, and rejects observations after the server
 watchdog could have fired.
+
+The corrected suite was rerun in the desktop session at `c283de31`. MXC still
+failed preview access and did not pass the independent abrupt-launcher-exit check;
+unelevated passed preview and shutdown but still failed network denial. This is
+an abrupt parent-exit test of the CLI process tree, not evidence that Codex's
+normal interactive Stop/Ctrl+C is broken. A Freedom integration needs explicit
+supervisor ownership and its own graceful/forced cancellation tests; do not
+equate killing the outer CLI with terminating every sandbox descendant.
 
 The reusable reference suite is `scripts/qualify-codex-windows-sandbox.js`.
 It retains unique synthetic workspaces and JSONL results, tests broad reads,
@@ -134,6 +142,25 @@ requested; successful provisioning has not yet been observed.
 Sources: [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.162.1),
 [MXC adapter](https://github.com/openai/codex/blob/4aa94dce270de668eff6e2fa8585c82385e84455/codex-rs/mxc-sandbox/README.md),
 [Windows sandbox modes](https://learn.chatgpt.com/docs/windows/windows-sandbox).
+
+### Integration direction after elevated qualification
+
+- Keep Pi and Freedom's permission/controller layer. Reuse/adapt the native
+  execution pieces; do not launch another model agent or depend on a user's
+  personal Codex configuration/authentication.
+- Place a Windows adapter beside the existing Seatbelt/Bubblewrap executors.
+  Match their process events, bounded output, timeouts, cancellation and preview
+  lifecycle; do not mark Windows supported merely because a one-shot CLI works.
+- If extracting the elevated helper, give Freedom its own identities, setup
+  state and firewall rules so installation/uninstallation cannot interfere with
+  a separately installed Codex. Review pinned upstream licensing/dependencies
+  before introducing any production package.
+- Select MXC only when its actual request capabilities and workload checks pass;
+  otherwise use a qualified elevated backend. Never retry a failed workload
+  automatically under weaker permissions.
+- Preserve explicit write boundaries, read-only external project behavior and
+  `.git` protection. Document that Windows command execution permits broad reads;
+  this decision does not relax macOS/Linux read isolation.
 
 ## Native capability report
 
