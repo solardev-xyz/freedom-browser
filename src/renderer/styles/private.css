@@ -98,6 +98,45 @@ body.private-window .menu-divider {
   background: var(--border);
 }
 
+/* The permission prompt, the site-permissions popover and the pop-up
+   blocker's popover sit on the same --menu-bg (#632). Their light hovers are
+   black overlays that vanish on plum, and the prompt's primary button pins
+   white text that suits the light --accent but not the private lavender one
+   (#fff on #b39ddb is about 2.4:1). Each gets back its dark-theme value: the
+   dark-theme primary button uses --bg, which here is the private plum. The
+   primary rule below out-specifies the neutral hover, so the filled button
+   keeps its fill. */
+body.private-window .permission-btn:hover,
+body.private-window .permission-popover-revoke:hover,
+body.private-window .popup-blocked-open:hover {
+  /* theme-literal: the dark-theme hover tint permissions.css gives these buttons */
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.private-window .permission-btn.primary,
+body.private-window .permission-btn.primary:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Toggles: light-theme.css pins a white knob and a pale grey track on the
+   Nodes menu's switches and the sidebar's `.toggle-switch`, where a dark-theme
+   private window paints them from --text and --border. Hand those back so a
+   light and a dark private window match. The "on" track keeps the shared
+   green: the light `:checked` rule out-specifies the track rule below. */
+body.private-window .bee-toggle-knob,
+body.private-window .ipfs-toggle-knob,
+body.private-window .radicle-toggle-knob,
+body.private-window .tor-toggle-knob,
+body.private-window .toggle-slider::before {
+  background: var(--text);
+  box-shadow: none;
+}
+
+body.private-window .toggle-slider {
+  background-color: var(--border);
+}
+
 /* "Private" label next to the navigation buttons, always visible in
    private windows (hidden attribute removed by index.js). */
 .private-badge {

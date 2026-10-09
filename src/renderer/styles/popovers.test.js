@@ -404,48 +404,122 @@ describe('popovers keep the private palette in a light-theme private window (#60
     expect(literal).toEqual([]);
   });
 
-  test("every light overlay on a popover's rows has a private-window counterpart", () => {
+  /**
+   * The class names a popover's own styles are written under, derived from
+   * POPOVER_CLASSES rather than listed: each popover class, every other class
+   * the markup or a renderer module puts on the same element (the pop-up
+   * blocker's `.popup-blocked-popover` rides on `.permission-popover`), and
+   * each of those with its last segment dropped, since a popover's rows are
+   * named after it (`.menu-dropdown` holds `.menu-item`, `.permission-prompt`
+   * holds `.permission-btn`, `.context-menu` holds `.context-menu-item`).
+   */
+  const popoverFamily = [
+    ...new Set(
+      [
+        ...classLists(INDEX_HTML),
+        ...rendererModules().flatMap((file) => assignedClassLists(fs.readFileSync(file, 'utf8'))),
+      ]
+        .filter(isPopover)
+        .flat()
+        .concat(POPOVER_CLASSES)
+        .filter((name) => name !== 'chrome-popover' && !(name in OWN_LIGHT_PALETTE))
+    ),
+  ];
+  const rowStems = [
+    ...new Set(popoverFamily.flatMap((name) => [name, name.replace(/-[^-]+$/, '')])),
+  ];
+  const ownPaletteStems = Object.keys(OWN_LIGHT_PALETTE).map((name) => name.replace(/-[^-]+$/, ''));
+
+  /**
+   * Classes that share a popover's stem but are not inside it, each with the
+   * reason. They sit on the toolbar, whose own light hovers are a separate
+   * question from the popovers' rows.
+   */
+  const NOT_ROWS = {
+    'menu-button': 'the toolbar button that opens the app menu, not one of its rows',
+  };
+
+  const isPopoverRow = (selector) => {
+    const names = classesIn(selector);
+    return (
+      names.some((name) => rowStems.some((stem) => name.startsWith(`${stem}-`))) &&
+      !names.some((name) => POPOVER_CLASSES.includes(name) && selector === `.${name}`) &&
+      !names.some((name) => name in NOT_POPOVERS || name in NOT_ROWS) &&
+      !names.some((name) => ownPaletteStems.some((stem) => name.startsWith(`${stem}-`)))
+    );
+  };
+
+  /** Colour properties a light row rule sets to a literal (not a token). */
+  const COLOUR_PROPS = ['background', 'background-color', 'color'];
+  const literalColourProps = (declarations) =>
+    declarations
+      .split(';')
+      .map((one) => one.split(':'))
+      .filter(([prop, value]) => value !== undefined && COLOUR_PROPS.includes(prop.trim()))
+      .filter(([, value]) => !/^\s*(var\(|transparent|inherit|currentcolor|none)/i.test(value))
+      .map(([prop]) => prop.trim().replace(/^background-color$/, 'background'));
+
+  test("every light colour on a popover's rows has a private-window counterpart", () => {
     // The rows' light hovers and dividers are black overlays that vanish on
-    // the plum surface; private.css hands back the dark-theme values.
-    // The menus' rows: the app and Nodes menus share `.menu-item`, the tab and
-    // page context menus `.context-menu-item`, plus the address suggestions
-    // and the bookmarks bar's overflow menu.
-    const rowPrefixes = [
-      'menu-item',
-      'menu-divider',
-      'context-menu-',
-      'autocomplete-',
-      'bookmarks-overflow-',
-    ];
-    const rowSelectors = lightBackgrounds
-      .map(({ selector }) => selector)
-      .filter((selector) => {
-        const first = classesIn(selector)[0];
-        return (
-          first &&
-          !POPOVER_CLASSES.includes(first) &&
-          rowPrefixes.some((prefix) => first.startsWith(prefix))
-        );
-      });
-    // The sweep reached the hamburger, context menu and suggestion rows.
-    expect(rowSelectors).toEqual(
+    // the plum surface, and a light text colour picked for a light fill (the
+    // permission prompt's white "Allow" on --accent) loses its contrast when
+    // the private palette swaps that fill; private.css hands back the
+    // dark-theme values. Which rows count is derived from POPOVER_CLASSES, so
+    // a new popover's rows are swept with no edit here (#632 R1-M2).
+    const lightRows = CHROME_SHEETS.flatMap(({ css }) => selectorRules(css))
+      .filter(({ selector }) => selector.startsWith(LIGHT_PREFIX))
+      .map(({ selector, declarations }) => ({
+        selector: selector.slice(LIGHT_PREFIX.length),
+        props: literalColourProps(declarations),
+      }))
+      .filter(({ selector, props }) => props.length && isPopoverRow(selector));
+
+    // The derivation reached every menu's rows and the permission prompt's,
+    // which a hand-written prefix list once missed.
+    expect(lightRows.map(({ selector }) => selector)).toEqual(
       expect.arrayContaining([
         '.menu-item:hover:not(:disabled)',
+        '.menu-divider',
         '.context-menu-item:hover',
         '.autocomplete-item.selected',
-        '.menu-divider',
+        '.bookmarks-overflow-item:hover',
+        '.permission-btn:hover',
+        '.permission-btn.primary',
+        '.permission-popover-revoke:hover',
+        '.popup-blocked-open:hover',
       ])
     );
 
-    const privateSelectors = new Set(
-      selectorRules(read(STYLES_DIR, 'private.css'))
-        .filter(({ declarations }) => /background(-color)?\s*:/.test(declarations))
-        .map(({ selector }) => selector)
-    );
-    const missing = [...new Set(rowSelectors)].filter(
-      (selector) => !privateSelectors.has(PRIVATE_PREFIX + selector)
+    const privateProps = new Map();
+    for (const { selector, declarations } of selectorRules(read(STYLES_DIR, 'private.css'))) {
+      const props = declarations.split(';').map((one) =>
+        one
+          .split(':')[0]
+          .trim()
+          .replace(/^background-color$/, 'background')
+      );
+      privateProps.set(selector, [...(privateProps.get(selector) ?? []), ...props]);
+    }
+    const missing = lightRows.flatMap(({ selector, props }) =>
+      props
+        .filter((prop) => !(privateProps.get(PRIVATE_PREFIX + selector) ?? []).includes(prop))
+        .map((prop) => `${selector} { ${prop} }`)
     );
     expect(missing).toEqual([]);
+  });
+
+  test('the row sweep would catch a new popover row with no counterpart', () => {
+    // Mutation check on the derivation itself: a row of a popover that only
+    // exists in this fixture is still recognised through its stem.
+    expect(isPopoverRow('.permission-prompt-extra:hover')).toBe(true);
+    expect(isPopoverRow('.trust-popover-row:hover')).toBe(true);
+    // ...while the surfaces, the documented non-popovers and unrelated
+    // toolbar controls stay out.
+    expect(isPopoverRow('.menu-dropdown')).toBe(false);
+    expect(isPopoverRow('.trust-shield')).toBe(false);
+    expect(isPopoverRow('.new-tab-btn:hover')).toBe(false);
+    expect(isPopoverRow('.bookmark:hover')).toBe(false);
+    expect(isPopoverRow('.menu-button:hover')).toBe(false);
   });
 
   test('private.css comes after light-theme.css in the bundle', () => {
