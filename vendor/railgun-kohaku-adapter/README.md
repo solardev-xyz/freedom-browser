@@ -6,11 +6,9 @@ Freedom installs `@freedom/railgun-kohaku-adapter@0.6.0` from the committed
 The source repository is https://github.com/solardev-xyz/railgun-kohaku-adapter.
 The package is MPL-2.0, private in npm metadata, and has not been published to npm.
 
-This artifact was packed from `9231d71718a63634b6a4f66df8a5e64ac079e197` with
+This artifact was packed from `3561269432e76e3b02241ef0bbcfbc2d5dc283b3` with
 Node 24.18.1 and npm 11.16.0. Its SHA-256 is
-`2ad2b4ad09f84c80936a78dbcbb5a2441ba53a863e9f8570a53ce80a78986f80`. The packed
-files equal those of `008d671b65d8d8a8959d6ebc94fdb6b2176f4701`; the later commit
-adds only unpublished qualification tools.
+`f3ce849cde073599a3dd2b4d80b38d19a29a05268369fb4e86cd00cdb3edf4c2`.
 
 Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
 `previousCandidate` with its qualification scope), it adds:
@@ -21,6 +19,11 @@ Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
   names the actual transaction endpoint. A local `describe` returns the held
   input note and a transfer's own-instance recipient and amount.
   The lane never signs, sends, retries or releases the hold.
+- `retryAttempted(holdId)` on the retained-POI lane: one explicit second
+  handoff of a hold's attempted POI request, byte for byte, gated by the same
+  session's fresh owned `Missing` status. A durable reservation is written
+  first, and a third handoff is refused. POI submit responses now also carry a
+  redacted error category; it grants no acceptance or retry authority.
 - `openAccount({ publicCache: 'new' | 'pending' })`: an explicit public-cache
   rebuild or resume for accounts whose public generation belongs to another
   source policy, including earlier package builds and legacy Freedom profiles.

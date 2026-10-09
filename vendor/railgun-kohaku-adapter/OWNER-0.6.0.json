@@ -1,12 +1,12 @@
 {
-  "packageSource": "9231d71718a63634b6a4f66df8a5e64ac079e197",
+  "packageSource": "3561269432e76e3b02241ef0bbcfbc2d5dc283b3",
   "registryPublished": false,
   "tarball": "vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
-  "sha256": "2ad2b4ad09f84c80936a78dbcbb5a2441ba53a863e9f8570a53ce80a78986f80",
-  "integrity": "sha512-s2YoSOJ3BrvjQL5CMUfRSSO5zoMhlyA1aPZ+ih5zsMLQ5Tw3G8a/BhmYXt7VP2tY8tMOvfthuPQYIz0qemufuQ==",
+  "sha256": "f3ce849cde073599a3dd2b4d80b38d19a29a05268369fb4e86cd00cdb3edf4c2",
+  "integrity": "sha512-hBAXwM3xnNnpI+G6iDtb8xNvov/70jJma0Hh7zV1uQoE3I5Hzi1/1EjfwYuXNC9CLMLVFZLEyILSvOeJQrSwsA==",
   "files": 280,
   "nativeIntegrationQualified": false,
-  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description; final native qualification on this host identity pending",
+  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry and redacted POI error categories; final native qualification on this host identity pending",
   "previousCandidate": {
     "packageSource": "fb3add6aa411375b42ed84735d4901bbc491c68e",
     "registryPublished": false,
@@ -316,5 +316,5 @@
     "types/read.d.mts",
     "types/read.d.ts"
   ],
-  "packageRuntimeSource": "008d671b65d8d8a8959d6ebc94fdb6b2176f4701"
+  "packageRuntimeSource": "3561269432e76e3b02241ef0bbcfbc2d5dc283b3"
 }
