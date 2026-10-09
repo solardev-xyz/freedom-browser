@@ -1,9 +1,9 @@
 {
-  "packageSource": "ee64dc06e7841219c68e4ebb4b39de206cae16a2",
+  "packageSource": "bcd860791926b38520a032814ac7ac59b9108c7c",
   "registryPublished": false,
   "tarball": "vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",
-  "sha256": "860015b2880a301fff3f6ae19ec3a47d6502f3f436e2545c28e00f401df8d948",
-  "integrity": "sha512-1MQTEdqoF4gJuZDWGJlEUE3aSLH9ERPYZE7pCx5S5CxnzxslifW08bYMXFXZJPLyISwUIiyXIi84UBkkKMYaNg==",
+  "sha256": "c56eb6d160f16a9177eaa7b875c57bed7ab5c509b7259522faceb14b704d0fbc",
+  "integrity": "sha512-yMxOh1EJQ6lSnsK88+uJI3TLoTc5JlplYBSHNzKB5COWj4vaPeG1mmgql4d4sDrmeQusN+4c2RlyyQdv4L7fXA==",
   "files": 281,
   "nativeIntegrationQualified": false,
   "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry, redacted POI error categories, the current POI_3x3 circuit and one replacement proof for a retired-circuit attempt; final native qualification on this host identity pending",
@@ -317,5 +317,5 @@
     "types/read.d.mts",
     "types/read.d.ts"
   ],
-  "packageRuntimeSource": "ee64dc06e7841219c68e4ebb4b39de206cae16a2"
+  "packageRuntimeSource": "bcd860791926b38520a032814ac7ac59b9108c7c"
 }

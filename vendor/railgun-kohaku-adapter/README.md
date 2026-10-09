@@ -6,9 +6,9 @@ Freedom installs `@freedom/railgun-kohaku-adapter@0.6.0` from the committed
 The source repository is https://github.com/solardev-xyz/railgun-kohaku-adapter.
 The package is MPL-2.0, private in npm metadata, and has not been published to npm.
 
-This artifact was packed from `ee64dc06e7841219c68e4ebb4b39de206cae16a2` with
+This artifact was packed from `bcd860791926b38520a032814ac7ac59b9108c7c` with
 Node 24.18.1 and npm 11.16.0. Its SHA-256 is
-`860015b2880a301fff3f6ae19ec3a47d6502f3f436e2545c28e00f401df8d948`.
+`c56eb6d160f16a9177eaa7b875c57bed7ab5c509b7259522faceb14b704d0fbc`.
 
 Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
 `previousCandidate` with its qualification scope), it adds:
@@ -27,7 +27,8 @@ Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
 - The current POI_3x3 circuit. Railgun's wallet 11.2.0 rotated it (bundle
   `QmZ2MyM6TKxffkv6stuo2hFwmUfs3q4xgMYN164Sje8new`), and POI services reject
   proofs from the retired one. The runtime artifact directory must hold the
-  current `POI_3x3` wasm, zkey and vkey. `reproveRetired(holdId)` makes one
+  current `POI_3x3` wasm, zkey and vkey. `reproveRetiredShield(holdId)` and
+  `reproveRetiredTransact(holdId)` (the original preparation's route) make one
   replacement proof for an attempted output whose spent retry carried a
   retired-circuit proof, and `submitReproof(holdId)` hands it off once, gated
   like the retry. The retired verification key ships only to recognize such
