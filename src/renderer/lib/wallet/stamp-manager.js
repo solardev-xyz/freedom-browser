@@ -39,12 +39,12 @@ let loadedKey = null;
 let loadRequestId = 0;
 // True while this visit's getStamps is in flight: the spinner line shows.
 let refreshing = false;
-// What the rendered cards were built from, so a refresh that brings the same
-// list leaves them (and any open extension form) alone.
+// What the rendered cards show, so a refresh that brings the same list leaves
+// them (and any open extension form) alone.
 let renderedSignature = null;
-// The last non-empty list getStamps returned, and for which node wallet. A
-// return visit shows it at once while the fresh list loads (#595). Profiles
-// run in their own processes, so this never crosses one.
+// The last non-empty list getStamps returned, when, and for which node
+// wallet. A return visit shows it at once while the fresh list loads (#595).
+// Profiles run in their own processes, so this never crosses one.
 let cachedBatches = null;
 // The node wallet the last state with an account named.
 let knownWallet = null;
@@ -92,7 +92,7 @@ export async function openStampManager() {
   loadedKey = null;
   clearBatchList();
   const cached = cachedStampsForWallet();
-  if (cached) renderBatchList(cached);
+  if (cached) renderBatchList(cached, { stale: true });
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
@@ -141,9 +141,16 @@ function adoptState(state) {
   return changed;
 }
 
+// This wallet's cached list, its time remaining counted down by the time
+// since it was fetched, so a days-old list doesn't show its old expiry.
 function cachedStampsForWallet() {
   const wallet = walletKey();
-  return wallet && cachedBatches?.wallet === wallet ? cachedBatches.stamps : null;
+  if (!wallet || cachedBatches?.wallet !== wallet) return null;
+  const elapsed = Math.max(0, Math.floor((Date.now() - cachedBatches.fetchedAt) / 1000));
+  return cachedBatches.stamps.map((batch) => ({
+    ...batch,
+    ttlSeconds: Math.max(0, (batch.ttlSeconds || 0) - elapsed),
+  }));
 }
 
 // A finished purchase or a change in the node's batches reloads the list.
@@ -219,11 +226,13 @@ function renderLoadingStatus() {
   const show = isOpen && refreshing;
   loadingStatus?.classList.toggle('hidden', !show);
   if (loadingText) {
+    // Any list on screen, even an empty one, is being checked; only a screen
+    // with no list yet is loading it.
     loadingText.textContent = !show
       ? ''
-      : batchCount > 0
-        ? 'Checking for changes…'
-        : 'Loading your storage…';
+      : batchCount === null
+        ? 'Loading your storage…'
+        : 'Checking for changes…';
   }
 }
 
@@ -240,15 +249,17 @@ async function loadBatchList() {
       stamps = result.stamps || [];
       // A wallet change starts a new request, so this list is the current
       // wallet's (or, before any state named one, the first wallet's).
-      cachedBatches = stamps.length > 0 ? { wallet: knownWallet, stamps } : null;
+      cachedBatches =
+        stamps.length > 0 ? { wallet: knownWallet, stamps, fetchedAt: Date.now() } : null;
     }
   } catch {
     if (!isOpen || requestId !== loadRequestId) return;
   }
   // A failed refresh keeps this wallet's cached list rather than claiming
-  // it has no storage.
+  // it has no storage; its cards stay without actions, as they may be stale.
   refreshing = false;
-  renderBatchList(stamps ?? cachedStampsForWallet() ?? []);
+  if (stamps) renderBatchList(stamps);
+  else renderBatchList(cachedStampsForWallet() ?? [], { stale: true });
 }
 
 async function startOperation(request) {
@@ -264,16 +275,46 @@ async function startOperation(request) {
 // Batch list rendering
 // ============================================
 
-function renderBatchList(stamps) {
+// What a card shows and acts on. Batches carry fields that drift on every
+// /stamps call (expiresApprox, the exact ttlSeconds), so comparing whole
+// batches would rebuild the cards on every refresh.
+function cardSignature(batch) {
+  const ttl = batch.ttlSeconds;
+  return [
+    batch.batchId,
+    batch.usable,
+    batch.pending,
+    batch.sizeBytes,
+    batch.usagePercent,
+    batch.depth,
+    formatDuration(ttl),
+    ttl > 0 && ttl < TTL_CRITICAL_SECONDS
+      ? 'critical'
+      : ttl > 0 && ttl < TTL_WARN_SECONDS
+        ? 'warn'
+        : '',
+  ];
+}
+
+// A stale list (the cache, before or without a fresh /stamps) is drawn with
+// its Keep Longer / Make Bigger buttons disabled: the batch may have expired
+// or changed since. A fresh list with the same signature turns them on in
+// place, so the cards (and any open form) stay.
+function renderBatchList(stamps, { stale = false } = {}) {
   if (!batchListContainer) return;
 
-  const signature = JSON.stringify([stamps, setupState?.canBuy, setupState?.plans]);
+  const signature = JSON.stringify([
+    stamps.map(cardSignature),
+    setupState?.canBuy,
+    (setupState?.plans || []).map((plan) => plan.depth),
+  ]);
   batchCount = stamps.length;
   renderLoadingStatus();
   renderEmptyText();
-  // Nothing changed since the cards were drawn: keep them, and with them any
-  // extension form the user opened during the refresh.
-  if (signature === renderedSignature) return;
+  if (signature === renderedSignature) {
+    setActionsLive(!stale);
+    return;
+  }
   renderedSignature = signature;
 
   batchListContainer.innerHTML = '';
@@ -340,6 +381,14 @@ function renderBatchList(stamps) {
     }
 
     batchListContainer.appendChild(card);
+  });
+  setActionsLive(!stale);
+}
+
+function setActionsLive(live) {
+  batchListContainer?.querySelectorAll('.stamp-batch-action-btn').forEach((btn) => {
+    btn.disabled = !live;
+    btn.title = live ? '' : 'Available once your storage list is up to date.';
   });
 }
 

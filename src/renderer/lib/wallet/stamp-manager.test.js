@@ -47,6 +47,24 @@ class FakeElement {
   querySelector() {
     return null;
   }
+  // Class selectors only ('.name'), which is all the module asks for.
+  querySelectorAll(selector) {
+    const name = selector.replace(/^\./, '');
+    const found = [];
+    const walk = (node) => {
+      for (const child of node.children) {
+        if (
+          String(child.className || '')
+            .split(/\s+/)
+            .includes(name)
+        )
+          found.push(child);
+        walk(child);
+      }
+    };
+    walk(this);
+    return found;
+  }
 }
 
 const flush = async () => {
@@ -97,7 +115,8 @@ const BATCH = {
   usable: true,
   sizeBytes: 1e9,
   usagePercent: 3,
-  ttlSeconds: 30 * 86400,
+  // Mid-day, so a refetch a few seconds later still reads "30 days".
+  ttlSeconds: 30 * 86400 + 3600,
   depth: 22,
 };
 
@@ -328,10 +347,20 @@ describe('the storage screen while /stamps loads (#595)', () => {
     expect(elements['stamp-batch-list'].children).toHaveLength(1);
   });
 
+  const actionButtons = (elements) =>
+    elements['stamp-batch-list'].querySelectorAll('.stamp-batch-action-btn');
+  // What stamp-service's normalizeBatch adds on every call: an expiry estimate
+  // from Date.now() and a ttl a few seconds lower than the last call's.
+  const refetched = (batch, secondsLater) => ({
+    ...batch,
+    ttlSeconds: batch.ttlSeconds - secondsLater,
+    expiresApprox: new Date(Date.now() + (batch.ttlSeconds - secondsLater) * 1000).toISOString(),
+  });
+
   test('a return visit shows the cached batches at once, with a spinner', async () => {
     const { elements, visible, mod } = await load({
       state: withWallet(ready()),
-      stamps: [BATCH],
+      stamps: [refetched(BATCH, 0)],
     });
     expect(visible('stamp-list-loading')).toBe(false);
     const pending = slowStamps();
@@ -344,12 +373,79 @@ describe('the storage screen while /stamps loads (#595)', () => {
     expect(elements['stamp-list-loading-text'].textContent).toBe('Checking for changes…');
     const card = elements['stamp-batch-list'].children[0];
 
-    // Nothing changed: the spinner goes and the same cards stay.
-    pending.resolve({ success: true, stamps: [BATCH] });
+    // An extension form the user has open on the card (stands in for
+    // showExtensionForm's inline form).
+    const form = new FakeElement();
+    card.appendChild(form);
+
+    // Nothing the card shows changed (only the drifting expiresApprox and a
+    // ttl two seconds lower): the spinner goes and the same card, with its
+    // form, stays.
+    pending.resolve({ success: true, stamps: [refetched(BATCH, 2)] });
     await flush();
     expect(visible('stamp-list-loading')).toBe(false);
     expect(elements['stamp-batch-list'].children[0]).toBe(card);
+    expect(card.children).toContain(form);
     expect(elements['stamp-batch-list'].children).toHaveLength(1);
+  });
+
+  test("cached cards can't start an extension until the fresh list lands", async () => {
+    const { elements, mod } = await load({ state: withWallet(ready()), stamps: [BATCH] });
+    expect(actionButtons(elements).length).toBeGreaterThan(0);
+    expect(actionButtons(elements).every((btn) => !btn.disabled)).toBe(true);
+
+    const pending = slowStamps();
+    await reopen(mod);
+    const buttons = actionButtons(elements);
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.every((btn) => btn.disabled)).toBe(true);
+
+    pending.resolve({ success: true, stamps: [refetched(BATCH, 2)] });
+    await flush();
+    // Same cards, now live.
+    expect(actionButtons(elements)).toEqual(buttons);
+    expect(buttons.every((btn) => !btn.disabled)).toBe(true);
+  });
+
+  test('a failed refresh leaves the cached cards without live actions', async () => {
+    const { elements, mod } = await load({ state: withWallet(ready()), stamps: [BATCH] });
+    const pending = slowStamps();
+    await reopen(mod);
+    pending.resolve({ success: false, error: 'node unreachable' });
+    await flush();
+    expect(actionButtons(elements).length).toBeGreaterThan(0);
+    expect(actionButtons(elements).every((btn) => btn.disabled)).toBe(true);
+  });
+
+  test('cached cards count their time remaining down from when they were fetched', async () => {
+    const realNow = Date.now;
+    const fetchedAt = realNow();
+    try {
+      Date.now = () => fetchedAt;
+      const { elements, mod } = await load({ state: withWallet(ready()), stamps: [BATCH] });
+      Date.now = () => fetchedAt + 10 * 86400 * 1000;
+      slowStamps();
+      await reopen(mod);
+      const card = elements['stamp-batch-list'].children[0];
+      const ttlRow = card.children.find((row) => row.children[0]?.textContent === 'Time remaining');
+      expect(ttlRow.children[1].textContent).toBe('20 days');
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test('a reload over an empty list says it is checking, not loading', async () => {
+    const { elements, visible, emit } = await load({ state: withWallet(needsStorage()) });
+    expect(visible('stamp-list-empty')).toBe(true);
+    slowStamps();
+    // A finished purchase changes the stamps key and reloads the list.
+    await emit({
+      ...withWallet(needsStorage()),
+      operation: { id: 'op-1', phase: 'done' },
+    });
+    expect(visible('stamp-list-loading')).toBe(true);
+    expect(visible('stamp-list-empty')).toBe(true);
+    expect(elements['stamp-list-loading-text'].textContent).toBe('Checking for changes…');
   });
 
   test('a refresh that brings a different list swaps it in', async () => {

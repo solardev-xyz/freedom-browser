@@ -413,7 +413,10 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
                   usable: true,
                   sizeBytes: 1e9,
                   usagePercent: 0,
-                  ttlSeconds: 30 * 86400,
+                  // Drifts like stamp-service's normalizeBatch: a lower ttl
+                  // and a fresh expiry estimate on every call.
+                  ttlSeconds: 30 * 86400 + 3600 - globalThis.__heldStamps.length,
+                  expiresApprox: new Date().toISOString(),
                   depth: 20,
                 },
               ],
@@ -460,13 +463,20 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await expect(empty).toBeHidden();
     await expect(loading).toHaveText('Checking for changes…');
     await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
+    // The cached card may be stale: its actions wait for the fresh list.
+    const keepLonger = cards.locator('.stamp-batch-action-btn', { hasText: 'Keep Longer' });
+    await expect(keepLonger).toBeDisabled();
     await shoot(window, 'storage-refreshing');
+    const card = await cards.first().elementHandle();
 
     await electronApp.evaluate(() => {
       for (const release of globalThis.__heldStamps.splice(0)) release();
     });
     await expect(loading).toBeHidden();
     await expect(cards).toHaveCount(1);
+    // The same list came back: the card stays (it is not rebuilt), now live.
+    await expect(keepLonger).toBeEnabled();
+    expect(await card.evaluate((node) => node.isConnected)).toBe(true);
   });
 
   test('the storage screen shows the stalled-scan warning over the empty state', async ({

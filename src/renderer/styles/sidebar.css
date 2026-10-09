@@ -1943,8 +1943,13 @@
   transition: background-color 0.15s ease;
 }
 
-.stamp-batch-action-btn:hover {
+.stamp-batch-action-btn:hover:not(:disabled) {
   background: rgba(26, 115, 232, 0.15);
+}
+
+.stamp-batch-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Extension form (inline) */
