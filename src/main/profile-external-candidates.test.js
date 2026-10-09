@@ -16,6 +16,7 @@ const {
   shouldPromptForProtocol,
 } = require('./profile-external-candidates');
 const IPC = require('../shared/ipc-channels');
+const { writeAntProcessMarker } = require('./ant-process-marker');
 
 function createProfile(nodes = {}) {
   return {
@@ -102,6 +103,57 @@ describe('profile external candidates', () => {
       expect(again).toEqual([]);
       expect(options.presentCandidates).toHaveBeenCalledTimes(1);
       expect(shouldPromptForProtocol(profile, 'bee')).toBe(false);
+    });
+
+    // R1-M1: the profile's own antd, left on 1633 by a Freedom that crashed,
+    // is not offered as an existing node (ant-manager reuses it regardless).
+    test("does not offer the profile's own antd left running by an earlier run", async () => {
+      const profile = legacyProfile();
+      // Any live pid other than ours stands in for the orphaned antd.
+      writeAntProcessMarker(userDataDir, { pid: process.ppid, apiPort: 1633, dataDir: '/d' });
+      const presentCandidates = jest.fn();
+      const probe = jest.fn().mockResolvedValue(true);
+
+      const decisions = await promptForDefaultExternalCandidates(profile, {
+        enabledProtocols: { bee: true },
+        logger: { info: jest.fn() },
+        presentCandidates,
+        probeEndpoint: probe,
+      });
+
+      expect(decisions).toEqual([]);
+      expect(presentCandidates).not.toHaveBeenCalled();
+      expect(getLegacyExternalCandidateChoice(profile, 'bee')).toBeNull();
+
+      // A marker for another port does not hide the node on 1633.
+      writeAntProcessMarker(userDataDir, { pid: process.ppid, apiPort: 1635, dataDir: '/d' });
+      expect(await detectDefaultExternalCandidates(profile, {
+        enabledProtocols: { bee: true },
+        probeEndpoint: probe,
+      })).toHaveLength(1);
+    });
+
+    // R1-M2: a legacy profile's managed node gets no saved per-profile port.
+    test('the message-box fallback does not promise profile-specific ports', async () => {
+      const dialog = { showMessageBox: jest.fn().mockResolvedValue({ response: 1 }) };
+      const options = {
+        dialog,
+        enabledProtocols: { bee: true },
+        logger: { info: jest.fn() },
+        presentCandidates: jest.fn().mockResolvedValue(null),
+        probeEndpoint: jest.fn().mockResolvedValue(true),
+      };
+
+      await promptForDefaultExternalCandidates(legacyProfile(), options);
+      const legacyDetail = dialog.showMessageBox.mock.calls[0][0].detail;
+      expect(legacyDetail).not.toMatch(/profile-specific ports/);
+      expect(legacyDetail).toMatch(/next free port beside it/);
+
+      await promptForDefaultExternalCandidates(createProfile(), {
+        ...options,
+        updateNodeConfig: jest.fn(),
+      });
+      expect(dialog.showMessageBox.mock.calls[1][0].detail).toMatch(/profile-specific ports/);
     });
 
     test('has no saved choice before the prompt, or for catalog profiles', () => {

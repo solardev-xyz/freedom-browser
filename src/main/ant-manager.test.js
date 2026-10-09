@@ -273,6 +273,12 @@ function loadAntManagerModule(options = {}) {
   const Socket = createSocketClass(options.portSequence || options.portResolver || false);
   const randomBytes = options.randomBytes || jest.fn(() => Buffer.from('ab'.repeat(32), 'hex'));
 
+  const processMarker = {
+    writeAntProcessMarker: jest.fn(),
+    clearAntProcessMarker: jest.fn(),
+    findOwnLiveAntd: jest.fn(() => options.ownLiveAntd || null),
+  };
+
   const { mod } = loadMainModule(require.resolve('./ant-manager'), {
     app,
     ipcMain,
@@ -302,6 +308,7 @@ function loadAntManagerModule(options = {}) {
       [require.resolve('./profile-external-candidates')]: () => ({
         getLegacyExternalCandidateChoice: jest.fn(() => options.legacyExternalChoice || null),
       }),
+      [require.resolve('./ant-process-marker')]: () => processMarker,
       [require.resolve('./migrate-user-data')]: () => ({
         isBeeDataMigrationPending: options.isBeeDataMigrationPending || jest.fn(() => false),
       }),
@@ -357,6 +364,7 @@ function loadAntManagerModule(options = {}) {
     log,
     mod,
     noteAntApiUrl,
+    processMarker,
     randomBytes,
     saveSettings,
     setErrorState,
@@ -602,6 +610,59 @@ describe('ant-manager', () => {
       const stopPromise = ctx.mod.stopAnt();
       await jest.advanceTimersByTimeAsync(0);
       await stopPromise;
+    });
+
+    test('records the antd it spawns and forgets it once it exits', async () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', userDataDir: '/profile', metadata: null },
+        legacyExternalChoice: 'managed',
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+        createProcess: (binary, processOptions) =>
+          Object.assign(createProcessMock(binary, processOptions), { pid: 4242 }),
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+
+      expect(ctx.processMarker.writeAntProcessMarker).toHaveBeenCalledWith('/profile', {
+        pid: 4242,
+        apiPort: 1635,
+        dataDir: ctx.dataDir,
+      });
+      expect(ctx.processMarker.clearAntProcessMarker).not.toHaveBeenCalled();
+
+      const stopPromise = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stopPromise;
+      expect(ctx.processMarker.clearAntProcessMarker).toHaveBeenCalledWith('/profile', 4242);
+    });
+
+    // R1-M1: after a crash the profile's own antd is still on 1633 holding the
+    // data dir's statestore lock; a second antd beside it could not start.
+    test("reuses the profile's own antd left from an earlier run despite a managed choice", async () => {
+      jest.spyOn(global, 'setInterval').mockReturnValue(123);
+      jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', userDataDir: '/profile', metadata: null },
+        legacyExternalChoice: 'managed',
+        ownLiveAntd: { pid: 4242, apiPort: 1633 },
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+
+      expect(ctx.processMarker.findOwnLiveAntd).toHaveBeenCalledWith('/profile', 1633);
+      expect(ctx.spawn).not.toHaveBeenCalled();
+      expect(ctx.mod.getActivePort()).toBe(1633);
+      expect(ctx.updateService).toHaveBeenCalledWith('ant', expect.objectContaining({
+        mode: 'reused',
+      }));
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      await ctx.mod.stopAnt();
     });
 
     test('reuses it when the profile chose the external node', async () => {

@@ -6,6 +6,7 @@ const path = require('path');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { updateActiveProfileNodeConfigWhenIdle } = require('./profile-resolver');
+const { findOwnLiveAntd } = require('./ant-process-marker');
 const { probeSocks5Endpoint } = require('./socks-probe');
 const {
   IPFS_GATEWAY_PROBE_PATH,
@@ -210,6 +211,24 @@ function shouldPromptForProtocol(profile, protocol) {
   return config?.mode === 'managed' && !config?.[EXTERNAL_CANDIDATE_PROMPT_KEY]?.choice;
 }
 
+// A legacy profile runs its own antd on the default 1633 too. One left running
+// by a Freedom that crashed is not "an existing node" to offer: ant-manager.js
+// reuses it regardless (it holds the data dir's lock), so asking would only
+// save an answer that is ignored now and misapplied later.
+function isOwnLegacySwarmNode(profile, protocol, definition, options = {}) {
+  if (protocol !== 'bee' || !isLegacyProfile(profile)) return false;
+  const find = options.findOwnLiveAntd || findOwnLiveAntd;
+  return (definition.endpoints || []).some((endpoint) => {
+    let port;
+    try {
+      port = Number(new URL(endpoint).port);
+    } catch {
+      return false;
+    }
+    return Boolean(port) && Boolean(find(profile.userDataDir, port));
+  });
+}
+
 async function detectDefaultExternalCandidates(profile, options = {}) {
   const candidates = [];
   const probe = options.probeEndpoint || probeEndpoint;
@@ -218,6 +237,7 @@ async function detectDefaultExternalCandidates(profile, options = {}) {
   for (const [protocol, definition] of Object.entries(definitions)) {
     if (options.enabledProtocols && options.enabledProtocols[protocol] === false) continue;
     if (!shouldPromptForProtocol(profile, protocol)) continue;
+    if (isOwnLegacySwarmNode(profile, protocol, definition, options)) continue;
 
     const results = await Promise.all(
       definition.probes.map((candidateProbe) => probe(candidateProbe, options))
@@ -417,7 +437,11 @@ async function promptForDefaultExternalCandidates(profile, options = {}) {
       message: `Freedom found an existing ${candidate.label} node at ${endpointText}.`,
       detail:
         `Use it for the "${profileName}" profile, or keep this profile independent ` +
-        'with a Freedom-managed node on profile-specific ports.' +
+        // A legacy profile has no catalog entry to keep ports in: its node
+        // takes the next free port beside the existing one on every start.
+        (isLegacyProfile(profile)
+          ? 'with a Freedom-managed node on the next free port beside it.'
+          : 'with a Freedom-managed node on profile-specific ports.') +
         (candidate.trustNote ? `\n\n${candidate.trustNote}` : ''),
     });
 

@@ -26,6 +26,11 @@ const {
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
 const { getLegacyExternalCandidateChoice } = require('./profile-external-candidates');
+const {
+  clearAntProcessMarker,
+  findOwnLiveAntd,
+  writeAntProcessMarker,
+} = require('./ant-process-marker');
 const { antApiGet } = require('./swarm/ant-api-chrome');
 const { loadSettings, saveSettings } = require('./settings-store');
 const antCache = require('./swarm/ant-cache');
@@ -642,13 +647,27 @@ async function startAnt() {
 
   if (generation !== startGeneration) return;
 
+  // The node on the default port may be this profile's own antd, left running
+  // by a Freedom that crashed or was killed (ant-process-marker.js). It holds
+  // the data dir's statestore lock, so a second antd beside it cannot start:
+  // reuse it whatever the saved choice says, as before #218.
+  const ownOrphan = existing.found && !managedProfileNode
+    ? findOwnLiveAntd(getActiveProfile()?.userDataDir, existing.port)
+    : null;
+  if (ownOrphan) {
+    log.info(
+      '[Ant] The node on port', existing.port,
+      `is this profile's own antd from an earlier run (pid ${ownOrphan.pid}); reusing it`
+    );
+  }
+
   // Kept managed: the node on the default port is somebody else's, so start
   // the bundled one beside it, clear of both of its ports.
-  const keepLegacyManaged = existing.found && legacyChoice === 'managed';
+  const keepLegacyManaged = existing.found && !ownOrphan && legacyChoice === 'managed';
   if (keepLegacyManaged) {
     log.info('[Ant] Not reusing the node on port', existing.port, '(profile keeps its own node)');
     existing = { found: false, conflict: true, port: existing.port };
-  } else if (existing.found && legacyChoice !== 'external') {
+  } else if (existing.found && !ownOrphan && legacyChoice !== 'external') {
     log.warn(
       '[Ant] Reusing a node on port', existing.port,
       'without a saved choice for this profile; Swarm requests will go through it'
@@ -835,6 +854,8 @@ async function startAnt() {
     antProcess = spawn(binPath, args);
     antSpawnedAt = Date.now();
     const child = antProcess;
+    const markerDir = getActiveProfile()?.userDataDir;
+    writeAntProcessMarker(markerDir, { pid: child.pid, apiPort, dataDir });
 
     bridge.pipeLog(child.stdout, (line) => {
       log.info(`[Ant stdout]: ${line}`);
@@ -845,6 +866,7 @@ async function startAnt() {
 
     antProcess.on('close', (code) => {
       void closeChainBridge(bridge);
+      clearAntProcessMarker(markerDir, child.pid);
       if (antProcess !== child) return;
       log.info(`[Ant] Process exited with code ${code}`);
       antProcess = null;
