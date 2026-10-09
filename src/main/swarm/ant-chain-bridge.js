@@ -264,8 +264,18 @@ function antErrorReply(method, error) {
 // transaction as "never mined" after a lasting read outage. Measured from the
 // first lookup of the hash, which is when Ant's own deadline starts.
 const RECEIPT_GRACE_MS = 40000;
-const RECEIPT_TRACK_MS = 10 * 60 * 1000;
+// A lookup this long after the previous answer for the same hash belongs to a
+// new wait (well past Ant's 8 s backoff cap), and gets a new grace window.
+const RECEIPT_WAIT_GAP_MS = 20000;
 const RECEIPT_TRACK_MAX = 64;
+
+// A receipt lookup failure that no later poll can clear: the request or the
+// configuration is wrong, not the chain behind. Ant gets it at once.
+function receiptFailureIsPermanent(error) {
+  if (error?.code === -32602 || error?.code === -32601) return true;
+  const message = typeof error?.message === 'string' ? error.message : '';
+  return /^(No chain source left for |Unsupported (read method|chain ID):)/.test(message);
+}
 
 // Private daemon transport, not a renderer/dApp RPC endpoint. The URL capability
 // is generated per start, passed only to our child, and never persisted.
@@ -284,19 +294,23 @@ async function startAntChainBridge({
   let closePromise;
   let warnedNoLogQuorum = false;
   let authority;
-  // Transaction hash -> when Ant first asked for its receipt.
-  const receiptFirstAsked = new Map();
+  // Transaction hash -> { first, last }: when the current wait for its receipt
+  // began, and when Ant last asked.
+  const receiptWaits = new Map();
   function receiptAskedAt(hash) {
     const at = now();
-    for (const [key, first] of receiptFirstAsked) {
-      if (at - first > RECEIPT_TRACK_MS) receiptFirstAsked.delete(key);
+    for (const [key, wait] of receiptWaits) {
+      if (at - wait.last > RECEIPT_WAIT_GAP_MS) receiptWaits.delete(key);
     }
-    if (!receiptFirstAsked.has(hash)) {
-      if (receiptFirstAsked.size >= RECEIPT_TRACK_MAX)
-        receiptFirstAsked.delete(receiptFirstAsked.keys().next().value);
-      receiptFirstAsked.set(hash, at);
+    let wait = receiptWaits.get(hash);
+    if (!wait) {
+      if (receiptWaits.size >= RECEIPT_TRACK_MAX)
+        receiptWaits.delete(receiptWaits.keys().next().value);
+      wait = { first: at, last: at };
+      receiptWaits.set(hash, wait);
     }
-    return receiptFirstAsked.get(hash);
+    wait.last = at;
+    return wait.first;
   }
   function send(res, status, body) {
     if (res.destroyed || res.writableEnded) return;
@@ -425,7 +439,7 @@ async function startAntChainBridge({
             });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');
-      if (receiptHash && answer.result !== null) receiptFirstAsked.delete(receiptHash);
+      if (receiptHash && answer.result !== null) receiptWaits.delete(receiptHash);
 
       const body = { jsonrpc: '2.0', id, result: answer.result };
       if (Buffer.byteLength(JSON.stringify(body)) > MAX_RESPONSE) {
@@ -441,7 +455,12 @@ async function startAntChainBridge({
       log.verbose(`[Ant chain] ${method} via ${source}`);
       send(res, 200, body);
     } catch (error) {
-      if (!controller.signal.aborted && receiptHash && now() - receiptFirstAt < receiptGraceMs) {
+      if (
+        !controller.signal.aborted &&
+        receiptHash &&
+        now() - receiptFirstAt < receiptGraceMs &&
+        !receiptFailureIsPermanent(error)
+      ) {
         // Ant v0.5.64 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
         // on the first JSON-RPC error, even a passing one, and reports a
         // transaction it already sent as failed (#614: Colibri cannot prove a
@@ -451,12 +470,17 @@ async function startAntChainBridge({
         // first lookup: after that the real error goes through (below), so a
         // lasting outage reaches the user as the chain error rather than as
         // Ant's "transaction never mined" for a transaction that was mined.
+        // A failure no later poll can clear (receiptFailureIsPermanent) also
+        // goes through at once.
         const { code } = antErrorReply(method, error);
         send(res, 200, { jsonrpc: '2.0', id, result: null });
         log.warn(
           `[Ant chain] eth_getTransactionReceipt failed (${code}), answered as not yet mined`
         );
       } else if (!controller.signal.aborted) {
+        // Ant's wait gives up on this error, so the next lookup of the hash
+        // starts a new wait with its own grace window.
+        if (receiptHash) receiptWaits.delete(receiptHash);
         const { code, message, data } = antErrorReply(method, error);
         fail(code, message, data);
         log.warn(
@@ -479,6 +503,10 @@ async function startAntChainBridge({
     } finally {
       clearTimeout(timer);
       active.delete(controller);
+      // The gap to Ant's next poll counts from this answer, not from the ask:
+      // a slow lookup must not make the next poll look like a new wait.
+      const wait = receiptHash && receiptWaits.get(receiptHash);
+      if (wait) wait.last = now();
     }
   });
   server.requestTimeout = timeoutMs;

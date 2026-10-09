@@ -596,9 +596,14 @@ test('a receipt lookup that keeps failing passes the real error once the grace w
 
   router.request.mockRejectedValueOnce(outage());
   expect((await post(bridge.url, rpc('eth_getTransactionReceipt', [hash]))).body.result).toBeNull();
-  clock += 39999;
-  router.request.mockRejectedValueOnce(outage());
-  expect((await post(bridge.url, rpc('eth_getTransactionReceipt', [hash]))).body.result).toBeNull();
+  // Ant polls at most 8 s apart.
+  for (const step of [8000, 8000, 8000, 8000, 7999]) {
+    clock += step;
+    router.request.mockRejectedValueOnce(outage());
+    expect(
+      (await post(bridge.url, rpc('eth_getTransactionReceipt', [hash]))).body.result
+    ).toBeNull();
+  }
   // The window is measured from Ant's first lookup of this hash (case-folded),
   // not from the latest failure, so it ends before Ant's own 60 s deadline.
   clock += 1;
@@ -612,6 +617,12 @@ test('a receipt lookup that keeps failing passes the real error once the grace w
     message: 'Chain request failed: all sources down',
   });
   expect(log.warn).toHaveBeenCalledWith('[Ant chain] eth_getTransactionReceipt failed (-32000)');
+
+  // Ant's wait ends on that error, so a new wait for the same hash right
+  // after (a retry resuming the pending transaction) gets a new window.
+  clock += 1000;
+  router.request.mockRejectedValueOnce(outage());
+  expect((await post(bridge.url, rpc('eth_getTransactionReceipt', [hash]))).body.result).toBeNull();
 
   // A different transaction gets its own window.
   router.request.mockRejectedValueOnce(outage());
@@ -628,6 +639,58 @@ test('a receipt lookup that keeps failing passes the real error once the grace w
   expect(
     (await post(bridge.url, rpc('eth_getTransactionReceipt', [other]))).body.result
   ).toBeNull();
+});
+
+test('a receipt wait resumed after a pause gets a new grace window, a slow lookup does not end one (#614)', async () => {
+  await bridge.close();
+  let clock = 1000;
+  bridge = await startAntChainBridge({ router, log, now: () => clock });
+  const hash = `0x${'12'.repeat(32)}`;
+  const outage = () => Object.assign(new Error('all sources down'), { code: -32000 });
+  const ask = () => post(bridge.url, rpc('eth_getTransactionReceipt', [hash]));
+
+  // A first wait that ended by Ant's own deadline (every poll null).
+  router.request.mockRejectedValueOnce(outage());
+  expect((await ask()).body.result).toBeNull();
+  // A later wait for the same hash, past Ant's backoff cap: a new window.
+  clock += 39000 + 20001;
+  router.request.mockRejectedValueOnce(outage());
+  expect((await ask()).body.result).toBeNull();
+
+  // A lookup that takes 33 s to fail: the gap to the next poll counts from
+  // its answer, so the next poll is still the same wait and the window,
+  // measured from that wait's first lookup, ends on time.
+  router.request.mockImplementationOnce(async () => {
+    clock += 33000;
+    throw outage();
+  });
+  expect((await ask()).body.result).toBeNull();
+  clock += 8000;
+  router.request.mockRejectedValueOnce(outage());
+  expect((await ask()).body.error.code).toBe(-32000);
+});
+
+test('a receipt lookup that can never succeed passes its error at once (#614)', async () => {
+  const hash = `0x${'34'.repeat(32)}`;
+  const ask = () => post(bridge.url, rpc('eth_getTransactionReceipt', [hash]));
+  router.request.mockRejectedValueOnce(
+    new Error(
+      'No chain source left for eth_getTransactionReceipt on chain 100: read order [colibri], ' +
+        'excluded for this request: colibri'
+    )
+  );
+  expect((await ask()).body.error.code).toBe(-32002);
+  router.request.mockRejectedValueOnce(
+    Object.assign(new Error('invalid argument 0: hex string has length 2'), { code: -32602 })
+  );
+  expect((await ask()).body.error.code).toBe(-32602);
+  router.request.mockRejectedValueOnce(Object.assign(new Error('nope'), { code: -32601 }));
+  expect((await ask()).body.error.code).toBe(-32601);
+  router.request.mockRejectedValueOnce(new Error('Unsupported chain ID: 100'));
+  expect((await ask()).body.error.code).toBe(-32002);
+  // A passing failure in the same wait is still answered as "not yet mined".
+  router.request.mockRejectedValueOnce(Object.assign(new Error('flaky'), { code: 4900 }));
+  expect((await ask()).body.result).toBeNull();
 });
 
 test('uncertain broadcasts and real RPC rejections are never retried by the bridge', async () => {
