@@ -78,11 +78,59 @@ function extractLaunchUrls(argv) {
   return sanitizeLaunchUrls(candidates);
 }
 
+// What the first window of a cold start opens: Profile settings for a launch
+// carrying --open-settings, else the argv links; then any macOS `open-url`
+// links that arrived before the window existed, which are opened either way.
+function buildColdStartUrls(argv, { settingsUrl = null, pendingOpenUrls = [] } = {}) {
+  const first =
+    Array.isArray(argv) && argv.includes('--open-settings') && settingsUrl
+      ? [settingsUrl]
+      : extractLaunchUrls(argv);
+  const urls = [...first];
+  for (const url of sanitizeLaunchUrls(pendingOpenUrls)) {
+    if (urls.length >= MAX_LAUNCH_URLS) break;
+    if (!urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
+// One-shot launch instructions this process was started with: the links it
+// opened (the same positionals extractLaunchUrls accepts) and the Profiles
+// manager's --open-settings. A restart (`app.relaunch()`) would otherwise reuse
+// the whole command line and open them all again.
+const ONE_SHOT_SWITCHES = new Set(['--open-settings']);
+
+// The arguments (argv without argv[0], the executable) for relaunching this
+// process with its one-shot launch instructions removed. Everything else is
+// kept as it was, the app path in development and --profile/--profile-dir
+// (and their values) in particular.
+function relaunchArgs(argv) {
+  if (!Array.isArray(argv)) return [];
+  const args = [];
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (typeof arg === 'string' && arg.startsWith('-')) {
+      if (ONE_SHOT_SWITCHES.has(arg)) continue;
+      args.push(arg);
+      if (SWITCHES_WITH_VALUE.has(arg) && index + 1 < argv.length) {
+        index += 1;
+        args.push(argv[index]);
+      }
+      continue;
+    }
+    if (isAcceptedLaunchUrl(arg)) continue;
+    args.push(arg);
+  }
+  return args;
+}
+
 module.exports = {
   LAUNCH_URL_PROTOCOLS,
+  buildColdStartUrls,
   MAX_LAUNCH_URLS,
   MAX_LAUNCH_URL_LENGTH,
   extractLaunchUrls,
   isAcceptedLaunchUrl,
+  relaunchArgs,
   sanitizeLaunchUrls,
 };

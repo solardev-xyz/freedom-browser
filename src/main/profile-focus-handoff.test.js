@@ -7,6 +7,7 @@ const {
   readProfileFocusAck,
   requestProfileFocusAsyncAwait,
   requestProfileFocusSync,
+  requestProfileQuitAsync,
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
 
@@ -320,6 +321,78 @@ describe('profile focus handoff', () => {
     await waitFor(() => readProfileFocusAck(profile, 'dup'));
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(onFocusWindow).toHaveBeenCalledTimes(1);
+  });
+
+  test('a handled request is not replayed by the next process (relaunch within the max age)', async () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const paths = getProfileFocusPaths(profile);
+    const first = jest.fn().mockResolvedValue(undefined);
+
+    requestProfileFocusSync(profile, {
+      nonce: 'replay-focus',
+      urls: ['https://x.example/'],
+      timeoutMs: 0,
+    });
+    const watcher = startProfileFocusRequestWatcher(profile, first, { pollIntervalMs: 10 });
+    await waitFor(() => readProfileFocusAck(profile, 'replay-focus'));
+    watcher.stop();
+    expect(first).toHaveBeenCalledTimes(1);
+    // Neither copy of the request outlives its handling.
+    expect(fs.existsSync(paths.requestPath)).toBe(false);
+    expect(fs.readdirSync(paths.requestDir)).toEqual([]);
+
+    // The profile is quit and relaunched: a new watcher with no nonce memory.
+    const second = jest.fn().mockResolvedValue(undefined);
+    trackWatcher(startProfileFocusRequestWatcher(profile, second, { pollIntervalMs: 10 }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  test('a handled quit request does not quit the relaunched process', async () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const onFocusWindow = jest.fn().mockResolvedValue(undefined);
+    const firstQuit = jest.fn().mockResolvedValue(undefined);
+
+    expect(requestProfileQuitAsync(profile, { nonce: 'replay-quit' }).ok).toBe(true);
+    const watcher = startProfileFocusRequestWatcher(profile, onFocusWindow, {
+      pollIntervalMs: 10,
+      onQuit: firstQuit,
+    });
+    await waitFor(() => readProfileFocusAck(profile, 'replay-quit'));
+    watcher.stop();
+    expect(firstQuit).toHaveBeenCalledTimes(1);
+
+    const secondQuit = jest.fn().mockResolvedValue(undefined);
+    trackWatcher(
+      startProfileFocusRequestWatcher(profile, onFocusWindow, {
+        pollIntervalMs: 10,
+        onQuit: secondQuit,
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(secondQuit).not.toHaveBeenCalled();
+  });
+
+  test('a requester answered by an older build clears the shared request it left', async () => {
+    const profile = trackProfile(makeTempProfile('work'));
+    const paths = getProfileFocusPaths(profile);
+
+    const pending = requestProfileFocusAsyncAwait(profile, {
+      nonce: 'old-target',
+      pollIntervalMs: 10,
+      timeoutMs: 2000,
+    });
+    // An older running build: reads only the shared request, writes only the
+    // shared ack, and leaves the request where it was.
+    await waitFor(() => fs.existsSync(paths.requestPath));
+    fs.writeFileSync(
+      paths.ackPath,
+      JSON.stringify({ nonce: 'old-target', ok: true, handledAtMs: Date.now(), pid: 1 }),
+      'utf-8'
+    );
+
+    await expect(pending).resolves.toEqual(expect.objectContaining({ ok: true }));
+    expect(fs.existsSync(paths.requestPath)).toBe(false);
   });
 
   test("readProfileFocusAck by nonce finds that request's own ack even after a newer one", () => {

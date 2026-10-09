@@ -1,8 +1,10 @@
 const {
   MAX_LAUNCH_URLS,
   MAX_LAUNCH_URL_LENGTH,
+  buildColdStartUrls,
   extractLaunchUrls,
   isAcceptedLaunchUrl,
+  relaunchArgs,
   sanitizeLaunchUrls,
 } = require('./launch-urls');
 
@@ -127,6 +129,68 @@ describe('launch URLs (#597)', () => {
       expect(sanitizeLaunchUrls(undefined)).toEqual([]);
       expect(sanitizeLaunchUrls('https://example.com/')).toEqual([]);
       expect(sanitizeLaunchUrls({ 0: 'https://example.com/' })).toEqual([]);
+    });
+  });
+  describe('buildColdStartUrls', () => {
+    const SETTINGS = 'freedom://settings#profile';
+
+    test('opens the argv links, then links macOS queued before the window', () => {
+      expect(
+        buildColdStartUrls(['freedom', 'https://a.example/'], {
+          settingsUrl: SETTINGS,
+          pendingOpenUrls: ['https://b.example/', 'https://a.example/', 'file:///etc/passwd'],
+        })
+      ).toEqual(['https://a.example/', 'https://b.example/']);
+    });
+
+    test('--open-settings lands on settings and still opens queued open-url links', () => {
+      expect(
+        buildColdStartUrls(['freedom', '--open-settings', 'https://a.example/'], {
+          settingsUrl: SETTINGS,
+          pendingOpenUrls: ['https://b.example/'],
+        })
+      ).toEqual([SETTINGS, 'https://b.example/']);
+    });
+
+    test('nothing to open yields an empty list', () => {
+      expect(buildColdStartUrls(['freedom'], { settingsUrl: SETTINGS })).toEqual([]);
+    });
+  });
+
+  describe('relaunchArgs', () => {
+    test('drops the launch links and --open-settings, keeps everything else', () => {
+      expect(
+        relaunchArgs([
+          '/usr/bin/electron',
+          '.',
+          '--profile',
+          'work',
+          'https://x.example/',
+          '--open-settings',
+          '--profile-dir=/data/p',
+          'bzz://ab12cd34/',
+          'file:///etc/passwd',
+          '--no-sandbox',
+        ])
+      ).toEqual([
+        '.',
+        '--profile',
+        'work',
+        '--profile-dir=/data/p',
+        'file:///etc/passwd',
+        '--no-sandbox',
+      ]);
+    });
+
+    test('a switch value that looks like a link is kept with its switch', () => {
+      expect(relaunchArgs(['freedom', '--profile-dir', 'https://x.example/'])).toEqual([
+        '--profile-dir',
+        'https://x.example/',
+      ]);
+    });
+
+    test('tolerates a missing argv', () => {
+      expect(relaunchArgs(undefined)).toEqual([]);
     });
   });
 });

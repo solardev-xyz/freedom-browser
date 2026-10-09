@@ -48,10 +48,7 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
   app.setPath('userData', process.env.FREEDOM_TEST_USER_DATA);
   // Keep E2E download artifacts inside the per-run temp dir instead of
   // polluting the real ~/Downloads folder.
-  app.setPath(
-    'downloads',
-    require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
-  );
+  app.setPath('downloads', require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads'));
 }
 // Honoured in a packaged build only when the launch also kept a CDP debug port
 // on a scratch profile, i.e. the packaged E2E launcher
@@ -86,7 +83,7 @@ const {
   requestProfileFocusSync,
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
-const { extractLaunchUrls, sanitizeLaunchUrls } = require('./launch-urls');
+const { buildColdStartUrls, extractLaunchUrls, sanitizeLaunchUrls } = require('./launch-urls');
 // Links this launch was given (an OS link handler, `freedom <url>`), checked
 // against the schemes Freedom opens. A cold start opens them in its first
 // window; a second launch of an already-open profile hands them over below.
@@ -603,9 +600,12 @@ async function bootstrap() {
   // A profile cold-started from another window's "edit" button (Profiles
   // manager) carries --open-settings; land its first tab on Profile settings.
   // Otherwise the first window opens the links the launch was given, if any.
-  const coldStartUrls = process.argv.includes('--open-settings')
-    ? [PROFILE_SETTINGS_DEEPLINK]
-    : [...launchUrls, ...pendingOpenUrls.splice(0)];
+  // macOS `open-url` links that arrived before this window are opened either
+  // way, after the settings tab when there is one.
+  const coldStartUrls = buildColdStartUrls(process.argv, {
+    settingsUrl: PROFILE_SETTINGS_DEEPLINK,
+    pendingOpenUrls: pendingOpenUrls.splice(0),
+  });
   const mainWindow = createMainWindow(coldStartUrls.length > 0 ? coldStartUrls : null);
   firstWindowCreated = true;
   // One-off big deletes wait until the window is up, so an upgrade never
@@ -796,9 +796,11 @@ async function windDown() {
   if (!myotisExits || myotisExits.some((exited) => !exited)) {
     log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
   }
-  log.info(myotisExits && myotisExits.every(Boolean)
-    ? '[App] All processes stopped, quitting...'
-    : '[App] Quitting with Myotis exit unconfirmed');
+  log.info(
+    myotisExits && myotisExits.every(Boolean)
+      ? '[App] All processes stopped, quitting...'
+      : '[App] Quitting with Myotis exit unconfirmed'
+  );
 }
 
 app.on('before-quit', async (event) => {

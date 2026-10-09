@@ -113,6 +113,17 @@ function writeRequest(paths, request) {
   }
 }
 
+// Remove the shared legacy request file if it still holds `nonce`. Once a
+// request is handled nothing may leave it there: a watcher started later (the
+// profile relaunched within the request max age) remembers no nonces and
+// would act on it again, reopening its links or quitting the new process.
+// If another request overwrote it meanwhile it stays; that one has its own
+// file too and the watcher clears this copy when it handles it.
+function removeSharedRequest(paths, nonce) {
+  const shared = readJsonFile(paths.requestPath);
+  if (shared?.nonce === nonce) removeFileQuietly(paths.requestPath);
+}
+
 // The ack for `nonce`, if the target wrote one yet; collects (deletes) its
 // per-request file and the request file once found.
 function takeAck(paths, nonce) {
@@ -120,11 +131,14 @@ function takeAck(paths, nonce) {
   if (own?.nonce === nonce) {
     removeFileQuietly(ackFileFor(paths, nonce));
     removeFileQuietly(requestFileFor(paths, nonce));
+    removeSharedRequest(paths, nonce);
     return own;
   }
   const shared = readJsonFile(paths.ackPath);
   if (shared?.nonce === nonce) {
+    // An older running build, which never clears the request it handled.
     removeFileQuietly(requestFileFor(paths, nonce));
+    removeSharedRequest(paths, nonce);
     return shared;
   }
   return null;
@@ -405,13 +419,15 @@ function startProfileFocusRequestWatcher(profile, onFocusWindow, options = {}) {
       // their own ack.
       for (const { request, filePath } of collectRequests()) {
         if (stopped) break;
-        if (handledNonces.has(request.nonce)) {
-          if (filePath) removeFileQuietly(filePath);
-          continue;
-        }
+        // Both copies go before the request is acted on: handledNonces lives
+        // only as long as this process, so a copy still on disk when it exits
+        // (a quit request, or a relaunch within the max age) would be handled
+        // again by the next one.
+        if (filePath) removeFileQuietly(filePath);
+        removeSharedRequest(paths, request.nonce);
+        if (handledNonces.has(request.nonce)) continue;
         rememberNonce(request.nonce);
         await handleRequest(request);
-        if (filePath) removeFileQuietly(filePath);
       }
     } finally {
       handling = false;
