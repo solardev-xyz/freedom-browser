@@ -198,6 +198,68 @@ builds, process-tree cancellation and UI isolation remain unqualified.
    trees, previews, external read-only projects, Electron and packaged installs
    on a disposable Windows environment before changing product support claims.
 
+## OS requirements and alternatives — 2026-10-10
+
+Reviewed upstream MXC at `c6f301d53a1430c4c921a05c57af838f7392348f`.
+This is research against newer source, not a change to the installed 1.0.0 SDK.
+
+### Immediate recommendation: update, then probe before executing
+
+The host is still Windows 11 Pro 25H2 `26200.9457`. Microsoft's optional
+[KB5124010](https://support.microsoft.com/en-us/servicing/os/windows-11/2026/09/kb5124010-windows-11-24h2-25h2-update)
+was published September 22 and updates 25H2 to `26200.9550`. It is a non-security
+preview cumulative update, not an Insider enrollment. MXC's
+[current support table](https://github.com/microsoft/mxc/blob/c6f301d53a1430c4c921a05c57af838f7392348f/docs/backends/process-container/os-version-support.md)
+names `.9278` for Process Isolation and `.9550` for Session Isolation.
+That table does **not** guarantee `fs_enumerate` or host-loopback ingress at
+either version. Do not infer those capabilities from general backend support.
+An OS update is a useful controlled comparison, not a verified fix.
+
+The new scratch `capability-gates.mjs` performs only platform and request probes;
+it does not launch workloads or grant root read access. Its baseline log
+`capability-gates-before-update.log` confirms both exact requests are rejected:
+
+- `processContainer.filesystem.enumeratePaths`: unsupported by this Windows
+  version; metadata-only access requires native support.
+- `network.ingress.hostLoopback: 'allow'`: unsupported by this Windows version.
+
+After an approved OS update and restart, re-run this probe over SSH. If the
+filesystem request becomes supported, replace the rejected root read grant with
+enumeration-only ancestors and repeat the positive and negative file tests in
+the desktop session. Require actual preview connectivity testing separately:
+even upstream's newer identity-less proxy support records an unresolved
+host-to-container listener failure under its proxy mapping. Discovery success
+alone cannot qualify preview serving.
+
+No update, feature enablement or reboot was performed. Attempting a read-only
+Windows Update COM query over SSH failed with `E_ACCESSDENIED`, so whether the
+update is offered to this particular device must be checked in Windows Settings.
+
+### Alternatives and their costs
+
+| Route | Assessment for Freedom |
+| --- | --- |
+| Native BaseContainer with metadata-only grants | Preferred if actual host support and confinement tests pass. Closest fit to Windows tools and the existing host project model. Current OS rejects the necessary grant. |
+| AppContainer / DACL fallback | Not a drop-in solution to the current policy: introduces host ACL management; explicit host-loopback allowance and directional rules have native-support requirements. Needs its own design and qualification, not automatic fallback. |
+| Ordinary WSL distribution | Not a security sandbox by itself. Merely disabling drive automount and Windows interop does not establish isolation. A Linux sandbox inside it would require explicit qualification of WSL-specific host interfaces as well as the existing Linux tests. WSL is not installed on this machine. |
+| MXC WSLC | Separate SDK/runtime packaging; requires WSL 2.9.9+. Network policy is isolated or unrestricted bridged, not independent directions. Cannot exclude `.git` inside a writable mount. Host port mapping currently requires raw development contract `1.1.0-alpha`, outside the typed 1.0.0 API. Not a direct reuse of our workspace policy. |
+| MXC Windows Sandbox | Genuine Windows VM boundary, but current backend is experimental, fixes guest external networking off, cannot exclude nested paths within a writable share, and admits one execution at a time per VM. Does not supply our dependency-install/managed-preview flow unchanged. Windows Sandbox also excludes Windows Home. |
+| Separately managed VM with a narrow guest bridge | A viable design to investigate if native support remains unsuitable, not implemented or qualified. Needs runtime image distribution, lifecycle/recovery, file transfer or scoped mounts, network authority, preview forwarding and cleanup. A Linux guest could reuse parts of our Linux executor but would run Linux tools; a Windows guest preserves native tools with greater packaging/licensing work. |
+
+Microsoft's [WSL security model](https://github.com/microsoft/WSL/blob/master/doc/docs/technical-documentation/security.md)
+explicitly distinguishes distro settings from security boundaries. Do not replace
+the failed MXC policy with an ordinary `wsl.exe` execution path and call it safe.
+The [WSLC policy table](https://github.com/microsoft/mxc/blob/c6f301d53a1430c4c921a05c57af838f7392348f/docs/backends/wslc/wslc-state-aware.md)
+and [Windows Sandbox backend](https://github.com/microsoft/mxc/blob/c6f301d53a1430c4c921a05c57af838f7392348f/docs/backends/windows-sandbox/windows-sandbox.md)
+describe the adapter limitations above. Microsoft documents Windows Sandbox's
+[supported editions](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/).
+
+If the OS update leaves the missing primitives unavailable, the next decision is
+between a separately qualified native containment implementation and a managed
+VM design. That is an architectural/product choice (native tools, installation
+size and setup requirements), not another permission workaround. No additional
+runtime dependency or fallback backend is selected by this research.
+
 ## Upstream references
 
 - [MXC Node SDK](https://github.com/microsoft/mxc/blob/main/sdk/node/README.md)

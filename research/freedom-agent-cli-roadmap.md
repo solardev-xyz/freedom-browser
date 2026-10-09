@@ -35,6 +35,16 @@ the SSH startup difference, UI qualification and preview route remain unresolved
 Windows workspace execution remains unsupported and fails closed; no production
 backend was added.
 
+Follow-up research (2026-10-10): prepared a read-only request-specific capability
+probe and confirmed metadata-only grants and localhost ingress are both rejected.
+Optional Windows update KB5124010 moves this host from `26200.9457` to
+`26200.9550`; upstream names the latter for Session Isolation but does not promise
+the two missing primitives. Recommend update/re-probe before selecting another
+backend; installation and reboot have not been performed. Ordinary WSL is not a
+security boundary, and MXC's WSLC/Windows Sandbox adapters do not directly match
+our protected-path and network/preview requirements. The feasibility report
+records the alternatives and their product costs; no fallback has been selected.
+
 See [the feasibility report](agent-windows-mxc-feasibility.md) for exact versions,
 checks, desktop reproduction instructions and remaining implementation gates.
 
