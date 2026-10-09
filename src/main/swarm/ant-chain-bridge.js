@@ -294,23 +294,36 @@ async function startAntChainBridge({
   let closePromise;
   let warnedNoLogQuorum = false;
   let authority;
-  // Transaction hash -> { first, last }: when the current wait for its receipt
-  // began, and when Ant last asked.
+  // Transaction hash -> { first, last, inFlight }: when the current wait for
+  // its receipt began, when Ant last asked or was last answered, and how many
+  // of its lookups are still running. A wait with a lookup in flight is never
+  // pruned: `last` only moves when that lookup answers, so a slow one would
+  // otherwise look idle to a concurrent lookup of another hash and lose its
+  // window, giving the next poll a fresh one past Ant's own deadline.
   const receiptWaits = new Map();
   function receiptAskedAt(hash) {
     const at = now();
     for (const [key, wait] of receiptWaits) {
-      if (at - wait.last > RECEIPT_WAIT_GAP_MS) receiptWaits.delete(key);
+      if (wait.inFlight === 0 && at - wait.last > RECEIPT_WAIT_GAP_MS) receiptWaits.delete(key);
     }
     let wait = receiptWaits.get(hash);
     if (!wait) {
-      if (receiptWaits.size >= RECEIPT_TRACK_MAX)
-        receiptWaits.delete(receiptWaits.keys().next().value);
-      wait = { first: at, last: at };
+      if (receiptWaits.size >= RECEIPT_TRACK_MAX) {
+        let evict = null;
+        for (const [key, tracked] of receiptWaits) {
+          if (tracked.inFlight === 0) {
+            evict = key;
+            break;
+          }
+        }
+        receiptWaits.delete(evict ?? receiptWaits.keys().next().value);
+      }
+      wait = { first: at, last: at, inFlight: 0 };
       receiptWaits.set(hash, wait);
     }
     wait.last = at;
-    return wait.first;
+    wait.inFlight += 1;
+    return wait;
   }
   function send(res, status, body) {
     if (res.destroyed || res.writableEnded) return;
@@ -345,7 +358,7 @@ async function startAntChainBridge({
     active.add(controller);
     let id = null;
     let receiptHash = null;
-    let receiptFirstAt = 0;
+    let receiptWait = null;
     let method;
     const fail = (code, message, data) =>
       send(res, 200, {
@@ -423,7 +436,7 @@ async function startAntChainBridge({
       }
       if (method === 'eth_getTransactionReceipt' && typeof request.params[0] === 'string') {
         receiptHash = request.params[0].toLowerCase();
-        receiptFirstAt = receiptAskedAt(receiptHash);
+        receiptWait = receiptAskedAt(receiptHash);
       }
       controller.signal.throwIfAborted();
       const answer =
@@ -439,7 +452,8 @@ async function startAntChainBridge({
             });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');
-      if (receiptHash && answer.result !== null) receiptWaits.delete(receiptHash);
+      if (receiptHash && answer.result !== null && receiptWaits.get(receiptHash) === receiptWait)
+        receiptWaits.delete(receiptHash);
 
       const body = { jsonrpc: '2.0', id, result: answer.result };
       if (Buffer.byteLength(JSON.stringify(body)) > MAX_RESPONSE) {
@@ -458,7 +472,7 @@ async function startAntChainBridge({
       if (
         !controller.signal.aborted &&
         receiptHash &&
-        now() - receiptFirstAt < receiptGraceMs &&
+        now() - receiptWait.first < receiptGraceMs &&
         !receiptFailureIsPermanent(error)
       ) {
         // Ant v0.5.64 `wait_for_receipt` (crates/ant-chain/src/tx.rs) gives up
@@ -480,7 +494,8 @@ async function startAntChainBridge({
       } else if (!controller.signal.aborted) {
         // Ant's wait gives up on this error, so the next lookup of the hash
         // starts a new wait with its own grace window.
-        if (receiptHash) receiptWaits.delete(receiptHash);
+        if (receiptHash && receiptWaits.get(receiptHash) === receiptWait)
+          receiptWaits.delete(receiptHash);
         const { code, message, data } = antErrorReply(method, error);
         fail(code, message, data);
         log.warn(
@@ -505,8 +520,10 @@ async function startAntChainBridge({
       active.delete(controller);
       // The gap to Ant's next poll counts from this answer, not from the ask:
       // a slow lookup must not make the next poll look like a new wait.
-      const wait = receiptHash && receiptWaits.get(receiptHash);
-      if (wait) wait.last = now();
+      if (receiptWait) {
+        receiptWait.inFlight -= 1;
+        receiptWait.last = now();
+      }
     }
   });
   server.requestTimeout = timeoutMs;

@@ -670,6 +670,45 @@ test('a receipt wait resumed after a pause gets a new grace window, a slow looku
   expect((await ask()).body.error.code).toBe(-32000);
 });
 
+test('a slow receipt lookup keeps its wait while another hash is looked up (#614)', async () => {
+  await bridge.close();
+  let clock = 1000;
+  bridge = await startAntChainBridge({ router, log, now: () => clock });
+  const a = `0x${'56'.repeat(32)}`;
+  const b = `0x${'78'.repeat(32)}`;
+  const outage = () => Object.assign(new Error('all sources down'), { code: -32000 });
+  const ask = (hash) => post(bridge.url, rpc('eth_getTransactionReceipt', [hash]));
+
+  // Hash A: null at t=0, then a poll at t=8 s whose lookup hangs for 25 s.
+  router.request.mockRejectedValueOnce(outage());
+  expect((await ask(a)).body.result).toBeNull();
+  clock += 8000;
+  let failSlow;
+  router.request.mockImplementationOnce(
+    () =>
+      new Promise((resolve, reject) => {
+        failSlow = reject;
+      })
+  );
+  const slow = ask(a);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(failSlow).toBeInstanceOf(Function);
+
+  // A lookup of hash B 21 s into A's hanging lookup must not drop A's wait.
+  clock += 21000;
+  router.request.mockRejectedValueOnce(outage());
+  expect((await ask(b)).body.result).toBeNull();
+  clock += 4000;
+  failSlow(outage());
+  expect((await slow).body.result).toBeNull();
+
+  // A's next poll (t=41 s) is past its window, measured from t=0: Ant gets
+  // the real error before its own 60 s deadline, not another null.
+  clock += 8000;
+  router.request.mockRejectedValueOnce(outage());
+  expect((await ask(a)).body.error.code).toBe(-32000);
+});
+
 test('a receipt lookup that can never succeed passes its error at once (#614)', async () => {
   const hash = `0x${'34'.repeat(32)}`;
   const ask = () => post(bridge.url, rpc('eth_getTransactionReceipt', [hash]));
