@@ -277,7 +277,9 @@ function loadAntManagerModule(options = {}) {
     writeAntProcessMarker: jest.fn(),
     clearAntProcessMarker: jest.fn(),
     findOwnLiveAntd: jest.fn(async () => options.ownLiveAntd || null),
-    fetchNodeOverlay: jest.fn(async () => options.nodeOverlay || null),
+    fetchNodeOverlay: jest.fn(async () => (typeof options.nodeOverlay === 'function'
+      ? options.nodeOverlay()
+      : options.nodeOverlay || null)),
     recordAntProcessOverlay: jest.fn(),
   };
 
@@ -648,6 +650,76 @@ describe('ant-manager', () => {
       await jest.advanceTimersByTimeAsync(0);
       await stopPromise;
       expect(ctx.processMarker.clearAntProcessMarker).toHaveBeenCalledWith('/profile', 4242);
+    });
+
+    // R3-M1: one failed /addresses fetch must not leave the marker without an
+    // overlay for the whole run; it is retried until the node reports one.
+    test('retries the overlay fetch until the spawned antd reports one', async () => {
+      jest.useFakeTimers();
+      const answers = [null, null, 'cd'.repeat(32)];
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', userDataDir: '/profile', metadata: null },
+        legacyExternalChoice: 'managed',
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+        nodeOverlay: () => answers.shift() ?? null,
+        createProcess: (binary, processOptions) =>
+          Object.assign(createProcessMock(binary, processOptions), { pid: 4242 }),
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      await jest.advanceTimersByTimeAsync(1000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.fetchNodeOverlay).toHaveBeenCalledTimes(1);
+      expect(ctx.processMarker.recordAntProcessOverlay).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(2000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.fetchNodeOverlay).toHaveBeenCalledTimes(2);
+      expect(ctx.processMarker.recordAntProcessOverlay).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(4000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.fetchNodeOverlay).toHaveBeenCalledTimes(3);
+      expect(ctx.processMarker.recordAntProcessOverlay)
+        .toHaveBeenCalledWith('/profile', 4242, 'cd'.repeat(32));
+
+      // Recorded: no further fetches.
+      await jest.advanceTimersByTimeAsync(60000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.fetchNodeOverlay).toHaveBeenCalledTimes(3);
+
+      const stopPromise = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stopPromise;
+    });
+
+    test('stops retrying the overlay fetch once the antd is stopped', async () => {
+      jest.useFakeTimers();
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', userDataDir: '/profile', metadata: null },
+        legacyExternalChoice: 'managed',
+        portResolver: nodeOnDefaultPorts,
+        httpResponse: healthyOnDefaultPort,
+        createProcess: (binary, processOptions) =>
+          Object.assign(createProcessMock(binary, processOptions), { pid: 4242 }),
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      await jest.advanceTimersByTimeAsync(1000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.fetchNodeOverlay).toHaveBeenCalledTimes(1);
+
+      const stopPromise = ctx.mod.stopAnt();
+      await jest.advanceTimersByTimeAsync(0);
+      await stopPromise;
+
+      await jest.advanceTimersByTimeAsync(120000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.fetchNodeOverlay).toHaveBeenCalledTimes(1);
+      expect(ctx.processMarker.recordAntProcessOverlay).not.toHaveBeenCalled();
     });
 
     // R1-M1: after a crash the profile's own antd is still on 1633 holding the

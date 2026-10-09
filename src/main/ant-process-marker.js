@@ -22,9 +22,10 @@
 // another identity. The port is the marker's own, not 1633, because a legacy
 // profile that keeps its own node next to a foreign one runs antd on the next
 // free port (#218 review R2-M1/M2). A marker written before the node first
-// answered has no overlay and never matches; that only affects a Freedom that
-// died during the antd's first seconds, which then falls back to the prompt
-// and saved choice.
+// answered has no overlay and never matches; ant-manager keeps retrying the
+// overlay fetch (with backoff) while its antd runs, so that only affects a
+// Freedom that died before any fetch succeeded, which then falls back to the
+// prompt and saved choice (#218 review R3-M1).
 
 const fs = require('fs');
 const http = require('http');

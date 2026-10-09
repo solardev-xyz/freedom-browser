@@ -56,6 +56,7 @@ let pendingStart = false;
 let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
+let overlayRetryTimer = null;
 const statusListeners = new Set();
 
 function closeChainBridge(bridge = chainBridge) {
@@ -879,6 +880,7 @@ async function startAnt() {
       if (antProcess !== child) return;
       log.info(`[Ant] Process exited with code ${code}`);
       antProcess = null;
+      clearOverlayRetry();
 
       if (forceKillTimeout) {
         clearTimeout(forceKillTimeout);
@@ -951,9 +953,7 @@ async function startAnt() {
         updateState(STATUS.RUNNING);
         startHealthCheck();
         // Lets the next launch recognise this antd if it outlives Freedom.
-        void fetchNodeOverlay(apiPort).then((overlay) => {
-          recordAntProcessOverlay(markerDir, child.pid, overlay);
-        });
+        recordOverlayUntilKnown(child, generation, markerDir, apiPort);
       } else {
         attempts++;
         if (attempts >= maxAttempts) {
@@ -971,9 +971,44 @@ async function startAnt() {
   }
 }
 
+// Until the spawned antd has reported its overlay, the marker cannot identify
+// it after a crash (findOwnLiveAntd never matches a marker without one), so a
+// failed /addresses fetch (a timeout on a loaded host, a node still settling)
+// is retried with backoff for as long as this child is the current antd,
+// instead of leaving the marker overlay-less for the whole run (#218 review
+// R3-M1).
+const OVERLAY_RETRY_INITIAL_MS = 2000;
+const OVERLAY_RETRY_MAX_MS = 30000;
+
+function clearOverlayRetry() {
+  if (overlayRetryTimer) {
+    clearTimeout(overlayRetryTimer);
+    overlayRetryTimer = null;
+  }
+}
+
+function recordOverlayUntilKnown(child, generation, markerDir, apiPort, delayMs = OVERLAY_RETRY_INITIAL_MS) {
+  clearOverlayRetry();
+  const isCurrent = () => generation === startGeneration && antProcess === child;
+  void fetchNodeOverlay(apiPort).then((overlay) => {
+    if (!isCurrent()) return;
+    if (overlay) {
+      recordAntProcessOverlay(markerDir, child.pid, overlay);
+      return;
+    }
+    overlayRetryTimer = setTimeout(() => {
+      overlayRetryTimer = null;
+      if (!isCurrent()) return;
+      recordOverlayUntilKnown(child, generation, markerDir, apiPort,
+        Math.min(delayMs * 2, OVERLAY_RETRY_MAX_MS));
+    }, delayMs);
+  });
+}
+
 // Stop Ant and return a Promise that resolves when the process exits
 function stopAnt() {
   ++startGeneration;
+  clearOverlayRetry();
   const bridgeClosed = closeChainBridge();
   return new Promise((resolve) => {
     pendingStart = false;
