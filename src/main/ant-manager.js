@@ -28,7 +28,9 @@ const { noteAntApiUrl } = require('./swarm/ant-api-guard');
 const { getLegacyExternalCandidateChoice } = require('./profile-external-candidates');
 const {
   clearAntProcessMarker,
+  fetchNodeOverlay,
   findOwnLiveAntd,
+  recordAntProcessOverlay,
   writeAntProcessMarker,
 } = require('./ant-process-marker');
 const { antApiGet } = require('./swarm/ant-api-chrome');
@@ -643,23 +645,30 @@ async function startAnt() {
   const legacyChoice = managedProfileNode
     ? null
     : getLegacyExternalCandidateChoice(getActiveProfile(), 'bee');
-  let existing = managedProfileNode ? { found: false } : await detectExistingDaemon();
-
+  // This profile's own antd may have outlived a Freedom that crashed or was
+  // killed (ant-process-marker.js), on 1633 or, if the profile keeps its own
+  // node beside a foreign one, on the next free port. It holds the data dir's
+  // statestore lock, so a second antd beside it cannot start: reuse it
+  // whatever the saved choice says, as before #218.
+  const ownOrphan = managedProfileNode
+    ? null
+    : await findOwnLiveAntd(getActiveProfile()?.userDataDir);
   if (generation !== startGeneration) return;
 
-  // The node on the default port may be this profile's own antd, left running
-  // by a Freedom that crashed or was killed (ant-process-marker.js). It holds
-  // the data dir's statestore lock, so a second antd beside it cannot start:
-  // reuse it whatever the saved choice says, as before #218.
-  const ownOrphan = existing.found && !managedProfileNode
-    ? findOwnLiveAntd(getActiveProfile()?.userDataDir, existing.port)
-    : null;
-  if (ownOrphan) {
+  let existing;
+  if (managedProfileNode) {
+    existing = { found: false };
+  } else if (ownOrphan) {
     log.info(
-      '[Ant] The node on port', existing.port,
+      '[Ant] The node on port', ownOrphan.apiPort,
       `is this profile's own antd from an earlier run (pid ${ownOrphan.pid}); reusing it`
     );
+    existing = { found: true, port: ownOrphan.apiPort };
+  } else {
+    existing = await detectExistingDaemon();
   }
+
+  if (generation !== startGeneration) return;
 
   // Kept managed: the node on the default port is somebody else's, so start
   // the bundled one beside it, clear of both of its ports.
@@ -941,6 +950,10 @@ async function startAnt() {
 
         updateState(STATUS.RUNNING);
         startHealthCheck();
+        // Lets the next launch recognise this antd if it outlives Freedom.
+        void fetchNodeOverlay(apiPort).then((overlay) => {
+          recordAntProcessOverlay(markerDir, child.pid, overlay);
+        });
       } else {
         attempts++;
         if (attempts >= maxAttempts) {

@@ -276,7 +276,9 @@ function loadAntManagerModule(options = {}) {
   const processMarker = {
     writeAntProcessMarker: jest.fn(),
     clearAntProcessMarker: jest.fn(),
-    findOwnLiveAntd: jest.fn(() => options.ownLiveAntd || null),
+    findOwnLiveAntd: jest.fn(async () => options.ownLiveAntd || null),
+    fetchNodeOverlay: jest.fn(async () => options.nodeOverlay || null),
+    recordAntProcessOverlay: jest.fn(),
   };
 
   const { mod } = loadMainModule(require.resolve('./ant-manager'), {
@@ -619,6 +621,7 @@ describe('ant-manager', () => {
         legacyExternalChoice: 'managed',
         portResolver: nodeOnDefaultPorts,
         httpResponse: healthyOnDefaultPort,
+        nodeOverlay: 'ab'.repeat(32),
         createProcess: (binary, processOptions) =>
           Object.assign(createProcessMock(binary, processOptions), { pid: 4242 }),
       });
@@ -632,6 +635,14 @@ describe('ant-manager', () => {
         dataDir: ctx.dataDir,
       });
       expect(ctx.processMarker.clearAntProcessMarker).not.toHaveBeenCalled();
+      expect(ctx.processMarker.recordAntProcessOverlay).not.toHaveBeenCalled();
+
+      // R2-M2: once it answers, its overlay is what identifies it next launch.
+      await jest.advanceTimersByTimeAsync(1000);
+      await flushMicrotasks();
+      expect(ctx.processMarker.fetchNodeOverlay).toHaveBeenCalledWith(1635);
+      expect(ctx.processMarker.recordAntProcessOverlay)
+        .toHaveBeenCalledWith('/profile', 4242, 'ab'.repeat(32));
 
       const stopPromise = ctx.mod.stopAnt();
       await jest.advanceTimersByTimeAsync(0);
@@ -655,10 +666,36 @@ describe('ant-manager', () => {
       await ctx.mod.startAnt();
       await flushMicrotasks();
 
-      expect(ctx.processMarker.findOwnLiveAntd).toHaveBeenCalledWith('/profile', 1633);
+      expect(ctx.processMarker.findOwnLiveAntd).toHaveBeenCalledWith('/profile');
       expect(ctx.spawn).not.toHaveBeenCalled();
       expect(ctx.mod.getActivePort()).toBe(1633);
       expect(ctx.updateService).toHaveBeenCalledWith('ant', expect.objectContaining({
+        mode: 'reused',
+      }));
+      expect(ctx.log.warn).not.toHaveBeenCalled();
+      await ctx.mod.stopAnt();
+    });
+
+    // R2-M1: a profile that kept its own node beside a foreign one ran antd on
+    // 1635; after a crash that orphan is found on its own port, not on 1633.
+    test("reuses the profile's own antd left on a fallback port beside a foreign node", async () => {
+      jest.spyOn(global, 'setInterval').mockReturnValue(123);
+      jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
+      const ctx = loadAntManagerModule({
+        activeProfile: { source: 'test-user-data', userDataDir: '/profile', metadata: null },
+        legacyExternalChoice: 'managed',
+        ownLiveAntd: { pid: 4242, apiPort: 1635 },
+        portResolver: (port) => port === 1633 || port === 1634 || port === 1635,
+        httpResponse: healthyOnDefaultPort,
+      });
+
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+
+      expect(ctx.spawn).not.toHaveBeenCalled();
+      expect(ctx.mod.getActivePort()).toBe(1635);
+      expect(ctx.updateService).toHaveBeenCalledWith('ant', expect.objectContaining({
+        api: 'http://127.0.0.1:1635',
         mode: 'reused',
       }));
       expect(ctx.log.warn).not.toHaveBeenCalled();

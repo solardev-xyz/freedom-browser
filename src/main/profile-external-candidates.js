@@ -215,18 +215,19 @@ function shouldPromptForProtocol(profile, protocol) {
 // by a Freedom that crashed is not "an existing node" to offer: ant-manager.js
 // reuses it regardless (it holds the data dir's lock), so asking would only
 // save an answer that is ignored now and misapplied later.
-function isOwnLegacySwarmNode(profile, protocol, definition, options = {}) {
+async function isOwnLegacySwarmNode(profile, protocol, definition, options = {}) {
   if (protocol !== 'bee' || !isLegacyProfile(profile)) return false;
   const find = options.findOwnLiveAntd || findOwnLiveAntd;
-  return (definition.endpoints || []).some((endpoint) => {
+  for (const endpoint of definition.endpoints || []) {
     let port;
     try {
       port = Number(new URL(endpoint).port);
     } catch {
-      return false;
+      continue;
     }
-    return Boolean(port) && Boolean(find(profile.userDataDir, port));
-  });
+    if (port && await find(profile.userDataDir, { apiPort: port })) return true;
+  }
+  return false;
 }
 
 async function detectDefaultExternalCandidates(profile, options = {}) {
@@ -237,7 +238,7 @@ async function detectDefaultExternalCandidates(profile, options = {}) {
   for (const [protocol, definition] of Object.entries(definitions)) {
     if (options.enabledProtocols && options.enabledProtocols[protocol] === false) continue;
     if (!shouldPromptForProtocol(profile, protocol)) continue;
-    if (isOwnLegacySwarmNode(profile, protocol, definition, options)) continue;
+    if (await isOwnLegacySwarmNode(profile, protocol, definition, options)) continue;
 
     const results = await Promise.all(
       definition.probes.map((candidateProbe) => probe(candidateProbe, options))

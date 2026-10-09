@@ -16,7 +16,11 @@ const {
   shouldPromptForProtocol,
 } = require('./profile-external-candidates');
 const IPC = require('../shared/ipc-channels');
-const { writeAntProcessMarker } = require('./ant-process-marker');
+const {
+  findOwnLiveAntd,
+  recordAntProcessOverlay,
+  writeAntProcessMarker,
+} = require('./ant-process-marker');
 
 function createProfile(nodes = {}) {
   return {
@@ -109,13 +113,19 @@ describe('profile external candidates', () => {
     // is not offered as an existing node (ant-manager reuses it regardless).
     test("does not offer the profile's own antd left running by an earlier run", async () => {
       const profile = legacyProfile();
+      const ownOverlay = 'ab'.repeat(32);
+      let servedOverlay = ownOverlay;
+      const fetchOverlay = jest.fn(async () => servedOverlay);
+      const find = (dir, opts) => findOwnLiveAntd(dir, { ...opts, fetchOverlay });
       // Any live pid other than ours stands in for the orphaned antd.
       writeAntProcessMarker(userDataDir, { pid: process.ppid, apiPort: 1633, dataDir: '/d' });
+      recordAntProcessOverlay(userDataDir, process.ppid, ownOverlay);
       const presentCandidates = jest.fn();
       const probe = jest.fn().mockResolvedValue(true);
 
       const decisions = await promptForDefaultExternalCandidates(profile, {
         enabledProtocols: { bee: true },
+        findOwnLiveAntd: find,
         logger: { info: jest.fn() },
         presentCandidates,
         probeEndpoint: probe,
@@ -123,12 +133,25 @@ describe('profile external candidates', () => {
 
       expect(decisions).toEqual([]);
       expect(presentCandidates).not.toHaveBeenCalled();
+      expect(fetchOverlay).toHaveBeenCalledWith(1633);
       expect(getLegacyExternalCandidateChoice(profile, 'bee')).toBeNull();
 
-      // A marker for another port does not hide the node on 1633.
-      writeAntProcessMarker(userDataDir, { pid: process.ppid, apiPort: 1635, dataDir: '/d' });
+      // R2-M2: a live pid with a different node on the port (a recycled pid,
+      // a Bee started on 1633) is not ours, so that node is offered.
+      servedOverlay = 'cd'.repeat(32);
       expect(await detectDefaultExternalCandidates(profile, {
         enabledProtocols: { bee: true },
+        findOwnLiveAntd: find,
+        probeEndpoint: probe,
+      })).toHaveLength(1);
+
+      // A marker for another port does not hide the node on 1633.
+      servedOverlay = ownOverlay;
+      writeAntProcessMarker(userDataDir, { pid: process.ppid, apiPort: 1635, dataDir: '/d' });
+      recordAntProcessOverlay(userDataDir, process.ppid, ownOverlay);
+      expect(await detectDefaultExternalCandidates(profile, {
+        enabledProtocols: { bee: true },
+        findOwnLiveAntd: find,
         probeEndpoint: probe,
       })).toHaveLength(1);
     });
