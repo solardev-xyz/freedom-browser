@@ -42,7 +42,7 @@ function normalizePrivacy(value) {
   return { version: 1, settings: normalizeSettings(value.settings), earlierUnknown: value.earlierUnknown !== false,
     omittedRequests: count(value.omittedRequests),
     routes: (Array.isArray(value.routes) ? value.routes : []).slice(0, MAX_ROUTES).map(route => ({
-      providerId: bounded(route.providerId), modelId: bounded(route.modelId), origin: safeOrigin(route.origin),
+      providerId: bounded(route.providerId), ...(route.providerName && { providerName: bounded(route.providerName) }), modelId: bounded(route.modelId), origin: safeOrigin(route.origin),
       role: ROLES.has(route.role) ? route.role : 'agent', requests: count(route.requests),
       claim: CLAIMS.has(route.claim) ? route.claim : 'unknown',
       hardware: normalizeHardware(route.hardware),
@@ -78,7 +78,7 @@ class SessionPrivacy {
   snapshot() { return normalizePrivacy(this.summary); }
 
   record(model, role, destination, descriptor = {}) {
-    const entry = { providerId: bounded(descriptor.providerId || model?.provider), modelId: bounded(model?.id),
+    const entry = { providerId: bounded(descriptor.providerId || model?.provider), ...(descriptor.providerName && { providerName: bounded(descriptor.providerName) }), modelId: bounded(model?.id),
       origin: safeOrigin(destination), role: ROLES.has(role) ? role : 'agent',
       claim: CLAIMS.has(descriptor.claim) ? descriptor.claim : 'unknown',
       retention: ['required', 'not-required'].includes(descriptor.retention) ? descriptor.retention : 'unknown' };

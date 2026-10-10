@@ -206,7 +206,7 @@ export function createAgentPrivacy(button, panel, saveSettings = async () => {})
       const sum = key => group.reduce((n, r) => n + (r.binding?.[key] || 0), 0);
       const hardware = group.map(r => r.hardware).filter(Boolean);
       section.append(el('strong', route.modelId || 'Unknown model'),
-        el('p', `${route.providerId || 'Unknown provider'} · ${total} request${total === 1 ? '' : 's'}`));
+        el('p', `${route.providerName || route.providerId || 'Unknown provider'} · ${total} request${total === 1 ? '' : 's'}`));
       const encryptedRequests = group.reduce((n, r) => n + (r.encryption?.encrypted || 0), 0);
       if (encryptedRequests) section.append(el('p', `${encryptedRequests} request${encryptedRequests === 1 ? '' : 's'} sent encrypted message contents.`));
       if (group.some(r => r.encryption?.failed || r.encryption?.blocked)) section.append(el('p', 'An encrypted request was blocked or did not complete successfully.', 'agent-privacy-warning'));

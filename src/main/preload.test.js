@@ -358,6 +358,7 @@ describe('preload', () => {
       ],
       [exposures.electronAPI, 'getAgentProviderStatus', [], IPC.AGENT_PROVIDER_GET_STATUS, []],
       [exposures.electronAPI, 'getAgentProviderCatalog', [], IPC.AGENT_PROVIDER_GET_CATALOG, []],
+      [exposures.electronAPI, 'configureCompatibleAgentProvider', [{ providerId: 'openai-compatible', name: 'Fixture' }], IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, [{ providerId: 'openai-compatible', name: 'Fixture', kind: 'compatible' }]],
       [exposures.electronAPI, 'refreshAgentProviderModels', ['venice', 'test-key'], IPC.AGENT_PROVIDER_REFRESH_MODELS, [{ providerId: 'venice', apiKey: 'test-key' }]],
       [exposures.electronAPI, 'setAgentProviderPreferences', ['openrouter', { privacyPolicy: 'zdr' }], IPC.AGENT_PROVIDER_SET_PREFERENCES, [{ providerId: 'openrouter', privacyPolicy: 'zdr' }]],
       [exposures.electronAPI, 'testAgentProviderConnection', ['meta', 'muse-spark-1.3'], IPC.AGENT_PROVIDER_TEST_CONNECTION, [{ providerId: 'meta', modelId: 'muse-spark-1.3' }]],

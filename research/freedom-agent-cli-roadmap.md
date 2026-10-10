@@ -10,6 +10,31 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-10
 
+### Custom OpenAI-compatible connections — integrated into feature branch, 2026-10-10
+
+`experiment/agent-openai-compatible` verifies the user-supplied Clankyou endpoint
+with synthetic requests. Discovery, chat, SSE, tool/result replay, one structured
+output probe, client cancellation, Pi's default transport, Freedom tool execution
+and codemode passed. The endpoint has inconsistent small output-token-limit
+behavior and does not publish model capability/limit metadata.
+
+The work from `experiment/agent-openai-compatible` is merged into
+`feature/freedom-automation-kernel`. It includes setup UI, multiple independent custom connections,
+encrypted optional keys, discovered/manual model IDs, favourites, model limits
+and capability settings, an optional compatibility check and privacy attribution.
+After connecting, users can check streaming, tool calls and tool-result handling
+for the selected model, retry a failed stage, or continue without checking. No
+inference is sent automatically; possible token charges are disclosed first.
+Endpoints are immutable per connection and credential-bearing redirects are
+refused. Mac Electron checks cover discovery, settings, chat, privacy and a second
+keyless connection. The production resolver and a Freedom codemode session passed
+against the supplied endpoint. The user confirmed the custom connection and
+optional compatibility-check smoke test passed. Lint, 9,524 unit tests and the
+Electron integration test pass. Native Windows/Linux UI qualification and broader
+server compatibility remain open. Responses-only/custom-auth servers remain out
+of scope.
+See [implementation and findings](../docs/agent-openai-compatible-spike.md).
+
 ### Claude subscription connection — integrated into feature branch, 2026-10-10
 
 The work from `experiment/agent-claude-subscription` is merged into

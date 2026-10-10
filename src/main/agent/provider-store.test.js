@@ -34,6 +34,60 @@ function createStore(options = {}) {
 }
 
 describe('AgentProviderStore', () => {
+  test('keyless custom connections work without secure storage; keyed connections still require it', () => {
+    const { store } = createStore({ safeStorage: createSafeStorage(false) });
+    const config = { providerId: 'custom-11111111-1111-4111-8111-111111111111', name: 'Local',
+      baseUrl: 'http://localhost:1234/v1', models: [{ id: 'local' }], modelId: 'local', apiKey: '' };
+    store.saveCompatible(config);
+    expect(store.getSelection(config.providerId).apiKey).toBe('');
+    expect(() => store.saveCompatible({ ...config, apiKey: 'fixture' })).toThrow();
+    expect(store.getSelection(config.providerId).apiKey).toBe('');
+  });
+
+  test('oversized custom catalogues cannot overwrite the last readable provider store', () => {
+    const { store, dataDir } = createStore();
+    const { randomUUID } = require('crypto');
+    const { normalizeCompatibleModels } = require('./compatible-provider');
+    const models = normalizeCompatibleModels(Array.from({ length: 128 }, (_, i) => ({ id: `${i}-${'m'.repeat(190)}`, name: 'n'.repeat(200) })));
+    let previous, rejected = false;
+    for (let i = 0; i < 10; i++) {
+      const providerId = `custom-${randomUUID()}`;
+      try {
+        store.saveCompatible({ providerId, name: 'Large catalogue', baseUrl: 'https://host.test/v1', models, modelId: models[0].id, apiKey: '' });
+      } catch (error) {
+        expect(error.code).toBe('AGENT_PROVIDER_STORE_INVALID');
+        rejected = true;
+        expect(fs.readFileSync(path.join(dataDir, 'provider.json'), 'utf8')).toBe(previous);
+        expect(store.getPublicStatus().connections.length).toBe(i);
+        break;
+      }
+      previous = fs.readFileSync(path.join(dataDir, 'provider.json'), 'utf8');
+    }
+    expect(rejected).toBe(true);
+  });
+
+  test('custom connections keep independent encrypted keys and immutable endpoints across reloads', () => {
+    const { store, dataDir, safeStorage } = createStore();
+    const { normalizeCompatibleModels } = require('./compatible-provider');
+    const first = 'custom-11111111-1111-4111-8111-111111111111';
+    const second = 'custom-22222222-2222-4222-8222-222222222222';
+    const config = { providerId: first, name: 'My server', baseUrl: 'https://host.test/proxy/v1',
+      models: normalizeCompatibleModels([{ id: 'same-model' }]), modelId: 'same-model', apiKey: 'fixture-private-key' };
+    store.saveCompatible(config);
+    store.saveCompatible({ ...config, providerId: second, name: 'Local', baseUrl: 'http://localhost:1234/v1', apiKey: '' });
+    expect(JSON.stringify(store.getPublicStatus())).not.toContain('fixture-private-key');
+    expect(fs.readFileSync(path.join(dataDir, 'provider.json'), 'utf8')).not.toContain('fixture-private-key');
+    const reloaded = createStore({ dataDir, safeStorage }).store;
+    expect(reloaded.getSelection(first).apiKey).toBe('fixture-private-key');
+    expect(reloaded.getSelection(second).apiKey).toBe('');
+    expect(() => reloaded.saveCompatible({ ...config, baseUrl: 'https://other.test/v1' })).toThrow('different endpoint');
+    expect(reloaded.getSelection(first).baseUrl).toBe(config.baseUrl);
+    reloaded.saveCompatible({ ...config, apiKey: '' });
+    expect(reloaded.getSelection(first).apiKey).toBe('');
+    reloaded.remove(first);
+    expect(reloaded.getSelection(first)).toBeNull();
+    expect(reloaded.getSelection(second).baseUrl).toBe('http://localhost:1234/v1');
+  });
   test('a failed credential replacement preserves the previous complete file', () => {
     const { store, dataDir } = createStore();
     store.saveHosted({ providerId: 'openai', modelId: 'test', apiKey: 'old-fixture-key' });
