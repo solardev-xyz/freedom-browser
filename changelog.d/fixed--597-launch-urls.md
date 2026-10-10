@@ -1,0 +1,1 @@
+- A link opened with Freedom from another app or the command line now opens in a new tab, also while Freedom is already running ([#597](https://github.com/solardev-xyz/freedom-browser/issues/597))

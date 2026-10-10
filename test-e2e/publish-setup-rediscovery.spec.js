@@ -405,19 +405,26 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
       ipcMain.handle('swarm:get-stamps', () => {
         return new Promise((resolve) => {
           globalThis.__heldStamps.push(() =>
-            resolve({
-              success: true,
-              stamps: [
-                {
-                  batchId: 'aa'.repeat(32),
-                  usable: true,
-                  sizeBytes: 1e9,
-                  usagePercent: 0,
-                  ttlSeconds: 30 * 86400,
-                  depth: 20,
-                },
-              ],
-            })
+            resolve(
+              globalThis.__failStamps
+                ? { success: false, error: 'node unreachable' }
+                : {
+                    success: true,
+                    stamps: [
+                      {
+                        batchId: 'aa'.repeat(32),
+                        usable: true,
+                        sizeBytes: 1e9,
+                        usagePercent: 0,
+                        // Drifts like stamp-service's normalizeBatch: a lower ttl
+                        // and a fresh expiry estimate on every call.
+                        ttlSeconds: 30 * 86400 + 3600 - globalThis.__heldStamps.length,
+                        expiresApprox: new Date().toISOString(),
+                        depth: 20,
+                      },
+                    ],
+                  }
+            )
           );
         });
       });
@@ -432,6 +439,10 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     await expect(window.locator('#stamp-scan-status')).toBeHidden();
     await expect(empty).toBeHidden();
     await expect(cards).toHaveCount(0);
+    // A first visit shows the spinner in place of the list (#595).
+    const loading = window.locator('#stamp-list-loading');
+    await expect(loading).toBeVisible();
+    await expect(loading).toHaveText('Loading your storage…');
     await shoot(window, 'storage-loading');
 
     await electronApp.evaluate(() => {
@@ -439,8 +450,91 @@ test.describe('Publish setup during Ant batch rediscovery (#510, #484)', () => {
     });
     await expect(cards).toHaveCount(1);
     await expect(empty).toBeHidden();
+    await expect(loading).toBeHidden();
     await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
     await shoot(window, 'storage-loaded');
+
+    // A return visit lists the cached batches at once, under the spinner.
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(cards).toHaveCount(1);
+    await expect(empty).toBeHidden();
+    await expect(loading).toHaveText('Checking for changes…');
+    await expect(window.locator('#stamp-buy-another-btn')).toHaveText('Buy More Storage');
+    // The cached card may be stale: its actions wait for the fresh list.
+    const keepLonger = cards.locator('.stamp-batch-action-btn', { hasText: 'Keep Longer' });
+    await expect(keepLonger).toBeDisabled();
+    await shoot(window, 'storage-refreshing');
+    const card = await cards.first().elementHandle();
+
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(1);
+    // The same list came back: the card stays (it is not rebuilt), now live.
+    await expect(keepLonger).toBeEnabled();
+    expect(await card.evaluate((node) => node.isConnected)).toBe(true);
+    const stale = window.locator('#stamp-list-stale');
+    await expect(stale).toBeHidden();
+
+    // A return visit whose refresh fails keeps the cached card, says the
+    // list may be out of date, and leaves its actions off.
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await electronApp.evaluate(() => {
+      globalThis.__failStamps = true;
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(stale).toBeHidden();
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(1);
+    await expect(empty).toBeHidden();
+    await expect(stale).toBeVisible();
+    await expect(stale).toContainText('may be out of date');
+    await expect(keepLonger).toBeDisabled();
+    await shoot(window, 'storage-stale');
+
+    // getState fails before the list does: nothing is left to name the
+    // wallet, so the screen says the list couldn't be checked instead of
+    // loading forever (and draws no cards it can't match to a wallet).
+    await window.evaluate(async () => {
+      const { closeStampManager } = await import('./lib/wallet/stamp-manager.js');
+      closeStampManager();
+    });
+    await electronApp.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('swarm:setup-get-state');
+      ipcMain.handle('swarm:setup-get-state', () => {
+        throw new Error('setup state unavailable');
+      });
+    });
+    await openStorage(window);
+    await expect
+      .poll(() => electronApp.evaluate(() => globalThis.__heldStamps.length))
+      .toBeGreaterThan(0);
+    await expect(loading).toHaveText('Loading your storage…');
+    await electronApp.evaluate(() => {
+      for (const release of globalThis.__heldStamps.splice(0)) release();
+    });
+    await expect(loading).toBeHidden();
+    await expect(cards).toHaveCount(0);
+    await expect(empty).toBeHidden();
+    await expect(stale).toBeVisible();
+    await shoot(window, 'storage-state-failed');
   });
 
   test('the storage screen shows the stalled-scan warning over the empty state', async ({
