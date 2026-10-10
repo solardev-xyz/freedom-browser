@@ -1089,6 +1089,22 @@ describe('ManagedWorkspaceController', () => {
     }
   });
 
+  test('Windows setup cancellation leaves the workspace disabled and can be retried', async () => {
+    const { controller, dependencies } = createController();
+    let setupRequired = true;
+    dependencies.executor.detectCapabilities.mockImplementation(async () => ({ available: true, backend: 'windows-elevated', setupRequired, enforcement: {} }));
+    dependencies.executor.setup = jest.fn()
+      .mockRejectedValueOnce(new Error('Administrator cancelled setup'))
+      .mockImplementationOnce(async () => { setupRequired = false; });
+    await expect(controller.disclosure('conversation_one')).resolves.toMatchObject({ setupRequired: true });
+    expect(dependencies.executor.setup).not.toHaveBeenCalled();
+    await expect(controller.enable('conversation_one')).rejects.toThrow('cancelled setup');
+    expect(dependencies.store.enable).not.toHaveBeenCalled();
+    await controller.enable('conversation_one');
+    expect(dependencies.executor.setup).toHaveBeenCalledTimes(2);
+    expect(dependencies.store.enable).toHaveBeenCalledTimes(1);
+  });
+
   test('fails closed when the platform backend is unavailable', async () => {
     const { controller, dependencies } = createController();
     dependencies.executor.detectCapabilities.mockResolvedValue({

@@ -51,6 +51,21 @@ async function main() {
     record('checkpoint', commit);
     const history = await controller.workspaceHistory('windows-qualification', { action: 'list' });
     record('history', history);
+    const external = path.join(profile, 'external-project');
+    fs.mkdirSync(external);
+    require('node:child_process').execFileSync('git', ['init', '--quiet', external]);
+    fs.writeFileSync(path.join(external, 'README.md'), 'External project fixture');
+    await store.attachProject('external-qualification', external);
+    await controller.enable('external-qualification');
+    assert.equal((await controller.readFile('external-qualification', 'README.md')).toString(), 'External project fixture');
+    await assert.rejects(controller.writeFile('external-qualification', 'README.md', 'denied'), { code: 'PROJECT_READ_ONLY' });
+    record('external-read-only', { passed: true });
+    await controller.setProjectAccess('external-qualification', 'write', external);
+    await controller.readFile('external-qualification', 'README.md');
+    await controller.writeFile('external-qualification', 'README.md', 'Reviewed external edit');
+    assert.equal(fs.readFileSync(path.join(external, 'README.md'), 'utf8'), 'Reviewed external edit');
+    record('external-approved-write', { passed: true });
+
   } catch (error) {
     record('failure', { message: error.message, code: error.code, stack: error.stack });
     process.exitCode = 1;
