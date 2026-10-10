@@ -44,8 +44,11 @@ function extractGitHubRepoFromUrl(url) {
   );
   if (!match) return null;
   const owner = match[1];
-  // Strip '.git' before the dot-only check: 'x/..git' leaves '.'.
-  const repo = match[2].replace(/\.git$/, '');
+  // Strip '.git' before the dot-only check: 'x/..git' leaves '.'. Only as a
+  // suffix of a non-empty name, as validateGitHubUrl does: a repo literally
+  // named '.git' stays '.git' rather than becoming '' (whose bridge marker
+  // 'github.com/x/' would match any repo of owner x).
+  const repo = match[2].replace(/(.)\.git$/, '$1');
   if (isDotOnlyName(owner) || isDotOnlyName(repo)) return null;
   return { owner, repo };
 }

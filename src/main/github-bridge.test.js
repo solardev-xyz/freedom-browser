@@ -129,6 +129,18 @@ test.each(DOT_ONLY_INPUTS.filter((input) => input.startsWith('https://')))(
   }
 );
 
+test('bridge check keeps a repo named .git instead of stripping it to empty', async () => {
+  expect(validateGitHubUrl('https://github.com/x/.git')).toMatchObject({
+    valid: true, owner: 'x', repo: '.git',
+  });
+  mockEmbedded.listRepos.mockResolvedValueOnce([
+    { rid: 'rad:z6mkt4unrelated123', description: 'Imported from github.com/x/other' },
+  ]);
+  await expect(
+    mockHandlers.get(IPC.GITHUB_BRIDGE_CHECK_EXISTING)(null, 'https://github.com/x/.git')
+  ).resolves.toEqual({ success: true, bridged: false });
+});
+
 test('native addon is the only Radicle import prerequisite', async () => {
   await expect(mockHandlers.get(IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES)()).resolves.toMatchObject({
     success: true,
