@@ -63,7 +63,13 @@ async function buildWindowsWorkspace(arch = process.arch) {
   }
   if (digest(archive) !== ARCHIVE_SHA256) throw new Error('Sandbox source digest mismatch');
   const source = path.join(cache, `codex-${REVISION}`);
-  if (!fs.existsSync(source)) run('tar.exe', ['-xzf', archive, '-C', cache], ROOT);
+  const extracted = path.join(source, '.freedom-extracted');
+  if (!fs.existsSync(extracted)) {
+    // This Unix-only vendored license is a symlink. Windows tar cannot create
+    // it as a standard user; the sandbox build does not use bubblewrap.
+    run('tar.exe', ['-xzf', archive, '--exclude=*/vendor/bubblewrap/LICENSE', '-C', cache], ROOT);
+    fs.writeFileSync(extracted, ARCHIVE_SHA256);
+  }
   const workspace = path.join(source, 'codex-rs');
   patchSandbox(path.join(workspace, 'windows-sandbox-rs'));
   const manifest = path.join(workspace, 'Cargo.toml');
