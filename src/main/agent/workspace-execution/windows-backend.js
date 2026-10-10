@@ -50,6 +50,7 @@ class WindowsWorkspaceExecutor {
     const startedAt = Date.now();
     let privateDirectory;
     let result;
+    let attempted = false;
     try {
       if (!isValidatedWorkspaceExecutionPolicy(policy)) throw new Error('Execution requires a validated workspace policy');
       const request = validateExecutionRequest(rawRequest);
@@ -75,6 +76,7 @@ class WindowsWorkspaceExecutor {
         APPDATA: privateDirectory, LOCALAPPDATA: privateDirectory, TEMP: privateDirectory, TMP: privateDirectory,
         npm_config_cache: path.join(privateDirectory, 'npm-cache') };
       const cwd = path.join(workspace, path.posix.relative('/workspace', policy.workingDirectory));
+      attempted = true;
       result = await this.run(this.runtime, { version: 1, operation: 'execute', backend: 'elevated', home: this.home,
         command: [request.command, ...request.args], workspace, cwd, writableRoots,
         protectedPaths: policy.filesystem.protectedPaths.map(entry => entry.sourcePath),
@@ -85,7 +87,7 @@ class WindowsWorkspaceExecutor {
     } finally {
       if (privateDirectory) await fs.promises.rm(privateDirectory, { recursive: true, force: true }).catch(() => {});
     }
-    return this.receipt(startedAt, result);
+    return this.receipt(startedAt, { ...result, attempted });
   }
 
   receipt(startedAt, result) {
@@ -99,8 +101,8 @@ class WindowsWorkspaceExecutor {
     return Object.freeze({ backend: 'windows-elevated', state, startedAt, finishedAt, durationMs: finishedAt - startedAt,
       exitCode: result.terminal?.exitCode ?? null, signal: null, stdout: result.stdout || '', stderr: result.stderr || '',
       stdoutTruncated: result.stdoutTruncated === true, stderrTruncated: result.stderrTruncated === true,
-      terminationGuarantee: result.ready ? 'best_effort' : 'not_applicable', survivorsPossible: result.ready === true,
-      completeDescendantTermination: false, sideEffects: result.ready ? 'unknown' : 'none',
+      terminationGuarantee: result.attempted ? 'best_effort' : 'not_applicable', survivorsPossible: result.attempted === true,
+      completeDescendantTermination: false, sideEffects: result.attempted ? 'unknown' : 'none',
       error: failure ? { code: 'WORKSPACE_EXECUTION_FAILED', message: failure } : undefined });
   }
 }

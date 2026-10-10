@@ -56,6 +56,16 @@ describe('Windows sandbox policy boundary', () => {
     expect(run.mock.calls.every(([, input]) => input.operation === 'probe')).toBe(true);
   });
 
+  test('a helper failure after launch cannot certify that no side effects occurred', async () => {
+    run.mockImplementation(async (_runtime, request) => request.operation === 'probe'
+      ? { terminal: { type: 'capabilities', setupComplete: true } }
+      : { failure: 'Helper disconnected', ready: false });
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace });
+    expect(await executor.execute(policy, { command: 'runtime.exe' })).toMatchObject({
+      sideEffects: 'unknown', survivorsPossible: true, terminationGuarantee: 'best_effort',
+    });
+  });
+
   test('unvalidated policies and unsupported brokered networking fail before launch', async () => {
     expect((await executor.execute({}, { command: 'runtime.exe' })).state).toBe('sandbox_denied');
     const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace, network: 'brokered' });

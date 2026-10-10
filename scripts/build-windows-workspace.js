@@ -75,11 +75,13 @@ async function buildWindowsWorkspace(arch = process.arch) {
   fs.copyFileSync(path.join(workspace, 'windows-sandbox-rs/codex-windows-sandbox-setup.manifest'),
     path.join(workspace, 'windows-sandbox-rs/freedom-windows-sandbox-setup.manifest'));
   const manifest = path.join(workspace, 'Cargo.toml');
-  let text = fs.readFileSync(manifest, 'utf8');
+  // The release tag updates workspace.package but leaves Cargo.lock at 0.0.0.
+  // Restore that local-package label; the source/third-party versions stay pinned.
+  let text = fs.readFileSync(manifest, 'utf8').replace('[workspace.package]\nversion = "0.162.1"', '[workspace.package]\nversion = "0.0.0"');
   if (!text.includes('"freedom-windows-workspace",')) {
     text = text.replace('members = [', 'members = [\n    "freedom-windows-workspace",');
-    fs.writeFileSync(manifest, text);
   }
+  fs.writeFileSync(manifest, text);
   fs.cpSync(ADAPTER, path.join(workspace, 'freedom-windows-workspace'), { recursive: true });
   const locked = spawnSync('tar.exe', ['-xOf', archive, `codex-${REVISION}/codex-rs/Cargo.lock`], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, windowsHide: true });
   if (locked.status !== 0) throw new Error('Cannot read the pinned sandbox lockfile');
