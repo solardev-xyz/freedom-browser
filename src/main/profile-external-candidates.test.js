@@ -1,10 +1,14 @@
 const { EventEmitter } = require('events');
+const fs = require('fs');
 const http = require('http');
+const os = require('os');
+const path = require('path');
 const {
   DEFAULT_EXTERNAL_NODE_CANDIDATES,
   EXTERNAL_CANDIDATE_PROMPT_KEY,
   detectDefaultExternalCandidates,
   applyExternalCandidateDecisions,
+  getLegacyExternalCandidateChoice,
   presentExternalCandidatesInWindow,
   probeEndpoint,
   promptForDefaultExternalCandidateProtocol,
@@ -12,6 +16,11 @@ const {
   shouldPromptForProtocol,
 } = require('./profile-external-candidates');
 const IPC = require('../shared/ipc-channels');
+const {
+  findOwnLiveAntd,
+  recordAntProcessOverlay,
+  writeAntProcessMarker,
+} = require('./ant-process-marker');
 
 function createProfile(nodes = {}) {
   return {
@@ -30,6 +39,154 @@ function createProfile(nodes = {}) {
 }
 
 describe('profile external candidates', () => {
+  describe('legacy profiles (#218)', () => {
+    let userDataDir;
+
+    beforeEach(() => {
+      userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-legacy-profile-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    });
+
+    const legacyProfile = (source = 'test-user-data') => ({
+      id: 'test',
+      displayName: 'Test',
+      source,
+      userDataDir,
+      metadata: null,
+    });
+
+    test.each(['test-user-data', 'profile-dir'])(
+      'asks about a Swarm node on the default port for a %s launch',
+      async (source) => {
+        const profile = legacyProfile(source);
+        const presentCandidates = jest.fn().mockResolvedValue({ bee: 'managed' });
+
+        const decisions = await promptForDefaultExternalCandidates(profile, {
+          enabledProtocols: { bee: true, ipfs: true, tor: true },
+          logger: { info: jest.fn() },
+          now: '2026-10-09T00:00:00.000Z',
+          presentCandidates,
+          probeEndpoint: jest.fn().mockResolvedValue(true),
+        });
+
+        // Only Swarm: legacy launches never adopt an IPFS or Tor node on
+        // their own, so there is nothing to ask about for those.
+        expect(presentCandidates.mock.calls[0][1].map((c) => c.protocol)).toEqual(['bee']);
+        expect(decisions).toEqual([
+          { protocol: 'bee', choice: 'managed', endpoints: ['http://127.0.0.1:1633'] },
+        ]);
+        expect(getLegacyExternalCandidateChoice(profile, 'bee')).toBe('managed');
+        expect(
+          JSON.parse(fs.readFileSync(path.join(userDataDir, 'external-node-decisions.json'), 'utf-8'))
+        ).toEqual({
+          bee: {
+            choice: 'managed',
+            checkedAt: '2026-10-09T00:00:00.000Z',
+            endpoints: ['http://127.0.0.1:1633'],
+          },
+        });
+      }
+    );
+
+    test('keeps an external choice and does not ask again', async () => {
+      const profile = legacyProfile();
+      const options = {
+        enabledProtocols: { bee: true },
+        logger: { info: jest.fn() },
+        presentCandidates: jest.fn().mockResolvedValue({ bee: 'external' }),
+        probeEndpoint: jest.fn().mockResolvedValue(true),
+      };
+
+      await promptForDefaultExternalCandidates(profile, options);
+      expect(getLegacyExternalCandidateChoice(profile, 'bee')).toBe('external');
+
+      const again = await promptForDefaultExternalCandidates(profile, options);
+      expect(again).toEqual([]);
+      expect(options.presentCandidates).toHaveBeenCalledTimes(1);
+      expect(shouldPromptForProtocol(profile, 'bee')).toBe(false);
+    });
+
+    // R1-M1: the profile's own antd, left on 1633 by a Freedom that crashed,
+    // is not offered as an existing node (ant-manager reuses it regardless).
+    test("does not offer the profile's own antd left running by an earlier run", async () => {
+      const profile = legacyProfile();
+      const ownOverlay = 'ab'.repeat(32);
+      let servedOverlay = ownOverlay;
+      const fetchOverlay = jest.fn(async () => servedOverlay);
+      const find = (dir, opts) => findOwnLiveAntd(dir, { ...opts, fetchOverlay });
+      // Any live pid other than ours stands in for the orphaned antd.
+      writeAntProcessMarker(userDataDir, { pid: process.ppid, apiPort: 1633, dataDir: '/d' });
+      recordAntProcessOverlay(userDataDir, process.ppid, ownOverlay);
+      const presentCandidates = jest.fn();
+      const probe = jest.fn().mockResolvedValue(true);
+
+      const decisions = await promptForDefaultExternalCandidates(profile, {
+        enabledProtocols: { bee: true },
+        findOwnLiveAntd: find,
+        logger: { info: jest.fn() },
+        presentCandidates,
+        probeEndpoint: probe,
+      });
+
+      expect(decisions).toEqual([]);
+      expect(presentCandidates).not.toHaveBeenCalled();
+      expect(fetchOverlay).toHaveBeenCalledWith(1633);
+      expect(getLegacyExternalCandidateChoice(profile, 'bee')).toBeNull();
+
+      // R2-M2: a live pid with a different node on the port (a recycled pid,
+      // a Bee started on 1633) is not ours, so that node is offered.
+      servedOverlay = 'cd'.repeat(32);
+      expect(await detectDefaultExternalCandidates(profile, {
+        enabledProtocols: { bee: true },
+        findOwnLiveAntd: find,
+        probeEndpoint: probe,
+      })).toHaveLength(1);
+
+      // A marker for another port does not hide the node on 1633.
+      servedOverlay = ownOverlay;
+      writeAntProcessMarker(userDataDir, { pid: process.ppid, apiPort: 1635, dataDir: '/d' });
+      recordAntProcessOverlay(userDataDir, process.ppid, ownOverlay);
+      expect(await detectDefaultExternalCandidates(profile, {
+        enabledProtocols: { bee: true },
+        findOwnLiveAntd: find,
+        probeEndpoint: probe,
+      })).toHaveLength(1);
+    });
+
+    // R1-M2: a legacy profile's managed node gets no saved per-profile port.
+    test('the message-box fallback does not promise profile-specific ports', async () => {
+      const dialog = { showMessageBox: jest.fn().mockResolvedValue({ response: 1 }) };
+      const options = {
+        dialog,
+        enabledProtocols: { bee: true },
+        logger: { info: jest.fn() },
+        presentCandidates: jest.fn().mockResolvedValue(null),
+        probeEndpoint: jest.fn().mockResolvedValue(true),
+      };
+
+      await promptForDefaultExternalCandidates(legacyProfile(), options);
+      const legacyDetail = dialog.showMessageBox.mock.calls[0][0].detail;
+      expect(legacyDetail).not.toMatch(/profile-specific ports/);
+      expect(legacyDetail).toMatch(/next free port beside it/);
+
+      await promptForDefaultExternalCandidates(createProfile(), {
+        ...options,
+        updateNodeConfig: jest.fn(),
+      });
+      expect(dialog.showMessageBox.mock.calls[1][0].detail).toMatch(/profile-specific ports/);
+    });
+
+    test('has no saved choice before the prompt, or for catalog profiles', () => {
+      expect(getLegacyExternalCandidateChoice(legacyProfile(), 'bee')).toBeNull();
+      expect(getLegacyExternalCandidateChoice(createProfile(), 'bee')).toBeNull();
+      expect(shouldPromptForProtocol(legacyProfile(), 'bee')).toBe(true);
+      expect(shouldPromptForProtocol(legacyProfile(), 'ipfs')).toBe(false);
+    });
+  });
+
   test('detects compatible default-port nodes only for unprompted managed protocols', async () => {
     const profile = createProfile({
       radicle: {

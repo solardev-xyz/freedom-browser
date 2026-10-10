@@ -465,6 +465,91 @@ describe('tor-manager IPC', () => {
   });
 });
 
+describe('tor-manager profile mode sync (#377)', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  const torEntry = () => require('./service-registry').getRegistry().tor;
+
+  test('switching a refused Tor-disabled profile back clears the notice and the mode', async () => {
+    const activeProfile = { metadata: { nodes: { tor: { mode: 'disabled' } } } };
+    const { mod } = loadTorManager({ activeProfile, enableTorIntegration: true });
+
+    await mod.startTor();
+    expect(torEntry().mode).toBe('disabled');
+    expect(torEntry().statusMessage).toBe('Tor disabled for this profile');
+
+    activeProfile.metadata.nodes.tor = { mode: 'managed' };
+    mod.syncProfileMode();
+
+    expect(torEntry().mode).not.toBe('disabled');
+    expect(torEntry().statusMessage).toBeNull();
+  });
+
+  test('a stopped Tor switched to disabled publishes the mode without a notice', () => {
+    const activeProfile = { metadata: { nodes: { tor: { mode: 'managed' } } } };
+    const { mod } = loadTorManager({ activeProfile, enableTorIntegration: true });
+
+    activeProfile.metadata.nodes.tor = { mode: 'disabled' };
+    mod.syncProfileMode();
+
+    expect(torEntry().mode).toBe('disabled');
+    expect(torEntry().statusMessage).toBeNull();
+  });
+
+  test('a running Tor switched to disabled publishes the mode once it stops', async () => {
+    const activeProfile = {
+      metadata: {
+        nodes: { tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' } },
+      },
+    };
+    const { mod } = loadTorManager({
+      activeProfile,
+      enableTorIntegration: true,
+      socksProbeResult: true,
+    });
+
+    await mod.startTor();
+    expect(torEntry().mode).toBe('external');
+
+    // Saved while running: syncProfileMode() leaves the live entry alone.
+    activeProfile.metadata.nodes.tor = { mode: 'disabled' };
+    mod.syncProfileMode();
+    expect(torEntry().mode).toBe('external');
+
+    await mod.stopTor();
+    expect(torEntry().mode).toBe('disabled');
+    expect(torEntry().statusMessage).toBeNull();
+  });
+
+  test('stopping a Tor whose profile is not disabled leaves no mode behind', async () => {
+    const activeProfile = {
+      metadata: {
+        nodes: { tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' } },
+      },
+    };
+    const { mod } = loadTorManager({
+      activeProfile,
+      enableTorIntegration: true,
+      socksProbeResult: true,
+    });
+
+    await mod.startTor();
+    await mod.stopTor();
+    expect(torEntry().mode).not.toBe('disabled');
+  });
+
+  test('IPC registration publishes a profile that launches with Tor disabled', () => {
+    const activeProfile = { metadata: { nodes: { tor: { mode: 'disabled' } } } };
+    const { mod } = loadTorManager({ activeProfile, enableTorIntegration: true });
+
+    mod.registerTorIpc();
+
+    expect(torEntry().mode).toBe('disabled');
+  });
+});
+
 describe('tor-manager .onion routing across sessions', () => {
   const createSessionMock = () => ({ setProxy: jest.fn().mockResolvedValue(undefined) });
 

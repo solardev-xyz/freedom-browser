@@ -136,7 +136,17 @@ const registryEntry = (window, service) =>
 
 test.describe('packaged bundled nodes', () => {
   test.describe('Ant', () => {
-    test.use({ seedSettings: { ...NODES_OFF, startAntAtLaunch: true } });
+    test.use({
+      seedSettings: { ...NODES_OFF, startAntAtLaunch: true },
+      // Answer the launch prompt up front (#218): on a host already serving
+      // Swarm on 1633 the prompt would otherwise block the launch with no
+      // timeout. 'managed' rather than the live fixtures' default 'external',
+      // so the artifact's own antd starts beside that node and the 'bundled'
+      // assertion below tests it instead of failing on an adopted one.
+      externalNodeDecisions: {
+        bee: { choice: 'managed', endpoints: ['http://127.0.0.1:1633'] },
+      },
+    });
 
     test('the bundled Ant node starts and its local API answers /health', async ({ window }) => {
       // The artifact ships an antd for this platform and arch at all — checked
@@ -151,8 +161,10 @@ test.describe('packaged bundled nodes', () => {
       // 'bundled' — not 'reused'. If something else on the machine is already
       // serving the Ant API on the ecosystem default port (a
       // `npm run system-ant:start` node, or an antd a previous smoke leg left
-      // behind), the manager adopts it and the artifact's own antd never runs,
-      // which would make this leg pass without testing anything.
+      // behind) and the profile had no 'managed' answer, the manager adopts it
+      // and the artifact's own antd never runs, which would make this leg pass
+      // without testing anything. With the answer seeded above it starts its
+      // own antd on the next free port instead.
       expect(ant.mode, `expected the artifact's own antd, got mode "${ant.mode}"`).toBe('bundled');
       expect(ant.api).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 
