@@ -38,10 +38,10 @@ Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
   source policy, including earlier package builds and legacy Freedom profiles.
 
 Native synthetic lineages passed for this artifact, and it completed the
-[bounded installed-package live Sepolia journey](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/aca7aadc4fbaf9c375dfb7ab4a5bcd8a6328d425/docs/qualification/installed-live-sepolia-journey-0.6.0-2026-10-10/README.md) on October 10, 2026.
+[bounded installed-package live Sepolia journey](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/579bc15ff67c5b53eec43934f16a5f3e787e62fa/docs/qualification/installed-live-sepolia-journey-0.6.0-2026-10-10/README.md) on October 10, 2026.
 That covers Sepolia only. Mainnet, ordinary startup, circuit isolation and
-platform coverage remain open, and unsigned packaged initialization was not
-re-run for this candidate.
+platform coverage remain open. [Unsigned packaged initialization](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/3aca8a514f8a474db120e93103e8bf0de31aa9d3/docs/qualification/installed-owner-packaged-e8-0.6.0-2026-10-10/README.md)
+passed for E8 on the integrated host `f6a5d356`.
 
 The package owns the Railgun protocol algorithms, account stores, scan and proof
 jobs, disclosure plans, recovery lanes and Kohaku adapters. Freedom supplies the

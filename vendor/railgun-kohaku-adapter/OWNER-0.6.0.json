@@ -6,12 +6,12 @@
   "integrity": "sha512-kAXYGY7KrvFR5l3H6gBjtuXcjmxyaVD5UmJHEfcTjVhrkaK1VcwmHHadacNNSw9wU1H1iNiisX/KTaMsYXhZyA==",
   "files": 281,
   "nativeIntegrationQualified": false,
-  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry, redacted POI error categories, the current POI_3x3 circuit and one replacement proof for a retired-circuit attempt; native synthetic lineages and the bounded installed-package live Sepolia journey passed (see liveSepoliaJourney); packaged initialization not re-run for this candidate",
+  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry, redacted POI error categories, the current POI_3x3 circuit and one replacement proof for a retired-circuit attempt; native synthetic lineages and the bounded installed-package live Sepolia journey passed (see liveSepoliaJourney); unsigned packaged initialization passed on the integrated host f6a5d356 (see packagedInitialization)",
   "liveSepoliaJourney": {
     "result": "complete",
     "completed": "2026-10-10",
     "scope": "bounded installed-package Sepolia journey: private self-transfer, output POI, unshield to the enrolled EOA, finality, receipt gas and conservation summary",
-    "evidence": "https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/aca7aadc4fbaf9c375dfb7ab4a5bcd8a6328d425/docs/qualification/installed-live-sepolia-journey-0.6.0-2026-10-10/README.md",
+    "evidence": "https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/579bc15ff67c5b53eec43934f16a5f3e787e62fa/docs/qualification/installed-live-sepolia-journey-0.6.0-2026-10-10/README.md",
     "finalReportSha256": "09163719051afce18d02e5ae77d0fb9d7fa51e9184fbbb8ccd99dcd7c091fd47",
     "chainTransactions": 2,
     "hostCommits": [
@@ -27,6 +27,29 @@
       "Tor circuit isolation",
       "other platforms",
       "relayer privacy"
+    ]
+  },
+  "packagedInitialization": {
+    "result": "passed",
+    "completed": "2026-10-10",
+    "hostCommit": "f6a5d35635414bfec5853094a3a61cac2e651054",
+    "electron": "44.7.0",
+    "platform": "macOS arm64, unsigned",
+    "asarSha256": "1d4ece4c7be65c1ce8a1e5a9daad67d8a276e58250faab9be93ec1d11b9364ac",
+    "tarFiles": {
+      "accounted": 281,
+      "shipped": 265,
+      "omitted": 16
+    },
+    "loadedPackageFilesJoined": 155,
+    "networkAttempts": 0,
+    "evidence": "https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/3aca8a514f8a474db120e93103e8bf0de31aa9d3/docs/qualification/installed-owner-packaged-e8-0.6.0-2026-10-10/README.md",
+    "notQualified": [
+      "ordinary app startup",
+      "private operations in the packaged app",
+      "signed build",
+      "OS-level network confinement",
+      "distributable app (platform payloads not packaged)"
     ]
   },
   "previousCandidate": {
