@@ -44,7 +44,6 @@
 }
 
 [data-theme='light'] .autocomplete-dropdown {
-  background: #ffffff;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
 }
 
@@ -70,7 +69,6 @@
 }
 
 [data-theme='light'] .context-menu {
-  background: #ffffff;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
@@ -96,7 +94,6 @@
 }
 
 [data-theme='light'] .update-toast-content {
-  background: #ffffff;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
@@ -106,7 +103,6 @@
 
 [data-theme='light'] .menu-dropdown,
 [data-theme='light'] .bee-dropdown {
-  background: #ffffff;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
 }
 
@@ -135,7 +131,6 @@
 }
 
 [data-theme='light'] .bookmarks-overflow-menu {
-  background: #ffffff;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
 }
 

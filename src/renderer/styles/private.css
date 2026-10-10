@@ -63,6 +63,80 @@ body.private-window .find-bar-input {
   background: var(--bg);
 }
 
+/* The menus and popovers (#609) paint from the private --menu-bg in both
+   themes now that light-theme.css no longer hardcodes white on them. Their
+   row hovers, the address suggestions' badges and the menu dividers still
+   take light-theme.css's black overlays, which vanish on the plum surface, so
+   they get back the values they have in a dark-theme private window. The
+   extra `.private-window` class out-specifies the light rules, as above. */
+body.private-window .menu-item:hover:not(:disabled),
+body.private-window .menu-item-has-flyout.flyout-open > .menu-item,
+body.private-window .context-menu-item:hover,
+body.private-window .bookmarks-overflow-item:hover {
+  /* theme-literal: the dark-theme row hover menus.css and bookmarks.css give these rows */
+  background: rgba(255, 255, 255, 0.1);
+}
+
+body.private-window .autocomplete-item:hover,
+body.private-window .autocomplete-item.selected {
+  /* theme-literal: the dark-theme row hover autocomplete.css gives these rows */
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.private-window .autocomplete-item.selected,
+body.private-window .autocomplete-type.tab-badge {
+  /* theme-literal: the dark-theme selection tint autocomplete.css gives these */
+  background: rgba(94, 193, 255, 0.15);
+}
+
+body.private-window .autocomplete-type {
+  /* theme-literal: the dark-theme badge fill autocomplete.css gives it */
+  background: rgba(255, 255, 255, 0.05);
+}
+
+body.private-window .menu-divider {
+  background: var(--border);
+}
+
+/* The permission prompt, the site-permissions popover and the pop-up
+   blocker's popover sit on the same --menu-bg (#632). Their light hovers are
+   black overlays that vanish on plum, and the prompt's primary button pins
+   white text that suits the light --accent but not the private lavender one
+   (#fff on #b39ddb is about 2.4:1). Each gets back its dark-theme value: the
+   dark-theme primary button uses --bg, which here is the private plum. The
+   primary rule below out-specifies the neutral hover, so the filled button
+   keeps its fill. */
+body.private-window .permission-btn:hover,
+body.private-window .permission-popover-revoke:hover,
+body.private-window .popup-blocked-open:hover {
+  /* theme-literal: the dark-theme hover tint permissions.css gives these buttons */
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.private-window .permission-btn.primary,
+body.private-window .permission-btn.primary:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Toggles: light-theme.css pins a white knob and a pale grey track on the
+   Nodes menu's switches and the sidebar's `.toggle-switch`, where a dark-theme
+   private window paints them from --text and --border. Hand those back so a
+   light and a dark private window match. The "on" track keeps the shared
+   green: the light `:checked` rule out-specifies the track rule below. */
+body.private-window .bee-toggle-knob,
+body.private-window .ipfs-toggle-knob,
+body.private-window .radicle-toggle-knob,
+body.private-window .tor-toggle-knob,
+body.private-window .toggle-slider::before {
+  background: var(--text);
+  box-shadow: none;
+}
+
+body.private-window .toggle-slider {
+  background-color: var(--border);
+}
+
 /* "Private" label next to the navigation buttons, always visible in
    private windows (hidden attribute removed by index.js). */
 .private-badge {

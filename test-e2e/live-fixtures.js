@@ -84,6 +84,19 @@ const DEFAULT_NODES_OFF_SETTINGS = {
   startTorAtLaunch: false,
 };
 
+// Seeded into `<userData>/external-node-decisions.json` (the file
+// profile-external-candidates.js keeps a legacy profile's launch-prompt
+// answers in, #218). Without an answer, a launch on a host that already serves
+// Swarm on 1633 opens the "External Nodes Detected" modal, which has no
+// timeout, and the spec dies on a launch/readiness timeout instead of on
+// anything it asserts. 'external' keeps what these specs got before the
+// prompt existed: the node on 1633 is reused. A spec can override it (the
+// packaged Ant leg asks for 'managed' to make sure its own antd runs), or pass
+// null to see the prompt.
+const DEFAULT_EXTERNAL_NODE_DECISIONS = {
+  bee: { choice: 'external', endpoints: ['http://127.0.0.1:1633'] },
+};
+
 const test = base.extend({
   // Seed settings.json before launch (same semantics as fixtures.js) —
   // e.g. disable node autostart for specs that don't need Ant/IPFS.
@@ -93,7 +106,9 @@ const test = base.extend({
   // FREEDOM_ADBLOCK_DIR). The suite-critical vars below always win.
   launchEnv: [null, { option: true }],
 
-  electronApp: async ({ seedSettings: settingsOverride, launchEnv }, use) => {
+  externalNodeDecisions: [DEFAULT_EXTERNAL_NODE_DECISIONS, { option: true }],
+
+  electronApp: async ({ seedSettings: settingsOverride, launchEnv, externalNodeDecisions }, use) => {
     // One temp root per run, with four subdirs:
     //   - userData/     → settings, bookmarks, history (FREEDOM_TEST_USER_DATA)
     //   - ant-data/     → Ant's identity, swarm key, peerstore (FREEDOM_ANT_DATA)
@@ -123,6 +138,14 @@ const test = base.extend({
       fs.writeFileSync(
         path.join(userDataDir, 'settings.json'),
         JSON.stringify(seededSettings, null, 2),
+        'utf-8'
+      );
+    }
+
+    if (externalNodeDecisions) {
+      fs.writeFileSync(
+        path.join(userDataDir, 'external-node-decisions.json'),
+        JSON.stringify(externalNodeDecisions, null, 2),
         'utf-8'
       );
     }

@@ -157,6 +157,10 @@ function loadMenuModule(platform, options = {}) {
   // without a targetWindow the electron mock has no getFocusedWindow and
   // clicking throws, so the default stays the window-less template build.
   const targetWindow = options.targetWindow || null;
+  // Main windows in focus order (last = most recently focused), as
+  // mainWindow.js keeps them; focusedWindow overrides what has OS focus.
+  const mainWindows = options.mainWindows || (targetWindow ? [targetWindow] : []);
+  const focusedWindow = 'focusedWindow' in options ? options.focusedWindow : targetWindow;
 
   const { mod, dialog } = loadMainModule(require.resolve('./menu'), {
     electronOverrides: {
@@ -168,17 +172,18 @@ function loadMenuModule(platform, options = {}) {
         setApplicationMenu: jest.fn(),
         getApplicationMenu: jest.fn(() => menuInstance),
       },
-      ...(targetWindow && {
+      ...((targetWindow || options.mainWindows) && {
         BrowserWindow: {
-          getFocusedWindow: jest.fn(() => targetWindow),
-          getAllWindows: jest.fn(() => [targetWindow]),
+          getFocusedWindow: jest.fn(() => focusedWindow),
+          getAllWindows: jest.fn(() => mainWindows),
         },
       }),
     },
     extraMocks: {
       [require.resolve('./windows/mainWindow')]: () => ({
-        isMainBrowserWindow: () => true,
-        getMainWindows: () => (targetWindow ? [targetWindow] : []),
+        isMainBrowserWindow: (win) => mainWindows.includes(win),
+        getMainWindows: () => [...mainWindows],
+        getLastFocusedMainWindow: () => mainWindows[mainWindows.length - 1] || null,
         createMainWindow: jest.fn(),
       }),
       [require.resolve('./updater')]: () => ({
@@ -399,6 +404,26 @@ describe('menu', () => {
       owner.submenu.find((item) => item.id === 'downloads').click();
       expect(send).toHaveBeenCalledWith('tab:new-with-url', 'freedom://downloads');
     }
+  });
+
+  // R2-M1 (#630): with focus outside every main window (detached DevTools), a
+  // menu action goes to the window the user focused last, not the oldest-focused.
+  test('menu actions fall back to the last-focused main window', () => {
+    const left = { webContents: { send: jest.fn() } };
+    const current = { webContents: { send: jest.fn() } };
+    const devtools = { webContents: { send: jest.fn() } };
+    const { capturedTemplate } = loadMenuModule('linux', {
+      mainWindows: [left, current],
+      focusedWindow: devtools,
+    });
+    const history = findTopLabel(capturedTemplate, 'History');
+    history.submenu.find((item) => item.id === 'downloads').click();
+    expect(current.webContents.send).toHaveBeenCalledWith(
+      'tab:new-with-url',
+      'freedom://downloads'
+    );
+    expect(left.webContents.send).not.toHaveBeenCalled();
+    expect(devtools.webContents.send).not.toHaveBeenCalled();
   });
 
   test('File menu offers New Private Window right after New Window', () => {
