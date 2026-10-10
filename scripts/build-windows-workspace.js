@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { writeWindowsNotices } = require('./windows-workspace-notices');
 
 const REVISION = '092d3acd6bec3e3a14bdc7e7a2810ab628ab759d';
 const ARCHIVE_SHA256 = '79c8ea8547e1dd9969f63ef6b76a4fb0d1a024ef36c0c627fbcd2ffb658d9312';
@@ -98,6 +99,7 @@ async function buildWindowsWorkspace(arch = process.arch) {
   }
   fs.copyFileSync(path.join(source, 'LICENSE'), path.join(output, 'CODEX-LICENSE.txt'));
   if (fs.existsSync(path.join(source, 'NOTICE'))) fs.copyFileSync(path.join(source, 'NOTICE'), path.join(output, 'CODEX-NOTICE.txt'));
+  await writeWindowsNotices({ cargo, workspace, source, output, freedomRoot: ROOT, arch });
   const adapterSha256 = digest(path.join(ADAPTER, 'src/main.rs'));
   fs.writeFileSync(path.join(output, 'manifest.json'), `${JSON.stringify({ version: 1, backend: 'elevated', arch, revision: REVISION, archiveSha256: ARCHIVE_SHA256, adapterSha256, binaries: hashes }, null, 2)}\n`);
   console.log(`Windows workspace helper built: ${output}`);

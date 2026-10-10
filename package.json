@@ -278,7 +278,7 @@
         {
           "from": "out/windows-workspace/${arch}/",
           "to": "windows-workspace",
-          "filter": ["*.exe", "manifest.json", "CODEX-*.txt"]
+          "filter": ["*.exe", "manifest.json", "CODEX-*.txt", "CODEX-*.json"]
         },
         {
           "from": "radicle-bin/${os}-${arch}/",
