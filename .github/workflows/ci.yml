@@ -609,6 +609,7 @@ jobs:
   # the `e2e-not-in-ci:` prefix; the guard reads these lines.
   #
   # e2e-not-in-ci: agent-ollama-live.spec.js — requires an explicitly configured local Ollama model; exercised manually
+  # e2e-not-in-ci: claude-subscription-spike.spec.js — opt-in experiment using an authenticated local Claude subscription; no account credentials in CI
   # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
