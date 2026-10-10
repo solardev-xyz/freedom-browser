@@ -507,7 +507,7 @@ for (const kind of ['managed', 'external']) test(`parallel helper and parent edi
       await controller.readFile(conversationId, 'app/a.js');
       await controller.writeFile(conversationId, 'app/a.js', 'integrated');
       return { started, failures, blocked, stale, reports: reports.map(report => ({ state: report.state, changedFiles: report.changedFiles })),
-        files: ['app/a.js', 'app/b.js', 'shared/new/a.js', 'shared/new/b.js', 'parent.js'].map(file => fs.readFileSync(path.join(project, file), 'utf8')) };
+        files: ['app/a.js', 'app/b.js', 'shared/new/a.js', 'shared/new/b.js', 'parent.js'].map(file => fs.existsSync(path.join(project, file)) ? fs.readFileSync(path.join(project, file), 'utf8') : null) };
     } finally { release(); owner.subagentAbortController.abort(); await controller.dispose(); store.close(); }
   }, { root: repositoryRoot, userDataDir, kind });
   expect(result.failures).toEqual([]);
