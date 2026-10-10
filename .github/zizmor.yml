@@ -1,5 +1,5 @@
 # zizmor (https://docs.zizmor.sh) configuration, read by the `zizmor` job in
-# .github/workflows/zizmor.yml and by a local `zizmor .` from the repo root.
+# .github/workflows/ci.yml and by a local `zizmor .` from the repo root.
 # Every entry here is a finding that was triaged and accepted in the
 # 2026-10-10 security scan, https://github.com/solardev-xyz/freedom-browser/issues/637;
 # the reason is next to each one. Anything not listed fails CI.
