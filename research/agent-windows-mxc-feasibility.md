@@ -52,18 +52,41 @@ conservative: a launch attempt does not certify that no side effects occurred,
 or that every descendant has stopped.
 
 Implementation checks: native x64 build succeeds with the upstream lockfile
-enforced; macOS lint and full unit suite pass (9,420 tests).
-`scripts/qualify-windows-workspace.js` exercises Freedom's actual policy and
-executor, rather than the earlier Codex CLI reference. That qualification still
-requires the separate Freedom administrator provisioning; reference results
-must not be reported as results for this new integration.
+enforced; macOS lint and full unit suite pass (9,431 tests), followed by the
+focused receipt tests after the final conservative termination-scope change.
 
-Remaining gates before merge: actual executor desktop qualification, controller
-file/build/history/preview flow, setup cancellation/retry, Windows path aliases
-and alternate data streams, packaged Electron runtime, installer/license
-inventory, and full application UI smoke. MXC remains a future explicit backend
-once its preview and process-lifetime gaps are resolved; it must not silently
-replace the selected backend.
+Freedom's separate administrator provisioning completed successfully. Actual
+Freedom qualification at `0af5d977`, as the standard Windows user:
+
+- Executor: read/write scope, `.git` protection, read-only after a previous writer,
+  Node and npm build, direct network none/full, host localhost preview, graceful
+  server cancellation, abrupt owning-JS-process exit, junction write denial and
+  unchanged outside/Git sentinels all pass.
+- Electron controller (`controller-YXvpH3`): capability discovery, workspace enable,
+  file read/write, maximum 64-KiB write/read, PowerShell `npm.cmd run build`, reviewed
+  checkpoint creation and history retrieval all pass. Exit status 0.
+- Fixed two integration defects found by that controller test: the 38-KiB file
+  helper exceeded Windows' command-line limit (now private stdin framing), and
+  Git rejected Node's Windows null-device path (Git uses `/dev/null`). PowerShell
+  progress no longer pollutes command stderr with CLIXML.
+- Host path validation now rejects Windows alternate streams, device names and
+  trailing-dot/space aliases in policies, file operations and history.
+
+Tests use synthetic fixtures and the existing standard-user desktop task over
+SSH. They do not require switching the visible administrator RDP session. No
+model requests or real user project contents were used. These results are for
+Freedom's implementation, not just the earlier Codex CLI reference. Receipts
+still conservatively report best-effort cancellation rather than universal
+proof that no descendant could ever survive.
+
+Remaining gates before merge/release: external-project controller smoke,
+first-use setup cancellation/retry UI, actual application preview/approval UI,
+packaged/signed Electron runtime and installer, transitive native-license
+inventory, and Windows CI integration. ARM64 is unqualified. The current native
+packaging hook requires a Windows build host; cross-host staging is not yet
+qualified. MXC remains a future explicit backend once its preview and
+process-lifetime gaps are resolved; it must not silently replace the selected
+backend.
 
 ## Environment and sync
 

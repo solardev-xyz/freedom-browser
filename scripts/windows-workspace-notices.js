@@ -5,6 +5,26 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const upstreamLicenses = new Map();
+const MIT_TERMS = `MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+`;
 
 function selectedPackages(metadata, tree) {
   const selected = new Set(tree.split('\n').flatMap(line => {
@@ -54,6 +74,12 @@ async function missingLicense(item, directory) {
     upstreamLicenses.set(base, files);
     return files;
   }
+  // Preserve all supplied attribution above. A few crates (e.g.
+  // debugserver-types) declare MIT in Cargo.toml but publish no license file,
+  // even in the pinned repository. Include the declared standard terms and
+  // disclose the absence instead of inventing a copyright holder or year.
+  if (item.license === 'MIT') return [{ file: 'LICENSE-MIT-standard', text:
+    'The published crate declares MIT but its pinned sources supply no separate license file. Authors and source are listed above. Standard MIT terms:\n\n' + MIT_TERMS }];
   throw new Error(`No license text at the pinned source for ${item.name}`);
 }
 

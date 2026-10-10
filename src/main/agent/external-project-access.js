@@ -13,6 +13,15 @@ function contains(parent, child) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function protectedWindowsProject(root, environment = process.env) {
+  const roots = [environment.SystemRoot || 'C:\\Windows', environment.ProgramFiles || 'C:\\Program Files',
+    environment['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', environment.ProgramData || 'C:\\ProgramData'];
+  return path.win32.parse(root).root === root || roots.some(base => {
+    const relative = path.win32.relative(base, root);
+    return relative === '' || relative !== '..' && !relative.startsWith('..\\') && !path.win32.isAbsolute(relative);
+  });
+}
+
 // Only native-picker results reach this class. Persisted paths identify a project,
 // but are not grants: every application lifetime requires explicit reconnection.
 class ExternalProjectAccess {
@@ -32,7 +41,8 @@ class ExternalProjectAccess {
     const root = await fs.promises.realpath(selectedPath);
     const home = await fs.promises.realpath(os.homedir());
     const privateRoot = await fs.promises.realpath(this.userDataDir);
-    if (contains(root, home) || contains(root, privateRoot) || contains(privateRoot, root) ||
+    if ((process.platform === 'win32' && protectedWindowsProject(root)) ||
+        contains(root, home) || contains(root, privateRoot) || contains(privateRoot, root) ||
         ['.git', '.ssh', '.gnupg', '.aws', '.codex'].some((part) => root.split(path.sep).some((name) => name.toLowerCase() === part)) ||
         ['Library', 'AppData', '.config', '.local/share'].some((relative) => contains(path.join(home, relative), root)) ||
         ['/System', '/Library', '/Applications', '/usr', '/bin', '/sbin', '/etc', '/private/etc'].some((base) => contains(base, root))) {
@@ -77,4 +87,4 @@ class ExternalProjectAccess {
   clear() { this.grants.clear(); }
 }
 
-module.exports = { ExternalProjectAccess, projectError };
+module.exports = { ExternalProjectAccess, projectError, protectedWindowsProject };

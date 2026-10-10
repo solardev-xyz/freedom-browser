@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { ExternalProjectAccess } = require('./external-project-access');
+const { ExternalProjectAccess, protectedWindowsProject } = require('./external-project-access');
 const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
 const { ManagedWorkspaceController } = require('./managed-workspace-controller');
 
@@ -22,6 +22,16 @@ class SqliteAdapter {
     return options.simple ? Object.values(rows[0])[0] : rows;
   }
 }
+
+test.each(['C:\\', 'D:\\', 'c:\\WINDOWS\\System32', 'C:\\Program Files\\Freedom', 'C:\\ProgramData\\service'])('rejects Windows system storage as a project: %s', root => {
+  expect(protectedWindowsProject(root, {})).toBe(true);
+});
+
+test('Windows project protection respects relocated system directories and permits ordinary checkouts', () => {
+  expect(protectedWindowsProject('D:\\OS\\System32', { SystemRoot: 'D:\\OS' })).toBe(true);
+  expect(protectedWindowsProject('C:\\dev\\freedom-browser', {})).toBe(false);
+  expect(protectedWindowsProject('C:\\Windows-projects\\demo', {})).toBe(false);
+});
 
 describe('external project authority', () => {
   let temporary;
