@@ -3321,7 +3321,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 .agent-helper-report-body :is(h1, h2, h3, h4, h5, h6) { font-size: 13px; line-height: 1.4; margin: 10px 0 5px; }
 .agent-helper-report-body :is(ul, ol) { margin: 6px 0; padding-left: 18px; }
 .agent-helper-report-body pre { padding: 8px; border-radius: 6px; background: color-mix(in srgb, var(--text) 5%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; }
-.agent-helper-report-body code { font-family: monospace; font-size: 0.95em; }
+.agent-helper-report-body code { font-family: var(--font-mono); font-size: 0.95em; }
 .agent-helper-report-body blockquote { margin: 8px 0; padding-left: 10px; border-left: 2px solid var(--border); color: var(--muted); }
 .agent-helper-report-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
 .agent-helper-report-body :is(th, td) { padding: 4px 7px; border: 1px solid var(--border); text-align: left; }

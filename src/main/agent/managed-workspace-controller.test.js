@@ -8,10 +8,22 @@ const {
   ManagedWorkspaceController,
   WORKSPACE_FILE_HELPER,
   WINDOWS_FILE_HELPER_BOOTSTRAP,
+  workspaceFileVersion,
   validateCommand,
   validateWorkspacePath,
   validateWorkingDirectory,
 } = require('./managed-workspace-controller');
+
+test('Windows ACL refreshes preserve the read version while content and file changes invalidate it', () => {
+  const stats = { dev: 1, ino: 2, mode: 0o100644, mtimeMs: 3, ctimeMs: 4 };
+  const version = workspaceFileVersion(stats, 'before', 'win32');
+  expect(workspaceFileVersion({ ...stats, ctimeMs: 5 }, 'before', 'win32')).toBe(version);
+  expect(workspaceFileVersion(stats, 'after', 'win32')).not.toBe(version);
+  for (const key of ['dev', 'ino', 'mode', 'mtimeMs']) {
+    expect(workspaceFileVersion({ ...stats, [key]: stats[key] + 1 }, 'before', 'win32')).not.toBe(version);
+  }
+  expect(workspaceFileVersion({ ...stats, ctimeMs: 5 }, 'before', 'darwin')).not.toBe(workspaceFileVersion(stats, 'before', 'darwin'));
+});
 const { resolveExecutableAccess } = require('./workspace-execution/executable-access');
 
 function createController(overrides = {}) {

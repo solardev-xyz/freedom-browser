@@ -64,6 +64,15 @@ const MAX_WORKSPACE_GREP_MATCHES = 200;
 const MAX_WORKSPACE_SCAN_ENTRIES = 50_000;
 const MAX_WORKSPACE_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_WORKSPACE_SEARCH_PATTERN_LENGTH = 1_000;
+
+// Serialized into the isolated file helper; keep this function self-contained.
+function workspaceFileVersion(stats, bytes, platform = process.platform) {
+  // Applying a Windows sandbox DACL changes ctime without changing the file.
+  // Keep the content digest, identity, mode and modification time authoritative.
+  const metadata = [stats.dev, stats.ino, stats.mode, stats.mtimeMs];
+  if (platform !== 'win32') metadata.push(stats.ctimeMs);
+  return require('crypto').createHash('sha256').update(metadata.join(':')).update(bytes).digest('hex');
+}
 // Windows has a 32K command-line limit; the fixed helper and bounded content
 // travel over the private input pipe instead. No temporary executable is needed.
 const WINDOWS_FILE_HELPER_BOOTSTRAP = `
@@ -319,9 +328,7 @@ function writablePath(value) {
   return safe;
 }
 
-function fileVersion(stats, bytes) {
-  return require('crypto').createHash('sha256').update([stats.dev, stats.ino, stats.mode, stats.mtimeMs, stats.ctimeMs].join(':')).update(bytes).digest('hex');
-}
+const fileVersion = (${workspaceFileVersion.toString()});
 
 ${WORKSPACE_INSPECTION_HELPER}
 ${WORKSPACE_HISTORY_HELPER}
@@ -2475,6 +2482,7 @@ module.exports = {
   MAX_WORKSPACE_WRITE_BYTES,
   WORKSPACE_FILE_HELPER,
   WINDOWS_FILE_HELPER_BOOTSTRAP,
+  workspaceFileVersion,
   ManagedWorkspaceController,
   ManagedWorkspaceError,
   commandSummary,
