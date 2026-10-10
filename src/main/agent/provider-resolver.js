@@ -4,6 +4,8 @@ const { checkProviderAttestation } = require('./privacy-attestation');
 const { fetchNearWithEvidence, fetchVeniceEncrypted } = require('./privacy-request');
 
 const path = require('path');
+const { randomUUID } = require('crypto');
+const { isCompatibleId, cleanText, normalizeCompatibleUrl, normalizeCompatibleModels, discoverCompatibleModels, resolveCompatible, testCompatibleConnection } = require('./compatible-provider');
 const { CLAUDE_PROVIDER_ID, CLAUDE_MODELS, checkClaudeLogin, discoverClaudeModels } = require('./claude-cli');
 const { createClaudeSession } = require('./claude-session');
 const { loadPiSdk } = require('./pi-sdk');
@@ -141,7 +143,7 @@ class AgentProviderResolver {
         authType: 'subscription',
       })),
     ];
-    return catalogProviders.map(({ providerId, name, authType }) => ({
+    const result = catalogProviders.map(({ providerId, name, authType }) => ({
       providerId,
       name,
       authType,
@@ -166,9 +168,31 @@ class AgentProviderResolver {
           ...this.catalog.get(providerId).models.find((candidate) => candidate.id === model.id),
         })),
     }));
+    for (const connection of this.getStatus().connections.filter(c => c.kind === 'compatible')) {
+      result.push({ providerId: connection.providerId, name: connection.name, authType: 'compatible', group: 'Custom connections',
+        canRefresh: true, updatedAt: connection.updatedAt, privacy: 'Requests go to your configured endpoint. Retention and privacy guarantees are unknown.',
+        models: connection.models, defaultModelId: connection.modelId });
+    }
+    return result;
+  }
+
+  async configureCompatible(input) {
+    const providerId = input.providerId === 'openai-compatible' ? `custom-${randomUUID()}` : input.providerId;
+    if (!isCompatibleId(providerId) || !cleanText(input.name, 80)) throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Invalid custom connection');
+    const previous = this.store.getSelection(providerId);
+    if (input.providerId !== 'openai-compatible' && previous?.kind !== 'compatible') throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Unknown connection');
+    const baseUrl = normalizeCompatibleUrl(input.baseUrl);
+    if (previous && previous.baseUrl !== baseUrl) throw new AgentProviderError('AGENT_CUSTOM_ENDPOINT_IMMUTABLE', 'Add a new connection for a different endpoint');
+    const apiKey = input.clearApiKey === true ? '' : input.apiKey || previous?.apiKey || '';
+    if (typeof apiKey !== 'string' || apiKey.length > 16384 || /[\r\n]/.test(apiKey)) throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Invalid key');
+    const models = input.models?.length ? normalizeCompatibleModels(input.models) : await discoverCompatibleModels(baseUrl, apiKey, this.fetch);
+    const modelId = models.some(m => m.id === input.modelId) ? input.modelId : models.some(m => m.id === previous?.modelId) ? previous.modelId : models[0].id;
+    this.store.saveCompatible({ providerId, baseUrl, apiKey, name: input.name, models, modelId });
+    return this.getStatus();
   }
 
   async configureHosted(input = {}) {
+    if (input.kind === 'compatible') return this.configureCompatible(input);
     const providerId = requireIdentifier(input.providerId, 'providerId');
     const modelId = requireIdentifier(input.modelId, 'modelId');
     if (!Object.hasOwn(HOSTED_PROVIDERS, providerId)) {
@@ -316,7 +340,8 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not configured');
     }
     if (providerId === CLAUDE_PROVIDER_ID && !(await this.getClaudeModels()).some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
-    if (providerId !== 'ollama' && providerId !== CLAUDE_PROVIDER_ID) {
+    if (connection.kind === 'compatible' && !connection.models.some(m => m.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a configured model');
+    if (providerId !== 'ollama' && providerId !== CLAUDE_PROVIDER_ID && connection.kind !== 'compatible') {
       const runtime = await this.#createRuntime();
       if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
         throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
@@ -340,6 +365,15 @@ class AgentProviderResolver {
 
   async refreshModels(input = {}) {
     const providerId = requireIdentifier(input.providerId, 'providerId');
+    if (isCompatibleId(providerId)) {
+      const previous = this.store.getSelection(providerId);
+      if (previous?.kind !== 'compatible') throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Unknown connection');
+      const discovered = await discoverCompatibleModels(previous.baseUrl, previous.apiKey, this.fetch);
+      // Preserve manual entries, per-model settings, favourites and the selected model.
+      const models = [...previous.models, ...discovered.filter(m => !previous.models.some(old => old.id === m.id))];
+      this.store.saveCompatible({ ...previous, models, activate: false });
+      return this.getCatalog();
+    }
     if (providerId === CLAUDE_PROVIDER_ID) {
       await this.claudeCatalogPending;
       this.claudeCatalog = null;
@@ -388,8 +422,8 @@ class AgentProviderResolver {
 
   setPreferences(input = {}) {
     const providerId = requireIdentifier(input.providerId, 'providerId');
-    const definition = PROVIDER_DEFINITIONS[providerId];
     const connection = this.getStatus().connections.find((item) => item.providerId === providerId);
+    const definition = PROVIDER_DEFINITIONS[providerId] || (connection?.kind === 'compatible' ? { policies: [] } : undefined);
     if (!definition || !connection)
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Provider is not connected');
     const patch = {};
@@ -485,9 +519,13 @@ class AgentProviderResolver {
     const modelId = requireIdentifier(input.modelId, 'modelId');
     const { model, modelRuntime } = await this.resolveModel({ providerId, modelId });
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+    const timeout = setTimeout(() => controller.abort(), isCompatibleId(providerId) ? 45000 : 20_000);
     const startedAt = Date.now();
     try {
+      if (isCompatibleId(providerId)) {
+        await testCompatibleConnection(model, modelRuntime, controller.signal);
+        return { elapsedMs: Date.now() - startedAt, outcome: 'tools_verified' };
+      }
       const response = await modelRuntime.completeSimple(
         model,
         {
@@ -516,6 +554,7 @@ class AgentProviderResolver {
     if (!selection) {
       throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'No agent model is configured');
     }
+    if (selection.kind === 'compatible') return resolveCompatible(selection, await this.#createRuntime(), this.fetch, () => this.store.getSelection(selection.providerId));
     if (selection.providerId === CLAUDE_PROVIDER_ID && selection.kind === 'subscription') {
       const model = (await this.getClaudeModels()).find(model => model.id === selection.modelId);
       if (!model) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');

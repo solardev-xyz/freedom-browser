@@ -49,6 +49,7 @@ input[type='password']:focus-visible,
 input[type='number']:focus-visible,
 input[type='url']:focus-visible,
 input[type='email']:focus-visible,
+.agent-field input[type='checkbox']:focus-visible,
 input:not([type]):focus-visible,
 textarea:focus-visible,
 select:focus-visible {

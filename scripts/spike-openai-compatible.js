@@ -7,6 +7,42 @@ const readline = require('readline');
 const { randomUUID } = require('crypto');
 const { loadPiSdk } = require('../src/main/agent/pi-sdk');
 const { createIsolatedPiSession } = require('../src/main/agent/pi-session-factory');
+const { AgentProviderResolver } = require('../src/main/agent/provider-resolver');
+
+// Exercise the production resolver without persisting the supplied credential.
+async function productionProbe(config, report) {
+  let selection;
+  const store = {
+    createCredentialStore: () => ({ read: async () => undefined, list: async () => [], modify: async () => { throw new Error('Persistence disabled'); }, delete: async () => {} }),
+    getSelection: id => selection?.providerId === id ? selection : null,
+    saveCompatible: value => { selection = { ...value, kind: 'compatible' }; },
+    getPublicStatus: () => ({ configured: Boolean(selection), connections: selection ? [{ providerId: selection.providerId, name: selection.name }] : [] }),
+  };
+  const resolver = new AgentProviderResolver({ store, dataDir: require('os').tmpdir(), catalog: { get: () => ({ models: [] }) } });
+  await resolver.configureCompatible({ providerId: 'openai-compatible', name: 'Live compatibility probe', ...config, modelId: config.model });
+  report('production-discovery', { ids: selection.models.map(m => m.id), selected: selection.modelId });
+  const tested = await resolver.testConnection({ providerId: selection.providerId, modelId: selection.modelId });
+  report('production-connection-test', tested);
+  const { model, modelRuntime } = await resolver.resolveModel({ providerId: selection.providerId, modelId: selection.modelId });
+  const value = randomUUID();
+  let calls = 0, output = '';
+  const dispatchedTools = [];
+  const { session } = await createIsolatedPiSession({ model, modelRuntime, enableCodemode: true,
+    systemPrompt: 'You are a synthetic API test. Use only the provided tools. Reply with only the returned value.',
+    customTools: [{ name: 'freedom_probe', label: 'Synthetic probe', description: 'Return a synthetic value. No external effects.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      execute: async () => { calls++; return { content: [{ type: 'text', text: value }], details: {} }; } }] });
+  session.subscribe(event => {
+    if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') output += event.assistantMessageEvent.delta;
+    if (event.type === 'tool_execution_start') dispatchedTools.push(event.toolName);
+  });
+  const stop = setTimeout(() => { void session.abort(); }, 45000);
+  try {
+    await session.prompt('Call freedom_probe exactly once through codemode. Reply with only the returned value.');
+    report('production-freedom-codemode', { calls, dispatchedTools, outputContainsResult: output.includes(value) });
+    if (calls !== 1 || !dispatchedTools.includes('codemode') || !output.includes(value)) throw new Error('Session probe failed');
+  } finally { clearTimeout(stop); await session.dispose(); }
+}
 
 async function main(config) {
   const base = new URL(config.baseUrl);
@@ -18,6 +54,7 @@ async function main(config) {
   const modelId = config.model;
   if (typeof apiKey !== 'string' || !apiKey || typeof modelId !== 'string' || !modelId) throw new Error('Missing probe configuration.');
   const report = (test, details) => console.log(JSON.stringify({ test, ...details }));
+  if (config.phase === 'production') return productionProbe(config, report);
   const timedFetch = (url, options = {}) => {
     if (!String(url).startsWith(`${baseUrl}/`)) throw new Error('Unexpected probe destination');
     return fetch(url, { ...options, redirect: 'error',

@@ -10,15 +10,24 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-10
 
-### Custom OpenAI-compatible connections — feasibility spike, 2026-10-10
+### Custom OpenAI-compatible connections — implemented experimentally, 2026-10-10
 
 `experiment/agent-openai-compatible` verifies the user-supplied Clankyou endpoint
 with synthetic requests. Discovery, chat, SSE, tool/result replay, one structured
 output probe, client cancellation, Pi's default transport, Freedom tool execution
 and codemode passed. The endpoint has inconsistent small output-token-limit
-behavior and does not publish model capability/limit metadata. No production
-connection UI or storage changes yet; implementation and broader qualification
-remain open. See [spike findings](../docs/agent-openai-compatible-spike.md).
+behavior and does not publish model capability/limit metadata.
+
+The branch now includes setup UI, multiple independent custom connections,
+encrypted optional keys, discovered/manual model IDs, favourites, model limits
+and capability settings, a synthetic tool-round-trip test and privacy attribution.
+Endpoints are immutable per connection and credential-bearing redirects are
+refused. Mac Electron checks cover discovery, settings, chat, privacy and a second
+keyless connection. The production resolver and a Freedom codemode session passed
+against the supplied endpoint. User smoke, native Windows/Linux UI qualification
+and broader server compatibility remain open; this is not merged into the feature
+branch yet. Responses-only/custom-auth servers remain out of scope.
+See [implementation and findings](../docs/agent-openai-compatible-spike.md).
 
 ### Claude subscription connection — integrated into feature branch, 2026-10-10
 

@@ -261,6 +261,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   configureHostedAgentProvider: (providerId, modelId, apiKey, privacyPolicy) =>
     ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey,
       ...(privacyPolicy !== undefined && { privacyPolicy }) }),
+  configureCompatibleAgentProvider: (connection) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { ...connection, kind: 'compatible' }),
   configureOllamaAgentProvider: (modelId, baseUrl) =>
     ipcRenderer.invoke('agent:provider:configure-ollama', { modelId, baseUrl }),
   loginSubscriptionAgentProvider: (providerId, modelId) =>

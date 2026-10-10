@@ -1154,6 +1154,7 @@ jobs:
             test-e2e/agent-product-qualification.spec.js \
             test-e2e/agent-sidebar.spec.js \
             test-e2e/agent-mcp.spec.js \
+            test-e2e/custom-provider.spec.js \
             test-e2e/pdf-processor.spec.js \
             test-e2e/workspace-viewers.spec.js
       - name: Upload Playwright traces and screenshots

@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { isStoredCompatible } = require('./compatible-provider');
 const fs = require('fs');
 const path = require('path');
 
@@ -103,6 +104,7 @@ function isStoredConnection(connection, providerId) {
       ))
   )
     return false;
+  if (connection.kind === 'compatible') return isStoredCompatible(connection);
   if (connection.kind === 'hosted') {
     return (
       typeof connection.encryptedApiKey === 'string' &&
@@ -209,6 +211,7 @@ class AgentProviderStore {
         providerId: candidate.providerId,
         modelId: candidate.modelId,
         ...(candidate.favoriteModelIds && { favoriteModelIds: [...candidate.favoriteModelIds] }),
+        ...(candidate.kind === 'compatible' && { name: candidate.name, baseUrl: candidate.baseUrl, models: structuredClone(candidate.models), hasApiKey: Boolean(candidate.encryptedApiKey), updatedAt: candidate.updatedAt }),
         ...(candidate.privacyPolicy && { privacyPolicy: candidate.privacyPolicy }),
         ...(candidate.kind === 'ollama' && {
           baseUrl: candidate.baseUrl,
@@ -233,6 +236,7 @@ class AgentProviderStore {
       return { ...selection };
     }
     if (connection.kind === 'subscription') return { ...connection };
+    if (connection.kind === 'compatible' && !connection.encryptedApiKey) return { ...connection, apiKey: '' };
     if (!this.isEncryptionAvailable()) {
       throw new AgentProviderStoreError(
         'AGENT_SECURE_STORAGE_UNAVAILABLE',
@@ -255,7 +259,8 @@ class AgentProviderStore {
       );
     }
     return {
-      kind: 'hosted',
+      ...(connection.kind === 'compatible' ? { ...connection, encryptedApiKey: undefined } : {}),
+      kind: connection.kind,
       providerId: connection.providerId,
       modelId: connection.modelId,
       apiKey,
@@ -286,6 +291,21 @@ class AgentProviderStore {
       activeProviderId: providerId,
       credentials: payload.credentials,
     });
+  }
+
+  saveCompatible({ providerId, name, baseUrl, models, modelId, apiKey, activate = true }) {
+    const payload = this.#read();
+    const previous = payload.connections[providerId];
+    if (previous && (previous.kind !== 'compatible' || previous.baseUrl !== baseUrl)) {
+      throw new AgentProviderStoreError('AGENT_CUSTOM_ENDPOINT_IMMUTABLE', 'Add a new connection to use a different endpoint.');
+    }
+    if (apiKey && !this.isEncryptionAvailable()) throw new AgentProviderStoreError('AGENT_SECURE_STORAGE_UNAVAILABLE', 'Secure credential storage is unavailable');
+    const connection = { kind: 'compatible', providerId, name, baseUrl, models, modelId, updatedAt: Date.now(),
+      ...(previous?.favoriteModelIds && { favoriteModelIds: previous.favoriteModelIds }),
+      ...(apiKey && { encryptedApiKey: this.safeStorage.encryptString(apiKey).toString('base64') }) };
+    if (!isStoredCompatible(connection)) throw new AgentProviderStoreError('AGENT_PROVIDER_INVALID', 'Invalid custom connection');
+    this.#write({ ...payload, connections: { ...payload.connections, [providerId]: connection },
+      activeProviderId: activate ? providerId : payload.activeProviderId });
   }
 
   saveOllama({ modelId, modelIds: discoveredModels, baseUrl, activate = true }) {
@@ -333,7 +353,7 @@ class AgentProviderStore {
   select(providerId, modelId) {
     const payload = this.#read();
     const connection = payload.connections[providerId];
-    if (!connection || (connection.kind === 'ollama' && !connection.modelIds.includes(modelId))) {
+    if (!connection || (connection.kind === 'ollama' && !connection.modelIds.includes(modelId)) || (connection?.kind === 'compatible' && !connection.models.some(m => m.id === modelId))) {
       throw new AgentProviderStoreError(
         'AGENT_MODEL_INVALID',
         'Selected agent model is not configured'
@@ -462,6 +482,9 @@ class AgentProviderStore {
       ),
       'utf8'
     );
+    if (payload.length > MAX_PROVIDER_STORE_BYTES) {
+      throw new AgentProviderStoreError('AGENT_PROVIDER_STORE_INVALID', 'Too many saved provider settings; the previous connections were preserved');
+    }
     const noFollow = fs.constants.O_NOFOLLOW || 0;
     const temporary = `${this.filePath}.${crypto.randomBytes(12).toString('hex')}.tmp`;
     const descriptor = fs.openSync(

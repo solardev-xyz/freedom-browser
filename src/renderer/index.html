@@ -1680,6 +1680,14 @@
               </div>
               <div id="agent-provider-connection-fields">
                 <button id="agent-provider-disconnect" class="agent-button secondary" type="button" hidden>Disconnect</button>
+                <div id="agent-custom-fields" hidden>
+                  <label class="agent-field"><span>Connection name</span><input id="agent-custom-name" type="text" maxlength="80" placeholder="My AI server" /></label>
+                  <label class="agent-field"><span>API base URL</span><input id="agent-custom-url" type="url" maxlength="2048" spellcheck="false" placeholder="https://example.com/v1" /></label>
+                  <p id="agent-custom-transport" class="agent-catalog-status">Use the API base URL, including any path such as /v1. Requests go directly to this endpoint.</p>
+                  <label class="agent-field"><span>Model IDs (optional, one per line)</span><textarea id="agent-custom-models" rows="3" placeholder="Leave empty to discover models" spellcheck="false"></textarea></label>
+                  <p class="agent-catalog-status">If discovery is unavailable, enter the model IDs supplied by your server.</p>
+                  <label id="agent-custom-clear-key-field" class="agent-field"><span><input id="agent-custom-clear-key" type="checkbox" /> Remove saved API key</span></label>
+                </div>
                 <label id="agent-api-key-field" class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored encrypted on this device" /></label>
                 <div id="agent-subscription-fields" class="hidden">
                   <p id="agent-subscription-note" class="agent-subscription-note">Connect with your ChatGPT subscription.</p>
@@ -1712,6 +1720,14 @@
                     <select id="agent-model-select" hidden aria-label="Model"></select>
                   </div>
                   <p id="agent-model-details" class="agent-catalog-status"></p>
+                  <div id="agent-custom-model-settings" hidden>
+                    <p class="agent-catalog-status">Settings for the selected model. Defaults are estimates; use your server’s documented limits.</p>
+                    <label class="agent-field"><span>Context window (tokens)</span><input id="agent-custom-context" type="number" min="1024" max="10000000" value="32768" /></label>
+                    <label class="agent-field"><span>Maximum output tokens</span><input id="agent-custom-output" type="number" min="128" value="4096" /></label>
+                    <label class="agent-field"><span><input id="agent-custom-vision" type="checkbox" /> Supports images</span></label>
+                    <label class="agent-field"><span><input id="agent-custom-reasoning" type="checkbox" /> Supports reasoning controls</span></label>
+                    <label class="agent-field"><span><input id="agent-custom-schema" type="checkbox" /> Supports strict JSON schema</span></label>
+                  </div>
                   <div id="agent-provider-key-settings"></div>
                   <button id="agent-provider-test" class="agent-text-button" type="button" hidden>Send test prompt</button>
                   <p id="agent-provider-test-note" class="agent-catalog-status" hidden>Sends only “Reply with OK.” to this model. Token charges may apply.</p>

@@ -1548,6 +1548,21 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   resize: vertical;
 }
 
+.agent-field:has(input[type='checkbox']) > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-field input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 .agent-config-actions,
 .agent-run-actions {
   display: flex;

@@ -198,8 +198,9 @@ function setMessage(element, message = '', isError = false) {
   element.classList.toggle('error', isError);
 }
 
+const isCustomProvider = id => id === 'openai-compatible' || id?.startsWith('custom-');
 function providerName(providerId) {
-  return PROVIDER_NAMES[providerId] || providerId || 'Model';
+  return PROVIDER_NAMES[providerId] || providerConnection(providerId)?.name || providerCatalog.find(p => p.providerId === providerId)?.name || (providerId === 'openai-compatible' ? 'OpenAI-compatible' : '') || providerId || 'Model';
 }
 
 function isShareablePage(tab) {
@@ -1769,6 +1770,7 @@ function togglePanel() {
 
 function renderProviderFields() {
   const providerId = elements.provider.value;
+  const isCustom = isCustomProvider(providerId);
   const isOllama = providerId === 'ollama';
   const isSubscription = providerAuthType(providerId) === 'subscription';
   const connection = providerConnection(providerId);
@@ -1777,6 +1779,13 @@ function renderProviderFields() {
   const isClaude = ['anthropic', 'anthropic-claude'].includes(providerId);
   const canUpgradeChatgpt = providerId === 'openai-codex' && isConnectedSubscription;
   const descriptor = providerCatalog.find((item) => item.providerId === providerId);
+  elements.customFields.hidden = !isCustom;
+  elements.customSettings.hidden = !isCustom || !connection;
+  elements.customUrl.disabled = isCustom && Boolean(connection);
+  elements.customClearKeyField.hidden = !isCustom || !connection?.hasApiKey;
+  elements.model.hidden = !isCustom;
+  elements.testProvider.textContent = isCustom ? 'Test chat and tool calling' : 'Send test prompt';
+  elements.testProviderNote.textContent = isCustom ? 'Sends synthetic messages and a harmless tool result. No files or pages are shared. Token charges may apply.' : 'Sends only “Reply with OK.” to this model. Token charges may apply.';
   elements.providerHeading.textContent = providerName(providerId);
   elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
   elements.providerStatus.classList.toggle('active', Boolean(connection));
@@ -1785,6 +1794,7 @@ function renderProviderFields() {
   elements.ollamaFields.classList.toggle('hidden', !isOllama);
   elements.apiKeyField.classList.toggle('hidden', isSubscription || isOllama);
   (connection ? elements.keySettings : elements.connectionFields).prepend(elements.apiKeyField);
+  if (isCustom && !connection) elements.connectionFields.prepend(elements.customFields);
   elements.subscriptionFields.classList.toggle('hidden', !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt && !providerLoginPending));
   elements.saveProvider.hidden = isSubscription;
   elements.authCode.hidden = !providerLoginPending || !elements.authUserCode.textContent;
@@ -1799,8 +1809,8 @@ function renderProviderFields() {
   elements.provider.disabled = providerLoginPending;
   elements.model.disabled = providerLoginPending;
   elements.modelRefresh.hidden = !isOllama && !descriptor?.canRefresh;
-  elements.modelRefresh.disabled = (isOllama || isSubscription) && !connection;
-  elements.apiKey.placeholder = connection ? 'Leave empty to keep your saved key' : 'Stored encrypted on this device';
+  elements.modelRefresh.disabled = (isOllama || isSubscription || isCustom) && !connection;
+  elements.apiKey.placeholder = isCustom && !connection ? 'Optional — leave empty if not required' : connection ? 'Leave empty to keep your saved key' : 'Stored encrypted on this device';
   elements.saveProvider.textContent = isOllama
     ? connection ? 'Save connection' : 'Connect to Ollama'
     : connection ? 'Save connection' : 'Connect provider';
@@ -1890,6 +1900,14 @@ function openProviderDetail(providerId, chooseMethod = false) {
     const connection = providerConnection(providerId);
     elements.ollamaUrl.value = connection?.baseUrl || 'http://127.0.0.1:11434/v1';
   }
+  if (isCustomProvider(providerId)) {
+    const connection = providerConnection(providerId);
+    elements.customName.value = connection?.name || '';
+    elements.customUrl.value = connection?.baseUrl || '';
+    elements.customModels.value = connection?.models.map(m => m.id).join('\n') || '';
+    elements.customClearKey.checked = false;
+    renderCustomTransport();
+  }
   elements.providerAdvanced.open = false;
   elements.providerMethods.hidden = !chooseMethod;
   elements.connectionFields.hidden = chooseMethod;
@@ -1940,7 +1958,7 @@ function createProviderLogo(providerId) {
 
 function renderProviderOptions() {
   const selected = elements.provider.value;
-  const definitions = [...providerCatalog, { providerId: 'ollama', name: 'Ollama', group: 'On this device' }];
+  const definitions = [...providerCatalog, { providerId: 'openai-compatible', name: 'OpenAI-compatible', group: 'Custom connections' }, { providerId: 'ollama', name: 'Ollama', group: 'On this device' }];
   elements.provider.replaceChildren(...definitions.map((definition) => {
     const option = document.createElement('option');
     option.value = definition.providerId;
@@ -1961,8 +1979,10 @@ function renderProviderOptions() {
     venice: 'Models with privacy options',
     'near-ai': 'TEE and external models',
     ollama: 'Models running on your computer',
+    'openai-compatible': 'Connect your own endpoint',
   };
   for (const definition of definitions) {
+    if (definition.providerId.startsWith('custom-')) continue;
     if (['anthropic-claude', 'openai-chatgpt', 'openai-codex', 'meta-subscription'].includes(definition.providerId)) continue;
     const name = definition.providerId === 'openai' ? 'OpenAI' : definition.name;
     if (!`${name} ${definition.providerId} ${definition.providerId === 'openai' ? 'ChatGPT subscription API' : ''}`.toLowerCase().includes(query)) continue;
@@ -2051,9 +2071,23 @@ function renderModelOptions(providerId) {
     elements.model.value = options.find((option) => option.value === provider?.defaultModelId && !option.disabled)?.value ||
       options.find((option) => !option.disabled)?.value || '';
   }
+  loadCustomModelSettings();
   renderModelDetails();
 }
 
+function renderCustomTransport() {
+  elements.customTransport.textContent = elements.customUrl.value.trim().startsWith('http:')
+    ? 'HTTP sends messages and any API key without transport encryption. Use only a network you trust.'
+    : 'Requests go directly to this endpoint. Retention and privacy guarantees are unknown. Add a new connection to change a saved URL.';
+}
+function loadCustomModelSettings() {
+  const model = catalogModel(elements.provider.value, elements.model.value);
+  elements.customContext.value = model?.contextWindow || 32768;
+  elements.customOutput.value = model?.maxTokens || 4096;
+  elements.customVision.checked = model?.vision === true;
+  elements.customReasoning.checked = model?.reasoning === true;
+  elements.customSchema.checked = model?.jsonSchema === true;
+}
 function renderModelDetails() {
   const providerId = elements.provider.value;
   const model = catalogModel(providerId, elements.model.value);
@@ -2119,7 +2153,7 @@ async function testProviderConnection() {
     const response = await window.electronAPI.testAgentProviderConnection(providerId,
       providerId === 'ollama' ? providerConnection(providerId)?.modelId : elements.model.value);
     setMessage(elements.providerMessage, response?.ok
-      ? response.result.outcome === 'token_limit'
+      ? response.result.outcome === 'tools_verified' ? 'Chat and tool calling verified' : response.result.outcome === 'token_limit'
         ? 'Connection accepted. The model reached the test token limit before finishing.'
         : `Model responded in ${Math.max(0.1, response.result.elapsedMs / 1000).toFixed(1)}s`
       : responseMessage(response, 'Test prompt failed'), !response?.ok);
@@ -2250,7 +2284,7 @@ function renderProviderStatus(status) {
     ? `${providerName(status.providerId)} · ${status.modelId}`
     : 'Not configured';
   elements.providerStatus.classList.toggle('active', configured);
-  if (configured && Object.hasOwn(PROVIDER_NAMES, status.providerId)) {
+  if (configured && (Object.hasOwn(PROVIDER_NAMES, status.providerId) || isCustomProvider(status.providerId))) {
     elements.provider.value = status.providerId;
     if (status.providerId === 'ollama') {
       elements.ollamaUrl.value = status.baseUrl || 'http://127.0.0.1:11434/v1';
@@ -2359,7 +2393,7 @@ async function saveProvider() {
   setMessage(elements.providerMessage, providerId === 'ollama' ? 'Finding installed models…' : 'Saving…');
   try {
     let response;
-    if (adding && providerId !== 'ollama' && !elements.model.value) {
+    if (adding && !isCustomProvider(providerId) && providerId !== 'ollama' && !elements.model.value) {
       // Some catalogs require the entered key. Discover them as part of connecting,
       // without making users select a model in the connection form.
       if (!await refreshModelCatalog()) return;
@@ -2370,7 +2404,25 @@ async function saveProvider() {
         return;
       }
     }
-    if (providerId === 'ollama') {
+    if (isCustomProvider(providerId)) {
+      const ids = [...new Set(elements.customModels.value.split(/[,\n]/).map(s => s.trim()).filter(Boolean))];
+      const oldModels = providerConnection(providerId)?.models || [];
+      const models = ids.map(id => {
+        const previous = oldModels.find(m => m.id === id) || { id };
+        return id === elements.model.value ? { ...previous, contextWindow: Number(elements.customContext.value),
+          maxTokens: Number(elements.customOutput.value), vision: elements.customVision.checked,
+          reasoning: elements.customReasoning.checked, jsonSchema: elements.customSchema.checked } : previous;
+      });
+      response = await window.electronAPI.configureCompatibleAgentProvider({ providerId, name: elements.customName.value.trim(),
+        baseUrl: elements.customUrl.value.trim(), apiKey: elements.apiKey.value, clearApiKey: elements.customClearKey.checked,
+        models, modelId: elements.model.value });
+      if (response?.ok) {
+        providerStatus = response.status;
+        providerCatalog = [];
+        await loadProviderCatalog();
+        openProviderDetail(response.status.providerId);
+      }
+    } else if (providerId === 'ollama') {
       response = await window.electronAPI.configureOllamaAgentProvider(
         undefined,
         elements.ollamaUrl.value.trim()
@@ -5001,6 +5053,10 @@ export function initAgentUi(options = {}) {
     processCompactCount: byId('agent-process-compact-count'),
     processCompactList: byId('agent-process-compact-list'),
     mcpPanel: byId('agent-mcp-panel'),
+    customFields: byId('agent-custom-fields'), customName: byId('agent-custom-name'), customUrl: byId('agent-custom-url'),
+    customModels: byId('agent-custom-models'), customClearKey: byId('agent-custom-clear-key'), customClearKeyField: byId('agent-custom-clear-key-field'), customTransport: byId('agent-custom-transport'),
+    customSettings: byId('agent-custom-model-settings'), customContext: byId('agent-custom-context'), customOutput: byId('agent-custom-output'),
+    customVision: byId('agent-custom-vision'), customReasoning: byId('agent-custom-reasoning'), customSchema: byId('agent-custom-schema'),
     providerHome: byId('agent-provider-home'),
     providerBrowser: byId('agent-provider-browser'),
     providerDetail: byId('agent-provider-detail'),
@@ -5283,7 +5339,8 @@ export function initAgentUi(options = {}) {
   elements.providerChatgpt.addEventListener('click', () => openProviderDetail(elements.provider.value === 'anthropic' ? 'anthropic-claude' : elements.provider.value === 'meta' ? 'meta-subscription' : 'openai-chatgpt'));
   elements.providerApi.addEventListener('click', () => openProviderDetail(elements.provider.value === 'anthropic' ? 'anthropic' : elements.provider.value === 'meta' ? 'meta' : 'openai'));
   elements.providerSearch.addEventListener('input', renderProviderOptions);
-  elements.model.addEventListener('change', renderModelDetails);
+  elements.customUrl.addEventListener('input', renderCustomTransport);
+  elements.model.addEventListener('change', () => { loadCustomModelSettings(); renderModelDetails(); });
   elements.modelRefresh.addEventListener('click', refreshModelCatalog);
   elements.testProvider.addEventListener('click', testProviderConnection);
   elements.modelMenuSearch.addEventListener('input', renderModelMenu);

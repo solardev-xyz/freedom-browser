@@ -326,3 +326,13 @@ The Agent's Anthropic setup also offers an installed Claude Code connection for
 personal Pro/Max subscriptions. It uses the CLI's existing login and Freedom's
 normal tools, approvals, helpers, codemode and conversation UI. Managed installations
 are not supported. See [setup and qualification](agent-claude-subscription.md).
+
+### Experimental custom AI connections
+
+**Models → Add provider → OpenAI-compatible** connects a custom Chat Completions
+endpoint using an optional API key. Models can be discovered or entered manually;
+multiple connections appear independently in the model picker. Saved keys are
+encrypted, and model limits/capabilities can be configured in connection settings.
+The built-in test checks chat and a synthetic tool round trip. Privacy guarantees
+remain unknown unless independently established. See
+[setup and qualification](agent-openai-compatible-spike.md).

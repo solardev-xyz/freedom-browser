@@ -8,9 +8,8 @@ Date: 2026-10-10. Base: `feature/freedom-automation-kernel` at `f5a41b99`.
 The user-supplied `https://vibing.at/clankyou/v1` endpoint works with the installed
 Pi 1.0.2 `openai-completions` transport without endpoint-specific compatibility
 flags. A Freedom isolated session and a Freedom codemode session each performed
-one synthetic tool call and used its returned value. This establishes feasibility;
-custom-provider setup, credential persistence and model-picker integration are
-not implemented by this spike.
+one synthetic tool call and used its returned value. The initial feasibility spike
+was followed by the implementation below on the same experimental branch.
 
 Only synthetic prompts and tool results were sent. No real browser pages, project
 files or conversation history were supplied. The user-provided key was delivered
@@ -73,23 +72,64 @@ or hidden stdin; do not put a real key in a committed fixture or shell command.
 It emits JSON summaries, never credentials or full provider error payloads.
 Running it makes a small set of real inference requests. It is not a CI test.
 
-The runtime and credential/model stores are in memory. No dependencies or
-production connection behavior changed. `npm run lint` passed.
+The original probe uses in-memory runtime and credential/model stores.
+Set `phase: "production"` to exercise Freedom's production connection resolver,
+discovery, synthetic connection test and a codemode session instead. That phase
+also keeps the supplied credential in memory. No dependencies were added.
 
-## Next implementation
+## Implemented connection flow
 
-Add an app-owned custom connection with a stable ID, user-supplied label, base URL,
-optional encrypted API key and discovered/manual models. Register it through Pi's
-existing transport; keep endpoint selection and credentials in the main process.
-The renderer should use the normal model catalogue rather than runtime internals.
+Choose **Models → Add provider → OpenAI-compatible**, enter a connection name,
+API base URL (including `/v1` or any proxy prefix) and optional API key. Leave model
+IDs empty to discover them through `GET /models`, or enter IDs manually when
+discovery is unavailable. Connections appear independently in the normal model
+picker and support favourites, refresh, selection and disconnect.
 
-Support multiple independent connections, preserve custom base paths, and offer
-model capability/limit settings where discovery supplies no reliable metadata.
-Use synthetic chat and tool probes for connection testing; keep optional features
-such as structured output disabled until configured or verified. Identify the
-actual endpoint in privacy reporting without implying retention, TEE or E2EE
-guarantees. Existing conversations must not silently change destination when a
-connection is edited. No automatic credential forwarding across redirects.
+- Credentials use Freedom's existing encrypted, profile-bound store. Keyless
+  connections also work when secure credential storage is unavailable.
+- Chat Completions is the supported protocol. Responses-only servers, custom
+  authentication/header schemes and provider-specific extensions are not covered.
+- Discovery accepts model IDs only. Model limits default to 32,768 context and
+  4,096 output tokens; these are estimates, not discovered limits. Under
+  **Details & connection settings**, select a model to configure its limits and
+  declared image, reasoning-control and strict JSON-schema support. Optional
+  capabilities start off. The schema setting enables schema requests for Freedom's
+  classifiers; the connection test does not certify those optional capabilities.
+- Refresh preserves manual entries, existing settings, favourites and selection.
+  Remove unwanted IDs through the saved connection's model list.
+- **Test chat and tool calling** uses a synthetic function call and a random
+  returned value, with no real browser or workspace tools. It makes inference
+  requests and can incur normal token charges. It tests the saved configuration.
+- An endpoint cannot be changed after saving. Add a new connection to change it;
+  existing conversations retain their original connection identity. Keys can be
+  rotated or explicitly removed, and names/model settings remain editable. New
+  requests check the current connection and key; removing a model or disconnecting
+  blocks further requests through an already-created runtime. Requests already
+  sent cannot be recalled.
+- Only the configured `/models` and `/chat/completions` destinations receive the
+  configured key; redirects are refused. Keyless requests carry no authorization
+  header. HTTP is supported for local/LAN servers with a transport warning.
+- Privacy reporting identifies the connection name and actual destination origin,
+  with unknown retention/privacy guarantees and no implied TEE or E2EE.
+
+## Implementation qualification
+
+On macOS, an Electron fixture test covers setup, discovery, saved model settings,
+the tool test, a streamed chat, privacy details, and two independent connections,
+including a keyless/manual-model server. The changed setup and settings surfaces
+were checked in both themes. Unit coverage includes credential isolation and
+reload, immutable endpoints, secret-free public status, bounded storage writes,
+untrusted catalogue metadata, redirect/destination restrictions and keyless auth.
+`npm run lint` and the full unit suite pass (9,519 passed, 129 skipped); the
+custom-provider Electron test also passes. No dependencies were added.
+
+The production resolver was then tested against the supplied endpoint with `fast`:
+all eight IDs were discovered, the synthetic tool round trip passed, and an
+isolated Freedom session dispatched `codemode` and `freedom_probe` exactly once,
+using the returned random value. No real user files/pages/history were sent.
+
+User smoke testing, native Windows/Linux UI checks and broader server compatibility
+remain open. The earlier endpoint quirks and untested capabilities still apply.
 
 Relevant local SDK documentation:
 `node_modules/@earendil-works/pi-coding-agent/docs/models.md` and

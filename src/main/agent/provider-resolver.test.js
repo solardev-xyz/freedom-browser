@@ -101,6 +101,29 @@ function createResolver(selection = null, options = {}) {
 }
 
 describe('AgentProviderResolver', () => {
+  test('custom discovery preserves URL paths and manual models avoid requiring discovery', async () => {
+    const fetch = jest.fn(async () => new Response(JSON.stringify({ data: [{ id: 'fast' }, { id: 'smart' }] })));
+    const { resolver, store } = createResolver(null, { fetch });
+    store.saveCompatible = jest.fn();
+    await resolver.configureHosted({ kind: 'compatible', providerId: 'openai-compatible', name: 'Gateway', baseUrl: 'https://host.test/proxy/v1/', apiKey: 'fixture' });
+    expect(store.saveCompatible).toHaveBeenCalledWith(expect.objectContaining({ providerId: expect.stringMatching(/^custom-/), name: 'Gateway', baseUrl: 'https://host.test/proxy/v1', modelId: 'fast', apiKey: 'fixture' }));
+    const firstId = store.saveCompatible.mock.calls[0][0].providerId;
+    await resolver.configureHosted({ kind: 'compatible', providerId: 'openai-compatible', name: 'Manual', baseUrl: 'http://localhost:1234/v1', models: [{ id: 'local' }] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(store.saveCompatible.mock.calls[1][0].providerId).not.toBe(firstId);
+    expect(store.saveCompatible.mock.calls[1][0].apiKey).toBe('');
+  });
+  test('custom edits preserve keys only for the same immutable endpoint', async () => {
+    const selection = { kind: 'compatible', providerId: 'custom-11111111-1111-4111-8111-111111111111', name: 'Gateway', baseUrl: 'https://host.test/v1', apiKey: 'fixture', modelId: 'fast', models: [{ id: 'fast' }] };
+    const { resolver, store } = createResolver(selection);
+    store.saveCompatible = jest.fn();
+    await expect(resolver.configureCompatible({ ...selection, apiKey: '', baseUrl: 'https://foreign.test/v1' })).rejects.toMatchObject({ code: 'AGENT_CUSTOM_ENDPOINT_IMMUTABLE' });
+    expect(store.saveCompatible).not.toHaveBeenCalled();
+    await resolver.configureCompatible({ ...selection, apiKey: '', name: 'Renamed' });
+    expect(store.saveCompatible.mock.calls[0][0].apiKey).toBe('fixture');
+    await resolver.configureCompatible({ ...selection, clearApiKey: true });
+    expect(store.saveCompatible.mock.calls[1][0].apiKey).toBe('');
+  });
   test('discovers installed Ollama models without a model name or inference', async () => {
     const fetch = jest.fn(async () => new Response(JSON.stringify({ models: [
       { name: 'qwen3:8b' }, { name: 'llama3.2:3b' }, { name: 'qwen3:8b' },
