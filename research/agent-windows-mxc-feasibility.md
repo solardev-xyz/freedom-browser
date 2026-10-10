@@ -51,8 +51,8 @@ PowerShell is the Windows command shell. Cancellation receipts remain
 conservative: a launch attempt does not certify that no side effects occurred,
 or that every descendant has stopped.
 
-Implementation checks: native x64 build succeeded before the final lockfile
-reproducibility adjustment; macOS lint and full unit suite pass (9,420 tests).
+Implementation checks: native x64 build succeeds with the upstream lockfile
+enforced; macOS lint and full unit suite pass (9,420 tests).
 `scripts/qualify-windows-workspace.js` exercises Freedom's actual policy and
 executor, rather than the earlier Codex CLI reference. That qualification still
 requires the separate Freedom administrator provisioning; reference results
