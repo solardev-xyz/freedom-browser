@@ -16,6 +16,9 @@
   /* "Be careful" amber — address-bar trust shield's unverified state,
      wallet review warning glyph (e.g. spoofed/stale ENS reverse claim). */
   --warning-fg: #d29922;
+  /* Fixed-width stack for addresses, hashes and keys. Name real faces:
+     a bare `monospace` renders in Times on macOS under Electron (#616). */
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 }
 
 /* Light theme */

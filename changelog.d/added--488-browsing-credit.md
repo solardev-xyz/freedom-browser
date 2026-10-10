@@ -1,5 +1,0 @@
-- The Swarm node's chequebook as browsing credit, in the wallet sidebar's Nodes tab ([#488](https://github.com/solardev-xyz/freedom-browser/issues/488)):
-  - Pays peers for faster downloads and for uploads, with Ant's measured costs
-  - Credit left, spend over the last 24 hours and 7 days, paying or free tier
-  - Top up any amount in xDAI: 0.05, 0.1 or 0.5 xBZZ, or your own, without buying storage
-  - "Pay peers from the chequebook" switch, applied without a restart

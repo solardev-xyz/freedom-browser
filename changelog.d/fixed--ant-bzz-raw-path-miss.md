@@ -1,1 +1,0 @@
-- A `bzz://` address whose data isn't on Swarm, or with a path below raw uploaded data, fails sooner instead of after half a minute or more ([#482](https://github.com/solardev-xyz/freedom-browser/pull/482))

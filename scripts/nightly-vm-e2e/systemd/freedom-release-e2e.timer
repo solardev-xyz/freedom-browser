@@ -1,0 +1,12 @@
+# A candidate is published whenever a release tag is pushed, at any hour, so
+# check hourly all day. run-nightly.sh skips a version it has already tested,
+# and its lock keeps this from overlapping a nightly run.
+[Unit]
+Description=Check hourly for a new Freedom release or candidate to E2E-test
+
+[Timer]
+OnCalendar=*-*-* *:50:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,1 +1,0 @@
-- Recover Myotis sync after interrupted shutdowns without requiring a computer restart for new sessions on local disks (network and unrecognised filesystems stay blocked); preserve old sync data and provide recovery guidance for older stuck sessions ([#418](https://github.com/solardev-xyz/freedom-browser/issues/418))

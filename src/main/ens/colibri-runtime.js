@@ -191,9 +191,9 @@ upstreamRuntime.setRuntimeProvider(provideRuntime);
 // Manual proof requests must advertise the installed verifier's version, too.
 // Upstream packs that number as three single-byte fields
 // (major << 16 | minor << 8 | patch): the installed build's own
-// `_c4w_get_current_version_number()` returns 196609 for 3.0.1 (verified
-// 2026-10-07 by calling that export on the shipped `c4w.wasm`; 3.0.0 gave
-// 196608), which is what the encoding below produces. A version outside that shape — a pre-release
+// `_c4w_get_current_version_number()` returns 196610 for 3.0.2 (verified
+// 2026-10-07 by calling that export on the shipped `c4w.wasm`; 3.0.1 gave
+// 196609), which is what the encoding below produces. A version outside that shape — a pre-release
 // tag, a part >= 256, a 2- or 4-part version — has no representation here, and
 // guessing one would hand the prover a wrong but plausible integer that passes
 // the worker's `Number.isSafeInteger` guard. Refuse instead: `null` fails that

@@ -1746,17 +1746,21 @@ test.describe('Search settings (#281)', () => {
         )
       )
       .toBe(true);
+    // `.layout` is the page's scroller; the document itself never scrolls
+    // (#604).
     const scrolls = await page.evaluate(() => {
       const row = document.querySelector('.settings-search-hit');
-      const revealed = Math.round(window.scrollY);
-      window.scrollTo(0, 0);
+      const scroller = document.querySelector('.layout');
+      const revealed = Math.round(scroller.scrollTop);
+      scroller.scrollTo(0, 0);
       row.scrollIntoView({ block: 'center' });
-      const centred = Math.round(window.scrollY);
-      window.scrollTo(0, 0);
+      const centred = Math.round(scroller.scrollTop);
+      scroller.scrollTo(0, 0);
       row.scrollIntoView({ block: 'start' });
-      const topped = Math.round(window.scrollY);
-      return { revealed, centred, topped };
+      const topped = Math.round(scroller.scrollTop);
+      return { revealed, centred, topped, documentScroll: window.scrollY };
     });
+    expect(scrolls.documentScroll).toBe(0);
     expect(scrolls.centred).not.toBe(scrolls.topped);
     expect(scrolls.revealed).toBe(scrolls.centred);
   });
@@ -1973,7 +1977,7 @@ test.describe('settings deep links name the view they open (#280)', () => {
       // real hash change and a stale scroll offset cannot fake the reveal.
       await page.evaluate(() => {
         location.hash = 'search';
-        window.scrollTo(0, 0);
+        document.querySelector('.layout').scrollTo(0, 0);
       });
       await input.click();
       await input.fill(`freedom://settings/${old}`);
@@ -1986,21 +1990,31 @@ test.describe('settings deep links name the view they open (#280)', () => {
       if (!now.includes('/')) {
         // A section that heads its entry is opened at the top of the page,
         // the entry's own heading included.
-        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+        await expect
+          .poll(() => page.evaluate(() => document.querySelector('.layout').scrollTop))
+          .toBe(0);
         continue;
       }
       // A panel further down is brought up: once the panels above it have
       // painted, its top sits at the top of the view — or, on a page too
-      // short to scroll it that far, the page is scrolled as far as it goes
-      // with the panel's top on screen. Not merely somewhere below the fold.
+      // short to scroll it that far, the content is scrolled as far as it
+      // goes with the panel's top on screen. Not merely somewhere below the
+      // fold. Only `.layout` scrolls for it: a scrolled document is what
+      // painted `networks/ens` blank and the others shifted down (#604).
       await expect
         .poll(
           () =>
             page.evaluate((id) => {
               const top = document.getElementById(id).getBoundingClientRect().top;
+              const scroller = document.querySelector('.layout');
               const atBottom =
-                window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
-              return top >= 0 && top < window.innerHeight - 40 && (top <= 60 || atBottom);
+                scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+              return (
+                window.scrollY === 0 &&
+                top >= 0 &&
+                top < window.innerHeight - 40 &&
+                (top <= 60 || atBottom)
+              );
             }, panel),
           { message: `${old} → ${now} leaves #${panel} out of view` }
         )

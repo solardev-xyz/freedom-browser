@@ -497,6 +497,23 @@ describe('page-context-menu', () => {
     });
   });
 
+  // R4-M1: on a Swarm error page `reloadIgnoringCache()` reloads the error
+  // page itself, keeping its `streak=1` URL, so an exhausted auto-retry run
+  // stays exhausted. Reload must take the chrome's own reload path instead,
+  // the one toolbar Reload/Ctrl+R use, which retries the original URL fresh.
+  test('Reload goes through the injected chrome reload, not a bare guest reload', async () => {
+    const { mod, pageContextMenu, activeWebview } = await loadPageContextMenuModule();
+    const onReload = jest.fn();
+    await mod.initPageContextMenu({ onReload });
+
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    await triggerMenuAction(pageContextMenu, 'reload');
+
+    expect(onReload).toHaveBeenCalledTimes(1);
+    expect(onReload).toHaveBeenCalledWith(activeWebview);
+    expect(activeWebview.reloadIgnoringCache).not.toHaveBeenCalled();
+  });
+
   test('dispatches page and link actions through menu clicks', async () => {
     const { mod, pageContextMenu, activeWebview, electronAPI, pushDebug, backdrop, urlUtils } =
       await loadPageContextMenuModule();

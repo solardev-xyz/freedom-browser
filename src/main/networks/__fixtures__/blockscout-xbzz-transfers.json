@@ -1,385 +1,1065 @@
 {
- "_comment": "Captured 2026-10-05: one Bee node wallet's xBZZ Transfer logs (sender 0x971f31aa...), blocks 16514506..48606023, from rpc.gnosischain.com eth_getLogs and from gnosis.blockscout.com module=logs&action=getLogs (1 page). Public chain data. See blockscout-logs.test.js.",
- "params": [
-  {
-   "address": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
-   "fromBlock": "0xfbfdca",
-   "toBlock": "0x2e5ab47",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9"
-   ]
-  }
- ],
- "rpc": [
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x000000000000000000000000be212ea1a4978a64e8f7636ae18305c38ca092bd"
-   ],
-   "data": "0x000000000000000000000000000000000000000000000000058d15e176280000",
-   "blockNumber": "0x22941e8",
-   "transactionHash": "0xae3744390d0a338b4b2de2d40b2b7f8fb4b82b1aa41ded3b9a41c7789685d211",
-   "transactionIndex": "0x1",
-   "blockHash": "0x703fc6169132694829c4e53e4e763f77df8679aaa35c62cb9e44080c2483f655",
-   "logIndex": "0x1",
-   "blockTimestamp": "0x66fa04b3",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x000000000000000000000000bd3b164ef9603a8ea97ef2d65c3ee1d94add5a3a"
-   ],
-   "data": "0x000000000000000000000000000000000000000000000000002386f26fc10000",
-   "blockNumber": "0x22a1817",
-   "transactionHash": "0x61cd2b1916af307888c2285a5f062453a65364dd1e60aedd3a76833491585869",
-   "transactionIndex": "0x3",
-   "blockHash": "0x9e18dbb52f1f26075d9a178dc08e9e0973c7d2bcc4ecbb95257ec2c39fa3f06f",
-   "logIndex": "0xb",
-   "blockTimestamp": "0x66fe4fe6",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
-   ],
-   "data": "0x000000000000000000000000000000000000000000000000002e593c00000000",
-   "blockNumber": "0x22a1829",
-   "transactionHash": "0xfd8665388bc0492ef0a332590048f4d1b85508a7efefa6fd477e087733a1d9bb",
-   "transactionIndex": "0xb",
-   "blockHash": "0x434f39e07bb042460e69b0de8e4c76a50a042bfad5a7f628d536dcffda5f6342",
-   "logIndex": "0x9",
-   "blockTimestamp": "0x66fe5040",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x000000000000000000000000be212ea1a4978a64e8f7636ae18305c38ca092bd"
-   ],
-   "data": "0x000000000000000000000000000000000000000000000000002386f26fc10000",
-   "blockNumber": "0x22a1ab6",
-   "transactionHash": "0x803f069ef9a890d14e3c606fe7b2e5e26394b30d19c56e02c477740ba80fbf77",
-   "transactionIndex": "0x0",
-   "blockHash": "0x2d88535f5d850563fe4e0fabb4cd708bfb0f26f2aaa8fe5d8f2889f5c4f55b95",
-   "logIndex": "0x0",
-   "blockTimestamp": "0x66fe5d47",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x000000000000000000000000445b848e16730988f871c4a09ab74526d27c2ce8"
-   ],
-   "data": "0x000000000000000000000000000000000000000000000000030d98d59a960000",
-   "blockNumber": "0x23b1fcf",
-   "transactionHash": "0x473031e4545dff9a3614fb319b89ce47c8982251e9fbc65fd51bce4a2a755956",
-   "transactionIndex": "0x3",
-   "blockHash": "0x812141bc383519ded1625436e3877f2bf35f4ffb9fe8896635f51ab3e75b0d17",
-   "logIndex": "0x11",
-   "blockTimestamp": "0x6756377e",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
-   ],
-   "data": "0x0000000000000000000000000000000000000000000000000233e85a00000000",
-   "blockNumber": "0x25df4b7",
-   "transactionHash": "0x9602b122217097e795ab19806dfe088371d1417b5844b9da19880500864e4dd5",
-   "transactionIndex": "0x5",
-   "blockHash": "0x933ed3414f08b64141f1b0f9bf2d7dbfc69eaaa50296f87fa0ba0b421018c7f3",
-   "logIndex": "0x8",
-   "blockTimestamp": "0x68093117",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x000000000000000000000000da2a16ee889e7f04980a8d597b48c8d51b9518f4"
-   ],
-   "data": "0x000000000000000000000000000000000000000000000000030d98d59a960000",
-   "blockNumber": "0x276b068",
-   "transactionHash": "0xa8b2732d21792e60fd1f18ded0e03c1e9a9bf39bc09120891caf16b0b0bce2bf",
-   "transactionIndex": "0x0",
-   "blockHash": "0x78019747f3be7d5346a5c2605f3c8b6bf8a50450d24c3e5d504e7cf544870caa",
-   "logIndex": "0x0",
-   "blockTimestamp": "0x6888a48d",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
-   ],
-   "data": "0x0000000000000000000000000000000000000000000000000028f0f500400000",
-   "blockNumber": "0x2b516fa",
-   "transactionHash": "0x960da997fa36a7d23439df1b4d6d0dfbd6d1c99c24cb0bb90094b1aaa0e754a1",
-   "transactionIndex": "0xb",
-   "blockHash": "0x2c87e4efff3737751287739433b361f004ea0a732c7e6e676b97ea76502f1ddf",
-   "logIndex": "0x3f",
-   "blockTimestamp": "0x69cae9a5",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
-   ],
-   "data": "0x00000000000000000000000000000000000000000000000000443c4300400000",
-   "blockNumber": "0x2ba9f05",
-   "transactionHash": "0xb03082992417d06e5063041dc5f6a7685d1729055b4b42fd267bdce00989b4a6",
-   "transactionIndex": "0xa",
-   "blockHash": "0x6c07096c543b84607af14c793619c2b12758537f3403f7bdd8ad60174a6d919b",
-   "logIndex": "0x6b",
-   "blockTimestamp": "0x69e76ad5",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x000000000000000000000000da2a16ee889e7f04980a8d597b48c8d51b9518f4"
-   ],
-   "data": "0x000000000000000000000000000000000000000000000000136dcc951d8c0000",
-   "blockNumber": "0x2c5f5bd",
-   "transactionHash": "0x675a2063746ecf7053408c61f05294579038e76177ec7b864f07f598300a1693",
-   "transactionIndex": "0xb",
-   "blockHash": "0xfbc9e2d86d3fa375e2a1740e0387a25d75a36cff496711a68b6c213907b27faa",
-   "logIndex": "0x2a",
-   "blockTimestamp": "0x6a21c8fb",
-   "removed": false
-  },
-  {
-   "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-   "topics": [
-    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-    "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-    "0x0000000000000000000000000cbfb197efa7ee99f49bb9f483ceeff98f730c71"
-   ],
-   "data": "0x00000000000000000000000000000000000000000000000006f05b59d3b20000",
-   "blockNumber": "0x2dd549f",
-   "transactionHash": "0xdc04aa73e2f908ac0da51e18e5702a6d6df4e2964b12105bd90138d0db4479ba",
-   "transactionIndex": "0xa",
-   "blockHash": "0x8c0d22ec7c1028425274309e7dfeb4f3fe2c660d61c448d1e6ffd411bb41b7c0",
-   "logIndex": "0x23",
-   "blockTimestamp": "0x6a996582",
-   "removed": false
-  }
- ],
- "blockscout": {
-  "message": "OK",
-  "result": [
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x22941e8",
-    "data": "0x000000000000000000000000000000000000000000000000058d15e176280000",
-    "gasPrice": "0x8f0d1f53",
-    "gasUsed": "0x23aa4",
-    "logIndex": "0x1",
-    "timeStamp": "0x66fa04b3",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x000000000000000000000000be212ea1a4978a64e8f7636ae18305c38ca092bd",
-     null
-    ],
-    "transactionHash": "0xae3744390d0a338b4b2de2d40b2b7f8fb4b82b1aa41ded3b9a41c7789685d211",
-    "transactionIndex": "0x1"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x22a1817",
-    "data": "0x000000000000000000000000000000000000000000000000002386f26fc10000",
-    "gasPrice": "0x8ac275f6",
-    "gasUsed": "0xe957",
-    "logIndex": "0xb",
-    "timeStamp": "0x66fe4fe6",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x000000000000000000000000bd3b164ef9603a8ea97ef2d65c3ee1d94add5a3a",
-     null
-    ],
-    "transactionHash": "0x61cd2b1916af307888c2285a5f062453a65364dd1e60aedd3a76833491585869",
-    "transactionIndex": "0x3"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x22a1829",
-    "data": "0x000000000000000000000000000000000000000000000000002e593c00000000",
-    "gasPrice": "0x8ac275f6",
-    "gasUsed": "0x642c8",
-    "logIndex": "0x9",
-    "timeStamp": "0x66fe5040",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293",
-     null
-    ],
-    "transactionHash": "0xfd8665388bc0492ef0a332590048f4d1b85508a7efefa6fd477e087733a1d9bb",
-    "transactionIndex": "0xb"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x22a1ab6",
-    "data": "0x000000000000000000000000000000000000000000000000002386f26fc10000",
-    "gasPrice": "0x820e1845",
-    "gasUsed": "0x132cf",
-    "logIndex": "0x0",
-    "timeStamp": "0x66fe5d47",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x000000000000000000000000be212ea1a4978a64e8f7636ae18305c38ca092bd",
-     null
-    ],
-    "transactionHash": "0x803f069ef9a890d14e3c606fe7b2e5e26394b30d19c56e02c477740ba80fbf77",
-    "transactionIndex": "0x0"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x23b1fcf",
-    "data": "0x000000000000000000000000000000000000000000000000030d98d59a960000",
-    "gasPrice": "0x6b49d207",
-    "gasUsed": "0x2a892",
-    "logIndex": "0x11",
-    "timeStamp": "0x6756377e",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x000000000000000000000000445b848e16730988f871c4a09ab74526d27c2ce8",
-     null
-    ],
-    "transactionHash": "0x473031e4545dff9a3614fb319b89ce47c8982251e9fbc65fd51bce4a2a755956",
-    "transactionIndex": "0x3"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x25df4b7",
-    "data": "0x0000000000000000000000000000000000000000000000000233e85a00000000",
-    "gasPrice": "0x1520c9e",
-    "gasUsed": "0x85166",
-    "logIndex": "0x8",
-    "timeStamp": "0x68093117",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293",
-     null
-    ],
-    "transactionHash": "0x9602b122217097e795ab19806dfe088371d1417b5844b9da19880500864e4dd5",
-    "transactionIndex": "0x5"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x276b068",
-    "data": "0x000000000000000000000000000000000000000000000000030d98d59a960000",
-    "gasPrice": "0x59682f93",
-    "gasUsed": "0x2a8b9",
-    "logIndex": "0x0",
-    "timeStamp": "0x6888a48d",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x000000000000000000000000da2a16ee889e7f04980a8d597b48c8d51b9518f4",
-     null
-    ],
-    "transactionHash": "0xa8b2732d21792e60fd1f18ded0e03c1e9a9bf39bc09120891caf16b0b0bce2bf",
-    "transactionIndex": "0x0"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x2b516fa",
-    "data": "0x0000000000000000000000000000000000000000000000000028f0f500400000",
-    "gasPrice": "0x71",
-    "gasUsed": "0x5b29c",
-    "logIndex": "0x3f",
-    "timeStamp": "0x69cae9a5",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293",
-     null
-    ],
-    "transactionHash": "0x960da997fa36a7d23439df1b4d6d0dfbd6d1c99c24cb0bb90094b1aaa0e754a1",
-    "transactionIndex": "0xb"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x2ba9f05",
-    "data": "0x00000000000000000000000000000000000000000000000000443c4300400000",
-    "gasPrice": "0x91",
-    "gasUsed": "0x5a762",
-    "logIndex": "0x6b",
-    "timeStamp": "0x69e76ad5",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293",
-     null
-    ],
-    "transactionHash": "0xb03082992417d06e5063041dc5f6a7685d1729055b4b42fd267bdce00989b4a6",
-    "transactionIndex": "0xa"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x2c5f5bd",
-    "data": "0x000000000000000000000000000000000000000000000000136dcc951d8c0000",
-    "gasPrice": "0xed9",
-    "gasUsed": "0x14060",
-    "logIndex": "0x2a",
-    "timeStamp": "0x6a21c8fb",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x000000000000000000000000da2a16ee889e7f04980a8d597b48c8d51b9518f4",
-     null
-    ],
-    "transactionHash": "0x675a2063746ecf7053408c61f05294579038e76177ec7b864f07f598300a1693",
-    "transactionIndex": "0xb"
-   },
-   {
-    "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
-    "blockNumber": "0x2dd549f",
-    "data": "0x00000000000000000000000000000000000000000000000006f05b59d3b20000",
-    "gasPrice": "0x186ac",
-    "gasUsed": "0xa697",
-    "logIndex": "0x23",
-    "timeStamp": "0x6a996582",
-    "topics": [
-     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-     "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
-     "0x0000000000000000000000000cbfb197efa7ee99f49bb9f483ceeff98f730c71",
-     null
-    ],
-    "transactionHash": "0xdc04aa73e2f908ac0da51e18e5702a6d6df4e2964b12105bd90138d0db4479ba",
-    "transactionIndex": "0xa"
-   }
+  "_comment": "Captured 2026-10-07: one Bee node wallet's xBZZ Transfer logs (sender 0x971f31aa...), blocks 16514506..48606023, from rpc.gnosischain.com eth_getLogs and from gnosis.blockscout.com /api/v2/addresses/{wallet}/token-transfers?type=ERC-20&filter=from&token=xBZZ&block_number=48606024&index=0 (1 page; it redirects to gnosisscan.io). Public chain data. See blockscout-logs.test.js.",
+  "params": [
+    {
+      "address": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+      "fromBlock": "0xfbfdca",
+      "toBlock": "0x2e5ab47",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9"
+      ]
+    }
   ],
-  "status": "1"
- }
+  "rpc": [
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x000000000000000000000000be212ea1a4978a64e8f7636ae18305c38ca092bd"
+      ],
+      "data": "0x000000000000000000000000000000000000000000000000058d15e176280000",
+      "blockNumber": "0x22941e8",
+      "transactionHash": "0xae3744390d0a338b4b2de2d40b2b7f8fb4b82b1aa41ded3b9a41c7789685d211",
+      "transactionIndex": "0x1",
+      "blockHash": "0x703fc6169132694829c4e53e4e763f77df8679aaa35c62cb9e44080c2483f655",
+      "logIndex": "0x1",
+      "blockTimestamp": "0x66fa04b3",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x000000000000000000000000bd3b164ef9603a8ea97ef2d65c3ee1d94add5a3a"
+      ],
+      "data": "0x000000000000000000000000000000000000000000000000002386f26fc10000",
+      "blockNumber": "0x22a1817",
+      "transactionHash": "0x61cd2b1916af307888c2285a5f062453a65364dd1e60aedd3a76833491585869",
+      "transactionIndex": "0x3",
+      "blockHash": "0x9e18dbb52f1f26075d9a178dc08e9e0973c7d2bcc4ecbb95257ec2c39fa3f06f",
+      "logIndex": "0xb",
+      "blockTimestamp": "0x66fe4fe6",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
+      ],
+      "data": "0x000000000000000000000000000000000000000000000000002e593c00000000",
+      "blockNumber": "0x22a1829",
+      "transactionHash": "0xfd8665388bc0492ef0a332590048f4d1b85508a7efefa6fd477e087733a1d9bb",
+      "transactionIndex": "0xb",
+      "blockHash": "0x434f39e07bb042460e69b0de8e4c76a50a042bfad5a7f628d536dcffda5f6342",
+      "logIndex": "0x9",
+      "blockTimestamp": "0x66fe5040",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x000000000000000000000000be212ea1a4978a64e8f7636ae18305c38ca092bd"
+      ],
+      "data": "0x000000000000000000000000000000000000000000000000002386f26fc10000",
+      "blockNumber": "0x22a1ab6",
+      "transactionHash": "0x803f069ef9a890d14e3c606fe7b2e5e26394b30d19c56e02c477740ba80fbf77",
+      "transactionIndex": "0x0",
+      "blockHash": "0x2d88535f5d850563fe4e0fabb4cd708bfb0f26f2aaa8fe5d8f2889f5c4f55b95",
+      "logIndex": "0x0",
+      "blockTimestamp": "0x66fe5d47",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x000000000000000000000000445b848e16730988f871c4a09ab74526d27c2ce8"
+      ],
+      "data": "0x000000000000000000000000000000000000000000000000030d98d59a960000",
+      "blockNumber": "0x23b1fcf",
+      "transactionHash": "0x473031e4545dff9a3614fb319b89ce47c8982251e9fbc65fd51bce4a2a755956",
+      "transactionIndex": "0x3",
+      "blockHash": "0x812141bc383519ded1625436e3877f2bf35f4ffb9fe8896635f51ab3e75b0d17",
+      "logIndex": "0x11",
+      "blockTimestamp": "0x6756377e",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
+      ],
+      "data": "0x0000000000000000000000000000000000000000000000000233e85a00000000",
+      "blockNumber": "0x25df4b7",
+      "transactionHash": "0x9602b122217097e795ab19806dfe088371d1417b5844b9da19880500864e4dd5",
+      "transactionIndex": "0x5",
+      "blockHash": "0x933ed3414f08b64141f1b0f9bf2d7dbfc69eaaa50296f87fa0ba0b421018c7f3",
+      "logIndex": "0x8",
+      "blockTimestamp": "0x68093117",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x000000000000000000000000da2a16ee889e7f04980a8d597b48c8d51b9518f4"
+      ],
+      "data": "0x000000000000000000000000000000000000000000000000030d98d59a960000",
+      "blockNumber": "0x276b068",
+      "transactionHash": "0xa8b2732d21792e60fd1f18ded0e03c1e9a9bf39bc09120891caf16b0b0bce2bf",
+      "transactionIndex": "0x0",
+      "blockHash": "0x78019747f3be7d5346a5c2605f3c8b6bf8a50450d24c3e5d504e7cf544870caa",
+      "logIndex": "0x0",
+      "blockTimestamp": "0x6888a48d",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
+      ],
+      "data": "0x0000000000000000000000000000000000000000000000000028f0f500400000",
+      "blockNumber": "0x2b516fa",
+      "transactionHash": "0x960da997fa36a7d23439df1b4d6d0dfbd6d1c99c24cb0bb90094b1aaa0e754a1",
+      "transactionIndex": "0xb",
+      "blockHash": "0x2c87e4efff3737751287739433b361f004ea0a732c7e6e676b97ea76502f1ddf",
+      "logIndex": "0x3f",
+      "blockTimestamp": "0x69cae9a5",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x00000000000000000000000045a1502382541cd610cc9068e88727426b696293"
+      ],
+      "data": "0x00000000000000000000000000000000000000000000000000443c4300400000",
+      "blockNumber": "0x2ba9f05",
+      "transactionHash": "0xb03082992417d06e5063041dc5f6a7685d1729055b4b42fd267bdce00989b4a6",
+      "transactionIndex": "0xa",
+      "blockHash": "0x6c07096c543b84607af14c793619c2b12758537f3403f7bdd8ad60174a6d919b",
+      "logIndex": "0x6b",
+      "blockTimestamp": "0x69e76ad5",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x000000000000000000000000da2a16ee889e7f04980a8d597b48c8d51b9518f4"
+      ],
+      "data": "0x000000000000000000000000000000000000000000000000136dcc951d8c0000",
+      "blockNumber": "0x2c5f5bd",
+      "transactionHash": "0x675a2063746ecf7053408c61f05294579038e76177ec7b864f07f598300a1693",
+      "transactionIndex": "0xb",
+      "blockHash": "0xfbc9e2d86d3fa375e2a1740e0387a25d75a36cff496711a68b6c213907b27faa",
+      "logIndex": "0x2a",
+      "blockTimestamp": "0x6a21c8fb",
+      "removed": false
+    },
+    {
+      "address": "0xdbf3ea6f5bee45c02255b2c26a16f300502f68da",
+      "topics": [
+        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+        "0x000000000000000000000000971f31aaeac713b47aa55e50c06409afc1de46b9",
+        "0x0000000000000000000000000cbfb197efa7ee99f49bb9f483ceeff98f730c71"
+      ],
+      "data": "0x00000000000000000000000000000000000000000000000006f05b59d3b20000",
+      "blockNumber": "0x2dd549f",
+      "transactionHash": "0xdc04aa73e2f908ac0da51e18e5702a6d6df4e2964b12105bd90138d0db4479ba",
+      "transactionIndex": "0xa",
+      "blockHash": "0x8c0d22ec7c1028425274309e7dfeb4f3fe2c660d61c448d1e6ffd411bb41b7c0",
+      "logIndex": "0x23",
+      "blockTimestamp": "0x6a996582",
+      "removed": false
+    }
+  ],
+  "blockscout": {
+    "items": [
+      {
+        "block_hash": "0x8c0d22ec7c1028425274309e7dfeb4f3fe2c660d61c448d1e6ffd411bb41b7c0",
+        "block_number": 48059551,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 35,
+        "method": "0xa9059cbb",
+        "timestamp": "2026-09-03T12:18:10.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0x0CbFB197Efa7Ee99f49BB9f483CEeFf98f730C71",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "500000000000000000"
+        },
+        "transaction_hash": "0xdc04aa73e2f908ac0da51e18e5702a6d6df4e2964b12105bd90138d0db4479ba",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0xfbc9e2d86d3fa375e2a1740e0387a25d75a36cff496711a68b6c213907b27faa",
+        "block_number": 46527933,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 42,
+        "method": "manageStake",
+        "timestamp": "2026-06-04T18:50:35.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0xda2a16EE889E7F04980A8d597b48c8D51B9518F4",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "Provided by OLI"
+                },
+                "name": "StakeRegistry",
+                "ordinal": 0,
+                "slug": "stakeregistry",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "StakeRegistry",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "1400000000000000000"
+        },
+        "transaction_hash": "0x675a2063746ecf7053408c61f05294579038e76177ec7b864f07f598300a1693",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x6c07096c543b84607af14c793619c2b12758537f3403f7bdd8ad60174a6d919b",
+        "block_number": 45784837,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 107,
+        "method": "createBatch",
+        "timestamp": "2026-04-21T12:17:25.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0x45a1502382541Cd610CC9068e88727426b696293",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "projectName": "Swarm",
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tagUrl": "https://scout-app.kleros.io/single-tags/0x4876c3b0d01613b759637fe1fcfd5fe1745b6a7a5b058244826d8b334540ff3b",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "The official Swarm's PostageStamp contract on gnosis",
+                  "tooltipUrl": "https://www.ethswarm.org/"
+                },
+                "name": "PostageStamp v2.1",
+                "ordinal": 10,
+                "slug": "postagestamp-v21-100",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "PostageStamp",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "19206556880994304"
+        },
+        "transaction_hash": "0xb03082992417d06e5063041dc5f6a7685d1729055b4b42fd267bdce00989b4a6",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x2c87e4efff3737751287739433b361f004ea0a732c7e6e676b97ea76502f1ddf",
+        "block_number": 45422330,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 63,
+        "method": "createBatch",
+        "timestamp": "2026-03-30T21:22:45.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0x45a1502382541Cd610CC9068e88727426b696293",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "projectName": "Swarm",
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tagUrl": "https://scout-app.kleros.io/single-tags/0x4876c3b0d01613b759637fe1fcfd5fe1745b6a7a5b058244826d8b334540ff3b",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "The official Swarm's PostageStamp contract on gnosis",
+                  "tooltipUrl": "https://www.ethswarm.org/"
+                },
+                "name": "PostageStamp v2.1",
+                "ordinal": 10,
+                "slug": "postagestamp-v21-100",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "PostageStamp",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "11523934130274304"
+        },
+        "transaction_hash": "0x960da997fa36a7d23439df1b4d6d0dfbd6d1c99c24cb0bb90094b1aaa0e754a1",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x78019747f3be7d5346a5c2605f3c8b6bf8a50450d24c3e5d504e7cf544870caa",
+        "block_number": 41332840,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 0,
+        "method": "manageStake",
+        "timestamp": "2025-07-29T10:38:05.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0xda2a16EE889E7F04980A8d597b48c8D51B9518F4",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "Provided by OLI"
+                },
+                "name": "StakeRegistry",
+                "ordinal": 0,
+                "slug": "stakeregistry",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "StakeRegistry",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "220000000000000000"
+        },
+        "transaction_hash": "0xa8b2732d21792e60fd1f18ded0e03c1e9a9bf39bc09120891caf16b0b0bce2bf",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x933ed3414f08b64141f1b0f9bf2d7dbfc69eaaa50296f87fa0ba0b421018c7f3",
+        "block_number": 39711927,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 8,
+        "method": "createBatch",
+        "timestamp": "2025-04-23T18:27:35.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0x45a1502382541Cd610CC9068e88727426b696293",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "projectName": "Swarm",
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tagUrl": "https://scout-app.kleros.io/single-tags/0x4876c3b0d01613b759637fe1fcfd5fe1745b6a7a5b058244826d8b334540ff3b",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "The official Swarm's PostageStamp contract on gnosis",
+                  "tooltipUrl": "https://www.ethswarm.org/"
+                },
+                "name": "PostageStamp v2.1",
+                "ordinal": 10,
+                "slug": "postagestamp-v21-100",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "PostageStamp",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "158725885132800000"
+        },
+        "transaction_hash": "0x9602b122217097e795ab19806dfe088371d1417b5844b9da19880500864e4dd5",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x812141bc383519ded1625436e3877f2bf35f4ffb9fe8896635f51ab3e75b0d17",
+        "block_number": 37429199,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 17,
+        "method": "manageStake",
+        "timestamp": "2024-12-09T00:19:10.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0x445B848e16730988F871c4a09aB74526d27c2Ce8",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "projectName": "Swarm",
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tagUrl": "https://scout-app.kleros.io/single-tags/0xf97bfe057ee50d71b5815b4c31d62ad720ea045b76ac04445620273a5c9deed1",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "The official Swarm's StakeRegistry (Deprecated) contract on Gnosis",
+                  "tooltipUrl": "https://www.ethswarm.org/"
+                },
+                "name": "StakeRegistry (Deprecated)",
+                "ordinal": 10,
+                "slug": "stakeregistry-deprecated-100",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "StakeRegistry",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "220000000000000000"
+        },
+        "transaction_hash": "0x473031e4545dff9a3614fb319b89ce47c8982251e9fbc65fd51bce4a2a755956",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x2d88535f5d850563fe4e0fabb4cd708bfb0f26f2aaa8fe5d8f2889f5c4f55b95",
+        "block_number": 36313782,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 0,
+        "method": "manageStake",
+        "timestamp": "2024-10-03T09:00:55.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0xBe212EA1A4978a64e8f7636Ae18305C38CA092Bd",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "Provided by OLI"
+                },
+                "name": "StakeRegistry",
+                "ordinal": 0,
+                "slug": "stakeregistry",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "StakeRegistry",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "10000000000000000"
+        },
+        "transaction_hash": "0x803f069ef9a890d14e3c606fe7b2e5e26394b30d19c56e02c477740ba80fbf77",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x434f39e07bb042460e69b0de8e4c76a50a042bfad5a7f628d536dcffda5f6342",
+        "block_number": 36313129,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 9,
+        "method": "createBatch",
+        "timestamp": "2024-10-03T08:05:20.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0x45a1502382541Cd610CC9068e88727426b696293",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "projectName": "Swarm",
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tagUrl": "https://scout-app.kleros.io/single-tags/0x4876c3b0d01613b759637fe1fcfd5fe1745b6a7a5b058244826d8b334540ff3b",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "The official Swarm's PostageStamp contract on gnosis",
+                  "tooltipUrl": "https://www.ethswarm.org/"
+                },
+                "name": "PostageStamp v2.1",
+                "ordinal": 10,
+                "slug": "postagestamp-v21-100",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "PostageStamp",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "13045963161600000"
+        },
+        "transaction_hash": "0xfd8665388bc0492ef0a332590048f4d1b85508a7efefa6fd477e087733a1d9bb",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x9e18dbb52f1f26075d9a178dc08e9e0973c7d2bcc4ecbb95257ec2c39fa3f06f",
+        "block_number": 36313111,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 11,
+        "method": "0xa9059cbb",
+        "timestamp": "2024-10-03T08:03:50.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0xbd3B164ef9603A8EA97eF2D65c3EE1d94ADd5a3a",
+          "implementations": [
+            {
+              "address_hash": "0x3b6a7f0bDB6663007F95dBD7FDDef815f7596715",
+              "name": "ERC20SimpleSwap"
+            }
+          ],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": "eip1167",
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "10000000000000000"
+        },
+        "transaction_hash": "0x61cd2b1916af307888c2285a5f062453a65364dd1e60aedd3a76833491585869",
+        "type": "token_transfer"
+      },
+      {
+        "block_hash": "0x703fc6169132694829c4e53e4e763f77df8679aaa35c62cb9e44080c2483f655",
+        "block_number": 36258280,
+        "from": {
+          "ens_domain_name": null,
+          "hash": "0x971F31AaEAC713b47Aa55e50c06409AfC1de46b9",
+          "implementations": [],
+          "is_contract": false,
+          "is_scam": false,
+          "is_verified": false,
+          "metadata": null,
+          "name": null,
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "log_index": 1,
+        "method": "manageStake",
+        "timestamp": "2024-09-30T01:53:55.000000Z",
+        "to": {
+          "ens_domain_name": null,
+          "hash": "0xBe212EA1A4978a64e8f7636Ae18305C38CA092Bd",
+          "implementations": [],
+          "is_contract": true,
+          "is_scam": false,
+          "is_verified": true,
+          "metadata": {
+            "tags": [
+              {
+                "meta": {
+                  "tagIcon ": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "textColor": "#C163D4",
+                  "tooltipAttribution": "https://www.openlabelsinitiative.org?utm_source=blockscout",
+                  "tooltipAttributionIcon": "https://blockscout-icons.s3.us-east-1.amazonaws.com/OLI_tag_logo.svg",
+                  "tooltipDescription": "Provided by OLI"
+                },
+                "name": "StakeRegistry",
+                "ordinal": 0,
+                "slug": "stakeregistry",
+                "tagType": "name"
+              }
+            ]
+          },
+          "name": "StakeRegistry",
+          "private_tags": [],
+          "proxy_type": null,
+          "public_tags": [],
+          "reputation": "ok",
+          "watchlist_names": []
+        },
+        "token": {
+          "address_hash": "0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da",
+          "circulating_market_cap": "2909536",
+          "circulating_supply": "63149437.83655022",
+          "decimals": "16",
+          "exchange_rate": "0.04607361",
+          "holders_count": "228140",
+          "icon_url": "https://assets.coingecko.com/coins/images/16509/small/Circle_Orange_onWhite.png?1696516071",
+          "is_bridged": true,
+          "name": "Swarm",
+          "new_ui_multiplier": null,
+          "reputation": "ok",
+          "symbol": "BZZ",
+          "total_supply": "15882494262279968343987",
+          "type": "ERC-20",
+          "ui_multiplier": null,
+          "ui_multiplier_effective_at": null,
+          "volume_24h": "87244"
+        },
+        "token_type": "ERC-20",
+        "total": {
+          "decimals": "16",
+          "ui_multiplier": null,
+          "value": "400000000000000000"
+        },
+        "transaction_hash": "0xae3744390d0a338b4b2de2d40b2b7f8fb4b82b1aa41ded3b9a41c7789685d211",
+        "type": "token_transfer"
+      }
+    ],
+    "next_page_params": null
+  }
 }

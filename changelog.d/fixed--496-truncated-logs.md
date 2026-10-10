@@ -1,2 +1,0 @@
-- A log query over a fixed range of 2,000 blocks or more that matches too many logs now fails with a "narrow the block range" error instead of quietly returning only the last few hundred blocks' logs, for sites and for the Swarm node's wallet scan alike ([#496](https://github.com/solardev-xyz/freedom-browser/issues/496))
-  - Public Gnosis RPCs cut such an answer short without saying so; the Swarm node now narrows its scan until the answer is complete

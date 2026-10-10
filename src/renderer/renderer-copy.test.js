@@ -296,19 +296,23 @@ describe('error page heading case (#260)', () => {
   });
 
   test('every heading this page can show is sentence case', () => {
-    const runtime = [...errorHtml.matchAll(/setErrorTitle\(\s*(['"])(.*?)\1\s*\)/g)].map(
-      (m) => m[2]
-    );
-    expect(runtime.length).toBeGreaterThanOrEqual(2);
+    const PROPER_NOUNS = new Set(['Swarm']);
+    // Literal setErrorTitle() calls, plus the per-reason Swarm headings
+    // describeSwarmFailure() hands it (#618).
+    const runtime = [
+      ...errorHtml.matchAll(/setErrorTitle\(\s*(['"])(.*?)\1\s*\)/g),
+      ...errorHtml.matchAll(/\btitle:\s*(['"])(.*?)\1/g),
+    ].map((m) => m[2]);
+    expect(runtime.length).toBeGreaterThanOrEqual(6);
     const headings = ['Content unavailable', ...runtime];
     for (const heading of headings) {
-      // Sentence case: only the first word (and any proper noun, of which
-      // these have none) is capitalised.
+      // Sentence case: only the first word (and any proper noun) is
+      // capitalised.
       expect(
         heading
           .split(' ')
           .slice(1)
-          .filter((w) => /^[A-Z]/.test(w))
+          .filter((w) => /^[A-Z]/.test(w) && !PROPER_NOUNS.has(w))
       ).toEqual([]);
     }
   });

@@ -1,2 +1,0 @@
-- On Linux, Freedom's windows now carry the same app identity as its launcher entry, so the desktop groups them under the Freedom launcher and icon ([#470](https://github.com/solardev-xyz/freedom-browser/pull/470))
-  - Switching to an already-open profile gets the same focus nudge as opening a new one on X11; on a native Wayland session (the GNOME default) switching profiles can still show a "Freedom is ready" notification instead of raising the window

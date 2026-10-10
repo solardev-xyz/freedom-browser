@@ -89,6 +89,11 @@ const SURFACES = {
     '37-settings-nodes',
     '38-settings-advanced',
     '39-settings-about',
+    // A panel below its entry's first, brought up by its route (#604).
+    '40-settings-privacy-permissions',
+    '41-settings-networks-rpc',
+    '42-settings-networks-ens',
+    '43-settings-nodes-startup',
     '44-settings-search',
     '45-settings-shortcut-conflict',
   ],

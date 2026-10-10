@@ -1,3 +1,0 @@
-- Offchain ENS names whose gateway is a `.onion` address resolve over Tor ([#359](https://github.com/solardev-xyz/freedom-browser/issues/359))
-  - Before, the gateway's name went to your DNS resolver and the lookup failed
-  - Not dialled at all until Tor is routing it

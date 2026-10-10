@@ -856,7 +856,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
   initAutocomplete(); // Address bar autocomplete
-  initPageContextMenu({ onOpening: onAnyMenuOpening }); // Page context menu for webviews
+  initPageContextMenu({ onOpening: onAnyMenuOpening, onReload: hardReloadPage }); // Page context menu for webviews
   // Cut/Copy/Paste/Select All for every editable chrome text field — the
   // address bar, the find bar and the bookmark-edit dialog (#316). Passed in
   // explicitly rather than left to the module's fallback so the list of chrome

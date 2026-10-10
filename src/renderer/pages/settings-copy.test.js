@@ -210,6 +210,10 @@ describe('settings.html destructive actions follow one rule (#284)', () => {
     expect(SOURCE).toMatch(/class="btn danger" data-action="remove-key"/);
   });
 
+  test('"Restore defaults" is danger-styled: it drops every custom shortcut at once (#606)', () => {
+    expect(SOURCE).toMatch(/class="btn danger" id="shortcuts-restore-defaults"/);
+  });
+
   test('the three re-addable removals are plain', () => {
     // A remembered permission, one at a time…
     expect(SOURCE).toMatch(/<button class="btn" data-action="revoke"/);

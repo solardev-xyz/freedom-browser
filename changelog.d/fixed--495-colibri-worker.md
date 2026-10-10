@@ -1,2 +1,0 @@
-- Verifying a chain read with Colibri no longer freezes the browser ([#495](https://github.com/solardev-xyz/freedom-browser/issues/495))
-  - Colibri's proof checks ran on the browser's main thread, so a large proof from a page's `eth_call` or an ENS lookup stalled every window until it finished; they now run in a background thread, and one stuck past its deadline is stopped

@@ -1,2 +1,0 @@
-- Updated runtime dependencies:
-  - `@corpus-core/colibri-stateless` 3.0.0 to 3.0.1 (light-client updates are cached only once their finality is proven, and a short light-client update list is rejected)

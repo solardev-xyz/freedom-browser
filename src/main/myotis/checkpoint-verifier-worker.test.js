@@ -654,7 +654,7 @@ describe('bounded HTTP bodies', () => {
 describe('captured proofs with the real Colibri WASM', () => {
   beforeAll(() => {
     // These captures qualify this exact verifier/API, not a semver-compatible build.
-    expect(require('@corpus-core/colibri-stateless/package.json').version).toBe('3.0.1');
+    expect(require('@corpus-core/colibri-stateless/package.json').version).toBe('3.0.2');
   });
   test('real Gnosis proof requires PublicNode historical finality when Gnosis Checkpointz is offline', () => {
     const dir = path.resolve(__dirname, '../../../docs/audits/evidence/gnosis-recovery-2026-09/capture');

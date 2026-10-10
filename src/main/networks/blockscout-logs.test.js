@@ -2,11 +2,13 @@ const {
   BlockscoutError,
   BLOCKSCOUT_MAX_PAGES,
   ERC20_TRANSFER_TOPIC,
-  blockscoutLogToRpcLog,
+  agreedRpcLogs,
+  blockscoutTransfer,
   fetchBlockscoutTransferLogs,
   isLocalHostname,
   logIndexFilter,
   logsAgree,
+  rpcTransfer,
   rpcTransferLogsWellFormed,
 } = require('./blockscout-logs');
 const captured = require('./__fixtures__/blockscout-xbzz-transfers.json');
@@ -81,29 +83,42 @@ describe('logIndexFilter: only the Transfer scans Ant sends', () => {
   });
 });
 
-describe('mapping (captured from both providers, 2026-10-05)', () => {
-  test("each Blockscout log maps onto the RPC's entry for it, field for field", () => {
-    expect(captured.blockscout.result).toHaveLength(captured.rpc.length);
-    captured.blockscout.result.forEach((row, index) => {
-      const { blockHash, blockTimestamp, ...rpcEntry } = captured.rpc[index];
-      expect(blockHash).toMatch(/^0x[0-9a-f]{64}$/);
-      expect(blockTimestamp).toBeDefined();
-      // Topics lose Blockscout's null padding; gasPrice, gasUsed and timeStamp
-      // are dropped; blockHash, which the index does not report, stays out.
-      expect(blockscoutLogToRpcLog(row)).toEqual(rpcEntry);
-    });
+describe('mapping (captured from both providers, 2026-10-07)', () => {
+  const indexed = () => captured.blockscout.items.map(blockscoutTransfer);
+
+  test("each Blockscout transfer is the RPC's entry for it, field for field", () => {
+    expect(captured.blockscout.next_page_params).toBeNull();
+    expect(captured.blockscout.items).toHaveLength(captured.rpc.length);
+    const byPosition = new Map(
+      captured.rpc.map((log) => [
+        `${parseInt(log.blockNumber, 16)}:${parseInt(log.logIndex, 16)}`,
+        log,
+      ])
+    );
+    for (const item of captured.blockscout.items) {
+      const transfer = blockscoutTransfer(item);
+      const log = byPosition.get(`${item.block_number}:${item.log_index}`);
+      expect(transfer).toEqual(rpcTransfer(log));
+      expect(transfer).toMatchObject({
+        address: log.address,
+        blockHash: log.blockHash,
+        transactionHash: log.transactionHash,
+        from: log.topics[1],
+        to: log.topics[2],
+        value: BigInt(log.data).toString(),
+      });
+    }
   });
 
   test('the two captured answers agree', () => {
-    const mapped = captured.blockscout.result.map(blockscoutLogToRpcLog);
-    expect(logsAgree(mapped, captured.rpc)).toBe(true);
+    expect(logsAgree(indexed(), captured.rpc)).toBe(true);
     // Order and spelling do not matter.
     const shouted = [...captured.rpc].reverse().map((log) => ({
       ...log,
       address: log.address.toUpperCase().replace('0X', '0x'),
       blockNumber: `0x000${log.blockNumber.slice(2)}`,
     }));
-    expect(logsAgree(mapped, shouted)).toBe(true);
+    expect(logsAgree(indexed(), shouted)).toBe(true);
   });
 
   test.each([
@@ -119,25 +134,52 @@ describe('mapping (captured from both providers, 2026-10-05)', () => {
       (rpc) => [{ ...rpc[0], transactionHash: `0x${'2'.repeat(64)}` }, ...rpc.slice(1)],
     ],
     [
-      'a different transaction index',
-      (rpc) => [{ ...rpc[0], transactionIndex: '0x7' }, ...rpc.slice(1)],
+      'a different block hash',
+      (rpc) => [{ ...rpc[0], blockHash: `0x${'3'.repeat(64)}` }, ...rpc.slice(1)],
+    ],
+    ['another contract', (rpc) => [{ ...rpc[0], address: `0x${'1'.repeat(40)}` }, ...rpc.slice(1)]],
+    [
+      'another event',
+      (rpc) => [
+        { ...rpc[0], topics: [`0x${'4'.repeat(64)}`, ...rpc[0].topics.slice(1)] },
+        ...rpc.slice(1),
+      ],
     ],
     ['a removed log', (rpc) => [{ ...rpc[0], removed: true }, ...rpc.slice(1)]],
     ['a duplicate in place of a log', (rpc) => [rpc[1], ...rpc.slice(1)]],
     ['a malformed entry', (rpc) => [{ ...rpc[0], blockNumber: 12 }, ...rpc.slice(1)]],
     ['no list', () => null],
   ])('they disagree with %s', (_label, change) => {
-    const mapped = captured.blockscout.result.map(blockscoutLogToRpcLog);
-    expect(logsAgree(mapped, change(captured.rpc))).toBe(false);
+    expect(logsAgree(indexed(), change(captured.rpc))).toBe(false);
+  });
+
+  test('a duplicate on the Blockscout side disagrees', () => {
+    const doubled = indexed();
+    doubled[1] = doubled[0];
+    expect(logsAgree(doubled, captured.rpc)).toBe(false);
+  });
+
+  test.each([
+    ['no block hash', { block_hash: null }],
+    ['a short transaction hash', { transaction_hash: '0x12' }],
+    ['a block number that is a string', { block_number: '48059551' }],
+    ['a negative log index', { log_index: -1 }],
+    ['no sender', { from: null }],
+    ['a recipient that is not an address', { to: { hash: '0x12' } }],
+    ['a value that is not decimal', { total: { value: '0x10' } }],
+    ['a value over 256 bits', { total: { value: (1n << 256n).toString() } }],
+    ['another token type', { token_type: 'ERC-721' }],
+    ['no token', { token: null }],
+  ])('a Blockscout transfer with %s is malformed', (_label, change) => {
+    expect(blockscoutTransfer({ ...captured.blockscout.items[0], ...change })).toBeNull();
   });
 });
 
 // The RPC's entries are what Ant receives, so they must be in the exact shape
 // Ant reads, not only agree with Blockscout once both are canonicalised.
 describe('the RPC entries must have the exact shape Ant reads', () => {
-  const mapped = () => captured.blockscout.result.map(blockscoutLogToRpcLog);
+  const indexed = () => captured.blockscout.items.map(blockscoutTransfer);
   const first = (change) => (rpc) => [{ ...rpc[0], ...change(rpc[0]) }, ...rpc.slice(1)];
-  const WORD = `0x${'0'.repeat(63)}1`;
 
   test('the captured RPC answer is well formed', () => {
     expect(rpcTransferLogsWellFormed(captured.rpc)).toBe(true);
@@ -169,32 +211,49 @@ describe('the RPC entries must have the exact shape Ant reads', () => {
   ])('%s: the check fails', (_label, change) => {
     const rpc = change(captured.rpc);
     expect(rpcTransferLogsWellFormed(rpc)).toBe(false);
-    expect(logsAgree(mapped(), rpc)).toBe(false);
-  });
-
-  // A malformed RPC value never agrees, even with a Blockscout row that is
-  // malformed the same way (Blockscout's rows are held to the same encoding
-  // when they are read: fetchBlockscoutTransferLogs).
-  test('a two-word value disagrees even when Blockscout reports the same', () => {
-    const data = `${WORD}${'0'.repeat(64)}`;
-    const indexed = mapped().map((log, i) => (i === 0 ? { ...log, data } : log));
-    const rpc = captured.rpc.map((log, i) => (i === 0 ? { ...log, data } : log));
-    expect(logsAgree(indexed, rpc)).toBe(false);
+    expect(logsAgree(indexed(), rpc)).toBe(false);
   });
 });
 
-// A Blockscout log row, as its logs API returns one (see the fixture).
-const row = (block, logIndex = 0, { from = WALLET, to = OTHER } = {}) => ({
-  address: XBZZ.toLowerCase(),
-  blockNumber: `0x${block.toString(16)}`,
-  data: `0x${'0'.repeat(63)}1`,
-  gasPrice: '0x1',
-  gasUsed: '0x1',
-  logIndex: `0x${logIndex.toString(16)}`,
-  timeStamp: '0x1',
-  topics: [ERC20_TRANSFER_TOPIC, from, to, null],
-  transactionHash: `0x${block.toString(16).padStart(32, '0')}${logIndex.toString(16).padStart(32, '0')}`,
-  transactionIndex: '0x0',
+// What the pair delivers is what it verified: the RPC's entries cut to the
+// fields logsAgree compared with Blockscout's transfers.
+describe('agreedRpcLogs', () => {
+  const indexed = () => captured.blockscout.items.map(blockscoutTransfer);
+
+  test('a wrong transactionIndex still agrees, so it is not delivered', () => {
+    // Blockscout does not report it: nothing in the pair can check it.
+    const rpc = captured.rpc.map((log) => ({ ...log, transactionIndex: '0x3e7' }));
+    expect(logsAgree(indexed(), rpc)).toBe(true);
+    const delivered = agreedRpcLogs(rpc);
+    expect(delivered).toHaveLength(rpc.length);
+    for (const log of delivered) expect(log).not.toHaveProperty('transactionIndex');
+  });
+
+  test('keeps every compared field in the RPC spelling, and nothing else', () => {
+    const rpc = captured.rpc.map((log) => ({ ...log, blockTimestamp: '0x1', extra: 'x' }));
+    const delivered = agreedRpcLogs(rpc);
+    delivered.forEach((log, i) => {
+      const { transactionIndex: _unchecked, blockTimestamp: _t, extra: _x, ...compared } = rpc[i];
+      expect(log).toEqual({ ...compared, removed: false });
+      expect(log.topics).not.toBe(rpc[i].topics);
+    });
+  });
+});
+
+// A Blockscout token-transfer item, as its API v2 lists one (see the fixture,
+// which also carries display fields such as the token's name and the parties'
+// tags; they are not read).
+const row = (block, logIndex = 0, { from = WALLET, to = OTHER, token = XBZZ } = {}) => ({
+  block_hash: `0x${block.toString(16).padStart(64, 'b')}`,
+  block_number: block,
+  from: { hash: `0x${from.slice(26)}` },
+  log_index: logIndex,
+  to: { hash: `0x${to.slice(26)}` },
+  token: { address_hash: token, type: 'ERC-20' },
+  token_type: 'ERC-20',
+  total: { decimals: '16', value: '1' },
+  transaction_hash: `0x${block.toString(16).padStart(32, '0')}${logIndex.toString(16).padStart(32, '0')}`,
+  type: 'token_transfer',
 });
 
 function reply(body, { status = 200, headers = {}, url = 'https://gnosisscan.io/api' } = {}) {
@@ -207,8 +266,18 @@ function reply(body, { status = 200, headers = {}, url = 'https://gnosisscan.io/
     text: async () => text,
   });
 }
-const ok = (rows) => reply({ status: '1', message: 'OK', result: rows });
-const NO_LOGS = { status: '0', message: 'No logs found', result: [] };
+// One page of items, newest first; `more` names the next page as Blockscout
+// does (the last item's position), else this is the last page.
+const ok = (items, { more = false } = {}) => {
+  const last = items[items.length - 1];
+  return reply({
+    items,
+    next_page_params: more
+      ? { block_number: last.block_number, index: last.log_index, items_count: 50 }
+      : null,
+  });
+};
+const NO_LOGS = { items: [], next_page_params: null };
 
 describe('fetchBlockscoutTransferLogs', () => {
   const filter = logIndexFilter(100, antFilter({ fromBlock: '0x64', toBlock: '0x2710' }));
@@ -218,22 +287,23 @@ describe('fetchBlockscoutTransferLogs', () => {
   const read = (fetchImpl, toBlock = 10_000, lookup = publicLookup) =>
     fetchBlockscoutTransferLogs(filter, toBlock, { timeoutMs: 1000, fetchImpl, lookup });
   const queryOf = (url) => Object.fromEntries(new URL(url).searchParams);
+  // `count` items newest first, one per block from `newest` down.
+  const descending = (newest, count) => Array.from({ length: count }, (_, i) => row(newest - i));
 
-  test("asks Blockscout's logs API for exactly the filter, and maps the answer", async () => {
-    const fetchImpl = jest.fn(() => ok([row(200), row(300, 2)]));
+  test("asks Blockscout's token-transfer API for the sender's transfers before toBlock + 1", async () => {
+    const fetchImpl = jest.fn(() => ok([row(300, 2), row(200)]));
     const logs = await read(fetchImpl, 5000);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(url.startsWith('https://gnosis.blockscout.com/api?')).toBe(true);
+    expect(new URL(url).origin + new URL(url).pathname).toBe(
+      'https://gnosis.blockscout.com/api/v2/addresses/0x971f31aaeac713b47aa55e50c06409afc1de46b9/token-transfers'
+    );
     expect(queryOf(url)).toEqual({
-      module: 'logs',
-      action: 'getLogs',
-      fromBlock: '100',
-      toBlock: '5000',
-      address: XBZZ.toLowerCase(),
-      topic0: ERC20_TRANSFER_TOPIC,
-      topic1: WALLET,
-      topic0_1_opr: 'and',
+      type: 'ERC-20',
+      filter: 'from',
+      token: XBZZ.toLowerCase(),
+      block_number: '5001',
+      index: '0',
     });
     // Nothing but the filter: no credentials, no referrer.
     expect(init).toMatchObject({
@@ -241,86 +311,110 @@ describe('fetchBlockscoutTransferLogs', () => {
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
     });
+    // Oldest first.
     expect(logs.map((log) => [log.blockNumber, log.logIndex])).toEqual([
-      ['0xc8', '0x0'],
-      ['0x12c', '0x2'],
+      [200, 0],
+      [300, 2],
     ]);
-    expect(logs[0]).toEqual({ ...blockscoutLogToRpcLog(row(200)), removed: false });
+    expect(logs[0]).toEqual(blockscoutTransfer(row(200)));
   });
 
-  test('a recipient scan names topic2 and its operator', async () => {
+  test("a recipient scan lists the recipient's incoming transfers", async () => {
     const fetchImpl = jest.fn(() => reply(NO_LOGS));
     const recipient = logIndexFilter(
       100,
       antFilter({ topics: [ERC20_TRANSFER_TOPIC, null, WALLET] })
     );
     await fetchBlockscoutTransferLogs(recipient, 10, { timeoutMs: 1000, fetchImpl });
-    const query = queryOf(fetchImpl.mock.calls[0][0]);
-    expect(query).toMatchObject({ topic2: WALLET, topic0_2_opr: 'and' });
-    expect(query.topic1).toBeUndefined();
+    const url = new URL(fetchImpl.mock.calls[0][0]);
+    expect(url.pathname).toBe(
+      '/api/v2/addresses/0x971f31aaeac713b47aa55e50c06409afc1de46b9/token-transfers'
+    );
+    expect(queryOf(url)).toMatchObject({ filter: 'to', block_number: '11', index: '0' });
   });
 
-  test('"No logs found" is an empty answer', async () => {
+  test('a scan by sender and recipient reads by sender and keeps that recipient only', async () => {
+    const both = logIndexFilter(
+      100,
+      antFilter({
+        fromBlock: '0x64',
+        toBlock: '0x2710',
+        topics: [ERC20_TRANSFER_TOPIC, WALLET, OTHER],
+      })
+    );
+    const elsewhere = `0x${'0'.repeat(24)}${'2'.repeat(40)}`;
+    const fetchImpl = jest.fn(() => ok([row(300), row(250, 0, { to: elsewhere }), row(200)]));
+    const logs = await fetchBlockscoutTransferLogs(both, 10_000, { timeoutMs: 1000, fetchImpl });
+    expect(queryOf(fetchImpl.mock.calls[0][0])).toMatchObject({ filter: 'from' });
+    expect(logs.map((log) => log.blockNumber)).toEqual([200, 300]);
+  });
+
+  test('no transfers is an empty answer', async () => {
     expect(await read(() => reply(NO_LOGS))).toEqual([]);
   });
 
-  test('a page at the 1,000-log cap is never taken as complete: the next is read from its last block', async () => {
-    // 999 logs in blocks 101..1099, then the cap cuts block 1100 part-way.
-    const first = [
-      ...Array.from({ length: 998 }, (_, i) => row(101 + i)),
-      row(1100, 0),
-      row(1100, 1),
-    ];
-    const second = [row(1100, 0), row(1100, 1), row(1100, 2), row(5000)];
+  test('pages are read back from where the last one ended, until fromBlock is passed', async () => {
     const fetchImpl = jest
       .fn()
-      .mockImplementationOnce(() => ok(first))
-      .mockImplementationOnce(() => ok(second));
+      .mockImplementationOnce(() => ok(descending(9000, 50), { more: true }))
+      .mockImplementationOnce(() => ok([...descending(8950, 3), row(99), row(98)], { more: true }));
     const logs = await read(fetchImpl);
+    // The second page reached a transfer before fromBlock (100): no third.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(queryOf(fetchImpl.mock.calls[1][0])).toMatchObject({
-      fromBlock: '1100',
-      toBlock: '10000',
+      block_number: '8951',
+      index: '0',
     });
-    expect(logs).toHaveLength(998 + 4);
-    expect(logs.filter((log) => log.blockNumber === '0x44c')).toHaveLength(3);
+    expect(logs).toHaveLength(53);
+    expect(logs[0].blockNumber).toBe(8948);
+    expect(logs[52].blockNumber).toBe(9000);
   });
 
-  test('a capped page whose logs all sit in one block cannot be read on', async () => {
-    const fetchImpl = () => ok(Array.from({ length: 1000 }, (_, i) => row(500, i)));
-    await expect(read(fetchImpl)).rejects.toThrow('one block fills a whole page');
+  test('an empty page that names a next one fails the read', async () => {
+    await expect(
+      read(() => reply({ items: [], next_page_params: { block_number: 1, index: 0 } }))
+    ).rejects.toThrow('an empty page that is not the last');
   });
 
-  test(`more than ${BLOCKSCOUT_MAX_PAGES} full pages fail rather than return part of the answer`, async () => {
-    let page = 0;
+  test(`more than ${BLOCKSCOUT_MAX_PAGES} pages fail rather than return part of the answer`, async () => {
+    let newest = 10_000;
     const fetchImpl = jest.fn(() => {
-      const base = 101 + page * 1000;
-      page += 1;
-      return ok(Array.from({ length: 1000 }, (_, i) => row(base + i)));
+      const items = descending(newest, 50);
+      newest -= 50;
+      return ok(items, { more: true });
     });
     await expect(read(fetchImpl)).rejects.toThrow(`over ${BLOCKSCOUT_MAX_PAGES} pages`);
     expect(fetchImpl).toHaveBeenCalledTimes(BLOCKSCOUT_MAX_PAGES);
   });
 
   test.each([
-    ['a log outside the range', [row(20_000)], 'outside the filter'],
-    ['a log from another sender', [row(200, 0, { from: OTHER })], 'outside the filter'],
+    ['a transfer after toBlock', [row(10_001)], 'out of order'],
+    ['a transfer from another sender', [row(200, 0, { from: OTHER })], 'outside the filter'],
     [
-      'a log of another contract',
-      [{ ...row(200), address: `0x${'1'.repeat(40)}` }],
+      'a transfer of another token',
+      [row(200, 0, { token: `0x${'1'.repeat(40)}` })],
       'outside the filter',
     ],
-    ['a malformed log', [{ ...row(200), transactionHash: '0x12' }], 'outside the filter'],
-    ['logs out of order', [row(300), row(200)], 'out of order'],
+    ['a malformed transfer', [{ ...row(200), transaction_hash: '0x12' }], 'outside the filter'],
+    ['transfers out of order', [row(200), row(300)], 'out of order'],
+    ['the same transfer twice', [row(200), row(200)], 'out of order'],
   ])('%s fails the read', async (_label, rows, message) => {
     await expect(read(() => ok(rows))).rejects.toThrow(message);
+  });
+
+  test('a page that repeats the last transfer of the one before fails the read', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce(() => ok([row(300), row(200)], { more: true }))
+      .mockImplementationOnce(() => ok([row(200)]));
+    await expect(read(fetchImpl)).rejects.toThrow('out of order');
   });
 
   test('a 429 cools Blockscout down for the reset it names, within bounds', async () => {
     const limited = (reset) =>
       read(() =>
         reply(
-          { status: '0', message: 'Too many requests', result: null },
+          { message: 'Too many requests' },
           {
             status: 429,
             headers: reset === undefined ? {} : { 'x-ratelimit-reset': String(reset) },
@@ -336,52 +430,14 @@ describe('fetchBlockscoutTransferLogs', () => {
   });
 
   test.each([
-    ['a value of two words', { data: `0x${'0'.repeat(127)}1` }],
-    ['an empty value', { data: '0x' }],
-    ['a recipient topic that is not an address', { to: `0x${'1'.repeat(64)}` }],
-  ])('a Blockscout row with %s is not in the encoding Ant reads', async (_label, change) => {
-    const bad = { ...row(200, 0, change.to ? { to: change.to } : {}) };
-    if (change.data) bad.data = change.data;
-    await expect(read(() => ok([bad]))).rejects.toThrow('outside the filter');
-  });
-
-  test('a recipient scan refuses a Blockscout row whose sender topic is not an address', async () => {
-    const recipient = logIndexFilter(
-      100,
-      antFilter({
-        fromBlock: '0x64',
-        toBlock: '0x2710',
-        topics: [ERC20_TRANSFER_TOPIC, null, OTHER],
-      })
-    );
-    const bad = row(200, 0, { from: `0x${'1'.repeat(64)}` });
-    await expect(
-      fetchBlockscoutTransferLogs(recipient, 10_000, {
-        timeoutMs: 1000,
-        fetchImpl: () => ok([bad]),
-      })
-    ).rejects.toThrow('outside the filter');
-    // The same row with an address sender is read.
-    const good = row(200, 0);
-    await expect(
-      fetchBlockscoutTransferLogs(recipient, 10_000, {
-        timeoutMs: 1000,
-        fetchImpl: () => ok([good]),
-      })
-    ).resolves.toHaveLength(1);
-  });
-
-  test.each([
     ['HTTP 500', () => reply('oops', { status: 500 }), 'HTTP 500'],
     ['an answer that is not JSON', () => reply('<html>'), 'not JSON'],
-    [
-      'a refusal',
-      () => reply({ status: '0', message: 'Invalid address format', result: null }),
-      'refused',
-    ],
+    ['a refusal', () => reply({ message: 'Invalid address format' }), 'refused'],
+    ['items that are not a list', () => reply({ items: {}, next_page_params: null }), 'refused'],
+    ['no next_page_params', () => reply({ items: [] }), 'refused'],
     [
       'a throttle in the body',
-      () => reply({ status: '0', message: 'Too many requests. Increase limits', result: null }),
+      () => reply({ message: 'Too many requests. Increase limits' }),
       'throttled',
     ],
     [
@@ -428,7 +484,8 @@ describe('fetchBlockscoutTransferLogs', () => {
     expect(fetchImpl.mock.calls.every(([, init]) => init.redirect === 'manual')).toBe(true);
     const second = new URL(fetchImpl.mock.calls[1][0]);
     expect(second.host).toBe('gnosisscan.io');
-    expect(queryOf(second.toString()).topic1).toBe(WALLET);
+    expect(second.pathname).toContain(`/addresses/0x${WALLET.slice(26)}/`);
+    expect(queryOf(second.toString())).toMatchObject({ filter: 'from', block_number: '10001' });
   });
 
   test('a redirect to http is refused before it is dialled: the address never goes out in clear', async () => {
@@ -599,8 +656,8 @@ describe('fetchBlockscoutTransferLogs', () => {
         (_url, { signal }) =>
           new Promise((resolve, reject) => {
             page += 1;
-            const rows = Array.from({ length: 1000 }, (_, i) => row(page * 1000 + i));
-            const timer = setTimeout(() => resolve(ok(rows)), 600);
+            const rows = Array.from({ length: 50 }, (_, i) => row(10_000 - page * 50 - i));
+            const timer = setTimeout(() => resolve(ok(rows, { more: true })), 600);
             signal.addEventListener('abort', () => {
               clearTimeout(timer);
               reject(new Error('aborted'));
@@ -627,11 +684,12 @@ describe('fetchBlockscoutTransferLogs', () => {
       () => reply({}, { status: 429 }),
       () => reply('oops', { status: 503 }),
       () => reply('<html>'),
-      () => reply({ status: '0', message: 'Too many requests', result: null }),
-      () => reply({ status: '0', message: 'Query limit exceeded', result: null }),
+      () => reply({ message: 'Too many requests' }),
+      () => reply({ message: 'Query limit exceeded' }),
       () => ok([row(20_000)]),
-      () => ok([row(300), row(200)]),
-      () => ok(Array.from({ length: 1000 }, (_, i) => row(500, i))),
+      () => ok([row(200), row(300)]),
+      () => ok([row(200, 0, { from: OTHER })]),
+      () => reply({ items: [], next_page_params: { block_number: 1, index: 0 } }),
       () => Promise.reject(new TypeError('fetch failed')),
     ];
     for (const fetchImpl of failures) {
@@ -639,10 +697,11 @@ describe('fetchBlockscoutTransferLogs', () => {
       expect(err).toBeInstanceOf(BlockscoutError);
       expect(antShrinksLogScanOn(err.message)).toBe(false);
     }
-    let page = 0;
+    let newest = 10_000;
     const err = await read(() => {
-      page += 1;
-      return ok(Array.from({ length: 1000 }, (_, i) => row(page * 1000 + i)));
+      const items = Array.from({ length: 50 }, (_, i) => row(newest - i));
+      newest -= 50;
+      return ok(items, { more: true });
     }).catch((error) => error);
     expect(antShrinksLogScanOn(err.message)).toBe(false);
   });

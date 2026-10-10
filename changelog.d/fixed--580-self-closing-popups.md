@@ -1,2 +1,0 @@
-- A page that closes itself now closes its tab, and a pop-up window with it, instead of leaving a tab that could not be closed ([#580](https://github.com/solardev-xyz/freedom-browser/issues/580))
-  - Pop-ups that close themselves after a moment, like popupcheck.com's, stayed open, and neither the tab's close button nor Cmd/Ctrl+W removed them

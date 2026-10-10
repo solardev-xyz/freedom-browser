@@ -130,3 +130,34 @@ a regression in `eth_call` verification after 3.0.1 should be checked against
 - The real ENS suite passed all six scenarios.
 - Linux x64, Node 24.21.0. The native Myotis recovery campaigns on macOS arm64
   were not re-run.
+
+## 3.0.2 re-validation — 7 October 2026
+
+Freedom now pins 3.0.2. The package changes only `c4w.wasm` and the native
+prebuilds (and its own version field); `c4w.js`, the `package.json` exports,
+the `node` conditional export, the `C4_DISABLE_NATIVE` escape hatch and the
+MIT `LICENSE` are unchanged. `c4w.wasm` is `d84bac79…`, 1371569 bytes (3.0.1:
+`86c981e7…`, 1371514). The one upstream change is
+corpus-core/colibri-stateless#395 in `header_cache.c`: a header-only update
+freed a cached execution body but kept the pointer, so the next one freed it
+again. In the WASM build that corrupted the heap — repeated `eth_getLogs`
+eventually trapped in `free`, and receipts then failed with a sticky
+`invalid merkle root!`. That is the same instance-poisoning symptom
+`colibri-runtime.js` recovers from by replacing the WASM instance after a
+trap; the recovery stays, since #395 removes one cause, not the trap path.
+
+- `_c4w_get_current_version_number()` on the shipped 3.0.2 WASM returns 196610,
+  which is what `colibri-runtime.js` encodes from the package version.
+- The offline fixtures above, captured on 3.0.0, still verify on 3.0.2, and
+  every rejection control still rejects (`checkpoint-verifier-worker.test.js`
+  and `colibri-runtime.test.js`, 83 tests).
+- `capture.cjs` (with its version assertion pointed at 3.0.2, not committed)
+  verified live Ethereum (slot 15381472) and Gnosis (slot 30481920) checkpoints
+  through the production worker against a three-authority quorum, advertising
+  client version 196610. Those captures were not kept as fixtures.
+- The real ENS suite (`ENS_COLIBRI_E2E=1`) passed all six scenarios, and the
+  live `test-e2e/live/eth-sites.spec.js` cold start (ENS, WNS and GNS sites
+  rendered in the real Electron main process, native addon still disabled)
+  passed on Electron 44.7.0.
+- Linux x64, Node 24.21.0. The native Myotis recovery campaigns on macOS arm64
+  were not re-run.

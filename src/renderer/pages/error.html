@@ -47,11 +47,11 @@
         background: var(--shell-surface);
         padding: 16px;
         border-radius: 8px;
-        font-family: monospace;
+        font-family: var(--font-mono);
         font-size: 14px;
         color: var(--shell-danger);
         margin-bottom: 24px;
-        word-break: break-all;
+        overflow-wrap: anywhere;
         white-space: pre-wrap;
       }
       button {
@@ -62,6 +62,15 @@
         border-radius: 6px;
         cursor: pointer;
         font-size: 14px;
+      }
+      .auto-retry {
+        font-size: 14px;
+        margin: 0 0 16px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
       }
       button:hover {
         background: var(--shell-button-hover);
@@ -83,7 +92,11 @@
         invalid, the content may no longer exist, or no peers are serving it.
       </p>
       <div id="details" class="error-details"></div>
-      <button id="retry-btn">Try Again</button>
+      <p id="auto-retry" class="auto-retry" hidden></p>
+      <div class="actions">
+        <button id="retry-btn">Try Again</button>
+        <button id="auto-retry-stop" hidden>Stop retrying</button>
+      </div>
     </div>
 
     <script src="scripts/error.js"></script>

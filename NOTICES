@@ -63,6 +63,31 @@ Microsoft Visual C++ runtime (Windows builds only)
   as Distributable Code under the Microsoft Visual Studio license terms.
   https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
 
+AppImage runtime (Linux AppImage only)
+  The executable header of the Freedom .AppImage file: the static type-2
+  runtime from AppImage/type2-runtime release 20251108, added by
+  electron-builder (build.toolsets.appimage 1.0.3). It is a separate
+  program that mounts the image and then starts Freedom; Freedom's code
+  is not linked into it. The .deb and pacman packages do not contain it.
+  Corresponding source, including the build scripts and the libfuse
+  patch: https://github.com/AppImage/type2-runtime/tree/20251108
+  It contains code from:
+  - type2-runtime: MIT, Copyright (c) 2004-23 probonopd
+  - libfuse 3.15.0: LGPL-2.1, https://github.com/libfuse/libfuse,
+    modified by upstream's patches/libfuse/mount.c.diff
+  - squashfuse 0.5.2: BSD-2-Clause, Copyright (c) 2012 Dave Vasilevsky,
+    Phillip Lougher, https://github.com/vasi/squashfuse
+  - musl libc: MIT, Copyright (c) 2005-2020 Rich Felker, et al.,
+    https://musl.libc.org
+  - zstd: BSD-3-Clause (offered as BSD-3-Clause OR GPL-2.0; used under
+    BSD-3-Clause), Copyright (c) Meta Platforms, Inc. and affiliates,
+    https://github.com/facebook/zstd
+  - zlib: Zlib, https://zlib.net
+  - mimalloc: MIT, Copyright (c) Microsoft Corporation, Daan Leijen,
+    https://github.com/microsoft/mimalloc
+  Running the AppImage with --appimage-help prints upstream's own list of
+  these licenses (it does not name mimalloc).
+
 == Bundled renderer libraries (src/renderer/vendor/) ==
 
 OpenLV (@openlv/core, @openlv/session, @openlv/signaling, @openlv/transport)

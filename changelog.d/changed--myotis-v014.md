@@ -1,3 +1,0 @@
-- Updated bundled nodes:
-  - [Myotis](https://github.com/biafra23/myotis) 0.1.11 to 0.1.14
-- Gas estimates and contract calls through Myotis honour every transaction field, and a transaction Myotis refuses shows as not sent rather than possibly sent ([#557](https://github.com/solardev-xyz/freedom-browser/pull/557))

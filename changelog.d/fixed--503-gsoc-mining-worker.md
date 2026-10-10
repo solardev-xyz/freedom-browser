@@ -1,2 +1,0 @@
-- Joining a new Swarm messaging room no longer freezes the browser ([#503](https://github.com/solardev-xyz/freedom-browser/issues/503))
-  - Working out a room's address ran on the browser's main thread and stalled every window for up to a second; it now runs in a background thread, and a page can start at most 16 new rooms a minute

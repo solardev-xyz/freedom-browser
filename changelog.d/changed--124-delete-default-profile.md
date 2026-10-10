@@ -1,3 +1,0 @@
-- The first profile can be deleted from the profile manager once another profile exists ([#124](https://github.com/solardev-xyz/freedom-browser/issues/124))
-  - The last remaining profile still cannot be deleted, and neither can the one you are using
-  - Once deleted it stays deleted: opening another profile no longer brings it back

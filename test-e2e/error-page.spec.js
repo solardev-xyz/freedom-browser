@@ -79,9 +79,9 @@ test('the swarm error page does not inherit the previous page title', async ({
     )
     .toMatch(/pages\/error\.html\?error=swarm_content_not_found/);
 
-  // The error page names itself. `swarm_content_not_found` renders the
-  // "Content not ready yet" headline and sets the document title to match.
-  await expect(tabTitle).toHaveText('Content not ready yet', { timeout: 10_000 });
+  // The error page names itself. A `not_found` probe renders the
+  // "Content not found yet" headline and sets the document title to match.
+  await expect(tabTitle).toHaveText('Content not found yet', { timeout: 10_000 });
 });
 
 // The other half of #236: the tab title is what the history entry records at
@@ -246,4 +246,230 @@ test.describe('the error page reads node state from the registry', () => {
     expect(await descriptionFor(window, 'swarm')).not.toMatch(/node is not running/);
     expect(await descriptionFor(window, 'ipfs')).not.toMatch(/node is not running/);
   });
+});
+
+// #618: the page used to say "still connecting to peers … (timeout)" for
+// every probe failure. Each reason now gets its own copy, and only the
+// recoverable ones retry on their own.
+const errorPageFor = async (electronApp, window, hash) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(`bzz://${hash}`);
+  await input.press('Enter');
+  let page;
+  await expect
+    .poll(() => {
+      page = electronApp.windows().find((p) => p.url().includes('/pages/error.html'));
+      return Boolean(page);
+    })
+    .toBe(true);
+  return page;
+};
+
+test('a timeout on a node short of peers says so, and retries on its own', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, {
+    ok: false,
+    reason: 'not_found',
+    lastStatus: 404,
+    peers: 3,
+  });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#title')).toHaveText('Content not found yet');
+  await expect(page.locator('#description')).toContainText('connected to only 3 peers');
+  await expect(page.locator('#details')).toContainText(
+    'Not found within 5 minutes (last answer: HTTP 404, 3 peers connected)'
+  );
+  await expect(page.locator('#auto-retry')).toHaveText(/Trying again automatically in \d+ s\./);
+
+  await page.locator('#auto-retry-stop').click();
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+  await expect(page.locator('#auto-retry-stop')).toBeHidden();
+});
+
+test('a well-connected timeout blames the content, not the peers', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, {
+    ok: false,
+    reason: 'not_found',
+    lastStatus: 'no_response',
+    peers: 120,
+  });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#description')).toContainText('may not have spread');
+  await expect(page.locator('#description')).not.toContainText('peers');
+  await expect(page.locator('#details')).toContainText('no answer within 30 seconds');
+});
+
+for (const [outcome, title] of [
+  [{ ok: false, reason: 'path_not_found' }, 'Page not found'],
+  [{ ok: false, reason: 'other', status: 403 }, "Couldn't load this content"],
+]) {
+  test(`a permanent failure (${outcome.reason}) does not retry`, async ({
+    electronApp,
+    window,
+    harness,
+  }) => {
+    await harness.setProbeFixture(SAMPLE_BZZ_HASH, outcome);
+    const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+    await expect(page.locator('#title')).toHaveText(title);
+    await expect(page.locator('#details')).not.toContainText('timeout');
+    await expect(page.locator('#auto-retry')).toBeHidden();
+    await expect(page.locator('#auto-retry-stop')).toBeHidden();
+  });
+}
+
+// An auto-retry that succeeds lands on a bzz:// page, which can't reach the
+// error page's file:// sessionStorage to clear the streak count. So the page
+// only keeps counting when the chrome says this failure follows straight on
+// from an error page for the same URL (`streak=1`); otherwise it starts over.
+test('the auto-retry count carries over only within a streak', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found', peers: 50 });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  const pageUrl = new URL(page.url());
+  expect(pageUrl.searchParams.get('retry')).toBe(`bzz://${SAMPLE_BZZ_HASH}/`);
+  expect(pageUrl.searchParams.has('streak')).toBe(false);
+
+  const exhaust = (target) =>
+    page.evaluate(
+      ([key, href]) => {
+        sessionStorage.setItem(key, JSON.stringify({ count: 6, at: Date.now() }));
+        window.location.replace(href);
+      },
+      [`freedom:auto-retry:bzz://${SAMPLE_BZZ_HASH}/`, target]
+    );
+
+  // Same streak: six retries already spent, so no more.
+  pageUrl.searchParams.set('streak', '1');
+  await exhaust(pageUrl.toString());
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+  await expect(page.locator('#auto-retry-stop')).toBeHidden();
+
+  // No streak (the content loaded in between): the old count is dropped.
+  pageUrl.searchParams.delete('streak');
+  await exhaust(pageUrl.toString());
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  await expect(page.locator('#auto-retry-stop')).toBeVisible();
+});
+
+// Who started the retry decides whether the streak continues: the error
+// page's own auto-retry carries an exhausted count on, but the toolbar Reload
+// and the page context menu's Reload are explicit retries like Try Again and
+// start over with a countdown.
+test('the error page retrying itself keeps the streak; the toolbar or context-menu Reload starts a new one', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found', peers: 50 });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  const key = `freedom:auto-retry:bzz://${SAMPLE_BZZ_HASH}/`;
+  const spendAll = () =>
+    page.evaluate(
+      (k) => sessionStorage.setItem(k, JSON.stringify({ count: 6, at: Date.now() })),
+      key
+    );
+  // Waits for the next error page to commit. Not keyed on a URL change: a
+  // regression would land on a byte-identical URL, and must fail on the
+  // `streak` assertion, not on a timeout here.
+  const nextErrorPage = async (act) => {
+    const loaded = page.waitForEvent('load');
+    await act();
+    await loaded;
+    return new URL(page.url());
+  };
+
+  // What the auto-retry timer does: a `location.href` to the retry URL, which
+  // goes through the chrome's probe and fails again.
+  await spendAll();
+  let url = await nextErrorPage(() =>
+    page.evaluate((href) => {
+      window.location.href = href;
+    }, `bzz://${SAMPLE_BZZ_HASH}/`)
+  );
+  expect(url.searchParams.get('streak')).toBe('1');
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+
+  // The toolbar Reload from that same exhausted error page.
+  await spendAll();
+  url = await nextErrorPage(() => window.locator('#reload-btn').click());
+  expect(url.searchParams.has('streak')).toBe(false);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  await expect(page.locator('#auto-retry-stop')).toBeVisible();
+
+  // The page context menu's Reload is the same explicit retry (R4-M1). Exhaust
+  // the streak again first, then reload from the menu raised in the guest.
+  await spendAll();
+  url = await nextErrorPage(() =>
+    page.evaluate((href) => {
+      window.location.href = href;
+    }, `bzz://${SAMPLE_BZZ_HASH}/`)
+  );
+  expect(url.searchParams.get('streak')).toBe('1');
+  await expect(page.locator('#auto-retry')).toHaveText('Stopped trying again automatically.');
+
+  await spendAll();
+  await page.evaluate(() =>
+    document.body.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 })
+    )
+  );
+  const reloadItem = window.locator('#page-context-menu [data-action="reload"]');
+  await expect(reloadItem).toBeVisible();
+  url = await nextErrorPage(() => reloadItem.click());
+  expect(url.searchParams.has('streak')).toBe(false);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  await expect(page.locator('#auto-retry-stop')).toBeVisible();
+});
+
+// Back onto an error page is the user reading history: a fresh countdown
+// would retry unasked, and the retry (a new navigation) would drop the
+// forward entry the user just came Back from.
+test('going Back onto a retrying error page does not restart the countdown', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(`ipfs://${SAMPLE_IPFS_CID}`, {
+    body: '<html><head><title>Elsewhere</title></head><body>elsewhere</body></html>',
+  });
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found', peers: 50 });
+  const page = await errorPageFor(electronApp, window, SAMPLE_BZZ_HASH);
+  await expect(page.locator('#auto-retry')).toHaveText(/in 30 s\./);
+  const errorUrl = page.url();
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(`ipfs://${SAMPLE_IPFS_CID}`);
+  await input.press('Enter');
+  await expect
+    .poll(() => electronApp.windows().some((p) => p.url().startsWith('ipfs://')))
+    .toBe(true);
+
+  await window.locator('#back-btn').click();
+  let back;
+  await expect
+    .poll(() => {
+      back = electronApp.windows().find((p) => p.url() === errorUrl);
+      return Boolean(back);
+    })
+    .toBe(true);
+  await expect(back.locator('#auto-retry')).toHaveText(
+    'Not trying again automatically. Use Try Again to retry.'
+  );
+  await expect(back.locator('#auto-retry-stop')).toBeHidden();
+  // The forward entry is still there to go to.
+  await expect(window.locator('#forward-btn')).toBeEnabled();
 });

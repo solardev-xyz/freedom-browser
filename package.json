@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.7-dev",
+  "version": "0.8.8-dev",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
@@ -301,7 +301,7 @@
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^44.6.0",
+    "electron": "^44.7.0",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "eslint": "^10.12.0",
@@ -312,7 +312,7 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
-    "@corpus-core/colibri-stateless": "3.0.1",
+    "@corpus-core/colibri-stateless": "3.0.2",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",
     "@freedom/railgun-kohaku-adapter": "file:vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-0.6.0.tgz",

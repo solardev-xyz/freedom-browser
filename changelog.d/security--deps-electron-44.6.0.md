@@ -1,4 +1,0 @@
-- Updated runtime dependencies:
-  - Electron 44.4.5 to 44.6.0 (Chromium 152.0.7977.130 and Node 24.21.0, unchanged; upstream ANGLE, Chromium, Dawn and V8 security fixes, and a fix for find-in-page hanging when the host page has an iframe)
-  - `@ledgerhq/hw-app-eth` 7.8.19 to 7.10.0
-  - `@x402/core` and `@x402/evm` 2.27.0 to 2.28.0

@@ -1,19 +1,13 @@
 # License Audit Report for Freedom Browser
 
 **Intended License:** MPL-2.0 (Mozilla Public License 2.0)
-**Audit Date:** 2026-09-23
-**Baseline:** `0.8.6`
+**Audit Date:** 2026-10-08
+**Baseline:** `0.8.7`
 **Auditor:** Automated analysis, re-derived from the installed tree
 
 > **DISCLAIMER:** This is a practical engineering audit, not legal advice. For final licensing decisions, consult a qualified attorney.
 
-> **What changed in this revision.** Re-derived for the 0.8.6 cut against the installed tree. No component was added or removed since 0.8.5 and no upstream relicensed; ten shipped components moved version, and each one's license was re-read at the version being shipped rather than assumed from the last audit. npm: `@corpus-core/colibri-stateless` 2.0.6 → 3.0.0 (MIT), `@ethersphere/bee-js` 13.0.0 → 13.1.0 (BSD-3-Clause), `@ledgerhq/hw-app-eth` 7.8.17 → 7.8.19 (Apache-2.0), `@safe-global/protocol-kit` 8.0.6 → 8.0.7 (MIT), `@x402/core` and `@x402/evm` 2.25.0 → 2.27.0 (Apache-2.0), `electron` → 44.4.5 (MIT), `ethers` → 6.17.0 (MIT). Bundled binaries: Ant v0.5.44 → v0.5.45 (`MIT OR Apache-2.0`, both `LICENSE-MIT` and `LICENSE-APACHE` still present at the tag) and Myotis v0.1.7 → v0.1.11 (Apache-2.0; upstream's `NOTICE` is byte-identical to the one audited at v0.1.10, sha256 `ee84afd3…`, and `NOTICES` still reproduces it verbatim per section 4(d)). Arti 2.6.0, freedom-ipfs v0.4.3 and libradicle 0.7.1 are unchanged. The only copyleft that ships is still the LGPL-3.0 OpenLV bundle, on the same relinking terms as before.
->
-> **2026-09-24 update:** Myotis is now pinned to v0.1.12. Its Apache-2.0 license and byte-identical `NOTICE` were rechecked at that tag; the existing attribution still applies.
->
-> **2026-10-06 update:** Myotis is now pinned to v0.1.13. `LICENSE` and `NOTICE` are byte-identical to v0.1.12 (`git diff v0.1.12 v0.1.13 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies.
->
-> **2026-10-06 update (v0.1.14):** Myotis is now pinned to v0.1.14. `LICENSE` and `NOTICE` are byte-identical to v0.1.13 (`git diff v0.1.13 v0.1.14 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies.
+> **What changed in this revision.** Re-derived for the 0.8.7-rc.1 cut against the installed tree. Every version recorded in `licenses-audit.json` was compared with the installed tree and the repo's pins, not only the two the test enforces, and matches. Shipped components that moved since 0.8.6, each license re-read at the version being shipped: npm `@corpus-core/colibri-stateless` 3.0.0 → 3.0.2 (MIT, identical `LICENSE`), `@ledgerhq/hw-app-eth` 7.8.19 → 7.10.0 (Apache-2.0), `@x402/core` and `@x402/evm` 2.27.0 → 2.28.0 (Apache-2.0), `electron` 44.4.5 → 44.7.0 (MIT); bundled Ant v0.5.45 → v0.5.61 (`MIT OR Apache-2.0`), freedom-ipfs v0.4.3 → v0.4.5 (`MIT OR Apache-2.0`), libradicle 0.7.1 → 0.8.0 (`MIT OR Apache-2.0` in `Cargo.toml`, still no committed license text), Myotis v0.1.11 → v0.1.14 (Apache-2.0; upstream's `NOTICE` byte-identical at every step, sha256 `ee84afd3…`, and `NOTICES` still reproduces it per section 4(d)) and Arti 2.6.0 → 2.7.0 (`MIT OR Apache-2.0`, license files byte-identical, no upstream `NOTICE`; its `Cargo.lock` adds ten crates, all under licenses already in the tree). Three components were added since 0.8.6: the uBlock Origin filters and scriptlets in `assets/adblock/` (GPL-3.0 data, shipped alongside; decided in #412, see _The GPL question_), the Microsoft Visual C++ runtime DLLs on Windows (#563), and — found by this re-derivation, not by the test — the static **AppImage runtime** every Linux `.AppImage` now starts with (#566), which links a patched libfuse 3.15.0 under LGPL-2.1. It is recorded below under _AppImage runtime_ and attributed in `NOTICES`; the maintainer decided that pointing to upstream's published source meets LGPL-2.1 for it.
 >
 > The previous revision (2026-08-19) described a pre-0.8.5 tree — electron 39.2.7, ant v0.5.21, libradicle 0.3.0, "downloaded binaries: 2", no Myotis, no Arti — and reported `Copyleft (GPL/AGPL/LGPL): 0`, which was already untrue of the tree it was written against. Because `release-process.md` §4's pre-tag license check reads these files, it was passing on stale data. Since 0.8.5 these files are re-derived from the installed dependency tree and from what `package.json`'s `build` config actually packages, and `licenses-audit.test.js` fails the build when either drifts from what is written here.
 
@@ -35,6 +29,7 @@
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
 | Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
 | Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                          |
+| Weak copyleft (LGPL-2.1) in the Linux AppImage runtime      | 1 library   | Separate program, upstream source — **decided** (see below)        |
 
 ### Resolved during this audit: a GPL-3.0 library was shipping
 
@@ -65,6 +60,7 @@ Freedom Browser is distributed as:
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
+- **AppImage runtime** (Linux `.AppImage` only): the executable header of the AppImage file, AppImage/type2-runtime 20251108, added by electron-builder from `build.toolsets.appimage`. A separate program that mounts the image and starts Freedom; see _AppImage runtime_ below.
 
 ---
 
@@ -86,7 +82,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.61` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.64` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -104,11 +100,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### libradicle (Native Radicle Addon)
 
 - **Source:** https://github.com/solardev-xyz/libradicle
-- **Version:** `0.7.1` (pin: `src/shared/radicle-addon-version.js` `RADICLE_ADDON_VERSION`)
+- **Version:** `0.8.0` (pin: `src/shared/radicle-addon-version.js` `RADICLE_ADDON_VERSION`)
 - **License:** MIT OR Apache-2.0
 - **Risk:** Green
 - **Integration:** Native addon loaded by the Electron main process
-- **Notes:** Upstream commits **no** `LICENSE` file; the dual-license claim rests on `license = "MIT OR Apache-2.0"` in its `Cargo.toml`, verified at tag `v0.7.1`. It statically links Radicle Heartwood (`solardev-xyz/heartwood`), whose workspace `Cargo.toml` is also `MIT OR Apache-2.0` — no copyleft enters this way.
+- **Notes:** Upstream commits **no** `LICENSE` file; the dual-license claim rests on `license = "MIT OR Apache-2.0"` in its `Cargo.toml`, verified at tag `v0.8.0`. It statically links Radicle Heartwood (`solardev-xyz/heartwood`), whose workspace `Cargo.toml` is also `MIT OR Apache-2.0` — no copyleft enters this way.
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔; ask upstream to commit the license texts.
 
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
@@ -123,13 +119,23 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Arti (Tor Client) — _new in 0.8.5_
 
 - **Source:** https://gitlab.torproject.org/tpo/core/arti (crates.io crate `arti`)
-- **Version:** `2.6.0` (pin: `scripts/fetch-arti.js` `PINNED_ARTI_VERSION`)
+- **Version:** `2.7.0` (pin: `scripts/fetch-arti.js` `PINNED_ARTI_VERSION`)
 - **License:** MIT OR Apache-2.0 (crate `license` field; `LICENSE-MIT` reads _Copyright 2019-2025, The Tor Project, Inc._)
 - **Risk:** Green
 - **Platforms:** macOS, Linux and Windows x64 (no Windows ARM64 package is built)
 - **Integration:** Separate process, reached over SOCKS
 - **Notes:** Built with `cargo install arti --locked`, so the shipped binary **statically links the crate's entire dependency tree**. Upstream distributes that tree under permissive licenses; re-check the `Cargo.lock` license set on any `ARTI_VERSION` bump.
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔
+
+### AppImage runtime (Linux AppImage only) — _new in 0.8.7_
+
+- **Source:** https://github.com/AppImage/type2-runtime, release `20251108` (complete source, build scripts and the libfuse patch)
+- **Version:** `20251108` (pin: `package.json` `build.toolsets.appimage` `1.0.3`, which electron-builder maps to `appimage-tools-runtime-20251108`)
+- **License:** the runtime itself MIT; it statically links libfuse 3.15.0 (**LGPL-2.1**, with upstream's `patches/libfuse/mount.c.diff`), squashfuse 0.5.2 (BSD-2-Clause), musl (MIT), zstd (BSD-3-Clause OR GPL-2.0, used as BSD-3-Clause), zlib (Zlib) and mimalloc (MIT)
+- **Risk:** Orange (decided)
+- **Integration:** Separate program — the ELF header of the `.AppImage` file mounts the squashfs image and execs Freedom; no Freedom code is linked into it. The `.deb` and pacman packages do not contain it.
+- **Notes:** Arrived with #566, which switched to the static runtime so the AppImage starts without `libfuse2`. The previous runtime (appimage-12.0.1) `dlopen()`ed the system `libfuse.so.2`, so 0.8.7 is the first release whose AppImage carries LGPL-2.1 code. `licenses-audit.test.js` cannot see it: its inventory comes from `build.extraResources` and `src/`, and this arrives through electron-builder's toolset. The runtime's own `--appimage-help` lists every component except mimalloc. Re-read this list on every `build.toolsets.appimage` or electron-builder bump.
+- **Action Required:** Attribution in `NOTICES` ✔. **Decided by the maintainer (2026-10-07):** pointing to upstream's public source is sufficient. LGPL-2.1 §6 lets a statically linked program ship when the user can obtain the library's source and relink; AppImage/type2-runtime publishes the complete runtime source, its build scripts and the libfuse patch at release `20251108`, and `NOTICES` names that release and libfuse 3.15.0. Freedom does not mirror the source. Keep the pointer on the release that ships when `build.toolsets.appimage` moves.
 
 ---
 
@@ -160,7 +166,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ## Electron Framework
 
-- **Version:** 44.6.0 (lockfile-resolved)
+- **Version:** 44.7.0 (lockfile-resolved)
 - **License:** MIT
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.
@@ -291,6 +297,7 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 12. **Ad-blocking filter lists** — CC BY-SA
 13. **Chain and token marks** committed under `src/renderer/assets/` — third-party marks, terms unconfirmed (see _Assets_)
 14. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
+15. **AppImage runtime** (Linux `.AppImage` only) — MIT runtime with statically linked LGPL-2.1 libfuse, BSD squashfuse/zstd, MIT musl/mimalloc and Zlib zlib; not checked by `licenses-audit.test.js`, see _AppImage runtime_
 
 `licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 
@@ -316,6 +323,7 @@ The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"
 
 - **MPL-2.0** (13 packages) — file-level copyleft, same license as Freedom itself, all consumed unmodified. No obligation beyond notice.
 - **LGPL-3.0** (5 packages: `@openlv/{core,session,signaling,transport}`, `websocket-mqtt`) — shipped as one isolated, regenerable bundle so §4 relinking is possible. See _The LGPL question_ above.
+- **LGPL-2.1** (libfuse, statically linked into the Linux AppImage runtime) — a separate upstream program, attributed in `NOTICES`, whose published upstream source meets §6 (maintainer decision, 2026-10-07). See _AppImage runtime_ above.
 
 ### Why This Matters
 
@@ -346,6 +354,7 @@ Combining with **GPL-3.0** would not work: it would require the combined work to
 | CC-BY-SA-3.0           | Yes                | Attribution + share-alike on the _data_, not on our code                       |
 | MPL-2.0                | Yes                | Same license; file-level copyleft only                                         |
 | LGPL-3.0               | Yes, conditionally | Only while the library ships as a separately replaceable unit (§4)             |
+| LGPL-2.1               | Yes, conditionally | Only inside a separate program whose source permits relinking (§6)             |
 | **GPL-3.0 / AGPL-3.0** | **No**             | Would force the combined work to GPL. Must not ship.                           |
 | CC-BY-4.0              | Yes*               | Attribution required, but only in dev deps                                     |
 
@@ -356,8 +365,8 @@ Combining with **GPL-3.0** would not work: it would require the combined work to
 Freedom Browser can be released under MPL-2.0, with these conditions:
 
 - **Zero GPL/AGPL code ships** — true only after removing `qrious.min.js`
-- **Weak copyleft (MPL-2.0, LGPL-3.0) is present and handled**, not absent
-- **All runtime binaries and native addons are permissively licensed**
+- **Weak copyleft (MPL-2.0, LGPL-3.0) is present and handled**, not absent; **LGPL-2.1 in the Linux AppImage runtime** is attributed, and §6 is met by upstream's published source (decided)
+- **All runtime binaries and native addons in `resources/` are permissively licensed** (the AppImage runtime is the exception above)
 - **Myotis requires its upstream `NOTICE` reproduced**, per Apache-2.0 §4(d)
 - **Assets are original works**, except the CC BY-SA filter-list data and the third-party chain/token marks
 
@@ -368,10 +377,11 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 - [x] `NOTICES` names every shipped binary, addon and vendor bundle
 - [x] Myotis's upstream `NOTICE` reproduced verbatim
 - [x] LGPL relinking instructions present in `NOTICES`
+- [x] Maintainer decision recorded for the AppImage runtime's LGPL-2.1 libfuse
 - [x] No GPL/AGPL code in the packaged artifact
 - [ ] Add MPL-2.0 header comments to source files (optional but recommended)
 - [x] Electron's `LICENSES.chromium.html` ships in every artifact, macOS included
 
 ---
 
-_Re-derived from the installed tree on 2026-09-23 against `0.8.6`. Kept honest by `licenses-audit.test.js`._
+_Re-derived from the installed tree on 2026-10-08 against `0.8.7`. Kept honest by `licenses-audit.test.js`._

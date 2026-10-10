@@ -43,6 +43,15 @@ let menuPageUrl = null;
 // panel) could otherwise sit over the page next to it. #67
 let onOpening = null;
 
+// The chrome's own hard reload (`navigation.js`'s `hardReloadPage`), injected
+// rather than imported for the same import-cycle reason `history-traversal.js`
+// gives. Reload here must do exactly what Shift+toolbar Reload does: on an
+// error page that means re-running the original URL through `loadTarget` as a
+// chrome-driven retry (a fresh Swarm retry streak), not `reloadIgnoringCache()`
+// on the error page itself, which keeps its `streak=1` URL and so continues an
+// exhausted auto-retry run. Falls back to the bare reload when not wired.
+let onReload = null;
+
 const currentUrlOf = (webview) => {
   try {
     return webview?.getURL?.() || null;
@@ -301,7 +310,9 @@ const handleAction = async (action, { background = false } = {}) => {
       break;
 
     case 'reload':
-      activeWebview?.reloadIgnoringCache();
+      if (!activeWebview) break;
+      if (onReload) onReload(activeWebview);
+      else activeWebview.reloadIgnoringCache();
       break;
 
     case 'view-source':
@@ -453,11 +464,12 @@ const handleAction = async (action, { background = false } = {}) => {
 /**
  * Initialize the page context menu.
  *
- * @param {{ onOpening?: () => void }} [options]
+ * @param {{ onOpening?: () => void, onReload?: (webview) => void }} [options]
  */
 export const initPageContextMenu = async (options = {}) => {
   pageContextMenu = document.getElementById('page-context-menu');
   onOpening = options.onOpening ?? null;
+  onReload = options.onReload ?? null;
 
   // Handle menu item clicks
   if (pageContextMenu) {

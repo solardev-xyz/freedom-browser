@@ -1,1 +1,0 @@
-- Myotis tries known serving peers on cold starts and after checkpoint recovery ([#416](https://github.com/solardev-xyz/freedom-browser/pull/416))

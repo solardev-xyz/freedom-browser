@@ -1,0 +1,3 @@
+- The Swarm error page says why content didn't load instead of always blaming a timeout and missing peers ([#618](https://github.com/solardev-xyz/freedom-browser/issues/618))
+  - A missing page inside a Swarm site shows "Page not found" within seconds instead of after 5 minutes
+  - Content the network doesn't have yet is retried automatically, with a countdown and a way to stop it

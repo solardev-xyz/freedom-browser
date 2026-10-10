@@ -1,0 +1,1 @@
+- Addresses, hashes and error details render in a fixed-width font on macOS instead of Times ([#616](https://github.com/solardev-xyz/freedom-browser/issues/616))

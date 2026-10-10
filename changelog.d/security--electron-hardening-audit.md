@@ -1,4 +1,0 @@
-- Main-process sender checks on every IPC channel: a web page can't reach wallet, identity, permission or file-publishing calls even with a compromised renderer ([#420](https://github.com/solardev-xyz/freedom-browser/pull/420))
-  - Browser window locked to its own interface: a dropped link or file can't replace it
-  - Tab security settings enforced by the main process
-  - Packaged builds ignore `NODE_OPTIONS`
