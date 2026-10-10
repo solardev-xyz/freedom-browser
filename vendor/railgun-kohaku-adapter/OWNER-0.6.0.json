@@ -6,7 +6,29 @@
   "integrity": "sha512-kAXYGY7KrvFR5l3H6gBjtuXcjmxyaVD5UmJHEfcTjVhrkaK1VcwmHHadacNNSw9wU1H1iNiisX/KTaMsYXhZyA==",
   "files": 281,
   "nativeIntegrationQualified": false,
-  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry, redacted POI error categories, the current POI_3x3 circuit and one replacement proof for a retired-circuit attempt; final native qualification on this host identity pending",
+  "status": "installed-journey candidate: held-submission observation lane, explicit public-cache opening, recovery destination binding, archive-complete held reads, local held-input description, one explicit identical POI retry, redacted POI error categories, the current POI_3x3 circuit and one replacement proof for a retired-circuit attempt; native synthetic lineages and the bounded installed-package live Sepolia journey passed (see liveSepoliaJourney); packaged initialization not re-run for this candidate",
+  "liveSepoliaJourney": {
+    "result": "complete",
+    "completed": "2026-10-10",
+    "scope": "bounded installed-package Sepolia journey: private self-transfer, output POI, unshield to the enrolled EOA, finality, receipt gas and conservation summary",
+    "evidence": "https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/aca7aadc4fbaf9c375dfb7ab4a5bcd8a6328d425/docs/qualification/installed-live-sepolia-journey-0.6.0-2026-10-10/README.md",
+    "finalReportSha256": "09163719051afce18d02e5ae77d0fb9d7fa51e9184fbbb8ccd99dcd7c091fd47",
+    "chainTransactions": 2,
+    "hostCommits": [
+      "2018288fe2094a74002473b374bfa0a7dae93736",
+      "b13a36c17771ed7a9040a9827f9cff4e0f98b770",
+      "7fd112e98ea146448176462f0df3d1500e367832",
+      "09eb25d6cab136211742a05d126b9308e51c25a6"
+    ],
+    "trust": "unverified-rpc",
+    "notQualified": [
+      "mainnet",
+      "ordinary app startup",
+      "Tor circuit isolation",
+      "other platforms",
+      "relayer privacy"
+    ]
+  },
   "previousCandidate": {
     "packageSource": "fb3add6aa411375b42ed84735d4901bbc491c68e",
     "registryPublished": false,

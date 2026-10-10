@@ -37,8 +37,11 @@ Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
   rebuild or resume for accounts whose public generation belongs to another
   source policy, including earlier package builds and legacy Freedom profiles.
 
-Its synthetic native acceptance on this host identity is recorded separately.
-It is not a live Sepolia result.
+Native synthetic lineages passed for this artifact, and it completed the
+[bounded installed-package live Sepolia journey](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/aca7aadc4fbaf9c375dfb7ab4a5bcd8a6328d425/docs/qualification/installed-live-sepolia-journey-0.6.0-2026-10-10/README.md) on October 10, 2026.
+That covers Sepolia only. Mainnet, ordinary startup, circuit isolation and
+platform coverage remain open, and unsigned packaged initialization was not
+re-run for this candidate.
 
 The package owns the Railgun protocol algorithms, account stores, scan and proof
 jobs, disclosure plans, recovery lanes and Kohaku adapters. Freedom supplies the
