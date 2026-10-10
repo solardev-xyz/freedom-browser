@@ -1,0 +1,1 @@
+- A `bzz://`, `ipfs://` or other dweb address Freedom can't open shows an error page instead of being sent to the search engine ([#621](https://github.com/solardev-xyz/freedom-browser/issues/621))

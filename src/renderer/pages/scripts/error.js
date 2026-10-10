@@ -65,10 +65,20 @@ const sanitizeRetryUrl = (candidate) => {
 const retryUrl = sanitizeRetryUrl(params.get('retry')) || sanitizeRetryUrl(url);
 const protocolUrl = toProtocolUrl(url);
 const protocol = explicitProtocol || detectProtocol(url);
+// Why a Swarm probe failed (swarm-probe.js outcome); absent on older links.
+const swarmReason = params.get('reason');
+const swarmStatus = params.get('status');
+const swarmPeers = params.get('peers') === null ? null : Number(params.get('peers'));
+// Set by the chrome only when this failure follows straight on from an
+// error page for the same URL. Without it the content loaded in between (or
+// this is a fresh visit), so an old count must not carry over.
+const continuesRetryStreak = params.get('streak') === '1';
 
 const detailsEl = document.getElementById('details');
 const descriptionEl = document.getElementById('description');
 const titleEl = document.getElementById('title');
+const autoRetryEl = document.getElementById('auto-retry');
+const autoRetryStopBtn = document.getElementById('auto-retry-stop');
 
 // Headline and document title move together: the tab, the window title
 // and the history entry all read `document.title`, and a stale one is
@@ -130,7 +140,176 @@ function hostFor(rawUrl) {
   }
 }
 
+// Below this many connected peers a node is still warming up, so a miss
+// says more about the node than about the content.
+const LOW_PEER_COUNT = 10;
+
+function describeLastAnswer(status) {
+  if (status === 'no_response') return 'no answer within 30 seconds';
+  return status ? `HTTP ${status}` : 'none';
+}
+
+function describeSwarmFailure() {
+  switch (swarmReason) {
+    case 'path_not_found':
+      return {
+        title: 'Page not found',
+        description:
+          'This Swarm site exists, but it has no page at this path. Check the address for a typo.',
+        detail: "HTTP 404: the path isn't in the site's manifest",
+        recoverable: false,
+      };
+    case 'invalid_hash':
+      return {
+        title: 'Not a valid Swarm address',
+        description: 'A Swarm reference is 64 or 128 hexadecimal characters.',
+        detail: 'Invalid Swarm reference',
+        recoverable: false,
+      };
+    case 'other':
+      return {
+        title: "Couldn't load this content",
+        description: `The Swarm node refused the request (HTTP ${swarmStatus || 'error'}).`,
+        detail: `HTTP ${swarmStatus || 'error'} from the Swarm node`,
+        recoverable: false,
+      };
+    case 'probe_failed':
+      return {
+        title: "Couldn't check this content",
+        description: "Freedom couldn't ask the Swarm node for this content.",
+        detail: 'Content check failed',
+        recoverable: true,
+      };
+    default: {
+      // 'not_found': the probe's 5-minute budget ran out.
+      const fewPeers = Number.isFinite(swarmPeers) && swarmPeers < LOW_PEER_COUNT;
+      const peerNote = Number.isFinite(swarmPeers)
+        ? `, ${swarmPeers} peer${swarmPeers === 1 ? '' : 's'} connected`
+        : '';
+      return {
+        title: 'Content not found yet',
+        description: fewPeers
+          ? `Your Swarm node is connected to only ${swarmPeers} peer${swarmPeers === 1 ? '' : 's'}, too few to find this content. It keeps connecting in the background.`
+          : "Your Swarm node couldn't find this content on the network. It may not have spread through the network yet, or it may no longer be stored.",
+        detail: swarmReason
+          ? `Not found within 5 minutes (last answer: ${describeLastAnswer(swarmStatus)}${peerNote})`
+          : 'Not found',
+        recoverable: true,
+      };
+    }
+  }
+}
+
+// Recoverable failures retry on their own: content can still spread to
+// the network and a node can still gain peers. Each retry runs a fresh
+// probe (up to 5 minutes), so the waits between them stay short; the
+// count lives in sessionStorage because every retry lands on a new copy
+// of this page. A manual "Try Again", or a load that reached the content in
+// between (no `streak` param), starts the count over.
+const AUTO_RETRY_DELAYS_S = [30, 60, 120, 300, 300, 300];
+// A count older than this belongs to an earlier visit, not this streak.
+const AUTO_RETRY_STREAK_MS = 30 * 60_000;
+const autoRetryKey = `freedom:auto-retry:${retryUrl || url || ''}`;
+let autoRetryTimer = null;
+
+function readAutoRetryCount() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(autoRetryKey) || 'null');
+    if (!saved || Date.now() - saved.at > AUTO_RETRY_STREAK_MS) return 0;
+    return saved.count;
+  } catch {
+    return 0;
+  }
+}
+
+function writeAutoRetryCount(count) {
+  try {
+    if (count === 0) sessionStorage.removeItem(autoRetryKey);
+    else sessionStorage.setItem(autoRetryKey, JSON.stringify({ count, at: Date.now() }));
+  } catch {
+    // Storage unavailable: retries still happen, just without the cap.
+  }
+}
+
+function stopAutoRetry(message) {
+  clearInterval(autoRetryTimer);
+  autoRetryTimer = null;
+  autoRetryStopBtn.hidden = true;
+  autoRetryEl.textContent = message;
+}
+
+// Back/Forward onto this page is the user reading history, not a fresh
+// failure: a countdown started then would retry unasked, and its retry
+// (replayed by the chrome as a new navigation) drops the forward entry the
+// user came back from. So no countdown on a history traversal; Try Again
+// still retries.
+const RETRY_PAUSED_TEXT = 'Not trying again automatically. Use Try Again to retry.';
+
+function reachedByHistoryTraversal() {
+  try {
+    return performance.getEntriesByType('navigation')[0]?.type === 'back_forward';
+  } catch {
+    return false;
+  }
+}
+
+function scheduleAutoRetry() {
+  if (!retryUrl) return;
+  if (reachedByHistoryTraversal()) {
+    autoRetryEl.hidden = false;
+    autoRetryEl.textContent = RETRY_PAUSED_TEXT;
+    return;
+  }
+  if (!continuesRetryStreak) writeAutoRetryCount(0);
+  const count = readAutoRetryCount();
+  autoRetryEl.hidden = false;
+  if (count >= AUTO_RETRY_DELAYS_S.length) {
+    autoRetryEl.textContent = 'Stopped trying again automatically.';
+    return;
+  }
+  let remaining = AUTO_RETRY_DELAYS_S[count];
+  const render = () => {
+    autoRetryEl.textContent = `Trying again automatically in ${remaining} s.`;
+  };
+  render();
+  autoRetryStopBtn.hidden = false;
+  autoRetryTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) {
+      render();
+      return;
+    }
+    stopAutoRetry('Trying again…');
+    writeAutoRetryCount(count + 1);
+    window.location.href = retryUrl;
+  }, 1000);
+}
+
+// Addresses the address bar refused (navigation.js `showAddressError`).
+// Retrying can't help, so the button goes.
+const ADDRESS_ERRORS = {
+  invalid_address: {
+    title: 'Not a valid address',
+    description: "Freedom can't open this address. Check it for typos.",
+  },
+  unloadable_swarm_hash: {
+    title: "Can't open this address",
+    description:
+      'This Swarm reference is made only of digits, which the browser reads as a network ' +
+      "address, so it can't be opened as a bzz:// page.",
+  },
+};
+
 async function displayError() {
+  const addressError = ADDRESS_ERRORS[error];
+  if (addressError) {
+    setErrorTitle(addressError.title);
+    descriptionEl.textContent = addressError.description;
+    detailsEl.textContent = url || '';
+    document.getElementById('retry-btn').hidden = true;
+    return;
+  }
+
   const parts = [];
   if (protocolUrl) parts.push(protocolUrl);
 
@@ -148,17 +327,15 @@ async function displayError() {
   }
 
   if (error === 'swarm_content_not_found') {
-    // The Bee HTTP API is reachable, but the requested content didn't
-    // resolve within the probe timeout. Typically means the node is
-    // still connecting to enough peers to locate the manifest.
-    setErrorTitle('Content not ready yet');
-    descriptionEl.innerHTML =
-      "Couldn't find this content on the Swarm network yet. The node is " +
-      'still connecting to peers &mdash; try again in a moment.';
-    if (protocolUrl) {
-      parts.push('');
-      parts.push('Swarm content not found (timeout)');
-    }
+    // The Ant API is reachable but the probe didn't get the content. Say
+    // which way it failed: the old copy blamed peers and a timeout for
+    // every failure, including ones that were neither (#618).
+    const failure = describeSwarmFailure();
+    setErrorTitle(failure.title);
+    descriptionEl.textContent = failure.description;
+    parts.push('');
+    parts.push(failure.detail);
+    if (failure.recoverable) scheduleAutoRetry();
   } else if (error && error.includes('ERR_CONNECTION_REFUSED')) {
     if (protocol === 'swarm') {
       const status = await checkSwarmStatus();
@@ -185,9 +362,24 @@ displayError();
 
 // Retry the original URL
 document.getElementById('retry-btn').onclick = () => {
+  writeAutoRetryCount(0);
   if (retryUrl) {
     window.location.href = retryUrl;
   } else {
     window.location.reload();
   }
 };
+
+autoRetryStopBtn.onclick = () => {
+  stopAutoRetry('Stopped trying again automatically.');
+};
+
+// The same applies if Chromium keeps this page in its back/forward cache:
+// a restored page resumes its timers, so stop the countdown on the way out
+// and don't restart it on the way back.
+window.addEventListener('pagehide', () => {
+  if (autoRetryTimer) stopAutoRetry(RETRY_PAUSED_TEXT);
+});
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted && autoRetryTimer) stopAutoRetry(RETRY_PAUSED_TEXT);
+});

@@ -53,13 +53,13 @@ body.unverified h1 {
   padding: 12px 16px;
 }
 .group-hosts {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--shell-link);
   margin-bottom: 4px;
 }
 .group-value {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   color: var(--shell-body);
   word-break: break-all;
@@ -82,7 +82,7 @@ p {
   padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 20px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 14px;
   word-break: break-all;
 
@@ -110,7 +110,7 @@ p {
 }
 .detail-value {
   color: var(--shell-body-ink);
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   overflow-wrap: anywhere;
 }

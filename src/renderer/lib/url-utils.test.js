@@ -273,6 +273,26 @@ describe('url-utils', () => {
   });
 
   describe('formatBzzUrl', () => {
+    test('finds the hash when the URL parser rejects bzz://<all digits>', () => {
+      // Chromium parses a standard scheme's host like a web host, so an
+      // all-digit one is an overflowing IPv4 number and `new URL` throws.
+      // Node's parser doesn't, so stand in for Chromium's here.
+      const RealURL = global.URL;
+      global.URL = class extends RealURL {
+        constructor(input, base) {
+          if (/^bzz:\/\/[0-9]+(?:[/?#]|$)/i.test(String(input))) throw new TypeError('Invalid URL');
+          super(input, base);
+        }
+      };
+      try {
+        const digits = '3'.repeat(64);
+        const result = formatBzzUrl(`bzz://${digits}/a.html`, 'http://127.0.0.1:1633/bzz/');
+        expect(result?.displayValue).toBe(`bzz://${digits}/a.html`);
+      } finally {
+        global.URL = RealURL;
+      }
+    });
+
     test('formats explicit bzz:// protocol with hash only', () => {
       const input = 'bzz://1234567890abcdef';
       const result = formatBzzUrl(input, BZZ_ROUTE_PREFIX);

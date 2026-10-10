@@ -1888,7 +1888,7 @@
   margin-top: 6px;
   font-size: 10px;
   color: var(--muted);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   cursor: default;
 }
 
@@ -3015,7 +3015,7 @@
 .perms-tx-addr,
 .perms-tx-selector {
   font-size: 11px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   color: var(--muted);
 }
 

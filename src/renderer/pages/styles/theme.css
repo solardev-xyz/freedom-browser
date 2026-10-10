@@ -20,6 +20,10 @@
 html {
   color-scheme: dark;
 
+  /* Fixed-width stack for addresses, hashes and keys. Name real faces:
+     a bare `monospace` renders in Times on macOS under Electron (#616). */
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
   /* Surfaces and ink — history, downloads, payments, links, profiles, settings. */
   --bg: #0d1117;
   --bg-elev: #161b22;
@@ -327,4 +331,14 @@ html[data-theme='light'] {
   /* Theme-conditional asset swaps. */
   --dark-only-display: none;
   --light-only-display: block;
+}
+
+/* The one non-palette rule: the user-agent sheet gives these the bare
+   generic `monospace`, which Electron on macOS renders in Times (#616).
+   Any page rule with a class still wins; this only replaces the default. */
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
 }

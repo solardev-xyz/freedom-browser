@@ -258,7 +258,7 @@
 }
 
 .onboarding-form .mnemonic-input {
-  font-family: monospace;
+  font-family: var(--font-mono);
   resize: none;
 }
 
@@ -354,7 +354,7 @@
   padding: 16px;
   background: var(--bg);
   border-radius: 8px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
 }
 
@@ -484,7 +484,7 @@
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   text-align: center;
 }
 
@@ -513,7 +513,7 @@
 
 .identity-wallet-address {
   font-size: 14px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   color: var(--text);
   background: transparent;
   padding: 0;
@@ -556,7 +556,7 @@
 .identity-value {
   font-size: 12px;
   color: var(--text);
-  font-family: monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
