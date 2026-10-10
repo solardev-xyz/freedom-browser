@@ -2228,6 +2228,7 @@ class ManagedWorkspaceController {
         args: capabilities.backend === 'windows-elevated'
           ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(
             `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
 Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''")}';\n${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`, 'utf16le').toString('base64')]
           : [
           '-c',

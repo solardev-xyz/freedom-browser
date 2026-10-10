@@ -7,13 +7,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { parseArgs } = require('node:util');
-const { AgentManagedWorkspaceStore } = require('../src/main/agent/managed-workspace-store');
-const { ManagedWorkspaceController } = require('../src/main/agent/managed-workspace-controller');
-const { values } = parseArgs({ options: { root: { type: 'string' } } });
+const { values } = parseArgs({ options: { root: { type: 'string' }, 'app-root': { type: 'string' } } });
 async function main() {
   assert.equal(process.platform, 'win32');
   assert.ok(process.versions.electron, 'Use Electron with ELECTRON_RUN_AS_NODE=1');
   assert.ok(values.root && path.isAbsolute(values.root));
+  const application = values['app-root'] ? path.resolve(values['app-root']) : path.resolve(__dirname, '..');
+  const { AgentManagedWorkspaceStore } = require(path.join(application, 'src/main/agent/managed-workspace-store'));
+  const { ManagedWorkspaceController } = require(path.join(application, 'src/main/agent/managed-workspace-controller'));
   fs.mkdirSync(values.root, { recursive: true });
   const profile = fs.mkdtempSync(path.join(values.root, 'controller-'));
   const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
@@ -56,6 +57,24 @@ async function main() {
     record('checkpoint', commit);
     const history = await controller.workspaceHistory('windows-qualification', { action: 'list' });
     record('history', history);
+    await controller.writeFile('windows-qualification', 'server.cjs', "const h=require('http').createServer((q,r)=>r.end('windows-preview'));h.listen(0,'127.0.0.1',()=>console.log('PORT='+h.address().port));process.stdin.on('data',b=>console.log('INPUT='+b.toString().trim()));");
+    const launch = 'node server.cjs';
+    const serverPermission = await controller.prepareCommandPermissions('windows-qualification', { executables: ['node'], network: 'full' }, { command: launch });
+    controller.grantCommandPermissions('windows-qualification', serverPermission.prepared);
+    let server = await controller.startProcess('windows-qualification', { command: launch, yieldMs: 1000, timeoutMs: 30000 });
+    let output = server.output || '';
+    for (let i = 0; i < 10 && !/PORT=\d+/.test(output); i++) {
+      server = await controller.interactProcess('windows-qualification', server.processId, { waitMs: 1000 });
+      output += server.output || '';
+    }
+    const port = Number(output.match(/PORT=(\d+)/)?.[1]);
+    assert.ok(port, 'Preview server must report its port');
+    assert.equal(await (await fetch(`http://127.0.0.1:${port}`)).text(), 'windows-preview');
+    const input = await controller.interactProcess('windows-qualification', server.processId, { input: 'hello\n', waitMs: 1000 });
+    assert.match(input.output, /INPUT=hello/);
+    await controller.terminateProcess('windows-qualification', server.processId);
+    await assert.rejects(fetch(`http://127.0.0.1:${port}`, { signal: AbortSignal.timeout(2000) }));
+    record('preview-stdin-and-stop', { passed: true });
     // External projects must be outside the browser profile, just as a folder
     // selected by the user would be. AppData itself is intentionally rejected.
     const external = fs.mkdtempSync(path.join(values.root, 'external-project-'));
