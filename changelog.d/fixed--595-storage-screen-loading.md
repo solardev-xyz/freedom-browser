@@ -1,0 +1,1 @@
+- Storage screen no longer opens blank while the batch list loads: it shows a spinner, and a return visit lists your batches at once ([#595](https://github.com/solardev-xyz/freedom-browser/issues/595))
