@@ -807,6 +807,7 @@ class ManagedWorkspaceController {
     this.runtime = null;
     this.runtimePromise = null;
     this.leases = new Map();
+    this.projectFileQueues = new Map();
     this.leasePromises = new Map();
     this.activeCommands = new Map();
     this.pendingOperations = new Set();
@@ -1461,7 +1462,7 @@ class ManagedWorkspaceController {
       const workspace = this.store.getForConversation(conversationId);
       if (!workspace?.enabled) throw new ManagedWorkspaceError('WORKSPACE_EXECUTION_NOT_ENABLED', 'The parent must create or attach a workspace before delegating editing.');
       const grant = workspace.project ? await this.store.projectAccess.resolve(workspace.workspaceId, { write: true }) : null;
-      await this.#enabledLease(conversationId, { signal });
+      await this.#withProjectFileAccess(conversationId, { signal }, () => this.#enabledLease(conversationId, { signal }));
       throwIfWorkspaceAborted(signal);
       const invoke = async (method, args, mutation = false) => {
         this.#assertWriter(token);
@@ -1513,6 +1514,32 @@ class ManagedWorkspaceController {
     }
   }
 
+  #withProjectFileAccess(conversationId, request, operation) {
+    const workspace = this.store.getForConversation(conversationId);
+    if (!workspace?.project) return operation();
+    // External grants require a fresh whole-tree identity scan. Our own sibling
+    // writes (and Windows sandbox ACL updates) must not race that scan. Queue
+    // only these short filesystem operations; helper/model work stays parallel.
+    const id = workspace.workspaceId;
+    const grant = this.store.projectAccess.grants.get(id);
+    const preceding = this.projectFileQueues.get(id) || Promise.resolve();
+    const pending = preceding.catch(() => {}).then(() => {
+      throwIfWorkspaceAborted(this.shutdownController.signal);
+      throwIfWorkspaceAborted(request.signal);
+      if (this.store.getForConversation(conversationId)?.workspaceId !== id ||
+          this.store.projectAccess.grants.get(id) !== grant) {
+        throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed while the file operation was waiting.');
+      }
+      return operation();
+    });
+    this.projectFileQueues.set(id, pending);
+    const release = () => {
+      if (this.projectFileQueues.get(id) === pending) this.projectFileQueues.delete(id);
+    };
+    void pending.then(release, release);
+    return pending;
+  }
+
   #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
     const mutation = ['write', 'mkdir', 'history_restore'].includes(operation);
     if (mutation) {
@@ -1520,10 +1547,10 @@ class ManagedWorkspaceController {
       this.#assertWriter(request.delegatedWriter, relativePath, operation, conversationId);
       if (this.#pendingWriteConflict(relativePath, operation, conversationId, false)) throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'A conflicting file operation or command is still running. Wait for it to settle, then re-read the file before editing.');
     }
-    return this.#runOperation(request, (executionRequest) => {
+    return this.#runOperation(request, (executionRequest) => this.#withProjectFileAccess(conversationId, executionRequest, () => {
       if (mutation) this.#assertWriter(executionRequest.delegatedWriter, relativePath, operation, conversationId);
       return this.#executeFileOperation(conversationId, operation, relativePath, content, executionRequest);
-    }, mutation && { path: relativePath, operation, conversationId });
+    }), mutation && { path: relativePath, operation, conversationId });
   }
 
   async #executeFileOperation(conversationId, operation, relativePath, content, request) {

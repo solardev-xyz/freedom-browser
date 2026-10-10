@@ -1244,6 +1244,39 @@ describe('ManagedWorkspaceController', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
+  test.each(['success', 'failure', 'cancel', 'revoke'])('external file validation waits for sibling writes and recovers after %s', async outcome => {
+    const { controller, dependencies, workspace } = createController();
+    dependencies.store.recordProjectEdit = jest.fn();
+    workspace.project = { connected: true, mode: 'write' };
+    const grant = { dev: '1', ino: '2', mode: 'write' };
+    dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
+    let finish;
+    dependencies.executor.execute.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = controller.writeFile('conversation_one', 'first.txt', 'one').catch(error => error);
+    for (let i = 0; i < 30 && !finish; i++) await new Promise(resolve => setImmediate(resolve));
+    expect(finish).toBeDefined();
+    const abort = new AbortController();
+    const second = controller.writeFile('conversation_one', 'second.txt', 'two', { signal: abort.signal }).catch(error => error);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(dependencies.createPolicy).toHaveBeenCalledTimes(1);
+    expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+    if (outcome === 'cancel') abort.abort();
+    if (outcome === 'revoke') dependencies.store.projectAccess.grants.delete(workspace.workspaceId);
+    finish({ ...completedExecution(''), ...(outcome === 'failure' && { state: 'failed', exitCode: 1 }) });
+    const firstResult = await first;
+    const secondResult = await second;
+    if (outcome === 'failure') expect(firstResult.code).toBe('WORKSPACE_WRITE_FAILED');
+    if (outcome === 'cancel' || outcome === 'revoke') {
+      expect(secondResult.code).toBe(outcome === 'cancel' ? 'WORKSPACE_OPERATION_CANCELLED' : 'PROJECT_RECONNECT_REQUIRED');
+      expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+    } else expect(dependencies.executor.execute).toHaveBeenCalledTimes(2);
+    expect(controller.projectFileQueues.size).toBe(0);
+    dependencies.store.projectAccess.grants.set(workspace.workspaceId, grant);
+    await controller.writeFile('conversation_one', 'third.txt', 'three');
+    expect(controller.projectFileQueues.size).toBe(0);
+    await controller.dispose();
+  });
+
   test('external file inspection uses a separate read-only policy and rechecks revocation', async () => {
     const { controller, dependencies, workspace } = createController();
     workspace.project = { connected: true, mode: 'read' };
