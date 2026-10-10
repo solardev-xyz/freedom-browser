@@ -28,16 +28,26 @@ function normalizeRid(rid) {
   return rid.startsWith('rad:') ? rid.slice(4) : rid;
 }
 
+// The owner/repo character class admits '.', so '.', '..' and '...' all
+// match it. The repo name becomes a path segment under the temp clone dir
+// (path.join(clonePath, repo)), where a dot-only name resolves to the clone
+// dir itself or its parent; refuse them here rather than relying on git
+// declining a non-empty clone target.
+function isDotOnlyName(name) {
+  return /^\.+$/.test(name);
+}
+
 function extractGitHubRepoFromUrl(url) {
   if (!validateNonEmptyString(url)) return null;
   const match = url.trim().match(
     /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/
   );
   if (!match) return null;
-  return {
-    owner: match[1],
-    repo: match[2].replace(/\.git$/, ''),
-  };
+  const owner = match[1];
+  // Strip '.git' before the dot-only check: 'x/..git' leaves '.'.
+  const repo = match[2].replace(/\.git$/, '');
+  if (isDotOnlyName(owner) || isDotOnlyName(repo)) return null;
+  return { owner, repo };
 }
 
 function toBridgeRepoKey(owner, repo) {
@@ -159,7 +169,7 @@ function validateGitHubUrl(url) {
   const fullMatch = input.match(
     /^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
   );
-  if (fullMatch) {
+  if (fullMatch && !isDotOnlyName(fullMatch[1]) && !isDotOnlyName(fullMatch[2])) {
     return {
       ...success(),
       valid: true,
@@ -171,7 +181,7 @@ function validateGitHubUrl(url) {
 
   // Try shorthand: owner/repo
   const shortMatch = input.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/);
-  if (shortMatch) {
+  if (shortMatch && !isDotOnlyName(shortMatch[1]) && !isDotOnlyName(shortMatch[2])) {
     return {
       ...success(),
       valid: true,
