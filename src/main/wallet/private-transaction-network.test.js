@@ -1,0 +1,1060 @@
+jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => true }));
+jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint }));
+jest.mock('../networks/network-registry', () => ({
+  getNetwork: () => ({}),
+  getEndpoints: () => [mockUrl],
+  getEndpointSources: () => [{ keyed: false, coverage: { 11155111: mockUrl } }],
+}));
+jest.mock('../networks/wallet-tor-transport', () => ({
+  createWalletTorTransport: () => ({ request: mockRequest }),
+}));
+jest.mock('../networks/chain-data-router', () => ({
+  request: jest.fn(),
+  broadcastRawTransaction: jest.fn(),
+  getFeeQuote: jest.fn(),
+}));
+jest.mock('./private-submission-journal', () => ({
+  getPrivateSubmissionJournal: (context) => mockJournals.get(context),
+}));
+const mockJournals = new WeakMap();
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { createSubmissionJournal } = jest.requireActual('./private-submission-journal');
+const mockRequest = jest.fn();
+let mockEndpoint, mockUrl;
+const { Wallet, Transaction } = require('ethers');
+const { createPrivacyScope } = require('../networks/privacy-context');
+const {
+  getPrivateTransactionNetwork,
+  getPrivateTransactionNetworkDestination,
+  assertPrivateTransactionNetworkDestination,
+} = require('./private-transaction-network');
+const service = require('./transaction-service');
+const chainData = require('../networks/chain-data-router');
+const wallet = new Wallet(`0x${'1'.repeat(64)}`); // Public synthetic fixture only.
+const params = { chainId: 11155111, to: `0x${'2'.repeat(40)}`, value: '1', gasLimit: '21000' };
+const fixtureIntent = require('./private-transaction-intent').transactionIntent(
+  'ppv2-register-auth',
+  { ...params, from: wallet.address, data: '0x' }
+);
+let scope, handle, network, tor, journalDirectory;
+let requests;
+let receipt, canonical;
+let nonce;
+let responseHook;
+let signer;
+beforeEach(() => {
+  jest.clearAllMocks();
+  tor = new AbortController();
+  mockEndpoint = { signal: tor.signal };
+  mockUrl = 'https://rpc.example';
+  scope = createPrivacyScope({ profileId: 'test', signal: new AbortController().signal });
+  handle = scope.getContext({
+    kind: 'public-address',
+    principal: wallet.address,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  journalDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'private-send-fixture-'));
+  mockJournals.set(
+    handle,
+    createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) })
+  );
+  network = getPrivateTransactionNetwork(handle);
+  canonical = { number: '0x10', hash: `0x${'c'.repeat(64)}` };
+  requests = [];
+  receipt = null;
+  nonce = '0x0';
+  responseHook = null;
+  signer = {
+    getAddress: async () => wallet.address,
+    signTransaction: jest.fn((tx) => wallet.signTransaction(tx)),
+  };
+  mockRequest.mockImplementation(async (context, _url, options) => {
+    expect(context).toBe(handle);
+    const call = JSON.parse(options.body);
+    requests.push(call);
+    if (responseHook) await responseHook(call);
+    const result = {
+      eth_chainId: '0xaa36a7',
+      eth_gasPrice: '0x64',
+      eth_getTransactionCount: nonce,
+      eth_getBalance: '0x123',
+      eth_getCode: '0x',
+      eth_estimateGas: '0x5208',
+      eth_call: '0x',
+      eth_getTransactionReceipt: receipt,
+      eth_getTransactionByHash: null,
+      eth_getBlockByNumber: canonical,
+      eth_blockNumber: '0x11',
+    }[call.method];
+    return {
+      status: 200,
+      body: Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: call.id,
+          result:
+            call.method === 'eth_sendRawTransaction'
+              ? Transaction.from(call.params[0]).hash
+              : result,
+        })
+      ),
+    };
+  });
+});
+afterEach(() => {
+  scope.close();
+  tor.abort();
+});
+
+test('fees, gas, simulation, nonce, signing, submission and receipts use only the context route', async () => {
+  const options = { privacyContext: handle, intent: fixtureIntent, review: async () => true };
+  expect(await service.estimateGas({ ...params, from: wallet.address }, options)).toEqual({
+    gasLimit: '25200',
+  });
+  await network.request(11155111, 'eth_call', [
+    { from: wallet.address, to: params.to, value: '0x1' },
+    'latest',
+  ]);
+  const sent = await service.signAndSendTransaction(params, signer, options);
+  receipt = {
+    transactionHash: sent.hash,
+    from: wallet.address,
+    blockHash: `0x${'c'.repeat(64)}`,
+    status: '0x1',
+    blockNumber: '0x10',
+    gasUsed: '0x5208',
+    effectiveGasPrice: '0x64',
+  };
+  expect(await service.waitForTransaction(sent.hash, 11155111, 2, options)).toMatchObject({
+    status: 'included',
+    blockNumber: 16,
+    confirmations: 2,
+    verified: false,
+  });
+  expect(requests.map((r) => r.method)).toEqual([
+    'eth_chainId',
+    'eth_estimateGas',
+    'eth_call',
+    'eth_gasPrice',
+    'eth_getTransactionCount',
+    'eth_sendRawTransaction',
+    'eth_getTransactionReceipt',
+    'eth_getBlockByNumber',
+    'eth_blockNumber',
+  ]);
+  expect(chainData.request).not.toHaveBeenCalled();
+  expect(chainData.broadcastRawTransaction).not.toHaveBeenCalled();
+});
+
+test('signers that broadcast through their own RPC are rejected before network or device interaction', async () => {
+  signer.sendTransaction = jest.fn();
+  await expect(
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_REMOTE_BROADCAST_UNSUPPORTED' });
+  expect(mockRequest).not.toHaveBeenCalled();
+  expect(signer.sendTransaction).not.toHaveBeenCalled();
+});
+
+test('changed signer output and lock during signing never reach broadcast', async () => {
+  signer.signTransaction.mockImplementation((tx) => wallet.signTransaction({ ...tx, value: '2' }));
+  await expect(
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_SIGNED_INTENT_MISMATCH' });
+  signer.signTransaction.mockImplementation(async (tx) => {
+    scope.close();
+    return wallet.signTransaction(tx);
+  });
+  await expect(
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  expect(requests.some((r) => r.method === 'eth_sendRawTransaction')).toBe(false);
+});
+
+test('a lost broadcast response preserves deterministic hash and refuses a duplicate attempt', async () => {
+  let signed;
+  responseHook = async (call) => {
+    if (call.method === 'eth_sendRawTransaction') {
+      signed = call.params[0];
+      throw new Error('response lost');
+    }
+  };
+  const error = await service
+    .signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
+    .catch((error) => error);
+  expect(error).toMatchObject({
+    code: 'PRIVATE_BROADCAST_UNCERTAIN',
+    submissionStatus: 'unknown',
+    transactionHash: Transaction.from(signed).hash,
+  });
+  await expect(
+    network.broadcastRawTransaction(11155111, signed, { intent: fixtureIntent })
+  ).rejects.toMatchObject({
+    code: 'PRIVATE_BROADCAST_ALREADY_ATTEMPTED',
+  });
+  responseHook = null;
+  expect(
+    await service.getTransactionStatus(error.transactionHash, 11155111, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
+  ).toMatchObject({ status: 'unknown' });
+  expect(requests.filter((r) => r.method === 'eth_sendRawTransaction')).toHaveLength(1);
+});
+
+test('other-account nonces, arbitrary hashes and Tor replacement cannot cross the context', async () => {
+  await expect(
+    network.request(11155111, 'eth_getTransactionCount', [params.to, 'pending'])
+  ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  await expect(
+    network.request(11155111, 'eth_getTransactionReceipt', [`0x${'f'.repeat(64)}`])
+  ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  mockEndpoint = { signal: new AbortController().signal };
+  await expect(network.getFeeQuote(11155111)).rejects.toMatchObject({
+    code: 'PRIVACY_REQUEST_ABORTED',
+  });
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('a fresh caller gets a new client after Tor restarts while old references stay revoked', async () => {
+  tor.abort();
+  tor = new AbortController();
+  mockEndpoint = { signal: tor.signal };
+  const next = getPrivateTransactionNetwork(handle);
+  expect(next).not.toBe(network);
+  await expect(network.getFeeQuote(11155111)).rejects.toMatchObject({
+    code: 'PRIVACY_REQUEST_ABORTED',
+  });
+  expect((await next.getFeeQuote(11155111)).gasPrice).toBe('100');
+});
+
+test('lock cancels receipt polling without waiting for its timer', async () => {
+  const sent = await service.signAndSendTransaction(params, signer, {
+    privacyContext: handle,
+    intent: fixtureIntent,
+    review: async () => true,
+  });
+  const waiting = service.waitForTransaction(sent.hash, 11155111, 1, {
+    privacyContext: handle,
+    intent: fixtureIntent,
+    review: async () => true,
+  });
+  await new Promise(setImmediate);
+  scope.close();
+  await expect(waiting).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+});
+
+test('review sees complete frozen intent; rejection, expiry and lock prevent signing', async () => {
+  const review = jest.fn(async (value) => {
+    expect(value.transaction).toMatchObject({ nonce: 0, gasPrice: '100', chainId: 11155111 });
+    expect(Object.isFrozen(value.transaction)).toBe(true);
+    expect(value.unsignedSerialized).toMatch(/^0x/);
+    return false;
+  });
+  await expect(
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_REJECTED' });
+  await expect(
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: () => new Promise(() => {}),
+      reviewTimeoutMs: 5,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+});
+
+test('explicit invalid contexts and absent review never reach ordinary networking', async () => {
+  for (const context of [false, 0, '', {}]) {
+    await expect(service.getGasPrices(11155111, { privacyContext: context })).rejects.toMatchObject(
+      { code: 'INVALID_PRIVACY_CONTEXT' }
+    );
+  }
+  await expect(
+    service.signAndSendTransaction(params, signer, { privacyContext: handle })
+  ).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_REQUIRED' });
+  expect(chainData.getFeeQuote).not.toHaveBeenCalled();
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('restart recovers a lost-response hash for receipt queries and blocks a new signature', async () => {
+  responseHook = async (call) => {
+    if (call.method === 'eth_sendRawTransaction') throw new Error('lost');
+  };
+  const error = await service
+    .signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
+    .catch((error) => error);
+  scope.close();
+  scope = createPrivacyScope({ profileId: 'test', signal: new AbortController().signal });
+  handle = scope.getContext({
+    kind: 'public-address',
+    principal: wallet.address,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  mockJournals.set(
+    handle,
+    createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) })
+  );
+  network = getPrivateTransactionNetwork(handle);
+  expect(await network.listSubmissions()).toEqual([
+    expect.objectContaining({ hash: error.transactionHash, state: 'attempted' }),
+  ]);
+  responseHook = null;
+  signer.signTransaction.mockClear();
+  await expect(
+    service.signAndSendTransaction({ ...params, value: '2' }, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+  expect(
+    await service.getTransactionStatus(error.transactionHash, 11155111, { privacyContext: handle })
+  ).toMatchObject({ status: 'unknown' });
+  expect(requests.filter((r) => r.method === 'eth_sendRawTransaction')).toHaveLength(1);
+});
+
+test('disk failure before broadcast sends no bytes; a failed acknowledgment keeps a recoverable unknown outcome', async () => {
+  const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => {
+    throw new Error('disk full');
+  });
+  try {
+    await expect(
+      service.signAndSendTransaction(params, signer, {
+        privacyContext: handle,
+        intent: fixtureIntent,
+        review: async () => true,
+      })
+    ).rejects.toMatchObject({ code: 'PRIVATE_STORAGE_WRITE_FAILED' });
+    expect(requests.some((r) => r.method === 'eth_sendRawTransaction')).toBe(false);
+  } finally {
+    rename.mockRestore();
+  }
+  responseHook = async (call) => {
+    if (call.method === 'eth_sendRawTransaction')
+      jest.spyOn(fs, 'renameSync').mockImplementation(() => {
+        throw new Error('disk full');
+      });
+  };
+  try {
+    const error = await service
+      .signAndSendTransaction(params, signer, {
+        privacyContext: handle,
+        intent: fixtureIntent,
+        review: async () => true,
+      })
+      .catch((error) => error);
+    expect(error).toMatchObject({
+      code: 'PRIVATE_BROADCAST_UNCERTAIN',
+      submissionStatus: 'unknown',
+    });
+    expect(await network.listSubmissions()).toEqual([
+      expect.objectContaining({ hash: error.transactionHash, state: 'attempted' }),
+    ]);
+  } finally {
+    jest.restoreAllMocks();
+  }
+});
+
+test('a reviewed resolution allows one new nonce; missing evidence before or during signing closes the gate', async () => {
+  const options = { privacyContext: handle, intent: fixtureIntent, review: async () => true };
+  const first = await service.signAndSendTransaction(params, signer, options);
+  const included = {
+    transactionHash: first.hash,
+    from: wallet.address,
+    blockHash: `0x${'c'.repeat(64)}`,
+    status: '0x1',
+    blockNumber: '0x10',
+  };
+  const policy = {
+    minimumConfirmations: 2,
+    review: async () => ({ allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' }),
+  };
+  receipt = included;
+  await network.resolveSubmission(first.hash, policy);
+  const includedBlock = canonical;
+  canonical = null;
+  signer.signTransaction.mockClear();
+  nonce = '0x1';
+  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({
+    code: 'PRIVATE_RECONCILIATION_UNAVAILABLE',
+  });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+  receipt = included;
+  canonical = includedBlock;
+  await network.resolveSubmission(first.hash, policy);
+  signer.signTransaction.mockImplementation(async (tx) => {
+    canonical = null;
+    return wallet.signTransaction(tx);
+  });
+  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({
+    code: 'PRIVATE_RECONCILIATION_UNAVAILABLE',
+  });
+  expect(requests.filter((call) => call.method === 'eth_sendRawTransaction')).toHaveLength(1);
+  receipt = included;
+  canonical = includedBlock;
+  await network.resolveSubmission(first.hash, policy);
+  signer.signTransaction.mockImplementation((tx) => wallet.signTransaction(tx));
+  const second = await service.signAndSendTransaction(params, signer, options);
+  expect(second.hash).not.toBe(first.hash);
+  expect(requests.filter((call) => call.method === 'eth_sendRawTransaction')).toHaveLength(2);
+  expect(await network.listSubmissions()).toHaveLength(2);
+  await expect(network.assertCanSubmit()).rejects.toMatchObject({
+    code: 'PRIVATE_SUBMISSION_UNRESOLVED',
+  });
+});
+
+test('rejects intent metadata that does not match signed bytes before journaling or transport', async () => {
+  const { transactionIntent } = require('./private-transaction-intent');
+  const signed = await wallet.signTransaction({
+    ...params,
+    data: '0xabcd',
+    nonce: 0,
+    gasPrice: 100n,
+  });
+  const wrong = transactionIntent('ppv2-native-deposit', {
+    ...params,
+    from: wallet.address,
+    data: '0xabcd',
+    value: '2',
+  });
+  await expect(
+    network.broadcastRawTransaction(11155111, signed, { intent: wrong })
+  ).rejects.toMatchObject({ code: 'PRIVATE_INTENT_INVALID' });
+  expect(await network.listSubmissions()).toEqual([]);
+  expect(requests).toEqual([]);
+});
+
+test('an absolute preparation deadline cannot be extended by slow nonce reads', async () => {
+  const expiresAt = Date.now() + 1000;
+  let clock;
+  responseHook = async (call) => {
+    if (call.method === 'eth_getTransactionCount')
+      clock = jest.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
+  };
+  try {
+    await expect(
+      service.signAndSendTransaction(params, signer, {
+        privacyContext: handle,
+        intent: fixtureIntent,
+        reviewExpiresAt: expiresAt,
+        review: async () => true,
+      })
+    ).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_EXPIRED' });
+    expect(signer.signTransaction).not.toHaveBeenCalled();
+    expect(requests.some((request) => request.method === 'eth_sendRawTransaction')).toBe(false);
+  } finally {
+    clock?.mockRestore();
+  }
+});
+
+test('exit reservation is derived from signed calldata and durable before an uncertain transport handoff', async () => {
+  const { transactionIntent } = require('./private-transaction-intent');
+  const { Interface } = require('ethers');
+  const word = (n) => `0x${BigInt(n).toString(16).padStart(64, '0')}`;
+  const data = new Interface([require('./ppv2-ragequit-policy').RAGEQUIT_ABI]).encodeFunctionData(
+    'ragequit',
+    [
+      [
+        [1n, 2n],
+        [
+          [3n, 4n],
+          [5n, 6n],
+        ],
+        [7n, 8n],
+        [
+          1n,
+          7n,
+          3n,
+          BigInt(wallet.address),
+          100n,
+          BigInt(require('./ppv2-deposit-policy').NATIVE),
+          4n,
+        ],
+      ],
+    ]
+  );
+  const tx = { ...params, from: wallet.address, data, value: 0n, nonce: 0, gasPrice: 100n };
+  const intent = transactionIntent('ppv2-native-ragequit', tx);
+  const signed = await wallet.signTransaction(tx);
+  let durable = false;
+  responseHook = async (call) => {
+    if (call.method !== 'eth_sendRawTransaction') return;
+    const records = await network.listSubmissions();
+    durable = records[0].intent.commitment === word(7) && records[0].intent.pool === params.to;
+    throw new Error('Lost response');
+  };
+  await expect(
+    network.broadcastRawTransaction(11155111, signed, {
+      intent: { ...intent, commitment: word(8) },
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_BROADCAST_UNCERTAIN' });
+  expect(durable).toBe(true);
+  expect((await network.listSubmissions())[0]).toMatchObject({ state: 'attempted', intent });
+});
+
+test('legacy exit recovery queries only its recorded hash through the owner context without broadcasting', async () => {
+  const { Interface } = require('ethers');
+  const { transactionIntent } = require('./private-transaction-intent');
+  const { createPrivacyStorage } = require('./privacy-storage');
+  const data = new Interface([require('./ppv2-ragequit-policy').RAGEQUIT_ABI]).encodeFunctionData(
+    'ragequit',
+    [
+      [
+        [1n, 2n],
+        [
+          [3n, 4n],
+          [5n, 6n],
+        ],
+        [7n, 8n],
+        [
+          1n,
+          7n,
+          3n,
+          BigInt(wallet.address),
+          100n,
+          BigInt(require('./ppv2-deposit-policy').NATIVE),
+          4n,
+        ],
+      ],
+    ]
+  );
+  const tx = Transaction.from(
+    await wallet.signTransaction({ ...params, type: 0, data, value: 0n, nonce: 0, gasPrice: 100n })
+  );
+  const intent = transactionIntent('ppv2-native-ragequit', tx);
+  await createPrivacyStorage({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) }).set(
+    'submissions-v1',
+    JSON.stringify({
+      version: 2,
+      records: [
+        {
+          hash: tx.hash,
+          nonce: 0,
+          state: 'attempted',
+          attemptedAt: Date.now(),
+          intent: { kind: intent.kind, digest: intent.digest },
+        },
+      ],
+      archive: [],
+    })
+  );
+  const methods = [];
+  mockRequest.mockImplementation(async (context, _url, options) => {
+    expect(context).toBe(handle);
+    const call = JSON.parse(options.body);
+    methods.push(call.method);
+    if (call.method !== 'eth_chainId') expect(call.params).toEqual([tx.hash]);
+    return {
+      status: 200,
+      body: Buffer.from(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: call.id,
+          result:
+            call.method === 'eth_chainId'
+              ? '0xaa36a7'
+              : {
+                  type: '0x0',
+                  hash: tx.hash,
+                  from: tx.from,
+                  to: tx.to,
+                  nonce: '0x0',
+                  gas: `0x${tx.gasLimit.toString(16)}`,
+                  gasPrice: '0x64',
+                  value: '0x0',
+                  input: data,
+                  v: `0x${tx.signature.networkV.toString(16)}`,
+                  r: tx.signature.r,
+                  s: tx.signature.s,
+                },
+        })
+      ),
+    };
+  });
+  await expect(
+    network.recoverExitIntent(tx.hash, params.to, {
+      review: async () => ({
+        recoverExitBinding: true,
+        acceptedEvidence: 'signed-transaction-hash',
+      }),
+    })
+  ).resolves.toMatchObject({ signatureVerified: true, releasesReservation: false });
+  expect(methods).toEqual(['eth_chainId', 'eth_getTransactionByHash']);
+  expect((await network.listSubmissions())[0]).toMatchObject({
+    state: 'attempted',
+    revision: 1,
+    intent,
+  });
+  await expect(network.assertCanSubmit()).rejects.toMatchObject({
+    code: 'PRIVATE_SUBMISSION_UNRESOLVED',
+  });
+});
+
+test('private submissions require classification before signing and again at raw handoff', async () => {
+  await expect(
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      review: async () => true,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_INTENT_INVALID' });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+  const signed = await wallet.signTransaction({ ...params, gasPrice: 100, nonce: 0 });
+  await expect(network.broadcastRawTransaction(11155111, signed)).rejects.toMatchObject({
+    code: 'PRIVATE_INTENT_INVALID',
+  });
+  expect(await network.listSubmissions()).toEqual([]);
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('shield funding reads are restricted to the same public address and explicit tags', async () => {
+  await expect(
+    network.request(11155111, 'eth_getBalance', [wallet.address, 'pending'])
+  ).resolves.toMatchObject({ result: '0x123' });
+  await expect(
+    network.request(11155111, 'eth_getCode', [wallet.address, 'pending'])
+  ).resolves.toMatchObject({ result: '0x' });
+  await expect(
+    network.request(11155111, 'eth_getTransactionCount', [wallet.address, 'latest'])
+  ).resolves.toMatchObject({ result: '0x0' });
+  for (const method of ['eth_getBalance', 'eth_getCode']) {
+    await expect(network.request(11155111, method, [params.to, 'pending'])).rejects.toMatchObject({
+      code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED',
+    });
+    await expect(
+      network.request(11155111, method, [wallet.address, 'latest'])
+    ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  }
+  await expect(
+    network.request(11155111, 'eth_getTransactionCount', [wallet.address, '0x1'])
+  ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+});
+test('recovery permits bounded numbered headers and rejects mismatched response heights', async () => {
+  await expect(
+    network.request(11155111, 'eth_getBlockByNumber', ['0x10', false])
+  ).resolves.toMatchObject({ result: canonical });
+  await expect(
+    network.request(11155111, 'eth_getBlockByNumber', ['0x11', false])
+  ).rejects.toThrow();
+  for (const params of [
+    ['latest', false],
+    ['pending', false],
+    ['0x20000000000000', false],
+    ['0x10', true],
+    ['0x01', false],
+  ]) {
+    const before = requests.length;
+    await expect(network.request(11155111, 'eth_getBlockByNumber', params)).rejects.toMatchObject({
+      code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED',
+    });
+    expect(requests.length).toBe(before);
+  }
+});
+
+test('transaction destination is genuinely bound to cached network and handle without RPC', () => {
+  const observed = getPrivateTransactionNetworkDestination(network, handle);
+  expect(getPrivateTransactionNetworkDestination(network, handle)).toBe(observed);
+  expect(() => assertPrivateTransactionNetworkDestination(network, handle, observed)).not.toThrow();
+  expect(Object.isFrozen(observed)).toBe(true);
+  expect(JSON.stringify(observed)).not.toContain('rpc.example');
+  for (const fake of [{}, { ...network }, Object.create(network)]) {
+    expect(() => getPrivateTransactionNetworkDestination(fake, handle)).toThrow();
+    expect(() => assertPrivateTransactionNetworkDestination(fake, handle, observed)).toThrow();
+  }
+  for (const fake of [{}, { ...observed }, JSON.parse(JSON.stringify(observed))]) {
+    expect(() => assertPrivateTransactionNetworkDestination(network, handle, fake)).toThrow();
+  }
+  const unrelated = scope.getContext({
+    kind: 'public-address',
+    principal: params.to,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  expect(() => getPrivateTransactionNetworkDestination(network, unrelated)).toThrow();
+  expect(() => assertPrivateTransactionNetworkDestination(network, unrelated, observed)).toThrow();
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+test('destination accessor never repairs a stale transaction client after Tor replacement', () => {
+  const observed = getPrivateTransactionNetworkDestination(network, handle);
+  tor.abort();
+  tor = new AbortController();
+  mockEndpoint = { signal: tor.signal };
+  expect(() => getPrivateTransactionNetworkDestination(network, handle)).toThrow();
+  expect(() => assertPrivateTransactionNetworkDestination(network, handle, observed)).toThrow();
+  const fresh = getPrivateTransactionNetwork(handle);
+  expect(fresh).not.toBe(network);
+  const next = getPrivateTransactionNetworkDestination(fresh, handle);
+  expect(next).not.toBe(observed);
+  expect(() => assertPrivateTransactionNetworkDestination(fresh, handle, observed)).toThrow();
+  expect(() => assertPrivateTransactionNetworkDestination(fresh, handle, next)).not.toThrow();
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+test('destination observation does not authorize an arbitrary transaction hash', async () => {
+  const observed = getPrivateTransactionNetworkDestination(network, handle);
+  assertPrivateTransactionNetworkDestination(network, handle, observed);
+  await expect(
+    network.request(11155111, 'eth_getTransactionReceipt', ['0x' + 'f'.repeat(64)])
+  ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  expect(mockRequest).not.toHaveBeenCalled();
+  scope.close();
+  expect(() => assertPrivateTransactionNetworkDestination(network, handle, observed)).toThrow();
+});
+
+const { createPrivateRpcDestinationConstraint } = require('../networks/private-rpc');
+function reviewedConstraint() {
+  return createPrivateRpcDestinationConstraint({
+    observation: getPrivateTransactionNetworkDestination(network, handle),
+    signal: scope.signal,
+    deadline: performance.now() + 60000,
+  });
+}
+function restrictedNetwork() {
+  const grant = reviewedConstraint();
+  const child = createPrivacyScope({ profileId: 'test', signal: scope.signal });
+  handle = child.getContext({
+    kind: 'public-address',
+    principal: wallet.address,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  mockJournals.set(
+    handle,
+    createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) })
+  );
+  network = getPrivateTransactionNetwork(handle, { destinationConstraint: grant.constraint });
+  return { grant, child };
+}
+test('per-handle destination restriction survives omitted cache lookups and dispatches only its pinned URL', async () => {
+  const { grant, child } = restrictedNetwork();
+  try {
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(getPrivateTransactionNetwork(handle, {})).toBe(network);
+    expect(getPrivateTransactionNetwork(handle, { destinationConstraint: undefined })).toBe(
+      network
+    );
+    mockUrl = 'https://different.example/path';
+    await network.request(11155111, 'eth_getCode', [wallet.address, 'pending']);
+    expect(mockRequest.mock.calls.map(([, url]) => url)).toEqual([
+      'https://rpc.example',
+      'https://rpc.example',
+    ]);
+    expect(() => getPrivateTransactionNetwork(handle, { destinationConstraint: {} })).toThrow();
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+test('a second genuine same-URL constraint cannot replace a bound token', () => {
+  const other = reviewedConstraint();
+  const { grant, child } = restrictedNetwork();
+  try {
+    expect(() =>
+      getPrivateTransactionNetwork(handle, { destinationConstraint: other.constraint })
+    ).toThrow();
+    expect(other.signal.aborted).toBe(false);
+    expect(grant.signal.aborted).toBe(false);
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(mockRequest).not.toHaveBeenCalled();
+  } finally {
+    other.close();
+    grant.close();
+    child.close();
+  }
+});
+test.each(['close', 'deadline', 'tor-replacement'])(
+  'revoked %s restriction never creates an unconstrained replacement',
+  async (reason) => {
+    if (reason === 'deadline') jest.useFakeTimers();
+    const { grant, child } = restrictedNetwork();
+    try {
+      if (reason === 'close') grant.close();
+      if (reason === 'deadline') jest.advanceTimersByTime(60000);
+      if (reason === 'tor-replacement') mockEndpoint = { signal: new AbortController().signal };
+      for (const options of [
+        undefined,
+        {},
+        { destinationConstraint: undefined },
+        { destinationConstraint: grant.constraint },
+      ])
+        expect(() => getPrivateTransactionNetwork(handle, options)).toThrow();
+      await expect(
+        network.request(11155111, 'eth_getCode', [wallet.address, 'pending'])
+      ).rejects.toThrow();
+      expect(mockRequest).not.toHaveBeenCalled();
+      expect(grant.signal.aborted).toBe(true);
+    } finally {
+      grant.close();
+      child.close();
+      jest.useRealTimers();
+    }
+  }
+);
+test('adding a constraint to an existing unconstrained client refuses rather than retrofitting it', () => {
+  const grant = reviewedConstraint();
+  try {
+    expect(() =>
+      getPrivateTransactionNetwork(handle, { destinationConstraint: grant.constraint })
+    ).toThrow();
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(grant.signal.aborted).toBe(false);
+    expect(mockRequest).not.toHaveBeenCalled();
+  } finally {
+    grant.close();
+  }
+});
+test.each([null, { extra: true }, new Proxy({}, {})])(
+  'invalid network options refuse without harming cached client %p',
+  (options) => {
+    expect(() => getPrivateTransactionNetwork(handle, options)).toThrow();
+    expect(getPrivateTransactionNetwork(handle)).toBe(network);
+    expect(mockRequest).not.toHaveBeenCalled();
+  }
+);
+test('constraint reaches fee, nonce, simulation and actual raw-send paths via ordinary omitted network lookup', async () => {
+  const { grant, child } = restrictedNetwork();
+  try {
+    const options = { privacyContext: handle, intent: fixtureIntent, review: async () => true };
+    await service.estimateGas({ ...params, from: wallet.address }, options);
+    await network.request(11155111, 'eth_call', [
+      { from: wallet.address, to: params.to, value: '0x1' },
+      'latest',
+    ]);
+    const result = await service.signAndSendTransaction(params, signer, options);
+    expect(result.hash).toMatch(/^0x[0-9a-f]{64}$/i);
+    expect(requests.filter((v) => v.method === 'eth_sendRawTransaction')).toHaveLength(1);
+    expect(requests.some((v) => v.method === 'eth_chainId')).toBe(true);
+    expect(requests.some((v) => v.method === 'eth_getTransactionCount')).toBe(true);
+    expect(mockRequest.mock.calls.every(([, url]) => url === 'https://rpc.example')).toBe(true);
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+test('review revocation prevents signing and raw-send after successful earlier simulation', async () => {
+  const { grant, child } = restrictedNetwork();
+  try {
+    await expect(
+      service.signAndSendTransaction(params, signer, {
+        privacyContext: handle,
+        intent: fixtureIntent,
+        review: async () => {
+          grant.close();
+          return true;
+        },
+      })
+    ).rejects.toThrow();
+    expect(requests.filter((v) => v.method === 'eth_sendRawTransaction')).toHaveLength(0);
+    expect(signer.signTransaction).not.toHaveBeenCalled();
+    expect(() => getPrivateTransactionNetwork(handle)).toThrow();
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+
+test('network options accessor is never invoked and cannot change cached client', () => {
+  const getter = jest.fn(() => {
+    throw Error('getter must not run');
+  });
+  const options = Object.defineProperty({}, 'destinationConstraint', {
+    get: getter,
+    enumerable: true,
+  });
+  expect(() => getPrivateTransactionNetwork(handle, options)).toThrow();
+  expect(getter).not.toHaveBeenCalled();
+  expect(getPrivateTransactionNetwork(handle)).toBe(network);
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('failed constrained first build retains its binding and an omitted retry cannot admit endpoint B', async () => {
+  const grant = reviewedConstraint();
+  const child = createPrivacyScope({ profileId: 'test', signal: scope.signal });
+  const fresh = child.getContext({
+    kind: 'public-address',
+    principal: wallet.address,
+    chainId: 11155111,
+    role: 'transaction-rpc',
+  });
+  try {
+    mockUrl = 'https://unreviewed.example/rpc';
+    expect(() =>
+      getPrivateTransactionNetwork(fresh, { destinationConstraint: grant.constraint })
+    ).toThrow();
+    for (const options of [undefined, {}, { destinationConstraint: undefined }])
+      expect(() => getPrivateTransactionNetwork(fresh, options)).toThrow();
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(grant.signal.aborted).toBe(false);
+    // A denied endpoint did not revoke a reusable restriction. Restoring the
+    // reviewed endpoint may build a client, but it still inherits that token.
+    mockUrl = 'https://rpc.example';
+    handle = fresh;
+    const inherited = getPrivateTransactionNetwork(fresh);
+    await inherited.request(11155111, 'eth_getCode', [wallet.address, 'pending']);
+    expect(mockRequest.mock.calls.every(([, url]) => url === 'https://rpc.example')).toBe(true);
+    grant.close();
+    expect(inherited.signal.aborted).toBe(true);
+    expect(() => getPrivateTransactionNetwork(fresh)).toThrow();
+  } finally {
+    grant.close();
+    child.close();
+  }
+});
+test.each([null, false, 0, {}, new Proxy({}, {})])(
+  'invalid first constraint %p leaves its new handle refused on omission',
+  (token) => {
+    const child = createPrivacyScope({ profileId: 'test', signal: scope.signal });
+    const fresh = child.getContext({
+      kind: 'public-address',
+      principal: wallet.address,
+      chainId: 11155111,
+      role: 'transaction-rpc',
+    });
+    try {
+      expect(() => getPrivateTransactionNetwork(fresh, { destinationConstraint: token })).toThrow();
+      expect(() => getPrivateTransactionNetwork(fresh)).toThrow();
+      expect(() => getPrivateTransactionNetwork(fresh, {})).toThrow();
+      expect(getPrivateTransactionNetwork(handle)).toBe(network);
+      expect(mockRequest).not.toHaveBeenCalled();
+    } finally {
+      child.close();
+    }
+  }
+);
+
+// Genuine host network + reconciler, with explicitly mocked public authority
+// and journal persistence. This checks routing/order, not authorization issuance.
+const mockRailgunResolutionAuthority = {};
+test.each(['railgun-native-shield', 'railgun-transact'])(
+  'reconciliation wires %s through the installed public authority bridge before and after review',
+  async (kind) => {
+    const moduleName = '@freedom/railgun-kohaku-adapter/host/owner-authority';
+    const actual = jest.requireActual(moduleName);
+    const selected =
+      kind === 'railgun-transact'
+        ? 'authorizeRailgunTransactResolution'
+        : 'authorizeRailgunShieldResolution';
+    const other =
+      kind === 'railgun-transact'
+        ? 'authorizeRailgunShieldResolution'
+        : 'authorizeRailgunTransactResolution';
+    expect(typeof actual[selected]).toBe('function');
+    expect(() => actual[selected](handle, { intent: { kind } }, false)).toThrow();
+    const permit = Object.freeze({ fixture: 'mock journal wiring only' });
+    const calls = [];
+    const authority = {
+      [selected]: jest.fn((context, record, completed) => {
+        expect(context).toBe(handle);
+        calls.push(completed ? 'authorize-complete' : 'authorize-review');
+        expect(record.intent.kind).toBe(kind);
+        return completed ? permit : undefined;
+      }),
+      [other]: jest.fn(() => {
+        throw Error('wrong authority branch');
+      }),
+    };
+    let record = { hash: '0x' + 'a'.repeat(64), nonce: 0, revision: 0, intent: { kind } };
+    const wiringJournal = {
+      list: async () => [record],
+      observe: jest.fn(async (hash, observation, revision) => {
+        expect(hash).toBe(record.hash);
+        expect(revision).toBe(record.revision);
+        record = { ...record, observation, revision: revision + 1 };
+        return record;
+      }),
+      resolve: jest.fn(async (...args) => {
+        calls.push('journal-resolve');
+        expect(args).toEqual([record.hash, record.revision, 2, permit]);
+        return record;
+      }),
+    };
+    mockJournals.set(handle, wiringJournal);
+    receipt = {
+      transactionHash: record.hash,
+      from: wallet.address,
+      status: '0x1',
+      blockHash: canonical.hash,
+      blockNumber: canonical.number,
+    };
+    Object.assign(mockRailgunResolutionAuthority, authority);
+    jest.doMock(moduleName, () => mockRailgunResolutionAuthority);
+    try {
+      await network.resolveSubmission(record.hash, {
+        minimumConfirmations: 2,
+        review: async () => {
+          calls.push('review');
+          return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
+        },
+      });
+      expect(calls).toEqual([
+        'authorize-review',
+        'review',
+        'authorize-complete',
+        'journal-resolve',
+      ]);
+      expect(authority[selected].mock.calls.map((args) => args[2])).toEqual([false, true]);
+      expect(authority[other]).not.toHaveBeenCalled();
+      expect(wiringJournal.observe).toHaveBeenCalledTimes(2);
+      expect(authority[selected]).toHaveBeenNthCalledWith(
+        1,
+        handle,
+        await wiringJournal.observe.mock.results[0].value,
+        false
+      );
+      expect(authority[selected]).toHaveBeenNthCalledWith(
+        2,
+        handle,
+        await wiringJournal.observe.mock.results[1].value,
+        true
+      );
+      for (const completed of [false, true]) {
+        const refusal = new Error('mock authority refuses');
+        authority[selected].mockImplementation((_context, _record, phase) => {
+          if (phase === completed) throw refusal;
+        });
+        wiringJournal.resolve.mockClear();
+        const review = jest.fn(async () => ({
+          allowNextTransaction: true,
+          acceptedEvidence: 'unverified-rpc',
+        }));
+        await expect(
+          network.resolveSubmission(record.hash, { minimumConfirmations: 2, review })
+        ).rejects.toBe(refusal);
+        expect(review).toHaveBeenCalledTimes(completed ? 1 : 0);
+        expect(wiringJournal.resolve).not.toHaveBeenCalled();
+      }
+    } finally {
+      jest.dontMock(moduleName);
+    }
+  }
+);

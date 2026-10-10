@@ -1,0 +1,299 @@
+{
+  "schema": "privacy-main-sync-v1",
+  "main": "9f6fec8d7ffb5f14ba8b029b20ba7e26cf5f44e8",
+  "merge": "52c35b8c224df43304aa8316e275396384c1383e",
+  "nativeQualificationCommit": "c45fc866c2634edc44eef59279b2a305ff26874e",
+  "nativeReportsRemainHistorical": true,
+  "changedQualifiedSourceFiles": {
+    "scripts/fetch-freedom-ipfs-native.js": {
+      "qualified": "89a29740398eff4ac4d494b46bb8dbebaadf6a5d78ed562f5d72861945f9b4cb",
+      "merged": "18f76a7cbf17359625ec00e89a6644654021ae57ba7e9bc9fe9c41cf01e49657"
+    },
+    "scripts/smoke-freedom-ipfs-native.js": {
+      "qualified": "924adc9c0604533767007c08b8dddc524e73681448fb1c29c3b4f2e72c4da916",
+      "merged": "04c4ca0fdf84c30c38cfae5aac84aa6eff89fb03e040b138f28c62bd8521c7af"
+    },
+    "src/main/ipfs-manager.js": {
+      "qualified": "250a21111984f35e8909e32acdc16ede070e8b84879e1a1f789df62c65430a44",
+      "merged": "a77289a198b14f90d712e084b870047eb35f9ddfc3df7c41ef1bd5898df97a49"
+    },
+    "src/main/ipfs-manager.test.js": {
+      "qualified": "d2c04ec49d1c35ff7bbd6bf2bf52b08dc20342ba86551be96ceb0e4686d119d9",
+      "merged": "25496a668c6c980a04c3ce2203174d66486eb2797fa0c089a919a2c94c594549"
+    },
+    "src/main/ipfs/freedom-ipfs-event-worker.test.js": {
+      "qualified": "7253f5ba5da1b1f97f7e34320f9e96cebe763e371c89787cf0c4a21f85462adc",
+      "merged": "4bcf55f16983f78d6afa0e0be3bbb074361cf738f7355dfa5a9fc30355152a78"
+    },
+    "src/main/ipfs/freedom-ipfs-native-node.js": {
+      "qualified": "8c1b3492207f5e7635d37c9743c3d83af241432f4334d6f223ff28f1fd50fc48",
+      "merged": "294561402d6514d6bf1569a657f48eca7f892ef417daf8fab7e0a9bb0ff2ea58"
+    },
+    "src/main/ipfs/freedom-ipfs-native-node.test.js": {
+      "qualified": "cf29aee24f5b1e4d18aea7f7543124630afae3775aaab41f8b25c368b690173d",
+      "merged": "78b47f94d2631c84a32ede2923a32c1eb72732c75eeff1231cc0e507a2e5ef17"
+    }
+  },
+  "unchangedSelectedNativeSourceCount": 178,
+  "mergedFiles": [
+    "LICENSE_AUDIT.md",
+    "changelog.d/changed--freedom-ipfs-0.4.5.md",
+    "docs/agent-playbooks/bundled-binaries.md",
+    "licenses-audit.json",
+    "scripts/fetch-freedom-ipfs-native.js",
+    "scripts/smoke-freedom-ipfs-native.js",
+    "src/main/ipfs-manager.js",
+    "src/main/ipfs-manager.test.js",
+    "src/main/ipfs/freedom-ipfs-event-worker.test.js",
+    "src/main/ipfs/freedom-ipfs-native-node.js",
+    "src/main/ipfs/freedom-ipfs-native-node.test.js",
+    "test-e2e/ensv2.spec.js"
+  ],
+  "downloads": {
+    "ant": "0.5.58: all downloader targets, Windows ARM64 emulation copy",
+    "ipfs": "0.4.5: host packaged and development addon",
+    "radicle": "0.7.1: host addon",
+    "myotis": "0.1.12: all five pinned release targets"
+  },
+  "myotisSupervisorRebuilt": true,
+  "myotisHostAbi": 32,
+  "arti": {
+    "version": "2.6.0",
+    "unchangedMatchingPinRetained": true
+  },
+  "networkScope": "IPFS disposable lifecycle started under sandbox denial of all network operations. No live retrieval or other network node startup.",
+  "pinsChanged": true,
+  "changedPinInputs": {
+    "scripts/fetch-freedom-ipfs-native.js": {
+      "before": "89a29740398eff4ac4d494b46bb8dbebaadf6a5d78ed562f5d72861945f9b4cb",
+      "after": "18f76a7cbf17359625ec00e89a6644654021ae57ba7e9bc9fe9c41cf01e49657"
+    }
+  },
+  "pinInputSha256": {
+    "package.json": "f4cbb3f9c86ea96bd6889741e3286b7130a9b6cfe7950daae4c6aa9ea2029dc8",
+    "package-lock.json": "2fefb4c5be3baeec56fbd2c60136e06640f307644bbb88e297c5cd2339a28993",
+    "scripts/fetch-ant.js": "43ad536a0e8708737be29ed1d495af7ecf31ceb4c890c6f4f5596d8b0a52fcad",
+    "scripts/fetch-freedom-ipfs-native.js": "18f76a7cbf17359625ec00e89a6644654021ae57ba7e9bc9fe9c41cf01e49657",
+    "scripts/fetch-radicle-addon.js": "044ece13bd75603ac6488c55e67d0b5e336ea279c6097558530cbb80c2d0770b",
+    "src/shared/radicle-addon-version.js": "fcf8150d4686ac239bdae9e976361d6ffad5031861e74d794e432dd948b9be6c",
+    "scripts/fetch-myotis.js": "49e6a71936c8ba705726c25c72958e8f97494fc9cf20310e8bce27c9b32f6f22",
+    "scripts/fetch-arti.js": "82cf8ed18c5bc04bb082936f3e0c2a5d2ff2a4304efa7e7b5a0f47350e8e58cc",
+    "scripts/build-myotis-supervisor.js": "8b9f3ea69367cb63396ca34f4bf66e3333022307f4310aaae096258c79c28030",
+    "scripts/fetch-adblock-lists.js": "f10127658120793f777ec25c1601a9e7e79f4967257d1fa439aa2c7d01838d4b",
+    "scripts/myotis-release.json": "ec364555320c1ada3f18bb63bdf2c844d09fea0748c0d215726500806c7d9c09"
+  },
+  "lockfileChanged": false,
+  "npmCiRequired": false,
+  "adblockRequirementsChanged": false,
+  "files": {
+    "ant-bin/mac-arm64/antd": {
+      "bytes": 14439824,
+      "sha256": "d27bed99adc077c4c06d5e22e52aeeda0b43e5aa11622a1f084ba02ea63a35c3"
+    },
+    "native/freedom-ipfs-node/prebuilds/mac-arm64/freedom_ipfs_native.node": {
+      "bytes": 35554504,
+      "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897"
+    },
+    "native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node": {
+      "bytes": 35554504,
+      "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897"
+    },
+    "radicle-bin/mac-arm64/libradicle.node": {
+      "bytes": 13006512,
+      "sha256": "807ef2c0679ee3cedebf9ef2f9f4c012f921b2f43bdcba52d3715a35e6d4d210"
+    },
+    "myotis-bin/mac-arm64/myotis-supervisor": {
+      "bytes": 34768,
+      "sha256": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203"
+    },
+    "arti-bin/mac-arm64/arti": {
+      "bytes": 22463904,
+      "sha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34"
+    },
+    "myotis-bin/mac-arm64/myotis-node.node": {
+      "bytes": 9859088,
+      "sha256": "19f1866ce23230ebad65262b79bf2dd0792f5b98684fdfdd9a0e6c5d0295d9cc"
+    },
+    "myotis-bin/mac-x64/myotis-node.node": {
+      "bytes": 11427568,
+      "sha256": "0e064d2511bdd9e78483c65de13efe44ed10affd35e8fca1561896a836f3f1b0"
+    },
+    "myotis-bin/linux-x64/myotis-node.node": {
+      "bytes": 13942520,
+      "sha256": "e80c561ca623d52e736d6d1f8c48da33c4975dd15143a1e4191bd81815f7dd16"
+    },
+    "myotis-bin/linux-arm64/myotis-node.node": {
+      "bytes": 12805736,
+      "sha256": "95d6aff682d005e403e346390bebf71d5df2b89a9198c2433d5365ca804a53d6"
+    },
+    "myotis-bin/win-x64/myotis-node.node": {
+      "bytes": 9835520,
+      "sha256": "70ce52f8aa0d3abbb9c4bf01d3da0a88fa495952823ba57be61bffa541d6fff1"
+    }
+  },
+  "logs": {
+    "ant-refresh": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-ant-refresh-oct5.log",
+      "sha256": "b5ef2c68dda6ff238486b1c5f80eb060ba0b4b3721220d5efd5d39bbdde42409",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "ipfs-refresh": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-ipfs-refresh-oct5.log",
+      "sha256": "c2ccc9b07baf71489836ee1f499568e5247163eab986f6093e4f7fc6337fda81",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "radicle-refresh": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-radicle-refresh-oct5.log",
+      "sha256": "17efb0b671a5ae45e89a99371c35e78eb9ab73427bc10e5c4cd6179e2231ff5c",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "myotis-refresh": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-myotis-refresh-oct5.log",
+      "sha256": "7a8d32e64cd86ecdec3a68ca39da218f4d0ef3873145c0d7e604e36183572661",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "supervisor": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-supervisor-oct5.log",
+      "sha256": "9e92838d110dcd4a96ebbf8e716d6caeb815a40a045a90cedb437fc67b5ccb1a",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "radicle-load": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-radicle-load-oct5.log",
+      "sha256": "aeb4ac21b39c501a267426de044fd429b5e727f3a53e12360668f1775a797d02",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "versions": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-versions-oct5.log",
+      "sha256": "d34c00b6557b1596b1703c7cc4e55e99d7f99880bcb50e4487bb56f0abd4ea8f",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "binaries": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-binaries-oct5.log",
+      "sha256": "6fd167b0d7d1263ed5cfe93953236d35a8b6663f9e8a3e80aad6b2eecf5b1b86",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "tests": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-tests-oct5.log",
+      "sha256": "ea104cede86b4aaabd82fde1e89b0f5986cb703e197adb2594065671badd2133",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "lint": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-lint-oct5.log",
+      "sha256": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    },
+    "ipfs-smoke-deny-network": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-ipfs-smoke-deny-network-oct5.log",
+      "sha256": "8d6d51f74bfe4280a1faf14f616535285b534f97cda5618f606f20584a9e34e6",
+      "exitCode": 0,
+      "originalRootHandleDrained": true
+    }
+  },
+  "validation": {
+    "testsPassed": 330,
+    "testsSkipped": 0,
+    "suitesPassed": 6,
+    "seconds": 0.653,
+    "fullLint": "passed",
+    "nativeCampaignRerun": false,
+    "fullRegressionRerun": false,
+    "e2eRerun": false
+  },
+  "ipfsLifecycle": {
+    "version": "0.4.5",
+    "scope": "Shipped production wrapper async start/health/stats/stop, scratch smoke runner only changes require path and retains temp data. No connectivity, live page, fanout, UI or packaged-Electron claim.",
+    "sandboxProfile": "(version 1)(allow default)(deny network*)",
+    "sandboxProfileSha256": "80de7c41c4cac0234db39d259c29450b17c4e5768f24bc7dd9f9f8c75d2c12a3",
+    "runner": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-ipfs-smoke-retained-oct5.js",
+      "sha256": "089b4f8d983e0c5063b1659b1d2f1b534a07d905e974b7d5dab32a75ebbd9032"
+    },
+    "originalRunner": {
+      "path": "scripts/smoke-freedom-ipfs-native.js",
+      "sha256": "04c4ca0fdf84c30c38cfae5aac84aa6eff89fb03e040b138f28c62bd8521c7af"
+    },
+    "runnerDiff": {
+      "path": "/private/tmp/privacy-main-9f6fec8d-ipfs-smoke-copy-oct5.diff",
+      "sha256": "b97795fd1dc250595d527e5d8c2d94ec4cd8ab916ff294ef0e38cd9e4ad135ae"
+    },
+    "command": "sandbox-exec -p '(version 1)(allow default)(deny network*)' env TMPDIR=/private/tmp/privacy-main-9f6fec8d-smoke-data-oct5 FREEDOM_IPFS_NATIVE_SMOKE_LIVE=0 FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102=0 FREEDOM_IPFS_NATIVE_SMOKE_TARGET=darwin-arm64 node /private/tmp/privacy-main-9f6fec8d-ipfs-smoke-retained-oct5.js",
+    "livePage": null,
+    "issue102Fanout": null,
+    "retainedDataNotPublished": true,
+    "installedInodeRefresh": [
+      {
+        "path": "native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node",
+        "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897",
+        "originalInode": 159607327,
+        "newInode": 172845082,
+        "backup": "/private/tmp/privacy-main-9f6fec8d-development-original-inode-oct5.node"
+      },
+      {
+        "path": "native/freedom-ipfs-node/prebuilds/mac-arm64/freedom_ipfs_native.node",
+        "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897",
+        "originalInode": 172843776,
+        "newInode": 172845083,
+        "backup": "/private/tmp/privacy-main-9f6fec8d-packaged-original-inode-oct5.node"
+      }
+    ],
+    "diagnosis": "Original load attempts were killed with CODESIGNING Invalid Page. Byte-identical addon on a fresh inode loads; retained both original inodes and installed same verified bytes on fresh inodes. Consistent with stale macOS signature cache; no re-signing or source change."
+  },
+  "excludedDiagnostics": [
+    {
+      "path": "/private/tmp/privacy-main-9f6fec8d-ipfs-smoke-oct5.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exitCode": 137,
+      "reason": "Initial sandboxed smoke killed before output; no pass claim."
+    },
+    {
+      "path": "/private/tmp/privacy-main-9f6fec8d-ipfs-load-probe-oct5.log",
+      "sha256": "86e4fa6788561641a5e83f82b14a46c3109005dfa3ef4cc9b5caaa64146b0133",
+      "signal": 9,
+      "reason": "Printed before-addon-load, then SIGKILL at addon load."
+    }
+  ],
+  "diagnosticCrashSummaries": [
+    {
+      "file": "node-2026-10-05-192319.ips",
+      "exception": {
+        "codes": "0x0000000000000032, 0x0000000131ac0000",
+        "rawCodes": [50, 5128323072],
+        "type": "EXC_BAD_ACCESS",
+        "signal": "SIGKILL (Code Signature Invalid)",
+        "subtype": "UNKNOWN_0x32 at 0x0000000131ac0000"
+      },
+      "termination": {
+        "flags": 0,
+        "code": 2,
+        "namespace": "CODESIGNING",
+        "indicator": "Invalid Page"
+      }
+    },
+    {
+      "file": "node-2026-10-05-192440.ips",
+      "exception": {
+        "codes": "0x0000000000000032, 0x0000000121800000",
+        "rawCodes": [50, 4857004032],
+        "type": "EXC_BAD_ACCESS",
+        "signal": "SIGKILL (Code Signature Invalid)",
+        "subtype": "UNKNOWN_0x32 at 0x0000000121800000"
+      },
+      "termination": {
+        "flags": 0,
+        "code": 2,
+        "namespace": "CODESIGNING",
+        "indicator": "Invalid Page"
+      }
+    }
+  ]
+}

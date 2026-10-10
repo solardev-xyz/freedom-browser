@@ -608,6 +608,13 @@ jobs:
   # #319 lesson: specs no job listed shipped their regressions green). Keep
   # the `e2e-not-in-ci:` prefix; the guard reads these lines.
   #
+  # e2e-not-in-ci: ppv2-deposit.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
+  # e2e-not-in-ci: ppv2-exit-circuits.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
+  # e2e-not-in-ci: ppv2-lifecycle.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
+  # e2e-not-in-ci: ppv2-process.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
+  # e2e-not-in-ci: ppv2-relay.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
+  # e2e-not-in-ci: ppv2-token-deposit.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
+  # e2e-not-in-ci: ppv2-withdrawal.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
   # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
@@ -1158,6 +1165,8 @@ jobs:
             test-e2e/private-windows.spec.js \
             test-e2e/private-tab-color.spec.js \
             test-e2e/chrome-input-focus.spec.js \
+            test-e2e/wallet-private-balances.spec.js \
+            test-e2e/wallet-private-recovery.spec.js \
             test-e2e/sidebar-subscreen-headers.spec.js \
             test-e2e/downloads.spec.js
 

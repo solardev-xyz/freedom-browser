@@ -7,3 +7,22 @@ docs/audits/evidence/**/*.bin -text
 # Pinned by sha256 in scripts/fetch-adblock-lists.js: never convert line endings,
 # or a core.autocrlf checkout (Windows runners) fails the check (#502).
 scripts/vendor/** -text
+
+# Byte-identical public inputs retained from the Railgun qualification archive.
+docs/qualification/railgun-account-txid-live-2026-10-03.json -text
+docs/qualification/railgun-frontier-vectors-2026-10-02.json -text
+docs/qualification/railgun-live-event-coverage-2026-10-03.json -text
+docs/qualification/railgun-poi-read-2026-10-03.json -text
+docs/qualification/railgun-public-contract-bytecodes-2026-10-04.json -text
+docs/qualification/railgun-public-generations-2026-10-03.json -text
+docs/qualification/railgun-public-state-2026-10-02.json -text
+docs/qualification/railgun-sepolia-deployment-2026-10-02.json -text
+docs/qualification/railgun-sepolia-deployment-2026-10-03.json -text
+docs/qualification/railgun-sepolia-governance-2026-10-03.json -text
+docs/qualification/railgun-sepolia-history-2026-10-02.json -text
+docs/qualification/railgun-sepolia-verifiers-2026-10-02.json -text
+docs/qualification/railgun-shield-account-2026-10-03.json -text
+docs/qualification/railgun-shield-prerequisites-2026-10-04.json -text
+docs/qualification/railgun-shield-submission-2026-10-03.json -text
+docs/qualification/railgun-txid-storage-2026-10-03.json -text
+docs/qualification/railgun-unsigned-relay-preparation-2026-10-06/public-source.json -text

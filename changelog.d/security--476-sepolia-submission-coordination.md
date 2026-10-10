@@ -1,0 +1,1 @@
+- A second Sepolia send from the same account is refused while another is still being prepared. Profiles containing experimental privacy state must be unlocked before any Sepolia send, so recorded pending transactions can be checked ([#476](https://github.com/solardev-xyz/freedom-browser/pull/476))

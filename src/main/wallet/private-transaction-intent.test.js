@@ -1,0 +1,131 @@
+const { AbiCoder, Interface, keccak256 } = require('ethers');
+const { transactionIntent, validIntent } = require('./private-transaction-intent');
+const { RAGEQUIT_ABI } = require('./ppv2-ragequit-policy');
+const { FIELD, NATIVE } = require('./ppv2-deposit-policy');
+const abi = new Interface([RAGEQUIT_ABI]);
+const owner = `0x${'22'.repeat(20)}`,
+  pool = `0x${'11'.repeat(20)}`;
+const signals = [1n, 7n, 3n, BigInt(owner), 100n, BigInt(NATIVE), 4n];
+const encode = (s) =>
+  abi.encodeFunctionData('ragequit', [
+    [
+      [1n, 2n],
+      [
+        [3n, 4n],
+        [5n, 6n],
+      ],
+      [7n, 8n],
+      s,
+    ],
+  ]);
+const tx = { chainId: 11155111, from: owner, to: pool, value: 0n, data: encode(signals) };
+test('calldata-derived exit binding preserves the exact legacy intent digest', () => {
+  const value = transactionIntent('ppv2-native-ragequit', {
+    ...tx,
+    commitment: `0x${'ff'.repeat(32)}`,
+  });
+  expect(value.pool).toBe(pool);
+  expect(BigInt(value.commitment)).toBe(7n);
+  expect(Object.isFrozen(value)).toBe(true);
+  expect(value.digest).toBe(
+    keccak256(
+      AbiCoder.defaultAbiCoder().encode(
+        ['string', 'uint256', 'address', 'address', 'uint256', 'bytes'],
+        ['ppv2-native-ragequit', tx.chainId, owner, pool, 0n, tx.data]
+      )
+    )
+  );
+  expect(validIntent(value)).toBe(true);
+  expect(validIntent({ kind: value.kind, digest: value.digest })).toBe(true);
+});
+test.each([
+  { data: '0xabcd' },
+  { data: `${tx.data}00` },
+  { value: 1n },
+  { chainId: 1 },
+  { from: pool },
+  { data: encode(signals.map((v, i) => (i === 1 ? FIELD : v))) },
+  { data: encode(signals.map((v, i) => (i === 4 ? 0n : v))) },
+  { data: encode(signals.map((v, i) => (i === 5 ? BigInt(pool) : v))) },
+])('refuses noncanonical or mismatched exit calldata %#', (change) => {
+  expect(() => transactionIntent('ppv2-native-ragequit', { ...tx, ...change })).toThrow(
+    expect.objectContaining({ code: 'PRIVATE_INTENT_INVALID' })
+  );
+});
+test('token exit binds the same note and refuses native kind confusion', () => {
+  const value = transactionIntent('ppv2-token-ragequit', {
+    ...tx,
+    data: encode(signals.map((v, i) => (i === 5 ? BigInt(pool) : v))),
+  });
+  expect(BigInt(value.commitment)).toBe(7n);
+  expect(validIntent(value)).toBe(true);
+  expect(() => transactionIntent('ppv2-token-ragequit', tx)).toThrow();
+  expect(validIntent({ ...value, pool: null })).toBe(false);
+  expect(validIntent({ ...value, commitment: `0x${FIELD.toString(16)}` })).toBe(false);
+  expect(validIntent({ ...value, kind: 'ppv2-native-deposit' })).toBe(false);
+});
+
+test('a ragequit cannot be disguised as a non-exit intent', () => {
+  for (const kind of [
+    'ppv2-register-auth',
+    'ppv2-native-deposit',
+    'ppv2-token-deposit',
+    'ppv2-token-approval',
+  ]) {
+    expect(() => transactionIntent(kind, tx)).toThrow(
+      expect.objectContaining({ code: 'PRIVATE_INTENT_INVALID' })
+    );
+  }
+});
+test.each([false, true])(
+  'Railgun private %s uses full calldata metadata and refuses other labels',
+  (unshield) => {
+    const transaction = structuredClone(
+      require('../../../test/fixtures/railgun/railgun-intent-transactions.json').find(
+        (row) => row.unshield === unshield
+      ).transaction
+    );
+    const classified = transactionIntent('railgun-transact', transaction);
+    expect(validIntent(classified)).toBe(true);
+    expect(validIntent({ kind: classified.kind, digest: classified.digest })).toBe(false);
+    for (const kind of ['railgun-native-shield', 'ppv2-native-deposit', 'ppv2-token-approval'])
+      expect(() => transactionIntent(kind, transaction)).toThrow();
+    expect(() => transactionIntent('railgun-transact', tx)).toThrow();
+  }
+);
+
+test('Railgun host intent fixtures retain their original source projections', () => {
+  const fs = require('fs');
+  const { createHash } = require('crypto');
+  const source = require('../../../test/fixtures/railgun/railgun-intent-source.json');
+  const bytes = fs.readFileSync(
+    require.resolve('../../../test/fixtures/railgun/railgun-intent-transactions.json')
+  );
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(source.sha256);
+});
+
+// The historical public-cold fixture passed an actual signed transaction into
+// this host boundary. Receipt/event matching is package-owned, not exercised here.
+test('signed public Shield fixture keeps the exact host journal intent', async () => {
+  const { Wallet, Transaction } = require('ethers');
+  const fixture = require('../../../test/fixtures/railgun/public-shield-host-intent.json');
+  const wallet = new Wallet('0x' + '01'.repeat(32));
+  const tx = Transaction.from(
+    await wallet.signTransaction({
+      chainId: 11155111,
+      ...fixture.prepared,
+      nonce: 0,
+      gasLimit: 500000,
+      gasPrice: 100,
+    })
+  );
+  const input = { from: wallet.address, ...tx.toJSON() };
+  expect(input).toEqual(fixture.expectedPublicTransaction);
+  expect({
+    hash: tx.hash,
+    nonce: 0,
+    state: 'attempted',
+    intent: transactionIntent('railgun-native-shield', input),
+  }).toEqual(fixture.record);
+  expect(validIntent(fixture.record.intent)).toBe(true);
+});

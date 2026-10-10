@@ -59,6 +59,71 @@ describe('chain-data activity', () => {
     expect(activity.describe()).toBe('chain-data: 100 eth_call failed, 0 ms');
   });
 
+  test('private context calls stay absent while pending and after settlement', async () => {
+    const { activity, at } = setup();
+    let resolve;
+    const original = jest.fn(function () {
+      expect(this).toBe(router);
+      return new Promise((done) => {
+        resolve = done;
+      });
+    });
+    const router = { request: original };
+    const context = Object.freeze({}),
+      options = { privacyContext: context };
+    activity.instrumentChainDataRouter(router);
+    const pending = router.request(11155111, 'eth_getBalance', ['account', 'latest'], options);
+    expect(original).toHaveBeenCalledWith(
+      11155111,
+      'eth_getBalance',
+      ['account', 'latest'],
+      options
+    );
+    expect(original.mock.calls[0][3].privacyContext).toBe(context);
+    at(2000);
+    expect(activity.describe()).toBe('');
+    const result = { result: '0x1', source: 'direct' };
+    resolve(result);
+    await expect(pending).resolves.toBe(result);
+    expect(activity.describe()).toBe('');
+  });
+
+  test.each(['reject', 'throw'])(
+    'private-context %s preserves the error without diagnostic activity',
+    async (mode) => {
+      const { activity } = setup();
+      const error = new Error('private request refused');
+      const router = {
+        request() {
+          if (mode === 'throw') throw error;
+          return Promise.reject(error);
+        },
+      };
+      activity.instrumentChainDataRouter(router);
+      const call = () => router.request(11155111, 'eth_call', [], { privacyContext: {} });
+      if (mode === 'throw') expect(call).toThrow(error);
+      else await expect(call()).rejects.toBe(error);
+      expect(activity.describe()).toBe('');
+    }
+  );
+
+  test('context presence skips diagnostics without reading inherited accessors', async () => {
+    const { activity } = setup();
+    const getter = jest.fn(() => null);
+    const options = Object.create(Object.defineProperty({}, 'privacyContext', { get: getter }));
+    const router = {
+      request: jest.fn(async (_chain, _method, _params, value) => {
+        expect(getter).not.toHaveBeenCalled();
+        expect(value.privacyContext).toBeNull();
+        return { source: 'direct' };
+      }),
+    };
+    activity.instrumentChainDataRouter(router);
+    await router.request(1, 'eth_getBalance', [], options);
+    expect(getter).toHaveBeenCalledTimes(1);
+    expect(activity.describe()).toBe('');
+  });
+
   test('lists the longest first and caps the list', () => {
     const { activity, at } = setup({ maxListed: 2 });
     const done = [];

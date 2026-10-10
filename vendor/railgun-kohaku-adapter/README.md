@@ -1,0 +1,92 @@
+# Railgun adapter dependency
+
+Freedom installs `@freedom/railgun-kohaku-adapter@0.6.0` from the committed
+`freedom-railgun-kohaku-adapter-0.6.0.tgz`. The lockfile binds its SHA-512 integrity;
+`OWNER-0.6.0.json` records the source commit, SHA-256 and exact 281-file membership.
+The source repository is https://github.com/solardev-xyz/railgun-kohaku-adapter.
+The package is MPL-2.0, private in npm metadata, and has not been published to npm.
+
+This artifact was packed from `7d75c1373a8afa3212cfe8ace1f784425e1057c5` with
+Node 24.18.1 and npm 11.16.0. Its SHA-256 is
+`eff8dc891345535bf27b1442a4157027fc976541a596e930a9adb6b525de2633`.
+
+Relative to the previous 0.6.0 artifact (`fb3add6a`, recorded under
+`previousCandidate` with its qualification scope), it adds:
+
+- `session.openSubmissionRecovery`: observe or resolve the exact journaled own
+  EOA submission of one held private operation, bound by its signing digest,
+  nullifier, tree and operation, across the journal and its archive. Consent
+  names the actual transaction endpoint. A local `describe` returns the held
+  input note and a transfer's own-instance recipient and amount.
+  The lane never signs, sends, retries or releases the hold.
+- `retryAttempted(holdId)` on the retained-POI lane: one explicit second
+  handoff of a hold's attempted POI request, byte for byte, gated by the same
+  session's fresh owned `Missing` status. A durable reservation is written
+  first, and a third handoff is refused. POI submit responses now also carry a
+  redacted error category; it grants no acceptance or retry authority.
+- The current POI_3x3 circuit. Railgun's wallet 11.2.0 rotated it (bundle
+  `QmZ2MyM6TKxffkv6stuo2hFwmUfs3q4xgMYN164Sje8new`), and POI services reject
+  proofs from the retired one. The runtime artifact directory must hold the
+  current `POI_3x3` wasm, zkey and vkey. `reproveRetiredShield(holdId)` and
+  `reproveRetiredTransact(holdId)` (the original preparation's route) make one
+  replacement proof for an attempted output whose spent retry carried a
+  retired-circuit proof, and `submitReproof(holdId)` hands it off once, gated
+  like the retry. The retired verification key ships only to recognize such
+  a proof (one new member, `src/execution/railgun-poi-retired-vkey.json`).
+- `openAccount({ publicCache: 'new' | 'pending' })`: an explicit public-cache
+  rebuild or resume for accounts whose public generation belongs to another
+  source policy, including earlier package builds and legacy Freedom profiles.
+
+Native synthetic lineages passed for this artifact, and it completed the
+[bounded installed-package live Sepolia journey](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/579bc15ff67c5b53eec43934f16a5f3e787e62fa/docs/qualification/installed-live-sepolia-journey-0.6.0-2026-10-10/README.md) on October 10, 2026.
+That covers Sepolia only. Mainnet, ordinary startup, circuit isolation and
+platform coverage remain open. [Unsigned packaged initialization](https://github.com/solardev-xyz/railgun-kohaku-adapter/blob/3aca8a514f8a474db120e93103e8bf0de31aa9d3/docs/qualification/installed-owner-packaged-e8-0.6.0-2026-10-10/README.md)
+passed for E8 on the integrated host `f6a5d356`.
+
+The package owns the Railgun protocol algorithms, account stores, scan and proof
+jobs, disclosure plans, recovery lanes and Kohaku adapters. Freedom supplies the
+vault credential primitive, submitter metadata, privacy contexts, transport,
+storage root and genuine Electron process handles through fixed host contracts.
+The public main entry exposes only `initializeRailgunMain`; private owner modules
+are not package subpaths. Generic Freedom journal code uses the bounded
+`/host/journal-data` and branded `/host/owner-authority` bridges.
+
+Engine and prover archives, their verification artifacts and Tor remain separately
+installed, pinned runtime inputs. They are not bundled in this tarball. The package
+uses the existing ethers peer and optional SQLite 13.0.3 peer; this update adds no
+third-party dependency. Freedom's lockfile resolves one physical package copy.
+
+## Reproduction and verification
+
+From a clean package checkout at the source commit above, run `npm pack` with the
+same npm version. No prepack or prepare script exists and no dependency install
+is needed for packing. Compare the resulting tar SHA-256, lockfile integrity and
+membership with `OWNER-0.6.0.json`. Never edit archive members directly.
+
+`railgun-kohaku-adapter-package.test.js` checks the full tarball and installed
+membership byte for byte, the lock integrity, CJS/ESM function identity, one-copy
+resolution and refusal of private subpath imports and fabricated receipts.
+Native execution and packaged loading require their separate qualification;
+ordinary unit tests do not establish those results.
+
+The preceding tar C candidate at `133e88cc` passed installed read, private
+preparation, unchanged-production-list rejection, stored-proof restart and unsigned
+packaged initialization checks. Those reports retain their exact source and tar
+pins. This artifact adds the separately reviewed retained-POI and owned-POI
+interfaces. The new final-tar campaign is separate from tar C and does not
+exercise those additional POI facade methods. Transact staging, foreign-recipient
+and relay native paths retain their earlier package pins. The signed-stop case is
+controlled cancellation, not crash recovery; the packaged probe is initialization,
+not packaged utility/proof execution or a full ordinary application launch.
+The current extraction does not constitute a completed live Sepolia spend or
+production UX integration.
+
+## Earlier extraction stages
+
+Earlier tarballs remain as historical artifacts. Versions 0.1–0.4 extracted the
+adapter and pure data contracts; 0.5 added the guarded private execution kernel.
+`EXECUTION-0.5.0.json` and the previous candidate in `OWNER-0.6.0.json` preserve
+source and artifact identities. Source-bound tests, scripts and qualification
+narratives are preserved in the dedicated repository with their original hashes
+and separately labelled current successors. Old native evidence never qualifies a
+new source revision automatically.

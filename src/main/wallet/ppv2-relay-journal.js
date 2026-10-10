@@ -1,0 +1,356 @@
+/** Main-owned write-ahead relay ledger. A response is not settlement.
+ * Resolution retains history and requires explicitly reviewed chain evidence. */
+const path = require('path');
+const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
+const { createHmac } = require('crypto');
+const { mnemonicToSeedSync } = require('@scure/bip39');
+const { createPrivacyStorage } = require('./privacy-storage');
+const { assertPPv2Context } = require('../identity/ppv2-keys');
+const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
+const HASH = /^0x[0-9a-f]{64}$/;
+const KEY = 'relay-attempts-v1';
+const retention = require('./privacy-journal-retention');
+const invalid = () =>
+  privacyError('PRIVATE_PPV2_RELAY_STATE_INVALID', 'Relay state could not be validated');
+const blocked = () =>
+  privacyError('PRIVATE_PPV2_RELAY_UNRESOLVED', 'A recorded relay attempt requires reconciliation');
+const keys = (v, names) =>
+  v &&
+  typeof v === 'object' &&
+  !Array.isArray(v) &&
+  Object.keys(v).length === names.length &&
+  names.every((k) => Object.hasOwn(v, k));
+const fields = ['id', 'intentDigest', 'endpointDigest', 'payloadDigest', 'commitment', 'nullifier'];
+function validAttempt(v) {
+  return keys(v, fields) && fields.every((k) => typeof v[k] === 'string' && HASH.test(v[k]));
+}
+function validSettlement(v) {
+  return (
+    keys(v, [
+      ...(v && Object.hasOwn(v, 'token') ? ['token'] : []),
+      ...(v && Object.hasOwn(v, 'owner') ? ['owner', 'inputValue'] : []),
+      'pool',
+      'processor',
+      'outputCommitment',
+      'amountOut',
+      'noteDigest',
+      'fromBlock',
+    ]) &&
+    (v.owner === undefined ||
+      (typeof v.owner === 'string' &&
+        /^0x[0-9a-f]{40}$/.test(v.owner) &&
+        BigInt(v.owner) !== 0n &&
+        typeof v.inputValue === 'string' &&
+        /^[1-9][0-9]{0,38}$/.test(v.inputValue) &&
+        BigInt(v.inputValue) < 1n << 128n &&
+        BigInt(v.inputValue) >= BigInt(v.amountOut))) &&
+    (v.token === undefined ||
+      (typeof v.token === 'string' &&
+        /^0x[0-9a-f]{40}$/.test(v.token) &&
+        BigInt(v.token) !== 0n)) &&
+    [v.pool, v.processor].every((x) => typeof x === 'string' && /^0x[0-9a-f]{40}$/.test(x)) &&
+    [v.outputCommitment, v.noteDigest].every((x) => typeof x === 'string' && HASH.test(x)) &&
+    typeof v.amountOut === 'string' &&
+    /^[1-9][0-9]{0,38}$/.test(v.amountOut) &&
+    Number.isSafeInteger(v.fromBlock) &&
+    v.fromBlock >= 0
+  );
+}
+function validObservation(v) {
+  return (
+    keys(v, ['status', 'transactionHash', 'blockHash', 'blockNumber', 'trust']) &&
+    v.trust === 'unverified-rpc' &&
+    ['included', 'exited', 'unknown', 'conflict'].includes(v.status) &&
+    (['included', 'exited'].includes(v.status)
+      ? HASH.test(v.transactionHash) &&
+        HASH.test(v.blockHash) &&
+        Number.isSafeInteger(v.blockNumber) &&
+        v.blockNumber >= 0
+      : v.transactionHash === null && v.blockHash === null && v.blockNumber === null)
+  );
+}
+function createPPv2RelayJournal({ handle, directory, key, profileGuard }) {
+  const { subject } = getPrivacyContext(handle);
+  if (
+    subject.kind !== 'private-account' ||
+    subject.role !== 'storage' ||
+    subject.protocol !== 'privacy-pools-v2' ||
+    subject.deployment !== 'sepolia' ||
+    subject.chainId !== 11155111 ||
+    subject.operation !== null ||
+    !/^ppv2:(0|[1-9][0-9]{0,4})$/.test(subject.principal) ||
+    Number(subject.principal.slice(5)) > 65535
+  )
+    throw invalid();
+  const storage = createPrivacyStorage({ handle, directory, key, profileGuard });
+  function decode(value) {
+    if (value === null) return { records: [], archive: [] };
+    try {
+      const data = JSON.parse(value);
+      if (
+        !keys(
+          data,
+          data.version === 2 ? ['version', 'records', 'archive'] : ['version', 'records']
+        ) ||
+        ![1, 2].includes(data.version) ||
+        !Array.isArray(data.records) ||
+        data.records.length > 64
+      )
+        throw invalid();
+      for (const record of data.records) {
+        const extra = ['settlement', 'observation', 'resolution', 'revision', 'scan'].filter((k) =>
+          Object.hasOwn(record, k)
+        );
+        if (
+          !keys(record, [...fields, 'attemptedAt', 'acknowledgedHash', ...extra]) ||
+          !validAttempt(Object.fromEntries(fields.map((k) => [k, record[k]]))) ||
+          !Number.isSafeInteger(record.attemptedAt) ||
+          record.attemptedAt < 0 ||
+          !(
+            record.acknowledgedHash === null ||
+            (typeof record.acknowledgedHash === 'string' && HASH.test(record.acknowledgedHash))
+          )
+        )
+          throw invalid();
+        if (
+          record.scan !== undefined &&
+          record.scan !== null &&
+          (!record.settlement ||
+            !keys(record.scan, ['nextBlock', 'blockHash']) ||
+            !Number.isSafeInteger(record.scan.nextBlock) ||
+            record.scan.nextBlock <= record.settlement.fromBlock ||
+            !HASH.test(record.scan.blockHash))
+        )
+          throw invalid();
+        if (record.settlement !== undefined && !validSettlement(record.settlement)) throw invalid();
+        if (
+          record.revision !== undefined &&
+          (!Number.isSafeInteger(record.revision) || record.revision < 0)
+        )
+          throw invalid();
+        if (
+          record.observation !== undefined &&
+          (!record.settlement ||
+            !Number.isSafeInteger(record.revision) ||
+            !validObservation(record.observation))
+        )
+          throw invalid();
+        if (
+          record.resolution !== undefined &&
+          record.resolution !== null &&
+          (!keys(record.resolution, ['blockHash', 'reviewedAt']) ||
+            !['included', 'exited'].includes(record.observation?.status) ||
+            record.resolution.blockHash !== record.observation.blockHash ||
+            !Number.isSafeInteger(record.resolution.reviewedAt) ||
+            record.resolution.reviewedAt < 0)
+        )
+          throw invalid();
+      }
+      const archive = data.version === 1 ? [] : data.archive;
+      if (!retention.validArchive(archive, 'relay')) throw invalid();
+      const all = [...archive, ...data.records];
+      if (
+        new Set(all.map((r) => r.id)).size !== all.length ||
+        new Set(all.map((r) => r.nullifier)).size !== all.length ||
+        new Set(all.map((r) => r.commitment)).size !== all.length
+      )
+        throw invalid();
+      return { records: data.records, archive };
+    } catch {
+      throw invalid();
+    }
+  }
+  async function list() {
+    const value = await storage.get(KEY);
+    getPrivacyContext(handle);
+    return Object.freeze(
+      decode(value).records.map((r) => {
+        for (const k of ['settlement', 'observation', 'resolution', 'scan'])
+          if (r[k]) Object.freeze(r[k]);
+        return Object.freeze(r);
+      })
+    );
+  }
+  return Object.freeze({
+    assertScope(otherHandle) {
+      const current = getPrivacyContext(handle),
+        other = getPrivacyContext(otherHandle);
+      const { role: _a, ...a } = current.subject,
+        { role: _b, ...b } = other.subject;
+      if (
+        current.profileId !== other.profileId ||
+        current.generation !== other.generation ||
+        JSON.stringify(a) !== JSON.stringify(b)
+      )
+        throw invalid();
+    },
+    list,
+    async recordDirectExposure() {
+      await storage.update('direct-test-exposure-v1', (value) => {
+        if (value !== null && value !== 'direct-ip') throw invalid();
+        return 'direct-ip';
+      });
+      getPrivacyContext(handle);
+    },
+    async hasDirectExposure() {
+      const value = await storage.get('direct-test-exposure-v1');
+      getPrivacyContext(handle);
+      if (value !== null && value !== 'direct-ip') throw invalid();
+      return value === 'direct-ip';
+    },
+    async assertCanExit(commitment) {
+      if (typeof commitment !== 'string' || !HASH.test(commitment.toLowerCase())) throw invalid();
+      const state = decode(await storage.get(KEY));
+      getPrivacyContext(handle);
+      if (
+        state.archive.some((r) => r.commitment === commitment.toLowerCase()) ||
+        state.records.some((r) => r.commitment === commitment.toLowerCase() && r.resolution)
+      ) {
+        throw privacyError('PRIVATE_PPV2_RELAY_REUSE_REFUSED', 'Relay input was already resolved');
+      }
+    },
+    async listArchive() {
+      const state = decode(await storage.get(KEY));
+      getPrivacyContext(handle);
+      return structuredClone(state.archive);
+    },
+    async archiveResolved(expected, anchors) {
+      await storage.update(KEY, (value) => {
+        const state = decode(value);
+        return JSON.stringify({
+          version: 2,
+          ...retention.archivePrefix(state.records, state.archive, expected, anchors, 'relay'),
+        });
+      });
+      getPrivacyContext(handle);
+    },
+    async assertCanSubmit() {
+      if ((await list()).some((r) => !r.resolution)) throw blocked();
+    },
+    async begin(attempt, settlement) {
+      if (!validAttempt(attempt) || (settlement !== undefined && !validSettlement(settlement)))
+        throw invalid();
+      const copy = { ...attempt, ...(settlement ? { settlement: { ...settlement } } : {}) };
+      await storage.update(KEY, (value) => {
+        const { records, archive } = decode(value);
+        if (records.some((r) => !r.resolution) || records.length >= 64) throw blocked();
+        if (
+          [...records, ...archive].some(
+            (r) =>
+              r.id === copy.id || r.nullifier === copy.nullifier || r.commitment === copy.commitment
+          )
+        ) {
+          throw privacyError(
+            'PRIVATE_PPV2_RELAY_REUSE_REFUSED',
+            'Relay input was already attempted'
+          );
+        }
+        return JSON.stringify({
+          version: 2,
+          archive,
+          records: [...records, { ...copy, attemptedAt: Date.now(), acknowledgedHash: null }],
+        });
+      });
+      getPrivacyContext(handle);
+    },
+    async observe(id, observation, revision, scan) {
+      if (
+        !validObservation(observation) ||
+        !Number.isSafeInteger(revision) ||
+        revision < 0 ||
+        revision >= Number.MAX_SAFE_INTEGER
+      )
+        throw invalid();
+      const copy = { ...observation },
+        checkpoint = scan === undefined || scan === null ? scan : { ...scan };
+      if (
+        checkpoint &&
+        (!keys(checkpoint, ['nextBlock', 'blockHash']) ||
+          !Number.isSafeInteger(checkpoint.nextBlock) ||
+          checkpoint.nextBlock <= 0 ||
+          !HASH.test(checkpoint.blockHash))
+      )
+        throw invalid();
+      await storage.update(KEY, (value) => {
+        const { records, archive } = decode(value),
+          r = records.find((r) => r.id === id);
+        if (!r?.settlement || (r.revision || 0) !== revision) throw invalid();
+        if (
+          !['included', 'exited'].includes(copy.status) ||
+          r.observation?.status !== copy.status ||
+          r.observation?.blockHash !== copy.blockHash ||
+          r.observation?.transactionHash !== copy.transactionHash
+        )
+          r.resolution = null;
+        if (checkpoint !== undefined) {
+          if (checkpoint && checkpoint.nextBlock <= r.settlement.fromBlock) throw invalid();
+          r.scan = checkpoint;
+        }
+        r.observation = copy;
+        r.revision = revision + 1;
+        return JSON.stringify({ version: 2, archive, records });
+      });
+      return (await list()).find((r) => r.id === id);
+    },
+    async resolve(id, revision) {
+      if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER)
+        throw invalid();
+      await storage.update(KEY, (value) => {
+        const { records, archive } = decode(value),
+          r = records.find((r) => r.id === id);
+        if (
+          !r?.settlement ||
+          r.revision !== revision ||
+          !['included', 'exited'].includes(r.observation?.status)
+        )
+          throw invalid();
+        r.resolution = { blockHash: r.observation.blockHash, reviewedAt: Date.now() };
+        r.revision++;
+        return JSON.stringify({ version: 2, archive, records });
+      });
+      return (await list()).find((r) => r.id === id);
+    },
+    async acknowledge(id, hash) {
+      if (typeof hash !== 'string' || !HASH.test(hash)) throw invalid();
+      await storage.update(KEY, (value) => {
+        const { records, archive } = decode(value),
+          record = records.find((r) => r.id === id);
+        if (
+          !record ||
+          record.id !== id ||
+          (record.acknowledgedHash && record.acknowledgedHash !== hash)
+        )
+          throw invalid();
+        record.acknowledgedHash = hash;
+        return JSON.stringify({ version: 2, archive, records });
+      });
+      getPrivacyContext(handle);
+    },
+  });
+}
+
+function getPPv2RelayJournal(handle, accountIndex) {
+  const { context, profile } = assertPPv2Context(handle, 'storage', accountIndex);
+  const vault = require('../identity/vault');
+  if (vault.getSessionSignal().aborted || !vault.getMnemonic())
+    throw privacyError('PRIVACY_VAULT_LOCKED', 'Relay journal is locked');
+  const seed = mnemonicToSeedSync(vault.getMnemonic());
+  let key;
+  try {
+    // Stable across endpoint/SDK changes: a new configuration cannot hide an attempt.
+    key = createHmac('sha256', seed)
+      .update('Freedom PPv2 relay journal v1\0')
+      .update(JSON.stringify([context.profileId, context.subject]))
+      .digest();
+    return createPPv2RelayJournal({
+      handle,
+      directory: path.join(profile.userDataDir, 'wallet-ppv2-relays'),
+      key,
+      profileGuard: createPrivacyProfileGuard({ handle, profile, seed }),
+    });
+  } finally {
+    seed.fill(0);
+    key?.fill(0);
+  }
+}
+module.exports = { createPPv2RelayJournal, getPPv2RelayJournal };

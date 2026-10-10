@@ -9,6 +9,9 @@ yarn-error.log*
 .DS_Store
 *.asar
 *.tgz
+# Reviewed dependency tarballs are committed inputs, not build output
+# (vendor/railgun-kohaku-adapter/README.md).
+!/vendor/railgun-kohaku-adapter/freedom-railgun-kohaku-adapter-*.tgz
 *.tsbuildinfo
 coverage/
 tmp/

@@ -10,10 +10,20 @@ import { escapeHtml, formatBalance } from './wallet-utils.js';
 // DOM references
 let assetListEl;
 let balanceErrorEl;
+let balanceGeneration = 0;
+let torBalanceMode = false;
 
 export function initBalanceDisplay() {
   assetListEl = document.getElementById('asset-list');
   balanceErrorEl = document.getElementById('balance-error');
+  window.addEventListener('settings:updated', (event) => {
+    const next = event.detail?.walletTorBalanceReads === true;
+    if (next === torBalanceMode) return;
+    torBalanceMode = next;
+    balanceGeneration += 1;
+    walletState.currentBalances = {};
+    if (walletIsVisible()) refreshBalances();
+  });
 }
 
 /**
@@ -23,6 +33,8 @@ export function initBalanceDisplay() {
  * Runs silently in background - no loading indicators shown to user
  */
 export async function refreshBalances(forceRefresh = false) {
+  const generation = ++balanceGeneration;
+  const identity = walletState.identityData;
   const userAddress = walletState.fullAddresses.wallet;
 
   if (!userAddress) return;
@@ -35,6 +47,15 @@ export async function refreshBalances(forceRefresh = false) {
 
     const userResult = await window.wallet.getBalances(userAddress);
 
+    if (
+      generation !== balanceGeneration ||
+      identity !== walletState.identityData ||
+      userAddress !== walletState.fullAddresses.wallet
+    )
+      return;
+    showPrivacyStatus(userResult?.balances);
+
+    // Display user wallet balances
     if (userResult?.success) {
       displayUserBalances(userResult.balances);
     } else if (userResult) {
@@ -99,7 +120,7 @@ export function getChainsWithBalance() {
     }
   }
   return [...chainIds]
-    .map(id => ({ chainId: id, ...walletState.registeredChains[id] }))
+    .map((id) => ({ chainId: id, ...walletState.registeredChains[id] }))
     .sort((a, b) => a.chainId - b.chainId);
 }
 
@@ -140,16 +161,18 @@ export function renderAssetList() {
     row.dataset.tokenKey = token.key;
 
     // Logo or placeholder
-    const logoHtml = token.logo && token.builtin
-      ? `<img class="asset-logo" src="assets/tokens/${token.logo}" alt="${token.symbol}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
-      : '';
+    const logoHtml =
+      token.logo && token.builtin
+        ? `<img class="asset-logo" src="assets/tokens/${token.logo}" alt="${token.symbol}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        : '';
 
     const placeholderHtml = `<div class="asset-logo-placeholder" style="${token.logo && token.builtin ? 'display:none' : ''}">${token.symbol.charAt(0)}</div>`;
 
     // Only show chain name when "All Chains" is selected
-    const chainNameHtml = walletState.selectedChainId === null
-      ? `<span class="asset-chain">${escapeHtml(chainName)}</span>`
-      : '';
+    const chainNameHtml =
+      walletState.selectedChainId === null
+        ? `<span class="asset-chain">${escapeHtml(chainName)}</span>`
+        : '';
 
     row.innerHTML = `
       <div class="asset-info-wrapper">
@@ -208,6 +231,8 @@ function displayUserBalances(balances) {
  * Load cached balances for instant display on startup
  */
 export async function loadCachedBalances() {
+  const generation = ++balanceGeneration;
+  const identity = walletState.identityData;
   const userAddress = walletState.fullAddresses.wallet;
 
   if (!userAddress) return;
@@ -215,9 +240,17 @@ export async function loadCachedBalances() {
   try {
     const userResult = await window.wallet.getBalancesCached(userAddress);
 
+    if (
+      generation !== balanceGeneration ||
+      identity !== walletState.identityData ||
+      userAddress !== walletState.fullAddresses.wallet
+    )
+      return;
+    showPrivacyStatus(userResult?.balances);
     if (userResult?.success && userResult.balances) {
       displayUserBalances(userResult.balances);
     }
+
     const cacheMiss = !(userResult?.success && userResult.balances);
     if (cacheMiss && walletIsVisible()) await refreshBalances();
   } catch (err) {
@@ -257,4 +290,19 @@ function hideBalanceError() {
   if (balanceErrorEl) {
     balanceErrorEl.classList.add('hidden');
   }
+}
+
+function showPrivacyStatus(balances) {
+  if (balances?.privacyMode !== 'tor-experimental') return;
+  torBalanceMode = true;
+  if (!balanceErrorEl) return;
+  balanceErrorEl.textContent =
+    balances.status === 'fresh'
+      ? 'Experimental Tor reads · Sepolia balances only · sending uses existing routes'
+      : balances.status === 'stale'
+        ? 'Sepolia balances are stale · refresh required'
+        : balances.refreshError === 'PRIVACY_EXPERIMENT_UNQUALIFIED'
+          ? 'Tor balance experiment unavailable pending qualification'
+          : 'Sepolia balances unavailable · unlock the wallet and start bundled Tor';
+  balanceErrorEl.classList.remove('hidden');
 }

@@ -13,7 +13,11 @@ const { isChainAvailable } = require('../networks/network-registry');
 const persistentCache = require('./balance-cache');
 
 // ERC-20 ABI (minimal for balance checking)
-const ERC20_ABI = ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)', 'function symbol() view returns (string)'];
+const ERC20_ABI = [
+  'function balanceOf(address) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function symbol() view returns (string)',
+];
 const ERC20_INTERFACE = new Interface(ERC20_ABI);
 
 // In-memory balance cache (for fast repeated lookups within session)
@@ -24,19 +28,32 @@ const CACHE_TTL_MS = 30000; // 30 seconds
 /**
  * Get native token balance for an address on a chain
  */
-async function getNativeBalance(address, chainId, tokenInfo) {
+async function getNativeBalance(address, chainId, tokenInfo, options = {}) {
   try {
-    const { result } = await chainData.request(chainId, 'eth_getBalance', [address, 'latest']);
+    const response = await chainData.request(
+      chainId,
+      'eth_getBalance',
+      [address, 'latest'],
+      options
+    );
+    const { result } = response;
     const balance = BigInt(result);
 
     return {
+      ...(options.privacyContext
+        ? { observedAt: response.observedAt, trust: response.trust, privacy: response.privacy }
+        : {}),
       raw: balance.toString(),
       formatted: formatEther(balance),
       symbol: tokenInfo.symbol,
       decimals: tokenInfo.decimals,
     };
   } catch (err) {
-    console.error(`[BalanceService] Failed to get native balance for ${address} on chain ${chainId}:`, err.message);
+    if (!options.privacyContext)
+      console.error(
+        `[BalanceService] Failed to get native balance for ${address} on chain ${chainId}:`,
+        err.message
+      );
     throw err;
   }
 }
@@ -44,17 +61,24 @@ async function getNativeBalance(address, chainId, tokenInfo) {
 /**
  * Get ERC-20 token balance for an address
  */
-async function getTokenBalance(address, tokenAddress, chainId, tokenInfo) {
+async function getTokenBalance(address, tokenAddress, chainId, tokenInfo, options = {}) {
   try {
     const [balanceCall, decimalsCall] = await Promise.all([
-      chainData.request(chainId, 'eth_call', [
-        { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('balanceOf', [address]) },
-        'latest',
-      ]),
-      chainData.request(chainId, 'eth_call', [
-        { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('decimals') },
-        'latest',
-      ]),
+      chainData.request(
+        chainId,
+        'eth_call',
+        [
+          { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('balanceOf', [address]) },
+          'latest',
+        ],
+        options
+      ),
+      chainData.request(
+        chainId,
+        'eth_call',
+        [{ to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('decimals') }, 'latest'],
+        options
+      ),
     ]);
     const [balance] = ERC20_INTERFACE.decodeFunctionResult('balanceOf', balanceCall.result);
     const [decimals] = ERC20_INTERFACE.decodeFunctionResult('decimals', decimalsCall.result);
@@ -65,9 +89,20 @@ async function getTokenBalance(address, tokenAddress, chainId, tokenInfo) {
       symbol: tokenInfo.symbol,
       decimals: Number(decimals),
       tokenAddress,
+      ...(options.privacyContext
+        ? {
+            observedAt: balanceCall.observedAt,
+            trust: balanceCall.trust,
+            privacy: balanceCall.privacy,
+          }
+        : {}),
     };
   } catch (err) {
-    console.error(`[BalanceService] Failed to get token balance for ${address} (${tokenAddress}) on chain ${chainId}:`, err.message);
+    if (!options.privacyContext)
+      console.error(
+        `[BalanceService] Failed to get token balance for ${address} (${tokenAddress}) on chain ${chainId}:`,
+        err.message
+      );
     throw err;
   }
 }
@@ -78,6 +113,9 @@ async function getTokenBalance(address, tokenAddress, chainId, tokenInfo) {
  * On fetch errors, preserves previous cached values instead of showing errors.
  */
 function getAllBalances(address) {
+  if (require('../settings-store').loadSettings().walletTorBalanceReads === true) {
+    return require('./private-balance-service').getPrivateBalances(address);
+  }
   const key = address.toLowerCase();
   if (balanceRefreshes.has(key)) return balanceRefreshes.get(key);
   const refresh = fetchAllBalances(address).finally(() => balanceRefreshes.delete(key));
@@ -155,6 +193,10 @@ async function fetchAllBalances(address) {
 
   await Promise.all(fetchPromises);
 
+  if (require('../settings-store').loadSettings().walletTorBalanceReads === true) {
+    return { privacyMode: 'tor-experimental', status: 'unavailable', lastUpdated: null };
+  }
+
   // Cache the result (in-memory)
   balanceCache.set(cacheKey, {
     data: balances,
@@ -177,6 +219,12 @@ async function fetchAllBalances(address) {
  * @returns {Promise<{balances: object, fromCache: boolean}>}
  */
 async function getBalancesWithCache(address, fetchFresh = true) {
+  if (require('../settings-store').loadSettings().walletTorBalanceReads === true) {
+    const service = require('./private-balance-service');
+    const balances = await service.getPrivateBalances(address, { cacheOnly: true });
+    if (fetchFresh) service.getPrivateBalances(address).catch(() => {});
+    return { balances, fromCache: balances.status !== 'fresh' };
+  }
   // Check in-memory cache first
   const cacheKey = `all:${address}`;
   const memoryCached = balanceCache.get(cacheKey);
@@ -212,6 +260,9 @@ async function getBalancesWithCache(address, fetchFresh = true) {
  * Clear balance cache for an address (both in-memory and persistent)
  */
 function clearBalanceCache(address) {
+  if (require('../settings-store').loadSettings().walletTorBalanceReads === true) {
+    require('./private-balance-service').clearPrivateBalanceCache(address);
+  }
   if (address) {
     balanceCache.delete(`all:${address}`);
     // Note: We don't clear persistent cache on normal refresh,
@@ -226,6 +277,9 @@ function clearBalanceCache(address) {
  */
 function clearAllCaches(address) {
   clearBalanceCache(address);
+  if (require('../settings-store').loadSettings().walletTorBalanceReads === true) {
+    require('./private-balance-service').clearPrivateBalanceCache(address, true);
+  }
   persistentCache.clearCache(address);
 }
 

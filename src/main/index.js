@@ -728,6 +728,7 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 // the before-quit handler so the handler can bound it and still be the only
 // place that decides when quitting is allowed.
 async function windDown() {
+  require('./wallet/privacy-session').shutdownPrivacySessions();
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
   // Close all DevTools first to prevent crashes during cleanup

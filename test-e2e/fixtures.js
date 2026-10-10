@@ -50,10 +50,50 @@ function launchOptions(userDataDir) {
 
 // Launch one Freedom instance against `userDataDir`. Exported through the
 // `relaunchApp` fixture rather than directly so every app a spec opens is
-// closed at teardown. A packaged run is driven over CDP rather than through
-// Playwright's Electron launcher; see packaged-launch.js.
-function launchApp(userDataDir) {
-  return launchTarget(launchOptions(userDataDir));
+// closed at teardown.
+async function launchApp(userDataDir) {
+  const app = await launchTarget(launchOptions(userDataDir));
+  if (isPackagedRun()) return app; // CDP launcher owns readiness and bounded shutdown.
+  const originalClose = app.close.bind(app);
+  let closing;
+  app.close = () =>
+    (closing ||= (async () => {
+      let timer;
+      try {
+        await Promise.race([
+          originalClose(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              // Only this fixture's own Electron child; never another app process.
+              app.process().kill('SIGKILL');
+              reject(new Error('Controlled Electron shutdown exceeded 30 seconds'));
+            }, 30000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    })());
+  let timer;
+  try {
+    await Promise.race([
+      app.evaluate(async ({ app }) => {
+        await app.whenReady();
+      }),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Controlled Electron readiness timed out')),
+          launchOptions(userDataDir).timeout
+        );
+      }),
+    ]);
+    return app;
+  } catch (error) {
+    await app.close().catch(() => {});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Teardown deadline for one instance (see close-app.js). A packaged app has
@@ -127,8 +167,13 @@ const test = base.extend({
   relaunchApp: async ({ userDataDir }, use) => {
     const started = [];
 
-    await use(async () => {
-      const app = await launchApp(userDataDir);
+    await use(async ({ freshProfile = false } = {}) => {
+      // Opt-in restoration tests get a genuinely empty, test-owned profile.
+      // Keep it under this fixture's temporary root for ordinary teardown.
+      const directory = freshProfile
+        ? fs.mkdtempSync(path.join(userDataDir, 'cold-profile-'))
+        : userDataDir;
+      const app = await launchApp(directory);
       started.push(app);
       return app;
     });

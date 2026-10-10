@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "passed": true,
+  "runtime": {
+    "node": "24.18.1",
+    "acorn": "8.16.0",
+    "ada": "3.4.4",
+    "amaro": "1.1.9",
+    "ares": "1.34.6",
+    "brotli": "1.2.0",
+    "cldr": "48.0",
+    "icu": "78.3",
+    "llhttp": "9.4.3",
+    "merve": "1.2.2",
+    "modules": "137",
+    "napi": "10",
+    "nbytes": "0.1.4",
+    "ncrypto": "0.0.1",
+    "nghttp2": "1.69.0",
+    "nghttp3": "",
+    "ngtcp2": "",
+    "openssl": "3.5.7",
+    "simdjson": "4.6.4",
+    "simdutf": "6.4.0",
+    "sqlite": "3.53.1",
+    "tz": "2026b",
+    "undici": "7.29.0",
+    "unicode": "17.0",
+    "uv": "1.52.1",
+    "uvwasi": "0.0.23",
+    "v8": "13.6.233.17-node.50",
+    "zlib": "1.3.1-e00f703",
+    "zstd": "1.5.7"
+  },
+  "elapsedMs": 43,
+  "disclosureEnabled": false,
+  "spendingEnabled": false,
+  "registrySimulated": true,
+  "transportSimulated": true,
+  "circuitIsolationQualified": false,
+  "physicalSocketDrainQualified": false,
+  "sources": {
+    "scripts/qualify-private-rpc-read-budget.js": "b740f536909622729a35c5eff798ff163ca3095830e627150d3cc21a5c953480",
+    "src/main/networks/private-rpc.js": "66ae4e62a9a2cde8c8f1a97ac73db39b372d8f3b6228cef668d41970e9b2848e",
+    "src/main/networks/private-rpc-read-budget.test.js": "51059b670bf5be2c632586aea4e8fb112a3bb548a0e8639306df749dd017e5b5",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133"
+  },
+  "runs": [
+    {
+      "name": "idle-close-zero-admissions",
+      "passed": true,
+      "factories": 0,
+      "methods": {}
+    },
+    {
+      "name": "pre-dispatch-reentrant-cancellation",
+      "passed": true,
+      "factories": 1,
+      "methods": {}
+    },
+    {
+      "name": "cancelled-shared-chain-healthy-waiter",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 1
+      }
+    },
+    {
+      "name": "cancelled-shared-chain-integrity",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1
+      }
+    },
+    {
+      "name": "detached-parameters-and-envelope",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 1
+      }
+    },
+    {
+      "name": "validator-integrity-dominates-cancellation",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 1
+      }
+    },
+    {
+      "name": "cancelled-validator-drains-before-close",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 1
+      }
+    },
+    {
+      "name": "copied-token-refuses-without-poisoning",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 1
+      }
+    },
+    {
+      "name": "unused-deadline-revokes",
+      "passed": true,
+      "factories": 0,
+      "methods": {}
+    },
+    {
+      "name": "exact-and-event-quota-overlap",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 4
+      }
+    },
+    {
+      "name": "event-header-limit-512",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 512
+      }
+    },
+    {
+      "name": "event-header-height-once",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 1
+      }
+    },
+    {
+      "name": "owner-revocation-late-valid",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1
+      }
+    },
+    {
+      "name": "owner-revocation-late-malformed",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1
+      }
+    },
+    {
+      "name": "owner-revocation-late-wrong-chain",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1
+      }
+    },
+    {
+      "name": "owner-revocation-late-reject",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1
+      }
+    },
+    {
+      "name": "transport-rejection-is-fatal-without-corruption-claim",
+      "passed": true,
+      "factories": 1,
+      "methods": {
+        "eth_chainId": 1,
+        "eth_getBlockByNumber": 1
+      }
+    }
+  ]
+}

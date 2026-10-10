@@ -640,6 +640,11 @@ describe('matchSettingsSearch', () => {
     expect(search('advanced').filter((entry) => entry.sectionId === 'experimental')).toHaveLength(
       1
     );
+    expect(
+      search('experimental')
+        .filter((entry) => entry.sectionId === 'experimental')
+        .map((entry) => entry.label)
+    ).toEqual(['Tor balance reads (experimental)']);
   });
 
   test('ties keep document order, so results read the way the page does', () => {

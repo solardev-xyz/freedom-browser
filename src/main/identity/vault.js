@@ -16,6 +16,15 @@ const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 // Vault state
 let unlockedMnemonic = null;
 let autoLockTimer = null;
+let lockGeneration = 0;
+let sessionController = new AbortController();
+sessionController.abort();
+
+// Main-only lifetime capability. Every lock path revokes the old signal;
+// unlocking never makes an old signal live again.
+function getSessionSignal() {
+  return sessionController.signal;
+}
 
 // Default auto-lock timeout (15 minutes)
 const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
@@ -103,14 +112,8 @@ async function saveVault(dataDir, password, mnemonic) {
   fs.writeFileSync(vaultPath, JSON.stringify(vaultData, null, 2));
 }
 
-/**
- * Unlock the vault and load mnemonic into memory
- * @param {string} dataDir - App data directory
- * @param {string} password - User's password
- * @param {number} autoLockMs - Auto-lock timeout (0 to disable)
- * @returns {Promise<void>}
- */
-async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
+// Verify/decrypt without changing the vault session or its auto-lock timer.
+async function decryptVaultMnemonic(dataDir, password) {
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found. Create one first.');
   }
@@ -124,18 +127,10 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 
   try {
     const decrypted = await decrypt(password, vaultData.encrypted);
-    unlockedMnemonic = decrypted.mnemonic;
-
-    // Validate decrypted mnemonic
-    if (!isValidMnemonic(unlockedMnemonic)) {
-      unlockedMnemonic = null;
+    if (!isValidMnemonic(decrypted.mnemonic)) {
       throw new Error('Decrypted data is not a valid mnemonic');
     }
-
-    // Set up auto-lock timer
-    if (autoLockMs > 0) {
-      resetAutoLockTimer(autoLockMs);
-    }
+    return decrypted.mnemonic;
   } catch (err) {
     if (err.message.includes('Incorrect password')) {
       throw new Error('Incorrect password', { cause: err });
@@ -145,14 +140,35 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 }
 
 /**
+ * Unlock the vault and load mnemonic into memory
+ * @param {string} dataDir - App data directory
+ * @param {string} password - User's password
+ * @param {number} autoLockMs - Auto-lock timeout (0 to disable)
+ * @returns {Promise<void>}
+ */
+async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
+  const startedGeneration = lockGeneration;
+  const mnemonic = await decryptVaultMnemonic(dataDir, password);
+  if (startedGeneration !== lockGeneration)
+    throw new Error('Vault unlock cancelled by a newer session');
+  // Only an explicit unlock replaces the lifetime and inactivity timer.
+  lockVault();
+  unlockedMnemonic = mnemonic;
+  sessionController = new AbortController();
+  resetAutoLockTimer(autoLockMs);
+}
+
+/**
  * Lock the vault (clear mnemonic from memory)
  */
 function lockVault() {
+  lockGeneration += 1;
   unlockedMnemonic = null;
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
     autoLockTimer = null;
   }
+  sessionController.abort();
 }
 
 /**
@@ -200,15 +216,10 @@ function resetAutoLockTimer(autoLockMs = DEFAULT_AUTO_LOCK_MS) {
  * @param {string} newPassword - New password
  */
 async function changePassword(dataDir, currentPassword, newPassword) {
-  // First verify current password by unlocking
-  await unlockVault(dataDir, currentPassword, 0);
-
-  if (!unlockedMnemonic) {
-    throw new Error('Failed to unlock vault');
-  }
-
-  // Re-encrypt with new password
-  await saveVault(dataDir, newPassword, unlockedMnemonic);
+  // Password verification must preserve the existing lock state, deadline and
+  // privacy-session signal, including an auto-lock during re-encryption.
+  const mnemonic = await decryptVaultMnemonic(dataDir, currentPassword);
+  await saveVault(dataDir, newPassword, mnemonic);
 }
 
 /**
@@ -218,7 +229,7 @@ async function changePassword(dataDir, currentPassword, newPassword) {
  */
 async function deleteVault(dataDir, password) {
   // Verify password first
-  await unlockVault(dataDir, password, 0);
+  await verifyPassword(dataDir, password);
   lockVault();
 
   // Delete vault file
@@ -236,19 +247,7 @@ async function deleteVault(dataDir, password) {
  * @throws {Error} If password is incorrect or vault doesn't exist
  */
 async function verifyPassword(dataDir, password) {
-  if (!vaultExists(dataDir)) {
-    throw new Error('No vault found');
-  }
-  const vaultPath = getVaultPath(dataDir);
-  const vaultData = JSON.parse(fs.readFileSync(vaultPath, 'utf-8'));
-  try {
-    await decrypt(password, vaultData.encrypted);
-  } catch (err) {
-    if (err.message.includes('Incorrect password')) {
-      throw new Error('Incorrect password', { cause: err });
-    }
-    throw err;
-  }
+  await decryptVaultMnemonic(dataDir, password);
 }
 
 /**
@@ -285,6 +284,7 @@ module.exports = {
   unlockVault,
   lockVault,
   isUnlocked,
+  getSessionSignal,
   getMnemonic,
   resetAutoLockTimer,
   changePassword,

@@ -1,0 +1,238 @@
+[
+  {
+    "proof": {
+      "result": {
+        "circuit": "ragequit",
+        "prover": "sdk-default",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 7,
+        "provingMs": 382,
+        "rssBytes": 1027276800,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 1027276800
+    },
+    "started": true,
+    "cancelled": "PRIVACY_CONTEXT_REVOKED",
+    "afterCancel": [],
+    "recovered": {
+      "result": {
+        "circuit": "ragequit",
+        "prover": "sdk-default",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 7,
+        "provingMs": 376,
+        "rssBytes": 1028096000,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 1028096000
+    },
+    "packaged": true,
+    "productionGate": false,
+    "hostFromAsar": true,
+    "artifacts": [
+      {
+        "name": "ragequit.wasm",
+        "size": 3085620,
+        "sha256": "95108046f922d9cb08a1d4e42c88708af03233551a5e13a7118d7a6eff5d31c4"
+      },
+      {
+        "name": "ragequit.zkey",
+        "size": 5932748,
+        "sha256": "3b0d2c3fdf26363be409dc4f01f5beb1c3cbc3b07a0c1ddb9e825e22e46d9bf4"
+      },
+      {
+        "name": "ragequit.vkey.json",
+        "size": 4329,
+        "sha256": "d285bf7a8f2e38d206c5513771d80816969c75b87558df194c1804ed1ec484d7"
+      }
+    ]
+  },
+  {
+    "proof": {
+      "result": {
+        "circuit": "ragequit",
+        "prover": "single-thread",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 7,
+        "provingMs": 1637,
+        "rssBytes": 565657600,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 565657600
+    },
+    "started": true,
+    "cancelled": "PRIVACY_CONTEXT_REVOKED",
+    "afterCancel": [],
+    "recovered": {
+      "result": {
+        "circuit": "ragequit",
+        "prover": "single-thread",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 7,
+        "provingMs": 1633,
+        "rssBytes": 564264960,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 564264960
+    },
+    "packaged": true,
+    "productionGate": false,
+    "hostFromAsar": true,
+    "artifacts": [
+      {
+        "name": "ragequit.wasm",
+        "size": 3085620,
+        "sha256": "95108046f922d9cb08a1d4e42c88708af03233551a5e13a7118d7a6eff5d31c4"
+      },
+      {
+        "name": "ragequit.zkey",
+        "size": 5932748,
+        "sha256": "3b0d2c3fdf26363be409dc4f01f5beb1c3cbc3b07a0c1ddb9e825e22e46d9bf4"
+      },
+      {
+        "name": "ragequit.vkey.json",
+        "size": 4329,
+        "sha256": "d285bf7a8f2e38d206c5513771d80816969c75b87558df194c1804ed1ec484d7"
+      }
+    ]
+  },
+  {
+    "proof": {
+      "result": {
+        "circuit": "transact_1x1",
+        "prover": "sdk-default",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 8,
+        "provingMs": 849,
+        "rssBytes": 1367539712,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 1547517952
+    },
+    "started": true,
+    "cancelled": "PRIVACY_CONTEXT_REVOKED",
+    "afterCancel": [],
+    "recovered": {
+      "result": {
+        "circuit": "transact_1x1",
+        "prover": "sdk-default",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 8,
+        "provingMs": 846,
+        "rssBytes": 1374715904,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 1607811072
+    },
+    "packaged": true,
+    "productionGate": false,
+    "hostFromAsar": true,
+    "artifacts": [
+      {
+        "name": "transact_1x1.wasm",
+        "size": 3239462,
+        "sha256": "bd13ab4130320f095cdee83b42e27877fc6c17f18be3fbdfc55436d33689d262"
+      },
+      {
+        "name": "transact_1x1.zkey",
+        "size": 17942432,
+        "sha256": "ba00dc63d1ef0b09a49dbf9348430362ef18dca5309ad5b6f06a896349c4c80a"
+      },
+      {
+        "name": "transact_1x1.vkey.json",
+        "size": 4531,
+        "sha256": "e429d3e895de5cc9d2839a3fd8303fadd30be3759bac06ce7fb063ceda198308"
+      }
+    ]
+  },
+  {
+    "proof": {
+      "result": {
+        "circuit": "transact_1x1",
+        "prover": "single-thread",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 8,
+        "provingMs": 4596,
+        "rssBytes": 628195328,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 628195328
+    },
+    "started": true,
+    "cancelled": "PRIVACY_CONTEXT_REVOKED",
+    "afterCancel": [],
+    "recovered": {
+      "result": {
+        "circuit": "transact_1x1",
+        "prover": "single-thread",
+        "verified": true,
+        "publicSignalsBound": true,
+        "tamperedAmountRejected": true,
+        "publicSignalCount": 8,
+        "provingMs": 4552,
+        "rssBytes": 627392512,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 627392512
+    },
+    "packaged": true,
+    "productionGate": false,
+    "hostFromAsar": true,
+    "artifacts": [
+      {
+        "name": "transact_1x1.wasm",
+        "size": 3239462,
+        "sha256": "bd13ab4130320f095cdee83b42e27877fc6c17f18be3fbdfc55436d33689d262"
+      },
+      {
+        "name": "transact_1x1.zkey",
+        "size": 17942432,
+        "sha256": "ba00dc63d1ef0b09a49dbf9348430362ef18dca5309ad5b6f06a896349c4c80a"
+      },
+      {
+        "name": "transact_1x1.vkey.json",
+        "size": 4531,
+        "sha256": "e429d3e895de5cc9d2839a3fd8303fadd30be3759bac06ce7fb063ceda198308"
+      }
+    ]
+  }
+]

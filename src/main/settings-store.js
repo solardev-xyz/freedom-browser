@@ -59,6 +59,7 @@ const DEFAULT_SETTINGS = {
   // the decentralized protocols keep connecting directly).
   enableTorIntegration: false,
   startTorAtLaunch: false,
+  walletTorBalanceReads: false,
   autoUpdate: true,
   showBookmarkBar: false,
   // When true, every download opens a native save dialog. Off by default:
@@ -268,7 +269,10 @@ function loadSettings() {
 }
 
 function broadcastSettingsUpdated(merged) {
-  broadcastToAllWebContents(IPC.SETTINGS_UPDATED, merged);
+  broadcastToAllWebContents(IPC.SETTINGS_UPDATED, {
+    ...merged,
+    walletTorExperimentAvailable: isWalletTorExperimentAvailable(),
+  });
 }
 
 // Main-process subscribers to committed settings changes (e.g. the
@@ -300,6 +304,8 @@ function notifySettingsChanged(merged, previous) {
 // by === .
 function saveSettings(newSettings) {
   try {
+    if (newSettings?.walletTorBalanceReads === true && !isWalletTorExperimentAvailable())
+      return false;
     const previous = loadSettings();
     const merged = { ...previous };
     let changed = false;
@@ -385,6 +391,9 @@ function saveSettings(newSettings) {
         .catch((err) => log.error('[adblock] engine refresh after settings change failed:', err));
     }
 
+    if (merged.walletTorBalanceReads !== previous.walletTorBalanceReads) {
+      require('./wallet/privacy-session').resetPrivacySession();
+    }
     broadcastSettingsUpdated(merged);
     notifySettingsChanged(merged, previous);
 
@@ -395,9 +404,14 @@ function saveSettings(newSettings) {
   }
 }
 
+// Development qualification switch; never enables a packaged build.
+function isWalletTorExperimentAvailable() {
+  return app.isPackaged === false && process.env.FREEDOM_WALLET_TOR_EXPERIMENT === '1';
+}
+
 function registerSettingsIpc() {
   ipcMain.handle(IPC.SETTINGS_GET, () => {
-    return loadSettings();
+    return { ...loadSettings(), walletTorExperimentAvailable: isWalletTorExperimentAvailable() };
   });
 
   ipcMain.handle(IPC.SETTINGS_SAVE, (_event, newSettings) => {
@@ -422,6 +436,7 @@ function registerSettingsIpc() {
 
 module.exports = {
   loadSettings,
+  isWalletTorExperimentAvailable,
   saveSettings,
   registerSettingsIpc,
   // Exported for the parity test against the renderer copy in search-utils.js.

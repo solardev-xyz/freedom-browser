@@ -1,0 +1,45 @@
+{
+  "schema": "freedom-railgun-extraction-cleanup-v1",
+  "planSha256": "43d28ab2be6f5b95fb4d861bbcbdc2b6e27ed66c1e94994d50b81d0f0f3ddecb",
+  "preCleanupHostCommit": "2c39311b79c10b1985d702c083ee16db13bc2b7d",
+  "removedFiles": 777,
+  "removedLines": 290777,
+  "packageManifest": "docs/owners/removal/PLAN.json",
+  "packageManifestCommit": "608aa0244b62a5e3e568d0d8a23e57cbfd18a4d7",
+  "retainedHostCoverageCommit": "9cbc2f0d85e725eb1f29b7506ec9b972b6814f5e",
+  "sourceHashesVerifiedBeforeRemoval": true,
+  "postCleanupAcceptance": {
+    "unit": {
+      "command": "npm test -- -- --runInBand",
+      "suitesPassed": 392,
+      "testsPassed": 9025,
+      "testsSkipped": 33,
+      "suitesSkipped": 5,
+      "exitCode": 0,
+      "logSha256": "715e7edbdba49a6fc207cbdeb373af2e0106426f4605fd4a7a9f5eb43aa51cf0"
+    },
+    "lint": "passed",
+    "literalIncomingEdgeAudit": "no retained import to a removed target; bounded static review",
+    "reviewerTargetedChecks": {
+      "suites": 16,
+      "tests": 432,
+      "result": "passed"
+    },
+    "nativeAndPackaged": {
+      "hostCommit": "dcd242f13da2a1e9b49a1ac092ba42ef45f1be20",
+      "packageEvidenceCommit": "018d98a8f68e6d43b99c7a57b97fd7be6f774541",
+      "privateSyntheticCases": 5,
+      "qualified": true,
+      "originalMainsAndDriversNaturalExitZero": true,
+      "inputPostchecksUnchanged": true,
+      "unsignedPackagedInitialization": "passed; earlier sandbox abort preserved separately",
+      "live": false
+    }
+  },
+  "earlierAttempt": {
+    "outcome": "interrupted by operator after sandbox listen EPERM failures",
+    "exitCode": 143,
+    "logSha256": "ebdee2fed3d434a55af905c9a419a5479936359038b2d67572fdb9349b45699b",
+    "relabelledAsPass": false
+  }
+}

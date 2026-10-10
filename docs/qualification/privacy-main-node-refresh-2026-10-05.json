@@ -1,0 +1,71 @@
+{
+  "createdAt": "2026-10-04T22:39:55.931Z",
+  "main": "dbfd0e7d35354a40473dc4ce46eeef16eae6b32e",
+  "downloads": {
+    "ant": "0.5.58: all downloader targets, Windows ARM64 emulation copy",
+    "ipfs": "0.4.3: host packaged and development addon",
+    "radicle": "0.7.1: host addon",
+    "myotis": "0.1.12: all five pinned release targets"
+  },
+  "myotisSupervisorRebuilt": true,
+  "myotisHostAbi": 32,
+  "arti": {
+    "version": "2.6.0",
+    "unchangedMatchingPinRetained": true
+  },
+  "networkNodesStarted": false,
+  "pinsChanged": false,
+  "files": {
+    "ant-bin/mac-arm64/antd": {
+      "bytes": 14439824,
+      "sha256": "d27bed99adc077c4c06d5e22e52aeeda0b43e5aa11622a1f084ba02ea63a35c3"
+    },
+    "native/freedom-ipfs-node/prebuilds/mac-arm64/freedom_ipfs_native.node": {
+      "bytes": 33220056,
+      "sha256": "10218e249ba00cb0c7646cbc738a85bb806a9f030aa449736bfa056284955b4b"
+    },
+    "native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node": {
+      "bytes": 33220056,
+      "sha256": "10218e249ba00cb0c7646cbc738a85bb806a9f030aa449736bfa056284955b4b"
+    },
+    "radicle-bin/mac-arm64/libradicle.node": {
+      "bytes": 13006512,
+      "sha256": "807ef2c0679ee3cedebf9ef2f9f4c012f921b2f43bdcba52d3715a35e6d4d210"
+    },
+    "myotis-bin/mac-arm64/myotis-supervisor": {
+      "bytes": 34768,
+      "sha256": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203"
+    },
+    "arti-bin/mac-arm64/arti": {
+      "bytes": 22463904,
+      "sha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34"
+    },
+    "myotis-bin/mac-arm64/myotis-node.node": {
+      "bytes": 9859088,
+      "sha256": "19f1866ce23230ebad65262b79bf2dd0792f5b98684fdfdd9a0e6c5d0295d9cc"
+    },
+    "myotis-bin/mac-x64/myotis-node.node": {
+      "bytes": 11427568,
+      "sha256": "0e064d2511bdd9e78483c65de13efe44ed10affd35e8fca1561896a836f3f1b0"
+    },
+    "myotis-bin/linux-x64/myotis-node.node": {
+      "bytes": 13942520,
+      "sha256": "e80c561ca623d52e736d6d1f8c48da33c4975dd15143a1e4191bd81815f7dd16"
+    },
+    "myotis-bin/linux-arm64/myotis-node.node": {
+      "bytes": 12805736,
+      "sha256": "95d6aff682d005e403e346390bebf71d5df2b89a9198c2433d5365ca804a53d6"
+    },
+    "myotis-bin/win-x64/myotis-node.node": {
+      "bytes": 9835520,
+      "sha256": "70ce52f8aa0d3abbb9c4bf01d3da0a88fa495952823ba57be61bffa541d6fff1"
+    }
+  },
+  "logSha256": {
+    "ant-refresh": "b5ef2c68dda6ff238486b1c5f80eb060ba0b4b3721220d5efd5d39bbdde42409",
+    "ipfs-refresh": "dba00968187e4cd1853a3bf6e3c64313aae0549cf5a332b754b101d13e598019",
+    "radicle-refresh": "17efb0b671a5ae45e89a99371c35e78eb9ab73427bc10e5c4cd6179e2231ff5c",
+    "myotis-refresh": "7a8d32e64cd86ecdec3a68ca39da218f4d0ef3873145c0d7e604e36183572661",
+    "myotis-supervisor": "9e92838d110dcd4a96ebbf8e716d6caeb815a40a045a90cedb437fc67b5ccb1a"
+  }
+}

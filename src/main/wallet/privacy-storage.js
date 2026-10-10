@@ -1,0 +1,220 @@
+/** Encrypted atomic implementation of the Kohaku Storage shape. Main owns
+ * the directory and 256-bit storage key; neither is supplied by a renderer.
+ * No product key-management or backup policy is selected by this primitive.
+ */
+const fs = require('fs');
+const path = require('path');
+const { createHash, randomBytes, createCipheriv, createDecipheriv } = require('crypto');
+const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
+const MAX_BYTES = 4 * 1024 * 1024;
+
+function getPrivacyStoragePath(handle, directory) {
+  const context = getPrivacyContext(handle);
+  const aad = Buffer.from(JSON.stringify([1, context.profileId, context.subject]));
+  return path.join(directory, `${createHash('sha256').update(aad).digest('hex')}.json`);
+}
+
+function decodePrivacyStorage(record, secret, aad) {
+  if (record.version !== 1) throw new Error('version');
+  const iv = Buffer.from(record.iv, 'base64');
+  const tag = Buffer.from(record.tag, 'base64');
+  const ciphertext = Buffer.from(record.ciphertext, 'base64');
+  if (iv.length !== 12 || tag.length !== 16 || ciphertext.length > MAX_BYTES)
+    throw new Error('shape');
+  const decipher = createDecipheriv('aes-256-gcm', secret, iv);
+  decipher.setAAD(aad);
+  decipher.setAuthTag(tag);
+  let head, tail, plaintext;
+  try {
+    head = decipher.update(ciphertext);
+    tail = decipher.final();
+    plaintext = Buffer.concat([head, tail]);
+    const values = JSON.parse(plaintext.toString('utf8'));
+    if (
+      !values ||
+      Array.isArray(values) ||
+      typeof values !== 'object' ||
+      Object.keys(values).length > 256 ||
+      Object.entries(values).some(
+        ([name, value]) => !name || name.length > 256 || typeof value !== 'string'
+      )
+    )
+      throw new Error('shape');
+    return values;
+  } finally {
+    head?.fill(0);
+    tail?.fill(0);
+    plaintext?.fill(0);
+  }
+}
+// Fixed internal main-process callers only; this is not an authority issuer.
+// One synchronous authenticated read. There is no storage adapter, writer,
+// inventory adoption or retained key/listener on this path.
+function readExistingPrivacyStorageValue({ handle, directory, key, profile, seed }, name) {
+  const context = getPrivacyContext(handle);
+  const permitted =
+    (context.subject.kind === 'private-account' && context.subject.role === 'storage') ||
+    (context.subject.kind === 'public-address' &&
+      context.subject.role === 'transaction-rpc' &&
+      context.subject.operation === null &&
+      context.subject.protocol === null &&
+      context.subject.deployment === null);
+  if (
+    !permitted ||
+    !Buffer.isBuffer(key) ||
+    key.length !== 32 ||
+    !path.isAbsolute(directory) ||
+    typeof name !== 'string' ||
+    !name ||
+    name.length > 256
+  )
+    throw privacyError('PRIVATE_STORAGE_INVALID', 'Invalid privacy storage configuration');
+  const file = getPrivacyStoragePath(handle, directory);
+  const bytes = require('./privacy-profile-guard').readRegisteredPrivacyProfileFile({
+    handle,
+    profile,
+    seed,
+    file,
+    maximumBytes: MAX_BYTES * 2,
+  });
+  let values;
+  try {
+    values = decodePrivacyStorage(
+      JSON.parse(bytes.toString('utf8')),
+      key,
+      Buffer.from(JSON.stringify([1, context.profileId, context.subject]))
+    );
+  } catch {
+    throw privacyError(
+      'PRIVATE_STORAGE_UNREADABLE',
+      'Privacy state could not be authenticated or decoded'
+    );
+  }
+  getPrivacyContext(handle);
+  return Object.hasOwn(values, name) ? values[name] : null;
+}
+
+function createPrivacyStorage({ handle, directory, key, profileGuard }) {
+  const context = getPrivacyContext(handle);
+  const permitted =
+    (context.subject.kind === 'private-account' && context.subject.role === 'storage') ||
+    (context.subject.kind === 'public-address' &&
+      context.subject.role === 'transaction-rpc' &&
+      context.subject.operation === null &&
+      context.subject.protocol === null &&
+      context.subject.deployment === null);
+  if (!permitted || !Buffer.isBuffer(key) || key.length !== 32 || !path.isAbsolute(directory)) {
+    throw privacyError('PRIVATE_STORAGE_INVALID', 'Invalid privacy storage configuration');
+  }
+  const secret = Buffer.alloc(key.length);
+  key.copy(secret);
+  const aad = Buffer.from(JSON.stringify([1, context.profileId, context.subject]));
+  const file = getPrivacyStoragePath(handle, directory);
+  context.signal.addEventListener('abort', () => secret.fill(0), { once: true });
+  function assertActive() {
+    getPrivacyContext(handle);
+  }
+  function validKey(name) {
+    if (typeof name !== 'string' || !name || name.length > 256)
+      throw privacyError('PRIVATE_STORAGE_INVALID', 'Invalid storage key');
+  }
+  function read() {
+    assertActive();
+    profileGuard?.assert(file);
+    if (!fs.existsSync(file)) return {};
+    try {
+      if (fs.statSync(file).size > MAX_BYTES * 2) throw new Error('size');
+      const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const values = decodePrivacyStorage(record, secret, aad);
+      profileGuard?.remember(file);
+      return values;
+    } catch (error) {
+      if (error.code?.startsWith('PRIVATE_PROFILE_')) throw error;
+      throw privacyError(
+        'PRIVATE_STORAGE_UNREADABLE',
+        'Privacy state could not be authenticated or decoded'
+      );
+    }
+  }
+  // One synchronous read/modify/rename turn also serializes separate adapters
+  // targeting this file in the owning main process. Updaters cannot await.
+  function update(name, change) {
+    validKey(name);
+    assertActive();
+    const values = read();
+    const value = change(Object.hasOwn(values, name) ? values[name] : null);
+    if (typeof value !== 'string' || Buffer.byteLength(value) > 1024 * 1024)
+      throw privacyError('PRIVATE_STORAGE_LIMIT', 'Privacy value is too large');
+    Object.defineProperty(values, name, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    const plaintext = Buffer.from(JSON.stringify(values));
+    let replaced = false;
+    try {
+      if (Object.keys(values).length > 256 || plaintext.length > MAX_BYTES)
+        throw privacyError('PRIVATE_STORAGE_LIMIT', 'Privacy state is too large');
+      const iv = randomBytes(12);
+      const cipher = createCipheriv('aes-256-gcm', secret, iv);
+      cipher.setAAD(aad);
+      const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+      const serialized = JSON.stringify({
+        version: 1,
+        iv: iv.toString('base64'),
+        tag: cipher.getAuthTag().toString('base64'),
+        ciphertext: ciphertext.toString('base64'),
+      });
+      assertActive();
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+      const fd = fs.openSync(temporary, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, serialized);
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      // Synchronous rename keeps the lifetime check and commit in one main
+      // event-loop turn. Interrupted writes leave only encrypted temp files.
+      assertActive();
+      fs.renameSync(temporary, file);
+      replaced = true;
+      if (process.platform !== 'win32') {
+        const parent = fs.openSync(directory, 'r');
+        try {
+          fs.fsyncSync(parent);
+        } finally {
+          fs.closeSync(parent);
+        }
+      }
+      profileGuard?.remember(file);
+    } catch (error) {
+      const failure =
+        error.code?.startsWith('PRIVATE_') || error.code?.startsWith('PRIVACY_')
+          ? error
+          : privacyError('PRIVATE_STORAGE_WRITE_FAILED', 'Privacy state could not be saved');
+      if (replaced) failure.storageCommitted = true;
+      throw failure;
+    } finally {
+      plaintext.fill(0);
+    }
+  }
+  return Object.freeze({
+    _brand: 'Storage',
+    async get(name) {
+      validKey(name);
+      const values = read();
+      assertActive();
+      return Object.hasOwn(values, name) ? values[name] : null;
+    },
+    async set(name, value) {
+      update(name, () => value);
+    },
+    async update(name, change) {
+      update(name, change);
+    },
+  });
+}
+module.exports = { createPrivacyStorage, getPrivacyStoragePath, readExistingPrivacyStorageValue };

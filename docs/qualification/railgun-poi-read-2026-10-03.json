@@ -1,0 +1,155 @@
+{
+  "observedAt": "2026-10-03T05:37:41.215Z",
+  "sourceSha256": {
+    "scripts/qualify-railgun-poi-read.js": "86fc4bbe5c14b85e46ce44c1650fe70c91632dcf0f415194a7dd34313b2f6afd",
+    "scripts/qualify-ppv2-live.js": "775d3c0dc2b7c138056d25c58da1fa4299065447c849cd8509e83432e1f0e6d2",
+    "scripts/fixtures/railgun-poi-signed-event.json": "b5a4fb3822b7870cbe92f5e5eb56cd0c69624ef9a52bc401c7e167e4bc3d9aae",
+    "src/main/wallet/railgun-poi-source.js": "a7a4227a7ddfd7f3b2a30288b0d6a8727e6f39d671dff216d2728eff5782f736",
+    "src/main/wallet/railgun-poi-records.js": "c4511c0ea185835c67bbbc8b8ba74bec6271e4b3a457a2b6a1576b42593fd1ac",
+    "src/main/wallet/railgun-poi-membership.js": "e4ddd983ceb07b424527ba209c03d9b5c5dd4d1622ea14c4883bf2da569a74c8",
+    "src/main/wallet/railgun-poi-job.js": "11866bab4ebadc0013e1059b909616f8fc793ebca054413518491cd8ecc79286",
+    "src/main/wallet/railgun-engine-runtime.js": "3dd0d43fc4cf9a766539986cd0779573ec49d39c261ebaa1c3906c81653bc860",
+    "src/main/wallet/railgun-process.js": "e9d5d03d8c15fe55ee29751d96d1034fd14ab2ab11726059a8d0ca3ac050d3a6",
+    "src/main/wallet/railgun-process-entry.js": "d17252bdfc9d7b93994eb4df04bdb4d6eff77fd89b1dc569a1b47ed1e0772f1e",
+    "src/main/wallet/railgun-process-guards.js": "f7bbf6220212b62ae7791f9b47c145d95abec9e499b26f7bfe854e950281d958",
+    "src/main/wallet/railgun-engine-manifest.json": "54a4d63dea94e17a542d7510c08e1f35ea71256c821639ba86da29b89f8c7f2c",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133",
+    "src/main/networks/wallet-tor-transport.js": "54c552a4c89c7e1068b4677286d5fe99d47f5b059ffa372a4d5b969719138bc9",
+    "src/main/networks/isolated-socks.js": "93e0fe9f1a28600926b592091525ae4a0bb77542ae0d1d1184c3c725fc45cfcf"
+  },
+  "publicQueriesOnly": true,
+  "accountsOpened": 0,
+  "submissions": 0,
+  "spendingEnabled": false,
+  "torManager": "qualification-only-endpoint-shim",
+  "circuitIsolationQualified": false,
+  "enrolledPoiQualified": false,
+  "passed": true,
+  "transport": {
+    "version": "Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: static-sqlite",
+    "binarySha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34",
+    "bootstrapMs": 9689,
+    "rpc": "https://sepolia.rpc.sentio.xyz",
+    "transport": "wallet HTTP/TLS over dedicated bundled Arti",
+    "circuitIsolation": "not independently observed in this run"
+  },
+  "serviceMs": 3002,
+  "serviceObservation": {
+    "listKey": "efc6ddb59c098a13fb2b618fdae94c1c3a807abc8fb1837c93620c9143ee9e88",
+    "statuses": [
+      {
+        "blindedCommitment": "0x15286788e718241f2514941fb5713442365941c238886481b3b0948a966c6cb0",
+        "type": "Shield",
+        "status": "Valid"
+      }
+    ],
+    "proofs": [
+      {
+        "leaf": "15286788e718241f2514941fb5713442365941c238886481b3b0948a966c6cb0",
+        "elements": [
+          "2d264b76ae633c16b2fd15daa941701275f7123323461cd6968663fabddf5c13",
+          "29fd6d74e268b3ab02d1c8d8cd5de6605f8a4419c62283f9f5047055b3560a89",
+          "22aea5ffe930a56e4d35200437d64113becb04e3f986254545f9829fd7fdffe1",
+          "0e46690aeca275ee4c028b901f298b057bfed0006a58429917544431ab072d03",
+          "03b07e16a59cb006bd89e6c3affde8e262b0bd8845abd9cf7f99e7bd83926687",
+          "0a501c61dea1776d387d70e7a5bf2446e48d833bc630b19e5de363690b392356",
+          "1b5b63f660ec79b54698400c73bef68bb52e34889dec63be6fe3c5977d0fb320",
+          "0fd80636d709457be9251786fba9c0b6df50ab66194e55526a5e2cebad777aeb",
+          "230c42adfee3dc370e623e19980ca79b6b75d9d9fdf994b9f1326acaa7ed6249",
+          "0aa492fc372e88a75e6abb23bd5858183ba5dd81cf93f6ea6eb99bcf94232a24",
+          "0ade01b6b4e9438042b3f654a79d9366a460aa568e4c92d92d605b57605a475e",
+          "2823ab13433ade96803cc1c2d534d41e76e764e2021eeb0e9f8928d4d78c036d",
+          "0836f566bb29053b84b19f5d532f37504dd35d155f67b1440c1c4af611847b11",
+          "132f4c01fa84b78c8bf0fd8f0ee1c1ef4ede6d6ad40ada7948a1c7baeac3e70f",
+          "08c5bd0f85cef2f8c3c1412a2b69ee943c6925ecf79798bb2b84e1b76d26871f",
+          "27f7c465045e0a4d8bec7c13e41d793734c50006ca08920732ce8c3096261435"
+        ],
+        "indices": "0000000000000000000000000000000000000000000000000000000000000000",
+        "root": "1dfc8f4ce59568fac3a31fb6bef2f1778317aa80c5de96fe895b2e3396c3f98d"
+      }
+    ],
+    "events": [
+      {
+        "signedPOIEvent": {
+          "index": 0,
+          "blindedCommitment": "0x15286788e718241f2514941fb5713442365941c238886481b3b0948a966c6cb0",
+          "signature": "b5e771f1db99beef531235c357c7dd007042f09933cdaa2cb0f0bed41081d636238e97862016172d995618ed9657cd878da4b1f7dd7be2a95a931b5757e1e802",
+          "type": "Shield"
+        },
+        "validatedMerkleroot": "08f1e050a7b9a46dce7e4fd26d8116ea85748c4fd0db4528384d2e3c35cfbfac"
+      }
+    ],
+    "rootsAccepted": true,
+    "observedAt": "2026-10-03T05:37:53.930Z",
+    "trust": "unverified-service",
+    "membershipVerified": false,
+    "spendingEnabled": false
+  },
+  "membershipMs": 204,
+  "membership": {
+    "listKey": "efc6ddb59c098a13fb2b618fdae94c1c3a807abc8fb1837c93620c9143ee9e88",
+    "statuses": [
+      {
+        "blindedCommitment": "0x15286788e718241f2514941fb5713442365941c238886481b3b0948a966c6cb0",
+        "type": "Shield",
+        "status": "Valid"
+      }
+    ],
+    "proofs": [
+      {
+        "leaf": "15286788e718241f2514941fb5713442365941c238886481b3b0948a966c6cb0",
+        "elements": [
+          "2d264b76ae633c16b2fd15daa941701275f7123323461cd6968663fabddf5c13",
+          "29fd6d74e268b3ab02d1c8d8cd5de6605f8a4419c62283f9f5047055b3560a89",
+          "22aea5ffe930a56e4d35200437d64113becb04e3f986254545f9829fd7fdffe1",
+          "0e46690aeca275ee4c028b901f298b057bfed0006a58429917544431ab072d03",
+          "03b07e16a59cb006bd89e6c3affde8e262b0bd8845abd9cf7f99e7bd83926687",
+          "0a501c61dea1776d387d70e7a5bf2446e48d833bc630b19e5de363690b392356",
+          "1b5b63f660ec79b54698400c73bef68bb52e34889dec63be6fe3c5977d0fb320",
+          "0fd80636d709457be9251786fba9c0b6df50ab66194e55526a5e2cebad777aeb",
+          "230c42adfee3dc370e623e19980ca79b6b75d9d9fdf994b9f1326acaa7ed6249",
+          "0aa492fc372e88a75e6abb23bd5858183ba5dd81cf93f6ea6eb99bcf94232a24",
+          "0ade01b6b4e9438042b3f654a79d9366a460aa568e4c92d92d605b57605a475e",
+          "2823ab13433ade96803cc1c2d534d41e76e764e2021eeb0e9f8928d4d78c036d",
+          "0836f566bb29053b84b19f5d532f37504dd35d155f67b1440c1c4af611847b11",
+          "132f4c01fa84b78c8bf0fd8f0ee1c1ef4ede6d6ad40ada7948a1c7baeac3e70f",
+          "08c5bd0f85cef2f8c3c1412a2b69ee943c6925ecf79798bb2b84e1b76d26871f",
+          "27f7c465045e0a4d8bec7c13e41d793734c50006ca08920732ce8c3096261435"
+        ],
+        "indices": "0000000000000000000000000000000000000000000000000000000000000000",
+        "root": "1dfc8f4ce59568fac3a31fb6bef2f1778317aa80c5de96fe895b2e3396c3f98d"
+      }
+    ],
+    "events": [
+      {
+        "signedPOIEvent": {
+          "index": 0,
+          "blindedCommitment": "0x15286788e718241f2514941fb5713442365941c238886481b3b0948a966c6cb0",
+          "signature": "b5e771f1db99beef531235c357c7dd007042f09933cdaa2cb0f0bed41081d636238e97862016172d995618ed9657cd878da4b1f7dd7be2a95a931b5757e1e802",
+          "type": "Shield"
+        },
+        "validatedMerkleroot": "08f1e050a7b9a46dce7e4fd26d8116ea85748c4fd0db4528384d2e3c35cfbfac"
+      }
+    ],
+    "rootsAccepted": true,
+    "observedAt": "2026-10-03T05:37:53.930Z",
+    "trust": "unverified-service",
+    "membershipVerified": true,
+    "spendingEnabled": false
+  },
+  "negativeMembership": [
+    {
+      "kind": "path",
+      "refused": true
+    },
+    {
+      "kind": "position",
+      "refused": true
+    },
+    {
+      "kind": "index",
+      "refused": true
+    }
+  ],
+  "closedAndForgedReceiptsRefused": true
+}

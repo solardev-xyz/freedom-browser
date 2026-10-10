@@ -1,0 +1,88 @@
+{
+  "productionGate": false,
+  "packaged": true,
+  "blockedSecond": "PRIVATE_SUBMISSION_UNRESOLVED",
+  "partialSteps": 1,
+  "partialKind": "ppv2-register-viewing",
+  "sends": 3,
+  "reviews": [
+    {
+      "operation": "ppv2-register-auth",
+      "proofVerified": false,
+      "chainStateVerified": false
+    },
+    {
+      "operation": "ppv2-register-viewing",
+      "proofVerified": false,
+      "chainStateVerified": false
+    },
+    {
+      "operation": "ppv2-native-deposit",
+      "proofVerified": true,
+      "chainStateVerified": false
+    }
+  ],
+  "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
+  "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-native-deposit"],
+  "attemptedRecovered": true,
+  "missingTimestampCount": 0,
+  "proofCommitmentRecovered": true,
+  "notes": [
+    {
+      "value": "10000",
+      "status": "pending"
+    }
+  ],
+  "restoredEqual": true,
+  "independentlyRecovered": true,
+  "rescanRecovered": true,
+  "discrepancyDetected": true,
+  "cachePreserved": true,
+  "ciphertextOnly": true,
+  "balances": [
+    {
+      "amount": "0",
+      "tag": "spendable"
+    },
+    {
+      "amount": "10000",
+      "tag": "unspendable"
+    }
+  ],
+  "isolatedRoles": true,
+  "methods": [
+    "eth_blockNumber",
+    "eth_call",
+    "eth_gasPrice",
+    "eth_getBlockByNumber",
+    "eth_getLogs",
+    "eth_getTransactionCount",
+    "eth_getTransactionReceipt",
+    "eth_sendRawTransaction"
+  ],
+  "liveTransactionSubmitted": false,
+  "processRestart": {
+    "recovered": true,
+    "rescanRecovered": true,
+    "journalRestored": true,
+    "blocked": "PRIVATE_SUBMISSION_UNRESOLVED",
+    "sends": 0,
+    "productionGate": false,
+    "packaged": true
+  },
+  "nativeExit": {
+    "kind": "ppv2-native-ragequit",
+    "amount": "10000",
+    "value": "0",
+    "proofVerified": true,
+    "chainStateVerified": false,
+    "commitmentBound": true,
+    "ownerBound": true,
+    "poolBound": true,
+    "sent": 1,
+    "journalKind": "ppv2-native-ragequit",
+    "observedStatus": "exited",
+    "reviewed": "ppv2-native-ragequit",
+    "recordedHash": true
+  }
+}

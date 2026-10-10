@@ -1,0 +1,23 @@
+{
+  "sent": 1,
+  "reviewed": 1,
+  "durableBeforeSend": true,
+  "outcome": "PRIVATE_PPV2_RELAY_UNCERTAIN",
+  "tamperRejected": true,
+  "realProofVerified": true,
+  "chainStateVerified": false,
+  "quoteSignatureVerified": false,
+  "nullifierBound": true,
+  "commitmentBound": true,
+  "recordedWithoutPayload": true,
+  "acknowledgedHash": null,
+  "productionGate": false,
+  "packaged": true,
+  "liveTransactionSubmitted": false,
+  "restart": {
+    "records": 1,
+    "acknowledgedHash": null,
+    "blocked": "PRIVATE_PPV2_RELAY_UNRESOLVED",
+    "packaged": true
+  }
+}

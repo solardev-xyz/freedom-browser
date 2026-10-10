@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "baseRevision": "b88345f942fc4090f321644cb830f07cdbaad892",
+  "hostSourceSha256": {
+    "src/main/networks/kohaku-provider.js": "f1a880f351981355b48b401e25f99280a3eeb063aad79f129c16b84401c99bbd",
+    "src/main/networks/kohaku-provider.test.js": "a54da6fb9e84e218e67851d3ab8c6920c50c3b817255fb3b3f5dfea0d155926b",
+    "src/main/networks/kohaku-scan-cache.js": "0e110ed10f6cbe4efa4f045b0fd5b4c0d35d86d810d2e9fd3788681e75477f6c",
+    "src/main/networks/kohaku-scan-cache.test.js": "c1edc47f846d79e61bc236bcf446ea192c756bdfe8325bcdb344e49ca590d97b",
+    "src/main/wallet/ppv2-scan-storage.test.js": "032bfa78499808d8da46811af972418a5e282573683e41b490fc5355e069802a",
+    "src/main/wallet/ppv2-sepolia-test-step.js": "54f7f7be80bb2b3864892f07da25feafd0b929050488e337ab5b3cc256cc4d68",
+    "src/main/wallet/ppv2-sepolia-test-step.test.js": "27511e498693b537abadc6cac51ec9ef215358bc91731ba2f8e9dc4c77d2eae9",
+    "src/main/wallet/ppv2-session.js": "9e857a559ab789bdcbbc7ca0e18a33e2061137cf99d44a265c70ee9d637741fd",
+    "src/main/wallet/ppv2-storage.js": "0a06d570c8a86d28a6a2671e90c5af47e4c6fc578123b8322f2ee4a657210db2",
+    "src/main/wallet/ppv2-task-budget.js": "aa71fe233a06e5bd10ae09d3074ea2f46a8dc3664e593c98169f75063500cf17",
+    "src/main/wallet/ppv2-task-budget.test.js": "39f56bfdbac9c13d01d3aa62448888f27c9f9a89ddd319caa6ebfc717bbc270a",
+    "src/main/wallet/private-transaction-network.js": "de05c4bd89d37f4435b363baafcd4d40a2540faf851f84c3475f2562046c2f16",
+    "src/main/wallet/private-transaction-network.test.js": "95111006a305ac678eebd160eefa745b1a8383eff235caf093876d57c6723036",
+    "src/main/wallet/transaction-service.js": "05155d5909095bb627fe8aa8bb5fd0b14b36c0bf171564191c466e3547999831",
+    "test-e2e/ppv2-deposit.spec.js": "c6ce37ce37189700ea10a0894a94c963e9a622958edd195d436339d72c9355ec",
+    "test-e2e/ppv2-lifecycle.spec.js": "091dd48f1d2a78992bf804c16fa230970c9aa4461cc227e09c4124aeae98e3d6"
+  },
+  "unit": {
+    "fullPassed": 6848,
+    "fullSkipped": 33,
+    "openlvSeparatelyPassed": 6
+  },
+  "sdk": {
+    "fullRun": {
+      "startTime": "2026-10-01T22:24:19.452Z",
+      "duration": 472098.17500000005,
+      "expected": 18,
+      "skipped": 0,
+      "unexpected": 1,
+      "flaky": 0
+    },
+    "depositRerun": {
+      "startTime": "2026-10-01T22:32:45.897Z",
+      "duration": 5230.268,
+      "expected": 1,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "note": "The full run passed 18 and failed the deposit exact RPC-method assertion, which omitted the new block-header reads. Only that expectation changed; the deposit rerun passed. All 19 cases have passing results across these two runs."
+  },
+  "runtimeSha256": "fa71e37dab6f558a2a73c2903233667f30809201a6ef1af1f2ab17f8971fe19d",
+  "lintPassed": true,
+  "claudeReview": "Scan cache and progress counter reviewed; blocker fixed and simulated 20-minute recovery regression added.",
+  "liveTransactionsSubmitted": false,
+  "fundedProfileChanged": false,
+  "productionEnabled": false
+}

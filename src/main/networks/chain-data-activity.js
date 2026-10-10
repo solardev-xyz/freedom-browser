@@ -83,6 +83,16 @@ function createChainDataActivity({
     const original = router[name];
     if (typeof original !== 'function' || original[WRAPPED]) return false;
     const wrapped = function (chainId, ...rest) {
+      const options = rest[2];
+      // Do not record even failed/private-context validation attempts. Check
+      // presence without evaluating a getter before the router evaluates it.
+      if (
+        name === 'request' &&
+        options !== null &&
+        (typeof options === 'object' || typeof options === 'function') &&
+        'privacyContext' in options
+      )
+        return original.call(this, chainId, ...rest);
       const finish = track(chainId, methodOf(rest));
       let pending;
       try {

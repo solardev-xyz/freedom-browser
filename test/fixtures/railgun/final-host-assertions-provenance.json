@@ -1,0 +1,92 @@
+{
+  "schema": "freedom-retained-final-host-assertions-v1",
+  "sourceCommit": "b0ecd1657362e72c402e9c7e54df6fc4e1959301",
+  "originalFiles": {
+    "src/main/wallet/railgun-shield-intent.test.js": {
+      "sha256": "035ddc40830b9a0acaa55082e89b72668335644d4a1eb11529e29e78d9ff474e",
+      "gitBlob": "05f040a5c287f7a61268869e9fe3830ab74df1c0"
+    },
+    "src/main/wallet/railgun-shield-recovery.test.js": {
+      "sha256": "5f70ff91d52f3d890a8a2c2cd1ed502f4294e330f171adf7cc135b300df55515",
+      "gitBlob": "a5fa26c07a436838b62999d34f7b269d1f0cf3b9"
+    },
+    "src/main/wallet/railgun-transact-recovery.test.js": {
+      "sha256": "dc2adcf880d0231c27f44c74a91c3b37ba58f776226f9946751fc2e6fc13d138",
+      "gitBlob": "8cb56bd3dd91ef5a67e7087a1460e1bcbd632e35"
+    },
+    "src/main/wallet/railgun-shield-pins.json": {
+      "sha256": "0f38d69a9acb5ecdaeb7197f4410a1c6068b8896e4204a179631176223e31a75",
+      "gitBlob": "755625d04905e20f0f6521815a4b7df937e32f1c"
+    }
+  },
+  "retainedSubjects": {
+    "src/main/wallet/ordinary-submission-policy.js": "5aba1411547dda1cb76f23c0f89d6bf863e2188e07e45004130a4ac7ff803d31",
+    "src/main/wallet/private-transaction-network.js": "8318ca393d3d2458af0bb78de874cf8c823171ecb17ec1b8ebfef934e9a7c980",
+    "src/main/wallet/private-submission-reconciler.js": "786ce5f69cdf9a491e08687fb95cc169d38c7939d5b9cd59706c9547cbc9f47b",
+    "src/main/wallet/privacy-journal-retention.js": "e031f6b67ddf1717de9ca928195c765dd3f961f075a5d3ead31da086882e393a"
+  },
+  "publicFixtures": {
+    "test/fixtures/railgun/public-shield-host-intent.json": "c908f26269ff28fbe4b446ba25264e8fdb2f1001d6cc0e6b411792a35537df3a",
+    "test/fixtures/railgun/railgun-journal-histories.json": "8c26227cfafac0d89f68326a78ceb5db88757a6b1c8641fb60eef6cad27d56f9",
+    "test/fixtures/railgun/host-target-pins.json": "56e151ce2b7ce0b4622d7edee65287f1b89a647be0ff9dc0045cccfc3e6f9389"
+  },
+  "targetPinsProjection": ["proxy", "implementation", "relayAdapt", "wrappedNative"],
+  "authorityBridge": {
+    "publicSubpath": "@freedom/railgun-kohaku-adapter/host/owner-authority",
+    "sha256": "6df83c0122d2006de129d831193ad43c510142762fe0112c45d33518fe8a2519",
+    "bytes": 1445,
+    "tarDByteEquality": true,
+    "limits": "Only this loaded public bridge byte comparison is claimed; no full tar-D installation qualification."
+  },
+  "coverage": [
+    {
+      "destination": "src/main/wallet/ordinary-submission-policy.test.js",
+      "source": "src/main/wallet/railgun-shield-intent.test.js",
+      "assertions": [
+        "proxy/implementation/RelayAdapt cannot be classified or requested as ordinary",
+        "PPv2 intent disguise rejected",
+        "ordinary WETH transfer passes"
+      ],
+      "scope": "Same host assertions and public calldata, with projected fixed public target pins; no owner initialization."
+    },
+    {
+      "destination": "src/main/wallet/private-transaction-network.test.js",
+      "sourceSubjects": [
+        "src/main/wallet/private-transaction-network.js",
+        "src/main/wallet/private-submission-reconciler.js"
+      ],
+      "relatedOriginalCampaigns": [
+        "src/main/wallet/railgun-shield-recovery.test.js",
+        "src/main/wallet/railgun-transact-recovery.test.js"
+      ],
+      "assertions": [
+        "actual uninitialized public authority refuses",
+        "both Railgun intent kinds select their exact installed public authority function",
+        "same context/record and false-before-review/true-after-review flags",
+        "returned mock permit forwarded only after second authorization",
+        "refusal before or after review prevents journal resolution"
+      ],
+      "scope": "Actual host network and reconciler, mocked authority and journal persistence; no genuine authorization success, owner lifecycle or signing claim."
+    },
+    {
+      "destination": "src/main/wallet/privacy-journal-retention.test.js",
+      "source": [
+        "src/main/wallet/railgun-shield-recovery.test.js",
+        "src/main/wallet/railgun-transact-recovery.test.js"
+      ],
+      "assertions": [
+        "validArchive accepts matched Shield/Transact record",
+        "position65536 rejected for Shield note or Transact output"
+      ],
+      "scope": "Public structural records and actual retained host predicate. Original receipt matcher, encrypted archival/cold reopen and recovery ownership remain separate package/host journal tests."
+    }
+  ],
+  "existingJournalCoverage": {
+    "path": "src/main/wallet/private-submission-journal.test.js",
+    "basisSha256": "13629d566ec2cf567a6bc10887f96a4d0fb9de61a4c6321aa3d4046baa90bbc9",
+    "retained": "Public/transact archived read, permanent exclusion and reverted Shield cases already retained. Explicit matched Shield/Transact out-of-range position predicates were not present and are added here."
+  },
+  "runtimeChanged": false,
+  "nativeExecuted": false,
+  "realProfileAccess": false
+}

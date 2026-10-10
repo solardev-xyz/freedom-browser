@@ -1,0 +1,125 @@
+{
+  "revision": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "upstream": "https://github.com/ethereum/kohaku/pull/258",
+  "sources": [
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/http.adapter.ts",
+      "sha256": "067973077129e8e80f1fffd8120661807a2f44368b054ab60803bf4b875a1d2f"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/rpc.adapter.ts",
+      "sha256": "90b9e2758e9da02076603e4906fbfd4ca4fe89ca4a13bf35d042826dfd295a93"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/session.ts",
+      "sha256": "eac2568da0a1e7f8fee529de29254ed5b69b65798f7434fdf633d6bfd61fdba1"
+    },
+    {
+      "file": "packages/privacy-pools/package.json",
+      "sha256": "001430c3b6e3a033681a67ee1295ee2243be86287151033b873fc7e3a8a4d39b"
+    },
+    {
+      "file": ".npmrc",
+      "sha256": "9d221d8dadc70c1d4225a971c7971416070512977cd20a6e90ee70c9fbcf0edd"
+    },
+    {
+      "file": "examples/ppv2-sample-app/README.md",
+      "sha256": "fcad7e6ffc0e49aa978cd166904c58187ba2cc245bb133ec224256446b0a6508"
+    },
+    {
+      "file": "examples/ppv2-sample-app/src/wallet/config.ts",
+      "sha256": "5381dab307ad9577608a0d434dfa818fc657432422332d296da35f1d2e654d03"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/storage.adapter.ts",
+      "sha256": "01525897e96018f0ec067cd564f08af8e4cba899f66f905556f186d2f2eba73a"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/interfaces/errors.ts",
+      "sha256": "3a63b35e5b9649df350cb6bda9d59bc24f9b79857171ca4b40297a0e21cff02f"
+    },
+    {
+      "file": "packages/plugins/src/errors.ts",
+      "sha256": "d0bb2f1e683912292ce1d5d4277f9cc977441105869596215a1644da488546b6"
+    },
+    {
+      "file": "examples/ppv2-sample-app/src/live/session.ts",
+      "sha256": "920a029c7459f30d10a5f73d330e576a417a51fccdce58611f3a6e560c04cad3"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/account/derivation.ts",
+      "sha256": "52c23bb9ea5b3dcff07a60df2261af78d3df93c5c014f5480cdb890ea933dcb1"
+    }
+  ],
+  "compiledSha256": "df1761cc2ae6bf4209093f15e46097fcd38158710b0882d40787b29866557efc",
+  "esbuild": "0.28.2",
+  "output": "/var/folders/yk/vgp12b9s3hz7l4vh92hr5r8w0000gn/T/kohaku-ppv2-fixture-wBTe9D/http-adapter.cjs",
+  "storageOutput": "/var/folders/yk/vgp12b9s3hz7l4vh92hr5r8w0000gn/T/kohaku-ppv2-fixture-wBTe9D/storage-adapter.cjs",
+  "storageCompiledSha256": "e1039f56c7ddbb9da7f6eeb55c35cfedd043db75539090570058bca9316964d5",
+  "scope": "HTTP/storage-adapter interop only. SDK, proving, deployment and shielded-note recovery unqualified.",
+  "checkedAt": "2026-09-25",
+  "access": {
+    "registry": "https://npm.pkg.github.com",
+    "package": "@0xbow-io/privacy-pools-v2-sdk",
+    "candidateVersion": "0.2.0-beta.0",
+    "authenticatedStatus": 403,
+    "diagnosticCategory": "permission_denied",
+    "account": "flotob",
+    "readPackagesScopeListed": false,
+    "referencedSourceRepo": "0xbow-io/v2-monorepo",
+    "authenticatedSourceStatus": 404,
+    "accountEntitlementEstablished": false
+  },
+  "auditCandidateConfirmed": false,
+  "sdkInstalled": false,
+  "realProofExecuted": false,
+  "onchainTransactionSubmitted": false,
+  "cli": {
+    "revision": "e7d8e9d54661cbfe3134a7afa415910adad0e711",
+    "sources": [
+      {
+        "file": "src/host/makeHost.ts",
+        "sha256": "3c72491ff172748aa5a124120dd654c52fdd91dd4bcb92c0ea09f65b0c12301f"
+      },
+      {
+        "file": "src/host/keystore.ts",
+        "sha256": "2550a5caf7f0e80595357f50cc06d6a78c90cadec4ed571f21b6224a1bd11b35"
+      },
+      {
+        "file": "src/host/storage.ts",
+        "sha256": "2aea26d85128c03255d68ac60da30f025419d5dbc5b9f834697d1d0358042160"
+      },
+      {
+        "file": "src/lib/protocol-runtime.ts",
+        "sha256": "0733bade620dc85b13b21e8b8958e579541cbef6e70b913b70e335fba04a443a"
+      },
+      {
+        "file": "src/lib/shield-flow.ts",
+        "sha256": "4e69527f781bf77b1a5b828c05fc73814f8384a19456e44a1596cc3b282851fd"
+      },
+      {
+        "file": "src/utils/tor.ts",
+        "sha256": "6306c9cc7bbfecc0b724687b4e00050132e33146b33120f684641f739caf747b"
+      }
+    ]
+  },
+  "kohakuMaster": {
+    "revision": "cae352597009b369c7f3a2aafbef4653385a092d",
+    "railgunStatus": "empty private placeholder; not usable adapter"
+  },
+  "validation": {
+    "unitPassed": 5560,
+    "unitSkipped": 25,
+    "knownBaselineFailures": 3,
+    "lint": "passed",
+    "storageInterop": [
+      "encrypted reopen",
+      "namespace separation",
+      "durable tombstones",
+      "clear refusal",
+      "JSON/ciphertext corruption refusal",
+      "size limit",
+      "vault lifetime revocation"
+    ]
+  }
+}

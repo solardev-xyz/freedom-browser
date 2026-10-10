@@ -7,6 +7,7 @@ module.exports = [
       'dev-scripts/**',
       'dist/**',
       'out/**',
+      'tmp/**',
       'coverage/**',
       'node_modules/**',
       'src/renderer/vendor/**',

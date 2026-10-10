@@ -1,0 +1,6 @@
+{
+  "proxy": "0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea",
+  "implementation": "0x16dc2574cc30e4deecfb9ba22d95e5126a2fc0b3",
+  "relayAdapt": "0x7e3d929ebd5bdc84d02bd3205c777578f33a214d",
+  "wrappedNative": "0xfff9976782d46cc05630d1f6ebab18b2324d6b14"
+}

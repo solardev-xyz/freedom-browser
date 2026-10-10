@@ -17,6 +17,7 @@ const fields = {
   startTor: $('start-tor-at-launch'),
   enableIdentity: $('enable-identity-wallet'),
   showIpfsProgressStatus: $('show-ipfs-progress-status'),
+  walletTorBalanceReads: $('wallet-tor-balance-reads'),
   autoUpdate: $('auto-update'),
   adblockEnabled: $('adblock-enabled'),
   adblockAds: $('adblock-ads'),
@@ -1654,6 +1655,7 @@ const currentFormState = () => ({
   startTorAtLaunch: fields.startTor.checked,
   enableIdentityWallet: fields.enableIdentity.checked,
   showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
+  walletTorBalanceReads: fields.walletTorBalanceReads.checked,
   autoUpdate: fields.autoUpdate.checked,
   blockUnverifiedEns: fields.unverifiedEnsAction.value !== 'open',
   adblockEnabled: fields.adblockEnabled.checked,
@@ -1678,6 +1680,13 @@ const applyFormState = (settings) => {
   fields.startTor.checked = settings.startTorAtLaunch === true;
   fields.enableIdentity.checked = settings.enableIdentityWallet === true;
   fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
+  fields.walletTorBalanceReads.checked = settings.walletTorBalanceReads === true;
+  fields.walletTorBalanceReads.disabled =
+    settings.walletTorExperimentAvailable !== true && !fields.walletTorBalanceReads.checked;
+  $('wallet-tor-help').textContent =
+    settings.walletTorExperimentAvailable === true
+      ? 'Sepolia balances only. Start bundled Tor first. Other user-wallet balances are unavailable; sending and other wallet traffic keep their existing routes. Swarm node balances keep their existing route. Circuit isolation is still under test.'
+      : 'Unavailable pending circuit and platform qualification. You can turn off a previously enabled experiment.';
   fields.autoUpdate.checked = settings.autoUpdate !== false;
   fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
   fields.adblockEnabled.checked = settings.adblockEnabled !== false;
@@ -2168,6 +2177,7 @@ fields.enableTor.addEventListener('change', () => {
 fields.startTor.addEventListener('change', save);
 fields.enableIdentity.addEventListener('change', save);
 fields.showIpfsProgressStatus.addEventListener('change', save);
+fields.walletTorBalanceReads.addEventListener('change', save);
 fields.autoUpdate.addEventListener('change', save);
 fields.unverifiedEnsAction.addEventListener('change', save);
 fields.adblockEnabled.addEventListener('change', () => {

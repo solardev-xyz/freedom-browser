@@ -1,0 +1,121 @@
+{
+  "fixture": "offline-loopback-wallet-tor-transport",
+  "runtime": "electron-main",
+  "node": "24.21.0",
+  "electron": "44.4.5",
+  "elapsedMs": 252,
+  "sourceSha256": {
+    "scripts/qualify-wallet-tor-transport.js": "fb57e35c3e24d9727d215643f4be9ec32c86db38e4fa7e125e1e8523561f0070",
+    "src/main/networks/wallet-tor-transport.js": "c55a55b6d2f46a801e70768893afd858c57c11d02905025536e9a5656a74c798",
+    "src/main/networks/wallet-tor-transport.test.js": "bf6ea8e7ee3699d1978727fce33fb39316409fe66ae3686ce06ec4e0a1d594a2",
+    "src/main/networks/wallet-tor-transport-lifecycle.test.js": "586edf4949bb559021fef32646f4e912b56491544762e7c5e066d2902a22ab1a",
+    "src/main/networks/isolated-socks.js": "c9d39387226747c45de2a4b9abbdcb9018e7e7273d2840070824be245951f117",
+    "src/main/networks/isolated-socks.test.js": "19cc0293ea98ba36fcca7048c1e4ba47004b90fcde94c040c3c2ae77a52f3ae9",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133",
+    "test/helpers/tor-socks-fixture.js": "3420b1bb238b5a89711e392154c66c8803f5657ffaf896c35b32270932a05a56",
+    "test/helpers/tor-tls-fixture.js": "e5fc3c2baececc89d3a20f1b3d16d0e8f99a1f2da92cf14020ed6775a9dad62f"
+  },
+  "runs": [
+    {
+      "mode": "exact",
+      "completeBodyReturned": true,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "over",
+      "completeBodyReturned": false,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "over-chunked",
+      "completeBodyReturned": false,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "framed-close",
+      "completeBodyReturned": true,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "chunked",
+      "completeBodyReturned": true,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "truncated-length",
+      "completeBodyReturned": false,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "truncated-chunked",
+      "completeBodyReturned": false,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "close-delimited",
+      "completeBodyReturned": false,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "encoding",
+      "completeBodyReturned": false,
+      "closedResolved": true,
+      "requests": 1
+    },
+    {
+      "mode": "default-close-delimited",
+      "defaultCompatible": true,
+      "closedResolved": true
+    },
+    {
+      "mode": "partial-cancel",
+      "refused": true,
+      "closedResolved": true
+    },
+    {
+      "mode": "queued-close",
+      "requestsRejected": 8,
+      "httpRequests": 2,
+      "closedResolved": true
+    },
+    {
+      "mode": "queued-release-close",
+      "requestsRejected": 8,
+      "httpRequests": 2,
+      "closedResolved": true
+    },
+    {
+      "mode": "untrusted-tls",
+      "noHttpRequest": true,
+      "closedResolved": true
+    },
+    {
+      "mode": "failed-socks",
+      "noHttpRequest": true,
+      "closedResolved": true
+    },
+    {
+      "mode": "invalid-before-network",
+      "endpointReads": 0,
+      "closedResolved": true
+    }
+  ],
+  "httpRequests": 15,
+  "peerSocketClosureObservedAfterBarrier": true,
+  "allDestinationsLoopbackFixture": true,
+  "liveQueries": 0,
+  "walletLoaded": false,
+  "poiSubmission": false,
+  "artiCircuitQualification": false,
+  "physicalDrainOrderingNegativeCases": "separate-unit-tests",
+  "retainedBodyLimitBytes": 2048,
+  "wireByteLimitClaimed": false
+}

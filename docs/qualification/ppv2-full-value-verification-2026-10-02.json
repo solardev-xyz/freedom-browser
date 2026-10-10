@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "baseRevision": "4d79365f2e6ab9f029e7b8ce37e6bb5b45792aad",
+  "recipeRevision": "d8fe7b706a52e42cf4761cd9d16958f49603e35f",
+  "hostSourceSha256": {
+    "scripts/check-ppv2-rebuild.js": "71565ac8db8ef65775e052e6525e7f825f5d5ab8ffb0ec327f0486a6b3841fc4",
+    "scripts/spike-ppv2-session.js": "480879a78207a59e4fb63556006e9cfcc93463d2580597dc1a03a213812ea5a3",
+    "src/main/wallet/ppv2-deposit-prover.js": "3a7173a2a365f727c36d6647079fc47fd93d3231937944802e41ab6a552eb750",
+    "src/main/wallet/ppv2-deposit-prover.test.js": "24a4c695accf8839ff784a3b408bdcc3210cb83c54968e6dd86db640b0adee1d",
+    "src/main/wallet/ppv2-ragequit-prover.js": "8370e0c62ad7565c1e2d84c1a31740c5ca56099cf4d4002b20be1731b145246e",
+    "src/main/wallet/ppv2-ragequit-prover.test.js": "1cbcea8836d9c2530704bbb9ca34f2f4684db35f97aef16304e08f7fac52e271",
+    "src/main/wallet/ppv2-relay-handoff.test.js": "f19d336623d1bc394bcd3247d6c523a31153dbbdf421e85f41c87b940d38f9ac",
+    "src/main/wallet/ppv2-relay-journal.js": "5ad1992ba4bf8280fd713477d9e630235285fd9b82d5afbbaa780bb4971613ba",
+    "src/main/wallet/ppv2-relay-policy.js": "14641e41d075a994b91885b4fbe1c1f53ecf67091a47e60610390ae77858f363",
+    "src/main/wallet/ppv2-runtime-manifest.js": "65453e6a9ffe4d7936e3b83453e0663ec58eed771d611b2bfc72e4870189b8f8",
+    "src/main/wallet/ppv2-runtime.js": "ab9c698aad19ee9739dda6f617abba8d8ab8f71bdb2b9b1741ff13c7da6e77b5",
+    "src/main/wallet/ppv2-runtime.test.js": "040dd1ab65ae2bfac618a7dec8924c349746cebd4e2300fdb7f79f05c63bb182",
+    "src/main/wallet/ppv2-session.js": "f6d8a967cf933b940492325df3c181749d2540d23ee99cc339a4ce80bdbc0e41",
+    "src/main/wallet/ppv2-session.test.js": "b335a6fe2819c6c3330f9b00867ac294d4b4a13b3bda51c665851835f6b03215",
+    "src/main/wallet/ppv2-transact-policy.js": "0b6bbc091bafb6c02446b453e1761ab9324222ceb4ef162c6ecc1afafec1d8fa",
+    "src/main/wallet/ppv2-transact-prover.js": "9f896818e1e47464bbfeb12d1660a6020cdfd8f45d035b74a758b1ea22ee0a08",
+    "src/main/wallet/ppv2-transact-prover.test.js": "30b053e1c2ab885d981d07aa08cc102ee1d05e54ec7cd29f6a6554cbb2eb7772",
+    "test-e2e/ppv2-relay.spec.js": "4bda98b7e3ce7e6bcf63e7f39ca10fb1c8274663cfb370146f6549cd9361a6d3",
+    "test-e2e/ppv2-withdrawal.spec.js": "f7c93ab39be1223953743b2ea1e929b6fb252b4e75e0c210e408e301095b6f78",
+    "src/main/wallet/ppv2-proof-verifier.js": "60d2accd4f652ace26e45ae17d5874cd13b73c8830d4695eeb7189b1f5bb8fb2",
+    "src/main/wallet/ppv2-proof-verifier.test.js": "a289c95ed458c0cb484ffd85118f8b6059dd9895268cf1e99c81af9743e41401",
+    "src/main/wallet/ppv2-proof-verify-job.js": "1f775bf21567345bf4a4f5ab44d09a34a53925d305786904dca17e0b320f1a79"
+  },
+  "unit": {
+    "fullPassed": 6892,
+    "fullSkipped": 33,
+    "passingSuites": 328,
+    "skippedSuites": 5,
+    "openlvSeparatelyPassed": 6,
+    "openlvNote": "Unchanged OpenLV isolated suite passed during the preceding scan qualification."
+  },
+  "sdk": {
+    "startTime": "2026-10-01T22:55:28.560Z",
+    "duration": 610562.42,
+    "expected": 21,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "rebuild": {
+    "schemaVersion": 1,
+    "archiveSha256": "a7327fce6acde362b05e439c0db579c06fdc87272feaaa21046b0b34dd182f34",
+    "archiveBytes": 47806767,
+    "recipeRevision": "d8fe7b706a52e42cf4761cd9d16958f49603e35f",
+    "independentArchivesIdentical": true,
+    "normalizedHistoricalBundlesIdentical": [
+      "sdk.cjs",
+      "serial-prover.cjs",
+      "abis.cjs",
+      "http.cjs"
+    ],
+    "pluginHistoricalDifference": "Exactly the reviewed inspectNullifier helper and two export entries",
+    "historicalArtifactWorkerMetadataFilesIdentical": 20,
+    "inputs": 2173,
+    "packages": 103,
+    "unattributedInputs": 21,
+    "packagesMissingLicenseText": [
+      {
+        "name": "@ethersproject/logger",
+        "version": "5.8.0",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "@iden3/bigarray",
+        "version": "0.0.2",
+        "declaredLicense": "GPL-3.0"
+      },
+      {
+        "name": "@iden3/binfileutils",
+        "version": "0.0.12",
+        "declaredLicense": "GPL-3.0"
+      },
+      {
+        "name": "blake-hash",
+        "version": "2.0.0",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "brorand",
+        "version": "1.1.0",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "circomlibjs",
+        "version": "0.1.7",
+        "declaredLicense": "GPL-3.0"
+      },
+      {
+        "name": "elliptic",
+        "version": "6.6.1",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "hash.js",
+        "version": "1.1.7",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "hmac-drbg",
+        "version": "1.0.1",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "minimalistic-crypto-utils",
+        "version": "1.0.1",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "@privacy-pools-v2/sdk",
+        "version": "0.0.0",
+        "declaredLicense": "MIT"
+      }
+    ],
+    "latentLoads": {
+      "sdk.cjs": {
+        "newWorkerExpressions": 4,
+        "workerThreadsRequires": 2,
+        "nativeLoaderReferences": 10,
+        "exhaustiveEgressQualification": false
+      },
+      "serial-prover.cjs": {
+        "newWorkerExpressions": 2,
+        "workerThreadsRequires": 0,
+        "nativeLoaderReferences": 0,
+        "exhaustiveEgressQualification": false
+      }
+    },
+    "tests": {
+      "startTime": "2026-10-01T22:55:28.560Z",
+      "duration": 610562.42,
+      "expected": 21,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "productionDistributionApproved": false
+  },
+  "freshVerifierSampledPeakRssBytes": [226181120],
+  "qualificationPlatform": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "logicalCores": 14,
+    "electron": "44.4.5"
+  },
+  "lintPassed": true,
+  "claudeReview": "No code blockers after selected-note binding; required runtime-pin/binding doc corrections applied. Full 21-case SDK and unit qualification then passed.",
+  "liveTransactionsSubmitted": false,
+  "fundedProfileChanged": false,
+  "productionEnabled": false
+}

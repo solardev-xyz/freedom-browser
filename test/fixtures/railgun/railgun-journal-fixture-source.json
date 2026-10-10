@@ -1,0 +1,27 @@
+{
+  "hostCommit": "8285fb804c82011abd4fcc38ccc00d66b27132e3",
+  "scope": "Test-only public structural records, dummy proof/ciphertext. Six unchanged original generator projections; no engine, identity, profile or network. Only record/transaction fields used by the host journal tests are retained.",
+  "historiesSha256": "8c26227cfafac0d89f68326a78ceb5db88757a6b1c8641fb60eef6cad27d56f9",
+  "inputs": [
+    {
+      "path": "scripts/fixtures/railgun-own-txid-data.js",
+      "sha256": "f5d56ae07e13815d2c19a14fa4f6cec8b1c2979e80b81461d9705fdb26bf7683"
+    },
+    {
+      "path": "scripts/fixtures/railgun-partial-own-txid-data.js",
+      "sha256": "29e4328238e0b9d45457a12a3a40bdea296c5aa99b68e80777f2243bcae92c90"
+    },
+    {
+      "path": "scripts/fixtures/railgun-partial-capsule-data.js",
+      "sha256": "2f9bf03d64202bbeb599fc781f3bcee90b80783a9b75e75a7ac52b36e9e1a50c"
+    },
+    {
+      "path": "scripts/fixtures/railgun-transact-data.js",
+      "sha256": "eb96647d3e82fe5d6995d125284c8bf43817180184be80890cf5e4c4c7ef0afb"
+    }
+  ],
+  "helperChanges": [
+    "Private policy import uses installed public host/data entry",
+    "Public deployment pins are a local structural fixture"
+  ]
+}

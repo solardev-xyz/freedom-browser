@@ -1,0 +1,563 @@
+{
+  "schema": "privacy-main-sync-readonly-audit-v1",
+  "date": "2026-10-05",
+  "main": "e98e2dd52512c86852e315da1e10f32f50fa01ba",
+  "merge": "69f5b02d16952fc44c9525f1c82c027e87c83dae",
+  "previousPublishedMilestone": "7ebc1d71cd0f8737083cadad8aab1162298bcdb3",
+  "mergeParentsVerified": true,
+  "mergedPaths": [
+    {
+      "status": "M",
+      "path": "LICENSE_AUDIT.md",
+      "mergedSha256": "45358dccae5760d7ada5645e34e6792a60d5cd93eed238f76afa6ef4ce60b42a",
+      "incomingMainSha256": "45358dccae5760d7ada5645e34e6792a60d5cd93eed238f76afa6ef4ce60b42a",
+      "equalsIncomingMain": true
+    },
+    {
+      "status": "A",
+      "path": "changelog.d/security--deps-electron-44.5.1.md",
+      "mergedSha256": "8e5c25b3cf3b45ea4fbd51f99643b08157c6d9e9f1a6ba7abeb8c2d54aaa9975",
+      "incomingMainSha256": "8e5c25b3cf3b45ea4fbd51f99643b08157c6d9e9f1a6ba7abeb8c2d54aaa9975",
+      "equalsIncomingMain": true
+    },
+    {
+      "status": "M",
+      "path": "licenses-audit.json",
+      "mergedSha256": "fdff58214eb254795a1479e0dae9d0fc2883d3333c7dc6eb3dbfd33f447c7cee",
+      "incomingMainSha256": "fdff58214eb254795a1479e0dae9d0fc2883d3333c7dc6eb3dbfd33f447c7cee",
+      "equalsIncomingMain": true
+    },
+    {
+      "status": "M",
+      "path": "package-lock.json",
+      "mergedSha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb",
+      "incomingMainSha256": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb",
+      "equalsIncomingMain": true
+    },
+    {
+      "status": "M",
+      "path": "package.json",
+      "mergedSha256": "9b9537ece4c4f368b9b7ba9bd92754d41ba243a12d4e714e22fab521aadfcda1",
+      "incomingMainSha256": "d9351286f804a8a00b82595ebfc02948ae4fdd9dcc59e30bd3fa9e111f224e2d",
+      "equalsIncomingMain": false
+    }
+  ],
+  "mainExactPathCount": 4,
+  "mainException": {
+    "path": "package.json",
+    "onlyDifference": "Retained !**/*.fixture.js packaging exclusion; removal yields exact incoming main bytes."
+  },
+  "nativeQualification": {
+    "sourceCommit": "6c845e5c37610f878b3cb4c3d377ce79892b82f3",
+    "publishedAt": "7ebc1d71cd0f8737083cadad8aab1162298bcdb3",
+    "reports": {
+      "docs/qualification/railgun-kohaku-read-data-contract-shield-transfer-lost-2026-10-05.json": "1d913a0a1f89ada7510caf219e78d140c1c1e7f15b239cccfddfa469c4e9607f",
+      "docs/qualification/railgun-kohaku-read-data-contract-shield-unshield-2026-10-05.json": "19f303da8b9d7a43931167b7907fdc3e943ef9917a0b21e406a7f429a06bb1e4",
+      "docs/qualification/railgun-kohaku-read-data-contract-transact-transfer-2026-10-05.json": "5a58b7b24998f718c3823c191f10d7744d99ce19efb6f9e3ec5003014cc76bc0",
+      "docs/qualification/railgun-kohaku-read-data-contract-transact-unshield-lost-2026-10-05.json": "98c79a87d5ca93dd2a08c490522ebb382c10e688c47c1fbd8c92bcc600f5a1c6",
+      "docs/qualification/railgun-kohaku-read-data-contract-shield-transfer-cancel-2026-10-05.json": "2de5edd622cbfe7991034c5250fb68c8bcd72c1cc4e2b973641e5b0d09023473",
+      "docs/qualification/railgun-kohaku-read-data-contract-acknowledged-2026-10-05.json": "15fde9320aadab0f6b3480ef6c468ec14a1035dcc4b294ca029d4ef229838702",
+      "docs/qualification/railgun-kohaku-read-data-contract-lost-response-2026-10-05.json": "91fb6fa4c8287b56d5a87f501ec70fcd6a43c4584d060232816b79d8febae4d5",
+      "docs/qualification/railgun-kohaku-read-data-contract-review-cancelled-2026-10-05.json": "78f28fce5448bad5584ecd08ed0e7233932f6f8dfdca9cc446b84254923d9541",
+      "docs/qualification/railgun-kohaku-read-data-contract-default-wallet-2026-10-05.json": "0780285e3fc35c68e4ed550c218629fd2022e5d34f7a864fdec9c62d932233f2",
+      "docs/qualification/railgun-kohaku-read-data-cold-acknowledged-setup-2026-10-05.json": "07c93131ee3625c6dd52c5cc430971f84e3673b20874c72f2b6d513f74c477bd",
+      "docs/qualification/railgun-kohaku-read-data-cold-acknowledged-resolve-2026-10-05.json": "5f8f66b722843f9bf1f160eeefe88f139cff94163f7e6ced3a2ebf2e030fc51e",
+      "docs/qualification/railgun-kohaku-read-data-cold-acknowledged-restore-2026-10-05.json": "b7cc2270f835e4565875398b4a919dac4aeee3acd37cd00245bdb12fd416aaf1",
+      "docs/qualification/railgun-kohaku-read-data-cold-lost-response-setup-2026-10-05.json": "4da3daf80b0a9bb3e5c9114c322707b06dabcafe8ca1fee760f49ff2a0dc38c8",
+      "docs/qualification/railgun-kohaku-read-data-cold-lost-response-resolve-2026-10-05.json": "86eef594620618b31ba873bc8d275be9626836c283e916b860e8ad4758470ecb",
+      "docs/qualification/railgun-kohaku-read-data-cold-lost-response-restore-2026-10-05.json": "6be66395bf42f95f437bd5b269fa0534635313a85f5c31746c47c9a4e7a1f4ea"
+    },
+    "all15ReportsByteExact": true,
+    "all18PublishedEvidenceFilesByteExact": true,
+    "historicalAfterDependencyRefresh": true,
+    "rerunOnElectron4451": false
+  },
+  "sourceFreeze": {
+    "sha256": "953b76daf6fc835668365ad0c96357872ca139cdfc36f87aae945005d78d11cd",
+    "pathCount": 11522,
+    "symlinksUnchanged": 15,
+    "drift": {
+      "package-lock.json": {
+        "qualified": "2fefb4c5be3baeec56fbd2c60136e06640f307644bbb88e297c5cd2339a28993",
+        "merged": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+      },
+      "package.json": {
+        "qualified": "f4cbb3f9c86ea96bd6889741e3286b7130a9b6cfe7950daae4c6aa9ea2029dc8",
+        "merged": "9b9537ece4c4f368b9b7ba9bd92754d41ba243a12d4e714e22fab521aadfcda1"
+      }
+    },
+    "unchangedCount": 11520,
+    "unchangedWalletPathCount": 458,
+    "sourceFileSetUnchanged": true
+  },
+  "runtimeInputDrift": {
+    "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron": {
+      "qualified": "e06891704834df56f24489e1f971428161ae17312143624af13736255cc0ab34",
+      "merged": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83"
+    },
+    "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework": {
+      "qualified": "e25ea99d8c7aba7f5f90710a27239bd073987e60be0e1bb79860b9eda1c1da10",
+      "merged": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a"
+    }
+  },
+  "otherEightQualifiedInputsUnchanged": {
+    "railgun-vault-weth-source-oct3-d.json": "bfa8684f50b2bb838b026f2c4972653bfc4503d9fd15182c6c5b219ce1bc1e41",
+    "railgun-public-contract-bytecodes-oct4.json": "a1f3a1c51c6272eca7940313bf3b8d6b8229527db3aaf3334acc76d8314c0427",
+    "tmp/privacy-build/railgun-engine-oct3-a/railgun-engine.asar": "019f10880abf1c448aee02ec77c5c2d68c3561c7b4eef02095d66bb5fecd6a7a",
+    "tmp/privacy-build/railgun-prover-oct3-f/railgun-prover.asar": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab",
+    "tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/base.ts": "1ac1b93c617eb8347e74263566071ebba2bcc7caca5166f11dce0a293e766803",
+    "tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/shared.ts": "c51d5160c0d63235c04ecc4b9ad2f6adbe3841fd01dcb0ebb154bdecf8bbc86f",
+    "tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/host/index.ts": "4a3578ceb42ae5138726e36de6bf2a9e7511ff73a8d592e6b494106be51a9814",
+    "tmp/privacy-build/pinned-inputs/kohaku/packages/plugins/src/broadcaster/base.ts": "6d973ce3b0ea458aaf1613c7106d9fb8104eb2c18baa5fe9ea405fe1d6f940cf"
+  },
+  "pinInputSha256": {
+    "package.json": "9b9537ece4c4f368b9b7ba9bd92754d41ba243a12d4e714e22fab521aadfcda1",
+    "package-lock.json": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb",
+    "scripts/fetch-ant.js": "f9fb53f46a8adc2a350cdcc3a021c6345f4a00ff0dfaab0fea2b3f74dfaa05aa",
+    "scripts/fetch-freedom-ipfs-native.js": "18f76a7cbf17359625ec00e89a6644654021ae57ba7e9bc9fe9c41cf01e49657",
+    "scripts/fetch-radicle-addon.js": "044ece13bd75603ac6488c55e67d0b5e336ea279c6097558530cbb80c2d0770b",
+    "src/shared/radicle-addon-version.js": "fcf8150d4686ac239bdae9e976361d6ffad5031861e74d794e432dd948b9be6c",
+    "scripts/fetch-myotis.js": "49e6a71936c8ba705726c25c72958e8f97494fc9cf20310e8bce27c9b32f6f22",
+    "scripts/fetch-arti.js": "82cf8ed18c5bc04bb082936f3e0c2a5d2ff2a4304efa7e7b5a0f47350e8e58cc",
+    "scripts/build-myotis-supervisor.js": "8b9f3ea69367cb63396ca34f4bf66e3333022307f4310aaae096258c79c28030",
+    "scripts/fetch-adblock-lists.js": "f10127658120793f777ec25c1601a9e7e79f4967257d1fa439aa2c7d01838d4b",
+    "scripts/myotis-release.json": "ec364555320c1ada3f18bb63bdf2c844d09fea0748c0d215726500806c7d9c09"
+  },
+  "changedPinInputs": {
+    "package.json": {
+      "before": "f4cbb3f9c86ea96bd6889741e3286b7130a9b6cfe7950daae4c6aa9ea2029dc8",
+      "after": "9b9537ece4c4f368b9b7ba9bd92754d41ba243a12d4e714e22fab521aadfcda1"
+    },
+    "package-lock.json": {
+      "before": "2fefb4c5be3baeec56fbd2c60136e06640f307644bbb88e297c5cd2339a28993",
+      "after": "6d5bf4ae876939561e1877342e51673c6e385f8b43e95a55fbc522e36fccadbb"
+    }
+  },
+  "dependencyRefresh": {
+    "npmCiRequired": true,
+    "npmCiObservedExitCode": 0,
+    "npmCiOriginalHandle": 24245,
+    "installedNpmLockSha256": "8d1235f8daef629d8a730a0ca6d074ef8a66bd71e44b2cb86167f3a2993500c6",
+    "changedLockedPackages": {
+      "node_modules/@ledgerhq/domain-service": {
+        "previousVersion": "1.8.19",
+        "lockedVersion": "1.9.0",
+        "integrity": "sha512-BeCoYq8SiXpP7ZEZchH03Qhj89GBoB5tDW3DuG5mrNXrjjqxxXXNKyuMgcKmWBbPHmKPN5G8L+wiLt6dP8d62Q==",
+        "installedVersion": "1.9.0",
+        "installedPackageJsonSha256": "e9c06088e3de166d8e94d9fd21d67540b8e85e5555e3838153e943411f1656ca"
+      },
+      "node_modules/@ledgerhq/evm-tools": {
+        "previousVersion": "1.14.3",
+        "lockedVersion": "1.15.0",
+        "integrity": "sha512-S6tHPAA8iIh0AHw5kLe+4tdakTR+hqcBeVXADTUljpDEj9ShmbiaYtOEDqC+BoD6SLfhyGpQLktjNMeZ8JzA6w==",
+        "installedVersion": "1.15.0",
+        "installedPackageJsonSha256": "0cf549ae798a76bf628dfd1b021d342f26c1605b8ed6cc0a030a49c1cf22436a"
+      },
+      "node_modules/@ledgerhq/hw-app-eth": {
+        "previousVersion": "7.8.19",
+        "lockedVersion": "7.10.0",
+        "integrity": "sha512-JD0ebJw+JJxKSd2foK0hx0385BmPp8iaWDTl/qcllJry3KdAHsZSIyaYXUPMpOM5ULQWshntTDWOg/QQKUkQnA==",
+        "installedVersion": "7.10.0",
+        "installedPackageJsonSha256": "efa7a15d1e3e5cf3e359a6a4592a129a2d56f4da4c9eda559795c36882ed793c"
+      },
+      "node_modules/@ledgerhq/live-env": {
+        "previousVersion": "4.0.0",
+        "lockedVersion": "4.1.0",
+        "integrity": "sha512-PhmQNymmw5M7jM/Uj4B1ghrVxA+x4tE20GYUJFEoCIBHHVS8Z5cKCulJqcJ5Nj/yI8BOxbRRuZW88OpbyBQ0Bw==",
+        "installedVersion": "4.1.0",
+        "installedPackageJsonSha256": "17a79265c0a43b19b355e2dd53a1348cb605fe654d412cf479957572cd772a26"
+      },
+      "node_modules/@ledgerhq/types-live": {
+        "previousVersion": "6.124.0",
+        "lockedVersion": "6.126.0",
+        "integrity": "sha512-IFtlthwuZrB48zA18F2Jbkl1F7Wr4Jz5kT8tm/T7yhOSjdgjB2VTBlrkJnzBDz/TZ7neJyq0+fF1ef07Mj57fA==",
+        "installedVersion": "6.126.0",
+        "installedPackageJsonSha256": "9f0248d7cece09f677854c658563c0a0be5258e22c0018dd207d6685c6e254f1"
+      },
+      "node_modules/@x402/core": {
+        "previousVersion": "2.27.0",
+        "lockedVersion": "2.28.0",
+        "integrity": "sha512-Da/7zKxCKqpBoB4Msc9tFgkAv7tJTD8nG+DSSm+QdXAyJS4PQsmgVSKe17rDJTtlu0pwNbLcOje6MyQ6kaDkig==",
+        "installedVersion": "2.28.0",
+        "installedPackageJsonSha256": "ea1e2b245fc438b45b4905f9a3dd7ec80efc17b750d5b94e634f927678722517"
+      },
+      "node_modules/@x402/evm": {
+        "previousVersion": "2.27.0",
+        "lockedVersion": "2.28.0",
+        "integrity": "sha512-BZuoaCKMoPQQuMTa4oibvoyI06WdCpgrzgdicUu8d+5NBMAfWb6LAmSQf1KkeiS8C+25/+2JGB4cHSL0VLGnSA==",
+        "installedVersion": "2.28.0",
+        "installedPackageJsonSha256": "ed47c07d1455e7a67b277c7c303772fd3094ed10050bb1181ff0be2f6061420f"
+      },
+      "node_modules/electron": {
+        "previousVersion": "44.4.5",
+        "lockedVersion": "44.5.1",
+        "integrity": "sha512-lx7AYoFIiyvEvgvpyWO9kOC60xtNPpiPZAth6Fmg9NutzpCAMLwpUlaBY2EXfZyIgUdzEmLMj9KvK0Vrokl1yQ==",
+        "installedVersion": "44.5.1",
+        "installedPackageJsonSha256": "686050bd77b967aab170a2dcacdc0254072446f5be1d5fb6e4383d577342fc19"
+      },
+      "node_modules/eslint": {
+        "previousVersion": "10.11.0",
+        "lockedVersion": "10.12.0",
+        "integrity": "sha512-npHjrHb2o4ehH3mE+YuxABR+0gyb0aVWCIolgJDArwCiHEIsonBm3ZKjel5b0U5+a+MbEvIyRCGCzD3eKKK2NA==",
+        "installedVersion": "10.12.0",
+        "installedPackageJsonSha256": "7178a717ca081a0558e5bd4eedd5b27c19d7a9b7048434ec40ba536aa2d0f501"
+      },
+      "node_modules/follow-redirects": {
+        "previousVersion": "1.16.0",
+        "lockedVersion": "1.16.1",
+        "integrity": "sha512-FNvFGzoMLWmE6Yj9spb/zjd7yiNCHiAW9/Tg9CXrQ8wuu32HtlJOwWO11OJafl5FfY3DxTdQ0vj42zU1kvv5jg==",
+        "installedVersion": "1.16.1",
+        "installedPackageJsonSha256": "3b63e57223c63eff7b1c9ecdcd6615af8c6fcbaa9d436e949f02acf2b6dbe588"
+      },
+      "node_modules/globals": {
+        "previousVersion": "17.12.0",
+        "lockedVersion": "17.13.0",
+        "integrity": "sha512-RwMTC61u7hrG3ZJMkZQOK4JLJrKS8QtoTii63EmWvFXHqycY9FObBJQCbsLxSO8kjKhWE5kV1GC+Vb1g3RI0Zg==",
+        "installedVersion": "17.13.0",
+        "installedPackageJsonSha256": "d6c36357b5596a7f2dea08fcdf16dece9c5b9b27f4938f5c184f45fcac7b102f"
+      },
+      "node_modules/http-cache-semantics": {
+        "previousVersion": "4.2.0",
+        "lockedVersion": "4.3.0",
+        "integrity": "sha512-M5t5LlJpS1UHMjvwRQVdFHvPISGeLAxNcrWuJkeGh0KxsqCHZ1O3NXZU/8x7cD0BDcGW8kapxMKTvwlqrNkHkA==",
+        "installedVersion": "4.3.0",
+        "installedPackageJsonSha256": "dbe99941ed2092d43257294405cfb389a476ef54a029488b51125e6f3a777fde"
+      },
+      "node_modules/prettier": {
+        "previousVersion": "3.9.8",
+        "lockedVersion": "3.9.9",
+        "integrity": "sha512-Z/CJHIkdujO/OtN7nXUii0Rf3VT5SRuhjBA82Xvu2XhBUgX3nhP67T0LHceBdQLex7OOFGTox+Q5Yg8Jk2Qivg==",
+        "installedVersion": "3.9.9",
+        "installedPackageJsonSha256": "8453a79e60e5437ccfe0722475ba80593373885c578f85604a562ebdfb621c30"
+      },
+      "node_modules/react": {
+        "previousVersion": "19.1.4",
+        "lockedVersion": "19.3.0",
+        "integrity": "sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog==",
+        "installedVersion": "19.3.0",
+        "installedPackageJsonSha256": "6e003e4e9ed25afa7fdd55613f8aa877cefa9b359d9c13f81ee704030248e24e"
+      },
+      "node_modules/ws": {
+        "previousVersion": "8.21.3",
+        "lockedVersion": "8.22.0",
+        "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
+        "installedVersion": "8.22.0",
+        "installedPackageJsonSha256": "c1ef91ca04eb4754c011c5f0e7638b5078ff71104fada400c44ac761cf93e0b1"
+      }
+    },
+    "lowAdvisoriesReported": 9,
+    "auditFixApplied": false,
+    "installScriptWarningsNotExpandedInScope": true
+  },
+  "installedFiles": {
+    "ant-bin/mac-arm64/antd": {
+      "bytes": 14507120,
+      "sha256": "32dde463f09cf832607ed6b815b34ffe7d10414bcf571197ab6b841b212bd3ec",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "native/freedom-ipfs-node/prebuilds/mac-arm64/freedom_ipfs_native.node": {
+      "bytes": 35554504,
+      "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node": {
+      "bytes": 35554504,
+      "sha256": "17896295a8ecd244dc3b1d5dad036ed955946b89e863e8486506cbec70a8a897",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "radicle-bin/mac-arm64/libradicle.node": {
+      "bytes": 13006512,
+      "sha256": "807ef2c0679ee3cedebf9ef2f9f4c012f921b2f43bdcba52d3715a35e6d4d210",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "myotis-bin/mac-arm64/myotis-supervisor": {
+      "bytes": 34768,
+      "sha256": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "arti-bin/mac-arm64/arti": {
+      "bytes": 22463904,
+      "sha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "myotis-bin/mac-arm64/myotis-node.node": {
+      "bytes": 9859088,
+      "sha256": "19f1866ce23230ebad65262b79bf2dd0792f5b98684fdfdd9a0e6c5d0295d9cc",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "myotis-bin/mac-x64/myotis-node.node": {
+      "bytes": 11427568,
+      "sha256": "0e064d2511bdd9e78483c65de13efe44ed10affd35e8fca1561896a836f3f1b0",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "myotis-bin/linux-x64/myotis-node.node": {
+      "bytes": 13942520,
+      "sha256": "e80c561ca623d52e736d6d1f8c48da33c4975dd15143a1e4191bd81815f7dd16",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "myotis-bin/linux-arm64/myotis-node.node": {
+      "bytes": 12805736,
+      "sha256": "95d6aff682d005e403e346390bebf71d5df2b89a9198c2433d5365ca804a53d6",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "myotis-bin/win-x64/myotis-node.node": {
+      "bytes": 9835520,
+      "sha256": "70ce52f8aa0d3abbb9c4bf01d3da0a88fa495952823ba57be61bffa541d6fff1",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "ant-bin/mac-x64/antd": {
+      "bytes": 16455680,
+      "sha256": "728f543f006e72be0ad564c1fc5cf5347e4587858d19f4051432cf6346ad96ed",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "ant-bin/linux-x64/antd": {
+      "bytes": 19819416,
+      "sha256": "7e4b451a64354979719d9013a12e6c11f58bb27e38616f708b7d52d5185778c1",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "ant-bin/linux-arm64/antd": {
+      "bytes": 17512208,
+      "sha256": "7882cc1a144a62c816d10456207b8782dd4394bc119c1609053781fa308993c8",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "ant-bin/win-x64/antd.exe": {
+      "bytes": 15841792,
+      "sha256": "6071903576183d85c5c91eb4e05b402c1fa4dd73c7403d6a987ff1a1c66df3c1",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "ant-bin/win-arm64/antd.exe": {
+      "bytes": 15841792,
+      "sha256": "6071903576183d85c5c91eb4e05b402c1fa4dd73c7403d6a987ff1a1c66df3c1",
+      "equalsPreviousVerifiedInstalledBytes": true
+    },
+    "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron": {
+      "bytes": 33968,
+      "sha256": "ca7e3290800255f5018160cff99cf6ecc58eae299c66148de1374a70e2715c83",
+      "equalsPreviousQualifiedRuntime": false
+    },
+    "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework": {
+      "bytes": 202631744,
+      "sha256": "75bbc78aca00244bd11760fd0a0f3d9fdff1b6bac2bbe7434238d409e664619a",
+      "equalsPreviousQualifiedRuntime": false
+    }
+  },
+  "installedVersions": {
+    "electron": "44.5.1",
+    "electronNode": "24.21.0",
+    "electronModulesABI": "149",
+    "ant": "0.5.59",
+    "ipfs": "0.4.5",
+    "radicle": "0.7.1",
+    "myotis": "0.1.12",
+    "myotisABI": 32,
+    "arti": "2.6.0"
+  },
+  "binaryEvidence": {
+    "ant": "All five pinned archives verified and six target paths installed including Windows ARM64 emulation copy; current installed bytes match previous verified versions.",
+    "ipfs": "Pinned v0.4.5 host addon bytes unchanged. Clean network-denied local smoke passed after Electron was available; livePage and issue102Fanout null.",
+    "radicle": "Pinned v0.7.1 host addon unchanged; 30 exports loaded, node not started.",
+    "myotis": "All five addons match direct pins; installer ABI32 constructor checks reported no networking; supervisor rebuilt with unchanged bytes.",
+    "arti": "Unchanged installed hash and pin; root checked version2.6.0, no rebuild.",
+    "electron": "First CLI triggered lazy binary download, then exited zero. Second versions file is clean JSON. Recorded executable/framework hashes are observed installed bytes, not independent vendor-signature verification."
+  },
+  "diagnostics": {
+    "firstIpfsProbe": "Initial network-denied smoke exercised the addon, but optional Electron probe attempted denied download; retained as diagnostic only. Clean rerun is qualification evidence.",
+    "firstElectronVersions": "Combined artifact begins with download line then JSON; preserved separately from clean JSON."
+  },
+  "tests": {
+    "originalHandle": 81720,
+    "exitCode": 0,
+    "naturalExitObservedByRoot": true,
+    "passed": 332,
+    "suitesPassed": 13,
+    "seconds": 2.542,
+    "scope": [
+      "license audit",
+      "architecture",
+      "real builder packaging filter",
+      "real Ant disposable migration",
+      "six x402 suites",
+      "three Ledger suites"
+    ],
+    "fullRepositoryRerun": false
+  },
+  "e2e": {
+    "originalHandle": 41599,
+    "exitCode": 0,
+    "passed": 7,
+    "seconds": 17.0,
+    "electron": "44.5.1",
+    "fakeAnt": true,
+    "screenshots": {
+      "dark-card-scanning.png": "e4291189b794b1d4178fb21739a634baf547e81b19b4f3f7cbc5f418b2b094b9",
+      "dark-fallback.png": "6064bc4757559eab145885ad3241f2f4872ea1ae226dca292fa604ce06e2e87c",
+      "dark-found.png": "1d1c43155cbb3cfb9785e5275c9c93f4f827de209d8bc5ec835e07baf11e349c",
+      "dark-new-wallet.png": "337072f6747739e694a2255ad7592c3d88708a1edf0da33bb0351a2e74e3fe40",
+      "dark-retrying-stalled.png": "08c8d1943dcb840dc010492c7fbc4d83a89f11885737ed0bfe7fff0bb9822329",
+      "dark-retrying.png": "8dd6788b1cfeb8339e5fbccf63da57d0744645f6b1de3ca89b526691be11a9f8",
+      "dark-scanning.png": "8f6df3f55be779f1d6dffaffdb97f5846bb4bfadf096a0b41f165ae0d7544d91",
+      "light-card-scanning.png": "75e01412b6cfb58573990ffc176786ae4724de004e7df011e46389ab86f08bf2",
+      "light-fallback.png": "583531947ed9ca5b42896936d71f5daed34bf67de9e635ce45e2d4ddeb947730",
+      "light-found.png": "bd63c828ffb7fd48452d5ffc32468a399450f8a7db29484b575ff7188f01b9b3",
+      "light-new-wallet.png": "14d06cddae1ce57560e5d0596b82e4ff5995bf7ce35633a1b01fcbf75b96a8c9",
+      "light-retrying-stalled.png": "f7594bb4654c5add8592a716d9f88811d407f5cb71e76373a2332451d7b0a59b",
+      "light-retrying.png": "dbbe4da7ec85b6f0c2b62b376d3d0630da202a2834dc9191ef6619faf953a437",
+      "light-scanning.png": "3e0b99a9595d5a5b1db50e782640a3bf20ddac698677d0a232e6a0fcf673a598"
+    },
+    "capturedCount": 14,
+    "rootVisuallyInspectedCount": 4,
+    "rootViewed": "card-scanning and retrying-stalled, dark and light; reported readable and contained",
+    "newUiAuthored": false,
+    "packagedOrLiveNodeClaim": false
+  },
+  "lint": {
+    "originalHandle": 72968,
+    "exitCode": 0
+  },
+  "logs": {
+    "ant": {
+      "file": "privacy-main-e98e2dd5-ant-oct5.log",
+      "bytes": 2311,
+      "sha256": "c57b432e937e3a6600211214cdcaa7935de03fb47879a1122ae2b2acf8a69009",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 44330,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "binaries": {
+      "file": "privacy-main-e98e2dd5-binaries-oct5.log",
+      "bytes": 145,
+      "sha256": "6fd167b0d7d1263ed5cfe93953236d35a8b6663f9e8a3e80aad6b2eecf5b1b86",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": null,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "e2e": {
+      "file": "privacy-main-e98e2dd5-e2e-oct5.log",
+      "bytes": 1738,
+      "sha256": "6f9601d5426ea6594d73ba9181c7db1e2f84c729bbb707be261e4e88e4e282a9",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 41599,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "electron-versions-clean": {
+      "file": "privacy-main-e98e2dd5-electron-versions-clean-oct5.json",
+      "bytes": 535,
+      "sha256": "eedc9ae44d4bb7ec0e8ac849cbd12007f19c262048243f1abd3ce7f42a313eab",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": null,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "electron-versions": {
+      "file": "privacy-main-e98e2dd5-electron-versions-oct5.json",
+      "bytes": 566,
+      "sha256": "77e7ca19f820c2d0288fb9a3957250992efe868e3b4fe61a3a4062c20820bac8",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 56829,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "ipfs": {
+      "file": "privacy-main-e98e2dd5-ipfs-oct5.log",
+      "bytes": 582,
+      "sha256": "c2ccc9b07baf71489836ee1f499568e5247163eab986f6093e4f7fc6337fda81",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 53944,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "ipfs-smoke-deny-network-clean": {
+      "file": "privacy-main-e98e2dd5-ipfs-smoke-deny-network-clean-oct5.log",
+      "bytes": 1254,
+      "sha256": "dcbe4ee3787599ef29ec61219d4394b30992b515baef9ae4879ef73dd57c802b",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": null,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "ipfs-smoke-deny-network": {
+      "file": "privacy-main-e98e2dd5-ipfs-smoke-deny-network-oct5.log",
+      "bytes": 1309,
+      "sha256": "f7c9824da318ed5f5fc05618c2978da5059ff3f1bc9bd33b696c90b4e17dbef2",
+      "diagnosticOnly": true,
+      "rootObservedExitCode": null,
+      "originalHandle": null,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "lint": {
+      "file": "privacy-main-e98e2dd5-lint-oct5.log",
+      "bytes": 46,
+      "sha256": "462d2ddfdd82da9a3a36c260c852ae0889f516c50d6b43e199930c4cc4fafa5f",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 72968,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "myotis": {
+      "file": "privacy-main-e98e2dd5-myotis-oct5.log",
+      "bytes": 396,
+      "sha256": "7a8d32e64cd86ecdec3a68ca39da218f4d0ef3873145c0d7e604e36183572661",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 2502,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "myotis-supervisor": {
+      "file": "privacy-main-e98e2dd5-myotis-supervisor-oct5.log",
+      "bytes": 190,
+      "sha256": "9e92838d110dcd4a96ebbf8e716d6caeb815a40a045a90cedb437fc67b5ccb1a",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": null,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "npm-ci": {
+      "file": "privacy-main-e98e2dd5-npm-ci-oct5.log",
+      "bytes": 21310,
+      "sha256": "11e155c95f589deab8fc71a7d2a0c23ab171a188dcfc3567d3e19037da9739f7",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 24245,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "radicle-load": {
+      "file": "privacy-main-e98e2dd5-radicle-load-oct5.log",
+      "bytes": 86,
+      "sha256": "aeb4ac21b39c501a267426de044fd429b5e727f3a53e12360668f1775a797d02",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": null,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "radicle": {
+      "file": "privacy-main-e98e2dd5-radicle-oct5.log",
+      "bytes": 265,
+      "sha256": "17efb0b671a5ae45e89a99371c35e78eb9ab73427bc10e5c4cd6179e2231ff5c",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 98524,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    },
+    "tests": {
+      "file": "privacy-main-e98e2dd5-tests-oct5.log",
+      "bytes": 1813,
+      "sha256": "a3823d09f9aea9acd2d9b61682f02e8492b7274810bde8ca0f2e699d74ba7e95",
+      "diagnosticOnly": false,
+      "rootObservedExitCode": 0,
+      "originalHandle": 81720,
+      "observationSource": "Root reported original command terminal outcome; auditor read/hash only. Direct synchronous exit where no handle is listed."
+    }
+  },
+  "scope": {
+    "auditorLaunchedProcessesTestsDownloads": false,
+    "auditorOpenedProfiles": false,
+    "rootEditsByAuditor": false,
+    "releaseQualified": false,
+    "fundedOrPrivateServicesQualified": false,
+    "newRailgunNativeQualification": false,
+    "pendingReaderWorkIncluded": false
+  }
+}

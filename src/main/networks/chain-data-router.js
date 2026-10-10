@@ -1,6 +1,7 @@
 const log = require('../logger');
 const registry = require('./network-registry');
 const myotis = require('../myotis/myotis-manager');
+const { getPrivacyContext } = require('./privacy-context');
 const blockscoutLogs = require('./blockscout-logs');
 
 const READ_METHODS = new Set([
@@ -238,8 +239,10 @@ class SourceDeadlineError extends SourceUnavailableError {
 
 function safeErrorMessage(error) {
   return (error?.message || String(error))
-    .replace(/0x[0-9a-fA-F]{128,}/g, (hex) =>
-      `${hex.slice(0, 10)}…(${Math.floor((hex.length - 2) / 2)} bytes)`)
+    .replace(
+      /0x[0-9a-fA-F]{128,}/g,
+      (hex) => `${hex.slice(0, 10)}…(${Math.floor((hex.length - 2) / 2)} bytes)`
+    )
     .replace(/\s+/g, ' ')
     .slice(0, 500);
 }
@@ -263,8 +266,12 @@ function normalizeRoutingOrigin(routingContext) {
 function requestTarget(method, params) {
   let target;
   if (CALL_OBJECT_METHODS.has(method)) target = params?.[0]?.to;
-  else if (['eth_getBalance', 'eth_getCode', 'eth_getStorageAt',
-    'eth_getTransactionCount'].includes(method)) target = params?.[0];
+  else if (
+    ['eth_getBalance', 'eth_getCode', 'eth_getStorageAt', 'eth_getTransactionCount'].includes(
+      method
+    )
+  )
+    target = params?.[0];
   else if (method === 'eth_getLogs') target = params?.[0]?.address;
   if (Array.isArray(target)) {
     const addresses = target
@@ -287,8 +294,9 @@ function adaptiveRouteKey(source, chainId, method, params, routingContext) {
 function isCapacityFailure(error) {
   if (error?.failureKind === 'capacity') return true;
   const message = safeErrorMessage(error);
-  return /out of gas|execution (?:gas|resource) limit|exceeds? (?:the )?(?:gas|execution) limit/i
-    .test(message);
+  return /out of gas|execution (?:gas|resource) limit|exceeds? (?:the )?(?:gas|execution) limit/i.test(
+    message
+  );
 }
 
 // How useful a failure is to a caller that adapts its request to the error
@@ -373,8 +381,10 @@ function recordAdaptiveSuccess(routeKey) {
 }
 
 function setAdaptiveSourceState(routeKey, state) {
-  if (!adaptiveSourceState.has(routeKey) &&
-      adaptiveSourceState.size >= MAX_ADAPTIVE_SOURCE_ROUTES) {
+  if (
+    !adaptiveSourceState.has(routeKey) &&
+    adaptiveSourceState.size >= MAX_ADAPTIVE_SOURCE_ROUTES
+  ) {
     adaptiveSourceState.delete(adaptiveSourceState.keys().next().value);
   }
   adaptiveSourceState.set(routeKey, state);
@@ -394,9 +404,8 @@ function recordAdaptiveFailure(routeKey, error, now = Date.now()) {
     return;
   }
   const timeoutCount = previous.timeoutCount + 1;
-  const cooldownMs = SOURCE_TIMEOUT_COOLDOWNS_MS[
-    Math.min(timeoutCount - 1, SOURCE_TIMEOUT_COOLDOWNS_MS.length - 1)
-  ];
+  const cooldownMs =
+    SOURCE_TIMEOUT_COOLDOWNS_MS[Math.min(timeoutCount - 1, SOURCE_TIMEOUT_COOLDOWNS_MS.length - 1)];
   setAdaptiveSourceState(routeKey, {
     ...previous,
     timeoutCount,
@@ -745,7 +754,11 @@ function assertMyotisAnswer(payload) {
   // gas, fee cap or funds — geth's -32000 with its wording, like a revert an
   // answer from verified state rather than a failure to answer.
   if (payload?.status === 'infeasible') {
-    throw myotisRefusal('infeasible', -32000, myotisRefusalMessage(payload.reason, 'transaction is infeasible'));
+    throw myotisRefusal(
+      'infeasible',
+      -32000,
+      myotisRefusalMessage(payload.reason, 'transaction is infeasible')
+    );
   }
   if (!payload || payload.error || ['error', 'unavailable'].includes(payload.status)) {
     throw new SourceUnavailableError('Myotis native read unavailable');
@@ -866,7 +879,9 @@ function assertMyotisCallShape(method, params) {
   for (const field of MYOTIS_BLOB_FIELDS) {
     const value = call[field];
     if (value == null || (Array.isArray(value) && value.length === 0)) continue;
-    throw new SourceUnavailableError(`Myotis cannot serve ${method} for a blob transaction ("${field}")`);
+    throw new SourceUnavailableError(
+      `Myotis cannot serve ${method} for a blob transaction ("${field}")`
+    );
   }
 }
 
@@ -878,9 +893,10 @@ async function requestMyotis(chainId, method, params) {
     const account = verifiedStateRead(await myotis.getAccount(params[0], chainId));
     // A proven-absent account has `balanceWei: null` and `nonce: -1`.
     if (account.exists === false) return '0x0';
-    const value = method === 'eth_getBalance'
-      ? nativeResult(account, 'balanceWei', 'balance')
-      : nativeResult(account, 'nonce');
+    const value =
+      method === 'eth_getBalance'
+        ? nativeResult(account, 'balanceWei', 'balance')
+        : nativeResult(account, 'nonce');
     return quantity(value);
   }
 
@@ -919,7 +935,8 @@ async function requestMyotis(chainId, method, params) {
     assertMyotisCallShape(method, params);
     const result = await myotis.estimateGas({ chainId, tx: params[0] || {}, block: 'latest' });
     const gas = nativeResult(result, 'gas');
-    if (!Number.isSafeInteger(gas) || gas < 0) throw new SourceUnavailableError('Myotis returned invalid gas');
+    if (!Number.isSafeInteger(gas) || gas < 0)
+      throw new SourceUnavailableError('Myotis returned invalid gas');
     return quantity(gas);
   }
 
@@ -1019,7 +1036,10 @@ async function requestViaMyotis(
   // A routing deadline limits caller patience, not native health. Keep this
   // slot until the manager settles; its own deadline retains native admission
   // until completion or verified child exit. Fallback can answer meanwhile.
-  requestPromise.then(() => releaseMyotisSlot(chainId), () => releaseMyotisSlot(chainId));
+  requestPromise.then(
+    () => releaseMyotisSlot(chainId),
+    () => releaseMyotisSlot(chainId)
+  );
   return withSourceDeadline(
     requestPromise,
     'Myotis',
@@ -1034,15 +1054,13 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   if (!registry.getEndpoints(chainId, 'prover').length) {
     throw new SourceUnavailableError('No Colibri prover configured');
   }
-  const inFlightKey = routeKey || JSON.stringify([
-    'colibri',
-    Number(chainId),
-    method,
-    requestTarget(method, params),
-  ]);
+  const inFlightKey =
+    routeKey || JSON.stringify(['colibri', Number(chainId), method, requestTarget(method, params)]);
   const routeInFlight = colibriInFlightByRoute.get(inFlightKey) || 0;
-  if (colibriInFlight.size >= MAX_COLIBRI_IN_FLIGHT ||
-      routeInFlight >= MAX_COLIBRI_IN_FLIGHT_PER_ROUTE) {
+  if (
+    colibriInFlight.size >= MAX_COLIBRI_IN_FLIGHT ||
+    routeInFlight >= MAX_COLIBRI_IN_FLIGHT_PER_ROUTE
+  ) {
     throw new SourceUnavailableError('Colibri is already processing this workload');
   }
   // Keep the WASM-backed verifier lazy; most startup paths do not need it.
@@ -1113,7 +1131,10 @@ async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
 function stableValue(value) {
   if (Array.isArray(value)) return `[${value.map(stableValue).join(',')}]`;
   if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableValue(value[key])}`).join(',')}}`;
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableValue(value[key])}`)
+      .join(',')}}`;
   }
   return JSON.stringify(value);
 }
@@ -1128,9 +1149,9 @@ function endpointHost(url) {
 
 function isUserConfiguredRpc(chainId, url) {
   const cid = String(chainId);
-  const source = registry.getEndpointSources(chainId, 'rpc').find(
-    (entry) => !entry.keyed && entry.coverage?.[cid] === url
-  );
+  const source = registry
+    .getEndpointSources(chainId, 'rpc')
+    .find((entry) => !entry.keyed && entry.coverage?.[cid] === url);
   if (!source) return false;
   const metadata = registry.getEndpointSourceList().find((entry) => entry.id === source.id);
   return Boolean(metadata && !metadata.builtin && !metadata.removed && !metadata.keyed);
@@ -1163,9 +1184,10 @@ function colibriTrust(chainId) {
     level: 'verified',
     method: 'colibri',
     prover,
-    proof: registry.getNetwork(chainId)?.zkProof === false
-      ? 'Sync-committee proof'
-      : 'ZK sync-committee proof',
+    proof:
+      registry.getNetwork(chainId)?.zkProof === false
+        ? 'Sync-committee proof'
+        : 'ZK sync-committee proof',
     block: null,
     agreed: prover ? [prover] : [],
     dissented: [],
@@ -1656,6 +1678,7 @@ async function requestDirect(
     keeper = createErrorKeeper(null),
     signal,
     timeoutMs: requestedTimeoutMs = null,
+    singleAttempt = false,
     // Optional sink: set to { url } of the endpoint whose answer is returned,
     // so a follow-up query (checkLogTruncation) can go back to that endpoint.
     answeredBy = null,
@@ -1665,8 +1688,11 @@ async function requestDirect(
   const timeoutMs = directUrlTimeoutMs(chainId, requestedTimeoutMs);
   const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
-  if (directFallback && urls.includes(directFallback.url) &&
-      Object.prototype.hasOwnProperty.call(directFallback, 'result')) {
+  if (
+    directFallback &&
+    urls.includes(directFallback.url) &&
+    Object.prototype.hasOwnProperty.call(directFallback, 'result')
+  ) {
     if (answeredBy) answeredBy.url = directFallback.url;
     return directResponse(
       chainId,
@@ -1697,6 +1723,7 @@ async function requestDirect(
       return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
       signal?.throwIfAborted();
+      if (singleAttempt) throw err;
       lastError = err;
       keeper.note(err);
       if (keeper.final) throw keeper.error;
@@ -1836,21 +1863,23 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
   }
   let earlier;
   try {
-    earlier = source === 'direct' && directUrl
-      ? await requestRpcUrl(
-        directUrl,
-        method,
-        probe.params,
-        directUrlTimeoutMs(chainId, options.directTimeoutMs),
-        { signal: checkSignal }
-      )
-      : await requestSource(source, chainId, method, probe.params, {
-        ...rest,
-        signal: checkSignal,
-        logRange: logRange && SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint'
-          ? { ...logRange, span: probe.span, learn: false }
-          : null,
-      });
+    earlier =
+      source === 'direct' && directUrl
+        ? await requestRpcUrl(
+            directUrl,
+            method,
+            probe.params,
+            directUrlTimeoutMs(chainId, options.directTimeoutMs),
+            { signal: checkSignal }
+          )
+        : await requestSource(source, chainId, method, probe.params, {
+            ...rest,
+            signal: checkSignal,
+            logRange:
+              logRange && SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint'
+                ? { ...logRange, span: probe.span, learn: false }
+                : null,
+          });
   } catch (err) {
     options.signal?.throwIfAborted();
     log.verbose(
@@ -1873,6 +1902,7 @@ async function request(
   {
     includeTrust = false,
     routingContext = null,
+    privacyContext = null,
     signal,
     background = false,
     directTimeoutMs = null,
@@ -1897,12 +1927,21 @@ async function request(
     rangeCapOf = null,
   } = {}
 ) {
+  if (privacyContext !== null) {
+    getPrivacyContext(privacyContext, chainId);
+    return require('./private-balance-router').requestPrivateBalance(chainId, method, rawParams, {
+      privacyContext,
+      includeTrust,
+      signal,
+    });
+  }
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
   const params = normalizeParams(method, rawParams);
   const supportsMyotis = myotis.NETWORKS?.has(Number(chainId)) === true;
-  const readOrder = network.access?.readOrder ||
+  const readOrder =
+    network.access?.readOrder ||
     (supportsMyotis ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER);
   const span =
     typeof rangeCapOf === 'function' && typeof rankError === 'function'
@@ -1949,9 +1988,10 @@ async function request(
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
     signal?.throwIfAborted();
     const source = order[sourceIndex];
-    const routeKey = source === 'myotis' || source === 'colibri' || source === 'quorum'
-      ? adaptiveRouteKey(source, chainId, method, params, routingContext)
-      : null;
+    const routeKey =
+      source === 'myotis' || source === 'colibri' || source === 'quorum'
+        ? adaptiveRouteKey(source, chainId, method, params, routingContext)
+        : null;
     if (adaptiveSourceUnavailable(routeKey)) {
       failures.push(`${source}: temporarily bypassed for this app workload`);
       continue;
@@ -2051,7 +2091,8 @@ async function request(
 async function getFeeQuote(chainId) {
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
-  const order = network.access?.readOrder ||
+  const order =
+    network.access?.readOrder ||
     (myotis.NETWORKS?.has(Number(chainId)) === true
       ? DEFAULT_READ_ORDER
       : DEFAULT_NON_MYOTIS_READ_ORDER);
@@ -2096,34 +2137,50 @@ async function getFeeQuote(chainId) {
   throw new Error(`All chain sources failed for fee quote (${failures.join('; ')})`);
 }
 
-async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {}) {
+async function broadcastRawTransaction(chainId, rawTransaction, { signal, submissionPermit } = {}) {
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
-  const order = network.access?.broadcastOrder ||
+  const journaled = require('../wallet/transaction-submission-coordinator').consumeSubmissionPermit(
+    chainId,
+    rawTransaction,
+    submissionPermit
+  );
+  const order =
+    network.access?.broadcastOrder ||
     (myotis.NETWORKS?.has(Number(chainId)) === true ? DEFAULT_BROADCAST_ORDER : ['direct']);
   const failures = [];
   let lastRpcError = null;
   for (const source of order) {
     signal?.throwIfAborted();
+    let handedOff = false;
     try {
       let result;
       if (source === 'myotis') {
         if (!myotis.isReady(chainId)) throw new SourceUnavailableError('Myotis is not ready');
+        handedOff = true;
         const payload = await myotis.sendRawTransaction(rawTransaction, chainId);
-        try { result = nativeResult(payload, 'txHash', 'result'); }
-        catch {
-          const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
+        try {
+          result = nativeResult(payload, 'txHash', 'result');
+        } catch {
+          const error = new Error(
+            'Myotis broadcast outcome uncertain; reconcile the original signed transaction'
+          );
           error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
           throw error;
         }
       } else if (source === 'direct') {
-        result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction], { signal });
+        handedOff = true;
+        result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction], {
+          signal,
+          singleAttempt: journaled,
+        });
       } else {
         throw new SourceUnavailableError(`${source} cannot broadcast transactions`);
       }
       return { result, source };
     } catch (err) {
       signal?.throwIfAborted();
+      if (journaled && handedOff) throw err;
       // Uncertain: the transaction may be out there. Rejected (ABI 36): Myotis
       // judged it unpayable or its nonce used on verified state and sent
       // nothing; another broadcaster would only add an unverified second opinion.
@@ -2133,7 +2190,9 @@ async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {})
       // JSON-RPC code/data the wallet needs — surface the real error rather
       // than the stringified aggregate, matching request().
       if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
-      log.verbose(`[chain-data] ${chainId} transaction broadcast via ${source} failed: ${err.message}`);
+      log.verbose(
+        `[chain-data] ${chainId} transaction broadcast via ${source} failed: ${err.message}`
+      );
     }
   }
   if (lastRpcError) throw lastRpcError;

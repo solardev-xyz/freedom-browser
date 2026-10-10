@@ -1,0 +1,83 @@
+{
+  "deposit": {
+    "chainId": 11155111,
+    "from": true,
+    "to": true,
+    "value": "10100",
+    "fee": "100",
+    "proofVerified": true,
+    "chainStateVerified": false,
+    "nativeToken": true,
+    "amount": "10000",
+    "noteBytes": 196,
+    "aspBytes": 394
+  },
+  "elapsedMs": 431,
+  "registrationCalls": 2,
+  "excessiveFee": "PRIVATE_PPV2_OPERATION_FAILED",
+  "cancelled": "PRIVACY_CONTEXT_REVOKED",
+  "afterProof": [],
+  "afterCancel": [],
+  "recovered": true,
+  "badArtifact": "PRIVATE_PPV2_OPERATION_FAILED",
+  "badArtifactStartedProver": false,
+  "methods": ["eth_blockNumber", "eth_call", "eth_getLogs"],
+  "productionGate": false,
+  "packaged": true,
+  "jobFromAsar": true,
+  "sdkFromAsar": true,
+  "transactionSubmitted": false,
+  "candidate": {
+    "kohaku": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+    "sdk": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+    "patchSha256": "411957dbb894d0fcb499933a3fb54367befb7fd474bac6098ac07afa32f0133e"
+  },
+  "sdkAsarSha256": "22231d9022b13c3fe11d2f8ba837c2b627d26a78ed1ca46c44517feb4a614429",
+  "artifactManifest": [
+    {
+      "kind": "wasm",
+      "name": "deposit.wasm",
+      "size": 2337270,
+      "sha256": "833e7b3c44a900a95496009a36284e11f57ba0385fab6b63f92075750817550a"
+    },
+    {
+      "kind": "provingKey",
+      "name": "deposit.zkey",
+      "size": 1031707,
+      "sha256": "0e64b6d15ea540b3ab04d5596ab45d1ed6df0872e0261a850039372104837b30"
+    },
+    {
+      "kind": "verificationKey",
+      "name": "deposit.vkey.json",
+      "size": 3744,
+      "sha256": "cc0c1647983f2ca75b192e5c671b9b2932fd690709922bf32443a4053cd0912a"
+    }
+  ],
+  "validation": {
+    "unitPassed": 23,
+    "fullRegression": {
+      "passed": 5590,
+      "skipped": 33,
+      "baselineFailures": 3
+    },
+    "sourceElectronPassed": 1,
+    "packagedElectronPassed": 2,
+    "lint": true,
+    "packagedSourcesMatch": true
+  },
+  "scope": {
+    "syntheticWallet": true,
+    "controlledChainResponses": true,
+    "liveSepolia": false,
+    "erc20Qualified": false,
+    "relayerSubmissionQualified": false
+  },
+  "sourceDigests": {
+    "src/main/wallet/ppv2-session.js": "0a835f8f2f419c67babf037ed50e92341bb420eae80a1cba76b8baeee82f60b3",
+    "src/main/wallet/ppv2-deposit-policy.js": "6210a496b5dd62d6b2f68f68db740153843ebc932395fc319a66a148f7a7ba2f",
+    "src/main/wallet/ppv2-deposit-prover.js": "ffb1d9f98749cce6d377b4dff563e150cda26e9e3b83ba540e9d8e8064e0b123",
+    "src/main/wallet/ppv2-deposit-job.js": "e4637c924b07b6eb081c0d000df1134f35310e25dee94c20de33fd5e3bbbb7a4",
+    "scripts/spike-ppv2-process.js": "bc75a54148319ec6b0c554446303eaaf71f941bd9d3be1a0ea59285c4c16fc14",
+    "test-e2e/ppv2-deposit.spec.js": "a35dc23c0042c1a650dc4bd25c4d367dbc9ce6d37568d8412b8fc23f0d80a473"
+  }
+}

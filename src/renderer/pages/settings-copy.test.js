@@ -306,11 +306,12 @@ describe('settings.html Advanced holds only the experiments (#275)', () => {
   const rowLabels = (html) =>
     [...html.matchAll(/<p class="row-label">([\s\S]*?)<\/p>/g)].map(([, body]) => textOf(body));
 
-  test('the two Beta features are all that is left, each badged rather than parenthesised', () => {
+  test('Advanced retains the Beta features and the wallet Tor experiment', () => {
     const advanced = section('experimental');
     expect(rowLabels(advanced)).toEqual([
       'Enable Identity &amp; Wallet Beta',
       'Enable Tor (.onion access) Beta',
+      'Tor balance reads (experimental)',
     ]);
     for (const label of ['Enable Identity &amp; Wallet', 'Enable Tor \\(\\.onion access\\)']) {
       expect(advanced).toMatch(new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`));
