@@ -115,7 +115,8 @@
     "radicle:build-addon": "node scripts/build-radicle-addon.js",
     "prestart": "node scripts/prepare-native-supervisors.js",
     "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js",
-    "build:linux-workspace-supervisor": "node scripts/build-linux-workspace-supervisor.js"
+    "build:linux-workspace-supervisor": "node scripts/build-linux-workspace-supervisor.js",
+    "build:windows-workspace": "node scripts/build-windows-workspace.js"
   },
   "build": {
     "appId": "baby.freedom.browser",
@@ -158,6 +159,11 @@
       "entitlementsInherit": "config/entitlements.mac.plist",
       "notarize": true,
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!**/*.test.c",
         "!**/node_modules/better-sqlite3/prebuilds/!(darwin-${arch}).node"
       ],
       "extraResources": [
@@ -206,6 +212,11 @@
         "x-scheme-handler/bzz"
       ],
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!**/*.test.c",
         "!**/node_modules/better-sqlite3/prebuilds/!(linux-${arch}).node"
       ],
       "extraResources": [
@@ -271,9 +282,19 @@
       ],
       "icon": "assets/icon.png",
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!**/*.test.c",
         "!**/node_modules/better-sqlite3/prebuilds/!(win32-${arch}).node"
       ],
       "extraResources": [
+        {
+          "from": "out/windows-workspace/${arch}/",
+          "to": "windows-workspace",
+          "filter": ["*.exe", "manifest.json", "CODEX-*.txt", "CODEX-*.json"]
+        },
         {
           "from": "radicle-bin/${os}-${arch}/",
           "to": "radicle-bin",

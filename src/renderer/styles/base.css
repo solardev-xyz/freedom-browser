@@ -31,6 +31,16 @@ body {
   flex-direction: column;
 }
 
+/* The user-agent sheet gives these the bare generic `monospace`, which
+   Electron on macOS renders in Times (#616). Any rule with a class still
+   wins over this one; it only replaces the browser default. */
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+}
+
 .hidden {
   display: none !important;
 }

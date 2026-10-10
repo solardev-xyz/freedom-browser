@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { unsafeWindowsRelativePath } = require('./workspace-execution/windows-paths');
 const { collectCommandReviewEvidence } = require('./command-review-evidence');
 const { ManagedWorkspaceServers } = require('./managed-workspace-servers');
 const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
@@ -63,7 +64,33 @@ const MAX_WORKSPACE_GREP_MATCHES = 200;
 const MAX_WORKSPACE_SCAN_ENTRIES = 50_000;
 const MAX_WORKSPACE_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_WORKSPACE_SEARCH_PATTERN_LENGTH = 1_000;
+
+// Serialized into the isolated file helper; keep this function self-contained.
+function workspaceFileVersion(stats, bytes, platform = process.platform) {
+  // Applying a Windows sandbox DACL changes ctime without changing the file.
+  // Keep the content digest, identity, mode and modification time authoritative.
+  const metadata = [stats.dev, stats.ino, stats.mode, stats.mtimeMs];
+  if (platform !== 'win32') metadata.push(stats.ctimeMs);
+  return require('crypto').createHash('sha256').update(metadata.join(':')).update(bytes).digest('hex');
+}
+// Windows has a 32K command-line limit; the fixed helper and bounded content
+// travel over the private input pipe instead. No temporary executable is needed.
+const WINDOWS_FILE_HELPER_BOOTSTRAP = `
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => {
+  input += chunk;
+  if (input.length > 256 * 1024) process.exit(73);
+  const end = input.indexOf('\\n');
+  if (end < 0) return;
+  process.stdin.destroy();
+  const { script, args } = JSON.parse(input.slice(0, end));
+  process.argv = [process.execPath, ...args];
+  require('vm').runInThisContext(script, { filename: 'freedom-workspace-file' });
+});
+`;
 const WORKSPACE_FILE_HELPER = String.raw`
+${unsafeWindowsRelativePath.toString()}
 const fs = process.versions.electron ? require('original-fs') : require('fs');
 const path = require('path');
 const READ_LIMIT = 524288;
@@ -88,6 +115,7 @@ function fail(code) {
 function checkedRelative(value, allowRoot = false) {
   if (typeof value !== 'string' || !value || value.includes('\0') || value.includes('\\') || path.posix.isAbsolute(value)) fail('INVALID_WORKSPACE_REQUEST');
   if (value === '.' && allowRoot) return value;
+  if (unsafeWindowsRelativePath(value)) fail('INVALID_WORKSPACE_REQUEST');
   const parts = value.split('/');
   if (parts.some((part) => !part || part === '.' || part === '..')) fail('INVALID_WORKSPACE_REQUEST');
   return parts.join('/');
@@ -300,9 +328,7 @@ function writablePath(value) {
   return safe;
 }
 
-function fileVersion(stats, bytes) {
-  return require('crypto').createHash('sha256').update([stats.dev, stats.ino, stats.mode, stats.mtimeMs, stats.ctimeMs].join(':')).update(bytes).digest('hex');
-}
+const fileVersion = (${workspaceFileVersion.toString()});
 
 ${WORKSPACE_INSPECTION_HELPER}
 ${WORKSPACE_HISTORY_HELPER}
@@ -556,7 +582,7 @@ function validateWorkingDirectory(value = '.') {
     );
   }
   if (value === '.') return value;
-  if (path.isAbsolute(value) || value.includes('\\')) {
+  if (path.isAbsolute(value) || value.includes('\\') || unsafeWindowsRelativePath(value)) {
     throw new ManagedWorkspaceError(
       'INVALID_WORKSPACE_REQUEST',
       'workingDirectory must be a workspace-relative path'
@@ -624,6 +650,7 @@ function validateWorkspacePath(value, options = {}) {
     );
   }
   if (value === '.' && options.allowRoot === true) return value;
+  if (unsafeWindowsRelativePath(value)) throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'File paths must not use Windows device names, streams or aliases');
   const segments = value.split('/');
   if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
     throw new ManagedWorkspaceError(
@@ -742,11 +769,13 @@ function publicCapabilities(capabilities) {
   return Object.freeze({
     available: true,
     backend: capabilities.backend,
+    ...(capabilities.setupRequired && { setupRequired: true }),
     network: 'disabled',
     fullNetworkAvailable: Boolean(enforcement.networkFull),
     fullNetworkIncludesHostAbstractUnixSockets:
       enforcement.fullNetworkIncludesHostAbstractUnixSockets === true,
-    filesystem: 'managed_workspace_only',
+    filesystem: enforcement.filesystemReadScope === 'windows_user_readable'
+      ? 'windows_broad_reads_scoped_writes' : 'managed_workspace_only',
     cancellationGuarantee: enforcement.cancellationGuarantee || 'backend_reported',
     survivorsPossible: enforcement.survivorsPossible === true,
     completeDescendantTermination: enforcement.completeDescendantTermination === true,
@@ -930,9 +959,18 @@ class ManagedWorkspaceController {
   }
 
   async enable(conversationId, request = {}) {
-    const capabilities = request.disclosureVerified
+    let capabilities = request.disclosureVerified
       ? await this.getCapabilities(request)
       : await this.disclosure(conversationId, request);
+    if (capabilities.setupRequired) {
+      throwIfWorkspaceAborted(request.signal);
+      await this.executor.setup(request);
+      this.capabilities = null;
+      capabilities = await this.getCapabilities(request);
+      if (!capabilities.available || capabilities.setupRequired) {
+        throw new ManagedWorkspaceError('WINDOWS_SANDBOX_SETUP_REQUIRED', 'Windows project protection setup did not complete');
+      }
+    }
     reportWorkspacePhase(request, 'creating_workspace');
     const workspace = await awaitWorkspaceStep(
       this.store.ensureForConversation(conversationId),
@@ -1531,8 +1569,8 @@ class ManagedWorkspaceController {
     try {
       if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) throw new Error('Project access changed');
       receipt = await this.executor.execute(lease.helperPolicy, {
-        command: '/bin/sh',
-        args: [
+        command: capabilities.backend === 'windows-elevated' ? lease.runtime.sandboxExecutablePath : '/bin/sh',
+        args: capabilities.backend === 'windows-elevated' ? ['-e', WINDOWS_FILE_HELPER_BOOTSTRAP] : [
           '-c',
           'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6" "$7" "$8"',
           'freedom-workspace-file',
@@ -1546,6 +1584,15 @@ class ManagedWorkspaceController {
           grant ? `${grant.dev}:${grant.ino}` : '',
         ],
         signal: controller.signal,
+        ...(capabilities.backend === 'windows-elevated' && { onStdin: input => {
+          const packet = Buffer.from(JSON.stringify({ script: WORKSPACE_FILE_HELPER, args: [
+            operation, relative, content ? content.toString('base64') : '',
+            (workspace.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId)) && operation === 'write'
+              ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
+            grant ? `${grant.dev}:${grant.ino}` : '',
+          ] }) + '\n');
+          for (let offset = 0; offset < packet.length; offset += 64 * 1024) input.write(packet.subarray(offset, offset + 64 * 1024));
+        } }),
       });
     } catch {
       throw new ManagedWorkspaceError(
@@ -2183,8 +2230,14 @@ class ManagedWorkspaceController {
     let receipt;
     try {
       receipt = await this.executor.execute(agentPolicy.policy, {
-        command: '/bin/sh',
-        args: [
+        command: capabilities.backend === 'windows-elevated'
+          ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe') : '/bin/sh',
+        args: capabilities.backend === 'windows-elevated'
+          ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(
+            `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
+Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''")}';\n${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`, 'utf16le').toString('base64')]
+          : [
           '-c',
           'cd "$1" && exec /bin/sh -c "$2"',
           'freedom-workspace',
@@ -2428,6 +2481,8 @@ module.exports = {
   MAX_WORKSPACE_SEARCH_PATTERN_LENGTH,
   MAX_WORKSPACE_WRITE_BYTES,
   WORKSPACE_FILE_HELPER,
+  WINDOWS_FILE_HELPER_BOOTSTRAP,
+  workspaceFileVersion,
   ManagedWorkspaceController,
   ManagedWorkspaceError,
   commandSummary,

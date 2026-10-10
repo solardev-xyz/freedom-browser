@@ -124,7 +124,7 @@ async function statValidatedElectronPackageArchive(value) {
     throw new TypeError('Electron runtime must be attested before inspecting its package archive');
   }
   const archiveFileSystem = validatedElectronRuntimeArchiveFileSystems.get(value);
-  if (!archiveFileSystem || value.platform !== 'linux' || value.packaged !== true) {
+  if (!archiveFileSystem || !['linux', 'win32'].includes(value.platform) || value.packaged !== true) {
     throw new TypeError('Electron runtime does not identify a packaged Linux archive');
   }
   return archiveFileSystem.promises.stat(path.join(value.resourcesPath, 'app.asar'));
@@ -138,7 +138,7 @@ async function detectElectronJavaScriptRuntime(options = {}) {
   const environment = options.environment || process.env;
   const archiveFileSystem =
     options.archiveFileSystem ||
-    (platform === 'linux' && process.versions.electron ? require('original-fs') : fs);
+    (['linux', 'win32'].includes(platform) && process.versions.electron ? require('original-fs') : fs);
   const run = options.run || runElectronProbe;
   const diagnostics = {
     platform,
@@ -148,10 +148,10 @@ async function detectElectronJavaScriptRuntime(options = {}) {
     freedomVersion: options.freedomVersion || null,
     packaged: options.packaged === true,
   };
-  if (platform !== 'darwin' && platform !== 'linux') {
+  if (!['darwin', 'linux', 'win32'].includes(platform)) {
     return unavailableRuntime(
       'ELECTRON_RUNTIME_PLATFORM_UNAVAILABLE',
-      'The Electron JavaScript runtime qualifier requires macOS or Linux',
+      'The Electron JavaScript runtime qualifier requires macOS, Linux or Windows',
       diagnostics
     );
   }
@@ -178,7 +178,7 @@ async function detectElectronJavaScriptRuntime(options = {}) {
   const applicationBundleRoot =
     platform === 'darwin' ? findApplicationBundle(executablePath) : null;
   const linuxLayout =
-    platform === 'linux'
+    ['linux', 'win32'].includes(platform)
       ? await deriveLinuxRuntimeRoot(
           executablePath,
           configuredResources,
@@ -208,7 +208,8 @@ async function detectElectronJavaScriptRuntime(options = {}) {
     env: {
       ELECTRON_RUN_AS_NODE: '1',
       HOME: os.tmpdir(),
-      PATH: '/usr/bin:/bin',
+      PATH: platform === 'win32' ? path.join(environment.SystemRoot || 'C:\\Windows', 'System32') : '/usr/bin:/bin',
+      ...(platform === 'win32' && { SystemRoot: environment.SystemRoot || 'C:\\Windows', TEMP: os.tmpdir(), TMP: os.tmpdir() }),
     },
   });
   let result;
@@ -245,6 +246,7 @@ async function detectElectronJavaScriptRuntime(options = {}) {
   const layout =
     platform === 'darwin'
       ? 'macos-app-bundle'
+      : platform === 'win32' ? 'windows-packaged-directory'
       : appImage.appImagePath && appImage.appDirMatchesRuntimeRoot
         ? 'linux-appimage'
         : 'linux-packaged-directory';
@@ -280,7 +282,7 @@ async function detectElectronJavaScriptRuntime(options = {}) {
     }),
   });
   validatedElectronRuntimes.add(runtime);
-  if (platform === 'linux' && runtime.packaged) {
+  if (['linux', 'win32'].includes(platform) && runtime.packaged) {
     validatedElectronRuntimeArchiveFileSystems.set(runtime, archiveFileSystem);
   }
   return runtime;

@@ -301,8 +301,11 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
       };
     }
 
-    // Extract potential hash (first segment before /)
-    const firstSegment = raw.split('/')[0].replace(/^bzz:\/\//i, '');
+    // Extract potential hash (first segment before /). Drop the scheme
+    // first: `new URL()` throws for `bzz://<all digits>` (Chromium parses
+    // the host of a standard scheme as IPv4), and splitting first would
+    // leave just `bzz:`.
+    const firstSegment = raw.replace(/^bzz:\/\//i, '').split(/[/?#]/)[0];
 
     // Only treat as Swarm reference if it's valid hex (64 or 128 chars)
     if (!isValidSwarmHash(firstSegment)) {

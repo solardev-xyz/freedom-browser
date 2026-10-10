@@ -1,5 +1,7 @@
 'use strict';
 
+const { unsafeWindowsRelativePath } = require('./windows-paths');
+
 // Sandbox boundaries describe physical files. Electron's patched fs treats ASAR
 // archives as virtual directories with synthetic identities, which cannot be
 // used for directory/hardlink validation or physical path ownership.
@@ -126,7 +128,7 @@ function validateWorkspaceRelativePath(value, label, { allowDot = false } = {}) 
     throw new ExecutionPolicyError('INVALID_POLICY', `${label} must be a safe relative path`);
   }
   if (allowDot && value === '.') return value;
-  if (!value || path.isAbsolute(value)) {
+  if (!value || path.isAbsolute(value) || unsafeWindowsRelativePath(value)) {
     throw new ExecutionPolicyError('INVALID_POLICY', `${label} must be a safe relative path`);
   }
   const segments = value.split('/');
@@ -754,10 +756,10 @@ async function canonicalElectronRuntime(input) {
         'electronRuntime does not match its attested macOS application bundle'
       );
     }
-  } else if (descriptor.platform !== 'linux') {
+  } else if (!['linux', 'win32'].includes(descriptor.platform)) {
     throw new ExecutionPolicyError(
       'INVALID_ELECTRON_RUNTIME',
-      'electronRuntime platform must be linux or darwin'
+      'electronRuntime platform must be linux, darwin or win32'
     );
   } else {
     const resourcesPath = await canonicalDirectory(
@@ -791,7 +793,7 @@ async function canonicalElectronRuntime(input) {
           'Packaged electronRuntime does not contain resources/app.asar'
         );
       }
-      if (insidePath(os.homedir(), sourcePath)) {
+      if (descriptor.platform === 'linux' && insidePath(os.homedir(), sourcePath)) {
         throw new ExecutionPolicyError(
           'INVALID_ELECTRON_RUNTIME',
           'Packaged Linux electronRuntime cannot grant access to a home-directory tree'

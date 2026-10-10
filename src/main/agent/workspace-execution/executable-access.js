@@ -12,6 +12,10 @@ const validatedExecutableRequests = new WeakSet();
 const SYSTEM_TOOLCHAIN_DIRECTORIES = Object.freeze(['/usr/bin', '/bin', '/usr/sbin', '/sbin']);
 
 function systemToolchainDirectories(platform) {
+  if (platform === 'win32') {
+    const root = process.env.SystemRoot || 'C:\\Windows';
+    return [path.join(root, 'System32'), path.join(root, 'System32/WindowsPowerShell/v1.0')];
+  }
   const directories = [...SYSTEM_TOOLCHAIN_DIRECTORIES];
   if (platform === 'darwin' && fs.existsSync('/Library/Developer/CommandLineTools/usr/bin')) {
     directories.unshift('/Library/Developer/CommandLineTools/usr/bin');
@@ -62,25 +66,29 @@ function hostPathEntries(hostEnvironment) {
     .slice(0, 64);
 }
 
-async function findExecutable(name, pathEntries) {
+async function findExecutable(name, pathEntries, platform = process.platform) {
   for (const directory of pathEntries) {
-    const candidate = path.join(directory, name);
-    try {
-      const stats = await fs.promises.stat(candidate);
-      if (!stats.isFile()) continue;
-      await fs.promises.access(candidate, fs.constants.X_OK);
-      return {
-        invokedPath: candidate,
-        executablePath: await fs.promises.realpath(candidate),
-      };
-    } catch {
-      // Continue through the bounded host PATH. An unavailable candidate grants nothing.
+    const suffixes = platform === 'win32' && !/\.(exe|cmd|bat|com)$/i.test(name) ? ['.exe', '.cmd', '.bat', '.com'] : [''];
+    for (const suffix of suffixes) {
+      const candidate = path.join(directory, name + suffix);
+      try {
+        const stats = await fs.promises.stat(candidate);
+        if (!stats.isFile()) continue;
+        await fs.promises.access(candidate, fs.constants.X_OK);
+        return {
+          invokedPath: candidate,
+          executablePath: await fs.promises.realpath(candidate),
+        };
+      } catch {
+        // Continue through the bounded host PATH. An unavailable candidate grants nothing.
+      }
     }
   }
   return null;
 }
 
 function isSystemExecutable(executablePath, platform) {
+  if (platform === 'win32') return systemToolchainDirectories(platform).some(root => insidePath(root, executablePath));
   if (insidePath('/usr/local', executablePath)) return false;
   const roots =
     platform === 'darwin'
@@ -169,10 +177,10 @@ async function resolveCommandInterpreters(names, pathEntries, platform) {
   const resolved = new Map();
   const visited = new Set();
   async function visit(name, parent = null, exactPath = null, ancestors = []) {
-    const baseline = await findExecutable(name, systemToolchainDirectories(platform));
+    const baseline = await findExecutable(name, systemToolchainDirectories(platform), platform);
     const found = exactPath
-      ? await findExecutable(name, [path.dirname(exactPath)])
-      : (await findExecutable(name, pathEntries)) || baseline;
+      ? await findExecutable(name, [path.dirname(exactPath)], platform)
+      : (await findExecutable(name, pathEntries, platform)) || baseline;
     if (parent && (!found || (!exactPath && isSystemExecutable(found.executablePath, platform) &&
         baseline?.executablePath !== found.executablePath))) {
       throw new ExecutableAccessError(
@@ -195,7 +203,7 @@ async function resolveCommandInterpreters(names, pathEntries, platform) {
     resolved.set(name, { found, baseline });
     if (resolved.size > MAX_EXECUTABLE_REQUESTS) throw unsupportedInterpreter(parent || name);
     if (!found || visited.has(found.executablePath)) return;
-    const interpreter = await scriptInterpreter(found.executablePath, name);
+    const interpreter = platform === 'win32' ? null : await scriptInterpreter(found.executablePath, name);
     if (interpreter) {
       await visit(interpreter.name, name, interpreter.exactPath, [...ancestors, found.executablePath]);
     }
@@ -208,10 +216,10 @@ async function resolveCommandInterpreters(names, pathEntries, platform) {
 async function resolveExecutableAccess(executables, options = {}) {
   const names = validateExecutableNames(executables);
   const platform = options.platform || process.platform;
-  if (!['darwin', 'linux'].includes(platform)) {
+  if (!['darwin', 'linux', 'win32'].includes(platform)) {
     throw new ExecutableAccessError(
       'EXECUTABLE_ACCESS_PLATFORM_UNAVAILABLE',
-      'Approved executable access is currently available only on macOS and Linux'
+      'Approved executable access is available on macOS, Linux and Windows'
     );
   }
   const pathEntries = hostPathEntries(options.hostEnvironment || process.env);

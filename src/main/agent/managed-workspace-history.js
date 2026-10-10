@@ -196,8 +196,10 @@ class ManagedWorkspaceHistory {
           killSignal: 'SIGKILL',
           maxBuffer: 1024 * 1024,
           env: {
-            PATH: '/usr/bin:/bin',
+            ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot || 'C:\\Windows',
+              PATH: path.dirname(executable) } : { PATH: '/usr/bin:/bin' }),
             LC_ALL: 'C',
+            // Git for Windows recognizes /dev/null; Node's device path does not.
             GIT_CONFIG_NOSYSTEM: '1',
             GIT_CONFIG_SYSTEM: '/dev/null',
             GIT_CONFIG_GLOBAL: '/dev/null',

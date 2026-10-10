@@ -180,6 +180,27 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
 - **No Keyboard Binding**: Print has no shortcut; use the hamburger menu's Print entry.
 
+## Freedom Agent
+
+Open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`. Connect your own model
+provider or a local Ollama model, then ask it to research pages, compare sources,
+or work on a project. Conversations appear over the page; Agent-first mode gives
+the conversation the full window.
+
+- **Browser work:** Agent uses conversation-owned tabs and can delegate independent
+  work to helpers. Helper cards show progress, reports, and individual Stop controls.
+- **Project work:** Create a managed workspace or attach an existing folder read-only.
+  Grant editing separately. Drag files into the composer to attach them to a prompt.
+  File, diff, and history viewers open in browser tabs; managed workspaces retain Git history.
+- **Connections and permissions:** Manage MCP services from the composer's `+` menu.
+  Permission controls govern consequential actions and command access. The conversation
+  privacy panel reports provider settings and the evidence available for that conversation.
+- **Windows projects:** First use requires administrator setup of restricted execution
+  accounts and network rules. Subsequent commands run without administrator rights.
+  Windows restricts writes and network access but allows broader file reads than the
+  macOS and Linux backends; the approval explains this difference. Windows commands
+  use PowerShell, including `npm.cmd` and `npx.cmd`.
+
 ## Bookmarks
 
 - **Address Bar Star**: Click the star icon to bookmark or unbookmark the current page.

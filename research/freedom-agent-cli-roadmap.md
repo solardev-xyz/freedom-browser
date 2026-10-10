@@ -1,14 +1,94 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-10-06
+Last updated: 2026-10-10
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-10-06
+## Current working status — 2026-10-10
+
+### Windows implementation in progress — 2026-10-10
+
+`experiment/agent-windows-mxc` now contains the experimental elevated Windows
+executor, native build/packaging adapter, administrator setup disclosure,
+PowerShell commands and Windows checkpoint environment. It reuses the pinned
+Codex sandbox library with separate Freedom OS identities. No MXC or unelevated
+fallback is active. Native x64 build, lint and 9,431 unit tests pass. Freedom's
+actual standard-user executor passes writes/read-only, networking, preview,
+cancellation, abrupt parent exit and junction checks. The Electron controller
+passes normal/max-size files, npm build, reviewed checkpoint and history flows.
+
+**Still open before merge/release:** external-project controller smoke, setup
+cancel/retry and app UI smoke, packaged/signed application and installer,
+transitive native-license inventory, Windows CI and ARM64 qualification. See
+[the Windows qualification record](agent-windows-mxc-feasibility.md#freedom-integration--in-progress-2026-10-10).
+MXC remains a later explicit backend; it is not an automatic fallback.
+
+### Native Windows preparation and MXC spike — 2026-10-09
+
+**Updated decision, 2026-10-10:** the user accepts broad reads on Windows with
+narrow writes and controlled networking, matching Codex's practical baseline.
+Project-only read isolation is no longer a Windows release prerequisite. Follow
+Codex's MXC path on compatible hosts and investigate its elevated restricted-token
+backend as the preferred fallback; no separate AppContainer/VM design or fork is
+selected. Official Codex 0.162.1 is checksum-verified in Windows scratch, with a
+separate home and no model requests. Added a reusable reference qualification
+script for write boundaries, builds, network, preview and launcher cleanup.
+Initial SSH tests reproduce Node's `0xC0000142` in both MXC and unelevated modes;
+both run Node/npm builds successfully in the standard user's desktop. Their
+outside, `.git` and junction write checks pass. MXC denies raw network access
+but its preview server is unreachable from the host; unelevated serves previews
+but raw sockets bypass its disabled-network posture. The user has now completed
+administrator provisioning. **Codex's elevated backend passes the full desktop
+reference suite:** broad reads, narrow writes, `.git`/junction protection, Node,
+synthetic npm build, denied/allowed direct network connections, localhost HTTP
+preview and abrupt launcher cleanup. Run `elevated-aoLBPh` exited `0`; no OS update
+or model request was needed. It is the first Windows implementation target.
+The corrected desktop suite still fails MXC's abrupt-launcher-exit check; MXC
+remains optional until preview/process-lifetime qualification passes. Freedom's
+production Windows executor remains unsupported until an adapter is implemented
+and qualified, including graceful cancellation, real dependency installation,
+external projects, Electron lifecycle and packaging.
+
+Started `experiment/agent-windows-mxc` from feature/main-refresh `b97afeb3`.
+GitHub now synchronizes the Mac and physical Windows 11 checkout. Portable
+Node 24.21.0, dependency installation, lint, Electron 44.7.0 and SQLite runtime
+checks passed on Windows. MXC 1.0.0 is installed only in scratch, not in Freedom.
+
+BaseContainer is available without ACL augmentation, and synthetic workspace /
+outside-path / protected `.git` checks passed. Node and Windows PowerShell fail
+with native initialization error `0xC0000142`; denial capture recorded no denied
+resources. Explicit host-loopback preview ingress is unsupported on this OS
+build. A subsequent user-run desktop matrix succeeded with Node when
+`ui.disable: false` and failed with `true`; SSH failed with both. Released MXC
+source confirms that flag blocks Win32k system calls rather than merely hiding
+windows. The desktop follow-up reached the script loader but required volume-root
+metadata for path resolution. A root read grant then enabled Node/npm and an idle
+process timeout, but also allowed reading an ungranted outside sentinel. A paired
+`cmd.exe` reproduction over SSH confirmed that adding the grant made two
+otherwise unreadable synthetic files readable. **That policy was rejected under
+the earlier project-only read requirement**;
+the earlier assumption that the root read grant was non-recursive was not borne
+out. The updated broad-read policy supersedes that particular blocker;
+the SSH startup difference, UI qualification and preview route remain unresolved.
+Windows workspace execution remains unsupported and fails closed; no production
+backend was added.
+
+Follow-up research (2026-10-10): prepared a read-only request-specific capability
+probe and confirmed metadata-only grants and localhost ingress are both rejected.
+Optional Windows update KB5124010 moves this host from `26200.9457` to
+`26200.9550`; upstream names the latter for Session Isolation but does not promise
+the two missing primitives. An update is not an evidence-backed fix or prerequisite
+for the Codex reference investigation; installation and reboot have not been performed. Ordinary WSL is not a
+security boundary, and MXC's WSLC/Windows Sandbox adapters do not directly match
+our protected-path and network/preview requirements. The feasibility report
+records the alternatives and their product costs; no fallback has been selected.
+
+See [the feasibility report](agent-windows-mxc-feasibility.md) for exact versions,
+checks, desktop reproduction instructions and remaining implementation gates.
 
 ### Session privacy verification — experimental, 2026-10-06
 

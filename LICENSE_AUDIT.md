@@ -82,7 +82,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Ant (antd, Swarm Node)
 
 - **Source:** https://github.com/freedom-hq/ant
-- **Version:** `v0.5.61` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
+- **Version:** `v0.5.64` (pin: `scripts/fetch-ant.js` `PINNED_RELEASE_TAG`)
 - **License:** MIT OR Apache-2.0 (upstream ships `LICENSE-MIT` and `LICENSE-APACHE`)
 - **Risk:** Green
 - **Integration:** Separate process via IPC
@@ -365,6 +365,15 @@ Combining with **GPL-3.0** would not work: it would require the combined work to
 ---
 
 ## Summary
+
+The Windows build also includes the **Codex Windows sandbox**, from pinned
+upstream commit `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d` (Apache-2.0).
+Freedom namespaces its operating-system identities and bundles the upstream
+LICENSE and NOTICE beside the three helper executables. The Freedom protocol
+adapter remains MPL-2.0. Its dependency versions come from the pinned upstream
+Cargo.lock; native dependency notices must be checked with the Windows release artifact.
+Freedom's Windows sandbox adapter manifest and Freedom's Windows sandbox adapter source
+under `src/main/agent/workspace-execution/native/windows/` are first-party MPL-2.0 material.
 
 Freedom Browser can be released under MPL-2.0, with these conditions:
 

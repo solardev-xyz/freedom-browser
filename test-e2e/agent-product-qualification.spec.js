@@ -34,6 +34,9 @@ const CLASSIFICATION = Object.freeze({
 });
 
 const EXPECTED_TOOL_NAMES = Object.freeze([
+  'codemode',
+  'mcp_discover',
+  'mcp_request',
   'bash',
   'browser_call_page_tool',
   'browser_get_dialog',
@@ -1621,29 +1624,25 @@ test('baseline: file delivery uses scoped download authority and a verified rece
   await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
   await expect(window.locator('#agent-approval-action')).toHaveText('Download quarterly report?');
   await expect(window.locator('#agent-approval-origin')).toHaveText('agent-product.test');
-  const approvalLayout = await window.locator('#agent-approval').evaluate((approval) => {
+  // First-send FLIP briefly keeps the launcher's wide composer geometry.
+  // Assert the settled approval layout, including equal choices and the footer.
+  await expect.poll(() => window.locator('#agent-approval').evaluate((approval) => {
     const decline = approval.querySelector('#agent-approval-decline').getBoundingClientRect();
     const allow = approval.querySelector('#agent-approval-approve').getBoundingClientRect();
     const status = approval.querySelector('.agent-approval-status').getBoundingClientRect();
     return {
-      declineTop: decline.top,
-      declineWidth: decline.width,
-      allowTop: allow.top,
-      allowWidth: allow.width,
-      buttonsBottom: Math.max(decline.bottom, allow.bottom),
-      statusTop: status.top,
+      sameRow: Math.abs(decline.top - allow.top) <= 1,
+      equalWidth: Math.abs(decline.width - allow.width) <= 1,
+      statusBelow: status.top > Math.max(decline.bottom, allow.bottom),
     };
-  });
-  expect(Math.abs(approvalLayout.declineTop - approvalLayout.allowTop)).toBeLessThanOrEqual(1);
-  expect(Math.abs(approvalLayout.declineWidth - approvalLayout.allowWidth)).toBeLessThanOrEqual(1);
-  expect(approvalLayout.statusTop).toBeGreaterThan(approvalLayout.buttonsBottom);
+  })).toEqual({ sameRow: true, equalWidth: true, statusBelow: true });
   await window.locator('#agent-approval-approve').click();
   const shelfCard = window.locator('#download-shelf .download-card');
   await expect(shelfCard).toBeVisible({ timeout: 10_000 });
   const shelfLayout = await shelfCard.evaluate((card) => {
     const cardRect = card.getBoundingClientRect();
     const pageRect = card.closest('.content-page').getBoundingClientRect();
-    const sidebarRect = document.querySelector('#agent-sidebar').getBoundingClientRect();
+    const sidebarRect = document.querySelector('#agent-sidebar .agent-sidebar-inner').getBoundingClientRect();
     return {
       cardRight: cardRect.right,
       pageRight: pageRect.right,

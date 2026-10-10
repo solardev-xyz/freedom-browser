@@ -731,7 +731,7 @@ async function ensureWorkspaceEnabled(options, operation, toolCallId, signal) {
   if (workspace?.project && !workspace.project.connected) {
     throw Object.assign(new Error(WORKSPACE_ERROR_MESSAGES.PROJECT_RECONNECT_REQUIRED), { code: 'PROJECT_RECONNECT_REQUIRED' });
   }
-  if (workspace?.enabled) return workspace;
+  if (workspace?.enabled && !(await options.controller.getCapabilities?.({ signal }))?.setupRequired) return workspace;
   const capabilities = await options.controller.disclosure(options.conversationId, {
     signal,
     onPhase,

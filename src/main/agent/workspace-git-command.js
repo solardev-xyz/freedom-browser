@@ -13,6 +13,8 @@ function workspaceGitCommand(platform = process.platform, accessible) {
       ? '/Library/Developer/CommandLineTools/usr/bin/git'
       : platform === 'linux'
         ? '/usr/bin/git'
+        : platform === 'win32'
+          ? require('path').join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'cmd', 'git.exe')
         : null;
   if (!executable) return null;
   try {

@@ -1,5 +1,7 @@
 'use strict';
 
+const { unsafeWindowsRelativePath } = require('./workspace-execution/windows-paths');
+
 const HISTORY_LIMITS = Object.freeze({ files: 200, fileBytes: 64 * 1024, totalBytes: 512 * 1024 });
 
 // These functions also run inside the fixed sandbox helper. Keep them self-contained.
@@ -16,6 +18,7 @@ function historyPathReason(value, includeGenerated = false) {
     value.includes('\\') ||
     [...value].some((character) => character.charCodeAt(0) < 32) ||
     value.startsWith('/') ||
+    unsafeWindowsRelativePath(value) ||
     value.split('/').some((part) => !part || part === '.' || part === '..')
   ) {
     return 'unsupported path';

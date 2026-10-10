@@ -1,0 +1,1 @@
+- Reading a Swarm feed entry by its index, or writing one at a chosen index, no longer fails now and then with a 502 error when that slot is still empty ([#619](https://github.com/solardev-xyz/freedom-browser/pull/619))

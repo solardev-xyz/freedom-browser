@@ -32,6 +32,22 @@ async function resolvedExecutableFixture() {
 }
 
 describe('workspace capability contract', () => {
+  test('long scripts do not consume an unrelated one-shot grant or bypass the approval length bound', async () => {
+    const { fixture, root } = await resolvedExecutableFixture();
+    try {
+      const grants = new WorkspaceCapabilityGrantStore();
+      const input = { conversationId: 'conversation_one', command: 'tool', workingDirectory: '.',
+        capabilities: [createExecutableRootCapability(root)] };
+      grants.grant('conversation_one', createWorkspaceCapabilityRequest(input), 'once');
+      const command = 'x'.repeat(32000);
+      expect(grants.inspect('conversation_one', { command, workingDirectory: '.' })).toEqual([]);
+      expect(grants.resolve('conversation_one', { command, workingDirectory: '.' })).toEqual([]);
+      expect(grants.resolve('conversation_one', input)).toHaveLength(1);
+      expect(() => createWorkspaceCapabilityRequest({ ...input, command })).toThrow();
+      expect(() => grants.resolve('conversation_one', { command: command + 'x', workingDirectory: '.' })).toThrow();
+    } finally { await fs.promises.rm(fixture, { recursive: true, force: true }); }
+  });
+
   test.each(['once', 'conversation'])('preserves command mappings across a later %s grant for the same root', async (scope) => {
     const { fixture, root } = await resolvedExecutableFixture();
     try {

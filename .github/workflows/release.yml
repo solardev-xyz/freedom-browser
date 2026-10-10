@@ -1177,8 +1177,7 @@ jobs:
       # packaging step below uses — no compiler is downloaded here either.
       # `arti.exe` lands in arti-bin/win-x64/ and reaches the package through
       # the `win.extraResources` entry in package.json.
-      - name: Build Arti (Tor) client
-        if: env.BUNDLE_TOR == 'true'
+      - name: Prepare Rust and build Windows native components
         shell: pwsh
         env:
           RUSTUP_VERSION: 1.28.2
@@ -1205,8 +1204,10 @@ jobs:
           if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          npm run tor:download
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:BUNDLE_TOR -eq 'true') {
+            npm run tor:download
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       # No Windows code-signing certificate exists yet, so this installer is
       # unsigned (same as every release on freedom.baby so far) and SmartScreen

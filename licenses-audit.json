@@ -25,6 +25,20 @@
   },
   "dependencies": [
     {
+      "name": "codex-windows-sandbox",
+      "version": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+      "type": "native-binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/openai/codex" },
+      "license": { "spdx": ["Apache-2.0"], "raw": "Apache-2.0", "license_files": ["CODEX-LICENSE.txt", "CODEX-NOTICE.txt"], "notice_required": true },
+      "version_pin": "scripts/build-windows-workspace.js REVISION",
+      "bundled_with_app": true,
+      "platforms": ["win"],
+      "linking_or_integration": "native helper process",
+      "risk": "green",
+      "issues": []
+    },
+    {
       "name": "electron",
       "version": "44.7.0",
       "type": "direct",
@@ -50,7 +64,7 @@
     },
     {
       "name": "ant (Swarm)",
-      "version": "v0.5.61",
+      "version": "v0.5.64",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },

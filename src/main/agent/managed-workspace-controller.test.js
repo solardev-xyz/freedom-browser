@@ -7,10 +7,23 @@ const { execFileSync } = require('child_process');
 const {
   ManagedWorkspaceController,
   WORKSPACE_FILE_HELPER,
+  WINDOWS_FILE_HELPER_BOOTSTRAP,
+  workspaceFileVersion,
   validateCommand,
   validateWorkspacePath,
   validateWorkingDirectory,
 } = require('./managed-workspace-controller');
+
+test('Windows ACL refreshes preserve the read version while content and file changes invalidate it', () => {
+  const stats = { dev: 1, ino: 2, mode: 0o100644, mtimeMs: 3, ctimeMs: 4 };
+  const version = workspaceFileVersion(stats, 'before', 'win32');
+  expect(workspaceFileVersion({ ...stats, ctimeMs: 5 }, 'before', 'win32')).toBe(version);
+  expect(workspaceFileVersion(stats, 'after', 'win32')).not.toBe(version);
+  for (const key of ['dev', 'ino', 'mode', 'mtimeMs']) {
+    expect(workspaceFileVersion({ ...stats, [key]: stats[key] + 1 }, 'before', 'win32')).not.toBe(version);
+  }
+  expect(workspaceFileVersion({ ...stats, ctimeMs: 5 }, 'before', 'darwin')).not.toBe(workspaceFileVersion(stats, 'before', 'darwin'));
+});
 const { resolveExecutableAccess } = require('./workspace-execution/executable-access');
 
 function createController(overrides = {}) {
@@ -1088,6 +1101,22 @@ describe('ManagedWorkspaceController', () => {
     }
   });
 
+  test('Windows setup cancellation leaves the workspace disabled and can be retried', async () => {
+    const { controller, dependencies } = createController();
+    let setupRequired = true;
+    dependencies.executor.detectCapabilities.mockImplementation(async () => ({ available: true, backend: 'windows-elevated', setupRequired, enforcement: {} }));
+    dependencies.executor.setup = jest.fn()
+      .mockRejectedValueOnce(new Error('Administrator cancelled setup'))
+      .mockImplementationOnce(async () => { setupRequired = false; });
+    await expect(controller.disclosure('conversation_one')).resolves.toMatchObject({ setupRequired: true });
+    expect(dependencies.executor.setup).not.toHaveBeenCalled();
+    await expect(controller.enable('conversation_one')).rejects.toThrow('cancelled setup');
+    expect(dependencies.store.enable).not.toHaveBeenCalled();
+    await controller.enable('conversation_one');
+    expect(dependencies.executor.setup).toHaveBeenCalledTimes(2);
+    expect(dependencies.store.enable).toHaveBeenCalledTimes(1);
+  });
+
   test('fails closed when the platform backend is unavailable', async () => {
     const { controller, dependencies } = createController();
     dependencies.executor.detectCapabilities.mockResolvedValue({
@@ -1180,6 +1209,16 @@ describe('ManagedWorkspaceController', () => {
     expect(validateWorkspacePath('src/index.js')).toBe('src/index.js');
     expect(() => validateWorkspacePath('../outside')).toThrow('inside the managed workspace');
     expect(() => validateWorkspacePath('/absolute')).toThrow('workspace-relative');
+  });
+
+  test('Windows file helper accepts maximum-sized content through stdin instead of command arguments', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-windows-helper-'));
+    const content = 'x'.repeat(65536);
+    try {
+      const packet = JSON.stringify({ script: WORKSPACE_FILE_HELPER, args: ['write', 'large.txt', Buffer.from(content).toString('base64'), '', ''] }) + '\n';
+      execFileSync(process.execPath, ['-e', WINDOWS_FILE_HELPER_BOOTSTRAP], { cwd: directory, input: packet, timeout: 5000 });
+      expect(fs.readFileSync(path.join(directory, 'large.txt'), 'utf8')).toBe(content);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
   test('versioned helper writes reject unread, externally changed, and replaced files', () => {

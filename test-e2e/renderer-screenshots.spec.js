@@ -253,6 +253,7 @@ async function guestElementMask(win, page, selector, id) {
 }
 
 const UPDATE_VERSION_MASK = 'screenshot-update-version-mask';
+const AUTO_RETRY_COUNTDOWN_MASK = 'screenshot-auto-retry-countdown-mask';
 
 // Types into the settings page's own "Search settings" field (#281) the way
 // the page hears a keystroke, so the result list is rendered by the page
@@ -446,7 +447,17 @@ test.describe('renderer screenshots', () => {
         await recipes.tezInterstitial(ctx, 'conflict');
         await shot('26-tez-conflict');
         await recipes.errorPage(ctx);
-        await shot('27-error-page');
+        // The auto-retry countdown (#618) ticks every second, so a capture a
+        // moment later reads a different number.
+        const errorPage = await pageFor(electronApp, '/pages/error.html');
+        await errorPage.waitForSelector('#auto-retry:not([hidden])');
+        const countdown = await guestElementMask(
+          window,
+          errorPage,
+          '#auto-retry',
+          AUTO_RETRY_COUNTDOWN_MASK
+        );
+        await shot('27-error-page', { mask: [...scrollbar, ...countdown] });
 
         for (const [i, page] of ['downloads', 'history', 'profiles', 'payments'].entries()) {
           await go(window, `freedom://${page}`, 1_800);

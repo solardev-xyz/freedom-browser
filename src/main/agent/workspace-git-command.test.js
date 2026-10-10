@@ -10,7 +10,8 @@ describe('installed Git availability', () => {
     expect(workspaceGitCommand('darwin', accessible)).toBe(null);
     expect(accessible.mock.calls).toEqual([['/Library/Developer/CommandLineTools/usr/bin/git']]);
     expect(workspaceGitCommand('linux', () => true)).toBe('/usr/bin/git');
-    expect(workspaceGitCommand('win32', () => true)).toBe(null);
+    expect(workspaceGitCommand('win32', () => true)).toBe(require('path').join(process.env.ProgramFiles || 'C:\\Program Files', 'Git/cmd/git.exe'));
+    expect(workspaceGitCommand('win32', () => false)).toBe(null);
   });
 
   test('missing Git produces an explicit history-unavailable result before reading project metadata', async () => {

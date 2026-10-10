@@ -289,7 +289,9 @@ class WorkspaceCapabilityGrantStore {
 
   resolve(conversationId, operation = {}) {
     const ownerId = requiredConversationId(conversationId);
-    const command = requiredBoundedString(operation.command, 'Command', 4_096);
+    // Execution accepts longer scripts than an approval sheet. They cannot
+    // match a short one-shot grant, but may use existing conversation grants.
+    const command = requiredBoundedString(operation.command, 'Command', 32_000);
     const workingDirectory = requiredBoundedString(
       operation.workingDirectory,
       'Working directory',
@@ -313,7 +315,7 @@ class WorkspaceCapabilityGrantStore {
 
   inspect(conversationId, operation = {}) {
     const ownerId = requiredConversationId(conversationId);
-    const command = requiredBoundedString(operation.command, 'Command', 4_096);
+    const command = requiredBoundedString(operation.command, 'Command', 32_000);
     const workingDirectory = requiredBoundedString(
       operation.workingDirectory,
       'Working directory',

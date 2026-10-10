@@ -404,6 +404,12 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
   return `bzz://${parsed.hash}${parsed.path || '/'}${parsed.search}${parsed.fragment}`;
 };
 
+// Input that names one of Freedom's own schemes: `scheme://…`, or a bare
+// `scheme:…` with no whitespace (so a query like "rad: what is it" still
+// searches).
+const EXPLICIT_DWEB_ADDRESS_RE =
+  /^(?:(?:bzz|ipfs|ipns|ens|web3|freedom):\/\/|(?:bzz|ipfs|ipns|ens|web3|freedom|rad|ethereum):\S*$)/i;
+
 // Build a file:// URL for error.html. `targetUrl` is the user-facing URL
 // shown in the address bar and on the page. `extras` can include:
 //   - protocol: explicit protocol hint ('swarm' | 'ipfs' | 'ipns')
@@ -412,12 +418,22 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
 //     If the display URL is an ENS-backed form (legacy ens:// or transport
 //     ENS like bzz://name.eth) the retry must point at the resolved
 //     transport URL, since the ENS host can't be loaded by Chromium directly.
+//   - reason / status / peers: why a Swarm probe failed (swarm-probe.js
+//     outcome), so the page can say what happened instead of guessing.
+//   - streak: set when this failure follows straight on from an error page
+//     for the same retry URL, so the page keeps counting its auto-retries;
+//     without it the page starts the count over.
 const buildErrorPageUrl = (errorCode, targetUrl, extras = {}) => {
   const errorUrl = new URL('pages/error.html', window.location.href);
   errorUrl.searchParams.set('error', errorCode);
   errorUrl.searchParams.set('url', targetUrl || '');
   if (extras.protocol) errorUrl.searchParams.set('protocol', extras.protocol);
   if (extras.retry) errorUrl.searchParams.set('retry', extras.retry);
+  for (const key of ['reason', 'status', 'peers', 'streak']) {
+    if (extras[key] !== undefined && extras[key] !== null) {
+      errorUrl.searchParams.set(key, String(extras[key]));
+    }
+  }
   return errorUrl.toString();
 };
 
@@ -1153,7 +1169,7 @@ const handleEthereumUri = (value) => {
  * the ENS name. The bzz protocol handler resolves the host on every
  * request (cache hit after the renderer already resolved upstream).
  */
-const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
+const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, options = {}) => {
   const gatewayUrl = target.targetUrl;
   const hash = target.swarmHash || extractBzzHash(gatewayUrl);
   // Probe the same in-manifest path the navigation will load. The gateway
@@ -1162,6 +1178,34 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   // formatBzzUrl), so extracting it here covers both.
   const probePath = extractBzzPath(gatewayUrl);
   const errorDisplayUrl = displayUrl || target.displayValue || gatewayUrl;
+  // What "Try Again" (and the error page's auto-retry) loads: the same URL a
+  // successful probe would hand to Chromium, in-manifest path included. A
+  // bare `bzz://<hash>` would retry the site root instead of the page that
+  // failed and silently move the address bar to the homepage.
+  const bzzRetryUrl =
+    target.bzzLoadUrl ||
+    (parseBzzGatewayUrl(gatewayUrl) ? gatewayUrlToBzzUrl(gatewayUrl) : null) ||
+    `bzz://${hash}${probePath || '/'}`;
+  // An error page counts its auto-retries in sessionStorage, but a retry
+  // that *succeeds* lands on a bzz:// page that can't reach that file://
+  // storage to clear it. So the chrome says whether this load continues a
+  // streak: it does only when the error page itself started it (its
+  // auto-retry, or Try Again, which zeroes the count first; both are a
+  // `location.href` the main process replays as `pageInitiated`) from an
+  // error page for this same retry URL. Anything else starts the count over:
+  // the content loaded in between, a fresh visit, or the user retrying from
+  // the chrome (toolbar Reload, re-typing the URL), which is as explicit a
+  // retry as Try Again and must not inherit an exhausted streak.
+  const continuesRetryStreak = (() => {
+    if (!options.pageInitiated) return false;
+    try {
+      const fromUrl = webview.getURL?.();
+      if (!fromUrl || !isErrorPageUrl(fromUrl)) return false;
+      return new URL(fromUrl).searchParams.get('retry') === bzzRetryUrl;
+    } catch {
+      return false;
+    }
+  })();
 
   if (!hash || !electronAPI?.startSwarmProbe) {
     // No hash or no probe support — fall back to the pre-existing behaviour.
@@ -1229,10 +1273,13 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 
       // Retry URL prefers the ENS-named load URL (so the user's "Try Again"
       // button preserves the ENS host and DevTools/origin stay stable). If
-      // none was supplied, fall back to the hash form, which Chromium can
-      // load directly via the bzz protocol handler.
-      const retryUrl = target.bzzLoadUrl || `bzz://${hash}`;
-      const errorExtras = { protocol: 'swarm', retry: retryUrl };
+      // none was supplied, fall back to the hash form (with its path), which
+      // Chromium can load directly via the bzz protocol handler.
+      const errorExtras = {
+        protocol: 'swarm',
+        retry: bzzRetryUrl,
+        streak: continuesRetryStreak ? 1 : null,
+      };
 
       // If the probe target was an ENS-named bzz URL (`bzz://name.eth/`)
       // and the probe failed (404 / await failure / other content
@@ -1255,7 +1302,12 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
         const message = awaitResult?.error?.message || 'failed to await probe';
         pushDebug(`[Swarm] Probe await failed: ${message}`);
         invalidateOnContentFailure();
-        webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
+        webview.loadURL(
+          buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
+            ...errorExtras,
+            reason: 'probe_failed',
+          })
+        );
         return;
       }
 
@@ -1288,7 +1340,14 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 
       pushDebug(`[Swarm] Probe failed (${outcome.reason}) — showing error page`);
       invalidateOnContentFailure();
-      webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
+      webview.loadURL(
+        buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
+          ...errorExtras,
+          reason: outcome.reason,
+          status: outcome.status ?? outcome.lastStatus,
+          peers: outcome.peers,
+        })
+      );
     })
     .catch((err) => {
       pushDebug(`[Swarm] Probe error: ${err?.message || err}`);
@@ -1297,11 +1356,12 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
       // their actual destination.
       if (navState.swarmProbeVersion !== myVersion) return;
       navState.pendingSwarmProbeId = null;
-      const retryUrl = target.bzzLoadUrl || `bzz://${hash}`;
       webview.loadURL(
         buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
           protocol: 'swarm',
-          retry: retryUrl,
+          retry: bzzRetryUrl,
+          reason: 'probe_failed',
+          streak: continuesRetryStreak ? 1 : null,
         })
       );
     });
@@ -1361,6 +1421,8 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // the browser chrome (an intercepted in-page link or a scripted location
   // change replayed through `navigate-to-url`). It leaves any uncommitted
   // address-bar edit in place; see the `clearAddressBarEdit` call below.
+  // Name-resolution continuations carry it on, and the Swarm probe reads it
+  // to tell an error page's own retry from a chrome-driven one.
   //
   // `options.continuesNavigation` — this call is the second leg of a
   // navigation that already ran the entry bookkeeping below (a name
@@ -1855,6 +1917,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           loadTarget(targetUri, displayOverride || targetUri, capturedWebview, {
             nameResolutionDepth: resolutionDepth + 1,
             continuesNavigation: true,
+            // A page-driven first leg stays page-driven: the Swarm retry
+            // streak (startBzzNavigationWithProbe) keys on it.
+            pageInitiated: !!options.pageInitiated,
           });
           return;
         }
@@ -1920,6 +1985,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         const innerOptions = {
           nameResolutionDepth: resolutionDepth + 1,
           continuesNavigation: true,
+          // Carried so an error page's auto-retry of `bzz://name.eth/…` still
+          // continues its retry streak once the name resolves.
+          pageInitiated: !!options.pageInitiated,
         };
         if (result.protocol === 'bzz') {
           innerOptions.bzzLoadUrl = transportDisplay;
@@ -2117,10 +2185,38 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     return;
   }
 
+  // An address the user typed but Freedom can't open lands on an error page
+  // that names it, rather than nowhere or in the search engine.
+  const showAddressError = (errorCode, displayValue) => {
+    pushDebug(`[AddressBar] ${errorCode}: ${displayValue}`);
+    setAddressDisplayForTab(displayValue, targetTabId);
+    const errorUrl = buildErrorPageUrl(errorCode, displayValue);
+    navState.pendingNavigationUrl = errorUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(errorUrl);
+    syncBzzBase(null);
+  };
+
   // Try Swarm/bzz
   const target = formatBzzUrl(value, state.bzzRoutePrefix);
   if (target) {
     const hashMatch = target.displayValue.match(/^bzz:\/\/([a-fA-F0-9]+)/);
+    // `bzz:` is a standard scheme, so Chromium parses its host like a web
+    // host and reads an all-digit one as an IPv4 number: `bzz://<digits>`
+    // is not a URL the webview can load. Vanishingly rare for a real
+    // reference (about 1 in 10^13), but say so instead of failing quietly.
+    // Only a full 64/128-character reference counts: a short numeric host
+    // such as `bzz://1234` has already been rewritten by Chromium's IPv4
+    // parsing (`bzz://0.0.4.210/`) and is not a Swarm reference at all. An
+    // ENS-backed load (`bzzLoadUrl`) is unaffected, because Chromium loads
+    // `bzz://<name>/`, not the resolved digits.
+    if (
+      !options.bzzLoadUrl &&
+      /^bzz:\/\/(?:[0-9]{64}|[0-9]{128})(?:[/?#]|$)/.test(target.displayValue)
+    ) {
+      showAddressError('unloadable_swarm_hash', target.displayValue);
+      return;
+    }
     // For ENS-host transport URLs we point pendingNavigationUrl at the
     // ENS-named load URL so the `did-navigate` reconciliation in
     // webcontents-setup matches: Chromium will report `bzz://<name>/`
@@ -2144,7 +2240,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     // Probe the Bee gateway first so the tab spinner stays active while the
     // node's peer set warms up; only load the webview once the content is
     // actually retrievable (or bail to the error page).
-    startBzzNavigationWithProbe(webview, augmented, navState, displayValue);
+    startBzzNavigationWithProbe(webview, augmented, navState, displayValue, {
+      pageInitiated: !!options.pageInitiated,
+    });
     return;
   }
 
@@ -2171,6 +2269,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(value);
     pushDebug(`Loading ${value}`);
     syncBzzBase(null);
+    return;
+  }
+
+  // An explicit dweb scheme is an address, never a query: sending a pasted
+  // `bzz://`/`ipfs://` reference to the search provider leaks it and hides
+  // the real problem (a malformed or unopenable address).
+  if (EXPLICIT_DWEB_ADDRESS_RE.test(value.trim())) {
+    showAddressError('invalid_address', value.trim());
     return;
   }
 
@@ -2658,8 +2764,9 @@ export const reloadPage = () => {
   retryErrorPageOrReload(webview, false);
 };
 
-export const hardReloadPage = () => {
-  const webview = getActiveWebview();
+// The page context menu passes the guest it was raised on (always the active
+// one; a stale menu drops the action before it gets here).
+export const hardReloadPage = (webview = getActiveWebview()) => {
   if (!webview) return;
   retryErrorPageOrReload(webview, true);
 };

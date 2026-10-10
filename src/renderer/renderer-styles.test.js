@@ -56,6 +56,8 @@ const {
   findColorLiterals,
   cssViewOfHtml,
   styleBlocks,
+  declarationsWithOffsets,
+  lineOf,
 } = require('../../test/helpers/css-audit');
 const {
   INVENTORY_FILE,
@@ -69,6 +71,73 @@ const {
 
 const RENDERER = __dirname;
 const SOURCES = sources();
+
+/** Top-level comma split of a font-family list (no family name contains a comma). */
+const familiesOf = (list) =>
+  list
+    .replace(/!\s*important\s*$/i, '')
+    .split(',')
+    .map((f) =>
+      f
+        .trim()
+        .replace(/^(['"])(.*)\1$/, '$2')
+        .trim()
+        .toLowerCase()
+    )
+    .filter(Boolean);
+
+// The `font` shorthand ends `<size>[/<line-height>] <family-list>`; the size is
+// the last length/keyword/function before the families. Found on a copy with
+// quoted names blanked, so a digit inside `'Mono 3'` cannot pose as a size.
+const FONT_SIZE =
+  /(?:^|\s)(?:[\d.]+(?:[a-z]+|%)?|xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger|(?:calc|var|clamp|min|max)\([^)]*\))(?:\s*\/\s*\S+)?(?=\s+\S)/gi;
+
+/** Whether a `font-family`/`font` value leaves the stack to the bare generic. */
+function isBareMonospace(property, value) {
+  const v = value.replace(/!\s*important\s*$/i, '').trim();
+  let list = v;
+  if (property === 'font') {
+    const blanked = v.replace(/'[^']*'|"[^"]*"/g, (q) => q[0] + ' '.repeat(q.length - 2) + q[0]);
+    let cut = -1;
+    for (const m of blanked.matchAll(FONT_SIZE)) cut = m.index + m[0].length;
+    if (cut === -1) return false; // a system-font keyword (`caption`, `menu`, …)
+    list = v.slice(cut);
+  }
+  const families = familiesOf(list);
+  return families.length > 0 && families.every((f) => f === 'monospace');
+}
+
+/** Every renderer script that ships (not tests, not vendored bundles). */
+function rendererScripts(dir = RENDERER, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== 'vendor' && entry.name !== 'node_modules') rendererScripts(full, out);
+    } else if (entry.name.endsWith('.js') && !entry.name.endsWith('.test.js')) {
+      out.push(path.relative(RENDERER, full).split(path.sep).join('/'));
+    }
+  }
+  return out.sort();
+}
+
+/** Font values a script sets: DOM style props, `setProperty`, canvas, CSS in strings. */
+function scriptFontValues(src) {
+  const found = [];
+  const add = (property, value, index) => found.push({ property, value, index });
+  for (const m of src.matchAll(/\bfontFamily\s*[:=]\s*(['"`])([^'"`]*)\1/g))
+    add('font-family', m[2], m.index);
+  for (const m of src.matchAll(
+    /\bsetProperty\(\s*(['"])font(-family)?\1\s*,\s*(['"`])([^'"`]*)\3/g
+  )) {
+    add(m[2] ? 'font-family' : 'font', m[4], m.index);
+  }
+  for (const m of src.matchAll(/\.font\s*=\s*(['"`])([^'"`]*)\1/g)) add('font', m[2], m.index);
+  // CSS written inside template literals / strings (`style="…"`, injected sheets).
+  for (const m of src.matchAll(/\b(font-family|font)\s*:\s*([^;{}<>`]*?)\s*(?=[;}"`<]|$)/gim)) {
+    add(m[1].toLowerCase(), m[2], m.index);
+  }
+  return found;
+}
 
 describe('renderer stylesheets', () => {
   test('the sweep sees the stylesheets it is supposed to sweep', () => {
@@ -107,6 +176,98 @@ describe('renderer stylesheets', () => {
       }
     }
     expect(broken).toEqual([]);
+  });
+
+  test('no font stack is the bare generic `monospace` (#616)', () => {
+    // Electron on macOS resolves a lone `monospace` to Times, so the stack
+    // must name real faces first; `var(--font-mono)` is the shared one. Every
+    // way a stylesheet, inline `<style>`, `style=""` or renderer script can
+    // set a family is swept: `font-family` and the `font` shorthand, any case,
+    // across lines, quoted or not, with `!important`, plus `style.fontFamily`,
+    // `setProperty('font-family', …)` and a canvas `ctx.font`.
+    const bare = [];
+    for (const rel of SOURCES) {
+      const src = cssOf(rel);
+      for (const decl of declarationsWithOffsets(maskOpaqueSpans(src))) {
+        const property = decl.property.toLowerCase();
+        if (property !== 'font-family' && property !== 'font') continue;
+        const raw = src.slice(decl.start, decl.end);
+        const value = raw.slice(raw.indexOf(':') + 1).replace(/\/\*[\s\S]*?\*\//g, ' ');
+        if (isBareMonospace(property, value)) bare.push(`${rel}:${lineOf(src, decl.start)}`);
+      }
+    }
+    for (const rel of rendererScripts()) {
+      const src = read(rel);
+      for (const { property, value, index } of scriptFontValues(src)) {
+        if (isBareMonospace(property, value)) bare.push(`${rel}:${lineOf(src, index)}`);
+      }
+    }
+    expect(bare).toEqual([]);
+  });
+
+  test('the bare-monospace check sees every spelling of it (#616)', () => {
+    const bad = [
+      ['font-family', 'monospace'],
+      ['font-family', ' monospace !important'],
+      ['font-family', '"monospace"'],
+      ['font-family', "\n    'monospace',\n    monospace\n  "],
+      ['font-family', 'MONOSPACE'],
+      ['font', '12px monospace'],
+      ['font', 'italic 700 12px/1.4 monospace !important'],
+      ['font', "small 'monospace'"],
+    ];
+    const good = [
+      ['font-family', 'var(--font-mono)'],
+      ['font-family', "'SF Mono', Menlo, monospace"],
+      ['font-family', 'inherit'],
+      ['font', '12px var(--font-mono)'],
+      ['font', "12px 'Mono 3', monospace"],
+      ['font', 'caption'],
+    ];
+    for (const [property, value] of bad)
+      expect([value, isBareMonospace(property, value)]).toEqual([value, true]);
+    for (const [property, value] of good)
+      expect([value, isBareMonospace(property, value)]).toEqual([value, false]);
+
+    const script = [
+      "el.style.fontFamily = 'monospace';",
+      'el.style.fontFamily="monospace"',
+      "el.style.setProperty('font-family', 'monospace', 'important');",
+      "ctx.font = '11px monospace';",
+      'html = `<span style="font-family: monospace">x</span>`;',
+      "const s = { fontFamily: 'monospace' };",
+    ].join('\n');
+    expect(
+      scriptFontValues(script).filter((v) => isBareMonospace(v.property, v.value))
+    ).toHaveLength(6);
+    expect(
+      scriptFontValues("el.style.fontFamily = 'var(--font-mono)';").filter((v) =>
+        isBareMonospace(v.property, v.value)
+      )
+    ).toEqual([]);
+  });
+
+  test('code, kbd, pre and samp default to --font-mono, not the UA `monospace` (#616)', () => {
+    // Without an authored family these elements keep the user-agent sheet's
+    // bare `monospace` — the same Times-on-macOS bug, with no rule to sweep.
+    // `styles/base.css` covers the chrome window (via `styles.css`) and
+    // `pages/styles/theme.css` every internal page (theme.test.js pins that).
+    expect(read('styles.css')).toMatch(/@import '\.\/styles\/base\.css';/);
+    for (const rel of ['styles/base.css', 'pages/styles/theme.css']) {
+      const masked = maskOpaqueSpans(read(rel));
+      expect([rel, masked]).toEqual([
+        rel,
+        expect.stringMatching(
+          /(?:^|\})\s*code,\s*kbd,\s*pre,\s*samp\s*\{\s*font-family:\s*var\(--font-mono\);\s*\}/
+        ),
+      ]);
+    }
+  });
+
+  test('both token files define --font-mono (#616)', () => {
+    for (const rel of ['styles/variables.css', 'pages/styles/theme.css']) {
+      expect(read(rel)).toMatch(/--font-mono:\s*[^;]*monospace;/);
+    }
   });
 });
 

@@ -107,11 +107,18 @@ function cssFor(file) {
 }
 
 describe('the shared internal-page palette', () => {
-  test('is two rules: the dark defaults and the light overrides', () => {
+  test('is the dark defaults, the light overrides and the monospace baseline', () => {
     expect((THEME.match(/\{/g) || []).length).toBe((THEME.match(/\}/g) || []).length);
-    expect(themeBlocks.map((b) => b.prelude)).toEqual(['html', "html[data-theme='light']"]);
+    expect(themeBlocks.map((b) => b.prelude)).toEqual([
+      'html',
+      "html[data-theme='light']",
+      'code, kbd, pre, samp',
+    ]);
+    // The baseline only swaps the user-agent `monospace` for the token (#616);
+    // anything more would be a layout rule every page inherits.
+    expect(themeBlocks[2].body.replace(/\s+/g, ' ').trim()).toBe('font-family: var(--font-mono);');
     // Nothing but the palette: a layout rule here would apply to every page.
-    for (const block of themeBlocks) {
+    for (const block of themeBlocks.slice(0, 2)) {
       const properties = [...stripStrings(block.body).matchAll(/([\w-]+)\s*:/g)].map(([, p]) => p);
       expect(properties.filter((p) => !p.startsWith('--') && p !== 'color-scheme')).toEqual([]);
     }
