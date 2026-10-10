@@ -25,13 +25,45 @@ policy was rejected under the earlier project-only read requirement. Broader
 reads are now accepted, while write containment, UI qualification and preview
 connectivity remain gates.
 
-No Freedom runtime code or dependencies changed. Windows workspace execution
-continues to fail closed. The initial MXC SDK spike made no host ACL changes.
+The initial spike made no Freedom runtime/dependency changes or host ACL changes.
+The experimental implementation described below now adds a Windows executor;
+it refuses execution until its separate administrator setup is complete.
 The later Codex unelevated comparison uses Codex's scoped ACL setup in synthetic
 workspaces. The user completed elevated provisioning, and that backend passed
 the full reference suite in the standard user's desktop session. No OS update
 was needed. The elevated backend is now the first implementation target; MXC
 remains an optional path pending preview and process-lifetime qualification.
+
+## Freedom integration — in progress, 2026-10-10
+
+The experimental branch now implements `windows-elevated` behind the existing
+workspace executor interface. A small native adapter reuses only the upstream
+sandbox library and setup/runner helpers, pinned to Codex 0.162.1 source commit
+`092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`. It does not run the Codex agent CLI.
+Build inputs and helper binaries are hash checked. Freedom uses separate account,
+firewall and setup-state names so it does not rotate Codex's credentials.
+
+The backend supports explicit read-only and writable project policies, protected
+Git metadata, private temporary storage, network-none/full, bounded output,
+streaming stdin/stdout and cancellation. The approval UI discloses broad reads
+and the one-time administrator setup. No automatic weaker fallback is enabled.
+PowerShell is the Windows command shell. Cancellation receipts remain
+conservative: a launch attempt does not certify that no side effects occurred,
+or that every descendant has stopped.
+
+Implementation checks: native x64 build succeeded before the final lockfile
+reproducibility adjustment; macOS lint and full unit suite pass (9,420 tests).
+`scripts/qualify-windows-workspace.js` exercises Freedom's actual policy and
+executor, rather than the earlier Codex CLI reference. That qualification still
+requires the separate Freedom administrator provisioning; reference results
+must not be reported as results for this new integration.
+
+Remaining gates before merge: actual executor desktop qualification, controller
+file/build/history/preview flow, setup cancellation/retry, Windows path aliases
+and alternate data streams, packaged Electron runtime, installer/license
+inventory, and full application UI smoke. MXC remains a future explicit backend
+once its preview and process-lifetime gaps are resolved; it must not silently
+replace the selected backend.
 
 ## Environment and sync
 

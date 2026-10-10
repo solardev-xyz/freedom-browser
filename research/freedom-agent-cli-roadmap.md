@@ -10,6 +10,18 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-10
 
+### Windows implementation in progress — 2026-10-10
+
+`experiment/agent-windows-mxc` now contains an experimental elevated Windows
+executor, native build/packaging adapter, administrator setup disclosure,
+PowerShell commands and Windows checkpoint environment. It reuses the pinned
+Codex sandbox library with separate Freedom OS identities. No MXC or unelevated
+fallback is active. Lint and 9,420 unit tests pass on macOS; native x64 builds
+have succeeded. This is **not yet Windows product qualification**: Freedom's
+separate provisioning and actual executor/controller desktop tests are pending.
+See [the implementation gates](agent-windows-mxc-feasibility.md#freedom-integration--in-progress-2026-10-10)
+for the remaining work and future MXC boundary.
+
 ### Native Windows preparation and MXC spike — 2026-10-09
 
 **Updated decision, 2026-10-10:** the user accepts broad reads on Windows with
