@@ -557,6 +557,36 @@ for (const theme of ['dark', 'light']) {
       }
     );
 
+    // #609: the same light-theme leak on the private window's menus, which
+    // light-theme.css painted white under the light lavender text.
+    test(
+      declare(`private window menus render legibly in ${theme}`),
+      async ({ electronApp, window }) => {
+        test.setTimeout(180_000);
+        const pw = await recipes.privateWindow({ app: electronApp, win: window });
+        const ctx = { app: electronApp, win: pw };
+        const check = (label, opts) => assertSurface(pw, { label, theme, ...opts });
+
+        await recipes.appMenu(ctx);
+        await check('private app menu', { minSamples: 3 });
+        await closeMenus(pw);
+
+        await recipes.nodesMenu(ctx);
+        await check('private nodes menu', { minSamples: 3 });
+        await closeMenus(pw);
+
+        await recipes.tabContextMenu(ctx);
+        await check('private tab context menu', { minSamples: 3 });
+        await pw.keyboard.press('Escape');
+
+        // The seeded bookmarks bar holds "vitalik.eth" and "Vitalik CID".
+        await pw.click('[data-test="address-input"]');
+        await pw.keyboard.type('vital');
+        await pw.waitForSelector('#autocomplete-dropdown:not(.hidden) .autocomplete-item');
+        await check('private address suggestions', { minSamples: 2 });
+      }
+    );
+
     test(
       declare(`wallet and permission subscreens render legibly in ${theme}`),
       async ({ electronApp, window }) => {

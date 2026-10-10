@@ -4,8 +4,12 @@
 const { Arch } = require('builder-util');
 const removeLocales = require('./remove-locales').default;
 const { bundleVcRuntime, findRedistDir } = require('./win-vcruntime');
+const { checkPackedApp } = require('./check-asar-contents');
 
 exports.default = async function afterPack(context) {
+  const packed = checkPackedApp(context, Arch[context.arch]);
+  console.log(`  • app.asar holds ${packed} files, all inside the build.files allowlist`);
+
   await removeLocales(context);
 
   if (context.electronPlatformName === 'win32') {

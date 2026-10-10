@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 66,
+  "total": 74,
   "gaps": [
     {
       "surface": "Swarm connect approval",
@@ -267,6 +267,22 @@
       "bar": 4.5
     },
     {
+      "surface": "private address suggestions",
+      "theme": "dark",
+      "el": "div.autocomplete-icon-placeholder",
+      "text": "E",
+      "ratio": 3.79,
+      "bar": 4.5
+    },
+    {
+      "surface": "private address suggestions",
+      "theme": "light",
+      "el": "div.autocomplete-icon-placeholder",
+      "text": "E",
+      "ratio": 3.79,
+      "bar": 4.5
+    },
+    {
       "surface": "private bookmark dialog",
       "theme": "dark",
       "el": "button#bookmark-submit-btn.primary-btn",
@@ -280,6 +296,54 @@
       "el": "button#bookmark-submit-btn.primary-btn",
       "text": "Add Bookmark",
       "ratio": 2.4,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "dark",
+      "el": "span.bee-toggle-label",
+      "text": "Swarm",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "dark",
+      "el": "span.ipfs-toggle-label",
+      "text": "IPFS",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "dark",
+      "el": "span.radicle-toggle-label",
+      "text": "Radicle",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "light",
+      "el": "span.bee-toggle-label",
+      "text": "Swarm",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "light",
+      "el": "span.ipfs-toggle-label",
+      "text": "IPFS",
+      "ratio": 2.17,
+      "bar": 4.5
+    },
+    {
+      "surface": "private nodes menu",
+      "theme": "light",
+      "el": "span.radicle-toggle-label",
+      "text": "Radicle",
+      "ratio": 2.17,
       "bar": 4.5
     },
     {

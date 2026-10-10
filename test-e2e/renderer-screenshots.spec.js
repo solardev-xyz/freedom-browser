@@ -560,7 +560,8 @@ test.describe('renderer screenshots', () => {
       // main-process state machine through the harness, the same entry point
       // electron-updater's events use, so both renderers paint what a user
       // would see mid-download and once an update is staged. Sizes and speed
-      // are fixed, and "Last checked just now" holds for the minute this takes.
+      // are fixed, and neither state shows a "Last checked" line (#594), so
+      // nothing here depends on the clock.
       test(`update states (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(180_000);
         const ctx = { app: electronApp, win: window };

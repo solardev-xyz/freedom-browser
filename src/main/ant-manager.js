@@ -25,6 +25,14 @@ const {
   clearService,
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
+const { getLegacyExternalCandidateChoice } = require('./profile-external-candidates');
+const {
+  clearAntProcessMarker,
+  fetchNodeOverlay,
+  findOwnLiveAntd,
+  recordAntProcessOverlay,
+  writeAntProcessMarker,
+} = require('./ant-process-marker');
 const { antApiGet } = require('./swarm/ant-api-chrome');
 const { loadSettings, saveSettings } = require('./settings-store');
 const antCache = require('./swarm/ant-cache');
@@ -48,6 +56,7 @@ let pendingStart = false;
 let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
+let overlayRetryTimer = null;
 const statusListeners = new Set();
 
 function closeChainBridge(bridge = chainBridge) {
@@ -632,10 +641,48 @@ async function startAnt() {
     return;
   }
 
-  // Step 1: Legacy/profile-dir launches may still opt into a system daemon.
-  const existing = managedProfileNode ? { found: false } : await detectExistingDaemon();
+  // Step 1: Legacy/profile-dir launches may still opt into a system daemon,
+  // as answered in the launch prompt (profile-external-candidates.js, #218).
+  const legacyChoice = managedProfileNode
+    ? null
+    : getLegacyExternalCandidateChoice(getActiveProfile(), 'bee');
+  // This profile's own antd may have outlived a Freedom that crashed or was
+  // killed (ant-process-marker.js), on 1633 or, if the profile keeps its own
+  // node beside a foreign one, on the next free port. It holds the data dir's
+  // statestore lock, so a second antd beside it cannot start: reuse it
+  // whatever the saved choice says, as before #218.
+  const ownOrphan = managedProfileNode
+    ? null
+    : await findOwnLiveAntd(getActiveProfile()?.userDataDir);
+  if (generation !== startGeneration) return;
+
+  let existing;
+  if (managedProfileNode) {
+    existing = { found: false };
+  } else if (ownOrphan) {
+    log.info(
+      '[Ant] The node on port', ownOrphan.apiPort,
+      `is this profile's own antd from an earlier run (pid ${ownOrphan.pid}); reusing it`
+    );
+    existing = { found: true, port: ownOrphan.apiPort };
+  } else {
+    existing = await detectExistingDaemon();
+  }
 
   if (generation !== startGeneration) return;
+
+  // Kept managed: the node on the default port is somebody else's, so start
+  // the bundled one beside it, clear of both of its ports.
+  const keepLegacyManaged = existing.found && !ownOrphan && legacyChoice === 'managed';
+  if (keepLegacyManaged) {
+    log.info('[Ant] Not reusing the node on port', existing.port, '(profile keeps its own node)');
+    existing = { found: false, conflict: true, port: existing.port };
+  } else if (existing.found && !ownOrphan && legacyChoice !== 'external') {
+    log.warn(
+      '[Ant] Reusing a node on port', existing.port,
+      'without a saved choice for this profile; Swarm requests will go through it'
+    );
+  }
 
   if (existing.found) {
     // Reuse existing daemon
@@ -722,9 +769,14 @@ async function startAnt() {
     apiPort = newApiPort;
   }
 
-  const managedP2pPortBusy = managedProfileNode ? await isPortOpen(p2pPort) : false;
+  const managedP2pPortBusy = managedProfileNode || keepLegacyManaged
+    ? await isPortOpen(p2pPort)
+    : false;
   if (managedP2pPortBusy) {
-    const newP2pPort = await findAvailablePort(p2pPort + 1, DEFAULTS.ant.fallbackRange, {
+    // Search above the API port too: with the defaults (1633/1634) both taken
+    // the API moves to 1635, which is still free until antd binds it.
+    const p2pSearchStart = Math.max(p2pPort, apiPort) + 1;
+    const newP2pPort = await findAvailablePort(p2pSearchStart, DEFAULTS.ant.fallbackRange, {
       reservedPorts: reservedProfilePorts,
     });
     if (!newP2pPort) {
@@ -812,6 +864,8 @@ async function startAnt() {
     antProcess = spawn(binPath, args);
     antSpawnedAt = Date.now();
     const child = antProcess;
+    const markerDir = getActiveProfile()?.userDataDir;
+    writeAntProcessMarker(markerDir, { pid: child.pid, apiPort, dataDir });
 
     bridge.pipeLog(child.stdout, (line) => {
       log.info(`[Ant stdout]: ${line}`);
@@ -822,9 +876,11 @@ async function startAnt() {
 
     antProcess.on('close', (code) => {
       void closeChainBridge(bridge);
+      clearAntProcessMarker(markerDir, child.pid);
       if (antProcess !== child) return;
       log.info(`[Ant] Process exited with code ${code}`);
       antProcess = null;
+      clearOverlayRetry();
 
       if (forceKillTimeout) {
         clearTimeout(forceKillTimeout);
@@ -896,6 +952,8 @@ async function startAnt() {
 
         updateState(STATUS.RUNNING);
         startHealthCheck();
+        // Lets the next launch recognise this antd if it outlives Freedom.
+        recordOverlayUntilKnown(child, generation, markerDir, apiPort);
       } else {
         attempts++;
         if (attempts >= maxAttempts) {
@@ -913,9 +971,44 @@ async function startAnt() {
   }
 }
 
+// Until the spawned antd has reported its overlay, the marker cannot identify
+// it after a crash (findOwnLiveAntd never matches a marker without one), so a
+// failed /addresses fetch (a timeout on a loaded host, a node still settling)
+// is retried with backoff for as long as this child is the current antd,
+// instead of leaving the marker overlay-less for the whole run (#218 review
+// R3-M1).
+const OVERLAY_RETRY_INITIAL_MS = 2000;
+const OVERLAY_RETRY_MAX_MS = 30000;
+
+function clearOverlayRetry() {
+  if (overlayRetryTimer) {
+    clearTimeout(overlayRetryTimer);
+    overlayRetryTimer = null;
+  }
+}
+
+function recordOverlayUntilKnown(child, generation, markerDir, apiPort, delayMs = OVERLAY_RETRY_INITIAL_MS) {
+  clearOverlayRetry();
+  const isCurrent = () => generation === startGeneration && antProcess === child;
+  void fetchNodeOverlay(apiPort).then((overlay) => {
+    if (!isCurrent()) return;
+    if (overlay) {
+      recordAntProcessOverlay(markerDir, child.pid, overlay);
+      return;
+    }
+    overlayRetryTimer = setTimeout(() => {
+      overlayRetryTimer = null;
+      if (!isCurrent()) return;
+      recordOverlayUntilKnown(child, generation, markerDir, apiPort,
+        Math.min(delayMs * 2, OVERLAY_RETRY_MAX_MS));
+    }, delayMs);
+  });
+}
+
 // Stop Ant and return a Promise that resolves when the process exits
 function stopAnt() {
   ++startGeneration;
+  clearOverlayRetry();
   const bridgeClosed = closeChainBridge();
   return new Promise((resolve) => {
     pendingStart = false;

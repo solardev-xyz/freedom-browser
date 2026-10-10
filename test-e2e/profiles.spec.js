@@ -75,6 +75,73 @@ test('node config: Myotis is embedded per profile and can be disabled', async ({
   expect(updated.nodes.myotis).toEqual({ mode: 'disabled', backend: 'myotis-native' });
 });
 
+// #377: with Tor mode `disabled` on the profile, a start click is answered by
+// tor-manager's startDisabledTor() with `stopped` and "Tor disabled for this
+// profile". The Nodes menu used to write that message into its status row and
+// then render it at zero height, so the toggle flipped on, snapped back and
+// nothing said why. Lives here because a profile's node config is only editable
+// on a catalog profile, which is what these fixtures launch.
+test('node config: a Tor-disabled profile says why the Tor toggle will not start (#377)', async ({
+  window,
+}) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await expect
+    .poll(() => settingsEval(window, `typeof window.freedomAPI?.updateProfileNodeConfig`))
+    .toBe('function');
+  const saved = await settingsEval(
+    window,
+    `window.freedomAPI.saveSettings({ enableTorIntegration: true })`
+  );
+  expect(saved).toBeTruthy();
+  const result = await settingsEval(
+    window,
+    `window.freedomAPI.updateProfileNodeConfig('tor', { mode: 'disabled' })`
+  );
+  expect(result?.success).toBe(true);
+  expect(result.profile.nodes.tor.mode).toBe('disabled');
+
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+  await expect(window.locator('#tor-nodes-section')).not.toHaveClass(/hidden/);
+  await window.locator('#tor-toggle-btn').click();
+
+  // Rendered geometry, not classes: the bug was a correct message at zero height.
+  const torSection = () =>
+    window.evaluate(() => {
+      const shown = (el) => Boolean(el) && el.getBoundingClientRect().height > 0;
+      return {
+        on: document.getElementById('tor-toggle-switch').classList.contains('running'),
+        statusShown: shown(document.getElementById('tor-status-row')),
+        statusText: document.getElementById('tor-status-label').textContent,
+        versionShown: shown(document.getElementById('tor-version-text')),
+      };
+    });
+  const refused = {
+    on: false,
+    statusShown: true,
+    statusText: 'Tor disabled for this profile',
+    versionShown: false,
+  };
+  await expect.poll(torSection).toEqual(refused);
+
+  // Past the 5s status poll, which re-runs the `stopped` path that used to
+  // strip the row.
+  await window.waitForTimeout(6_000);
+  expect(await torSection()).toEqual(refused);
+
+  // Switching the mode back takes the notice down without another start click.
+  const restored = await settingsEval(
+    window,
+    `window.freedomAPI.updateProfileNodeConfig('tor', { mode: 'managed' })`
+  );
+  expect(restored?.success).toBe(true);
+  await expect
+    .poll(torSection)
+    .toEqual({ on: false, statusShown: false, statusText: '', versionShown: false });
+  await window.waitForTimeout(6_000);
+  expect((await torSection()).statusShown).toBe(false);
+});
+
 // Settings → Nodes commits on change like every other section (#271). Lives
 // here rather than in settings.spec.js because node config is only editable on
 // a catalog profile, which is what these fixtures launch. No

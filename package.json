@@ -126,6 +126,13 @@
       "entitlementsInherit": "config/entitlements.mac.plist",
       "notarize": true,
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!src/**/__tests__/**",
+        "!src/**/__fixtures__/**",
+        "!src/**/__mocks__/**",
         "!**/node_modules/better-sqlite3/prebuilds/!(darwin-${arch}).node"
       ],
       "extraResources": [
@@ -165,6 +172,13 @@
         "x-scheme-handler/bzz"
       ],
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!src/**/__tests__/**",
+        "!src/**/__fixtures__/**",
+        "!src/**/__mocks__/**",
         "!**/node_modules/better-sqlite3/prebuilds/!(linux-${arch}).node"
       ],
       "extraResources": [
@@ -211,6 +225,13 @@
       ],
       "icon": "assets/icon.png",
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!src/**/__tests__/**",
+        "!src/**/__fixtures__/**",
+        "!src/**/__mocks__/**",
         "!**/node_modules/better-sqlite3/prebuilds/!(win32-${arch}).node"
       ],
       "extraResources": [
@@ -234,7 +255,10 @@
       "src/**/*",
       "package.json",
       "!**/*.test.js",
-      "!**/coverage/**"
+      "!**/coverage/**",
+      "!src/**/__tests__/**",
+      "!src/**/__fixtures__/**",
+      "!src/**/__mocks__/**"
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
