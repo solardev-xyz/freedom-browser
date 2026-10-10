@@ -222,7 +222,10 @@ function loadIpcHandlersModule(options = {}) {
   const myotisManager = options.myotisManager || {
     stopAllMyotis: jest.fn(),
     refreshMyotisStatus: jest.fn(),
-    NETWORKS: new Map([[1, {}], [100, {}]]),
+    NETWORKS: new Map([
+      [1, {}],
+      [100, {}],
+    ]),
   };
 
   const { mod, app, webContents } = loadMainModule(require.resolve('./ipc-handlers'), {
@@ -361,6 +364,31 @@ describe('ipc-handlers', () => {
       })
     ).resolves.toEqual(success());
     expect(ctx.state.activeBzzBases.has(5)).toBe(false);
+  });
+
+  test('Restart relaunches without the links (or --open-settings) this launch opened', () => {
+    const ctx = loadIpcHandlersModule();
+    ctx.app.relaunch = jest.fn();
+    ctx.app.quit = jest.fn();
+    const originalArgv = process.argv;
+    process.argv = [
+      '/opt/Freedom/freedom',
+      '--profile',
+      'work',
+      'https://x.example/',
+      '--open-settings',
+      '--no-sandbox',
+    ];
+    try {
+      ctx.mod.registerBaseIpcHandlers();
+      ctx.ipcMain.emit(IPC.APP_RELAUNCH, {});
+    } finally {
+      process.argv = originalArgv;
+    }
+    expect(ctx.app.relaunch).toHaveBeenCalledWith({
+      args: ['--profile', 'work', '--no-sandbox'],
+    });
+    expect(ctx.app.quit).toHaveBeenCalled();
   });
 
   test('registers window, app, and internal routing handlers', async () => {
