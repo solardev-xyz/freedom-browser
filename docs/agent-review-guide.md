@@ -17,7 +17,12 @@ remote MCP services have independent connection management in the composer + men
 
 The UI includes provider/model discovery, searchable model selection, permission
 controls, approvals, live activity and helper cards, durable conversations,
-workspace/server controls, and Files/Changes/History viewers. Managed workspaces
+workspace/server controls, and Files/Changes/History viewers. Provider connections
+include hosted API keys, ChatGPT/Meta sign-in, local Ollama, an installed Claude
+Code personal subscription, and custom OpenAI-compatible Chat Completions servers.
+Custom connections offer an optional per-model streaming/tool compatibility check.
+Conversation privacy distinguishes provider claims, transport observations,
+verified evidence and E2EE actually used. Managed workspaces
 save reviewed milestones; external repositories use their own Git history and
 commit only within the user's task authorization.
 
@@ -36,6 +41,9 @@ current implementation contract.
 | Product behavior and deliberate limits | [Active roadmap](../research/freedom-agent-cli-roadmap.md), this guide | Does the shipped scope match the user-facing claims? Are unqualified paths explicit? |
 | Runtime and orchestration | `src/main/agent/runtime.js`, `freedom-agent-service.js`, `pi-session-factory.js`; [subagents](agent-subagents.md) | Are turns, steering, Stop, provider changes and helper ownership coherent? Can late work escape its original run? |
 | ChatGPT sign-in | `src/main/agent/chatgpt-login.js`, `provider-resolver.js`, `provider-runtime.test.js` | Freedom owns the name hint, loopback callback pages and initial code exchange because Pi 1.0.2 hardcodes its branding. Pi retains credential storage, refresh and model transport. Compare the adapter with Pi's `auth/oauth/openai-chatgpt.js` when upgrading; preserve PKCE, issued client IDs, direct-token scopes, state checks (including denial callbacks), cancellation and retry. |
+| Claude subscription | [Contract and qualification](agent-claude-subscription.md); `src/main/agent/claude-cli.js`, `claude-session.js` (the tool bridge is in `claude-cli.js`) | Are built-in CLI tools disabled, environment/configuration constrained, managed policies refused and only the session's approved Freedom tools exposed? Does cancellation retire the process and bridge? |
+| Custom endpoints and credentials | [Connection contract](agent-openai-compatible-spike.md); `src/main/agent/compatible-provider.js`, `provider-resolver.js`, `provider-store.js`; `test-e2e/custom-provider.spec.js` | Can endpoint edits, redirects, model refresh or key rotation misroute a credential or conversation? Are capabilities explicit, checks opt-in and results tied to their model/settings? |
+| Conversation privacy | [Privacy contract](agent-session-privacy.md); `src/main/agent/session-privacy.js`, `privacy-request.js`, `privacy-attestation.js`; `src/renderer/lib/agent-privacy.js` | Do displayed guarantees match observed requests? Are encryption fallback, hardware advisories, CLI visibility limits and OpenRouter retention constraints represented accurately? |
 | Codemode and connected services | `pi-codemode.js`, `mcp-connections.js`, `pi-mcp-tools.js`; [integration boundaries](agent-codemode-mcp.md) | Do nested calls retain scope, approvals, Stop and partial-effect receipts? Are OAuth credentials isolated and service responses untrusted? |
 | Browser authority | `src/main/automation/origin-scoped-controller.js`, `automation-controller.js`, adapters; [WebMCP](webmcp-agent.md) | Are tab/frame ownership, origin, freshness and approval checked at dispatch? Are page-provided descriptions treated as untrusted? |
 | Project and command authority | `src/main/agent/managed-workspace-controller.js`, `external-project-access.js`, `workspace-execution/`; [existing projects](agent-existing-projects.md), [access review](agent-access-review.md) | Can read-only access expand accidentally? Are executable/network grants bounded? Do partial edits remain visible after Stop? |
@@ -59,27 +67,24 @@ reported separately; a partial rerun is not a fresh full-platform qualification.
 Do not use a live user profile for automated failure injection. Risky Git fixtures
 belong on the designated disposable testing machine.
 
-[CI run 36561402138](https://github.com/solardev-xyz/freedom-browser/actions/runs/36561402138)
-passed on code commit `bd67be70`: 48 jobs succeeded; opt-in live Myotis was skipped.
-The automation job passed all 84 tests. The Agent job passed 81 tests and one
-wallet approval test on retry; retain that test-reliability caveat. The final
-local unit run passed 7,898 tests (129 skipped). Mac mini qualification passed
-91 focused tests plus seven recovery probes with Node 24 and locked dependencies.
-Those results describe the September baseline, not the newer provider,
-codemode or MCP additions. The October 4 Pi 1.0.2 run passed 8,181 tests (129
-skipped), lint and four disposable Electron scenarios covering ChatGPT/Meta
-sign-in, existing-chat MCP management, native codemode and ASAR worker/WASM
-execution. A bounded native output-flood probe also passed. Human smoke tests
-confirmed MCP and autonomous codemode/delegation use. September's Claude review
-does not cover these later changes; current PR checks must qualify the pushed head.
+Current review baseline: merge `e944cc19`, integrating `main` at `5b832a0d`.
+The three conflict resolutions retain launch URL handoff alongside headless-runtime
+profile handling, automation attachment before guest creation, and both Tor status
+exports. Documentation-only commits after this baseline do not change its code.
 
-October 10 integration adds Windows x64 native execution. Local lint and 9,483
-unit tests pass; all 110 Agent/settings Electron checks pass. The Windows NSIS
-install and extracted ZIP each pass 16 packaged smoke tests and the complete
-Agent controller qualification (files, build, checkpoint, preview, stdin/Stop,
-and external-project permissions). Current-state [dark/light UI evidence](audits/evidence/freedom-agent-2026-10/README.md)
-is included. Current-head CI and the Windows intermittent parallel-helper result
-are tracked in the [qualification record](../research/agent-windows-mxc-feasibility.md).
+| Evidence | Scope and limit |
+| --- | --- |
+| Current merged code, macOS | Lint and full unit suite: **9,660 passed, 129 skipped**. **138 Agent/settings/runtime/profile/update Electron tests passed** on this same code. The PR records current-head GitHub checks separately. Skips are not passes. |
+| Claude subscription, macOS | Live provider UI, multi-turn chat, approvals/decline/Stop, helpers and a managed build/checkpoint/preview; user smoke passed. Windows/Linux CLI and packaged-app qualification remain open. |
+| Custom connections, macOS | Fixture UI covers discovery, two independent connections, keyless/manual models, streaming, tool checks, late-result model attribution, retry and continue. Production adapter/codemode worked against the supplied endpoint; user smoke passed. This is not qualification of every compatible server/model. |
+| Core Windows x64, `c717eb65` | Physical standard-user sandbox/controller and packaged NSIS/ZIP checks; 20 repeated parallel-helper cases. [CI](https://github.com/solardev-xyz/freedom-browser/actions/runs/38047194963) and [Windows qualification](https://github.com/solardev-xyz/freedom-browser/actions/runs/38047194934) passed. These predate Claude/custom-provider additions and the latest main merge. Package hashes and scope are retained in the PR's historical evidence. |
+| Earlier Linux/macOS containment and September review | Dated evidence remains in the roadmap and [independent audit](audits/freedom-agent-feature-review-2026-09.md). It does not independently review subsequent provider/privacy/UI/Windows additions. |
+
+Never substitute a historical green CI run for the current PR head. The new push
+must run its own checks, including the Windows sandbox workflow. The latter uses
+an elevated CI runner; the physical Windows evidence used a standard user. Real
+administrator provisioning succeeded, but UAC cancellation/retry has controller
+test coverage rather than an injected live UAC cancellation.
 
 The following manual checks remain explicitly unconfirmed and were not selected
 for this preparation pass:
@@ -113,6 +118,27 @@ Useful reviewer smoke tests, in disposable projects:
 8. Ask for a source-only architecture/accessibility review without mentioning
    codemode. Check recorded tool-script usage and helper counts, then Stop a
    helper and reopen the conversation to inspect its saved receipt.
+
+9. Connect an installed, authenticated personal Claude Code account. Check discovered
+   model names, a normal chat, an approved browser action and Stop. Follow the CLI
+   contract's setup requirements rather than copying its OAuth credentials.
+10. Add a custom provider using a disposable fixture or a server you are authorized
+    to use. Saving must not send inference. Explicitly run the optional check,
+    switch models during it, retry a failure and continue without checking.
+
+## Assigning review passes
+
+This is a large accumulated feature. Start with the contracts and the relevant
+entry points in the table, then follow their callers, IPC dispatch and tests.
+Suggested independent passes are provider/auth/privacy; browser/MCP authority;
+workspace/Git/native execution; and orchestration/persistence/UI. Cross-boundary
+findings need a follow-up across the affected passes. The September audit is
+prior evidence, not a clean bill of health for the current tree.
+
+A ready-to-use [review task brief](agent-playbooks/freedom-agent-review.md) provides
+scope, evidence expectations and a finding format for human or agent reviewers.
+The active roadmap contains historical experiments and deferred work; it is not
+necessary to read all its chronology before examining the production code.
 
 ## Platform boundaries and deferred extensions
 

@@ -1,5 +1,5 @@
 - Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
-  - Sign in with ChatGPT or Meta Muse, connect model-provider API keys, or use local Ollama models
+  - ChatGPT, Meta Muse and installed Claude Code subscriptions; provider API keys, custom OpenAI-compatible servers, and local Ollama models
   - Website actions, parallel helpers, connected MCP services, and permission controls
   - Sandboxed tool scripts for multi-step tasks
   - Local projects on macOS, Linux, and Windows; file comparisons, Git history, previews, and Swarm publishing

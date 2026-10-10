@@ -10,6 +10,23 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-10
 
+### Review preparation and main synchronization — 2026-10-10
+
+Merged current `main` (`5b832a0d`) as `e944cc19`, retaining runtime/profile-lock
+handling and early automation attachment alongside main's launch URL handoff,
+and retaining both Tor status exports. Lint and the full unit suite pass:
+**9,660 passed, 129 skipped**. The post-merge Mac Electron run passed all **138
+Agent/settings/runtime/profile/update tests**. See PR #457 for current-head CI;
+older green runs do not qualify the new head.
+
+The [review guide](../docs/agent-review-guide.md) now includes Claude subscription,
+custom endpoint and privacy passes, dated qualification boundaries, and a
+[review task brief](../docs/agent-playbooks/freedom-agent-review.md) for human or
+agent reviewers. Custom-provider setup and optional compatibility checks have
+passed user smoke testing. Native Windows/Linux qualification of those newer
+provider flows, the two recorded manual lifecycle checks, and human review remain
+open. Existing Windows core-executor/package evidence is retained separately.
+
 ### Custom OpenAI-compatible connections — integrated into feature branch, 2026-10-10
 
 `experiment/agent-openai-compatible` verifies the user-supplied Clankyou endpoint
