@@ -589,7 +589,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
     emit({ type: 'tool_started', toolCallId: 'helper', operation: 'delegate_task', intent: 'Delegating: Review planet controls' });
   });
   await expect(window.locator('.agent-tool-list')).toContainText('Delegating: Review planet controls');
-  await window.screenshot({ path: testInfo.outputPath('helper-running.png') });
+  await window.screenshot({ animations: 'disabled', path: testInfo.outputPath('helper-running.png') });
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     window.webContents.send('agent:event', { runId: 'run_helper_ui', type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '1 report received · 1 helper working',
@@ -619,7 +619,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
 
   for (const theme of ['dark', 'light']) {
     await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
-    await window.screenshot({ path: testInfo.outputPath(`helper-background-${theme}.png`) });
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`helper-background-${theme}.png`) });
   }
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
@@ -660,13 +660,13 @@ test('delegated reports are expandable, inert and coherent in both themes and la
       await expect(report).toBeVisible();
       expect(await report.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
       await report.scrollIntoViewIfNeeded();
-      await window.screenshot({ path: testInfo.outputPath(`helper-report-${layout}-${theme}.png`) });
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`helper-report-${layout}-${theme}.png`) });
       const sixth = window.locator('.agent-subagent-report').nth(5);
       await sixth.scrollIntoViewIfNeeded();
       await expect(sixth).toBeVisible();
-      await window.screenshot({ path: testInfo.outputPath(`helper-sixth-${layout}-${theme}.png`) });
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`helper-sixth-${layout}-${theme}.png`) });
       await browserReport.scrollIntoViewIfNeeded();
-      await window.screenshot({ path: testInfo.outputPath(`helper-browser-${layout}-${theme}.png`) });
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`helper-browser-${layout}-${theme}.png`) });
     }
   }
 });
@@ -700,7 +700,7 @@ test('project editing approval sheet is clear in both layouts and themes', async
     for (const theme of ['dark', 'light']) {
       await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
       await expect(window.locator('#agent-approval-approve')).toBeVisible();
-      await window.screenshot({ path: testInfo.outputPath(`project-approval-${layout}-${theme}.png`) });
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`project-approval-${layout}-${theme}.png`) });
     }
   }
   await electronApp.evaluate(({ BrowserWindow }) => {
@@ -714,7 +714,7 @@ test('project editing approval sheet is clear in both layouts and themes', async
   await expect(window.locator('#agent-approval-origin')).toContainText('Review\\u{200B} these changes');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
-    await window.screenshot({ path: testInfo.outputPath(`project-approval-controls-${theme}.png`) });
+    await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`project-approval-controls-${theme}.png`) });
   }
 });
 
@@ -750,7 +750,7 @@ test('existing project picker and access controls work in both layouts and theme
         await window.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
         await row.click();
         await expect(window.locator('.agent-workspace-popover')).toBeVisible();
-        await window.screenshot({ path: testInfo.outputPath(`project-${layout}-${theme}.png`) });
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`project-${layout}-${theme}.png`) });
         await window.locator('.agent-workspace-popover').getByRole('button', { name: 'Close', exact: true }).click();
       }
     }
@@ -1548,7 +1548,7 @@ test('saved helper reports load on expansion and page through complete SQLite te
       await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
       await card.locator('summary').scrollIntoViewIfNeeded();
       expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      await window.screenshot({ path: testInfo.outputPath(`saved-report-${layout}-${theme}.png`) });
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`saved-report-${layout}-${theme}.png`) });
     }
   }
   expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(2);
@@ -1656,7 +1656,7 @@ test('publication card follows one job through waiting, confirmation and complet
     }
     for (const theme of ['dark', 'light']) {
       await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-      await window.screenshot({ path: testInfo.outputPath(`publication-${stage.state}-${theme}.png`) });
+      await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`publication-${stage.state}-${theme}.png`) });
     }
   }
 });

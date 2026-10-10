@@ -66,6 +66,8 @@ const MAX_WORKSPACE_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_WORKSPACE_SEARCH_PATTERN_LENGTH = 1_000;
 
 // Serialized into the isolated file helper; keep this function self-contained.
+// Coverage counters belong to the parent process and cannot enter that script.
+/* istanbul ignore next */
 function workspaceFileVersion(stats, bytes, platform = process.platform) {
   // Applying a Windows sandbox DACL changes ctime without changing the file.
   // Keep the content digest, identity, mode and modification time authoritative.

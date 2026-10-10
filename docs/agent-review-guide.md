@@ -1,7 +1,7 @@
 # Freedom Agent: feature review guide
 
 Target: `feature/freedom-automation-kernel` → `main`.
-Prepared September 29, updated October 4, 2026. This is a review of an unreleased feature, not a
+Prepared September 29, updated October 10, 2026. This is a review of an unreleased feature, not a
 claim that every provider, operating system or deployment path is qualified.
 
 ## What the branch delivers
@@ -39,6 +39,7 @@ current implementation contract.
 | Codemode and connected services | `pi-codemode.js`, `mcp-connections.js`, `pi-mcp-tools.js`; [integration boundaries](agent-codemode-mcp.md) | Do nested calls retain scope, approvals, Stop and partial-effect receipts? Are OAuth credentials isolated and service responses untrusted? |
 | Browser authority | `src/main/automation/origin-scoped-controller.js`, `automation-controller.js`, adapters; [WebMCP](webmcp-agent.md) | Are tab/frame ownership, origin, freshness and approval checked at dispatch? Are page-provided descriptions treated as untrusted? |
 | Project and command authority | `src/main/agent/managed-workspace-controller.js`, `external-project-access.js`, `workspace-execution/`; [existing projects](agent-existing-projects.md), [access review](agent-access-review.md) | Can read-only access expand accidentally? Are executable/network grants bounded? Do partial edits remain visible after Stop? |
+| Windows execution and packaging | `workspace-execution/windows-backend.js`, `windows-sandbox-process.js`, `native/windows/src/main.rs`, `scripts/build-windows-workspace.js` | Are writes scoped, networking enforced, setup explicit, binaries pinned and dependency notices shipped? Are broad reads and best-effort cancellation disclosed? |
 | Git, recovery and persistence | `external-project-git.js`, `managed-workspace-history.js`, `session-history-store.js`; [viewers/recovery](agent-project-viewer.md) | Are unrelated files/staging preserved? Can uncertain operations be replayed? Are persisted receipts distinguished from current evidence? |
 | Privileged operations | `src/main/node-request-controller.js`, wallet and publication controllers; [Swarm lifecycle](agent-swarm-publication-lifecycle.md) | Are payment/publication approvals bound to exact operations/content? Are retries distinguished from new operations? |
 | Renderer and IPC | `src/renderer/lib/agent-ui.js`, `src/main/agent/ipc.js`, `src/main/ipc-sender-policy.js`, `src/shared/ipc-channels.js` | Are requests bound to the displayed approval? Can web content reach privileged channels? Are model/page strings inert and reviewable? |
@@ -71,6 +72,14 @@ sign-in, existing-chat MCP management, native codemode and ASAR worker/WASM
 execution. A bounded native output-flood probe also passed. Human smoke tests
 confirmed MCP and autonomous codemode/delegation use. September's Claude review
 does not cover these later changes; current PR checks must qualify the pushed head.
+
+October 10 integration adds Windows x64 native execution. Local lint and 9,483
+unit tests pass; all 110 Agent/settings Electron checks pass. The Windows NSIS
+install and extracted ZIP each pass 16 packaged smoke tests and the complete
+Agent controller qualification (files, build, checkpoint, preview, stdin/Stop,
+and external-project permissions). Current-state [dark/light UI evidence](audits/evidence/freedom-agent-2026-10/README.md)
+is included. Current-head CI and the Windows intermittent parallel-helper result
+are tracked in the [qualification record](../research/agent-windows-mxc-feasibility.md).
 
 The following manual checks remain explicitly unconfirmed and were not selected
 for this preparation pass:
@@ -105,13 +114,17 @@ Useful reviewer smoke tests, in disposable projects:
    codemode. Check recorded tool-script usage and helper counts, then Stop a
    helper and reopen the conversation to inspect its saved receipt.
 
-## Intentionally outside this PR preparation
+## Platform boundaries and deferred extensions
 
-Windows/Linux containment qualification remains deferred by user choice. macOS
-process-group termination is best-effort for detached descendants; resource
-containment and same-user filesystem races retain their documented limits.
-Packaged-release/native lifecycle qualification and provider-specific live
-coverage remain separate gates.
+Windows x64 now has a pinned native restricted-token backend, separate Freedom
+sandbox accounts, explicit administrator setup, scoped writes and network grants.
+Reads are deliberately broad, matching the accepted Windows policy. See the
+[Windows qualification record](../research/agent-windows-mxc-feasibility.md) for
+standard-user execution, packaged-artifact and CI evidence. Linux has earlier
+Bubblewrap qualification recorded in the roadmap; macOS and Windows cancellation
+remain best-effort for detached descendants. Resource containment, same-user
+filesystem races and provider-specific live coverage retain their documented
+limits. Windows ARM64 and MXC are future extensions, not shipped alternatives.
 
 Linked Git worktrees, general external rollback/push workflows, recovery-evidence
 retention and consolidation, broader scripted-download support, expanded WebMCP

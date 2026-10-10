@@ -10,22 +10,31 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-10
 
-### Windows implementation in progress — 2026-10-10
+### Windows x64 implementation and release qualification — 2026-10-10
 
-`experiment/agent-windows-mxc` now contains the experimental elevated Windows
-executor, native build/packaging adapter, administrator setup disclosure,
-PowerShell commands and Windows checkpoint environment. It reuses the pinned
-Codex sandbox library with separate Freedom OS identities. No MXC or unelevated
-fallback is active. Native x64 build, lint and 9,431 unit tests pass. Freedom's
-actual standard-user executor passes writes/read-only, networking, preview,
-cancellation, abrupt parent exit and junction checks. The Electron controller
-passes normal/max-size files, npm build, reviewed checkpoint and history flows.
+The Windows executor is integrated into `feature/freedom-automation-kernel`.
+It uses the pinned Codex restricted-token sandbox library, separate Freedom OS
+accounts, explicit administrator setup and PowerShell commands. Writes and
+networking remain scoped; reads are deliberately broad under the accepted
+Windows policy. MXC and unelevated execution are not automatic fallbacks.
 
-**Still open before merge/release:** external-project controller smoke, setup
-cancel/retry and app UI smoke, packaged/signed application and installer,
-transitive native-license inventory, Windows CI and ARM64 qualification. See
-[the Windows qualification record](agent-windows-mxc-feasibility.md#freedom-integration--in-progress-2026-10-10).
-MXC remains a later explicit backend; it is not an automatic fallback.
+Actual standard-user qualification covers protected Git metadata, read-only
+projects, Node/npm builds, network none/full, localhost preview, stdin, Stop,
+abrupt parent exit, junction denial, external edits and reviewed checkpoints.
+The native build emits dependency notices and hash-checked x64 helpers. Setup
+cancellation/retry is covered by controller tests; successful administrator
+provisioning was performed on the physical Windows desktop.
+
+Current Mac checks: lint, **9,483 unit tests** and **110 Agent/settings Electron
+checks** pass. The release pass also fixed takeover-dialog stacking, stale
+feature E2E expectations and an electron-builder exclusion-only pattern that
+accidentally included native build caches in the application archive.
+
+The [Windows qualification record](agent-windows-mxc-feasibility.md) tracks the
+current-head CI checks and exact evidence. The NSIS install and extracted ZIP
+each pass 16 packaged checks plus the full controller workflow. Windows ARM64,
+cross-host helper staging, stronger process-tree cleanup and MXC are optional
+future extensions. They are not silently selected or advertised as qualified.
 
 ### Native Windows preparation and MXC spike — 2026-10-09
 
@@ -2941,7 +2950,7 @@ The numbered inventory below records completed foundations and remaining capabil
 10. **Implemented with manual acceptance — Dependency acquisition through generic capability escalation.** A missing tool or dependency may lead Agent to propose an ordinary package-manager command with its exact executable, filesystem, and network requirements. Installs should default to the project or a Freedom-managed private, versioned, checksummed tool/cache location. Silent global host installation is not an acceptable fallback; a user-requested global change requires exact human approval.
 11. **Implemented; Linux and deterministic macOS substrate qualified — Preserve ordinary shell UX for managed long-lived processes.** The standard `bash` tool now waits up to ten seconds by default (or a bounded caller-selected yield interval) and returns an opaque conversation-owned process session when the sandboxed command remains active. The trusted `write_stdin` continuation tool can poll incremental output, send at most 16 KiB of input, or terminate that exact session; the model is instructed to continue rather than duplicate a yielded server. Each process retains the immutable executable and network policy selected at launch, a 30-minute wall-time ceiling, a 256 KiB tail buffer, and the existing backend output bounds. At most four active sessions may exist per conversation; terminal handles expire after five minutes. Conversation Stop, deletion, and controller disposal cancel retained processes through the platform backend, so receipts continue to disclose Linux namespace-scoped teardown versus macOS best-effort process-group teardown, including the exact `pid_namespace` or `original_process_group` termination scope in live results, durable activity, and the workspace ledger. A yielded process now also has a trusted one-shot terminal observer: natural completion, ordinary failure, timeout, or cancellation updates the original `bash` activity row in memory and durable history even when Pi never polls `write_stdin`. The observer carries only the normalized bounded receipt, cannot affect execution or cleanup, and a late original `running` result cannot overwrite the terminal state. Real non-destructive Seatbelt coverage proves post-readiness streaming and stdin without exposing the trusted readiness marker. Exact commit `1d5f057599ebe1b0050c5f1638a226ca9c28250e` passed the full Linux no-poll reconciliation gate on 2026-09-04: the external product harness passed 17/17 with zero findings, focused suites 178/178, sandbox 96/96, qualification 4/4, destructive 1/1, network capability-disabled 12/12 and enabled 26/26, lint clean, and full suite 3,982/3,982. Natural completion, ordinary failure, timeout, explicit termination, Stop, observer failure, concurrent identical commands, and terminal expiry all reached authoritative durable terminal activity without model polling; no namespace descendant survived. Visible process controls are now implemented and covered by the Linux checkpoint above. Remaining lifecycle work is deliberately separate: richer process inspection, restart semantics, and restart reattachment or honest stale-session recovery. Static preview remains the default whenever a server is unnecessary. The disposable-Mac deterministic process-session and native Quit cases now pass at the checkpoint above with explicitly best-effort teardown; live-provider qualification and stronger detached-process cleanup remain outstanding.
 12. **Implemented; Linux and deterministic macOS product paths qualified — Preview a declared managed server without exposing localhost directly.** The ordinary `bash` tool conditionally accepts a bounded `previewPort` when full-network permissions are supported. The adapter rejects a present fractional, string, out-of-range, or otherwise invalid port before command launch so malformed direct calls cannot silently lose preview intent or consume a grant. The port is fixed before launch, and the exact command must consume a trusted `full` network grant; an offline or mismatched command fails before execution. After the command yields, `workspace_preview` accepts only its opaque, conversation-owned `workspace_process_*` identity. Main re-inspects that live process for every request and proxies only its predeclared `127.0.0.1` port through a per-preview `freedom-preview://` origin. The proxy never forwards cookies or authorization, follows no redirects, blocks redirects away from the same loopback port, bounds request bodies to 1 MiB and responses to 16 MiB, limits concurrency, times out upstream requests after ten seconds, replaces upstream security headers, and revokes the origin when the process stops or the conversation is deleted. The server page may use same-origin requests and forms; external navigation, providers, privileged APIs, service workers, arbitrary host origins, and direct localhost navigation remain unavailable. This is an honest declared-port association, not cryptographic socket ownership: the approved process and its descendants can serve that port, while Freedom verifies the immutable process/port/posture association rather than claiming kernel-level listener attribution. Visible process controls are implemented. WebSocket/HMR transport and explicit saved-server restart/reattachment are implemented in the 2026-09-09 checkpoint below, with their own validation scope. Automatic crash restart remains deferred; further real projects should establish additional preview compatibility requirements. Static preview remains preferable when a server is unnecessary. Exact commit `9b129d43ee56c163704c744d2a6ed031f3259673` passed the Linux product-path gate on 2026-09-04: capability-unavailable 6/6, enabled 24/24, local focused matrix 200/200, Linux sandbox 96/96, qualification 4/4, destructive 1/1, network product 12/12 and 26/26, lint clean, and full suite 3,988/3,988. It used the real production controller, process manager, Pi tools, Bubblewrap backend, preview protocol, and Node HTTP server; all lifecycle, proxy, isolation, and teardown assertions passed with no survivor or security finding. The follow-up Linux qualification at `aa6d02a9` closed the malformed-port finding through the real Pi tool path (6/6), with zero launches or grant consumption for invalid ports and a successful approved launch for a valid port. The disposable-Mac deterministic preview and native Quit coverage now passes at the checkpoint above; live-provider and signed/notarized release qualification remain outstanding.
-13. **Keep Windows as the principal platform gap.** Managed workspace execution currently fails closed there. A Windows containment spike and adversarial qualification should happen before this creation path is presented as a generally available cross-platform Freedom capability, even if the macOS/Linux alpha continues first.
+13. **Implemented on Windows x64, October 10.** The native restricted-token backend preserves scoped writes, Git protection and networking while disclosing broad reads. Administrator setup is explicit. See the current Windows qualification record above; ARM64, MXC and stronger process-tree cleanup remain optional extensions.
 
 #### 10. Later — Expand consequential and privileged capabilities
 
