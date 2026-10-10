@@ -216,3 +216,21 @@ npm run serve:updates
 # Terminal 2: Start app with updates enabled
 npm run start:test-updater
 ```
+
+`dev-app-update.yml` is gitignored, so a fresh checkout has none; create it in the repository root first. From a source checkout the updater reads it as its update config, so it needs at least:
+
+```yaml
+provider: generic
+url: http://localhost:8765
+updaterCacheDirName: freedom-browser-updater
+```
+
+`serve:updates` serves files from `dist/`, with one exception: a request for `/latest-mac.yml` is answered with `dev-app-update.yml` itself, not `dist/latest-mac.yml`. On macOS the same file is therefore also the update manifest, so add the `version`, `files`, `path` and `sha512` entries of the build you want to offer (copy them from that build's `dist/latest-mac.yml`); without the file every macOS check 404s. On Linux and Windows the manifest (`latest-linux.yml`, `latest.yml`) comes from `dist/` as built.
+
+macOS (Squirrel.Mac) never installs an update into an unsigned app. To test the full download and install, run a signed, packaged build with `ENABLE_DEV_UPDATER` set. A packaged build keeps its shipped `app-update.yml` and only swaps the feed URL: `ENABLE_DEV_UPDATER=true` uses `http://localhost:8765` (the `serve:updates` server, so the `/latest-mac.yml` rule above applies), and `ENABLE_DEV_UPDATER=<http(s) URL>` uses any other generic feed, for example:
+
+```bash
+ENABLE_DEV_UPDATER=https://updates.example.org/test-feed /Applications/Freedom.app/Contents/MacOS/Freedom
+```
+
+Surrounding whitespace in the value is ignored. `0`, `false`, `no`, `off` (any case) or an empty value read the same as leaving the variable unset: the dev updater stays off. Any other value (a URL without `http://`/`https://`, one that doesn't parse) logs a warning, shown in the terminal and the log file, and falls back to `http://localhost:8765`.
