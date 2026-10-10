@@ -25,6 +25,8 @@ const RPCS = Object.freeze({
   tenderly: 'https://gateway.tenderly.co/public/sepolia',
   sentio: 'https://sepolia.rpc.sentio.xyz',
 });
+// Read-only JSON-RPC methods. A transaction receipt is a public read of a
+// known hash; no method that submits, signs or simulates a send is admitted.
 const READ_METHODS = new Set([
   'eth_chainId',
   'eth_getBlockByNumber',
@@ -33,7 +35,11 @@ const READ_METHODS = new Set([
   'eth_call',
   'eth_gasPrice',
   'eth_getLogs',
+  'eth_getTransactionReceipt',
 ]);
+function assertReadMethod(method) {
+  if (!READ_METHODS.has(method)) throw new Error('Live qualification cannot submit transactions');
+}
 
 async function openLiveTransport(output, onProgress = () => {}, source = 'publicnode') {
   if (!Object.hasOwn(RPCS, source)) throw new Error('Unknown qualification RPC');
@@ -202,8 +208,7 @@ async function openLiveTransport(output, onProgress = () => {}, source = 'public
         circuitIsolation: 'not independently observed in this run',
       },
       async rpc(method, params) {
-        if (!READ_METHODS.has(method))
-          throw new Error('Live qualification cannot submit transactions');
+        assertReadMethod(method);
         const id = randomUUID();
         const data = await json(
           'protocol-rpc',
@@ -268,4 +273,4 @@ if (require.main === module)
     console.error('Read-only qualification failed');
     process.exitCode = 1;
   });
-module.exports = { openLiveTransport };
+module.exports = { openLiveTransport, assertReadMethod };
