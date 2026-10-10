@@ -1,9 +1,12 @@
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { updateActiveProfileNodeConfigWhenIdle } = require('./profile-resolver');
+const { findOwnLiveAntd } = require('./ant-process-marker');
 const { probeSocks5Endpoint } = require('./socks-probe');
 const {
   IPFS_GATEWAY_PROBE_PATH,
@@ -12,6 +15,14 @@ const {
 } = require('./ipfs/ipfs-gateway-probe');
 
 const EXTERNAL_CANDIDATE_PROMPT_KEY = 'externalCandidatePrompt';
+
+// Legacy launches (FREEDOM_TEST_USER_DATA, --profile-dir) have no catalog
+// entry to keep node config in. Of their nodes only Swarm adopts a node on the
+// default port (ant-manager.js), so only it is asked about, and the answer is
+// kept in a file in the profile directory (#218).
+const LEGACY_PROFILE_SOURCES = new Set(['test-user-data', 'profile-dir']);
+const LEGACY_PROMPT_PROTOCOLS = new Set(['bee']);
+const LEGACY_DECISIONS_FILE = 'external-node-decisions.json';
 
 const DEFAULT_EXTERNAL_NODE_CANDIDATES = {
   bee: {
@@ -158,9 +169,65 @@ function probeEndpoint(probe, options = {}) {
   });
 }
 
+function isLegacyProfile(profile) {
+  return LEGACY_PROFILE_SOURCES.has(profile?.source) && Boolean(profile?.userDataDir);
+}
+
+function getLegacyDecisionsPath(profile) {
+  return path.join(profile.userDataDir, LEGACY_DECISIONS_FILE);
+}
+
+function readLegacyDecisions(profile) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getLegacyDecisionsPath(profile), 'utf-8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// The saved "use the node already on the default port?" answer of a legacy
+// profile, or null when it was never asked (or the profile is a catalog one,
+// which keeps its answer in the catalog).
+function getLegacyExternalCandidateChoice(profile, protocol) {
+  if (!isLegacyProfile(profile)) return null;
+  const choice = readLegacyDecisions(profile)[protocol]?.choice;
+  return choice === 'external' || choice === 'managed' ? choice : null;
+}
+
+function saveLegacyDecision(profile, protocol, updates) {
+  const decisions = readLegacyDecisions(profile);
+  decisions[protocol] = updates[EXTERNAL_CANDIDATE_PROMPT_KEY];
+  fs.mkdirSync(profile.userDataDir, { recursive: true });
+  fs.writeFileSync(getLegacyDecisionsPath(profile), JSON.stringify(decisions, null, 2), 'utf-8');
+}
+
 function shouldPromptForProtocol(profile, protocol) {
+  if (isLegacyProfile(profile)) {
+    return LEGACY_PROMPT_PROTOCOLS.has(protocol)
+      && !getLegacyExternalCandidateChoice(profile, protocol);
+  }
   const config = profile?.metadata?.nodes?.[protocol];
   return config?.mode === 'managed' && !config?.[EXTERNAL_CANDIDATE_PROMPT_KEY]?.choice;
+}
+
+// A legacy profile runs its own antd on the default 1633 too. One left running
+// by a Freedom that crashed is not "an existing node" to offer: ant-manager.js
+// reuses it regardless (it holds the data dir's lock), so asking would only
+// save an answer that is ignored now and misapplied later.
+async function isOwnLegacySwarmNode(profile, protocol, definition, options = {}) {
+  if (protocol !== 'bee' || !isLegacyProfile(profile)) return false;
+  const find = options.findOwnLiveAntd || findOwnLiveAntd;
+  for (const endpoint of definition.endpoints || []) {
+    let port;
+    try {
+      port = Number(new URL(endpoint).port);
+    } catch {
+      continue;
+    }
+    if (port && await find(profile.userDataDir, { apiPort: port })) return true;
+  }
+  return false;
 }
 
 async function detectDefaultExternalCandidates(profile, options = {}) {
@@ -171,6 +238,7 @@ async function detectDefaultExternalCandidates(profile, options = {}) {
   for (const [protocol, definition] of Object.entries(definitions)) {
     if (options.enabledProtocols && options.enabledProtocols[protocol] === false) continue;
     if (!shouldPromptForProtocol(profile, protocol)) continue;
+    if (await isOwnLegacySwarmNode(profile, protocol, definition, options)) continue;
 
     const results = await Promise.all(
       definition.probes.map((candidateProbe) => probe(candidateProbe, options))
@@ -334,7 +402,16 @@ async function presentExternalCandidatesInWindow(profile, candidates, options = 
 }
 
 async function promptForDefaultExternalCandidates(profile, options = {}) {
-  if (!profile || profile.source !== 'catalog') return [];
+  if (!profile) return [];
+  if (isLegacyProfile(profile)) {
+    options = {
+      ...options,
+      updateNodeConfig: options.updateNodeConfig
+        || ((protocol, updates) => saveLegacyDecision(profile, protocol, updates)),
+    };
+  } else if (profile.source !== 'catalog') {
+    return [];
+  }
 
   const logger = options.logger || console;
   const dialog = options.dialog || require('electron').dialog;
@@ -361,7 +438,11 @@ async function promptForDefaultExternalCandidates(profile, options = {}) {
       message: `Freedom found an existing ${candidate.label} node at ${endpointText}.`,
       detail:
         `Use it for the "${profileName}" profile, or keep this profile independent ` +
-        'with a Freedom-managed node on profile-specific ports.' +
+        // A legacy profile has no catalog entry to keep ports in: its node
+        // takes the next free port beside the existing one on every start.
+        (isLegacyProfile(profile)
+          ? 'with a Freedom-managed node on the next free port beside it.'
+          : 'with a Freedom-managed node on profile-specific ports.') +
         (candidate.trustNote ? `\n\n${candidate.trustNote}` : ''),
     });
 
@@ -391,6 +472,7 @@ module.exports = {
   applyExternalCandidateDecisions,
   buildPromptMarker,
   detectDefaultExternalCandidates,
+  getLegacyExternalCandidateChoice,
   probeEndpoint,
   presentExternalCandidatesInWindow,
   promptForDefaultExternalCandidateProtocol,
