@@ -64,6 +64,22 @@ const MAX_WORKSPACE_GREP_MATCHES = 200;
 const MAX_WORKSPACE_SCAN_ENTRIES = 50_000;
 const MAX_WORKSPACE_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_WORKSPACE_SEARCH_PATTERN_LENGTH = 1_000;
+// Windows has a 32K command-line limit; the fixed helper and bounded content
+// travel over the private input pipe instead. No temporary executable is needed.
+const WINDOWS_FILE_HELPER_BOOTSTRAP = `
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => {
+  input += chunk;
+  if (input.length > 256 * 1024) process.exit(73);
+  const end = input.indexOf('\\n');
+  if (end < 0) return;
+  process.stdin.destroy();
+  const { script, args } = JSON.parse(input.slice(0, end));
+  process.argv = [process.execPath, ...args];
+  require('vm').runInThisContext(script, { filename: 'freedom-workspace-file' });
+});
+`;
 const WORKSPACE_FILE_HELPER = String.raw`
 ${unsafeWindowsRelativePath.toString()}
 const fs = process.versions.electron ? require('original-fs') : require('fs');
@@ -1547,12 +1563,7 @@ class ManagedWorkspaceController {
       if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) throw new Error('Project access changed');
       receipt = await this.executor.execute(lease.helperPolicy, {
         command: capabilities.backend === 'windows-elevated' ? lease.runtime.sandboxExecutablePath : '/bin/sh',
-        args: capabilities.backend === 'windows-elevated' ? [
-          '-e', WORKSPACE_FILE_HELPER, operation, relative,
-          content ? content.toString('base64') : '',
-          (workspace.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId)) && operation === 'write' ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
-          grant ? `${grant.dev}:${grant.ino}` : '',
-        ] : [
+        args: capabilities.backend === 'windows-elevated' ? ['-e', WINDOWS_FILE_HELPER_BOOTSTRAP] : [
           '-c',
           'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6" "$7" "$8"',
           'freedom-workspace-file',
@@ -1566,6 +1577,15 @@ class ManagedWorkspaceController {
           grant ? `${grant.dev}:${grant.ino}` : '',
         ],
         signal: controller.signal,
+        ...(capabilities.backend === 'windows-elevated' && { onStdin: input => {
+          const packet = Buffer.from(JSON.stringify({ script: WORKSPACE_FILE_HELPER, args: [
+            operation, relative, content ? content.toString('base64') : '',
+            (workspace.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId)) && operation === 'write'
+              ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
+            grant ? `${grant.dev}:${grant.ino}` : '',
+          ] }) + '\n');
+          for (let offset = 0; offset < packet.length; offset += 64 * 1024) input.write(packet.subarray(offset, offset + 64 * 1024));
+        } }),
       });
     } catch {
       throw new ManagedWorkspaceError(
@@ -2453,6 +2473,7 @@ module.exports = {
   MAX_WORKSPACE_SEARCH_PATTERN_LENGTH,
   MAX_WORKSPACE_WRITE_BYTES,
   WORKSPACE_FILE_HELPER,
+  WINDOWS_FILE_HELPER_BOOTSTRAP,
   ManagedWorkspaceController,
   ManagedWorkspaceError,
   commandSummary,

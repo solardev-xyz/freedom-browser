@@ -7,6 +7,7 @@ const { execFileSync } = require('child_process');
 const {
   ManagedWorkspaceController,
   WORKSPACE_FILE_HELPER,
+  WINDOWS_FILE_HELPER_BOOTSTRAP,
   validateCommand,
   validateWorkspacePath,
   validateWorkingDirectory,
@@ -1180,6 +1181,16 @@ describe('ManagedWorkspaceController', () => {
     expect(validateWorkspacePath('src/index.js')).toBe('src/index.js');
     expect(() => validateWorkspacePath('../outside')).toThrow('inside the managed workspace');
     expect(() => validateWorkspacePath('/absolute')).toThrow('workspace-relative');
+  });
+
+  test('Windows file helper accepts maximum-sized content through stdin instead of command arguments', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-windows-helper-'));
+    const content = 'x'.repeat(65536);
+    try {
+      const packet = JSON.stringify({ script: WORKSPACE_FILE_HELPER, args: ['write', 'large.txt', Buffer.from(content).toString('base64'), '', ''] }) + '\n';
+      execFileSync(process.execPath, ['-e', WINDOWS_FILE_HELPER_BOOTSTRAP], { cwd: directory, input: packet, timeout: 5000 });
+      expect(fs.readFileSync(path.join(directory, 'large.txt'), 'utf8')).toBe(content);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
   test('versioned helper writes reject unread, externally changed, and replaced files', () => {
