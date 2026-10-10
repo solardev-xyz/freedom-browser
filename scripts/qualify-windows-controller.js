@@ -36,6 +36,11 @@ async function main() {
     await controller.writeFile('windows-qualification', 'large.txt', 'x'.repeat(65536));
     assert.equal((await controller.readFile('windows-qualification', 'large.txt')).length, 65536);
     record('maximum-file-round-trip', { passed: true });
+    const longCommand = "Write-Output 'Grüße'\n#" + 'x'.repeat(30000);
+    const longResult = await controller.execute('windows-qualification', { command: longCommand });
+    assert.equal(longResult.state, 'completed');
+    assert.match(longResult.stdout, /Grüße/);
+    record('long-unicode-command', { passed: true });
     await controller.writeFile('windows-qualification', 'package.json', JSON.stringify({ name: 'freedom-windows-test', private: true, scripts: { build: 'node build.cjs' } }));
     await controller.writeFile('windows-qualification', 'build.cjs', "require('fs').writeFileSync('built.txt', 'built'); console.log('build-ok')");
     const command = 'npm.cmd run build';
@@ -51,8 +56,9 @@ async function main() {
     record('checkpoint', commit);
     const history = await controller.workspaceHistory('windows-qualification', { action: 'list' });
     record('history', history);
-    const external = path.join(profile, 'external-project');
-    fs.mkdirSync(external);
+    // External projects must be outside the browser profile, just as a folder
+    // selected by the user would be. AppData itself is intentionally rejected.
+    const external = fs.mkdtempSync(path.join(values.root, 'external-project-'));
     require('node:child_process').execFileSync('git', ['init', '--quiet', external]);
     fs.writeFileSync(path.join(external, 'README.md'), 'External project fixture');
     await store.attachProject('external-qualification', external);

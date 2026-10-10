@@ -56,6 +56,26 @@ describe('Windows sandbox policy boundary', () => {
     expect(run.mock.calls.every(([, input]) => input.operation === 'probe')).toBe(true);
   });
 
+  test('long Unicode PowerShell scripts avoid the Windows command-line limit and preserve stdin', async () => {
+    const source = "Write-Output 'Grüße'\n#" + 'x'.repeat(32000);
+    let scriptPath;
+    const onStdin = jest.fn();
+    run.mockImplementation(async (_runtime, request, options) => {
+      if (request.operation === 'probe') return { terminal: { type: 'capabilities', setupComplete: true } };
+      scriptPath = request.command.at(-1);
+      expect(request.command.join(' ').length).toBeLessThan(24000);
+      expect(request.command.slice(-4, -1)).toEqual(['-ExecutionPolicy', 'Bypass', '-File']);
+      expect(await fs.promises.readFile(scriptPath, 'utf8')).toBe('\uFEFF' + source);
+      expect(request.writableRoots).toContain(path.dirname(scriptPath));
+      expect(options.onStdin).toBe(onStdin);
+      return { ready: true, terminal: { type: 'exit', exitCode: 0 } };
+    });
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace });
+    expect((await executor.execute(policy, { command: path.resolve('/powershell.exe'),
+      args: ['-NoProfile', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')], onStdin })).state).toBe('completed');
+    expect(fs.existsSync(scriptPath)).toBe(false);
+  });
+
   test('a helper failure after launch cannot certify that no side effects occurred', async () => {
     run.mockImplementation(async (_runtime, request) => request.operation === 'probe'
       ? { terminal: { type: 'capabilities', setupComplete: true } }

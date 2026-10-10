@@ -53,7 +53,20 @@ class WindowsWorkspaceExecutor {
     let attempted = false;
     try {
       if (!isValidatedWorkspaceExecutionPolicy(policy)) throw new Error('Execution requires a validated workspace policy');
-      const request = validateExecutionRequest(rawRequest);
+      // Validate the decoded script against the ordinary argument limit: UTF-16
+      // base64 expands a supported 32K-character command beyond that limit.
+      const encoded = Array.isArray(rawRequest?.args) && rawRequest.args.at(-2) === '-EncodedCommand'
+        && /^powershell\.exe$/i.test(path.win32.basename(rawRequest.command || '')) ? rawRequest.args.at(-1) : null;
+      let decodedScript = null;
+      if (typeof encoded === 'string' && encoded.length > 24000) {
+        if (encoded.length > 128 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error('Invalid encoded PowerShell script');
+        const bytes = Buffer.from(encoded, 'base64');
+        if (bytes.length % 2 || bytes.toString('base64') !== encoded) throw new Error('Invalid encoded PowerShell script');
+        decodedScript = bytes.toString('utf16le');
+      }
+      const request = validateExecutionRequest(decodedScript === null ? rawRequest : {
+        ...rawRequest, args: [...rawRequest.args.slice(0, -2), '-Command', decodedScript],
+      });
       if (request.signal?.aborted) return this.receipt(startedAt, { cancellation: 'cancelled' });
       if (policy.network === NETWORK_POSTURES.BROKERED || policy.seccomp.requireCustomFilter || policy.limits.aggregate.required) {
         throw new Error('The requested isolation controls are unavailable on Windows');
@@ -76,9 +89,18 @@ class WindowsWorkspaceExecutor {
         APPDATA: privateDirectory, LOCALAPPDATA: privateDirectory, TEMP: privateDirectory, TMP: privateDirectory,
         npm_config_cache: path.join(privateDirectory, 'npm-cache') };
       const cwd = path.join(workspace, path.posix.relative('/workspace', policy.workingDirectory));
+      let command = [request.command, ...request.args];
+      // PowerShell's UTF-16 base64 expansion can exceed CreateProcess's 32K
+      // command-line limit. Keep long scripts in this execution's private temp
+      // directory, without consuming the workload's interactive stdin stream.
+      if (decodedScript !== null) {
+        const script = path.join(privateDirectory, 'command.ps1');
+        await fs.promises.writeFile(script, '\uFEFF' + decodedScript, { flag: 'wx' });
+        command = [request.command, ...request.args.slice(0, -2), '-ExecutionPolicy', 'Bypass', '-File', script];
+      }
       attempted = true;
       result = await this.run(this.runtime, { version: 1, operation: 'execute', backend: 'elevated', home: this.home,
-        command: [request.command, ...request.args], workspace, cwd, writableRoots,
+        command, workspace, cwd, writableRoots,
         protectedPaths: policy.filesystem.protectedPaths.map(entry => entry.sourcePath),
         environment, network: policy.network === NETWORK_POSTURES.FULL, timeoutMs: policy.limits.timeoutMs },
       { ...request, ...policy.limits, timeoutMs: policy.limits.timeoutMs + 15000 });
