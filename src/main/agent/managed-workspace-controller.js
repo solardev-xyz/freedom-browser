@@ -2226,8 +2226,8 @@ class ManagedWorkspaceController {
         command: capabilities.backend === 'windows-elevated'
           ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe') : '/bin/sh',
         args: capabilities.backend === 'windows-elevated'
-          ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(
-            `$ErrorActionPreference = 'Stop';
+          ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(
+            `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
 Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''")}';\n${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`, 'utf16le').toString('base64')]
           : [
           '-c',

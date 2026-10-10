@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const { parseArgs } = require('node:util');
 const { WindowsWorkspaceExecutor } = require('../src/main/agent/workspace-execution/windows-backend');
 const { createWorkspaceExecutionPolicy, createWorkspaceFileReadPolicy } = require('../src/main/agent/workspace-execution/execution-policy');
@@ -86,6 +86,34 @@ async function main() {
   const first = fs.existsSync(heartbeat) ? fs.readFileSync(heartbeat, 'utf8') : null;
   await sleep(500);
   record('cancel-server', cancelled.state === 'cancelled' && first !== null && fs.readFileSync(heartbeat, 'utf8') === first && Date.now() - cancelledAt < 10000, cancelled);
+  // Kill the owning JS process, not just its workload. The helper must observe
+  // control-pipe EOF and terminate descendants even without a graceful abort.
+  const driverSource = `
+const {WindowsWorkspaceExecutor}=require(${JSON.stringify(require.resolve('../src/main/agent/workspace-execution/windows-backend'))});
+const {createWorkspaceExecutionPolicy}=require(${JSON.stringify(require.resolve('../src/main/agent/workspace-execution/execution-policy'))});
+(async()=>{const policy=await createWorkspaceExecutionPolicy({workspaceRoot:${JSON.stringify(workspace)},network:'full',limits:{timeoutMs:30000}});
+await new WindowsWorkspaceExecutor(${JSON.stringify(values.home ? { home: values.home } : {})}).execute(policy,{command:process.execPath,args:['-e',${JSON.stringify("const fs=require('fs');fs.writeFileSync('abrupt-heartbeat','started');setInterval(()=>fs.writeFileSync('abrupt-heartbeat',String(Date.now())),100);setTimeout(()=>process.exit(),30000);console.log('driver-ready')")}],onOutput:(_s,b)=>process.stdout.write(b)});})().catch(e=>{console.error(e);process.exitCode=1});`;
+  const driver = spawn(process.execPath, ['-e', driverSource], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let driverOutput = '';
+  driver.stdout.on('data', bytes => { driverOutput += bytes; });
+  driver.stderr.resume();
+  for (let i = 0; i < 100 && !driverOutput.includes('driver-ready'); i++) await sleep(100);
+  const driverStarted = driverOutput.includes('driver-ready');
+  driver.kill();
+  await sleep(1000);
+  const abruptHeartbeat = path.join(workspace, 'abrupt-heartbeat');
+  const lastHeartbeat = fs.existsSync(abruptHeartbeat) ? fs.readFileSync(abruptHeartbeat, 'utf8') : null;
+  await sleep(700);
+  record('abrupt-parent-exit', driverStarted && lastHeartbeat !== null && fs.readFileSync(abruptHeartbeat, 'utf8') === lastHeartbeat);
+
+  const junctionPolicy = await policy();
+  const outsideDirectory = path.join(directory, 'outside-directory');
+  fs.mkdirSync(outsideDirectory);
+  const junctionSentinel = path.join(outsideDirectory, 'sentinel.txt');
+  fs.writeFileSync(junctionSentinel, 'untouched');
+  fs.symlinkSync(outsideDirectory, path.join(workspace, 'outside-junction'), 'junction');
+  const junction = await executor.execute(junctionPolicy, { command: process.execPath, args: ['-e', "try { require('fs').writeFileSync('outside-junction/sentinel.txt','tampered'); process.exitCode=2; } catch(e) { console.log(e.code); }"] });
+  record('junction-write', junction.state === 'completed' && /EPERM|EACCES/.test(junction.stdout) && fs.readFileSync(junctionSentinel, 'utf8') === 'untouched', junction);
   record('sentinels', fs.readFileSync(outside, 'utf8') === 'untouched' && fs.readFileSync(gitSentinel, 'utf8') === 'untouched');
   if (results.some(result => !result.passed)) process.exitCode = 1;
 }

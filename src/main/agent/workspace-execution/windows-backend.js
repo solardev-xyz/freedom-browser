@@ -101,7 +101,8 @@ class WindowsWorkspaceExecutor {
     return Object.freeze({ backend: 'windows-elevated', state, startedAt, finishedAt, durationMs: finishedAt - startedAt,
       exitCode: result.terminal?.exitCode ?? null, signal: null, stdout: result.stdout || '', stderr: result.stderr || '',
       stdoutTruncated: result.stdoutTruncated === true, stderrTruncated: result.stderrTruncated === true,
-      terminationGuarantee: result.attempted ? 'best_effort' : 'not_applicable', survivorsPossible: result.attempted === true,
+      terminationGuarantee: result.attempted ? 'best_effort' : 'not_applicable',
+      terminationScope: result.attempted ? 'unknown' : 'not_applicable', survivorsPossible: result.attempted === true,
       completeDescendantTermination: false, sideEffects: result.attempted ? 'unknown' : 'none',
       error: failure ? { code: 'WORKSPACE_EXECUTION_FAILED', message: failure } : undefined });
   }

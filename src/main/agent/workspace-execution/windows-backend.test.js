@@ -62,7 +62,7 @@ describe('Windows sandbox policy boundary', () => {
       : { failure: 'Helper disconnected', ready: false });
     const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: workspace });
     expect(await executor.execute(policy, { command: 'runtime.exe' })).toMatchObject({
-      sideEffects: 'unknown', survivorsPossible: true, terminationGuarantee: 'best_effort',
+      sideEffects: 'unknown', survivorsPossible: true, terminationGuarantee: 'best_effort', terminationScope: 'unknown',
     });
   });
 
