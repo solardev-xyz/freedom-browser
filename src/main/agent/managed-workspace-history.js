@@ -3,7 +3,6 @@
 const fs = require('fs');
 const { compareEntries, textPreview } = require('./workspace-comparison');
 const path = require('path');
-const { devNull } = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const {
@@ -185,7 +184,7 @@ class ManagedWorkspaceHistory {
           '--no-pager',
           `--git-dir=${this.gitDirectory}`,
           '-c',
-          `core.hooksPath=${devNull}`,
+          'core.hooksPath=/dev/null',
           '-c',
           'core.fsmonitor=false',
           ...args,
@@ -200,9 +199,10 @@ class ManagedWorkspaceHistory {
             ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot || 'C:\\Windows',
               PATH: path.dirname(executable) } : { PATH: '/usr/bin:/bin' }),
             LC_ALL: 'C',
+            // Git for Windows recognizes /dev/null; Node's device path does not.
             GIT_CONFIG_NOSYSTEM: '1',
-            GIT_CONFIG_SYSTEM: devNull,
-            GIT_CONFIG_GLOBAL: devNull,
+            GIT_CONFIG_SYSTEM: '/dev/null',
+            GIT_CONFIG_GLOBAL: '/dev/null',
             GIT_NO_REPLACE_OBJECTS: '1',
             GIT_NO_LAZY_FETCH: '1',
             GIT_TERMINAL_PROMPT: '0',

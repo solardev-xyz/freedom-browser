@@ -33,6 +33,19 @@ async function main() {
     await controller.writeFile('windows-qualification', 'index.html', '<h1>Freedom Windows</h1>');
     assert.equal((await controller.readFile('windows-qualification', 'index.html')).toString(), '<h1>Freedom Windows</h1>');
     record('file-round-trip', { passed: true });
+    await controller.writeFile('windows-qualification', 'large.txt', 'x'.repeat(65536));
+    assert.equal((await controller.readFile('windows-qualification', 'large.txt')).length, 65536);
+    record('maximum-file-round-trip', { passed: true });
+    await controller.writeFile('windows-qualification', 'package.json', JSON.stringify({ name: 'freedom-windows-test', private: true, scripts: { build: 'node build.cjs' } }));
+    await controller.writeFile('windows-qualification', 'build.cjs', "require('fs').writeFileSync('built.txt', 'built'); console.log('build-ok')");
+    const command = 'npm.cmd run build';
+    const permission = await controller.prepareCommandPermissions('windows-qualification', { executables: ['node', 'npm'] }, { command });
+    controller.grantCommandPermissions('windows-qualification', permission.prepared);
+    const build = await controller.execute('windows-qualification', { command });
+    record('powershell-build', build);
+    assert.equal(build.state, 'completed');
+    assert.equal((await controller.readFile('windows-qualification', 'built.txt')).toString(), 'built');
+
     const review = await controller.reviewWorkspaceHistory('windows-qualification', { action: 'review', path: 'index.html' });
     const commit = await controller.reviewWorkspaceHistory('windows-qualification', { action: 'checkpoint', label: 'Windows qualification', reviewIds: [review.reviewId] });
     record('checkpoint', commit);
