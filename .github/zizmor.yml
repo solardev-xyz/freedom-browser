@@ -1,0 +1,29 @@
+# zizmor (https://docs.zizmor.sh) configuration, read by the `zizmor` job in
+# .github/workflows/ci.yml and by a local `zizmor .` from the repo root.
+# Every entry here is a finding that was triaged and accepted in the
+# 2026-10-10 security scan, https://github.com/solardev-xyz/freedom-browser/issues/637;
+# the reason is next to each one. Anything not listed fails CI.
+rules:
+  # auto-retry.yml runs on `workflow_run`, which zizmor treats as inherently
+  # dangerous. Mitigated: it checks out only the default branch (sparse,
+  # persist-credentials: false), passes event data through env rather than
+  # inline `${{ }}`, and holds only `actions: write` and `checks: read`.
+  dangerous-triggers:
+    ignore:
+      - auto-retry.yml
+
+  # ci.yml builds and tests but publishes nothing, so a poisoned npm/Electron
+  # cache entry there cannot reach a shipped build. release.yml, which does
+  # ship, restores no caches at all (#635). This audit still covers its
+  # setup-node and actions/cache steps, but not the Electron download cache
+  # inside the local install-node-deps action, which zizmor does not look
+  # into: that one is off only because every release.yml step passes
+  # `electron-cache: 'false'`, and scripts/ci/release-caches.test.js pins it.
+  cache-poisoning:
+    ignore:
+      - ci.yml
+
+  # Suggests `uses: $/...` over `./.github/actions/...` for local actions: a
+  # style preference, not a security finding.
+  self-repository:
+    disable: true

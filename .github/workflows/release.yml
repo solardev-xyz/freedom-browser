@@ -127,7 +127,9 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Plan the run
         id: plan
@@ -216,7 +218,9 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Assert Apple Silicon runner
         run: |
@@ -244,11 +248,18 @@ jobs:
             exit 1
           fi
 
+      # No `cache: npm` here or in any other job of this workflow, and the
+      # Electron download cache is off in install-node-deps below: these jobs
+      # build the signed releases and nightlies, so none of their inputs may
+      # come from a cache another run wrote (#635). ci.yml keeps its caches.
+      # `package-manager-cache: false` is a no-op on setup-node v4 (which only
+      # caches when `cache:` is set) but keeps it off after a bump to v5+, which
+      # caches npm by default; v4 logs it as an unexpected input until then.
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       - name: Assert package.json version matches the tag
         if: github.event_name == 'push'
@@ -265,6 +276,8 @@ jobs:
       # rebuilds the native modules against Electron on the arm64 host.
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
+        with:
+          electron-cache: 'false'
 
       # A nightly has no tag to take a version from, and `main`'s package.json
       # says `<next>-dev`, which is not a version anything should ship. Stamp
@@ -428,7 +441,7 @@ jobs:
         run: ls -la dist
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: freedom-mac-arm64-${{ env.SIGNED == 'true' && 'signed' || 'unsigned' }}
           path: |
@@ -474,7 +487,9 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Assert ${{ matrix.uname }} runner
         run: |
@@ -484,10 +499,10 @@ jobs:
           fi
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       - name: Assert package.json version matches the tag
         if: github.event_name == 'push'
@@ -520,6 +535,8 @@ jobs:
 
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
+        with:
+          electron-cache: 'false'
 
       # Same as the mac job: `main`'s package.json says `<next>-dev`, so a
       # nightly gets the version the plan job computed stamped in before the
@@ -618,7 +635,7 @@ jobs:
           done
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: freedom-linux-${{ matrix.arch }}
           path: |
@@ -665,27 +682,32 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       # `--ignore-scripts` on purpose: this job only needs Playwright to drive
       # an already-built artifact, so there is nothing to rebuild against
-      # Electron and no bundled binary to download.
+      # Electron and no bundled binary to download. `electron-cache: 'false'`
+      # is redundant with that today, but keeps the cache off if
+      # `ignore-scripts` is ever dropped (scripts/ci/release-caches.test.js).
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
         with:
           ignore-scripts: 'true'
+          electron-cache: 'false'
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
       - name: Download the linux ${{ matrix.arch }} artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: freedom-linux-${{ matrix.arch }}
           path: artifact
@@ -798,7 +820,7 @@ jobs:
       # usually empty on a green run — hence `ignore` rather than `error`.
       - name: Upload the smoke-test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-linux-${{ matrix.arch }}-report
           path: test-results/
@@ -823,27 +845,32 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       # `--ignore-scripts` on purpose: this job only needs Playwright to drive
       # an already-built artifact, so there is nothing to rebuild against
-      # Electron and no bundled binary to download.
+      # Electron and no bundled binary to download. `electron-cache: 'false'`
+      # is redundant with that today, but keeps the cache off if
+      # `ignore-scripts` is ever dropped (scripts/ci/release-caches.test.js).
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
         with:
           ignore-scripts: 'true'
+          electron-cache: 'false'
 
       # Signed and unsigned runs upload under different names, so match both
       # and let the step below read the signing state back off the name that
       # actually arrived rather than re-deriving it from the inputs.
       - name: Download the mac arm64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: freedom-mac-arm64-*
           path: artifact
@@ -1069,7 +1096,7 @@ jobs:
       # usually empty on a green run — hence `ignore` rather than `error`.
       - name: Upload the smoke-test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-mac-arm64-report
           path: test-results/
@@ -1098,7 +1125,9 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Assert x86_64 runner
         run: |
@@ -1108,10 +1137,10 @@ jobs:
           fi
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       - name: Assert package.json version matches the tag
         if: github.event_name == 'push'
@@ -1125,6 +1154,8 @@ jobs:
 
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
+        with:
+          electron-cache: 'false'
 
       # Same as the mac and Linux jobs: stamp the nightly version before
       # anything reads package.json's `<next>-dev`.
@@ -1235,7 +1266,7 @@ jobs:
           ls dist/*.exe dist/*-win.zip
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: freedom-win-x64
           path: |
@@ -1267,24 +1298,29 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       # `--ignore-scripts` on purpose: this job only needs Playwright to drive
       # an already-built artifact, so there is nothing to rebuild against
-      # Electron and no bundled binary to download.
+      # Electron and no bundled binary to download. `electron-cache: 'false'`
+      # is redundant with that today, but keeps the cache off if
+      # `ignore-scripts` is ever dropped (scripts/ci/release-caches.test.js).
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
         with:
           ignore-scripts: 'true'
+          electron-cache: 'false'
 
       - name: Download the win x64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: freedom-win-x64
           path: artifact
@@ -1443,7 +1479,7 @@ jobs:
       # usually empty on a green run — hence `ignore` rather than `error`.
       - name: Upload the smoke-test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: smoke-windows-x64-report
           path: test-results/
@@ -1464,7 +1500,7 @@ jobs:
 
     steps:
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: freedom-*
           merge-multiple: true
@@ -1550,19 +1586,23 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: npm
+          package-manager-cache: false
 
       - name: Install Linux native USB build dependency
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
+        with:
+          electron-cache: 'false'
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -1579,7 +1619,7 @@ jobs:
 
       - name: Upload Playwright traces and screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-full-traces
           path: |
@@ -1607,14 +1647,19 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # "Merged since the last nightly" is a git log between two commits
           # that can be many merges apart.
           fetch-depth: 0
+          # The one checkout that keeps the token in .git/config: "Publish the
+          # rolling nightly release" force-pushes the `nightly` tag with plain
+          # git. Nothing in this job uploads the workspace, and the job runs
+          # no npm install or build, only git, gh and the downloaded artifacts.
+          persist-credentials: true # zizmor: ignore[artipacked]
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: freedom-*
           merge-multiple: true

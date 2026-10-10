@@ -18,6 +18,14 @@ inputs:
       require Electron would download it uncached.
     required: false
     default: 'false'
+  electron-cache:
+    description: >
+      Restore (and save) the Electron download cache below. Pass `'false'` from
+      a job that produces signed or published artifacts (release.yml): the
+      Electron zip it holds is packaged into the app, and a release build must
+      not take any of its inputs from a cache another run wrote (#635).
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -50,7 +58,7 @@ runs:
     # OS/arch, because that tuple is what decides which zip gets fetched.
     - name: Resolve the Electron download cache
       id: electron-cache-meta
-      if: inputs.ignore-scripts != 'true'
+      if: inputs.ignore-scripts != 'true' && inputs.electron-cache != 'false'
       shell: bash
       run: |
         set -euo pipefail
@@ -64,14 +72,14 @@ runs:
 
     - name: Restore the Electron download cache
       id: electron-cache
-      if: inputs.ignore-scripts != 'true'
-      uses: actions/cache@v4
+      if: inputs.ignore-scripts != 'true' && inputs.electron-cache != 'false'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ steps.electron-cache-meta.outputs.dir }}
         key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-cache-meta.outputs.version }}
 
     - name: Report the Electron download cache
-      if: inputs.ignore-scripts != 'true'
+      if: inputs.ignore-scripts != 'true' && inputs.electron-cache != 'false'
       shell: bash
       env:
         CACHE_HIT: ${{ steps.electron-cache.outputs.cache-hit }}
@@ -89,7 +97,9 @@ runs:
     # downloads nothing — it only deletes better-sqlite3's unused `binding.gyp`
     # so @electron/rebuild skips the module (see its header). The prebuilt
     # addons it looks for ship inside the npm tarball, which `actions/setup-node`'s
-    # `cache: npm` already covers, so there is no second directory to cache here.
+    # `cache: npm` already covers in the workflows that set it (`ci.yml`,
+    # `startup-smoke.yml`; release.yml restores no cache of any kind, #635), so
+    # there is no second directory to cache here.
     - name: Run npm ci (bounded and retried)
       shell: bash
       env:
