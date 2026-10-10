@@ -68,10 +68,15 @@ Freedom qualification as the standard Windows user:
   long Unicode PowerShell scripts, npm build, reviewed checkpoint/history,
   localhost preview, stdin/Stop, external read-only and first approved write
   all pass. Windows DACL changes no longer invalidate unchanged file versions.
-- Real app startup and scoped helper writes pass. A wider parallel external
-  helper smoke failed once with a missing nested file; the focused rerun passed.
-  Five additional consecutive external-helper runs passed. The initial
-  intermittent failure remains recorded; no unsupported root-cause claim is made.
+- Real app startup and scoped helper writes pass. Extended repetition reproduced
+  the parallel external-helper failure as `WORKSPACE_CHANGED_DURING_VALIDATION`:
+  a fresh whole-tree identity scan raced a sibling's file changes. External file
+  operations and helper admission now queue through the same per-project gate;
+  validation and grant checks remain intact, and model/helper work stays parallel.
+  Focused controller tests cover success, failure, queued cancellation and grant
+  revocation; all four real macOS scoped/parallel writer cases pass. The packaged
+  checks above predate this final race fix; current-head CI and final package
+  reruns are linked from PR #457.
 - macOS at integration: lint, **9,483 unit tests** (129 skipped), and all **110
   Agent/settings Electron tests** pass. The latter closed earlier PR failures,
   including an obscured takeover confirmation and outdated model-picker/history
@@ -89,7 +94,9 @@ at merge `26848b0d`): `npm run dist -- --win --x64` succeeded. The unpacked tree
 extracted 281-MB ZIP and NSIS-installed application each passed **16/16 packaged
 checks** and the full controller qualification as `freedomdev`. Checks include
 fuses, SQLite history worker, persistence, site permissions, native helper hashes
-and 524-package dependency notices. The fixed app.asar is 258 MB, contains only
+and 524-package dependency notices. An additional installed-app probe fetched `is-number@7.0.0` from the real npm
+registry under an explicit full-network grant, then used it offline successfully.
+The fixed app.asar is 258 MB, contains only
 `src`, `node_modules` and `package.json`, and all 543 packaged source files matched
 the checkout. No RDP account switch was required. This local artifact does not
 bundle Tor; normal release CI builds Tor separately.

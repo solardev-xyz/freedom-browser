@@ -28,7 +28,10 @@ provisioning was performed on the physical Windows desktop.
 Current Mac checks: lint, **9,483 unit tests** and **110 Agent/settings Electron
 checks** pass. The release pass also fixed takeover-dialog stacking, stale
 feature E2E expectations and an electron-builder exclusion-only pattern that
-accidentally included native build caches in the application archive.
+accidentally included native build caches in the application archive. Extended
+Windows repetition also exposed an external-project validation race between
+sibling helpers; short file operations now share a per-project gate without
+skipping validation or serializing the helpers themselves.
 
 The [Windows qualification record](agent-windows-mxc-feasibility.md) tracks the
 current-head CI checks and exact evidence. The NSIS install and extracted ZIP
