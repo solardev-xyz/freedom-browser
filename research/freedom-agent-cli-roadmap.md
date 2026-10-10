@@ -19,6 +19,11 @@ and retaining both Tor status exports. Lint and the full unit suite pass:
 Agent/settings/runtime/profile/update tests**. See PR #457 for current-head CI;
 older green runs do not qualify the new head.
 
+Main advanced once more during the run: updater-only merge `6f139aa5` integrates
+`75cc0d3c`. Final lint and **9,684 unit tests** pass (129 skipped), plus all **5
+updater Electron checks**. The 138-test broader Electron result above remains
+at `e944cc19`; it is not relabelled as a new full run at the final head.
+
 The [review guide](../docs/agent-review-guide.md) now includes Claude subscription,
 custom endpoint and privacy passes, dated qualification boundaries, and a
 [review task brief](../docs/agent-playbooks/freedom-agent-review.md) for human or

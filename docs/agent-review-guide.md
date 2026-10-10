@@ -67,14 +67,15 @@ reported separately; a partial rerun is not a fresh full-platform qualification.
 Do not use a live user profile for automated failure injection. Risky Git fixtures
 belong on the designated disposable testing machine.
 
-Current review baseline: merge `e944cc19`, integrating `main` at `5b832a0d`.
-The three conflict resolutions retain launch URL handoff alongside headless-runtime
+Current review baseline: `6f139aa5`, integrating `main` at `75cc0d3c`.
+The earlier merge `e944cc19` resolved launch URL handoff alongside headless-runtime
 profile handling, automation attachment before guest creation, and both Tor status
-exports. Documentation-only commits after this baseline do not change its code.
+exports. The final merge adds only main's updater fix and its documentation/tests.
+Documentation-only commits after this baseline do not change its code.
 
 | Evidence | Scope and limit |
 | --- | --- |
-| Current merged code, macOS | Lint and full unit suite: **9,660 passed, 129 skipped**. **138 Agent/settings/runtime/profile/update Electron tests passed** on this same code. The PR records current-head GitHub checks separately. Skips are not passes. |
+| Current merged code, macOS | Lint and full unit suite: **9,684 passed, 129 skipped** on `6f139aa5`. **138 Agent/settings/runtime/profile/update Electron tests passed** on `e944cc19`; all **5 updater Electron tests** passed again after the updater-only final merge. The PR records current-head GitHub checks separately. Skips are not passes. |
 | Claude subscription, macOS | Live provider UI, multi-turn chat, approvals/decline/Stop, helpers and a managed build/checkpoint/preview; user smoke passed. Windows/Linux CLI and packaged-app qualification remain open. |
 | Custom connections, macOS | Fixture UI covers discovery, two independent connections, keyless/manual models, streaming, tool checks, late-result model attribution, retry and continue. Production adapter/codemode worked against the supplied endpoint; user smoke passed. This is not qualification of every compatible server/model. |
 | Core Windows x64, `c717eb65` | Physical standard-user sandbox/controller and packaged NSIS/ZIP checks; 20 repeated parallel-helper cases. [CI](https://github.com/solardev-xyz/freedom-browser/actions/runs/38047194963) and [Windows qualification](https://github.com/solardev-xyz/freedom-browser/actions/runs/38047194934) passed. These predate Claude/custom-provider additions and the latest main merge. Package hashes and scope are retained in the PR's historical evidence. |
