@@ -75,7 +75,13 @@ async function writeWindowsNotices({ cargo, workspace, source, output, freedomRo
     let files = licenseFiles(directory);
     if (!item.source && !files.length) files = [{ file: 'LICENSE', text: fs.readFileSync(path.join(item.name === 'freedom-windows-workspace' ? freedomRoot : source, 'LICENSE'), 'utf8') }];
     if (!files.some(file => /^(license|licence|copying)/i.test(path.basename(file.file)))) {
-      files.push(...await missingLicense(item, directory));
+      // For Apache-only or OR-licensed crates, select Apache-2.0 and include
+      // its complete standard text alongside the crate's authors and notices.
+      // AND expressions still require all of their upstream license texts.
+      const apacheOption = !/\bAND\b/.test(item.license) && item.license.replace(/[()]/g, '').split(/\s+OR\s+|\s*\/\s*/).includes('Apache-2.0');
+      files.push(...(apacheOption
+        ? [{ file: 'LICENSE-APACHE-2.0', text: fs.readFileSync(path.join(source, 'LICENSE'), 'utf8') }]
+        : await missingLicense(item, directory)));
     }
     const origin = item.source || `https://github.com/${item.name === 'freedom-windows-workspace' ? 'solardev-xyz/freedom-browser' : 'openai/codex'}`;
     const download = item.source?.startsWith('registry+') ? `https://crates.io/api/v1/crates/${item.name}/${item.version}/download` : origin;
