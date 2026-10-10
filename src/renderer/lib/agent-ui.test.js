@@ -66,6 +66,8 @@ function createAgentElements() {
     'agent-process-compact-count',
     'agent-process-compact-list',
     'agent-mcp-open', 'agent-mcp-panel',
+    'agent-compatibility', 'agent-compatibility-model', 'agent-compatibility-note',
+    'agent-compatibility-actions', 'agent-compatibility-result', 'agent-compatibility-continue',
     'agent-custom-fields', 'agent-custom-name', 'agent-custom-url', 'agent-custom-models', 'agent-custom-clear-key',
     'agent-custom-clear-key-field', 'agent-custom-transport', 'agent-custom-model-settings', 'agent-custom-context', 'agent-custom-output',
     'agent-custom-vision', 'agent-custom-reasoning', 'agent-custom-schema',

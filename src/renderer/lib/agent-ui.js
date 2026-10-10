@@ -97,6 +97,8 @@ let setWorkspaceNavigationEditable = () => {};
 let providerCatalog = [];
 let providerCatalogPromise = null;
 let providerStatus = null;
+let compatibilityCheck = null;
+let compatibilityCheckPending = false;
 const expandedModelProviders = new Set();
 let providerReady = false;
 let providerLoginPending = false;
@@ -1784,8 +1786,18 @@ function renderProviderFields() {
   elements.customUrl.disabled = isCustom && Boolean(connection);
   elements.customClearKeyField.hidden = !isCustom || !connection?.hasApiKey;
   elements.model.hidden = !isCustom;
-  elements.testProvider.textContent = isCustom ? 'Test chat and tool calling' : 'Send test prompt';
-  elements.testProviderNote.textContent = isCustom ? 'Sends synthetic messages and a harmless tool result. No files or pages are shared. Token charges may apply.' : 'Sends only “Reply with OK.” to this model. Token charges may apply.';
+  elements.compatibility.hidden = !isCustom || !connection;
+  (isCustom ? elements.compatibilityModel : elements.hostedFields).appendChild(elements.model);
+  if (isCustom) {
+    elements.compatibilityNote.appendChild(elements.testProviderNote);
+    elements.compatibilityActions.prepend(elements.testProvider);
+  } else {
+    elements.providerAdvanced.appendChild(elements.testProvider);
+    elements.providerAdvanced.appendChild(elements.testProviderNote);
+  }
+  elements.testProvider.textContent = isCustom ? 'Check compatibility' : 'Send test prompt';
+  elements.testProvider.disabled = compatibilityCheckPending;
+  elements.testProviderNote.textContent = isCustom ? 'Sends up to three small synthetic requests to check streaming, tool calling and tool results. No files or pages are shared. Token charges may apply.' : 'Sends only “Reply with OK.” to this model. Token charges may apply.';
   elements.providerHeading.textContent = providerName(providerId);
   elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
   elements.providerStatus.classList.toggle('active', Boolean(connection));
@@ -2073,6 +2085,7 @@ function renderModelOptions(providerId) {
   }
   loadCustomModelSettings();
   renderModelDetails();
+  renderCompatibilityCheck();
 }
 
 function renderCustomTransport() {
@@ -2145,20 +2158,60 @@ async function refreshModelCatalog() {
   finally { elements.modelRefresh.disabled = false; }
 }
 
+function compatibilityKey() {
+  const connection = providerConnection(elements.provider.value);
+  return JSON.stringify([connection?.providerId, connection?.updatedAt, elements.model.value]);
+}
+
+function renderCompatibilityCheck() {
+  if (!isCustomProvider(elements.provider.value)) return;
+  const check = compatibilityCheck?.key === compatibilityKey() ? compatibilityCheck : null;
+  setMessage(elements.compatibilityResult, check?.message || 'Not checked. Your connection is ready to use.', check?.failed === true);
+  elements.testProvider.textContent = check?.pending ? 'Checking…' : check ? 'Check again' : 'Check compatibility';
+  elements.testProvider.disabled = compatibilityCheckPending;
+  elements.compatibilityContinue.textContent = check?.pending ? 'Continue while checking' : check?.failed ? 'Continue anyway' : check ? 'Continue' : 'Continue without checking';
+}
+
 async function testProviderConnection() {
   const providerId = elements.provider.value;
+  const modelId = providerId === 'ollama' ? providerConnection(providerId)?.modelId : elements.model.value;
+  const custom = isCustomProvider(providerId);
+  const key = compatibilityKey();
   elements.testProvider.disabled = true;
-  setMessage(elements.providerMessage, 'Sending test prompt…');
+  if (custom) {
+    compatibilityCheckPending = true;
+    compatibilityCheck = { key, pending: true, message: `Checking ${modelId}…` };
+    renderCompatibilityCheck();
+  } else setMessage(elements.providerMessage, 'Sending test prompt…');
   try {
-    const response = await window.electronAPI.testAgentProviderConnection(providerId,
-      providerId === 'ollama' ? providerConnection(providerId)?.modelId : elements.model.value);
-    setMessage(elements.providerMessage, response?.ok
-      ? response.result.outcome === 'tools_verified' ? 'Chat and tool calling verified' : response.result.outcome === 'token_limit'
-        ? 'Connection accepted. The model reached the test token limit before finishing.'
-        : `Model responded in ${Math.max(0.1, response.result.elapsedMs / 1000).toFixed(1)}s`
-      : responseMessage(response, 'Test prompt failed'), !response?.ok);
-  } catch { setMessage(elements.providerMessage, 'Test prompt failed', true); }
-  finally { elements.testProvider.disabled = false; }
+    const response = await window.electronAPI.testAgentProviderConnection(providerId, modelId);
+    if (custom) {
+      const result = response?.result;
+      const descriptions = {
+        streaming: 'Chat works; streaming was not verified.',
+        toolCall: 'Chat and streaming work; tool calling failed.',
+        toolResult: 'Chat and tool calling work; using the tool result failed.',
+        chat: 'Chat could not be verified. Check the model, endpoint and credentials, then retry.',
+      };
+      const passed = response?.ok && result?.outcome === 'tools_verified';
+      compatibilityCheck = { key, failed: !passed, message: `${modelId}: ${passed
+        ? 'Chat and tools verified, including streaming and tool results.'
+        : response?.ok ? descriptions[result?.failedStage] || descriptions.chat : responseMessage(response, descriptions.chat)}` };
+    } else if (elements.provider.value === providerId && (providerId === 'ollama' ? providerConnection(providerId)?.modelId : elements.model.value) === modelId) {
+      setMessage(elements.providerMessage, response?.ok
+        ? response.result.outcome === 'token_limit'
+          ? 'Connection accepted. The model reached the test token limit before finishing.'
+          : `Model responded in ${Math.max(0.1, response.result.elapsedMs / 1000).toFixed(1)}s`
+        : responseMessage(response, 'Test prompt failed'), !response?.ok);
+    }
+  } catch {
+    if (custom) compatibilityCheck = { key, failed: true, message: `${modelId}: Compatibility check could not finish. You can retry or continue anyway.` };
+    else setMessage(elements.providerMessage, 'Test prompt failed', true);
+  } finally {
+    if (custom) compatibilityCheckPending = false;
+    elements.testProvider.disabled = false;
+    renderCompatibilityCheck();
+  }
 }
 
 function renderConnectedProviders() {
@@ -2444,6 +2497,10 @@ async function saveProvider() {
     }
     renderProviderStatus(response.status);
     setMessage(elements.providerMessage, providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile');
+    if (isCustomProvider(providerId)) {
+      renderCompatibilityCheck();
+      if (adding) { elements.compatibility.scrollIntoView?.({ block: 'start' }); elements.testProvider.focus(); }
+    }
   } catch {
     elements.apiKey.value = '';
     setMessage(elements.providerMessage, 'Could not save model', true);
@@ -5053,6 +5110,9 @@ export function initAgentUi(options = {}) {
     processCompactCount: byId('agent-process-compact-count'),
     processCompactList: byId('agent-process-compact-list'),
     mcpPanel: byId('agent-mcp-panel'),
+    compatibility: byId('agent-compatibility'), compatibilityModel: byId('agent-compatibility-model'),
+    compatibilityNote: byId('agent-compatibility-note'), compatibilityActions: byId('agent-compatibility-actions'),
+    compatibilityResult: byId('agent-compatibility-result'), compatibilityContinue: byId('agent-compatibility-continue'),
     customFields: byId('agent-custom-fields'), customName: byId('agent-custom-name'), customUrl: byId('agent-custom-url'),
     customModels: byId('agent-custom-models'), customClearKey: byId('agent-custom-clear-key'), customClearKeyField: byId('agent-custom-clear-key-field'), customTransport: byId('agent-custom-transport'),
     customSettings: byId('agent-custom-model-settings'), customContext: byId('agent-custom-context'), customOutput: byId('agent-custom-output'),
@@ -5340,9 +5400,18 @@ export function initAgentUi(options = {}) {
   elements.providerApi.addEventListener('click', () => openProviderDetail(elements.provider.value === 'anthropic' ? 'anthropic' : elements.provider.value === 'meta' ? 'meta' : 'openai'));
   elements.providerSearch.addEventListener('input', renderProviderOptions);
   elements.customUrl.addEventListener('input', renderCustomTransport);
-  elements.model.addEventListener('change', () => { loadCustomModelSettings(); renderModelDetails(); });
+  elements.model.addEventListener('change', () => { loadCustomModelSettings(); renderModelDetails(); renderCompatibilityCheck(); });
   elements.modelRefresh.addEventListener('click', refreshModelCatalog);
   elements.testProvider.addEventListener('click', testProviderConnection);
+  elements.compatibilityContinue.addEventListener('click', async () => {
+    if (!currentConversationId && currentRunStatus === 'idle') {
+      const providerId = elements.provider.value, modelId = elements.model.value;
+      await selectModel(providerId, modelId);
+      if (providerStatus?.providerId !== providerId || providerStatus?.modelId !== modelId) return;
+    }
+    setAgentView('workspace');
+    focusComposer();
+  });
   elements.modelMenuSearch.addEventListener('input', renderModelMenu);
   elements.privacyPolicy.addEventListener('change', () => renderModelOptions(elements.provider.value));
   elements.privacySave.addEventListener('click', () => saveProviderPreferences({ privacyPolicy: elements.privacyPolicy.value }));

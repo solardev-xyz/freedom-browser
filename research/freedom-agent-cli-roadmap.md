@@ -20,7 +20,10 @@ behavior and does not publish model capability/limit metadata.
 
 The branch now includes setup UI, multiple independent custom connections,
 encrypted optional keys, discovered/manual model IDs, favourites, model limits
-and capability settings, a synthetic tool-round-trip test and privacy attribution.
+and capability settings, an optional compatibility check and privacy attribution.
+After connecting, users can check streaming, tool calls and tool-result handling
+for the selected model, retry a failed stage, or continue without checking. No
+inference is sent automatically; possible token charges are disclosed first.
 Endpoints are immutable per connection and credential-bearing redirects are
 refused. Mac Electron checks cover discovery, settings, chat, privacy and a second
 keyless connection. The production resolver and a Freedom codemode session passed

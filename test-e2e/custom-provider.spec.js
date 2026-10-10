@@ -3,6 +3,8 @@ const { test, expect } = require('./fixtures');
 
 test('custom provider discovers models, verifies tools, chats, and supports a second keyless connection', async ({ window }, testInfo) => {
   const requests = [];
+  let rejectTools = false;
+  let holdTool = false, releaseTool;
   const server = http.createServer(async (req, res) => {
     let text = '';
     for await (const part of req) text += part;
@@ -12,7 +14,12 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ data: [{ id: 'fast' }, { id: 'smart' }] }));
     }
+    if (holdTool && body.tools?.length) {
+      holdTool = false;
+      await new Promise(resolve => { releaseTool = resolve; });
+    }
     const toolResult = body.messages.findLast(m => m.role === 'tool');
+    if (rejectTools && body.tools?.length) { res.writeHead(400); return res.end('Tools unsupported'); }
     const tool = body.tools?.find(t => t.function.name === 'connection_probe');
     const nonce = tool?.function.parameters.properties.nonce.enum[0];
     const delta = tool && !toolResult ? { tool_calls: [{ index: 0, id: 'fixture_call', type: 'function', function: { name: 'connection_probe', arguments: JSON.stringify({ nonce }) } }] }
@@ -38,6 +45,10 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await expect(window.locator('#agent-provider-status')).toHaveText('Connected', { timeout: 20000 });
     await expect(window.locator('#agent-provider-models-list')).toContainText('fast');
     await expect(window.locator('#agent-custom-url')).toBeDisabled();
+    await expect(window.locator('#agent-compatibility')).toBeVisible();
+    await expect(window.locator('#agent-provider-test')).toBeVisible();
+    await expect(window.locator('#agent-compatibility-continue')).toHaveText('Continue without checking');
+    expect(requests.every(r => r.url.endsWith('/models'))).toBe(true);
     await window.locator('#agent-provider-advanced').evaluate(el => { el.open = true; });
     await window.locator('#agent-model-select').selectOption('smart');
     await window.locator('#agent-custom-context').fill('64000');
@@ -45,13 +56,25 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await expect(window.locator('#agent-model-select')).toHaveValue('smart');
     await window.locator('#agent-provider-advanced').evaluate(el => { el.open = true; });
     await expect(window.locator('#agent-custom-context')).toHaveValue('64000');
+    holdTool = true;
     await window.locator('#agent-provider-test').click();
-    await expect(window.locator('#agent-provider-message')).toHaveText('Chat and tool calling verified', { timeout: 20000 });
+    await expect.poll(() => Boolean(releaseTool)).toBe(true);
+    await window.locator('#agent-model-select').selectOption('fast');
+    releaseTool();
+    await expect(window.locator('#agent-provider-test')).toBeEnabled({ timeout: 20000 });
+    await expect(window.locator('#agent-compatibility-result')).toContainText('Not checked');
+    await window.locator('#agent-model-select').selectOption('smart');
+    await expect(window.locator('#agent-compatibility-result')).toContainText('Chat and tools verified', { timeout: 20000 });
+    await expect(window.locator('#agent-compatibility-result')).toContainText('smart:');
+    await window.locator('#agent-model-select').selectOption('fast');
+    await expect(window.locator('#agent-compatibility-result')).toContainText('Not checked');
+    await window.locator('#agent-model-select').selectOption('smart');
+    await expect(window.locator('#agent-compatibility-result')).toContainText('Chat and tools verified');
     for (const theme of ['dark', 'light']) {
       await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-      await window.locator('#agent-sidebar').screenshot({ path: testInfo.outputPath(`custom-provider-${theme}.png`) });
+      await window.locator('#agent-compatibility').screenshot({ path: testInfo.outputPath(`custom-provider-check-${theme}.png`) });
     }
-    await window.locator('#agent-sidebar-back').click();
+    await window.locator('#agent-compatibility-continue').click();
     await window.locator('#agent-prompt').fill('Reply with CUSTOM_OK.');
     await window.locator('#agent-run').click();
     await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 20000 });
@@ -75,12 +98,22 @@ test('custom provider discovers models, verifies tools, chats, and supports a se
     await window.locator('#agent-provider-save').click();
     await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
     expect(requests.length).toBe(before);
+    rejectTools = true;
     await window.locator('#agent-provider-advanced').evaluate(el => { el.open = true; });
     await window.locator('#agent-provider-test').click();
-    await expect(window.locator('#agent-provider-message')).toHaveText('Chat and tool calling verified', { timeout: 20000 });
+    await expect(window.locator('#agent-compatibility-result')).toContainText('Chat and streaming work; tool calling failed.', { timeout: 20000 });
+    await expect(window.locator('#agent-compatibility-continue')).toHaveText('Continue anyway');
+    await window.locator('#agent-compatibility-continue').click();
+    await expect(window.locator('#agent-prompt')).toBeVisible();
+    await window.locator('#agent-model-menu-button').click();
+    await window.locator('#agent-manage-providers').click();
+    await window.locator('#agent-connected-provider-list').getByRole('button', { name: /Keyless fixture/ }).click();
+    rejectTools = false;
+    await window.locator('#agent-provider-test').click();
+    await expect(window.locator('#agent-compatibility-result')).toContainText('Chat and tools verified', { timeout: 20000 });
     expect(requests.slice(before).every(r => !r.auth)).toBe(true);
     await window.locator('#agent-provider-detail-back').click();
     await expect(window.locator('#agent-connected-provider-list')).toContainText('Fixture gateway');
     await expect(window.locator('#agent-connected-provider-list')).toContainText('Keyless fixture');
-  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  } finally { releaseTool?.(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });

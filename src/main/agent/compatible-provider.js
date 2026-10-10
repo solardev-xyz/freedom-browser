@@ -92,13 +92,33 @@ async function testCompatibleConnection(model, runtime, signal) {
     parameters: { type: 'object', properties: { nonce: { type: 'string', enum: [nonce] } }, required: ['nonce'], additionalProperties: false } }];
   const context = { messages: [{ role: 'user', content: `Call connection_probe with nonce ${nonce}. Then reply with its returned value.`, timestamp: Date.now() }], tools };
   const options = { signal, maxTokens: Math.min(2048, model.maxTokens), maxRetries: 0 };
-  const first = await runtime.completeSimple(model, context, options);
-  const call = first.content?.find(c => c.type === 'toolCall');
-  if (first.stopReason !== 'toolUse' || call?.name !== 'connection_probe' || call.arguments?.nonce !== nonce || first.content.filter(c => c.type === 'toolCall').length !== 1) throw failure('AGENT_CUSTOM_TOOLS_FAILED');
-  const value = randomUUID();
-  const second = await runtime.completeSimple(model, { ...context, messages: [...context.messages, first,
-    { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [{ type: 'text', text: value }], isError: false, timestamp: Date.now() }] }, options);
-  if (second.stopReason !== 'stop' || !second.content?.some(c => c.type === 'text' && c.text.includes(value))) throw failure('AGENT_CUSTOM_TOOLS_FAILED');
+  const checks = { chat: false, streaming: false, toolCall: false, toolResult: false };
+  let failedStage = 'chat';
+  try {
+    const stream = runtime.streamSimple(model, { messages: [{ role: 'user', content: 'Reply with OK.', timestamp: Date.now() }] }, options);
+    let textDelta = false;
+    for await (const event of stream) if (event.type === 'text_delta' && event.delta) textDelta = true;
+    const chat = await stream.result();
+    checks.chat = chat.stopReason === 'stop' && chat.content?.some(c => c.type === 'text' && c.text.trim()) === true;
+    checks.streaming = checks.chat && textDelta;
+    if (!checks.chat) return { outcome: 'failed', checks, failedStage };
+    failedStage = 'streaming';
+    if (!checks.streaming) return { outcome: 'chat_only', checks, failedStage };
+    failedStage = 'toolCall';
+    const first = await runtime.completeSimple(model, context, options);
+    const call = first.content?.find(c => c.type === 'toolCall');
+    checks.toolCall = Boolean(first.stopReason === 'toolUse' && call?.name === 'connection_probe' && call.arguments?.nonce === nonce && first.content.filter(c => c.type === 'toolCall').length === 1);
+    if (!checks.toolCall) return { outcome: 'chat_only', checks, failedStage };
+    failedStage = 'toolResult';
+    const value = randomUUID();
+    const second = await runtime.completeSimple(model, { ...context, messages: [...context.messages, first,
+      { role: 'toolResult', toolCallId: call.id, toolName: call.name, content: [{ type: 'text', text: value }], isError: false, timestamp: Date.now() }] }, options);
+    checks.toolResult = second.stopReason === 'stop' && second.content?.some(c => c.type === 'text' && c.text.includes(value)) === true;
+    return { outcome: checks.toolResult ? 'tools_verified' : 'chat_only', checks, ...(!checks.toolResult && { failedStage }) };
+  } catch {
+    // Provider errors can contain private payloads. Return only the failed stage.
+    return { outcome: checks.chat ? 'chat_only' : 'failed', checks, failedStage };
+  }
 }
 module.exports = { isCompatibleId, cleanText, normalizeCompatibleUrl, normalizeCompatibleModels, isStoredCompatible,
   compatibleFetch, discoverCompatibleModels, resolveCompatible, testCompatibleConnection };

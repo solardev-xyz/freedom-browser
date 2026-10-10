@@ -97,9 +97,15 @@ picker and support favourites, refresh, selection and disconnect.
   classifiers; the connection test does not certify those optional capabilities.
 - Refresh preserves manual entries, existing settings, favourites and selection.
   Remove unwanted IDs through the saved connection's model list.
-- **Test chat and tool calling** uses a synthetic function call and a random
-  returned value, with no real browser or workspace tools. It makes inference
-  requests and can incur normal token charges. It tests the saved configuration.
+- After connecting, **Check compatibility** is offered prominently as an optional
+  step. Saving/discovering models sends no inference requests. The check sends up
+  to three small requests: streamed chat, a synthetic function call, and a random
+  tool result. It uses no real browser or workspace tools and discloses possible
+  token charges before running. Results identify the checked model and saved
+  configuration; changing models/settings does not inherit another result.
+  Partial failures identify streaming, tool calling or tool-result handling.
+  Users can retry, select another model, or continue without checking/anyway.
+  Results are transient, not a full-compliance certification.
 - An endpoint cannot be changed after saving. Add a new connection to change it;
   existing conversations retain their original connection identity. Keys can be
   rotated or explicitly removed, and names/model settings remain editable. New
@@ -120,8 +126,10 @@ including a keyless/manual-model server. The changed setup and settings surfaces
 were checked in both themes. Unit coverage includes credential isolation and
 reload, immutable endpoints, secret-free public status, bounded storage writes,
 untrusted catalogue metadata, redirect/destination restrictions and keyless auth.
-`npm run lint` and the full unit suite pass (9,519 passed, 129 skipped); the
-custom-provider Electron test also passes. No dependencies were added.
+`npm run lint` and the full unit suite pass (9,524 passed, 129 skipped); the
+custom-provider Electron test also passes. Its optional-check coverage includes no
+automatic inference, switching models during a check, partial failure, retry and
+continuing despite failure. No dependencies were added.
 
 The production resolver was then tested against the supplied endpoint with `fast`:
 all eight IDs were discovered, the synthetic tool round trip passed, and an

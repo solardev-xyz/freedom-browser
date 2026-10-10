@@ -1672,6 +1672,14 @@
             <section id="agent-provider-detail" aria-labelledby="agent-provider-form-heading" hidden>
               <button id="agent-provider-detail-back" class="agent-text-button" type="button">‹ Providers</button>
               <div class="agent-card-heading"><h3 id="agent-provider-form-heading">Choose a provider</h3><span id="agent-provider-status" class="agent-badge">Not connected</span></div>
+              <section id="agent-compatibility" class="agent-compatibility" hidden aria-labelledby="agent-compatibility-heading">
+                <h4 id="agent-compatibility-heading">Optional compatibility check</h4>
+                <label class="agent-field"><span>Model to check</span><span id="agent-compatibility-model"></span></label>
+                <div id="agent-compatibility-note"></div>
+                <p id="agent-compatibility-result" class="agent-message" aria-live="polite"></p>
+                <div id="agent-compatibility-actions" class="agent-config-actions"><button id="agent-compatibility-continue" class="agent-text-button" type="button">Continue without checking</button></div>
+                <p class="agent-catalog-status">Results apply only to this model and saved settings. This is a quick check, not a guarantee of full API compatibility.</p>
+              </section>
               <select id="agent-provider-select" hidden aria-label="Provider"></select>
               <div id="agent-provider-methods" hidden>
                 <p class="agent-catalog-status">How would you like to connect?</p>

@@ -523,8 +523,8 @@ class AgentProviderResolver {
     const startedAt = Date.now();
     try {
       if (isCompatibleId(providerId)) {
-        await testCompatibleConnection(model, modelRuntime, controller.signal);
-        return { elapsedMs: Date.now() - startedAt, outcome: 'tools_verified' };
+        const result = await testCompatibleConnection(model, modelRuntime, controller.signal);
+        return { elapsedMs: Date.now() - startedAt, ...result };
       }
       const response = await modelRuntime.completeSimple(
         model,

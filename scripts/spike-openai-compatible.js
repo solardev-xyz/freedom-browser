@@ -23,6 +23,7 @@ async function productionProbe(config, report) {
   report('production-discovery', { ids: selection.models.map(m => m.id), selected: selection.modelId });
   const tested = await resolver.testConnection({ providerId: selection.providerId, modelId: selection.modelId });
   report('production-connection-test', tested);
+  if (tested.outcome !== 'tools_verified') throw new Error('Compatibility check failed');
   const { model, modelRuntime } = await resolver.resolveModel({ providerId: selection.providerId, modelId: selection.modelId });
   const value = randomUUID();
   let calls = 0, output = '';

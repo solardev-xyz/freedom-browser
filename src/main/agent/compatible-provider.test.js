@@ -1,6 +1,6 @@
 'use strict';
 
-const { normalizeCompatibleUrl, normalizeCompatibleModels, compatibleFetch, discoverCompatibleModels, resolveCompatible } = require('./compatible-provider');
+const { normalizeCompatibleUrl, normalizeCompatibleModels, compatibleFetch, discoverCompatibleModels, resolveCompatible, testCompatibleConnection } = require('./compatible-provider');
 
 test('runtime uses rotated keys, preserves request observation, and blocks removed connections/models', async () => {
   let current = { kind: 'compatible', providerId: 'custom-11111111-1111-4111-8111-111111111111',
@@ -58,4 +58,35 @@ test('transport cannot forward credentials to another endpoint or follow redirec
 test('validates manual model settings instead of trusting them as runtime configuration', () => {
   expect(normalizeCompatibleModels([{ id: 'org/model', contextWindow: 64000, maxTokens: 2048, vision: true }])[0].vision).toBe(true);
   for (const models of [[], [{ id: 'a' }, { id: 'a' }], [{ id: 'a', contextWindow: 1024, maxTokens: 2048 }], [{ id: 'a\n' }]]) expect(() => normalizeCompatibleModels(models)).toThrow();
+});
+
+
+test.each([
+  ['success', 'tools_verified', undefined],
+  ['chat-error', 'failed', 'chat'],
+  ['no-deltas', 'chat_only', 'streaming'],
+  ['no-tools', 'chat_only', 'toolCall'],
+  ['wrong-result', 'chat_only', 'toolResult'],
+])('compatibility check reports the exact stage: %s', async (mode, outcome, failedStage) => {
+  const runtime = {
+    streamSimple: jest.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        if (mode === 'chat-error') throw new Error('private diagnostic');
+        if (mode !== 'no-deltas') yield { type: 'text_delta', delta: 'OK' };
+      },
+      result: async () => ({ stopReason: 'stop', content: [{ type: 'text', text: 'OK' }] }),
+    })),
+    completeSimple: jest.fn(async (_model, context) => {
+      const toolResult = context.messages.find(m => m.role === 'toolResult');
+      if (toolResult) return { stopReason: 'stop', content: [{ type: 'text', text: mode === 'wrong-result' ? 'ignored' : toolResult.content[0].text }] };
+      if (mode === 'no-tools') return { stopReason: 'stop', content: [{ type: 'text', text: 'No tool call' }] };
+      return { stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'call', name: 'connection_probe', arguments: { nonce: context.tools[0].parameters.properties.nonce.enum[0] } }] };
+    }),
+  };
+  const result = await testCompatibleConnection({ maxTokens: 4096 }, runtime, new AbortController().signal);
+  expect(result.outcome).toBe(outcome);
+  expect(result.failedStage).toBe(failedStage);
+  expect(JSON.stringify(result)).not.toContain('private diagnostic');
+  if (outcome === 'tools_verified') expect(result.checks).toEqual({ chat: true, streaming: true, toolCall: true, toolResult: true });
+  if (['chat-error', 'no-deltas'].includes(mode)) expect(runtime.completeSimple).not.toHaveBeenCalled();
 });

@@ -333,6 +333,8 @@ are not supported. See [setup and qualification](agent-claude-subscription.md).
 endpoint using an optional API key. Models can be discovered or entered manually;
 multiple connections appear independently in the model picker. Saved keys are
 encrypted, and model limits/capabilities can be configured in connection settings.
-The built-in test checks chat and a synthetic tool round trip. Privacy guarantees
+After connecting, an optional compatibility check tests streaming chat and a
+synthetic tool round trip for the selected model. It discloses possible token
+charges and allows retrying or continuing despite failure. Privacy guarantees
 remain unknown unless independently established. See
 [setup and qualification](agent-openai-compatible-spike.md).
