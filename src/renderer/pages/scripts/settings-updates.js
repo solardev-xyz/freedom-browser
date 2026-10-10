@@ -67,8 +67,13 @@ function updateSectionView(state, now = Date.now()) {
     detail,
     percent,
     // Nothing was ever checked when this copy can't update; "Not checked
-    // yet" would only suggest it might be.
-    lastChecked: status === 'unsupported' ? '' : describeLastChecked(state?.lastChecked, now),
+    // yet" would only suggest it might be. Once an update is downloading or
+    // ready the check has plainly happened, and the line only competes with
+    // the progress detail and the restart button (#594).
+    lastChecked:
+      status === 'unsupported' || downloading || ready
+        ? ''
+        : describeLastChecked(state?.lastChecked, now),
     showCheck: !ready,
     checkEnabled: Boolean(state?.canCheck),
     checkLabel: status === 'checking' ? 'Checking…' : 'Check now',

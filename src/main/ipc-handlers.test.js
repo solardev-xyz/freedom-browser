@@ -222,7 +222,10 @@ function loadIpcHandlersModule(options = {}) {
   const myotisManager = options.myotisManager || {
     stopAllMyotis: jest.fn(),
     refreshMyotisStatus: jest.fn(),
-    NETWORKS: new Map([[1, {}], [100, {}]]),
+    NETWORKS: new Map([
+      [1, {}],
+      [100, {}],
+    ]),
   };
 
   const { mod, app, webContents } = loadMainModule(require.resolve('./ipc-handlers'), {
@@ -263,6 +266,9 @@ function loadIpcHandlersModule(options = {}) {
       [require.resolve('./myotis/myotis-manager')]: () => myotisManager,
       ...(options.radicleManager
         ? { [require.resolve('./radicle-manager')]: () => options.radicleManager }
+        : {}),
+      ...(options.torManager
+        ? { [require.resolve('./tor-manager')]: () => options.torManager }
         : {}),
       ...(options.swarmProbeMock
         ? { [require.resolve('./swarm/swarm-probe')]: () => options.swarmProbeMock }
@@ -361,6 +367,31 @@ describe('ipc-handlers', () => {
       })
     ).resolves.toEqual(success());
     expect(ctx.state.activeBzzBases.has(5)).toBe(false);
+  });
+
+  test('Restart relaunches without the links (or --open-settings) this launch opened', () => {
+    const ctx = loadIpcHandlersModule();
+    ctx.app.relaunch = jest.fn();
+    ctx.app.quit = jest.fn();
+    const originalArgv = process.argv;
+    process.argv = [
+      '/opt/Freedom/freedom',
+      '--profile',
+      'work',
+      'https://x.example/',
+      '--open-settings',
+      '--no-sandbox',
+    ];
+    try {
+      ctx.mod.registerBaseIpcHandlers();
+      ctx.ipcMain.emit(IPC.APP_RELAUNCH, {});
+    } finally {
+      process.argv = originalArgv;
+    }
+    expect(ctx.app.relaunch).toHaveBeenCalledWith({
+      args: ['--profile', 'work', '--no-sandbox'],
+    });
+    expect(ctx.app.quit).toHaveBeenCalled();
   });
 
   test('registers window, app, and internal routing handlers', async () => {
@@ -1382,6 +1413,29 @@ describe('ipc-handlers', () => {
         nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
       })
     );
+  });
+
+  test('a saved Tor mode is published to the registry right away (#377)', async () => {
+    // The Nodes menu reads a stopped Tor's mode and "Tor disabled for this
+    // profile" notice from the service registry; without this sync both stayed
+    // up after the user switched the mode back until the next start click.
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: { nodes: { tor: { mode: 'disabled' } } },
+    };
+    const torManager = { syncProfileMode: jest.fn() };
+    const ctx = loadIpcHandlersModule({ activeProfile, torManager });
+    ctx.mod.registerBaseIpcHandlers();
+
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'tor',
+      config: { mode: 'managed' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(torManager.syncProfileMode).toHaveBeenCalledTimes(1);
   });
 
   test('a node config whose catalog write fails is still refused as not saved', async () => {

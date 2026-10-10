@@ -1,0 +1,1 @@
+- Buying storage no longer reports "failed" right after a successful xDAI to xBZZ swap when Gnosis Chain has not produced the next block yet ([#614](https://github.com/solardev-xyz/freedom-browser/issues/614))
