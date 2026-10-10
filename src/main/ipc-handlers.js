@@ -40,6 +40,7 @@ const { openOrFocusProfile } = require('./profile-launcher');
 const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
+const { relaunchArgs } = require('./launch-urls');
 
 // Bzz content probes, keyed by probe id. Each entry exposes a promise that
 // resolves to the probe outcome. Entries survive until BZZ_AWAIT_PROBE
@@ -525,7 +526,7 @@ async function ensureProfileClosedForDelete(profileId, options = {}) {
     // Prefer the definitive signal: the acking process has actually exited.
     let ack;
     try {
-      ack = readAck(target);
+      ack = readAck(target, quit?.nonce);
     } catch {
       ack = null;
     }
@@ -807,7 +808,9 @@ function registerBaseIpcHandlers(callbacks = {}) {
   });
 
   ipcMain.on(IPC.APP_RELAUNCH, () => {
-    app.relaunch();
+    // Not a bare relaunch(): that reuses this launch's whole command line, so
+    // the links it was started with (and --open-settings) would open again.
+    app.relaunch({ args: relaunchArgs(process.argv) });
     app.quit();
   });
 
