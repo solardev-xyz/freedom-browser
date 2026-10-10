@@ -24,12 +24,17 @@ Initial SSH tests reproduce Node's `0xC0000142` in both MXC and unelevated modes
 both run Node/npm builds successfully in the standard user's desktop. Their
 outside, `.git` and junction write checks pass. MXC denies raw network access
 but its preview server is unreachable from the host; unelevated serves previews
-but raw sockets bypass its disabled-network posture. Administrator provisioning
-and qualification of the preferred elevated backend are pending. The corrected
-desktop suite also fails MXC's abrupt-launcher-exit check; explicit process-owner
-integration remains necessary (this does not test Codex's interactive Stop).
-Freedom's production Windows executor remains
-unsupported until a tested adapter is implemented.
+but raw sockets bypass its disabled-network posture. The user has now completed
+administrator provisioning. **Codex's elevated backend passes the full desktop
+reference suite:** broad reads, narrow writes, `.git`/junction protection, Node,
+synthetic npm build, denied/allowed direct network connections, localhost HTTP
+preview and abrupt launcher cleanup. Run `elevated-aoLBPh` exited `0`; no OS update
+or model request was needed. It is the first Windows implementation target.
+The corrected desktop suite still fails MXC's abrupt-launcher-exit check; MXC
+remains optional until preview/process-lifetime qualification passes. Freedom's
+production Windows executor remains unsupported until an adapter is implemented
+and qualified, including graceful cancellation, real dependency installation,
+external projects, Electron lifecycle and packaging.
 
 Started `experiment/agent-windows-mxc` from feature/main-refresh `b97afeb3`.
 GitHub now synchronizes the Mac and physical Windows 11 checkout. Portable

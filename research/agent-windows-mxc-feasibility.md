@@ -28,7 +28,10 @@ connectivity remain gates.
 No Freedom runtime code or dependencies changed. Windows workspace execution
 continues to fail closed. The initial MXC SDK spike made no host ACL changes.
 The later Codex unelevated comparison uses Codex's scoped ACL setup in synthetic
-workspaces. Elevated provisioning is pending; no OS update was performed.
+workspaces. The user completed elevated provisioning, and that backend passed
+the full reference suite in the standard user's desktop session. No OS update
+was needed. The elevated backend is now the first implementation target; MXC
+remains an optional path pending preview and process-lifetime qualification.
 
 ## Environment and sync
 
@@ -76,23 +79,33 @@ the standard test user. It has no automatic trigger. Task Scheduler's CLI worked
 over SSH after the PowerShell CIM API denied access. Scripts and logs reside in
 `C:\freedom-test\codex-oct10`; the task runs the GitHub-synchronized suite.
 
-| Desktop check | Codex MXC | Codex unelevated |
-| --- | --- | --- |
-| Workspace write and broad outside read | Passed | Passed |
-| Outside write blocked, sentinel unchanged | Passed | Passed |
-| `.git` write blocked, sentinel unchanged | Passed | Passed |
-| Write through host-created junction blocked | Passed | Passed |
-| Node 24.21 startup | Passed | Passed |
-| Synthetic npm build with Node child process | Passed | Passed |
-| Direct TCP denied with networking disabled | Passed (`EACCES`) | **Failed: socket connected** |
-| Direct TCP allowed with networking enabled | Passed | Passed |
-| Host HTTP connection to localhost preview | **Failed: server starts but is unreachable** | Passed |
-| Abrupt launcher exit | **Failed independent heartbeat/deadline check** | Passed heartbeat and HTTP checks |
+| Desktop check | Codex MXC | Codex unelevated | Codex elevated |
+| --- | --- | --- | --- |
+| Workspace write and broad outside read | Passed | Passed | Passed |
+| Outside write blocked, sentinel unchanged | Passed | Passed | Passed |
+| `.git` write blocked, sentinel unchanged | Passed | Passed | Passed |
+| Write through host-created junction blocked | Passed | Passed | Passed |
+| Node 24.21 startup | Passed | Passed | Passed |
+| Synthetic npm build with Node child process | Passed | Passed | Passed |
+| Direct TCP denied with networking disabled | Passed (`EACCES`) | **Failed: socket connected** | Passed (`EACCES`) |
+| Direct TCP allowed with networking enabled | Passed | Passed | Passed |
+| Host HTTP connection to localhost preview | **Failed: server starts but is unreachable** | Passed | Passed |
+| Abrupt launcher exit | **Failed independent heartbeat/deadline check** | Passed heartbeat and HTTP checks | Passed heartbeat and HTTP checks |
 
-These findings support testing the **elevated** fallback rather than adopting
-unelevated mode. MXC's write/network enforcement works for these cases, but the
-preview transport remains blocked on this host. The synthetic npm build does
-not establish third-party dependency-install or full Next.js compatibility.
+The **elevated** backend passes the complete reference suite and is the first
+Freedom implementation target. MXC's write/network enforcement works for these
+cases, but the preview transport remains blocked on this host. The synthetic
+npm build does not establish third-party dependency-install or full Next.js
+compatibility, and the reference CLI is not yet a Freedom runtime adapter.
+
+Elevated run: `desktop-runs\elevated-aoLBPh`, Codex 0.162.1, Node 24.21.0,
+suite code `c283de31` (checkout `039321b9`), Task Scheduler exit `0`.
+`desktop-elevated.log` and the run's `results.jsonl` retain every result. Both
+synthetic outside and `.git` sentinels remained unchanged. The direct socket
+control succeeded before the denied-network probe, and the preview returned
+the expected response before launcher termination. No elevated command prompt
+was used for the suite; only the prior provisioning required administrator
+credentials. No model requests were made.
 
 Initial desktop artifacts: `desktop-runs\mxc-EjP94C` and
 `desktop-runs\unelevated-GlnDV8`. The first SSH run's junction assertion was too
@@ -136,8 +149,10 @@ The administrator setup command, prepared as
 `codex sandbox setup --elevated --user <standard-test-user> --codex-home <scratch-home>`.
 It requires an Administrator PowerShell because SSH uses a standard account.
 It creates machine-wide sandbox accounts/rules even though configuration is in
-scratch; it is not a portable/no-host-change installation. User execution was
-requested; successful provisioning has not yet been observed.
+scratch; it is not a portable/no-host-change installation. The user completed it
+successfully from the administrator account and returned to the standard-user
+desktop. The test account's enabled `CodexSandboxOffline`/`CodexSandboxOnline`
+accounts were observed, and the subsequent elevated suite completed successfully.
 
 Sources: [Codex release](https://github.com/openai/codex/releases/tag/rust-v0.162.1),
 [MXC adapter](https://github.com/openai/codex/blob/4aa94dce270de668eff6e2fa8585c82385e84455/codex-rs/mxc-sandbox/README.md),
