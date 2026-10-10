@@ -694,11 +694,14 @@ jobs:
 
       # `--ignore-scripts` on purpose: this job only needs Playwright to drive
       # an already-built artifact, so there is nothing to rebuild against
-      # Electron and no bundled binary to download.
+      # Electron and no bundled binary to download. `electron-cache: 'false'`
+      # is redundant with that today, but keeps the cache off if
+      # `ignore-scripts` is ever dropped (scripts/ci/release-caches.test.js).
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
         with:
           ignore-scripts: 'true'
+          electron-cache: 'false'
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -854,11 +857,14 @@ jobs:
 
       # `--ignore-scripts` on purpose: this job only needs Playwright to drive
       # an already-built artifact, so there is nothing to rebuild against
-      # Electron and no bundled binary to download.
+      # Electron and no bundled binary to download. `electron-cache: 'false'`
+      # is redundant with that today, but keeps the cache off if
+      # `ignore-scripts` is ever dropped (scripts/ci/release-caches.test.js).
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
         with:
           ignore-scripts: 'true'
+          electron-cache: 'false'
 
       # Signed and unsigned runs upload under different names, so match both
       # and let the step below read the signing state back off the name that
@@ -1304,11 +1310,14 @@ jobs:
 
       # `--ignore-scripts` on purpose: this job only needs Playwright to drive
       # an already-built artifact, so there is nothing to rebuild against
-      # Electron and no bundled binary to download.
+      # Electron and no bundled binary to download. `electron-cache: 'false'`
+      # is redundant with that today, but keeps the cache off if
+      # `ignore-scripts` is ever dropped (scripts/ci/release-caches.test.js).
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
         with:
           ignore-scripts: 'true'
+          electron-cache: 'false'
 
       - name: Download the win x64 artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

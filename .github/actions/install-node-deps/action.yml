@@ -97,8 +97,9 @@ runs:
     # downloads nothing — it only deletes better-sqlite3's unused `binding.gyp`
     # so @electron/rebuild skips the module (see its header). The prebuilt
     # addons it looks for ship inside the npm tarball, which `actions/setup-node`'s
-    # `cache: npm` already covers in `ci.yml` (release.yml restores no cache of
-    # any kind, #635), so there is no second directory to cache here.
+    # `cache: npm` already covers in the workflows that set it (`ci.yml`,
+    # `startup-smoke.yml`; release.yml restores no cache of any kind, #635), so
+    # there is no second directory to cache here.
     - name: Run npm ci (bounded and retried)
       shell: bash
       env:

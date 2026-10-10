@@ -14,7 +14,11 @@ rules:
 
   # ci.yml builds and tests but publishes nothing, so a poisoned npm/Electron
   # cache entry there cannot reach a shipped build. release.yml, which does
-  # ship, restores no caches at all (#635) and stays covered by this audit.
+  # ship, restores no caches at all (#635). This audit still covers its
+  # setup-node and actions/cache steps, but not the Electron download cache
+  # inside the local install-node-deps action, which zizmor does not look
+  # into: that one is off only because every release.yml step passes
+  # `electron-cache: 'false'`, and scripts/ci/release-caches.test.js pins it.
   cache-poisoning:
     ignore:
       - ci.yml
