@@ -344,6 +344,12 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
       const ipfsManager = require('./ipfs-manager');
       await ipfsManager.syncProfileMode();
     }
+    if (protocol === 'tor') {
+      // Same reason: the Nodes menu reads a stopped Tor's mode and notice from
+      // the registry, which otherwise only changes on the next start click.
+      const torManager = require('./tor-manager');
+      torManager.syncProfileMode();
+    }
   } catch (err) {
     log.error('[profile] Node config saved, but applying it failed:', err);
     return failure(
