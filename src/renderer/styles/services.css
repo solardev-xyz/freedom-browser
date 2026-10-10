@@ -403,6 +403,11 @@
   gap: 12px;
 }
 
+/* `display: flex` above would otherwise win over the UA's `[hidden]` rule. */
+.tor-info-row[hidden] {
+  display: none;
+}
+
 .tor-info-label {
   color: var(--muted);
 }
