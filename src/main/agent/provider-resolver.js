@@ -4,7 +4,7 @@ const { checkProviderAttestation } = require('./privacy-attestation');
 const { fetchNearWithEvidence, fetchVeniceEncrypted } = require('./privacy-request');
 
 const path = require('path');
-const { CLAUDE_PROVIDER_ID, CLAUDE_MODELS, checkClaudeLogin } = require('./claude-cli');
+const { CLAUDE_PROVIDER_ID, CLAUDE_MODELS, checkClaudeLogin, discoverClaudeModels } = require('./claude-cli');
 const { createClaudeSession } = require('./claude-session');
 const { loadPiSdk } = require('./pi-sdk');
 const { loginChatGPT } = require('./chatgpt-login');
@@ -96,6 +96,9 @@ class AgentProviderResolver {
     this.loadSdk = options.loadSdk || loadPiSdk;
     this.fetch = options.fetch || globalThis.fetch;
     this.checkClaudeLogin = options.checkClaudeLogin || checkClaudeLogin;
+    this.discoverClaudeModels = options.discoverClaudeModels || discoverClaudeModels;
+    this.claudeCatalog = null;
+    this.claudeCatalogPending = null;
     this.catalog =
       options.catalog || new ProviderCatalog({ dataDir: this.dataDir, fetch: options.fetch });
     if (typeof this.store.createCredentialStore !== 'function') {
@@ -108,8 +111,24 @@ class AgentProviderResolver {
     return this.store.getPublicStatus();
   }
 
+  async getClaudeModels() {
+    if (this.claudeCatalog?.expiresAt > Date.now()) return this.claudeCatalog.models;
+    if (!this.claudeCatalogPending) {
+      this.claudeCatalogPending = this.discoverClaudeModels().then(models => {
+        this.claudeCatalog = { models, expiresAt: Date.now() + 5 * 60_000 };
+        return models;
+      }).catch(() => {
+        // No CLI/login or discovery unavailable: honest alias labels, never a
+        // guessed/stale version, and no failure of unrelated provider pickers.
+        this.claudeCatalog = { models: CLAUDE_MODELS, expiresAt: Date.now() + 30_000 };
+        return CLAUDE_MODELS;
+      }).finally(() => { this.claudeCatalogPending = null; });
+    }
+    return this.claudeCatalogPending;
+  }
+
   async getCatalog() {
-    const runtime = await this.#createRuntime();
+    const [runtime, claudeModels] = await Promise.all([this.#createRuntime(), this.getClaudeModels()]);
     const catalogProviders = [
       ...Object.entries(HOSTED_PROVIDERS).map(([providerId, name]) => ({
         providerId,
@@ -130,9 +149,9 @@ class AgentProviderResolver {
       group: PROVIDER_DEFINITIONS[providerId].group,
       privacy: PROVIDER_DEFINITIONS[providerId].privacy,
       policies: PROVIDER_DEFINITIONS[providerId].policies || [],
-      canRefresh: Boolean(PROVIDER_DEFINITIONS[providerId].catalogUrl),
+      canRefresh: providerId === CLAUDE_PROVIDER_ID || Boolean(PROVIDER_DEFINITIONS[providerId].catalogUrl),
       updatedAt: this.catalog.get(providerId).updatedAt || null,
-      models: (providerId === CLAUDE_PROVIDER_ID ? CLAUDE_MODELS : runtime.getModels(runtimeProviderId(providerId)))
+      models: (providerId === CLAUDE_PROVIDER_ID ? claudeModels : runtime.getModels(runtimeProviderId(providerId)))
         .filter(
           (model) =>
             !this.catalog.get(providerId).updatedAt ||
@@ -243,8 +262,9 @@ class AgentProviderResolver {
       );
     }
     if (providerId === CLAUDE_PROVIDER_ID) {
-      if (!CLAUDE_MODELS.some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
       await this.checkClaudeLogin({ signal: interaction?.signal });
+      this.claudeCatalog = null;
+      if (!(await this.getClaudeModels()).some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
       interaction?.signal?.throwIfAborted();
       this.store.saveSubscription({ providerId, modelId });
       return this.getStatus();
@@ -295,7 +315,7 @@ class AgentProviderResolver {
     if (!connection) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not configured');
     }
-    if (providerId === CLAUDE_PROVIDER_ID && !CLAUDE_MODELS.some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
+    if (providerId === CLAUDE_PROVIDER_ID && !(await this.getClaudeModels()).some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
     if (providerId !== 'ollama' && providerId !== CLAUDE_PROVIDER_ID) {
       const runtime = await this.#createRuntime();
       if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
@@ -320,6 +340,11 @@ class AgentProviderResolver {
 
   async refreshModels(input = {}) {
     const providerId = requireIdentifier(input.providerId, 'providerId');
+    if (providerId === CLAUDE_PROVIDER_ID) {
+      await this.claudeCatalogPending;
+      this.claudeCatalog = null;
+      return this.getCatalog();
+    }
     if (providerId === 'ollama') {
       const connection = this.getStatus().connections?.find((item) => item.providerId === 'ollama');
       if (!connection) throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Connect Ollama before refreshing models');
@@ -492,7 +517,7 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'No agent model is configured');
     }
     if (selection.providerId === CLAUDE_PROVIDER_ID && selection.kind === 'subscription') {
-      const model = CLAUDE_MODELS.find(model => model.id === selection.modelId);
+      const model = (await this.getClaudeModels()).find(model => model.id === selection.modelId);
       if (!model) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
       const executable = await this.checkClaudeLogin();
       const modelRuntime = {

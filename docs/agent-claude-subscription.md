@@ -8,8 +8,14 @@ and its existing login. It never reads, copies or stores the CLI's OAuth credent
 Disconnecting in Freedom removes its connection metadata; it does not log the CLI out.
 
 Requirements: Claude Code **2.1.290 or newer**, signed in with a personal **Pro or Max**
-account using `claude auth login`. Sonnet, Opus and Haiku are CLI aliases; Claude resolves
-them to the models available to that account. Usage consumes that account's allowance.
+account using `claude auth login`. Freedom discovers model choices and versioned names
+through the CLI's SDK initialization protocol, without sending an inference prompt.
+The catalogue is cached for five minutes and can be refreshed in provider settings.
+Alias IDs stay stable so existing selections and favourites survive CLI updates.
+If discovery is unavailable, the three original aliases are labelled “CLI default”
+rather than showing guessed versions. Additional models are selectable when the CLI
+reports them. Availability and billing remain subject to the account's plan; some
+models can require usage credits instead of drawing from included limits.
 Freedom does not turn the CLI's estimated API costs into a subscription bill.
 The Anthropic API-key connection remains separate.
 
@@ -71,7 +77,7 @@ all CLI network attempts, retries or internal compaction requests. It does not c
 verify the CLI's TLS connection, model hardware or response signatures. Provider model
 badges follow the existing Anthropic presentation.
 
-Lint and the full unit suite passed (9,505 tests; 129 skipped). Three live Electron
+Lint and the full unit suite passed (9,509 tests; 129 skipped). Three live Electron
 scenarios passed, with the approval/Stop/helper scenario repeated successfully after
 shutdown hardening.
 
@@ -83,8 +89,9 @@ calls, guidance, interruption, restart context, image serialization, authenticat
 refusal and managed-policy refusal.
 
 Native Windows/Linux Claude login and packaged-app qualification remain outstanding.
-The connection is ready for the user's macOS smoke test; that does not constitute
-cross-platform release qualification. Optional future work: managed-account support
+The user confirmed the macOS smoke test passed. Versioned catalogue discovery and
+the connection/chat UI were subsequently checked live in both themes; this does not
+constitute cross-platform release qualification. Optional future work: managed-account support
 with a qualified policy boundary and richer CLI failure/usage diagnostics.
 
 Run live checks only with a locally authenticated personal account:
@@ -96,6 +103,7 @@ FREEDOM_CLAUDE_LIVE=1 npx playwright test test-e2e/claude-subscription.spec.js -
 ## Primary references
 
 - [CLI reference](https://code.claude.com/docs/en/cli-reference)
+- [SDK model discovery](https://code.claude.com/docs/en/agent-sdk/typescript#modelinfo)
 - [Programmatic execution](https://code.claude.com/docs/en/headless)
 - [Subscription SDK usage](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
 - [Managed policy delivery](https://code.claude.com/docs/en/managed-settings)

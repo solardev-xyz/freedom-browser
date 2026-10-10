@@ -104,11 +104,68 @@ async function createToolBridge(tools, signal, onTool = () => {}, isReady = () =
 
 const CLAUDE_PROVIDER_ID = 'anthropic-claude';
 const CLAUDE_MODELS = ['sonnet', 'opus', 'haiku'].map(id => ({
-  id, name: `Claude ${id[0].toUpperCase()}${id.slice(1)} · subscription`,
+  id, name: `Claude ${id[0].toUpperCase()}${id.slice(1)} · CLI default`,
   provider: CLAUDE_PROVIDER_ID, api: 'claude-cli', baseUrl: 'https://api.anthropic.com',
   reasoning: true, input: ['text', 'image'], contextWindow: 200000, maxTokens: 32000,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 }));
+
+// SDK initialize returns the same ModelInfo catalogue as supportedModels().
+// Keep alias IDs stable for saved selections/favourites; take labels from the
+// installed CLI rather than guessing the version an alias resolves to.
+function normalizeClaudeModels(entries) {
+  if (!Array.isArray(entries)) throw cliError('Claude did not return its model catalogue.');
+  const seen = new Set();
+  const models = entries.flatMap(entry => {
+    if (!entry || typeof entry.value !== 'string' || entry.value === 'default' ||
+        !/^[a-z][a-z0-9.-]{0,119}(?:\[1m\])?$/.test(entry.value) || seen.has(entry.value) ||
+        typeof entry.displayName !== 'string' || !entry.displayName.trim() || entry.displayName.length > 160) return [];
+    seen.add(entry.value);
+    return [{ ...CLAUDE_MODELS[0], id: entry.value,
+      name: /^Claude\b/.test(entry.displayName) ? entry.displayName.trim() : `Claude ${entry.displayName.trim()}`,
+      reasoning: entry.supportsEffort === true || entry.supportsAdaptiveThinking === true,
+      ...(typeof entry.resolvedModel === 'string' && /^claude-[a-z0-9.-]{1,120}$/.test(entry.resolvedModel)
+        ? { resolvedModel: entry.resolvedModel } : {}),
+    }];
+  });
+  if (!models.length) throw cliError('Claude returned an empty model catalogue.');
+  return models;
+}
+
+async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
+  findExecutable = findClaudeExecutable } = {}) {
+  const controller = new AbortController();
+  const ownedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  const requestId = randomUUID();
+  let child, resolve, reject;
+  const result = new Promise((yes, no) => { resolve = yes; reject = no; });
+  // Attach immediately: abort/startup may reject before the process is ready.
+  result.catch(() => {});
+  const abort = () => reject(cliError('Claude model discovery was interrupted.'));
+  ownedSignal.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    ownedSignal.throwIfAborted();
+    child = await startProcess({ executable: await findExecutable(), model: 'sonnet',
+      systemPrompt: 'Model discovery only.', tools: [], signal: ownedSignal,
+      onEvent(event) {
+        if (event.type !== 'control_response' || event.response?.request_id !== requestId) return;
+        try {
+          if (event.response.subtype !== 'success') throw cliError('Claude model discovery failed.');
+          resolve(normalizeClaudeModels(event.response.response?.models));
+        } catch (error) { reject(error); }
+      },
+      onClose(error) { reject(error || cliError('Claude closed before returning its model catalogue.')); },
+    });
+    child.write({ type: 'control_request', request_id: requestId, request: { subtype: 'initialize', hooks: {} } });
+    return await result;
+  } finally {
+    clearTimeout(timer);
+    ownedSignal.removeEventListener('abort', abort);
+    controller.abort();
+    await child?.close();
+  }
+}
 function cliError(message) {
   return Object.assign(new Error(message), { code: 'AGENT_CLAUDE_UNAVAILABLE' });
 }
@@ -285,4 +342,5 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
 }
 
 module.exports = { MAX_BRIDGE_REQUEST_BYTES, CLAUDE_PROVIDER_ID, CLAUDE_MODELS, cliError, claudeEnvironment,
-  findClaudeExecutable, checkClaudeLogin, assertUnmanagedClaude, createToolBridge, startClaudeProcess };
+  findClaudeExecutable, checkClaudeLogin, assertUnmanagedClaude, createToolBridge, startClaudeProcess,
+  normalizeClaudeModels, discoverClaudeModels };

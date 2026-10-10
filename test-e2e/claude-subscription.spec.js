@@ -11,6 +11,12 @@ test('connect installed Claude, chat, remember context, and show privacy in the 
   await expect(window.locator('#agent-subscription-method-title')).toHaveText('Claude subscription');
   await window.locator('#agent-provider-chatgpt').click();
   await expect(window.locator('#agent-provider-login')).toHaveText('Connect installed Claude');
+  const models = window.locator('#agent-provider-models-list');
+  await expect(models).toContainText(/Claude Opus \d/);
+  await expect(models).toContainText(/Claude Sonnet \d/);
+  await expect(models).toContainText(/Claude Haiku \d/);
+  await expect(models).not.toContainText('· subscription');
+  await expect(models).not.toContainText('CLI default');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
     await window.locator('#agent-sidebar').screenshot({ path: testInfo.outputPath(`claude-connect-${theme}.png`) });

@@ -94,6 +94,7 @@ function createResolver(selection = null, options = {}) {
       store,
       dataDir: '/profile/agent',
       loadSdk: jest.fn(async () => sdk),
+      discoverClaudeModels: jest.fn(async () => require('./claude-cli').CLAUDE_MODELS),
       ...options,
     }),
   };
@@ -531,4 +532,30 @@ test('Claude runtime never falls back to a Pi API transport', async () => {
   expect(runtime.setRuntimeApiKey).not.toHaveBeenCalled();
   checkClaudeLogin.mockRejectedValueOnce(new Error('CLI unavailable'));
   await expect(resolver.resolveModel()).rejects.toThrow('CLI unavailable');
+});
+
+test('Claude catalogue discovery is shared, preserves alias selections, and refreshes version labels', async () => {
+  const { normalizeClaudeModels } = require('./claude-cli');
+  const discovered = normalizeClaudeModels([
+    { value: 'opus', displayName: 'Opus 5.5', resolvedModel: 'claude-opus-5-5' },
+    { value: 'claude-sonnet-5', displayName: 'Sonnet 5' },
+  ]);
+  const discoverClaudeModels = jest.fn(async () => discovered);
+  const { resolver, store } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus' },
+    { discoverClaudeModels, checkClaudeLogin: jest.fn(async () => '/native/claude') });
+  const [first, second] = await Promise.all([resolver.getCatalog(), resolver.getCatalog()]);
+  expect(discoverClaudeModels).toHaveBeenCalledTimes(1);
+  const catalog = first.find(p => p.providerId === 'anthropic-claude');
+  expect(catalog).toEqual(second.find(p => p.providerId === 'anthropic-claude'));
+  expect(catalog.canRefresh).toBe(true);
+  expect(catalog.models.map(m => m.name)).toEqual(['Claude Opus 5.5', 'Claude Sonnet 5']);
+  await resolver.selectModel({ providerId: 'anthropic-claude', modelId: 'claude-sonnet-5' });
+  expect(store.select).toHaveBeenCalledWith('anthropic-claude', 'claude-sonnet-5');
+  expect((await resolver.resolveModel()).model.name).toBe('Claude Opus 5.5');
+  await resolver.refreshModels({ providerId: 'anthropic-claude' });
+  expect(discoverClaudeModels).toHaveBeenCalledTimes(2);
+  discoverClaudeModels.mockRejectedValueOnce(new Error('CLI unavailable'));
+  const fallback = (await resolver.refreshModels({ providerId: 'anthropic-claude' })).find(p => p.providerId === 'anthropic-claude');
+  expect(fallback.models.map(m => m.name)).toEqual(['Claude Sonnet · CLI default', 'Claude Opus · CLI default', 'Claude Haiku · CLI default']);
+  expect(fallback.models.some(m => m.name.includes('5.5'))).toBe(false);
 });

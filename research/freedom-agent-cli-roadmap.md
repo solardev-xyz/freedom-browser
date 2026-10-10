@@ -22,9 +22,11 @@ cannot be constrained by ordinary command-line settings.
 
 Live Mac checks passed for the provider UI in both themes, multi-turn chat,
 privacy reporting, approval/decline/Stop, a browser helper and a managed static-site
-build/checkpoint/preview. Lint and **9,505 unit tests** pass (129 skipped).
-No dependencies added. The user smoke test is next;
-merging and native Windows/Linux Claude + packaged-app qualification remain open.
+build/checkpoint/preview. The user confirmed the Mac smoke test passed. Model
+choices and versioned names now come from CLI discovery, without inference; the
+connection/chat UI was rechecked in both themes. Lint and **9,509 unit tests** pass
+(129 skipped). No dependencies added. Merging and native Windows/Linux Claude +
+packaged-app qualification remain open.
 Optional later work: managed-account compatibility and richer CLI error/usage
 reporting. See [implementation and qualification notes](../docs/agent-claude-subscription.md).
 

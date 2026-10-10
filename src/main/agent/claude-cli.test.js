@@ -79,3 +79,59 @@ test('requires native subscription authentication and a compatible CLI without A
   run.mockResolvedValueOnce({ stdout: '2.1.100' });
   await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_VERSION' });
 });
+
+test('model discovery validates entries without guessing versions or duplicating the account default', () => {
+  const { normalizeClaudeModels } = require('./claude-cli');
+  const models = normalizeClaudeModels([
+    { value: 'default', displayName: 'Default (recommended)' },
+    { value: 'opus', displayName: 'Opus 5.5', resolvedModel: 'claude-opus-5-5', supportsEffort: true },
+    { value: 'opus', displayName: 'Duplicate' },
+    { value: '--injected', displayName: 'Invalid' },
+    { value: 'haiku', displayName: 'Claude Haiku', resolvedModel: { invalid: true } },
+    null,
+  ]);
+  expect(models.map(({ id, name }) => ({ id, name }))).toEqual([
+    { id: 'opus', name: 'Claude Opus 5.5' }, { id: 'haiku', name: 'Claude Haiku' },
+  ]);
+  expect(models[0].resolvedModel).toBe('claude-opus-5-5');
+  expect(models[1].resolvedModel).toBeUndefined();
+  expect(() => normalizeClaudeModels([])).toThrow('empty model catalogue');
+  expect(() => normalizeClaudeModels({})).toThrow('model catalogue');
+});
+
+test('discovery sends only initialization, ignores unrelated responses, and closes its child', async () => {
+  const { discoverClaudeModels } = require('./claude-cli');
+  const close = jest.fn(async () => {});
+  const write = jest.fn();
+  const startProcess = jest.fn(async options => {
+    expect(options.tools).toEqual([]);
+    write.mockImplementation(message => {
+      expect(message.type).toBe('control_request');
+      expect(message.request.subtype).toBe('initialize');
+      options.onEvent({ type: 'control_response', response: { request_id: 'foreign', subtype: 'success' } });
+      options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
+        response: { models: [{ value: 'sonnet', displayName: 'Sonnet 5.5' }] } } });
+    });
+    return { write, close };
+  });
+  const models = await discoverClaudeModels({ startProcess, findExecutable: async () => '/native/claude' });
+  expect(models[0].name).toBe('Claude Sonnet 5.5');
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(startProcess.mock.calls[0][0].signal.aborted).toBe(true);
+});
+
+test('discovery closes on cancellation and protocol failure', async () => {
+  const { discoverClaudeModels } = require('./claude-cli');
+  for (const cancel of [true, false]) {
+    const controller = new AbortController();
+    const close = jest.fn(async () => {});
+    await expect(discoverClaudeModels({ signal: controller.signal, findExecutable: async () => '/native/claude',
+      startProcess: async options => ({ close, write(message) {
+        if (cancel) controller.abort();
+        else options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'error' } });
+      } }),
+    })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_UNAVAILABLE' });
+    expect(close).toHaveBeenCalledTimes(1);
+  }
+});
