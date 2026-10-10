@@ -1,0 +1,1426 @@
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const {
+  ManagedWorkspaceController,
+  WORKSPACE_FILE_HELPER,
+  WINDOWS_FILE_HELPER_BOOTSTRAP,
+  workspaceFileVersion,
+  validateCommand,
+  validateWorkspacePath,
+  validateWorkingDirectory,
+} = require('./managed-workspace-controller');
+
+test('Windows ACL refreshes preserve the read version while content and file changes invalidate it', () => {
+  const stats = { dev: 1, ino: 2, mode: 0o100644, mtimeMs: 3, ctimeMs: 4 };
+  const version = workspaceFileVersion(stats, 'before', 'win32');
+  expect(workspaceFileVersion({ ...stats, ctimeMs: 5 }, 'before', 'win32')).toBe(version);
+  expect(workspaceFileVersion(stats, 'after', 'win32')).not.toBe(version);
+  for (const key of ['dev', 'ino', 'mode', 'mtimeMs']) {
+    expect(workspaceFileVersion({ ...stats, [key]: stats[key] + 1 }, 'before', 'win32')).not.toBe(version);
+  }
+  expect(workspaceFileVersion({ ...stats, ctimeMs: 5 }, 'before', 'darwin')).not.toBe(workspaceFileVersion(stats, 'before', 'darwin'));
+});
+const { resolveExecutableAccess } = require('./workspace-execution/executable-access');
+
+function createController(overrides = {}) {
+  const workspace = {
+    workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+    conversationId: 'conversation_one',
+    enabled: true,
+    backend: 'linux-bubblewrap',
+  };
+  const store = {
+    getForConversation: jest.fn(() => workspace),
+    ensureForConversation: jest.fn(async () => ({ ...workspace, enabled: false })),
+    resolvePath: jest.fn(async () => '/managed/workspace_aaaaaaaaaaaaaaaaaaaa'),
+    enable: jest.fn(() => workspace),
+    startCommand: jest.fn(() => 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb'),
+    finishCommand: jest.fn(() => true),
+    listCommands: jest.fn(() => []),
+    deleteConversation: jest.fn(async () => true),
+  };
+  const capabilities = {
+    available: true,
+    backend: 'linux-bubblewrap',
+    enforcement: {
+      cancellationGuarantee: 'namespace_scoped',
+      survivorsPossible: false,
+      completeDescendantTermination: true,
+    },
+  };
+  const executor = {
+    detectCapabilities: jest.fn(async () => capabilities),
+    execute: jest.fn(async () => ({
+      backend: 'linux-bubblewrap',
+      state: 'completed',
+      startedAt: 1_000,
+      finishedAt: 1_010,
+      durationMs: 10,
+      exitCode: 0,
+      signal: null,
+      stdout: 'hello',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      terminationGuarantee: 'namespace_scoped',
+      terminationScope: 'pid_namespace',
+      sideEffects: 'unknown',
+      survivorsPossible: false,
+      completeDescendantTermination: true,
+    })),
+  };
+  const runtime = {
+    available: true,
+    sandboxExecutablePath: '/opt/freedom-toolchain/electron/freedom',
+  };
+  const helperPolicy = { kind: 'test-helper-policy' };
+  const agentPolicy = { kind: 'test-agent-policy' };
+  const dependencies = {
+    store,
+    executor,
+    detectRuntime: jest.fn(async () => runtime),
+    createPolicy: jest.fn(async () => helperPolicy),
+    createReadPolicy: jest.fn(async () => helperPolicy),
+    restrictPolicy: jest.fn(() => agentPolicy),
+    now: jest.fn(() => 1_000),
+    ...overrides,
+  };
+  return {
+    controller: new ManagedWorkspaceController(dependencies),
+    dependencies,
+    workspace,
+    helperPolicy,
+    agentPolicy,
+  };
+}
+
+function completedExecution(stdout) {
+  return {
+    backend: 'linux-bubblewrap',
+    state: 'completed',
+    startedAt: 1_000,
+    finishedAt: 1_010,
+    durationMs: 10,
+    exitCode: 0,
+    signal: null,
+    stdout,
+    stderr: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    terminationGuarantee: 'namespace_scoped',
+    terminationScope: 'pid_namespace',
+    sideEffects: 'none',
+    survivorsPossible: false,
+    completeDescendantTermination: true,
+  };
+}
+
+describe('ManagedWorkspaceController', () => {
+  beforeEach(() => {
+    jest
+      .spyOn(fs.promises, 'realpath')
+      .mockImplementation(async (value) => path.resolve(String(value)));
+    jest.spyOn(fs.promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('model diff inspection is read-only, cancellable and does not mint a commit review', async () => {
+    const { ManagedWorkspaceHistory } = require('./managed-workspace-history');
+    jest.spyOn(ManagedWorkspaceHistory.prototype, 'exclusions').mockResolvedValue([]);
+    const { controller } = createController();
+    const inspect = jest.spyOn(controller, 'inspectWorkspace').mockResolvedValue({ available: true, text: '-old\n+new' });
+    const result = await controller.reviewWorkspaceHistory('conversation_one', { action: 'diff', path: 'README.md' });
+    expect(result).toMatchObject({ text: '-old\n+new', comparison: expect.stringContaining('HEAD') });
+    expect(inspect).toHaveBeenCalledWith('conversation_one', { kind: 'diff', path: 'README.md', signal: expect.any(AbortSignal) });
+    expect(controller.historyReviews.size).toBe(0);
+  });
+
+  test.each(['read', 'write', 'command'])('external recovery respects %s access and invalidates only resolved reviews', async mode => {
+    const { ExternalProjectGit } = require('./external-project-git');
+    const { controller, dependencies, workspace } = createController();
+    workspace.project = { connected: true, mode: mode === 'read' ? 'read' : 'write' };
+    const grant = { mode: workspace.project.mode };
+    dependencies.store.projectAccess = {
+      grants: new Map([[workspace.workspaceId, grant]]),
+      resolve: jest.fn(async (id, request) => {
+        if (request?.write && grant.mode === 'read') throw Object.assign(new Error('Read only'), { code: 'PROJECT_READ_ONLY' });
+        return grant;
+      }),
+    };
+    dependencies.store.resolveHistoryPath = jest.fn(async () => '/private-fixture');
+    jest.spyOn(ExternalProjectGit.prototype, 'validate').mockResolvedValue(true);
+    jest.spyOn(ExternalProjectGit.prototype, 'checkMetadataIdentity').mockResolvedValue();
+    jest.spyOn(ExternalProjectGit.prototype, 'recovery').mockResolvedValue({ pending: true, token: 'a'.repeat(64), automatic: 'archive', canKeepCurrent: true, candidate: 'b'.repeat(40) });
+    const rename = jest.spyOn(fs.promises, 'rename').mockResolvedValue();
+    controller.historyReviews.set('old', { conversationId: 'conversation_one' });
+    controller.historyReviews.set('other', { conversationId: 'conversation_two' });
+    if (mode === 'command') controller.activeCommands.set('running', { conversationId: 'conversation_one' });
+    await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'recovery' })).resolves.toMatchObject({ automatic: 'archive' });
+    expect(rename).not.toHaveBeenCalled();
+    const result = controller.reviewWorkspaceHistory('conversation_one', { action: 'recover', token: 'a'.repeat(64) });
+    if (mode === 'write') {
+      await expect(result).resolves.toMatchObject({ resolved: true, recoveryOutcome: 'already_completed' });
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(controller.historyReviews.has('old')).toBe(false);
+    } else {
+      await expect(result).rejects.toMatchObject({ code: mode === 'read' ? 'PROJECT_READ_ONLY' : 'WORKSPACE_HISTORY_UNAVAILABLE' });
+      expect(rename).not.toHaveBeenCalled();
+      expect(controller.historyReviews.has('old')).toBe(true);
+    }
+    expect(controller.historyReviews.has('other')).toBe(true);
+    expect(controller.historyLocks.size).toBe(0);
+  });
+
+  test.each(['.env', '.git/config', '../outside', 'notes.md', 'README.md'])(
+    'model diffs enforce mandatory/custom exclusions and removed-secret checks: %s', async (file) => {
+      const { ManagedWorkspaceHistory } = require('./managed-workspace-history');
+      jest.spyOn(ManagedWorkspaceHistory.prototype, 'exclusions').mockResolvedValue([{ path: 'notes.md' }]);
+      const { controller } = createController();
+      const inspect = jest.spyOn(controller, 'inspectWorkspace').mockResolvedValue({ available: true, text: '-password=notpublic12345\n+removed' });
+      await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'diff', path: file }))
+        .rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
+      expect(inspect).toHaveBeenCalledTimes(file === 'README.md' ? 1 : 0);
+    }
+  );
+
+  test('discloses only public enforcement properties and establishes one policy lease', async () => {
+    const { controller, dependencies, helperPolicy } = createController();
+
+    await expect(controller.disclosure('conversation_one')).resolves.toEqual({
+      available: true,
+      backend: 'linux-bubblewrap',
+      network: 'disabled',
+      fullNetworkAvailable: false,
+      fullNetworkIncludesHostAbstractUnixSockets: false,
+      filesystem: 'managed_workspace_only',
+      cancellationGuarantee: 'namespace_scoped',
+      survivorsPossible: false,
+      completeDescendantTermination: true,
+    });
+    await expect(controller.enable('conversation_one')).resolves.toMatchObject({ enabled: true });
+    expect(dependencies.createPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceRoot: '/managed/workspace_aaaaaaaaaaaaaaaaaaaa',
+        electronRuntime: expect.objectContaining({ available: true }),
+        environment: {
+          set: {
+            ELECTRON_RUN_AS_NODE: '1',
+          },
+        },
+      })
+    );
+    expect(dependencies.restrictPolicy).toHaveBeenCalledWith(helperPolicy, {
+      omitRuntimeRootIds: ['electron'],
+      omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
+    });
+    expect(JSON.stringify(await controller.disclosure('conversation_one'))).not.toContain(
+      '/managed/'
+    );
+  });
+
+  test('reports workspace startup phases without exposing host paths', async () => {
+    const { controller } = createController();
+    const phases = [];
+
+    await controller.enable('conversation_one', { onPhase: (phase) => phases.push(phase) });
+
+    expect(phases).toEqual([
+      'checking_capabilities',
+      'checking_runtime',
+      'ready_for_approval',
+      'creating_workspace',
+      'validating_boundary',
+      'enabling_workspace',
+      'workspace_ready',
+    ]);
+    expect(JSON.stringify(phases)).not.toContain('/managed/');
+  });
+
+  test('cancels a workspace enablement wait even when policy construction never settles', async () => {
+    let resolvePolicy;
+    const policy = new Promise((resolve) => {
+      resolvePolicy = resolve;
+    });
+    const { controller, dependencies, helperPolicy } = createController({
+      createPolicy: jest.fn(() => policy),
+    });
+    const abortController = new AbortController();
+    const enablement = controller.enable('conversation_one', {
+      signal: abortController.signal,
+    });
+    for (
+      let attempt = 0;
+      attempt < 10 && dependencies.createPolicy.mock.calls.length === 0;
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    abortController.abort();
+    await expect(enablement).rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    expect(dependencies.store.enable).not.toHaveBeenCalled();
+
+    resolvePolicy(helperPolicy);
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  test('executes in a relative directory, returns a structured receipt, and persists it', async () => {
+    const { controller, dependencies, workspace } = createController();
+    fs.promises.realpath.mockResolvedValueOnce(
+      path.join('/managed/workspace_aaaaaaaaaaaaaaaaaaaa', 'site')
+    );
+
+    const receipt = await controller.execute('conversation_one', {
+      command: 'printf hello',
+      workingDirectory: 'site',
+    });
+
+    expect(dependencies.executor.execute).toHaveBeenCalledWith(
+      { kind: 'test-agent-policy' },
+      expect.objectContaining({
+        command: '/bin/sh',
+        args: [
+          '-c',
+          'cd "$1" && exec /bin/sh -c "$2"',
+          'freedom-workspace',
+          '/workspace/site',
+          'printf hello',
+        ],
+        signal: expect.any(AbortSignal),
+      })
+    );
+    expect(receipt).toMatchObject({
+      workspaceId: workspace.workspaceId,
+      commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      command: 'printf hello',
+      workingDirectory: 'site',
+      networkPosture: 'none',
+      state: 'completed',
+      stdout: 'hello',
+      sideEffects: 'unknown',
+    });
+    expect(dependencies.store.finishCommand).toHaveBeenCalledWith(
+      receipt.commandId,
+      workspace.workspaceId,
+      expect.objectContaining({ state: 'completed' })
+    );
+  });
+
+  test('yields and later stops a conversation-owned sandbox process with streamed output', async () => {
+    let sandboxRequest;
+    const stdin = { write: jest.fn(() => true) };
+    const onTerminal = jest.fn();
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute.mockImplementation(async (_policy, request) => {
+      sandboxRequest = request;
+      request.onStdin(stdin);
+      request.onOutput('stdout', Buffer.from('ready\n'));
+      await new Promise((resolve) =>
+        request.signal.addEventListener('abort', resolve, { once: true })
+      );
+      return {
+        backend: 'linux-bubblewrap',
+        state: 'cancelled',
+        startedAt: 1_000,
+        finishedAt: 1_010,
+        durationMs: 10,
+        exitCode: null,
+        signal: 'SIGKILL',
+        stdout: 'ready\n',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        terminationGuarantee: 'namespace_scoped',
+        terminationScope: 'pid_namespace',
+        sideEffects: 'unknown',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
+      };
+    });
+
+    const started = await controller.startProcess('conversation_one', {
+      command: 'node server.js',
+      yieldMs: 250,
+      onTerminal,
+    });
+    expect(started).toMatchObject({
+      state: 'running',
+      output: 'ready\n',
+      workspace: {
+        commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        processId: expect.stringMatching(/^workspace_process_[a-f0-9]{24}$/),
+        state: 'running',
+        backend: 'linux-bubblewrap',
+      },
+    });
+    expect(controller.inspectProcess('conversation_one', started.processId)).toMatchObject({
+      processId: started.processId,
+      state: 'running',
+      workspace: {
+        processId: started.processId,
+        state: 'running',
+        networkPosture: 'none',
+      },
+    });
+    expect(controller.listProcesses('conversation_one')).toEqual([
+      expect.objectContaining({
+        processId: started.processId,
+        command: 'node server.js',
+        state: 'running',
+      }),
+    ]);
+    expect(controller.getWorkspace('conversation_one').processes).toHaveLength(1);
+    await controller.interactProcess('conversation_one', started.processId, {
+      input: 'reload\n',
+      waitMs: 0,
+    });
+    expect(stdin.write).toHaveBeenCalledWith(Buffer.from('reload\n'));
+
+    const stopped = await controller.terminateProcess('conversation_one', started.processId, {
+      waitMs: 1_000,
+    });
+    expect(sandboxRequest.signal.aborted).toBe(true);
+    expect(stopped).toMatchObject({
+      state: 'cancelled',
+      workspace: {
+        processId: started.processId,
+        state: 'cancelled',
+        signal: 'SIGKILL',
+        terminationGuarantee: 'namespace_scoped',
+        terminationScope: 'pid_namespace',
+      },
+    });
+    expect(onTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'cancelled',
+        workspace: expect.objectContaining({
+          processId: started.processId,
+          terminationScope: 'pid_namespace',
+        }),
+      })
+    );
+  });
+
+  test.each([false, true])('binds one-shot executable access and discovered interpreters (%s) to one exact command', async (script) => {
+    fs.promises.realpath.mockRestore();
+    fs.promises.stat.mockRestore();
+    const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-controller-tool-'));
+    const packageRoot = path.join(fixture, 'runtime');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    if (script) {
+      await fs.promises.writeFile(path.join(bin, 'tool'), '#!/usr/bin/env runtime\n', { mode: 0o700 });
+      await fs.promises.writeFile(path.join(bin, 'runtime'), '#!/bin/sh\n', { mode: 0o700 });
+    }
+    const prepared = await resolveExecutableAccess(['tool'], {
+      platform: 'darwin',
+      hostEnvironment: { PATH: bin },
+    });
+    jest
+      .spyOn(fs.promises, 'realpath')
+      .mockImplementation(async (value) => path.resolve(String(value)));
+    jest.spyOn(fs.promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+    const grantedPolicy = { kind: 'test-granted-policy' };
+    const { controller, dependencies } = createController({
+      resolveExecutableAccess: jest.fn(async () => prepared),
+      restrictPolicy: jest
+        .fn()
+        .mockReturnValueOnce({ kind: 'test-agent-policy' })
+        .mockReturnValue(grantedPolicy),
+    });
+
+    try {
+      const resolved = await controller.prepareExecutableAccess('conversation_one', ['tool'], {
+        command: 'tool --version',
+        workingDirectory: '.',
+      });
+      expect(resolved.publicRequest).toMatchObject({
+        kind: 'command_access',
+        command: 'tool --version',
+        workingDirectory: '.',
+        commands: (script ? ['tool', 'runtime'] : ['tool']).map((name) =>
+          expect.objectContaining({ name, status: 'requires_permission' })
+        ),
+      });
+      expect(
+        controller.grantExecutableAccess('conversation_one', resolved.prepared, 'once')
+      ).toEqual({
+        scope: 'once',
+        commands: script ? ['tool', 'runtime'] : ['tool'],
+        command: 'tool --version',
+        workingDirectory: '.',
+      });
+      expect(() =>
+        controller.grantExecutableAccess('conversation_one', resolved.prepared, 'once')
+      ).toThrow(expect.objectContaining({ code: 'INVALID_COMMAND_PERMISSION_GRANT' }));
+
+      await controller.execute('conversation_one', { command: 'tool --help' });
+      expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+        { kind: 'test-agent-policy' },
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+
+      await controller.execute('conversation_one', { command: 'tool --version' });
+      expect(dependencies.restrictPolicy).toHaveBeenLastCalledWith(
+        { kind: 'test-agent-policy' },
+        { addRuntimeRoots: prepared.runtimeRoots }
+      );
+      expect(dependencies.executor.execute).toHaveBeenCalledWith(
+        grantedPolicy,
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+
+      await controller.execute('conversation_one', { command: 'tool --version' });
+      expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+        { kind: 'test-agent-policy' },
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+      expect(controller.clearTurnPermissions('conversation_one')).toBe(false);
+
+      const conversationPermission = await controller.prepareExecutableAccess(
+        'conversation_one',
+        ['tool'],
+        { command: 'tool later', workingDirectory: '.' }
+      );
+      controller.grantExecutableAccess(
+        'conversation_one',
+        conversationPermission.prepared,
+        'conversation'
+      );
+      await controller.execute('conversation_one', { command: 'tool --different' });
+      expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+        grantedPolicy,
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+      expect(controller.clearTurnPermissions('conversation_one')).toBe(false);
+    } finally {
+      await fs.promises.rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps direct networking unavailable when the capability is explicitly disabled', async () => {
+    const { controller, dependencies } = createController({ networkPermissionsEnabled: false });
+    dependencies.executor.detectCapabilities.mockResolvedValue({
+      available: true,
+      backend: 'linux-bubblewrap',
+      enforcement: {
+        networkFull: 'host_namespace',
+        fullNetworkIncludesHostAbstractUnixSockets: true,
+      },
+    });
+
+    await expect(
+      controller.prepareCommandPermissions(
+        'conversation_one',
+        { network: 'full' },
+        { command: 'curl https://example.com', workingDirectory: '.' }
+      )
+    ).rejects.toMatchObject({ code: 'NETWORK_PERMISSION_UNAVAILABLE' });
+    expect(controller.fullNetworkPermissionsEnabled()).toBe(false);
+    expect(dependencies.createPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ network: 'none' })
+    );
+  });
+
+  test('binds full networking to an exact command while helper operations remain offline', async () => {
+    const basePolicy = { kind: 'test-full-base-policy' };
+    const helperPolicy = { kind: 'test-offline-helper-policy' };
+    const agentPolicy = { kind: 'test-offline-agent-policy' };
+    const fullNetworkAgentPolicy = { kind: 'test-full-network-agent-policy' };
+    const restrictPolicy = jest.fn((policy, restrictions) => {
+      if (policy === basePolicy && restrictions.network === 'none') return helperPolicy;
+      if (policy === helperPolicy) return agentPolicy;
+      if (policy === basePolicy) return fullNetworkAgentPolicy;
+      throw new Error('Unexpected policy restriction');
+    });
+    const { controller, dependencies } = createController({
+      networkPermissionsEnabled: true,
+      createPolicy: jest.fn(async () => basePolicy),
+      restrictPolicy,
+    });
+    dependencies.executor.detectCapabilities.mockResolvedValue({
+      available: true,
+      backend: 'linux-bubblewrap',
+      enforcement: {
+        cancellationGuarantee: 'namespace_scoped',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
+        networkFull: 'host_namespace',
+        fullNetworkIncludesHostAbstractUnixSockets: true,
+      },
+    });
+
+    const resolved = await controller.prepareCommandPermissions(
+      'conversation_one',
+      { network: 'full' },
+      { command: 'curl https://example.com', workingDirectory: '.' }
+    );
+
+    expect(controller.fullNetworkPermissionsEnabled()).toBe(true);
+    expect(dependencies.createPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ network: 'full' })
+    );
+    expect(resolved).toMatchObject({
+      approvalRequired: true,
+      available: [],
+      unavailable: [],
+      publicRequest: {
+        kind: 'command_access',
+        command: 'curl https://example.com',
+        workingDirectory: '.',
+        commands: [],
+        network: {
+          posture: 'full',
+          publicInternet: true,
+          hostLoopback: true,
+          privateLan: true,
+          hostAbstractUnixSockets: 'reachable',
+        },
+      },
+    });
+    expect(
+      controller.grantCommandPermissions('conversation_one', resolved.prepared, 'once')
+    ).toEqual({
+      scope: 'once',
+      commands: [],
+      command: 'curl https://example.com',
+      workingDirectory: '.',
+      network: 'full',
+    });
+
+    await controller.execute('conversation_one', { command: 'curl https://example.org' });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      agentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+
+    const fullNetworkReceipt = await controller.execute('conversation_one', {
+      command: 'curl https://example.com',
+      previewPort: 4_173,
+    });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      fullNetworkAgentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+    expect(fullNetworkReceipt.networkPosture).toBe('full');
+    expect(fullNetworkReceipt.previewPort).toBe(4_173);
+    expect(fullNetworkReceipt.processExitConfirmed).toBe(true);
+
+    await expect(
+      controller.execute('conversation_one', {
+        command: 'curl https://example.com',
+        previewPort: 4_173,
+      })
+    ).rejects.toMatchObject({ code: 'WORKSPACE_PREVIEW_NETWORK_REQUIRED' });
+
+    const offlineReceipt = await controller.execute('conversation_one', {
+      command: 'curl https://example.com',
+    });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      agentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+    expect(offlineReceipt.networkPosture).toBe('none');
+
+    const conversationPermission = await controller.prepareCommandPermissions(
+      'conversation_one',
+      { network: 'full' },
+      { command: 'npm install', workingDirectory: '.' }
+    );
+    controller.grantCommandPermissions(
+      'conversation_one',
+      conversationPermission.prepared,
+      'conversation'
+    );
+    await controller.execute('conversation_one', { command: 'git fetch' });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      fullNetworkAgentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+
+    await controller.readFile('conversation_one', 'README.md');
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      helperPolicy,
+      expect.objectContaining({ args: expect.arrayContaining(['read', 'README.md']) })
+    );
+  });
+
+  test('captures and caches the user command PATH for the default resolver', async () => {
+    fs.promises.realpath.mockRestore();
+    fs.promises.stat.mockRestore();
+    const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-controller-path-'));
+    const packageRoot = path.join(fixture, 'runtime');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'tool-real'), '#!/bin/sh\n', { mode: 0o700 });
+    // Exercise canonicalization on every host, including hosts where /bin/sh is
+    // not itself a symlink. Only the fake managed-workspace path needs a stub.
+    await fs.promises.symlink('tool-real', path.join(bin, 'tool'));
+    const actualRealpath = fs.promises.realpath;
+    jest
+      .spyOn(fs.promises, 'realpath')
+      .mockImplementation(async (value) =>
+        String(value).startsWith('/managed/')
+          ? path.resolve(String(value))
+          : actualRealpath(value)
+      );
+    const actualStat = fs.promises.stat;
+    jest.spyOn(fs.promises, 'stat').mockImplementation(async (value) =>
+      String(value).startsWith('/managed/')
+        ? { isDirectory: () => true, isFile: () => false }
+        : actualStat(value)
+    );
+    const capture = jest.fn(async () => ({ PATH: bin, source: 'login_shell' }));
+    const { controller } = createController({
+      resolveExecutableAccess,
+      captureHostCommandEnvironment: capture,
+    });
+
+    try {
+      await controller.prepareExecutableAccess('conversation_one', ['tool'], {
+        command: 'tool --version',
+      });
+      await controller.prepareExecutableAccess('conversation_one', ['tool'], {
+        command: 'tool --help',
+      });
+      expect(capture).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.promises.rm(fixture, { recursive: true, force: true });
+      fs.promises.realpath.mockRestore();
+      fs.promises.stat.mockRestore();
+    }
+  });
+
+  test('fails closed when a granted capability has no policy enforcement adapter', async () => {
+    const capabilityGrants = {
+      clear: jest.fn(),
+      clearOnce: jest.fn(() => false),
+      deleteConversation: jest.fn(() => false),
+      grant: jest.fn(),
+      resolve: jest.fn(() => [Object.freeze({ kind: 'network_public', version: 1 })]),
+    };
+    const { controller, dependencies } = createController({ capabilityGrants });
+
+    await expect(
+      controller.execute('conversation_one', {
+        command: 'printf hello',
+        workingDirectory: '.',
+      })
+    ).rejects.toMatchObject({ code: 'UNTRUSTED_CAPABILITY_AUTHORITY' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(dependencies.store.startCommand).not.toHaveBeenCalled();
+  });
+
+  test('fails closed for an unknown network-prefixed capability', async () => {
+    const capabilityGrants = {
+      clear: jest.fn(),
+      clearOnce: jest.fn(() => false),
+      deleteConversation: jest.fn(() => false),
+      grant: jest.fn(),
+      resolve: jest.fn(() => [Object.freeze({ kind: 'network_unknown', version: 1 })]),
+    };
+    const { controller, dependencies } = createController({ capabilityGrants });
+
+    await expect(
+      controller.execute('conversation_one', {
+        command: 'printf hello',
+        workingDirectory: '.',
+      })
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_WORKSPACE_CAPABILITY' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(dependencies.store.startCommand).not.toHaveBeenCalled();
+  });
+
+  test('runs bounded file reads through the same OS sandbox policy', async () => {
+    const { controller, dependencies } = createController();
+
+    await expect(controller.readFile('conversation_one', 'src/index.js')).resolves.toEqual(
+      Buffer.from('hello')
+    );
+    expect(dependencies.executor.execute).toHaveBeenCalledWith(
+      { kind: 'test-helper-policy' },
+      expect.objectContaining({
+        command: '/bin/sh',
+        args: expect.arrayContaining([
+          '/workspace',
+          '/opt/freedom-toolchain/electron/freedom',
+          'read',
+          'src/index.js',
+        ]),
+        signal: expect.any(AbortSignal),
+      })
+    );
+    expect(JSON.stringify(dependencies.executor.execute.mock.calls[0][1])).not.toContain(
+      'FREEDOM_JAVASCRIPT_RUNTIME'
+    );
+  });
+
+  test('runs exact bounded writes through the sandbox and refuses protected Git metadata', async () => {
+    const { controller, dependencies } = createController();
+    await controller.writeFile('conversation_one', 'src/index.js', 'hello');
+    expect(dependencies.executor.execute).toHaveBeenCalledWith(
+      { kind: 'test-helper-policy' },
+      expect.objectContaining({
+        args: expect.arrayContaining([
+          'write',
+          'src/index.js',
+          Buffer.from('hello').toString('base64'),
+        ]),
+      })
+    );
+    await expect(
+      controller.writeFile('conversation_one', '.git/config', 'unsafe')
+    ).rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
+  });
+
+  test('returns bounded structured directory, glob, and content-search results', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute
+      .mockResolvedValueOnce(
+        completedExecution(
+          JSON.stringify({
+            entries: [{ name: 'src', type: 'directory' }],
+            limitReached: false,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        completedExecution(
+          JSON.stringify({
+            results: ['src/index.js'],
+            limitReached: false,
+            scanLimitReached: false,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        completedExecution(
+          JSON.stringify({
+            output: 'src/index.js:1: hello',
+            matchCount: 1,
+            limitReached: false,
+            linesTruncated: false,
+            outputTruncated: false,
+            scanLimitReached: false,
+          })
+        )
+      );
+
+    await expect(controller.listDirectory('conversation_one', '.')).resolves.toEqual({
+      entries: [{ name: 'src', type: 'directory' }],
+      limitReached: false,
+    });
+    await expect(
+      controller.findFiles('conversation_one', '.', { pattern: '*.js' })
+    ).resolves.toEqual({
+      results: ['src/index.js'],
+      limitReached: false,
+      scanLimitReached: false,
+    });
+    await expect(
+      controller.grepFiles('conversation_one', '.', { pattern: 'hello' })
+    ).resolves.toMatchObject({ output: 'src/index.js:1: hello', matchCount: 1 });
+
+    expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
+      1,
+      { kind: 'test-helper-policy' },
+      expect.objectContaining({ args: expect.arrayContaining(['list', '.']) })
+    );
+    expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
+      2,
+      { kind: 'test-helper-policy' },
+      expect.objectContaining({ args: expect.arrayContaining(['find', '.']) })
+    );
+    expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
+      3,
+      { kind: 'test-helper-policy' },
+      expect.objectContaining({ args: expect.arrayContaining(['grep', '.']) })
+    );
+  });
+
+  test('routes chrome inspection through the offline helper and rejects metadata before execution', async () => {
+    const { controller, dependencies, helperPolicy } = createController();
+    dependencies.executor.execute.mockResolvedValueOnce({ state: 'completed', exitCode: 0, stdout: '{"entries":[]}' });
+    await expect(controller.inspectWorkspace('conversation_one', { kind: 'tree', path: '.' })).resolves.toEqual({ entries: [] });
+    expect(dependencies.executor.execute).toHaveBeenCalledWith(helperPolicy, expect.objectContaining({ command: '/bin/sh' }));
+    dependencies.executor.execute.mockClear();
+    for (const path of ['../escape', '.git/config', 'nested/.git/config']) {
+      await expect(controller.inspectWorkspace('conversation_one', { kind: 'file', path })).rejects.toThrow();
+    }
+    await expect(controller.inspectWorkspace('conversation_one', { kind: 'write', path: 'file' })).rejects.toThrow();
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+  });
+
+  test('the sandbox file helper rejects symlink and hardlink escapes', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-workspace-helper-'));
+    const workspace = path.join(fixture, 'workspace');
+    const outside = path.join(fixture, 'outside.txt');
+    fs.mkdirSync(workspace, { mode: 0o700 });
+    fs.mkdirSync(path.join(workspace, 'directory'), { mode: 0o700 });
+    fs.writeFileSync(outside, 'outside secret', { mode: 0o600 });
+    fs.symlinkSync(outside, path.join(workspace, 'symlink.txt'));
+    fs.symlinkSync(fixture, path.join(workspace, 'parent-link'));
+    fs.linkSync(outside, path.join(workspace, 'hardlink.txt'));
+    const run = (operation, relative, content = '') =>
+      execFileSync(process.execPath, ['-e', WORKSPACE_FILE_HELPER, operation, relative, content], {
+        cwd: workspace,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+    try {
+      expect(() => run('read', 'symlink.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() => run('read', 'parent-link/outside.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() =>
+        run(
+          'grep',
+          'parent-link',
+          Buffer.from(JSON.stringify({ pattern: 'outside', limit: 100 })).toString('base64')
+        )
+      ).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() => run('read', 'hardlink.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() => run('read', 'missing.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_PATH_NOT_FOUND') })
+      );
+      expect(() => run('read', 'directory')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_PATH_TYPE_MISMATCH') })
+      );
+      expect(() => run('write', '.git/config', Buffer.from('unsafe').toString('base64'))).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_PROTECTED_PATH') })
+      );
+      expect(run('write', 'src/index.js', Buffer.from('hello').toString('base64'))).toBe('');
+      expect(run('read', 'src/index.js')).toBe('hello');
+      fs.writeFileSync(path.join(workspace, 'src', 'other.txt'), 'goodbye\nhello again');
+      const list = JSON.parse(
+        run('list', '.', Buffer.from(JSON.stringify({ limit: 500 })).toString('base64'))
+      );
+      expect(list).toEqual({
+        entries: expect.arrayContaining([
+          { name: 'src', type: 'directory' },
+          { name: 'hardlink.txt', type: 'file' },
+          { name: 'symlink.txt', type: 'other' },
+        ]),
+        limitReached: false,
+      });
+      const found = JSON.parse(
+        run(
+          'find',
+          '.',
+          Buffer.from(JSON.stringify({ pattern: '*.js', limit: 1000 })).toString('base64')
+        )
+      );
+      expect(found).toMatchObject({ results: ['src/index.js'], limitReached: false });
+      const searched = JSON.parse(
+        run(
+          'grep',
+          '.',
+          Buffer.from(JSON.stringify({ pattern: 'hello', limit: 100 })).toString('base64')
+        )
+      );
+      expect(searched).toMatchObject({
+        matchCount: 2,
+        limitReached: false,
+        linesTruncated: false,
+      });
+      expect(searched.output).toContain('src/index.js:1: hello');
+      expect(searched.output).toContain('src/other.txt:2: hello again');
+      const regexSearch = JSON.parse(
+        run(
+          'grep',
+          '.',
+          Buffer.from(JSON.stringify({ pattern: 'hello\\s+again', limit: 100 })).toString('base64')
+        )
+      );
+      expect(regexSearch).toMatchObject({ matchCount: 1 });
+      expect(regexSearch.output).toContain('src/other.txt:2: hello again');
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  test('cancels every active command owned by the conversation', async () => {
+    const pending = {};
+    pending.promise = new Promise((resolve) => {
+      pending.resolve = resolve;
+    });
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute.mockImplementation((_policy, request) => {
+      request.signal.addEventListener('abort', () => {
+        pending.resolve({
+          backend: 'linux-bubblewrap',
+          state: 'cancelled',
+          startedAt: 1_000,
+          finishedAt: 1_001,
+          durationMs: 1,
+          exitCode: null,
+          signal: 'SIGKILL',
+          stdout: '',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          terminationGuarantee: 'namespace_scoped',
+          terminationScope: 'pid_namespace',
+          sideEffects: 'unknown',
+          survivorsPossible: false,
+          completeDescendantTermination: true,
+        });
+      });
+      return pending.promise;
+    });
+
+    const execution = controller.execute('conversation_one', { command: 'sleep 100' });
+    for (
+      let attempt = 0;
+      attempt < 10 && dependencies.executor.execute.mock.calls.length === 0;
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(controller.cancelConversation('conversation_one')).toBe(1);
+    await expect(execution).resolves.toMatchObject({
+      state: 'cancelled',
+      signal: 'SIGKILL',
+      terminationScope: 'pid_namespace',
+    });
+  });
+
+  test.each(['command', 'file'])('awaits cancelled %s cleanup before completing disposal', async (kind) => {
+    const { controller, dependencies } = createController();
+    let finish;
+    let request;
+    dependencies.executor.execute.mockImplementation((_policy, value) => {
+      request = value;
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const execution = kind === 'command'
+      ? controller.execute('conversation_one', { command: 'node server.js' })
+      : controller.readFile('conversation_one', 'index.html');
+    const outcome = execution.catch((error) => error);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(request).toBeDefined();
+    const shutdown = controller.dispose();
+    expect(controller.dispose()).toBe(shutdown);
+    expect(request.signal.aborted).toBe(true);
+    let finished = false;
+    void shutdown.then(() => { finished = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    expect(dependencies.store.finishCommand).not.toHaveBeenCalled();
+    const receipt = { ...completedExecution(''), state: 'cancelled', signal: 'SIGKILL', exitCode: null };
+    finish(receipt);
+    await outcome;
+    await expect(shutdown).resolves.toEqual({ drained: true });
+    if (kind === 'command') {
+      expect(dependencies.store.finishCommand).toHaveBeenCalledWith(
+        expect.any(String), expect.any(String), expect.objectContaining({ state: 'cancelled', signal: 'SIGKILL' })
+      );
+    }
+    await expect(controller.execute('conversation_one', { command: 'node late.js' }))
+      .rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    await expect(controller.readFile('conversation_one', 'index.html'))
+      .rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+  });
+
+  test('cancels a command still preparing its working directory before it can launch', async () => {
+    const { controller, dependencies } = createController();
+    let release;
+    fs.promises.realpath.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const execution = controller.execute('conversation_one', { command: 'node server.js' });
+    const outcome = expect(execution).rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    await new Promise((resolve) => setImmediate(resolve));
+    const shutdown = controller.dispose();
+    release('/managed/workspace_aaaaaaaaaaaaaaaaaaaa');
+    await outcome;
+    await expect(shutdown).resolves.toEqual({ drained: true });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(dependencies.store.startCommand).not.toHaveBeenCalled();
+  });
+
+  test('never publishes a late live handle or rereads a closed store when preparation outlives shutdown', async () => {
+    jest.useFakeTimers();
+    try {
+      const { controller, dependencies } = createController();
+      let release;
+      fs.promises.realpath.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+      const starting = controller.startProcess('conversation_one', { command: 'node server.js' });
+      const outcome = expect(starting).rejects.toMatchObject({ code: 'WORKSPACE_PROCESS_MANAGER_DISPOSED' });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(release).toBeDefined();
+      const shutdown = controller.dispose();
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(shutdown).resolves.toEqual({ drained: false });
+      const readsBeforeClose = dependencies.store.getForConversation.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(5_000);
+      await outcome;
+      expect(dependencies.store.getForConversation).toHaveBeenCalledTimes(readsBeforeClose);
+      expect(controller.processManager.entries.size).toBe(0);
+      release('/managed/workspace_aaaaaaaaaaaaaaaaaaaa');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('leaves a late backend receipt out of the closed store after the shutdown deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const { controller, dependencies } = createController();
+      let finish;
+      dependencies.executor.execute.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+      const execution = controller.execute('conversation_one', { command: 'node server.js' });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(finish).toBeDefined();
+      const shutdown = controller.dispose();
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(shutdown).resolves.toEqual({ drained: false });
+      expect(dependencies.store.finishCommand).not.toHaveBeenCalled();
+      finish({ ...completedExecution(''), state: 'cancelled' });
+      await execution;
+      expect(dependencies.store.finishCommand).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('Windows setup cancellation leaves the workspace disabled and can be retried', async () => {
+    const { controller, dependencies } = createController();
+    let setupRequired = true;
+    dependencies.executor.detectCapabilities.mockImplementation(async () => ({ available: true, backend: 'windows-elevated', setupRequired, enforcement: {} }));
+    dependencies.executor.setup = jest.fn()
+      .mockRejectedValueOnce(new Error('Administrator cancelled setup'))
+      .mockImplementationOnce(async () => { setupRequired = false; });
+    await expect(controller.disclosure('conversation_one')).resolves.toMatchObject({ setupRequired: true });
+    expect(dependencies.executor.setup).not.toHaveBeenCalled();
+    await expect(controller.enable('conversation_one')).rejects.toThrow('cancelled setup');
+    expect(dependencies.store.enable).not.toHaveBeenCalled();
+    await controller.enable('conversation_one');
+    expect(dependencies.executor.setup).toHaveBeenCalledTimes(2);
+    expect(dependencies.store.enable).toHaveBeenCalledTimes(1);
+  });
+
+  test('fails closed when the platform backend is unavailable', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.detectCapabilities.mockResolvedValue({
+      available: false,
+      backend: 'unavailable',
+      denial: { code: 'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE', message: 'Unavailable' },
+    });
+
+    await expect(controller.disclosure('conversation_one')).rejects.toMatchObject({
+      code: 'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE',
+    });
+    expect(dependencies.detectRuntime).not.toHaveBeenCalled();
+  });
+
+  test('redacts host paths from persisted and model-visible execution errors', async () => {
+    const { controller, dependencies, workspace } = createController();
+    dependencies.executor.execute.mockResolvedValue({
+      backend: 'linux-bubblewrap',
+      state: 'sandbox_denied',
+      startedAt: 1_000,
+      finishedAt: 1_001,
+      durationMs: 1,
+      exitCode: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
+      error: {
+        code: 'POLICY_PREPARATION_FAILED',
+        message: 'Could not mount /Users/private/project',
+      },
+    });
+
+    const receipt = await controller.execute('conversation_one', { command: 'pwd' });
+
+    expect(receipt.error).toEqual({
+      code: 'POLICY_PREPARATION_FAILED',
+      message: 'The workspace command did not complete',
+    });
+    expect(dependencies.store.finishCommand).toHaveBeenCalledWith(
+      receipt.commandId,
+      workspace.workspaceId,
+      expect.objectContaining({ error: receipt.error })
+    );
+    expect(JSON.stringify(receipt)).not.toContain('/Users/private');
+  });
+
+  test('reports an executor exception as an uncertain launch failure rather than policy denial', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute.mockRejectedValueOnce(new Error('spawn failed'));
+
+    const receipt = await controller.execute('conversation_one', { command: 'pwd' });
+
+    expect(receipt).toMatchObject({
+      state: 'failed',
+      exitCode: null,
+      terminationGuarantee: 'unknown',
+      sideEffects: 'unknown',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+      error: {
+        code: 'WORKSPACE_EXECUTION_FAILED',
+        message: 'Freedom could not execute the command inside the verified sandbox',
+      },
+    });
+  });
+
+  test('preserves safe missing-path semantics from the private file helper', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute.mockResolvedValue({
+      ...completedExecution(''),
+      state: 'failed',
+      exitCode: 73,
+      stderr: 'FREEDOM_FILE_ERROR:WORKSPACE_PATH_NOT_FOUND',
+    });
+
+    await expect(controller.readFile('conversation_one', 'missing.txt')).rejects.toMatchObject({
+      code: 'WORKSPACE_PATH_NOT_FOUND',
+      message: 'The requested workspace path does not exist',
+    });
+  });
+
+  test('rejects absolute, parent, and empty command or file requests before execution', () => {
+    expect(() => validateWorkingDirectory('/tmp')).toThrow('workspace-relative');
+    expect(() => validateWorkingDirectory('../outside')).toThrow('safe workspace-relative');
+    expect(() => validateCommand('')).toThrow('command must be non-empty');
+    expect(validateWorkspacePath('src/index.js')).toBe('src/index.js');
+    expect(() => validateWorkspacePath('../outside')).toThrow('inside the managed workspace');
+    expect(() => validateWorkspacePath('/absolute')).toThrow('workspace-relative');
+  });
+
+  test('Windows file helper accepts maximum-sized content through stdin instead of command arguments', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-windows-helper-'));
+    const content = 'x'.repeat(65536);
+    try {
+      const packet = JSON.stringify({ script: WORKSPACE_FILE_HELPER, args: ['write', 'large.txt', Buffer.from(content).toString('base64'), '', ''] }) + '\n';
+      execFileSync(process.execPath, ['-e', WINDOWS_FILE_HELPER_BOOTSTRAP], { cwd: directory, input: packet, timeout: 5000 });
+      expect(fs.readFileSync(path.join(directory, 'large.txt'), 'utf8')).toBe(content);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  test('versioned helper writes reject unread, externally changed, and replaced files', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-versioned-file-'));
+    const file = path.join(directory, 'file.txt');
+    const run = (operation, content = '', expected = '') => execFileSync(process.execPath,
+      ['-e', WORKSPACE_FILE_HELPER, operation, 'file.txt', Buffer.from(content).toString('base64'), expected],
+      { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+    try {
+      fs.writeFileSync(file, 'original');
+      expect(() => run('write', 'overwrite', 'missing')).toThrow();
+      let version = JSON.parse(run('read_version')).version;
+      fs.writeFileSync(file, 'external');
+      expect(() => run('write', 'overwrite', version)).toThrow();
+      expect(fs.readFileSync(file, 'utf8')).toBe('external');
+      version = JSON.parse(run('read_version')).version;
+      fs.renameSync(file, path.join(directory, 'old.txt'));
+      fs.writeFileSync(file, 'external');
+      expect(() => run('write', 'overwrite', version)).toThrow();
+      version = JSON.parse(run('read_version')).version;
+      run('write', 'accepted', version);
+      expect(fs.readFileSync(file, 'utf8')).toBe('accepted');
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  test.each(['success', 'failure', 'cancel', 'revoke'])('external file validation waits for sibling writes and recovers after %s', async outcome => {
+    const { controller, dependencies, workspace } = createController();
+    dependencies.store.recordProjectEdit = jest.fn();
+    workspace.project = { connected: true, mode: 'write' };
+    const grant = { dev: '1', ino: '2', mode: 'write' };
+    dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
+    let finish;
+    dependencies.executor.execute.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = controller.writeFile('conversation_one', 'first.txt', 'one').catch(error => error);
+    for (let i = 0; i < 30 && !finish; i++) await new Promise(resolve => setImmediate(resolve));
+    expect(finish).toBeDefined();
+    const abort = new AbortController();
+    const second = controller.writeFile('conversation_one', 'second.txt', 'two', { signal: abort.signal }).catch(error => error);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(dependencies.createPolicy).toHaveBeenCalledTimes(1);
+    expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+    if (outcome === 'cancel') abort.abort();
+    if (outcome === 'revoke') dependencies.store.projectAccess.grants.delete(workspace.workspaceId);
+    finish({ ...completedExecution(''), ...(outcome === 'failure' && { state: 'failed', exitCode: 1 }) });
+    const firstResult = await first;
+    const secondResult = await second;
+    if (outcome === 'failure') expect(firstResult.code).toBe('WORKSPACE_WRITE_FAILED');
+    if (outcome === 'cancel' || outcome === 'revoke') {
+      expect(secondResult.code).toBe(outcome === 'cancel' ? 'WORKSPACE_OPERATION_CANCELLED' : 'PROJECT_RECONNECT_REQUIRED');
+      expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+    } else expect(dependencies.executor.execute).toHaveBeenCalledTimes(2);
+    expect(controller.projectFileQueues.size).toBe(0);
+    dependencies.store.projectAccess.grants.set(workspace.workspaceId, grant);
+    await controller.writeFile('conversation_one', 'third.txt', 'three');
+    expect(controller.projectFileQueues.size).toBe(0);
+    await controller.dispose();
+  });
+
+  test('external file inspection uses a separate read-only policy and rechecks revocation', async () => {
+    const { controller, dependencies, workspace } = createController();
+    workspace.project = { connected: true, mode: 'read' };
+    const grant = { dev: '1', ino: '2', mode: 'read' };
+    dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
+    dependencies.executor.execute.mockResolvedValue(completedExecution(JSON.stringify({ entries: [], limitReached: false })));
+    await controller.listDirectory('conversation_one');
+    dependencies.executor.execute.mockResolvedValue(completedExecution(JSON.stringify({ available: true, changes: [] })));
+    dependencies.store.projectEdits = () => [];
+    await controller.inspectWorkspace('conversation_one', { kind: 'changes' });
+    expect(dependencies.createReadPolicy).toHaveBeenCalledWith(expect.objectContaining({ network: 'none' }));
+    expect(dependencies.createPolicy).not.toHaveBeenCalled();
+    expect(controller.leases.size).toBe(0);
+    dependencies.executor.execute.mockClear();
+    dependencies.createReadPolicy.mockImplementation(async () => {
+      dependencies.store.projectAccess.grants.delete(workspace.workspaceId);
+      return {};
+    });
+    await expect(controller.listDirectory('conversation_one')).rejects.toMatchObject({ code: 'PROJECT_RECONNECT_REQUIRED' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+  });
+
+  test('disjoint writers coexist and Stop retains only the stopped helper files until pending work settles', async () => {
+    const { controller, dependencies } = createController();
+    const scope = await controller.createDelegatedWriter('conversation_one', ['README.md']);
+    const sibling = await controller.createDelegatedWriter('conversation_one', ['other.md']);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(''));
+    await controller.writeFile('conversation_one', 'parent.md', 'parent');
+    await expect(controller.writeFile('conversation_one', 'README.md', 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.execute('conversation_one', { command: 'echo parent' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'status' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(scope.controller.writeFile('conversation_one', 'other.md', 'outside')).rejects.toMatchObject({ code: 'DELEGATED_PATH_DENIED' });
+    await expect(scope.controller.createDirectory('conversation_one', 'unrelated')).rejects.toMatchObject({ code: 'DELEGATED_PATH_DENIED' });
+    let finish;
+    dependencies.executor.execute.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const writing = scope.controller.writeFile('conversation_one', 'README.md', 'updated');
+    for (let i = 0; i < 40 && !finish; i++) await Promise.resolve();
+    expect(finish).toBeDefined();
+    scope.release();
+    await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    const unrelated = await controller.createDelegatedWriter('conversation_one', ['third.md']);
+    unrelated.release();
+    finish(completedExecution(''));
+    await writing;
+    await Promise.resolve(); await Promise.resolve();
+    expect(scope.evidence()).toMatchObject({ changedFiles: ['README.md'], attemptedFiles: ['README.md'], writesPending: false });
+    await expect(scope.controller.writeFile('conversation_one', 'README.md', 'late')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    const next = await controller.createDelegatedWriter('conversation_one', ['README.md']);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(''));
+    await sibling.controller.writeFile('conversation_one', 'other.md', 'still active');
+    await expect(controller.startProcess('conversation_one', { command: 'npm run build' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    sibling.release(); next.release();
+  });
+
+  test.each([
+    ['app/Page.js', 'app/page.js'], ['café.js', 'cafe\u0301.js'], ['Σ.js', 'ς.js'], ['ẞ.js', 'ss.js'],
+    ['app/page.js', 'app'], ['app', 'app/page.js'],
+  ])('file ownership rejects aliases and file/directory overlap: %s / %s', async (first, second) => {
+    const { controller } = createController();
+    const scope = await controller.createDelegatedWriter('conversation_one', [first]);
+    await expect(controller.createDelegatedWriter('conversation_one', [second])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.writeFile('conversation_one', second, 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    scope.release();
+  });
+
+  test('pending parent writes prevent conflicting admission but permit disjoint work and shared directories', async () => {
+    const { controller, dependencies } = createController();
+    let finish;
+    dependencies.executor.execute.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const writing = controller.writeFile('conversation_one', 'app/parent.js', 'parent');
+    for (let i = 0; i < 40 && !finish; i++) await Promise.resolve();
+    await expect(controller.createDelegatedWriter('conversation_one', ['app/parent.js'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.execute('conversation_one', { command: 'echo parent' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.startProcess('conversation_one', { command: 'npm run build' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'status' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    const a = await controller.createDelegatedWriter('conversation_one', ['app/a.js']);
+    const b = await controller.createDelegatedWriter('conversation_one', ['app/b.js']);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(''));
+    await Promise.all([a.controller.createDirectory('conversation_one', 'app'), b.controller.createDirectory('conversation_one', 'app')]);
+    await Promise.all([a.controller.writeFile('conversation_one', 'app/a.js', 'a'), b.controller.writeFile('conversation_one', 'app/b.js', 'b')]);
+    await expect(controller.createDirectory('conversation_one', 'app/a.js/sub')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.writeFile('other_conversation', 'different.js', 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    finish(completedExecution('')); await writing;
+    a.release(); b.release();
+  });
+
+  test('read-only helpers cannot refresh the parent stale-write version', async () => {
+    const { controller, dependencies } = createController();
+    controller.collaborativeConversations.add('conversation_one');
+    const reply = version => completedExecution(JSON.stringify({ version, content: Buffer.from('fixture').toString('base64') }));
+    dependencies.executor.execute.mockResolvedValue(reply('a'.repeat(64)));
+    await controller.readFile('conversation_one', 'README.md');
+    dependencies.executor.execute.mockResolvedValue(reply('b'.repeat(64)));
+    await controller.createDelegatedReader('conversation_one').readFile('conversation_one', 'README.md');
+    expect(controller.projectReads.get('conversation_one').get('README.md')).toBe('a'.repeat(64));
+  });
+
+  test('parent reads remain versioned after collaboration and stale writes carry the earlier revision', async () => {
+    const { controller, dependencies } = createController();
+    const scope = await controller.createDelegatedWriter('conversation_one', ['helper.js']);
+    const version = 'a'.repeat(64);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(JSON.stringify({ version, content: Buffer.from('before').toString('base64') })));
+    expect((await controller.readFile('conversation_one', 'helper.js')).toString()).toBe('before');
+    scope.release(); await Promise.resolve(); await Promise.resolve();
+    dependencies.executor.execute.mockResolvedValue({ ...completedExecution(''), exitCode: 1, stderr: 'FREEDOM_FILE_ERROR:WORKSPACE_HISTORY_CHANGED' });
+    await expect(controller.writeFile('conversation_one', 'helper.js', 'stale')).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_CHANGED' });
+    expect(dependencies.executor.execute.mock.calls.at(-1)[1].args).toContain(version);
+  });
+
+  test('writer admission preserves read-only grants, rejects protected paths and running commands', async () => {
+    const { controller, dependencies, workspace } = createController();
+    await expect(controller.createDelegatedWriter('conversation_one', ['.git/config'])).rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
+    workspace.project = { mode: 'read' };
+    dependencies.store.projectAccess = { resolve: jest.fn(async () => { throw Object.assign(new Error('read-only'), { code: 'PROJECT_READ_ONLY' }); }) };
+    await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'PROJECT_READ_ONLY' });
+    await Promise.resolve();
+    expect(controller.delegatedWriters.size).toBe(0);
+    controller.processManager.entries.set('pending', { state: 'running' });
+    await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+  });
+
+  test('revocation while an external policy is being prepared prevents launch', async () => {
+    const { controller, dependencies, workspace } = createController();
+    workspace.project = { connected: true, mode: 'write' };
+    const grant = { root: '/managed', dev: '1', ino: '2', mode: 'write' };
+    dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
+    dependencies.createPolicy.mockImplementation(async () => {
+      dependencies.store.projectAccess.grants.delete(workspace.workspaceId);
+      return {};
+    });
+    await expect(controller.execute('conversation_one', { command: 'echo should-not-run' })).rejects.toMatchObject({ code: 'PROJECT_RECONNECT_REQUIRED' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(controller.leases.size).toBe(0);
+  });
+});
+
+test('changed project evidence invalidates a reviewed command before shell execution', async () => {
+  jest.spyOn(fs.promises, 'realpath').mockImplementation(async value => path.resolve(String(value)));
+  jest.spyOn(fs.promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+  const { controller, dependencies } = createController();
+  controller.commandReviewEvidence.set('conversation_one', new Map([[JSON.stringify(['npm run dev', '.']), 'before']]));
+  controller.collectCommandReviewEvidence = jest.fn().mockResolvedValue({ fingerprint: 'after' });
+  await expect(controller.execute('conversation_one', { command: 'npm run dev' })).rejects.toMatchObject({ code: 'COMMAND_REVIEW_STALE' });
+  expect(dependencies.executor.execute.mock.calls.some(([, request]) => request.command === '/bin/sh')).toBe(false);
+  expect(controller.commandReviewEvidence.has('conversation_one')).toBe(false);
+  jest.restoreAllMocks();
+});

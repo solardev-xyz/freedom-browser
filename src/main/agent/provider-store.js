@@ -1,0 +1,656 @@
+'use strict';
+
+const crypto = require('crypto');
+const { isStoredCompatible } = require('./compatible-provider');
+const fs = require('fs');
+const path = require('path');
+
+const PROVIDER_STORE_VERSION = 3;
+const SINGLE_SELECTION_PROVIDER_STORE_VERSION = 2;
+const LEGACY_PROVIDER_STORE_VERSION = 1;
+const PROVIDER_STORE_FILE = 'provider.json';
+const MAX_PROVIDER_STORE_BYTES = 256 * 1024;
+const MAX_STORED_OLLAMA_MODELS = 128;
+const SUBSCRIPTION_IDS = new Set(['anthropic-claude', 'openai-codex', 'openai-chatgpt', 'meta-subscription']);
+
+class AgentProviderStoreError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'AgentProviderStoreError';
+    this.code = code;
+  }
+}
+
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function resolvedPath(value) {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+function createBinding(profileId, userDataDir) {
+  return {
+    profileId: profileId || 'default',
+    userDataDirHash: sha256Hex(resolvedPath(userDataDir)),
+  };
+}
+
+function assertRegularFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new AgentProviderStoreError(
+      'AGENT_PROVIDER_STORE_UNSAFE',
+      'Agent provider storage is not a regular file'
+    );
+  }
+  if (stat.size > MAX_PROVIDER_STORE_BYTES) {
+    throw new AgentProviderStoreError(
+      'AGENT_PROVIDER_STORE_INVALID',
+      'Agent provider storage is unexpectedly large'
+    );
+  }
+}
+
+function isStoredSelection(selection) {
+  if (selection === null) return true;
+  if (!selection || typeof selection !== 'object' || Array.isArray(selection)) return false;
+  if (
+    typeof selection.providerId !== 'string' ||
+    typeof selection.modelId !== 'string' ||
+    !selection.providerId ||
+    !selection.modelId
+  ) {
+    return false;
+  }
+  if (selection.kind === 'hosted') {
+    return (
+      typeof selection.encryptedApiKey === 'string' &&
+      selection.encryptedApiKey.length > 0 &&
+      selection.encryptedApiKey.length <= 128 * 1024
+    );
+  }
+  if (selection.kind === 'subscription') return SUBSCRIPTION_IDS.has(selection.providerId);
+  return selection.kind === 'ollama' && typeof selection.baseUrl === 'string';
+}
+
+function isStoredConnection(connection, providerId) {
+  if (
+    !connection ||
+    typeof connection !== 'object' ||
+    Array.isArray(connection) ||
+    connection.providerId !== providerId ||
+    typeof connection.modelId !== 'string' ||
+    !connection.modelId
+  ) {
+    return false;
+  }
+  if (
+    connection.privacyPolicy !== undefined &&
+    !['standard', 'zdr', 'private', 'tee'].includes(connection.privacyPolicy)
+  )
+    return false;
+  if (
+    connection.favoriteModelIds !== undefined &&
+    (!Array.isArray(connection.favoriteModelIds) ||
+      connection.favoriteModelIds.length > 128 ||
+      !connection.favoriteModelIds.every(
+        (id) => typeof id === 'string' && id.length > 0 && id.length <= 200
+      ))
+  )
+    return false;
+  if (connection.kind === 'compatible') return isStoredCompatible(connection);
+  if (connection.kind === 'hosted') {
+    return (
+      typeof connection.encryptedApiKey === 'string' &&
+      connection.encryptedApiKey.length > 0 &&
+      connection.encryptedApiKey.length <= 128 * 1024
+    );
+  }
+  if (connection.kind === 'subscription') return SUBSCRIPTION_IDS.has(providerId);
+  return (
+    connection.kind === 'ollama' &&
+    providerId === 'ollama' &&
+    typeof connection.baseUrl === 'string' &&
+    Array.isArray(connection.modelIds) &&
+    connection.modelIds.length > 0 &&
+    connection.modelIds.length <= MAX_STORED_OLLAMA_MODELS &&
+    connection.modelIds.every(
+      (modelId, index) =>
+        typeof modelId === 'string' &&
+        Boolean(modelId) &&
+        connection.modelIds.indexOf(modelId) === index
+    ) &&
+    connection.modelIds.includes(connection.modelId)
+  );
+}
+
+function isStoredConnectionMap(connections) {
+  if (!connections || typeof connections !== 'object' || Array.isArray(connections)) return false;
+  return Object.entries(connections).every(([providerId, connection]) =>
+    isStoredConnection(connection, providerId)
+  );
+}
+
+function connectionFromSelection(selection) {
+  if (!selection) return null;
+  return {
+    ...selection,
+    ...(selection.kind === 'ollama' && { modelIds: [selection.modelId] }),
+  };
+}
+
+function isStoredCredentialMap(credentials) {
+  if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) return false;
+  return Object.entries(credentials).every(
+    ([providerId, encryptedCredential]) =>
+      SUBSCRIPTION_IDS.has(providerId) &&
+      typeof encryptedCredential === 'string' &&
+      encryptedCredential.length > 0 &&
+      encryptedCredential.length <= 192 * 1024
+  );
+}
+
+function isOAuthCredential(credential) {
+  return (
+    credential !== null &&
+    typeof credential === 'object' &&
+    !Array.isArray(credential) &&
+    credential?.type === 'oauth' &&
+    typeof credential.access === 'string' &&
+    credential.access.length > 0 &&
+    credential.access.length <= 128 * 1024 &&
+    typeof credential.refresh === 'string' &&
+    credential.refresh.length > 0 &&
+    credential.refresh.length <= 128 * 1024 &&
+    Number.isFinite(credential.expires) &&
+    credential.expires > 0
+  );
+}
+
+class AgentProviderStore {
+  constructor(options = {}) {
+    if (!options.safeStorage) throw new TypeError('AgentProviderStore requires safeStorage');
+    if (typeof options.dataDir !== 'string' || !options.dataDir) {
+      throw new TypeError('AgentProviderStore requires a profile data directory');
+    }
+    this.safeStorage = options.safeStorage;
+    this.dataDir = path.resolve(options.dataDir);
+    this.filePath = path.join(this.dataDir, PROVIDER_STORE_FILE);
+    this.binding = createBinding(options.profileId, options.userDataDir || this.dataDir);
+    this.credentialOperations = new Map();
+    this.credentialStore = this.#createCredentialStore();
+  }
+
+  getDeviceId() {
+    const payload = this.#read();
+    if (!this.deviceId) {
+      this.deviceId = crypto.randomUUID();
+      this.#write(payload);
+    }
+    return this.deviceId;
+  }
+
+  isEncryptionAvailable() {
+    return this.safeStorage.isEncryptionAvailable() === true;
+  }
+
+  getPublicStatus() {
+    const payload = this.#read();
+    const connection = payload.connections[payload.activeProviderId];
+    return {
+      secureStorageAvailable: this.isEncryptionAvailable(),
+      configured: Boolean(connection),
+      connections: Object.values(payload.connections).map((candidate) => ({
+        kind: candidate.kind,
+        providerId: candidate.providerId,
+        modelId: candidate.modelId,
+        ...(candidate.favoriteModelIds && { favoriteModelIds: [...candidate.favoriteModelIds] }),
+        ...(candidate.kind === 'compatible' && { name: candidate.name, baseUrl: candidate.baseUrl, models: structuredClone(candidate.models), hasApiKey: Boolean(candidate.encryptedApiKey), updatedAt: candidate.updatedAt }),
+        ...(candidate.privacyPolicy && { privacyPolicy: candidate.privacyPolicy }),
+        ...(candidate.kind === 'ollama' && {
+          baseUrl: candidate.baseUrl,
+          modelIds: [...candidate.modelIds],
+        }),
+      })),
+      ...(connection && {
+        kind: connection.kind,
+        providerId: connection.providerId,
+        modelId: connection.modelId,
+        ...(connection.kind === 'ollama' && { baseUrl: connection.baseUrl }),
+      }),
+    };
+  }
+
+  getSelection(providerId) {
+    const payload = this.#read();
+    const connection = payload.connections[providerId || payload.activeProviderId];
+    if (!connection) return null;
+    if (connection.kind === 'ollama') {
+      const { modelIds: _modelIds, ...selection } = connection;
+      return { ...selection };
+    }
+    if (connection.kind === 'subscription') return { ...connection };
+    if (connection.kind === 'compatible' && !connection.encryptedApiKey) return { ...connection, apiKey: '' };
+    if (!this.isEncryptionAvailable()) {
+      throw new AgentProviderStoreError(
+        'AGENT_SECURE_STORAGE_UNAVAILABLE',
+        'Secure credential storage is unavailable'
+      );
+    }
+    let apiKey;
+    try {
+      apiKey = this.safeStorage.decryptString(Buffer.from(connection.encryptedApiKey, 'base64'));
+    } catch {
+      throw new AgentProviderStoreError(
+        'AGENT_CREDENTIAL_UNAVAILABLE',
+        'The saved provider credential could not be decrypted'
+      );
+    }
+    if (!apiKey) {
+      throw new AgentProviderStoreError(
+        'AGENT_CREDENTIAL_UNAVAILABLE',
+        'The saved provider credential is empty'
+      );
+    }
+    return {
+      ...(connection.kind === 'compatible' ? { ...connection, encryptedApiKey: undefined } : {}),
+      kind: connection.kind,
+      providerId: connection.providerId,
+      modelId: connection.modelId,
+      apiKey,
+    };
+  }
+
+  saveHosted({ providerId, modelId, apiKey, privacyPolicy }) {
+    if (!this.isEncryptionAvailable()) {
+      throw new AgentProviderStoreError(
+        'AGENT_SECURE_STORAGE_UNAVAILABLE',
+        'Secure credential storage is unavailable'
+      );
+    }
+    const encryptedApiKey = this.safeStorage.encryptString(apiKey).toString('base64');
+    const payload = this.#read();
+    this.#write({
+      connections: {
+        ...payload.connections,
+        [providerId]: {
+          ...payload.connections[providerId],
+          kind: 'hosted',
+          providerId,
+          modelId,
+          encryptedApiKey,
+          ...(privacyPolicy !== undefined && { privacyPolicy }),
+        },
+      },
+      activeProviderId: providerId,
+      credentials: payload.credentials,
+    });
+  }
+
+  saveCompatible({ providerId, name, baseUrl, models, modelId, apiKey, activate = true }) {
+    const payload = this.#read();
+    const previous = payload.connections[providerId];
+    if (previous && (previous.kind !== 'compatible' || previous.baseUrl !== baseUrl)) {
+      throw new AgentProviderStoreError('AGENT_CUSTOM_ENDPOINT_IMMUTABLE', 'Add a new connection to use a different endpoint.');
+    }
+    if (apiKey && !this.isEncryptionAvailable()) throw new AgentProviderStoreError('AGENT_SECURE_STORAGE_UNAVAILABLE', 'Secure credential storage is unavailable');
+    const connection = { kind: 'compatible', providerId, name, baseUrl, models, modelId, updatedAt: Date.now(),
+      ...(previous?.favoriteModelIds && { favoriteModelIds: previous.favoriteModelIds }),
+      ...(apiKey && { encryptedApiKey: this.safeStorage.encryptString(apiKey).toString('base64') }) };
+    if (!isStoredCompatible(connection)) throw new AgentProviderStoreError('AGENT_PROVIDER_INVALID', 'Invalid custom connection');
+    this.#write({ ...payload, connections: { ...payload.connections, [providerId]: connection },
+      activeProviderId: activate ? providerId : payload.activeProviderId });
+  }
+
+  saveOllama({ modelId, modelIds: discoveredModels, baseUrl, activate = true }) {
+    const payload = this.#read();
+    const previous = payload.connections.ollama;
+    const modelIds = discoveredModels || (
+      previous?.kind === 'ollama' && previous.baseUrl === baseUrl
+        ? [...previous.modelIds.filter((candidate) => candidate !== modelId), modelId].slice(
+            -MAX_STORED_OLLAMA_MODELS
+          )
+        : [modelId]);
+    this.#write({
+      connections: {
+        ...payload.connections,
+        ollama: {
+          kind: 'ollama', providerId: 'ollama', modelId, modelIds, baseUrl,
+          ...(previous?.baseUrl === baseUrl && previous.favoriteModelIds && {
+            favoriteModelIds: previous.favoriteModelIds.filter((id) => modelIds.includes(id)),
+          }),
+        },
+      },
+      activeProviderId: activate ? 'ollama' : payload.activeProviderId,
+      credentials: payload.credentials,
+    });
+  }
+
+  saveSubscription({ providerId, modelId }) {
+    if (providerId !== 'anthropic-claude' && !this.#readOAuthCredential(providerId)) {
+      throw new AgentProviderStoreError(
+        'AGENT_CREDENTIAL_UNAVAILABLE',
+        'The saved provider credential is unavailable'
+      );
+    }
+    const payload = this.#read();
+    this.#write({
+      connections: {
+        ...payload.connections,
+        [providerId]: { kind: 'subscription', providerId, modelId },
+      },
+      activeProviderId: providerId,
+      credentials: payload.credentials,
+    });
+  }
+
+  select(providerId, modelId) {
+    const payload = this.#read();
+    const connection = payload.connections[providerId];
+    if (!connection || (connection.kind === 'ollama' && !connection.modelIds.includes(modelId)) || (connection?.kind === 'compatible' && !connection.models.some(m => m.id === modelId))) {
+      throw new AgentProviderStoreError(
+        'AGENT_MODEL_INVALID',
+        'Selected agent model is not configured'
+      );
+    }
+    this.#write({
+      connections: {
+        ...payload.connections,
+        [providerId]: { ...connection, modelId },
+      },
+      activeProviderId: providerId,
+      credentials: payload.credentials,
+    });
+  }
+
+  savePreferences(providerId, patch) {
+    const payload = this.#read();
+    if (!payload.connections[providerId])
+      throw new AgentProviderStoreError('AGENT_PROVIDER_INVALID', 'Provider is not connected');
+    payload.connections[providerId] = { ...payload.connections[providerId], ...patch };
+    this.#write(payload);
+  }
+
+  remove(providerId) {
+    const payload = this.#read();
+    if (!payload.connections[providerId]) return;
+    const connections = { ...payload.connections };
+    const credentials = { ...payload.credentials };
+    delete connections[providerId];
+    delete credentials[providerId];
+    const activeProviderId =
+      payload.activeProviderId === providerId
+        ? Object.keys(connections)[0] || null
+        : payload.activeProviderId;
+    this.#write({ connections, activeProviderId, credentials });
+  }
+
+  createCredentialStore() {
+    return this.credentialStore;
+  }
+
+  clear() {
+    this.#write({ connections: {}, activeProviderId: null, credentials: {} });
+  }
+
+  #read() {
+    if (!fs.existsSync(this.filePath)) {
+      return { connections: {}, activeProviderId: null, credentials: {} };
+    }
+    assertRegularFile(this.filePath);
+    let payload;
+    try {
+      payload = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
+    } catch {
+      throw new AgentProviderStoreError(
+        'AGENT_PROVIDER_STORE_INVALID',
+        'Agent provider storage could not be read'
+      );
+    }
+    const isSingleSelection = [
+      LEGACY_PROVIDER_STORE_VERSION,
+      SINGLE_SELECTION_PROVIDER_STORE_VERSION,
+    ].includes(payload?.version);
+    const validBinding =
+      payload?.profileId === this.binding.profileId &&
+      payload?.userDataDirHash === this.binding.userDataDirHash;
+    const validCurrent =
+      payload?.version === PROVIDER_STORE_VERSION &&
+      isStoredConnectionMap(payload.connections) &&
+      (payload.activeProviderId === null ||
+        (typeof payload.activeProviderId === 'string' &&
+          Boolean(payload.connections[payload.activeProviderId]))) &&
+      isStoredCredentialMap(payload.credentials);
+    const validSingleSelection =
+      isSingleSelection &&
+      isStoredSelection(payload.selection) &&
+      (payload.version === LEGACY_PROVIDER_STORE_VERSION ||
+        isStoredCredentialMap(payload.credentials));
+    if (!validBinding || (!validCurrent && !validSingleSelection)) {
+      throw new AgentProviderStoreError(
+        'AGENT_PROVIDER_STORE_INVALID',
+        'Agent provider storage does not belong to this profile'
+      );
+    }
+    if (typeof payload.deviceId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.deviceId)) {
+      this.deviceId = payload.deviceId;
+    }
+    const connection = validCurrent ? null : connectionFromSelection(payload.selection);
+    const state = validCurrent
+      ? {
+          connections: payload.connections,
+          activeProviderId: payload.activeProviderId,
+          credentials: payload.credentials,
+        }
+      : {
+          connections: connection ? { [connection.providerId]: connection } : {},
+          activeProviderId: connection?.providerId || null,
+          credentials: payload.version === LEGACY_PROVIDER_STORE_VERSION ? {} : payload.credentials,
+        };
+    // Retire the old pilot connection without decrypting its key or silently
+    // switching requests to another provider. Preserve all other connections.
+    if (Object.hasOwn(state.connections, 'freepi')) {
+      delete state.connections.freepi;
+      if (state.activeProviderId === 'freepi') state.activeProviderId = null;
+      this.#write(state);
+    }
+    return state;
+  }
+
+  #write({ connections, activeProviderId, credentials }) {
+    fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    assertRegularFile(this.filePath);
+    const payload = Buffer.from(
+      JSON.stringify(
+        {
+          version: PROVIDER_STORE_VERSION,
+          ...(this.deviceId && { deviceId: this.deviceId }),
+          ...this.binding,
+          connections,
+          activeProviderId,
+          credentials,
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    if (payload.length > MAX_PROVIDER_STORE_BYTES) {
+      throw new AgentProviderStoreError('AGENT_PROVIDER_STORE_INVALID', 'Too many saved provider settings; the previous connections were preserved');
+    }
+    const noFollow = fs.constants.O_NOFOLLOW || 0;
+    const temporary = `${this.filePath}.${crypto.randomBytes(12).toString('hex')}.tmp`;
+    const descriptor = fs.openSync(
+      temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+      0o600
+    );
+    try {
+      try {
+        fs.writeFileSync(descriptor, payload);
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      assertRegularFile(this.filePath);
+      fs.renameSync(temporary, this.filePath);
+    } catch (error) {
+      try { fs.unlinkSync(temporary); } catch { /* Preserve the original storage error. */ }
+      throw error;
+    }
+    try {
+      fs.chmodSync(this.filePath, 0o600);
+    } catch {
+      // Windows may not implement POSIX permission bits.
+    }
+  }
+
+  #readOAuthCredential(providerId) {
+    const encryptedCredential = this.#read().credentials[providerId];
+    if (!encryptedCredential) return undefined;
+    if (!this.isEncryptionAvailable()) {
+      throw new AgentProviderStoreError(
+        'AGENT_SECURE_STORAGE_UNAVAILABLE',
+        'Secure credential storage is unavailable'
+      );
+    }
+    let credential;
+    try {
+      const serialized = this.safeStorage.decryptString(Buffer.from(encryptedCredential, 'base64'));
+      credential = JSON.parse(serialized);
+    } catch {
+      throw new AgentProviderStoreError(
+        'AGENT_CREDENTIAL_UNAVAILABLE',
+        'The saved provider credential could not be decrypted'
+      );
+    }
+    if (!isOAuthCredential(credential)) {
+      throw new AgentProviderStoreError(
+        'AGENT_CREDENTIAL_UNAVAILABLE',
+        'The saved provider credential is invalid'
+      );
+    }
+    return structuredClone(credential);
+  }
+
+  #writeOAuthCredential(providerId, credential) {
+    if (!SUBSCRIPTION_IDS.has(providerId) || !isOAuthCredential(credential)) {
+      throw new AgentProviderStoreError(
+        'AGENT_CREDENTIAL_UNAVAILABLE',
+        'The provider credential is invalid'
+      );
+    }
+    if (!this.isEncryptionAvailable()) {
+      throw new AgentProviderStoreError(
+        'AGENT_SECURE_STORAGE_UNAVAILABLE',
+        'Secure credential storage is unavailable'
+      );
+    }
+    const serialized = JSON.stringify(credential);
+    if (Buffer.byteLength(serialized, 'utf8') > 128 * 1024) {
+      throw new AgentProviderStoreError(
+        'AGENT_CREDENTIAL_UNAVAILABLE',
+        'The provider credential is unexpectedly large'
+      );
+    }
+    const payload = this.#read();
+    this.#write({
+      connections: payload.connections,
+      activeProviderId: payload.activeProviderId,
+      credentials: {
+        ...payload.credentials,
+        [providerId]: this.safeStorage.encryptString(serialized).toString('base64'),
+      },
+    });
+  }
+
+  #deleteOAuthCredential(providerId) {
+    const payload = this.#read();
+    const credentials = { ...payload.credentials };
+    const connections = { ...payload.connections };
+    delete credentials[providerId];
+    if (connections[providerId]?.kind === 'subscription') delete connections[providerId];
+    this.#write({
+      connections,
+      activeProviderId:
+        payload.activeProviderId === providerId
+          ? Object.keys(connections)[0] || null
+          : payload.activeProviderId,
+      credentials,
+    });
+  }
+
+  #enqueueCredentialOperation(providerId, operation) {
+    const previous = this.credentialOperations.get(providerId) || Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    this.credentialOperations.set(providerId, current);
+    return current.finally(() => {
+      if (this.credentialOperations.get(providerId) === current) {
+        this.credentialOperations.delete(providerId);
+      }
+    });
+  }
+
+  #createCredentialStore() {
+    return Object.freeze({
+      read: async (providerId, options = {}) => {
+        options.signal?.throwIfAborted();
+        const credential = this.#readOAuthCredential(providerId);
+        options.signal?.throwIfAborted();
+        return credential;
+      },
+      list: async (options = {}) => {
+        options.signal?.throwIfAborted();
+        const credentials = Object.keys(this.#read().credentials).map((providerId) => ({
+          providerId,
+          type: 'oauth',
+        }));
+        options.signal?.throwIfAborted();
+        return credentials;
+      },
+      modify: (providerId, modify, options = {}) =>
+        this.#enqueueCredentialOperation(providerId, async () => {
+          options.signal?.throwIfAborted();
+          const expectedCiphertext = this.#read().credentials[providerId];
+          const current = this.#readOAuthCredential(providerId);
+          const next = await modify(current);
+          options.signal?.throwIfAborted();
+          if (next !== undefined) {
+            const latestCiphertext = this.#read().credentials[providerId];
+            if (latestCiphertext !== expectedCiphertext) {
+              throw new AgentProviderStoreError(
+                'AGENT_CREDENTIAL_UNAVAILABLE',
+                'The provider credential changed during an update'
+              );
+            }
+            this.#writeOAuthCredential(providerId, next);
+          }
+          return next === undefined ? current : structuredClone(next);
+        }),
+      delete: (providerId, options = {}) =>
+        this.#enqueueCredentialOperation(providerId, async () => {
+          options.signal?.throwIfAborted();
+          this.#deleteOAuthCredential(providerId);
+        }),
+    });
+  }
+}
+
+module.exports = {
+  MAX_PROVIDER_STORE_BYTES,
+  PROVIDER_STORE_FILE,
+  PROVIDER_STORE_VERSION,
+  AgentProviderStore,
+  AgentProviderStoreError,
+  createBinding,
+  isOAuthCredential,
+  isStoredCredentialMap,
+  isStoredSelection,
+};

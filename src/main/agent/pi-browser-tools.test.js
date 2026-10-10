@@ -1,0 +1,1101 @@
+'use strict';
+
+const { OPERATIONS, MAX_WAIT_TIMEOUT_MS } = require('../automation/contract/operations');
+const { ERROR_CODES } = require('../automation/contract/errors');
+const { AutomationController } = require('../automation/automation-controller');
+const {
+  FreedomBrowserToolError,
+  MAX_AGENT_SCREENSHOT_BYTES,
+  TOOL_SPEC_BY_NAME,
+  createFreedomBrowserTools,
+} = require('./pi-browser-tools');
+
+const PNG_BASE64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString(
+  'base64'
+);
+
+function createSdk() {
+  const SessionManager = jest.fn();
+  const SettingsManager = jest.fn();
+  return {
+    createAgentSession: jest.fn(),
+    createBashTool: jest.fn(),
+    createEditTool: jest.fn(),
+    createExtensionRuntime: jest.fn(),
+    createFindTool: jest.fn(),
+    createGrepTool: jest.fn(),
+    createLsTool: jest.fn(),
+    createReadTool: jest.fn(),
+    createWriteTool: jest.fn(),
+    defineTool: jest.fn((tool) => tool),
+    ModelRuntime: jest.fn(),
+    SessionManager,
+    SettingsManager,
+  };
+}
+
+function successEnvelope(result = {}) {
+  return {
+    ok: true,
+    runtimeId: 'runtime_test',
+    contextId: 'context_test',
+    tabId: 'tab_assigned',
+    navigationId: 4,
+    result,
+  };
+}
+
+describe('Pi browser tool adapter', () => {
+  test('defines sequential canonical browser tools and session-local evidence retrieval', async () => {
+    const sdk = createSdk();
+    const controller = { execute: jest.fn() };
+    const tools = await createFreedomBrowserTools({ sdk, controller, tabId: 'tab_assigned' });
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      OPERATIONS.LIST_PAGE_TOOLS,
+      OPERATIONS.CALL_PAGE_TOOL,
+      OPERATIONS.GET_DIALOG,
+      OPERATIONS.HANDLE_DIALOG,
+      OPERATIONS.LIST_TABS,
+      OPERATIONS.CREATE_TAB,
+      OPERATIONS.GET_TAB,
+      OPERATIONS.FOCUS_TAB,
+      OPERATIONS.CLOSE_TAB,
+      OPERATIONS.SNAPSHOT,
+      OPERATIONS.LIST_FRAMES,
+      OPERATIONS.READ_FRAME,
+      OPERATIONS.NAVIGATE,
+      OPERATIONS.CLICK,
+      OPERATIONS.TYPE,
+      OPERATIONS.SELECT,
+      OPERATIONS.SCROLL,
+      OPERATIONS.PRESS,
+      OPERATIONS.UPLOAD,
+      OPERATIONS.DOWNLOAD,
+      OPERATIONS.LIST_DOWNLOADS,
+      OPERATIONS.NODE_STATUS,
+      OPERATIONS.NODE_REQUEST,
+      OPERATIONS.NODE_OPERATION_STATUS,
+      OPERATIONS.NODE_LIFECYCLE,
+      OPERATIONS.NODE_DIAGNOSTICS,
+      OPERATIONS.APP_DIAGNOSTICS,
+      OPERATIONS.SWARM_PUBLISH,
+      OPERATIONS.SWARM_PUBLICATION_STATUS,
+      OPERATIONS.WALLET_TRANSFER,
+      OPERATIONS.WAIT,
+      OPERATIONS.STOP_LOADING,
+      'browser_recall_evidence',
+    ]);
+    expect(tools.every((tool) => tool.executionMode === 'sequential')).toBe(true);
+    expect(tools.some((tool) => tool.name === OPERATIONS.SCREENSHOT)).toBe(false);
+    expect(tools.some((tool) => tool.name === OPERATIONS.LIST_TABS)).toBe(true);
+  });
+
+  test('keeps the assigned tab ID out of model-visible schemas', async () => {
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller: { execute: jest.fn() },
+      tabId: 'tab_assigned',
+    });
+
+    for (const tool of tools) {
+      expect(tool.parameters.additionalProperties).toBe(false);
+      if (![OPERATIONS.FOCUS_TAB, OPERATIONS.CLOSE_TAB].includes(tool.name)) {
+        expect(tool.parameters.properties).not.toHaveProperty('tabId');
+      }
+    }
+    expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.WAIT).parameters).toMatchObject({
+      properties: {
+        condition: { enum: ['load', 'navigation', 'text', 'url', 'element'] },
+        timeoutMs: { minimum: 1, maximum: MAX_WAIT_TIMEOUT_MS },
+      },
+      required: ['condition'],
+    });
+    expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.PRESS).parameters.properties.key.enum).toContain(
+      'Enter'
+    );
+    expect(
+      TOOL_SPEC_BY_NAME.get(OPERATIONS.SWARM_PUBLISH).parameters.properties
+    ).not.toHaveProperty('name');
+    expect(
+      TOOL_SPEC_BY_NAME.get(OPERATIONS.SWARM_PUBLISH).parameters.properties.workspacePath
+    ).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 1_024,
+    });
+    for (const operation of [
+      OPERATIONS.CLICK,
+      OPERATIONS.TYPE,
+      OPERATIONS.SELECT,
+      OPERATIONS.SCROLL,
+      OPERATIONS.PRESS,
+    ]) {
+      expect(TOOL_SPEC_BY_NAME.get(operation).parameters.properties.intent).toMatchObject({
+        type: 'string',
+        maxLength: 240,
+      });
+    }
+  });
+
+  test('advertises visual observation only to vision-capable models', async () => {
+    const controller = { execute: jest.fn() };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      visionEnabled: true,
+    });
+
+    const screenshot = tools.find((tool) => tool.name === OPERATIONS.SCREENSHOT);
+    expect(screenshot).toMatchObject({
+      label: 'Look at page',
+      executionMode: 'sequential',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    });
+    expect(screenshot.description).toContain('Use a fresh page snapshot');
+    expect(tools.find(tool => tool.name === OPERATIONS.TARGET_POINT)).toBeDefined();
+    const textTools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', visionEnabled: false });
+    expect(textTools.some(tool => tool.name === OPERATIONS.TARGET_POINT)).toBe(false);
+  });
+
+  test('returns a bounded page image to Pi without retaining pixels in receipts or details', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async (operation) => {
+        if (operation === OPERATIONS.SNAPSHOT) {
+          return successEnvelope({ url: 'https://visual.example/private', text: 'page' });
+        }
+        if (operation === OPERATIONS.SCREENSHOT) {
+          return successEnvelope({ mediaType: 'image/png', base64: PNG_BASE64 });
+        }
+        return successEnvelope();
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      visionEnabled: true,
+      onToolOutcome,
+    });
+    await tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT).execute('call_snapshot', {});
+
+    const result = await tools
+      .find((tool) => tool.name === OPERATIONS.SCREENSHOT)
+      .execute('call_screenshot', {});
+
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.SCREENSHOT, {
+      tabId: 'tab_assigned',
+    });
+    expect(result.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('fresh semantic snapshot'),
+      },
+      { type: 'image', data: PNG_BASE64, mimeType: 'image/png' },
+    ]);
+    expect(result.details).toEqual({
+      operation: OPERATIONS.SCREENSHOT,
+      envelope: expect.objectContaining({
+        ok: true,
+        result: { mediaType: 'image/png', bytes: 9 },
+      }),
+    });
+    expect(JSON.stringify(result.details)).not.toContain(PNG_BASE64);
+    expect(onToolOutcome).toHaveBeenLastCalledWith({
+      toolCallId: 'call_screenshot',
+      operation: OPERATIONS.SCREENSHOT,
+      status: 'succeeded',
+      tabId: 'tab_assigned',
+      pageId: 'tab_assigned',
+      origin: 'https://visual.example',
+    });
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain(PNG_BASE64);
+  });
+
+  test('rejects malformed and oversized page images before they reach Pi', async () => {
+    const controller = {
+      execute: jest
+        .fn()
+        .mockResolvedValueOnce(successEnvelope({ mediaType: 'image/png', base64: 'not-an-image' }))
+        .mockResolvedValueOnce(
+          successEnvelope({
+            mediaType: 'image/png',
+            base64: Buffer.concat([
+              Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+              Buffer.alloc(MAX_AGENT_SCREENSHOT_BYTES),
+            ]).toString('base64'),
+          })
+        ),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      visionEnabled: true,
+    });
+    const screenshot = tools.find((tool) => tool.name === OPERATIONS.SCREENSHOT);
+
+    await expect(screenshot.execute('call_invalid', {})).rejects.toMatchObject({
+      code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+    });
+    await expect(screenshot.execute('call_large', {})).rejects.toMatchObject({
+      code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+      suggestedAction: expect.stringContaining('semantic page snapshot'),
+    });
+  });
+
+  test('describes task tabs as a cross-site workspace capability', async () => {
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller: { execute: jest.fn() },
+      tabId: 'tab_assigned',
+    });
+
+    expect(tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB)?.description).toContain(
+      'supported web or distributed-web URL'
+    );
+  });
+
+  test('targets newly created and explicitly focused task tabs without exposing tab IDs broadly', async () => {
+    const controller = {
+      execute: jest.fn(async (operation, input) => {
+        if (operation === OPERATIONS.CREATE_TAB) {
+          return successEnvelope({
+            tab: { tabId: 'tab_created', url: input.url },
+            activeTabId: 'tab_created',
+          });
+        }
+        return successEnvelope(
+          operation === OPERATIONS.FOCUS_TAB ? { focused: true, tabId: input.tabId } : {}
+        );
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const create = tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB);
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+    const focus = tools.find((tool) => tool.name === OPERATIONS.FOCUS_TAB);
+
+    await create.execute('call_create', { url: 'https://example.test/research' });
+    await snapshot.execute('call_created_snapshot', {});
+    await focus.execute('call_focus', { tabId: 'tab_assigned' });
+    await snapshot.execute('call_start_snapshot', {});
+
+    expect(controller.execute.mock.calls).toEqual([
+      [OPERATIONS.CREATE_TAB, { tabId: 'tab_assigned', url: 'https://example.test/research' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_created' }],
+      [OPERATIONS.FOCUS_TAB, { tabId: 'tab_assigned' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' }],
+    ]);
+  });
+
+  test('tracks controller fallback and can create after every task tab is closed', async () => {
+    let activeTabId = 'tab_assigned';
+    const controller = {
+      getActiveTabId: jest.fn(() => activeTabId),
+      execute: jest.fn(async (operation, input) => {
+        if (operation === OPERATIONS.CREATE_TAB) {
+          activeTabId = 'tab_fresh';
+          return successEnvelope({
+            tab: { tabId: 'tab_fresh', url: input.url },
+            activeTabId,
+          });
+        }
+        return successEnvelope({});
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+    const create = tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB);
+
+    activeTabId = 'tab_remaining';
+    await snapshot.execute('call_fallback', {});
+    activeTabId = null;
+    await create.execute('call_fresh', { url: 'https://fresh.example/' });
+    await snapshot.execute('call_fresh_snapshot', {});
+
+    expect(controller.execute.mock.calls).toEqual([
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_remaining' }],
+      [OPERATIONS.CREATE_TAB, { tabId: null, url: 'https://fresh.example/' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_fresh' }],
+    ]);
+  });
+
+  test('creates the first task tab from an initially empty workspace', async () => {
+    let activeTabId = null;
+    const controller = {
+      getActiveTabId: jest.fn(() => activeTabId),
+      execute: jest.fn(async (operation, input) => {
+        if (operation === OPERATIONS.CREATE_TAB) {
+          activeTabId = 'tab_fresh';
+          return successEnvelope({
+            tab: { tabId: activeTabId, url: input.url },
+            activeTabId,
+          });
+        }
+        return successEnvelope({});
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+    });
+    const create = tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB);
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await create.execute('call_create', { url: 'https://fresh.example/' });
+    await snapshot.execute('call_snapshot', {});
+
+    expect(controller.execute.mock.calls).toEqual([
+      [OPERATIONS.CREATE_TAB, { tabId: null, url: 'https://fresh.example/' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_fresh' }],
+    ]);
+  });
+
+  test('routes tool execution through the controller with the pinned tab', async () => {
+    const envelope = successEnvelope({ clicked: true, ref: 'ref_7' });
+    const controller = { execute: jest.fn(async () => envelope) };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const click = tools.find((tool) => tool.name === OPERATIONS.CLICK);
+
+    const result = await click.execute('call_1', { ref: 'ref_7', tabId: 'tab_attacker' });
+
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CLICK, {
+      tabId: 'tab_assigned',
+      ref: 'ref_7',
+    });
+    expect(result).toEqual({
+      content: [{ type: 'text', text: JSON.stringify(envelope) }, { type: 'text', text: expect.stringContaining('Historical evidence saved as evidence_') }],
+      details: { operation: OPERATIONS.CLICK, envelope },
+    });
+  });
+
+  test('returns a safe download artifact and forwards bounded progress', async () => {
+    const artifact = {
+      artifactId: 'artifact_1234567890abcdef1234',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      bytes: 2048,
+      state: 'completed',
+      sourceOrigin: 'https://files.example',
+      location: 'downloads',
+      available: true,
+    };
+    const controller = {
+      execute: jest.fn(async (_operation, _input, execution) => {
+        execution.onProgress({ receivedBytes: 1024, totalBytes: 2048, state: 'in_progress' });
+        return successEnvelope({ artifact });
+      }),
+    };
+    const onToolOutcome = jest.fn();
+    const onToolProgress = jest.fn();
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+      onToolProgress,
+    });
+    const download = tools.find((tool) => tool.name === OPERATIONS.DOWNLOAD);
+
+    const result = await download.execute(
+      'call_download',
+      { ref: 'ref_download' },
+      new AbortController().signal
+    );
+
+    expect(controller.execute).toHaveBeenCalledWith(
+      OPERATIONS.DOWNLOAD,
+      { tabId: 'tab_assigned', ref: 'ref_download' },
+      expect.objectContaining({ signal: expect.any(Object), onProgress: expect.any(Function) })
+    );
+    expect(JSON.parse(result.content[0].text).result.artifact).toEqual(artifact);
+    expect(result.content[0].text).not.toContain('/Users/');
+    expect(onToolProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: 'call_download', operation: OPERATIONS.DOWNLOAD })
+    );
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ artifact, status: 'succeeded' })
+    );
+  });
+
+  test('reports structured outcomes independently of Pi error rendering', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: false,
+        error: {
+          code: ERROR_CODES.TAB_NOT_FOUND,
+          message: 'Rendered wording can change',
+          retryable: false,
+        },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await expect(snapshot.execute('call_structured', {})).rejects.toThrow();
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_structured',
+      operation: OPERATIONS.SNAPSHOT,
+      status: 'failed',
+      tabId: 'tab_assigned',
+      pageId: 'tab_assigned',
+      errorCode: ERROR_CODES.TAB_NOT_FOUND,
+    });
+  });
+
+  test('tells the model not to retry a download cancelled by the user', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: false,
+        error: {
+          code: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+          message:
+            'The user cancelled this download. Do not retry it unless the user explicitly asks again.',
+          retryable: false,
+          suggestedAction: 'Acknowledge the cancellation and continue without this file.',
+        },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+    });
+    const download = tools.find((tool) => tool.name === OPERATIONS.DOWNLOAD);
+
+    await expect(download.execute('call_cancelled', { ref: 'ref_download' })).rejects.toMatchObject(
+      {
+        code: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+        retryable: false,
+        suggestedAction: expect.stringContaining('Acknowledge'),
+        message: expect.stringContaining('Do not retry'),
+      }
+    );
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_cancelled',
+        operation: OPERATIONS.DOWNLOAD,
+        status: 'failed',
+        errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+      })
+    );
+  });
+
+  test('executes a direct wallet transfer without attaching a browser tab', async () => {
+    const onToolOutcome = jest.fn();
+    const signal = new AbortController().signal;
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: true,
+        runtimeId: 'runtime_test',
+        contextId: 'context_test',
+        result: {
+          wallet: {
+            action: 'broadcast',
+            transactionHash: '0xtransaction',
+            paymentId: 'payment_test',
+            chainId: 100,
+            recipient: '0x3333333333333333333333333333333333333333',
+            amount: '0.01',
+            asset: 'GNO',
+          },
+        },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const transfer = tools.find((tool) => tool.name === OPERATIONS.WALLET_TRANSFER);
+
+    await transfer.execute(
+      'call_transfer',
+      { recipient: 'meinhard.eth', amount: '0.01', asset: 'GNO', chainId: 100 },
+      signal
+    );
+
+    expect(controller.execute).toHaveBeenCalledWith(
+      OPERATIONS.WALLET_TRANSFER,
+      { recipient: 'meinhard.eth', amount: '0.01', asset: 'GNO', chainId: 100 },
+      expect.objectContaining({ signal })
+    );
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_transfer',
+        operation: OPERATIONS.WALLET_TRANSFER,
+        status: 'succeeded',
+        wallet: expect.objectContaining({
+          transactionHash: '0xtransaction',
+          paymentId: 'payment_test',
+        }),
+      })
+    );
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('meinhard.eth');
+  });
+
+  test('inspects safe node status without attaching a browser tab', async () => {
+    const onToolOutcome = jest.fn();
+    const result = {
+      nodes: [
+        {
+          id: 'ant',
+          name: 'Swarm',
+          implementation: 'Ant',
+          protocols: ['bzz'],
+          state: 'running',
+          mode: 'bundled',
+          running: true,
+          ready: true,
+        },
+      ],
+      summary: { total: 1, ready: 1, active: 1, disabled: 0, attention: 0 },
+    };
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: true,
+        runtimeId: 'runtime_test',
+        contextId: 'context_test',
+        result,
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const status = tools.find((tool) => tool.name === OPERATIONS.NODE_STATUS);
+
+    const response = await status.execute('call_nodes', {});
+
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.NODE_STATUS, {});
+    expect(JSON.parse(response.content[0].text).result).toEqual(result);
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_nodes',
+      operation: OPERATIONS.NODE_STATUS,
+      status: 'succeeded',
+      nodeStatus: result.summary,
+    });
+  });
+
+  test('publishes through a tabless cancellable tool and exposes only the safe receipt to UI', async () => {
+    const onToolOutcome = jest.fn();
+    const onToolProgress = jest.fn();
+    const signal = new AbortController().signal;
+    const publication = {
+      publicationId: `swarm_pub_${'a'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'folder',
+      name: 'website',
+      public: true,
+      progress: 100,
+      reference: 'b'.repeat(64),
+      bzzUrl: `bzz://${'b'.repeat(64)}`,
+      verified: true,
+    };
+    const controller = {
+      execute: jest.fn(async (_operation, _input, execution) => {
+        execution.onProgress({
+          state: 'uploading',
+          progress: 25,
+          publication: {
+            ...publication,
+            state: 'uploading',
+            applicationState: 'possibly_applied',
+            progress: 25,
+            reference: undefined,
+            bzzUrl: undefined,
+            verified: undefined,
+          },
+        });
+        return { ok: true, result: { publication, summary: { publication } } };
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+      onToolProgress,
+    });
+    const publish = tools.find((tool) => tool.name === OPERATIONS.SWARM_PUBLISH);
+
+    await publish.execute(
+      'call_publish',
+      { resourceId: `folder_${'c'.repeat(20)}`, indexDocument: 'index.html' },
+      signal
+    );
+
+    expect(controller.execute).toHaveBeenCalledWith(
+      OPERATIONS.SWARM_PUBLISH,
+      { resourceId: `folder_${'c'.repeat(20)}`, indexDocument: 'index.html' },
+      expect.objectContaining({ signal, onProgress: expect.any(Function) })
+    );
+    expect(onToolProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_publish',
+        operation: OPERATIONS.SWARM_PUBLISH,
+        progress: expect.objectContaining({ progress: 25 }),
+      })
+    );
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_publish',
+        operation: OPERATIONS.SWARM_PUBLISH,
+        status: 'succeeded',
+        publication,
+      })
+    );
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('resourceId');
+  });
+
+  test('gives Pi raw diagnostic evidence while progress receives only its summary', async () => {
+    const onToolOutcome = jest.fn();
+    const diagnosticResult = {
+      scope: 'node',
+      service: 'ipfs',
+      capturedAt: '2026-08-28T10:00:00.000Z',
+      runtime: { platform: 'darwin', nodeVersion: '24.0.0' },
+      status: { id: 'ipfs', state: 'error' },
+      logs: {
+        entries: [{ text: '/Users/private/ipfs daemon failed near peer 12D3KooW' }],
+        lineCount: 1,
+        bytes: 57,
+        truncated: false,
+      },
+      summary: {
+        scope: 'node',
+        service: 'ipfs',
+        lineCount: 1,
+        bytes: 57,
+        truncated: false,
+      },
+    };
+    const controller = {
+      execute: jest.fn(async () => ({ ok: true, result: diagnosticResult })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const diagnostics = tools.find((tool) => tool.name === OPERATIONS.NODE_DIAGNOSTICS);
+
+    const response = await diagnostics.execute('call_diagnostics', {
+      service: 'ipfs',
+      maxLines: 50,
+      maxBytes: 8192,
+    });
+
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.NODE_DIAGNOSTICS, {
+      service: 'ipfs',
+      maxLines: 50,
+      maxBytes: 8192,
+    });
+    expect(JSON.parse(response.content[0].text).result).toEqual(diagnosticResult);
+    expect(response.content[0].text).toContain('/Users/private/ipfs');
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_diagnostics',
+      operation: OPERATIONS.NODE_DIAGNOSTICS,
+      status: 'succeeded',
+      diagnostic: diagnosticResult.summary,
+    });
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toMatch(/entries|private|12D3KooW/);
+  });
+
+  test('gives Pi a raw node response while progress receives only its safe receipt', async () => {
+    const onToolOutcome = jest.fn();
+    const result = {
+      service: 'ant',
+      transport: 'http',
+      effect: 'read',
+      request: { method: 'GET', path: '/health' },
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: '{"sensitiveRawNodeEvidence":true}',
+        bytes: 33,
+      },
+      summary: {
+        service: 'ant',
+        effect: 'read',
+        method: 'GET',
+        path: '/health',
+        status: 200,
+        bytes: 33,
+      },
+    };
+    const controller = { execute: jest.fn(async () => ({ ok: true, result })) };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const request = tools.find((tool) => tool.name === OPERATIONS.NODE_REQUEST);
+
+    const response = await request.execute('call_node_request', {
+      service: 'ant',
+      transport: 'http',
+      request: { method: 'GET', path: '/health' },
+    });
+
+    expect(JSON.parse(response.content[0].text).result).toEqual(result);
+    expect(response.content[0].text).toContain('sensitiveRawNodeEvidence');
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_node_request',
+        operation: OPERATIONS.NODE_REQUEST,
+        status: 'succeeded',
+      })
+    );
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('sensitiveRawNodeEvidence');
+  });
+
+  test('reports page titles but excludes URL paths and page bodies from progress receipts', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async () =>
+        successEnvelope({
+          url: 'https://accounts.example/private?token=secret#details',
+          title: 'Private account',
+          text: 'sensitive page contents',
+          elements: [],
+        })
+      ),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await snapshot.execute('call_receipt', {});
+
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_receipt',
+      operation: OPERATIONS.SNAPSHOT,
+      status: 'succeeded',
+      tabId: 'tab_assigned',
+      pageId: 'tab_assigned',
+      origin: 'https://accounts.example',
+      pageTitle: 'Private account',
+    });
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toMatch(
+      /token|secret|sensitive page contents/
+    );
+  });
+
+  test('embedded-page receipts do not replace the owning tab title or origin', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = { execute: jest.fn()
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://owner.test/a', title: 'Owner' }))
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://child.test/b', title: 'Child', readOnly: true }))
+      .mockResolvedValueOnce(successEnvelope({})) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const execute = (operation, input) => tools.find((tool) => tool.name === operation).execute(operation, input);
+    await execute(OPERATIONS.SNAPSHOT, {});
+    await execute(OPERATIONS.READ_FRAME, { frameRef: 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
+    await execute(OPERATIONS.CLICK, { ref: 'ref_owner' });
+    expect(onToolOutcome.mock.calls.map(([receipt]) => [receipt.pageTitle, receipt.origin])).toEqual([
+      ['Owner', 'https://owner.test'], ['Child', 'https://child.test'], ['Owner', 'https://owner.test'],
+    ]);
+  });
+
+  test('keeps the observed title on clicks and failures but clears it when navigating to another page', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = { execute: jest.fn()
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://example.test/a', title: 'Article A' }))
+      .mockResolvedValueOnce(successEnvelope({}))
+      .mockResolvedValueOnce({ ok: false, error: { code: ERROR_CODES.ELEMENT_NOT_FOUND, message: 'Missing' } })
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://example.test/b' }))
+      .mockResolvedValueOnce(successEnvelope({})) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const execute = (operation, id, input) => tools.find((tool) => tool.name === operation).execute(id, input);
+    await execute(OPERATIONS.SNAPSHOT, 'read', {});
+    await execute(OPERATIONS.CLICK, 'click', { ref: 'ref_1' });
+    await expect(execute(OPERATIONS.CLICK, 'failed', { ref: 'ref_2' })).rejects.toThrow();
+    await execute(OPERATIONS.NAVIGATE, 'navigate', { url: 'https://example.test/b' });
+    await execute(OPERATIONS.CLICK, 'next', { ref: 'ref_3' });
+    expect(onToolOutcome.mock.calls.map(([receipt]) => receipt.pageTitle)).toEqual([
+      'Article A', 'Article A', 'Article A', undefined, undefined,
+    ]);
+  });
+
+  test('adds bounded recovery guidance without changing envelopes, receipts or dispatch count', async () => {
+    const onToolOutcome = jest.fn();
+    const envelope = successEnvelope({ text: 'PRIVATE-PAGE-TEXT', elements: [], frames: [] });
+    const controller = { execute: jest.fn(async () => envelope) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+    let result;
+    for (let index = 0; index < 4; index += 1) result = await snapshot.execute(`read_${index}`, {});
+    expect(result.content).toHaveLength(3);
+    expect(JSON.parse(result.content[0].text)).toEqual(envelope);
+    expect(result.content[1].text).toContain('same returned browser observation');
+    expect(result.content[1].text).not.toContain('PRIVATE-PAGE-TEXT');
+    expect(result.details.envelope).toBe(envelope);
+    expect(controller.execute).toHaveBeenCalledTimes(4);
+    expect(onToolOutcome).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('PRIVATE-PAGE-TEXT');
+  });
+
+  test('error recovery guidance preserves failure codes and never repeats the operation', async () => {
+    const controller = { execute: jest.fn(async () => ({ ok: false, error: {
+      code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE, message: 'Covered', retryable: true,
+      suggestedAction: 'Read the page again',
+    } })) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned' });
+    const click = tools.find((tool) => tool.name === OPERATIONS.CLICK);
+    for (let index = 0; index < 4; index += 1) {
+      const checked = expect(click.execute(`click_${index}`, { ref: 'same' }));
+      await checked.rejects.toMatchObject({ code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE, retryable: true, suggestedAction: 'Read the page again',
+        message: index === 3 ? expect.stringContaining('same retryable error 4 times') : expect.stringContaining('[ELEMENT_NOT_INTERACTABLE] Covered') });
+    }
+    expect(controller.execute).toHaveBeenCalledTimes(4);
+  });
+
+  test('retains the canonical controller policy boundary', async () => {
+    const authorize = jest.fn(async () => ({ allowed: true }));
+    const controller = new AutomationController({
+      runtimeId: 'runtime_test',
+      contextId: 'context_test',
+      tabIdFactory: () => 'tab_assigned',
+      policyController: { authorize },
+    });
+    const adapter = {
+      getState: () => ({ url: 'https://example.test/', navigationId: 1, available: true }),
+      navigate: jest.fn(),
+      snapshot: jest.fn(async () => ({ text: 'Fixture', elements: [] })),
+      click: jest.fn(),
+      type: jest.fn(),
+      screenshot: jest.fn(),
+      wait: jest.fn(),
+      stopLoading: jest.fn(),
+    };
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await expect(snapshot.execute('call_1', {})).resolves.toMatchObject({
+      details: {
+        operation: OPERATIONS.SNAPSHOT,
+        envelope: { ok: true, result: { text: 'Fixture', elements: [] } },
+      },
+    });
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: OPERATIONS.SNAPSHOT,
+        input: { tabId: 'tab_assigned' },
+        tab: expect.objectContaining({ tabId: 'tab_assigned', kind: 'desktop' }),
+      })
+    );
+  });
+
+  test.each([
+    ERROR_CODES.POLICY_DENIED,
+    ERROR_CODES.APPROVAL_REQUIRED,
+    ERROR_CODES.STALE_ELEMENT_REFERENCE,
+  ])('converts %s envelopes into typed Pi tool failures', async (code) => {
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: false,
+        error: {
+          code,
+          message: 'Operation refused',
+          retryable: code === ERROR_CODES.STALE_ELEMENT_REFERENCE,
+          suggestedAction: 'Take a new snapshot',
+        },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await expect(snapshot.execute('call_1', {})).rejects.toMatchObject({
+      name: 'FreedomBrowserToolError',
+      code,
+      retryable: code === ERROR_CODES.STALE_ELEMENT_REFERENCE,
+      suggestedAction: 'Take a new snapshot',
+    });
+  });
+
+  test('redacts unexpected controller exceptions', async () => {
+    const controller = {
+      execute: jest.fn(async () => {
+        throw new Error('provider key or implementation secret');
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    let failure;
+    try {
+      await snapshot.execute('call_1', {});
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(FreedomBrowserToolError);
+    expect(failure).toMatchObject({ code: ERROR_CODES.INTERNAL_ERROR });
+    expect(failure.message).not.toContain('secret');
+  });
+
+  test.each([OPERATIONS.LIST_FRAMES, OPERATIONS.READ_FRAME])('cancels %s through canonical page cleanup', async (operation) => {
+    const controller = { execute: jest.fn((name) => name === operation ? new Promise(() => {}) : Promise.resolve(successEnvelope({ stopped: true }))) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned' });
+    const abort = new AbortController();
+    const execution = tools.find((tool) => tool.name === operation).execute('frame_call', { frameRef: 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, abort.signal);
+    abort.abort();
+    await expect(execution).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.STOP_LOADING, { tabId: 'tab_assigned' });
+  });
+
+  test.each(['frame_element_bound', 'visual_bound'])('cancels pending approval/input for %s', async ref => {
+    const controller = { execute: jest.fn(name => name === OPERATIONS.CLICK ? new Promise(() => {}) : Promise.resolve(successEnvelope({ stopped: true }))) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned' });
+    const abort = new AbortController();
+    const pending = tools.find(tool => tool.name === OPERATIONS.CLICK).execute('call', { ref }, abort.signal);
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.STOP_LOADING, { tabId: 'tab_assigned' });
+  });
+
+  test('cancels a blocking operation through canonical stop-loading', async () => {
+    let settleWait;
+    const controller = {
+      execute: jest.fn((operation) => {
+        if (operation === OPERATIONS.WAIT) {
+          return new Promise((resolve) => {
+            settleWait = resolve;
+          });
+        }
+        if (operation === OPERATIONS.STOP_LOADING) {
+          settleWait({
+            ok: false,
+            error: {
+              code: ERROR_CODES.USER_CANCELLED,
+              message: 'Wait cancelled',
+              retryable: false,
+            },
+          });
+          return Promise.resolve(successEnvelope({ stopped: true }));
+        }
+        return Promise.resolve(successEnvelope());
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const wait = tools.find((tool) => tool.name === OPERATIONS.WAIT);
+    const abortController = new AbortController();
+
+    const execution = wait.execute(
+      'call_1',
+      { condition: 'text', text: 'Ready' },
+      abortController.signal
+    );
+    abortController.abort();
+
+    await expect(execution).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(controller.execute).toHaveBeenNthCalledWith(1, OPERATIONS.WAIT, {
+      tabId: 'tab_assigned',
+      condition: 'text',
+      text: 'Ready',
+    }, expect.objectContaining({ signal: abortController.signal }));
+    expect(controller.execute).toHaveBeenNthCalledWith(2, OPERATIONS.STOP_LOADING, {
+      tabId: 'tab_assigned',
+    });
+  });
+
+  test('does not start an already-aborted blocking operation', async () => {
+    const controller = { execute: jest.fn() };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const navigate = tools.find((tool) => tool.name === OPERATIONS.NAVIGATE);
+    const abortController = new AbortController();
+    abortController.abort();
+
+    await expect(
+      navigate.execute('call_1', { url: 'https://example.test/' }, abortController.signal)
+    ).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(controller.execute).not.toHaveBeenCalled();
+  });
+
+  test('requires a controller and an exact pinned tab ID', async () => {
+    await expect(createFreedomBrowserTools({ sdk: createSdk(), tabId: 'tab_1' })).rejects.toThrow(
+      'require an automation controller'
+    );
+    await expect(
+      createFreedomBrowserTools({
+        sdk: createSdk(),
+        controller: { execute: jest.fn() },
+        tabId: ' tab_1 ',
+      })
+    ).rejects.toThrow('cannot contain surrounding whitespace');
+    await expect(
+      createFreedomBrowserTools({
+        sdk: createSdk(),
+        controller: { execute: jest.fn() },
+        tabId: 'tab_1',
+        visionEnabled: 'yes',
+      })
+    ).rejects.toThrow('vision capability must be a boolean');
+  });
+});
+
+
+test.each(['failed', 'timed_out', 'outcome_unknown', 'cancelled'])(
+  'page-tool %s results retain evidence and receive actionable recovery', async (status) => {
+    const envelope = successEnvelope({ status, name: 'submit', executionRef: 'page_execution_test', mayHaveChanged: true });
+    const controller = { execute: jest.fn(async () => envelope) };
+    const onToolOutcome = jest.fn();
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const result = await tools.find(tool => tool.name === OPERATIONS.CALL_PAGE_TOOL).execute('id', { toolRef: 'test', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result.details.envelope).toBe(envelope);
+    expect(result.content.at(-1).text).toContain(status === 'cancelled' ? '"action":"stop"' : 'browser_list_page_tools');
+    expect(onToolOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    expect(controller.execute).toHaveBeenCalledTimes(1);
+  }
+);

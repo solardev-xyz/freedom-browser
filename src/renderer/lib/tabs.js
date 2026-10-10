@@ -92,6 +92,59 @@ const tabState = {
   nextTabId: 1,
 };
 
+// Renderer tab currently owned by an embedded agent run. This is presentation
+// state only: the main-process automation binding remains the authority for
+// which webContents the run can control.
+let agentControlledTabId = null;
+const agentCustodyByTabId = new Map();
+let onAgentTabClaim = null;
+const agentCustodyListeners = new Set();
+const tabPresentationListeners = new Set();
+
+export const setAgentControlledTab = (tabId = null) => {
+  const nextTabId = tabState.tabs.some((tab) => tab.id === tabId) ? tabId : null;
+  if (agentControlledTabId === nextTabId) return;
+  agentControlledTabId = nextTabId;
+  renderTabs();
+};
+
+export const setAgentTabCustody = (records = []) => {
+  agentCustodyByTabId.clear();
+  if (Array.isArray(records)) {
+    for (const record of records) {
+      if (
+        Number.isSafeInteger(record?.rendererTabId) &&
+        record.rendererTabId > 0 &&
+        record.provenance === 'agent' &&
+        record.custody === 'agent'
+      ) {
+        agentCustodyByTabId.set(record.rendererTabId, { ...record });
+      }
+    }
+  }
+  renderTabs();
+  const recordsSnapshot = [...agentCustodyByTabId.values()].map((record) => ({ ...record }));
+  for (const listener of agentCustodyListeners) {
+    try {
+      listener(recordsSnapshot);
+    } catch {
+      // One renderer observer cannot break canonical tab presentation.
+    }
+  }
+};
+
+export const setAgentTabClaimHandler = (handler = null) => {
+  onAgentTabClaim = typeof handler === 'function' ? handler : null;
+};
+
+export const isTabAgentOwned = (tabId) => agentCustodyByTabId.has(tabId);
+
+export const subscribeAgentTabCustody = (listener) => {
+  if (typeof listener !== 'function') return () => {};
+  agentCustodyListeners.add(listener);
+  return () => agentCustodyListeners.delete(listener);
+};
+
 // Map of named link targets to tab IDs (e.g. "mywindow" -> 3)
 // Used to reuse tabs when links specify target="mywindow"
 const namedTargets = new Map();
@@ -122,9 +175,12 @@ const pushTabMenuState = () => {
 
 // DOM elements (initialized in initTabs)
 let tabBar = null;
+let tabBarHome = null;
 let newTabBtn = null;
 let webviewContainer = null;
 let tabContextMenu = null;
+let projectedTabIds = null;
+let projectedActiveTabId = null;
 
 // Context menu state
 let contextMenuTabId = null;
@@ -196,12 +252,28 @@ export const getActiveTab = () => {
 
 // Get all open tabs (for autocomplete)
 export const getOpenTabs = () => {
-  return tabState.tabs.map((tab) => ({
+  return tabState.tabs.filter((tab) => tab.kind !== 'workspace-viewer').map((tab) => ({
     id: tab.id,
     url: tab.url,
     title: tab.title,
+    favicon: tab.favicon || '',
+    isLoading: tab.isLoading === true,
     isActive: tab.id === tabState.activeTabId,
   }));
+};
+
+// Presentation includes non-page viewers; browser/autocomplete projections above do not.
+export const getTabPresentation = () => tabState.tabs.map((tab) => ({
+  id: tab.id, url: tab.url, title: tab.title, favicon: tab.favicon || '',
+  isLoading: tab.isLoading === true, isActive: tab.id === tabState.activeTabId,
+  ...(tab.kind === 'workspace-viewer' ? { kind: tab.kind, conversationId: tab.conversationId } : {}),
+}));
+
+export const subscribeTabPresentation = (listener) => {
+  if (typeof listener !== 'function') return () => {};
+  tabPresentationListeners.add(listener);
+  listener(getTabPresentation());
+  return () => tabPresentationListeners.delete(listener);
 };
 
 // Get the webview of the currently active tab
@@ -938,6 +1010,14 @@ const createWebview = (tabId, initialUrl) => {
       }
     },
     'dom-ready': () => {
+      try {
+        const guestWebContentsId = webview.getWebContentsId?.();
+        if (Number.isInteger(guestWebContentsId) && guestWebContentsId > 0) {
+          electronAPI?.bindAutomationTab?.(tabId, guestWebContentsId);
+        }
+      } catch {
+        // The guest may be tearing down between dom-ready and the ID lookup.
+      }
       // Re-apply the tab-level mute flag once the webview is attached and
       // ready. Covers mutes toggled before attach (races right after
       // createTab) — webview methods throw until the guest is live, so
@@ -1099,6 +1179,8 @@ const isInternalPageUrl = (url) => {
   return Boolean(base) && url.startsWith(base);
 };
 
+const DOCUMENT_ICON_SVG = '<svg class="tab-icon-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h6"/></svg>';
+
 // Loading spinner (same style as address bar)
 const SPINNER_HTML = `<span class="tab-icon-spinner"></span>`;
 
@@ -1128,7 +1210,7 @@ const createTabElement = (tab) => {
   iconContainer.className = 'tab-icon-container';
 
   // Add default globe icon and spinner first (via innerHTML)
-  iconContainer.innerHTML = GLOBE_ICON_SVG + SPINNER_HTML;
+  iconContainer.innerHTML = (tab.kind === 'workspace-viewer' ? DOCUMENT_ICON_SVG : GLOBE_ICON_SVG) + SPINNER_HTML;
 
   // Favicon image (hidden by default) - append after innerHTML to preserve element
   const faviconEl = document.createElement('img');
@@ -1159,6 +1241,18 @@ const createTabElement = (tab) => {
     toggleMuteTab(tab.id);
   });
   tabEl.appendChild(audioBtn);
+
+  const agentBadge = document.createElement('button');
+  agentBadge.type = 'button';
+  agentBadge.className = 'tab-agent-badge';
+  agentBadge.dataset.test = 'tab-agent-badge';
+  agentBadge.textContent = 'Agent';
+  agentBadge.title = 'Agent-owned tab — click to claim';
+  agentBadge.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (agentCustodyByTabId.has(tab.id)) onAgentTabClaim?.(tab.id);
+  });
+  tabEl.appendChild(agentBadge);
 
   // Tab title
   const titleEl = document.createElement('span');
@@ -1300,6 +1394,23 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   tabEl.classList.toggle('active', isActive);
   tabEl.classList.toggle('before-active', isBeforeActive);
   tabEl.classList.toggle('pinned', !!tab.pinned);
+  tabEl.classList.toggle('workspace-viewer-tab', tab.kind === 'workspace-viewer');
+  tabEl.title = tab.kind === 'workspace-viewer' ? `${tab.title} — read-only workspace viewer` : tab.title || 'New Tab';
+  tabEl.classList.toggle('agent-owned', agentCustodyByTabId.has(tab.id));
+  tabEl.classList.toggle('agent-controlled', tab.id === agentControlledTabId);
+
+  const agentBadge = tabEl.querySelector('.tab-agent-badge');
+  if (agentBadge) {
+    agentBadge.disabled = !agentCustodyByTabId.has(tab.id);
+    agentBadge.title =
+      agentCustodyByTabId.has(tab.id)
+        ? tab.id === agentControlledTabId
+          ? 'Agent is controlling this tab — click to take over'
+          : 'Agent-owned tab — click to claim'
+        : tab.id === agentControlledTabId
+          ? 'Agent is controlling this user tab'
+          : '';
+  }
 
   // Update icon container state (loading, favicon, or default)
   const iconContainer = tabEl.querySelector('.tab-icon-container');
@@ -1427,6 +1538,7 @@ const renderTabs = () => {
 
     // Update the element state
     updateTabElement(tabEl, tab, isActive, isBeforeActive);
+    tabEl.hidden = projectedTabIds !== null && !projectedTabIds.has(tab.id);
 
     // Ensure correct DOM order
     const expectedNextSibling = previousSibling ? previousSibling.nextSibling : tabBar.firstChild;
@@ -1440,13 +1552,54 @@ const renderTabs = () => {
 
     previousSibling = tabEl;
   });
+  const presentation = getTabPresentation();
+  for (const listener of tabPresentationListeners) {
+    try {
+      listener(presentation);
+    } catch {
+      // Presentation observers cannot interrupt browser tab rendering.
+    }
+  }
+  if (projectedTabIds !== null) {
+    const activeTabElement = projectedTabIds.has(tabState.activeTabId)
+      ? tabElements.get(tabState.activeTabId)
+      : null;
+    if (activeTabElement && projectedActiveTabId !== tabState.activeTabId) {
+      activeTabElement.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    }
+    projectedActiveTabId = activeTabElement ? tabState.activeTabId : null;
+  } else {
+    projectedActiveTabId = null;
+  }
 
   // Adding or removing a tab changes whether the strip overflows.
   updateTabStripOverflow();
 };
 
+// Agent-first changes where the canonical tab strip is presented and which
+// conversation-owned tabs are visible; it does not create a second tab UI.
+// Moving the existing strip preserves close/mute/context-menu/reorder behavior
+// and every future tab interaction automatically in both layouts.
+export const setTabStripProjection = ({ container = null, tabIds = null } = {}) => {
+  if (!tabBar) return;
+  if (container) {
+    const nextIds = new Set(Array.isArray(tabIds) ? tabIds.filter(Number.isSafeInteger) : []);
+    if (tabBar.parentNode === container && projectedTabIds?.size === nextIds.size && [...nextIds].every((id) => projectedTabIds.has(id))) return;
+    container.appendChild(tabBar);
+    projectedActiveTabId = null;
+    projectedTabIds = new Set(
+      Array.isArray(tabIds) ? tabIds.filter((tabId) => Number.isSafeInteger(tabId)) : []
+    );
+  } else {
+    tabBarHome?.prepend(tabBar);
+    projectedTabIds = null;
+  }
+  renderTabs();
+};
+
 // URLs `createTab` is allowed to load directly as the initial webview
-// `src`. Everything else — dweb schemes, hostile `file://`/`data:`/
+// `src`. The opaque Freedom preview form is generated only by the trusted
+// workspace controller. Everything else — dweb schemes, hostile `file://`/`data:`/
 // `javascript:`, anything we don't recognise — is parked on
 // `about:blank` and dispatched to `loadTarget`, which routes the
 // schemes it understands and silently drops the rest. This narrow
@@ -1457,6 +1610,7 @@ const isDirectLoadUrl = (url) => {
   if (!url) return true;
   if (url === 'about:blank') return true;
   if (url === homeUrl) return true;
+  if (/^freedom-preview:\/\/[a-f0-9]{20,128}\//i.test(url)) return true;
   return /^https?:\/\//i.test(url);
 };
 
@@ -1508,7 +1662,8 @@ const whenWebviewAttached = (webview, fn) => {
 // skipped. Everything else opens in the foreground, as before.
 export const createTab = (url = null, options = {}) => {
   const tabId = tabState.nextTabId++;
-  // Direct loads: empty/null (use homeUrl), http(s), about:blank, and
+  // Direct loads: empty/null (use homeUrl), http(s), isolated workspace preview,
+  // about:blank, and
   // the app's own `homeUrl` (production: file:///…/pages/home.html).
   // Anything else parks on about:blank while `onLoadTarget` resolves
   // it — this keeps dweb URLs working (their resolution pipeline takes
@@ -1580,6 +1735,24 @@ export const createTab = (url = null, options = {}) => {
   }
 
   pushDebug(`Created tab ${tabId}`);
+  return tab;
+};
+
+// Trusted renderer-only surface. No URL, webContents, preload/provider setup,
+// automation binding, or persisted page/closed-tab history is created here.
+export const createWorkspaceViewerTab = ({ key, conversationId, title, content, onClose }) => {
+  if (typeof conversationId !== 'string' || !conversationId || typeof key !== 'string' ||
+      typeof title !== 'string' || !content || content.tagName !== 'SECTION') throw new Error('Invalid workspace viewer');
+  const existing = tabState.tabs.find((tab) => tab.kind === 'workspace-viewer' && tab.viewerKey === key && tab.conversationId === conversationId);
+  if (existing) { switchTab(existing.id); return existing; }
+  if (tabState.tabs.filter((tab) => tab.kind === 'workspace-viewer').length >= 12) throw new Error('Close a workspace viewer before opening another.');
+  const tab = { id: tabState.nextTabId++, kind: 'workspace-viewer', viewerKey: key, conversationId,
+    title, url: '', webview: null, content, onClose, navigationState: createNavigationState() };
+  content.classList.add('workspace-viewer-surface');
+  content.tabIndex = -1;
+  tabState.tabs.push(tab);
+  webviewContainer?.appendChild(content);
+  switchTab(tab.id);
   return tab;
 };
 
@@ -1659,7 +1832,9 @@ export const closeTab = (tabId) => {
   // Remove event listeners before removing webview (prevents memory leak)
   cleanupWebview(tab.webview);
 
-  // Remove webview from DOM
+  // Remove the owned surface and invalidate any pending viewer read.
+  tab.onClose?.();
+  tab.content?.remove();
   tab.webview?.remove();
 
   // Remove tab element from DOM and map
@@ -1690,7 +1865,8 @@ export const closeTab = (tabId) => {
     } else {
       // No more tabs - close window via IPC
       tabState.activeTabId = null;
-      electronAPI?.closeWindow?.();
+      if (tab.kind === 'workspace-viewer') createTab(defaultNewTabUrl());
+      else electronAPI?.closeWindow?.();
     }
   }
 
@@ -1819,7 +1995,10 @@ const showContextMenu = (x, y, tabId) => {
   const muteBtn = tabContextMenu.querySelector('[data-action="mute"]');
   if (muteBtn) {
     muteBtn.textContent = tab.isMuted ? 'Unmute Tab' : 'Mute Tab';
+    muteBtn.hidden = tab.kind === 'workspace-viewer';
   }
+  const claimBtn = tabContextMenu.querySelector('[data-action="claim-agent-tab"]');
+  if (claimBtn) claimBtn.hidden = !agentCustodyByTabId.has(tab.id);
 
   // Disable "Close Tabs to the Right" if there are no tabs to the right (excluding pinned)
   const tabIndex = tabState.tabs.findIndex((t) => t.id === tabId);
@@ -1910,10 +2089,11 @@ export const switchTab = (tabId, options = {}) => {
     }
   }
 
-  // Update active webview for dApp provider
-  if (tab.webview) {
-    setActiveWebview(tab.webview);
-  }
+  for (const t of tabState.tabs) t.content?.classList.toggle('hidden', t.id !== tabId);
+  document.body.classList.toggle('workspace-viewer-active', tab.kind === 'workspace-viewer');
+  // Clear the prior guest context when displaying renderer-owned content.
+  setActiveWebview(tab.webview || null);
+  tab.content?.focus?.();
 
   // Give the page keyboard focus, the way Chrome does on every tab
   // activation (click, Ctrl+Tab, Ctrl+1..8, the tab promoted when another
@@ -1954,7 +2134,7 @@ export const switchTab = (tabId, options = {}) => {
   const tabHasAddressBarEdit = typeof tab.navigationState?.addressBarPendingInput === 'string';
   const tabIsOnNewTabPage =
     !tabHasAddressBarEdit && isNewTabPageUrl(tab.url || tab.navigationState?.currentPageUrl || '');
-  if (!options.isNewTab && !tabHasAddressBarEdit && !tabIsOnNewTabPage) {
+  if (options.focus !== false && !options.isNewTab && !tabHasAddressBarEdit && !tabIsOnNewTabPage) {
     tab.webview?.focus?.();
   }
 
@@ -1972,6 +2152,7 @@ export const switchTab = (tabId, options = {}) => {
       tabId,
       tab,
       isNewTab: options.isNewTab || false,
+      focus: options.focus !== false,
       fromAddressBarCommit: options.fromAddressBarCommit || false,
     });
   }
@@ -2292,6 +2473,7 @@ export const openOrFocusInternalPage = (pageName, subPath = null, options = {}) 
 export const initTabs = async () => {
   // Initialize DOM elements
   tabBar = document.getElementById('tab-bar');
+  tabBarHome = tabBar?.parentNode || null;
   newTabBtn = document.getElementById('new-tab-btn');
   webviewContainer = document.getElementById('webview-container');
   tabContextMenu = document.getElementById('tab-context-menu');
@@ -2327,6 +2509,9 @@ export const initTabs = async () => {
           break;
         case 'mute':
           toggleMuteTab(targetTabId);
+          break;
+        case 'claim-agent-tab':
+          if (agentCustodyByTabId.has(contextMenuTabId)) onAgentTabClaim?.(contextMenuTabId);
           break;
       }
       hideTabContextMenu();
@@ -2502,6 +2687,7 @@ export const initTabs = async () => {
   });
 
   electronAPI?.onFocusAddressBar?.(() => {
+    if (getActiveTab()?.kind === 'workspace-viewer') { createTab(); return; }
     const addressInput = document.getElementById('address-input');
     if (addressInput) {
       addressInput.focus();
@@ -2575,6 +2761,7 @@ export const initTabs = async () => {
     // Focus address bar
     if (matchesShortcut(event, 'view.focusAddressBar')) {
       event.preventDefault();
+      if (getActiveTab()?.kind === 'workspace-viewer') { createTab(); return; }
       const addressInput = document.getElementById('address-input');
       if (addressInput) {
         addressInput.focus();

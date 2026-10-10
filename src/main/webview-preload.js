@@ -596,6 +596,8 @@ function mintUuidV4() {
 const IS_PRIVATE_WINDOW = WEBVIEW_BOOT
   ? WEBVIEW_BOOT.isPrivate
   : ipcRenderer.sendSync('private:is-private') === true;
+const IS_ISOLATED_PREVIEW = location.protocol === 'freedom-preview:';
+const PROVIDERS_ENABLED = !IS_PRIVATE_WINDOW && !IS_ISOLATED_PREVIEW;
 
 // The webview preload runs in a sandbox — require() is restricted to a small
 // whitelist (electron, events, timers, url), so we cannot read provider
@@ -612,7 +614,7 @@ function ethereumInjectSource() {
   );
   return `window.__FREEDOM_PROVIDER_CONFIG__ = ${info};\n${WEBVIEW_BOOT.ethereum.source}`;
 }
-const ETHEREUM_INJECT_SOURCE = IS_PRIVATE_WINDOW ? '' : ethereumInjectSource();
+const ETHEREUM_INJECT_SOURCE = PROVIDERS_ENABLED ? ethereumInjectSource() : '';
 
 // Internal pages list — canonical source is src/shared/internal-pages.json,
 // handed over with the boot switch (sync IPC as the fallback) so preloads
@@ -1599,7 +1601,7 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 //
 // PRIVATE MODE GUARD (providers): skipped entirely in private windows —
 // no injection, no bridges. Nothing announces via EIP-6963.
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   try {
     // Preloads finish before Chromium executes the document's inline scripts.
     // Execute Freedom's trusted provider source synchronously in the page's
@@ -1794,7 +1796,7 @@ try {
   // Internal pages don't get it either: they talk to main through freedomAPI,
   // and their CSP (`script-src 'self'`, #432) refuses this inline <script>, so
   // injecting it there would only log a violation.
-  if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
+  if (PROVIDERS_ENABLED && !isInternalPage()) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
     } else {
@@ -1805,7 +1807,7 @@ try {
   console.error('[webview-preload] Failed to inject swarm provider:', err);
 }
 
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   // Bridge postMessage from page to IPC (Swarm)
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -1959,7 +1961,7 @@ try {
   // PRIVATE MODE GUARD (providers): window.radicle is not injected in
   // private windows — same policy as window.ethereum / window.swarm above.
   // Skipped on internal pages for the same reason as window.swarm (#432).
-  if (!IS_PRIVATE_WINDOW && !isInternalPage()) {
+  if (PROVIDERS_ENABLED && !isInternalPage()) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectRadicle, { once: true });
     } else {
@@ -1970,7 +1972,7 @@ try {
   console.error('[webview-preload] Failed to inject radicle provider:', err);
 }
 
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   // Bridge postMessage from page to IPC (Radicle)
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -2199,5 +2201,7 @@ if (!IS_PRIVATE_WINDOW) {
 console.log(
   IS_PRIVATE_WINDOW
     ? '[webview-preload] Loaded (freedomAPI + context menu — private window, providers disabled)'
-    : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
+    : IS_ISOLATED_PREVIEW
+      ? '[webview-preload] Loaded (context menu — isolated preview, providers disabled)'
+      : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
 );

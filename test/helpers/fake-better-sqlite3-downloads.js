@@ -16,14 +16,16 @@ const matchesLike = (value, pattern) =>
 
 const INSERT_NORM = norm(`INSERT INTO downloads (
   url, filename, save_path, mime_type, total_bytes, received_bytes,
-  state, start_time, end_time, is_private, session_partition
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  state, start_time, end_time, is_private, session_partition,
+  artifact_id, agent_conversation_id, destination_kind
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
 const UPDATE_NORM = norm(`UPDATE downloads SET
   received_bytes = COALESCE(?, received_bytes),
   total_bytes    = COALESCE(?, total_bytes),
   state          = COALESCE(?, state),
   save_path      = COALESCE(?, save_path),
+  filename       = COALESCE(?, filename),
   end_time       = COALESCE(?, end_time)
 WHERE id = ?`);
 
@@ -33,6 +35,10 @@ const SEARCH_NORM = norm(`SELECT * FROM downloads
   ORDER BY start_time DESC
   LIMIT ?`);
 const GET_BY_ID_NORM = norm(`SELECT * FROM downloads WHERE id = ?`);
+const GET_BY_ARTIFACT_ID_NORM = norm(`SELECT * FROM downloads WHERE artifact_id = ?`);
+const GET_BY_AGENT_CONVERSATION_NORM = norm(`SELECT * FROM downloads
+  WHERE agent_conversation_id = ?
+  ORDER BY start_time DESC`);
 const REMOVE_NORM = norm(`DELETE FROM downloads WHERE id = ?`);
 const CLEAR_NORM = norm(`DELETE FROM downloads WHERE state != 'in_progress'`);
 const SWEEP_NORM = norm(
@@ -84,7 +90,10 @@ class FakeBetterSqlite3DownloadsDatabase {
           startTime,
           endTime,
           isPrivate,
-          sessionPartition
+          sessionPartition,
+          artifactId,
+          agentConversationId,
+          destinationKind
         ) => {
           const row = {
             id: this.nextId++,
@@ -99,6 +108,9 @@ class FakeBetterSqlite3DownloadsDatabase {
             end_time: endTime,
             is_private: isPrivate,
             session_partition: sessionPartition,
+            artifact_id: artifactId,
+            agent_conversation_id: agentConversationId,
+            destination_kind: destinationKind,
           };
           this.rows.push(row);
           return { changes: 1, lastInsertRowid: row.id };
@@ -108,7 +120,7 @@ class FakeBetterSqlite3DownloadsDatabase {
 
     if (normalized === UPDATE_NORM) {
       return {
-        run: (receivedBytes, totalBytes, state, savePath, endTime, id) => {
+        run: (receivedBytes, totalBytes, state, savePath, filename, endTime, id) => {
           const row = this.rows.find((r) => r.id === id);
           if (!row) return { changes: 0 };
           if (receivedBytes !== null && receivedBytes !== undefined)
@@ -116,6 +128,7 @@ class FakeBetterSqlite3DownloadsDatabase {
           if (totalBytes !== null && totalBytes !== undefined) row.total_bytes = totalBytes;
           if (state !== null && state !== undefined) row.state = state;
           if (savePath !== null && savePath !== undefined) row.save_path = savePath;
+          if (filename !== null && filename !== undefined) row.filename = filename;
           if (endTime !== null && endTime !== undefined) row.end_time = endTime;
           return { changes: 1 };
         },
@@ -141,6 +154,19 @@ class FakeBetterSqlite3DownloadsDatabase {
 
     if (normalized === GET_BY_ID_NORM) {
       return { get: (id) => cloneRow(this.rows.find((r) => r.id === id)) };
+    }
+
+    if (normalized === GET_BY_ARTIFACT_ID_NORM) {
+      return { get: (artifactId) => cloneRow(this.rows.find((r) => r.artifact_id === artifactId)) };
+    }
+
+    if (normalized === GET_BY_AGENT_CONVERSATION_NORM) {
+      return {
+        all: (conversationId) =>
+          this.sortedRows()
+            .filter((row) => row.agent_conversation_id === conversationId)
+            .map(cloneRow),
+      };
     }
 
     if (normalized === REMOVE_NORM) {

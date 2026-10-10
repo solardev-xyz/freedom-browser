@@ -608,6 +608,9 @@ jobs:
   # #319 lesson: specs no job listed shipped their regressions green). Keep
   # the `e2e-not-in-ci:` prefix; the guard reads these lines.
   #
+  # e2e-not-in-ci: agent-ollama-live.spec.js — requires an explicitly configured local Ollama model; exercised manually
+  # e2e-not-in-ci: claude-subscription.spec.js — opt-in qualification with a locally authenticated Claude subscription
+  # e2e-not-in-ci: claude-subscription-spike.spec.js — opt-in experiment using an authenticated local Claude subscription; no account credentials in CI
   # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
@@ -1125,6 +1128,91 @@ jobs:
   # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
   # and the download shelf, whose dismissed card must stay dismissed for the
   # rest of the transfer (`downloads`, #309).
+  # Native Agent qualification uses macOS's real workspace sandbox.
+  e2e-agent:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+      - name: Run agent E2E
+        run: |
+          npm run test:e2e -- \
+            test-e2e/agent-cancellation.spec.js \
+            test-e2e/agent-evaluation.spec.js \
+            test-e2e/agent-product-qualification.spec.js \
+            test-e2e/agent-sidebar.spec.js \
+            test-e2e/agent-mcp.spec.js \
+            test-e2e/custom-provider.spec.js \
+            test-e2e/pdf-processor.spec.js \
+            test-e2e/workspace-viewers.spec.js
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-agent-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Native Agent qualification uses macOS's real workspace sandbox.
+  e2e-automation:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
+      - name: Run automation E2E
+        run: |
+          npm run test:e2e -- \
+            test-e2e/automation-dialog.spec.js \
+            test-e2e/automation-frame-interaction.spec.js \
+            test-e2e/automation-frame-observation.spec.js \
+            test-e2e/automation-frame-prototype.spec.js \
+            test-e2e/automation-kernel.spec.js \
+            test-e2e/automation-native-dialog.spec.js \
+            test-e2e/automation-observation.spec.js \
+            test-e2e/automation-page-tools.spec.js \
+            test-e2e/automation-recovery.spec.js \
+            test-e2e/automation-runtime.spec.js \
+            test-e2e/automation-visual-interaction.spec.js \
+            test-e2e/automation-visual-prototype.spec.js \
+            test-e2e/freedom-cli.spec.js
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-automation-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   e2e-chrome:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -1809,6 +1897,8 @@ jobs:
     needs:
       [
         code-changed,
+        e2e-agent,
+        e2e-automation,
         e2e-adblock,
         e2e-address-bar-clipboard,
         e2e-address-bar-ens,

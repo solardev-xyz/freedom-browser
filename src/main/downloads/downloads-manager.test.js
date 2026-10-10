@@ -228,6 +228,161 @@ describe('downloads-manager', () => {
     );
   });
 
+  test('attributes a controlled download and returns a path-free verified artifact receipt', async () => {
+    const mod = loadManager();
+    const item = new FakeDownloadItem({
+      url: 'https://files.example/report.pdf?token=secret',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      totalBytes: 5,
+    });
+    const extraItem = new FakeDownloadItem({
+      url: 'https://files.example/unrequested.bin',
+      filename: 'unrequested.bin',
+    });
+    const sourceWebContents = {
+      hostWebContents: { id: 42 },
+      isDestroyed: () => false,
+    };
+    const progress = jest.fn();
+
+    const result = await mod.runControlledDownload({
+      pageAdapter: { webContents: sourceWebContents },
+      conversationId: 'conversation_download',
+      onProgress: progress,
+      trigger: async () => {
+        session.emit('will-download', {}, item, sourceWebContents);
+        session.emit('will-download', {}, extraItem, sourceWebContents);
+        fs.writeFileSync(item.getSavePath(), 'hello');
+        item.receivedBytes = 5;
+        item.emit('done', {}, 'completed');
+      },
+    });
+
+    expect(result.artifact).toEqual({
+      artifactId: expect.stringMatching(/^artifact_[a-f0-9]{20}$/),
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      bytes: 5,
+      state: 'completed',
+      sourceOrigin: 'https://files.example',
+      location: 'downloads',
+      available: true,
+    });
+    expect(JSON.stringify(result)).not.toContain(downloadsDir);
+    expect(JSON.stringify(result)).not.toContain('token=secret');
+    expect(extraItem.cancel).toHaveBeenCalledTimes(1);
+    expect(mod.listAgentDownloads('conversation_download')).toEqual([result.artifact]);
+    await expect(
+      ipcMain.invoke(IPC.DOWNLOADS_OPEN_ARTIFACT, result.artifact.artifactId)
+    ).resolves.toEqual({ success: true });
+    expect(shell.openPath).toHaveBeenCalledWith(item.getSavePath());
+    expect(progress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: 'completed', receipt: result.artifact })
+    );
+  });
+
+  test('cancels active downloads owned by a stopped Agent conversation', async () => {
+    const mod = loadManager();
+    const item = new FakeDownloadItem({
+      url: 'https://files.example/large.bin',
+      filename: 'large.bin',
+      totalBytes: 10_000,
+    });
+    const sourceWebContents = {
+      hostWebContents: { id: 42 },
+      isDestroyed: () => false,
+    };
+    const pending = mod.runControlledDownload({
+      pageAdapter: { webContents: sourceWebContents },
+      conversationId: 'conversation_download',
+      trigger: async () => session.emit('will-download', {}, item, sourceWebContents),
+    });
+    await Promise.resolve();
+
+    expect(mod.cancelAgentDownloads('conversation_download')).toBe(1);
+    expect(item.cancel).toHaveBeenCalledTimes(1);
+    item.emit('done', {}, 'cancelled');
+    await expect(pending).rejects.toMatchObject({ code: 'USER_CANCELLED' });
+  });
+
+  test('blocks unsolicited Agent downloads and releases ordinary downloads after control ends', () => {
+    const mod = loadManager();
+    const source = { hostWebContents: { id: 42 }, isDestroyed: () => false };
+    mod.setControlledPage(source, true);
+    const blocked = new FakeDownloadItem({ url: 'https://files.example/report', filename: 'report.txt' });
+    session.emit('will-download', {}, blocked, source);
+    expect(blocked.cancel).toHaveBeenCalledTimes(1);
+    expect(mod.takeBlockedDownload(source)).toMatchObject({ code: 'APPROVAL_REQUIRED' });
+    mod.setControlledPage(source, false);
+    const ordinary = new FakeDownloadItem({ url: 'https://files.example/report', filename: 'report.txt' });
+    session.emit('will-download', {}, ordinary, source);
+    expect(ordinary.cancel).not.toHaveBeenCalled();
+    ordinary.emit('done', {}, 'cancelled');
+  });
+
+  test('refuses a different download substituted while an approved target is armed', async () => {
+    const mod = loadManager();
+    const source = { hostWebContents: { id: 42 }, isDestroyed: () => false };
+    const item = new FakeDownloadItem({ url: 'https://files.example/other', filename: 'other.exe' });
+    await expect(mod.runControlledDownload({ pageAdapter: { webContents: source }, conversationId: 'conversation_download',
+      expectedUrl: 'https://files.example/report', trigger: async () => session.emit('will-download', {}, item, source),
+    })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+    expect(item.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports a shelf cancellation as an explicit user decision without an artifact', async () => {
+    const mod = loadManager();
+    const item = new FakeDownloadItem({
+      url: 'https://files.example/large.iso',
+      filename: 'large.iso',
+      totalBytes: 6_000_000_000,
+    });
+    const sourceWebContents = {
+      hostWebContents: { id: 42 },
+      isDestroyed: () => false,
+    };
+    const progress = jest.fn();
+    const pending = mod.runControlledDownload({
+      pageAdapter: { webContents: sourceWebContents },
+      conversationId: 'conversation_download',
+      onProgress: progress,
+      trigger: async () => session.emit('will-download', {}, item, sourceWebContents),
+    });
+    await Promise.resolve();
+
+    const [row] = await ipcMain.invoke(IPC.DOWNLOADS_GET, {});
+    await expect(ipcMain.invoke(IPC.DOWNLOADS_CANCEL, row.id)).resolves.toBe(true);
+    expect(item.cancel).toHaveBeenCalledTimes(1);
+    item.emit('done', {}, 'cancelled');
+
+    await expect(pending).rejects.toMatchObject({
+      code: 'DOWNLOAD_CANCELLED_BY_USER',
+      retryable: false,
+      suggestedAction: expect.stringContaining('Do not retry'),
+    });
+    expect(progress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: 'cancelled' })
+    );
+    expect(progress.mock.calls.at(-1)[0]).not.toHaveProperty('receipt');
+  });
+
+  test('reports active download transitions for runtime idle accounting', () => {
+    const mod = loadManager();
+    const activity = [];
+    const unsubscribe = mod.onDownloadActivity((activeCount) => activity.push(activeCount));
+    const item = startDownload({
+      url: 'https://example.com/runtime.bin',
+      filename: 'runtime.bin',
+      totalBytes: 10,
+    });
+    expect(mod.getActiveDownloadCount()).toBe(1);
+    item.emit('done', {}, 'completed');
+    expect(mod.getActiveDownloadCount()).toBe(0);
+    expect(activity).toEqual([1, 0]);
+    expect(unsubscribe()).toBe(true);
+  });
+
   test('sanitizes a hostile suggested filename before choosing the save path', () => {
     loadManager();
 

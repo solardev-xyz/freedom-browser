@@ -1,0 +1,407 @@
+# Freedom Agent Linux workspace sandbox spike
+
+Date: 2026-09-01
+Status: isolated experiment on `experiment/agent-workspace-sandbox`
+Initial target: Ubuntu 24.04 x86-64 with distribution Bubblewrap
+
+## Decision summary
+
+The Linux boundary is credible enough to continue evaluating the shared execution-policy contract, but it is not product-ready. Bubblewrap can enforce the intended default filesystem, PID, IPC, UTS, user, cgroup-namespace, and network view before an arbitrary command starts, and the focused adversarial corpus demonstrates useful Node/npm-style execution without access to ordinary host data or services.
+
+Productization remains blocked on two items that Bubblewrap does not supply by itself:
+
+1. reviewed aggregate PID and memory containment through cgroup v2; and
+2. a reviewed custom seccomp policy, or an explicit security decision documenting why one is unnecessary for the supported workload.
+
+The spike deliberately contains no Pi tool, IPC, Workspace UI, preview server, publication adapter, or approval flow. The only new command-line entry point is a repository-local qualification script.
+
+## Threat model
+
+### Protected assets
+
+- Files outside the one Freedom-managed project workspace.
+- The host home directory, other projects, credentials, SSH agents, Git credential stores, browser/Freedom profiles, wallet data, node data, and reusable caches.
+- Host processes, local services, D-Bus, display servers, container engines, browser debugging sockets, and unrelated Unix sockets.
+- Workspace metadata that can persist execution authority, initially `.git` and its resolved external gitdir.
+- Host availability, bounded only partially in this checkpoint.
+
+### Attacker
+
+The command, shell scripts, generated programs, their complete descendant process tree, and all stdout/stderr are untrusted. The attacker may use shell indirection, Python, Node, encoded paths, symlinks, subprocesses, sockets, environment inspection, inherited-descriptor guesses, and deliberate cancellation races. Command text is not inspected or classified.
+
+Trusted components are the caller that selects the workspace, the normalized policy validator, the Bubblewrap argument generator, the distribution Bubblewrap binary, and the Linux kernel/AppArmor configuration. A future model-facing surface must refer to the workspace and operation by opaque IDs; it must not accept canonical host paths from the model.
+
+### Security goals
+
+- Apply isolation before any untrusted command begins and retain it for every descendant.
+- Expose only the selected workspace read/write, protected metadata read-only, a fresh bounded private `/tmp`, a bounded `/dev/shm`, a minimal host toolchain read-only, a fresh read-only `/proc`, and a minimal read-only `/dev` root.
+- Leave `/home`, `/root`, `/run`, `/sys`, the host `/tmp`, session/display buses, and arbitrary host paths absent.
+- Provide no external network, host loopback, DNS, or host-local abstract Unix sockets.
+- Construct the environment from an allowlist after `--clearenv`.
+- Close inherited file descriptors, including the launcher-owned status pipe, in trusted setup before command execution.
+- Fail closed when Bubblewrap, user namespaces, a protected mount, a required limit, or another requested policy property cannot be enforced.
+- Distinguish completed, failed, cancelled, timed-out, and sandbox-denied receipts.
+
+### Explicit non-goals and residual trust
+
+- This is not a kernel-escape boundary against a vulnerability in Linux namespaces, mount handling, or another exposed syscall.
+- It does not protect against a separate, same-UID trusted host process concurrently changing the workspace. Freedom-managed workspace ownership and lifecycle must exclude that race in the product design.
+- Aggregate CPU, memory, PID-count, workspace-disk, and file-size limits are represented but not yet enforced. Required requests fail closed. The two writable tmpfs mounts have fixed capacity limits, but those limits are not an aggregate memory controller; workspace disk exhaustion and fork/memory bombs remain outside the ordinary corpus.
+- An experimental `full` posture is implemented for qualification but remains outside product authority. It uses Bubblewrap's host network namespace and therefore combines public internet, host loopback, private/LAN IP connectivity, and host abstract Unix-socket reachability. Reserved `brokered` and partial-network requests fail as unsupported.
+- There is no setuid Bubblewrap path or unsandboxed fallback.
+- Linux `/proc/*/mountinfo` reveals the backing path of bind mounts, including the canonical workspace path. Opaque IDs keep that path out of the API, but they do not make it confidential from a command already running inside the workspace. Avoid placing secrets in managed-project path components; eliminating this disclosure would require a different storage/mount design or a materially reduced `/proc` view.
+- Workspace contents remain hostile after execution. Trusted preview, publication, indexing, attachment, and VCS consumers must use bounded `lstat`-first traversal, reject symlinks and special files, and never execute workspace-controlled hooks. The sandbox boundary does not make later host-side traversal safe.
+
+## Backend-neutral policy contract
+
+`createWorkspaceExecutionPolicy()` resolves and freezes this small contract:
+
+| Policy area          | Current contract and semantics                                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Readable roots       | Exact canonical workspace root plus backend-selected system/toolchain roots. The capability/launch plan records the concrete Linux paths.                                                                                                        |
+| Writable roots       | Exactly one canonical Freedom-managed workspace mounted as `/workspace`.                                                                                                                                                                         |
+| Protected carve-outs | Relative workspace paths with deny/read-only precedence. `.git` is required, resolved, and mounted read-only after the writable workspace mount. External metadata is denied unless trusted lifecycle state authorizes its exact canonical path. |
+| Temporary storage    | Fresh 256 MiB tmpfs `/tmp` for every execution, with private home/config/cache/data directories beneath it, plus a separate 64 MiB `/dev/shm`. Nothing persists to the host.                                                                          |
+| Working directory    | An existing relative directory whose canonical target remains inside the workspace. The sandbox path is rooted at `/workspace`.                                                                                                                  |
+| Environment          | `--clearenv`, safe locale/terminal inheritance, bounded trusted explicit values, and fixed private `HOME`, `TMP*`, and XDG locations. Loader, language injection, socket, display, Git override, and credential-shaped variables are rejected.   |
+| Network              | `none` remains the product default: external and host networking are absent, while a private loopback interface remains inside the network namespace. Experimental `full` adds `--share-net`, the host `resolv.conf` read-only, a staged `nsswitch.conf` that names glibc's `dns` module only for that posture, and honest receipt metadata for public/loopback/LAN plus host abstract Unix sockets. `brokered` is reserved and denied. |
+| Wall/output limits   | Five-minute default wall timeout, thirty-minute maximum, and independent 1 MiB stdout/stderr defaults. Output is continuously drained after the visible cap and marked truncated.                                                                |
+| Aggregate limits     | CPU time, memory, process count, and maximum file size are represented as optional requirements. Any required value is denied because this backend cannot yet enforce it.                                                                        |
+| Cancellation         | An `AbortSignal` immediately kills the PID-namespace init/Bubblewrap supervisor with `SIGKILL`; namespace teardown kills descendants. The receipt reports `SIGKILL`, not a graceful `SIGTERM` delivery that did not occur.                          |
+| System toolchain     | Explicit boolean. The first backend requires the read-only distro toolchain view and fails if it is disabled. Host `/usr/local` is masked, `/etc/alternatives` is exposed read-only when present, and `PATH` names only mounted runtime/system bins. |
+| Seccomp              | A required-custom-filter flag exists. It fails closed because no reviewed general filter ships in this spike.                                                                                                                                    |
+
+Protected/denied paths cannot be reopened, and read-only paths override their writable parent. `.git` is an immutable baseline protection: caller-provided protected paths are additions and an empty list cannot remove it. The validator rejects nested protected entries instead of relying on Bubblewrap argument order to resolve ambiguity.
+
+Validated policy objects carry private in-process provenance in a module-scoped `WeakSet`. The backend refuses lookalike plain objects even when their public kind, version, and fields are structurally plausible. A future IPC surface must resolve an opaque workspace ID and invoke this validator in trusted main-process code; serialized policy objects are intentionally not executable authority.
+
+## Path and metadata handling
+
+The launcher mounts the host workspace at the neutral `/workspace` path. Absolute or relative symlinks that leave it resolve into an absent sandbox path; symlinks into an exposed system path reach only its read-only view.
+
+Pre-existing hardlinks are different: a writable path and a hidden outside path can name the same inode. The policy therefore performs two complete, bounded `lstat` scans without following symbolic links. Regular files are grouped by stable filesystem identity `(device, inode)`, and every observed path records its reported link count and whether it is writable or protected. An internal hardlink group is accepted only when every path reports one consistent link count, the number of paths found inside the workspace exactly equals that count, and the inode does not cross protected and writable authority. Native-build layouts such as `Release/addon.node` plus `Release/obj.target/addon.node` therefore work when both names are internal. An unaccounted link outside the workspace, a mixed link count, or a protected/writable alias fails closed with `WORKSPACE_HARDLINK_DENIED`.
+
+Pathname Unix sockets, FIFOs, and devices in writable paths remain denied. Protected paths are traversed for identity accounting but retain their previous special-file treatment. Symbolic links are recorded for scan stability but never followed. Each pass remains bounded to 500,000 entries, and the complete entry identity/metadata snapshot must match a second pass; disappearance, replacement, metadata changes, or directory changes fail closed. The repeated scan narrows validation-time races but cannot eliminate the interval between validation and backend launch. A separate same-UID host process could still mutate or replace workspace entries after validation. Freedom-managed workspace ownership and lifecycle must prevent that race before product exposure; the sandboxed process itself cannot create a hardlink to an inaccessible outside file because the outside path is absent from its filesystem view.
+
+`.git` behavior is explicit:
+
+- An ordinary `.git` directory is over-mounted read-only.
+- A `.git` pointer file is parsed only after trusted lifecycle state supplies the exact canonical external gitdir and common-directory paths. Workspace-controlled pointer text cannot authorize a mount. Authorized pointers are replaced with path-neutral sandbox pointers under `/freedom-git-*`.
+- The resolved gitdir and, when present, common directory are mounted read-only.
+- A missing `.git`, a symlink, malformed pointer, nested protected path, or missing resolved directory fails closed. A future Freedom project creator can satisfy this invariant by initializing the managed project before shell authority is granted.
+- Common and linked-worktree-specific Git configuration is bounded and rejected if it contains includes, credential sections, embedded URL credentials, HTTP credential-bearing files/headers, TLS key paths, or a worktree-controlled hooks path.
+
+This allows `git status`, `diff`, `log`, and version inspection while preventing commits, ref/object/config mutation, checkout metadata changes, and hook installation.
+
+## Linux Bubblewrap construction
+
+The launcher uses:
+
+- `--unshare-all` plus explicit `--unshare-user`;
+- `--disable-userns` and `--assert-userns-disabled` to prevent nested user namespaces;
+- `--cap-drop ALL`, `--new-session`, `--die-with-parent`, and a private hostname;
+- a new PID namespace and `/proc`, IPC/network/UTS/cgroup namespaces, and minimal `/dev`;
+- read-only `/usr`, `/bin`, `/sbin`, required `/lib*`, selected loader/public-certificate configuration, and an exact neutral mount for the active Node installation when it is outside system paths;
+- an empty read-only mount over `/usr/local`, a read-only `/etc/alternatives` when it exists, and a `PATH` containing only the mounted runtime `bin` plus `/usr/bin:/bin`;
+- a 256 MiB `/tmp` and 64 MiB `/dev/shm`, created with Bubblewrap's `--size` before their corresponding tmpfs mounts;
+- non-recursive read-only remounts of `/`, `/proc`, and `/dev` after mount construction, leaving only `/workspace`, `/tmp`, and `/dev/shm` writable;
+- no `/run`, host `/tmp`, host home, display, session bus, or socket mount;
+- a sanitized passwd/group/NSS/hosts view rather than the host identity database; and
+- one JSON status descriptor used by Bubblewrap, accepted only for the first valid child PID. Before command execution, a trusted wrapper invoked through canonical `/bin/bash` requires `/proc/self/fd/0`, enumerates `/proc/self/fd`, validates every descriptor name as numeric, and closes every descriptor above standard error. A close failure exits 98, missing procfs exits 97, and stderr is not redirected around this setup. The wrapper emits readiness only after closure succeeds, then executes the requested command.
+
+Bubblewrap's child-PID status occurs before every mount has necessarily succeeded. The executor therefore launches a trusted positional-argument shell wrapper that emits a random readiness marker only after Bubblewrap has completed setup and reached the final command environment. The parent strips this marker from stdout. Without it, a bind failure is `sandbox_denied`, never an ordinary command failure and never a reason to retry unsandboxed.
+
+Capability detection runs a second probe inside the same namespace, read-only system, procfs, device, and bounded-tmpfs environment used by the backend. It invokes `/bin/bash`, explicitly opens descriptors 4, 5, 10, and 37, runs the production closure wrapper, and requires the child to find no persistent descriptor above standard error. Missing Bash, missing procfs, unsupported multi-digit closure, unexpected probe output, or any close failure makes the backend unavailable with `closedFileDescriptors: false`. The available capability reports the canonical Bash path, probe descriptor set, and successful closure result before it may report `closedFileDescriptors: true`.
+
+No command string parser exists. Callers supply an executable and argument vector; a general shell request deliberately invokes `/bin/sh -c` as its executable/arguments.
+
+## Receipt and lifecycle semantics
+
+- `completed`: sandbox initialized and the command exited zero. Output truncation does not change this state.
+- `failed`: sandbox initialized and the command exited nonzero.
+- `cancelled`: the caller aborted and the process tree was terminated.
+- `timed_out`: the wall limit expired and the process tree was terminated.
+- `sandbox_denied`: capability detection, policy preparation, protected mounts, or sandbox initialization failed. The command was not started.
+
+Stdout and stderr are separately capped and continuously drained. The receipt includes independent truncation flags. Raw Bubblewrap initialization diagnostics are retained only in internal capability diagnostics; execution denial receipts do not return host workspace paths.
+
+Launcher staging cleanup is best-effort after the sandbox has stopped. A cleanup rejection is reduced to a bounded error code in `diagnostics.stagingCleanupFailed` and never prevents the execution receipt from resolving.
+
+Cancellation and timeout deliberately use immediate namespace teardown in this checkpoint. Sending `SIGTERM` to Bubblewrap's PID-namespace init does not establish graceful TERM delivery to the requested command; killing the outer monitor tears down the namespace and the kernel kills its remaining members. Requested cancellation and timeout receipts therefore contain `signal: SIGKILL` and retain `terminationGuarantee: namespace_scoped`. Every spawned receipt says `sideEffects: unknown`; sandbox denial and cancellation before launch say `sideEffects: none`. A TERM-trap regression proves that no TERM handler runs, while ordinary and detached heartbeat descendants stop before receipt resolution and remain stopped afterward. A future graceful mode would need a separately reviewed in-namespace supervisor rather than host `/proc` PID discovery.
+
+## Qualification results
+
+### VM state before provisioning
+
+- Ubuntu 24.04.3 LTS, kernel `6.8.0-90-generic`, x86-64.
+- `kernel.unprivileged_userns_clone=1`.
+- `kernel.apparmor_restrict_unprivileged_userns=1`.
+- `user.max_user_namespaces=30830`.
+- Bubblewrap absent.
+
+### Provisioning and AppArmor finding
+
+The approved distribution packages installed Bubblewrap `0.9.0` and AppArmor `4.0.1really4.0.1-0ubuntu0.24.04.7`. The `apparmor-profiles` package places `bwrap-userns-restrict` under `/usr/share/apparmor/extra-profiles`, disabled by default.
+
+Before loading that profile, a non-root Bubblewrap probe reached the generic `unprivileged_userns` profile and failed on `setpcap`/`net_admin`, ending with `loopback: Failed RTM_NEWADDR: Operation not permitted`. Loading the distribution profile with `apparmor_parser` preserved the global restriction and made the same `nobody` probe pass with user, mount, PID, IPC, network, UTS, and cgroup namespaces plus nested-userns disabling. The root-session launcher corpus also passes. This is evidence for the unprivileged path, not a recommendation to run Freedom as root.
+
+The loaded profile is VM runtime state, not a repository change and not persistent packaging. A production Debian package would need a reviewed AppArmor installation/reload path. An AppImage cannot assume that profile exists.
+
+### Automated matrix
+
+The ordinary focused suite uses only validated temporary fixture roots and covers:
+
+- shell, generated scripts, nested children, Node, Python, workspace writes, and read-only Git inspection;
+- direct and encoded forbidden reads/writes;
+- symlinks leaving the workspace;
+- acceptance of fully accounted internal native-build hardlinks and rejection of unaccounted external or protected/writable aliases;
+- hidden host processes and failed signaling;
+- sensitive environment scrubbing;
+- inherited descriptor closure, including explicit descriptors 4, 5, 10, and 37 plus enumeration from Bash and non-Node Python children that must find no persistent descriptor above standard error;
+- pathname and abstract host Unix sockets, with descendant-only Unix IPC still working;
+- rejection of host IPC endpoints pre-positioned inside the writable workspace;
+- host loopback, external networking, and DNS denial;
+- fresh private home/config/tmp behavior;
+- output truncation without pipe blockage;
+- ordinary nonzero command failure;
+- descendant cleanup after timeout and explicit cancellation;
+- protected ordinary and explicitly authorized external `.git` metadata, with workspace-controlled external pointers denied by default;
+- rejection of unsafe `config.worktree` in an otherwise authorized linked-worktree layout;
+- rejection of forged lookalike policy objects and later child-PID status replacements;
+- receipt completion when synthetic staging cleanup fails; and
+- sandbox initialization failure with proof that the command never ran outside Bubblewrap.
+
+The VM-only destructive test requires `FREEDOM_SANDBOX_DESTRUCTIVE=1`, validates a fresh direct child of the system temporary directory with a fixed prefix, deletes only synthetic workspace content, and proves an outside sibling canary survives. It never targets the VM root, home, checkout, or another broad path.
+
+The repository-local qualification command runs a focused Jest policy suite, `npm run lint`, and a representative Babel source transform inside the sandbox with installed dependencies and no network. It produces only compact JSON summaries. The checkout declares esbuild but does not contain its executable, so qualification uses the already-installed Babel build dependency instead of downloading or changing dependencies.
+
+Final VM validation results:
+
+- `npm run test:agent-sandbox`: 28 passed; the single destructive test skipped by default.
+- `npm run test:agent-sandbox:destructive` with the explicit gate: 1 passed.
+- `npm run test:agent-sandbox:qualification`: focused Jest, full lint, and Babel transform all completed inside Bubblewrap.
+- `npm run lint`: passed on the host and inside Bubblewrap.
+- Full `npm test`: 203 suites and 3,751 tests passed; seven unrelated suites failed because this pre-provisioned checkout lacks declared Ghostery, embedded Pi SDK, OpenLV, and Ledger packages. No dependency was installed or changed to hide that environmental limitation.
+
+### Cross-platform stabilization rerun
+
+The shared policy was requalified on the same Ubuntu 24.04.3 x86-64 server after installing the explicitly approved host-only `libudev-dev` package. `npm ci` then rebuilt all Electron native dependencies, including `keccak` and `usb`, without changing the repository dependency graph. The real `keccak` output and object paths reported the same device/inode with `nlink=2`, and repository policy construction plus the Bubblewrap qualification accepted the fully accounted pair. A focused external-link fixture still returned `WORKSPACE_HARDLINK_DENIED`; protected/writable aliases and synthetic inconsistent link counts were also denied.
+
+Recorded stabilization results:
+
+- `npm ci`: passed; 1,167 packages installed and 22 existing audit findings reported (7 low, 5 moderate, 10 high).
+- `npm run test:agent-sandbox`: 7 suites and 49 tests passed; 3 suites and 9 tests skipped normally.
+- `npm run test:agent-sandbox:qualification`: capability detection plus focused Jest, full lint, and Babel transform completed inside Bubblewrap.
+- Doubly gated `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 test passed.
+- Host `npm run lint`: passed.
+- Full `npm test`: 214 suites and 3,835 tests passed; 8 suites and 26 tests skipped normally.
+- A direct receipt/teardown probe retained `backend: linux-bubblewrap` and `terminationGuarantee: namespace_scoped` for completed, timed-out, and cancelled executions. Timeout and cancellation heartbeat files remained unchanged after receipt resolution, with no namespace survivor observed.
+
+### Linux audit-hardening qualification
+
+The hardening rerun used the same designated disposable Ubuntu server:
+
+- Ubuntu 24.04.3 LTS, kernel `6.8.0-90-generic`, x86-64;
+- distribution Bubblewrap `0.9.0-1ubuntu0.1` (`bubblewrap 0.9.0`);
+- AppArmor `4.0.1really4.0.1-0ubuntu0.24.04.7`, with the `bwrap` profile loaded in enforce mode;
+- `kernel.unprivileged_userns_clone=1`, `kernel.apparmor_restrict_unprivileged_userns=1`, and `user.max_user_namespaces=30830`;
+- unified cgroup v2 with `cpu`, `memory`, and `pids` controllers available but not delegated to this backend; and
+- Node `v24.15.0` and npm `11.12.1`.
+
+The 256 MiB `/tmp` limit leaves room for the qualified npm/Jest/lint/Babel workloads while forcing private home and XDG writes into one explicit finite store. The separate 64 MiB `/dev/shm` matches a conservative conventional container default and avoids an unbounded shared-memory mount. These are capacity ceilings, not reservations; the deterministic test writes only 1 MiB to each mount and checks `statvfs`, so it does not pressure the host toward OOM. The combined 320 MiB possible tmpfs use is still host memory/swap consumption until cgroup containment exists.
+
+The following commands were run from the repository at this branch head:
+
+```sh
+npm ci
+npx jest --runInBand src/main/agent/workspace-execution/bubblewrap-backend.test.js src/main/agent/workspace-execution/bubblewrap-integration.test.js
+npm run test:agent-sandbox
+npm run test:agent-sandbox:qualification
+FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive
+npm run lint
+npm test
+```
+
+Results:
+
+- `npm ci`: passed; 1,167 packages installed and the unchanged dependency audit reported 22 findings (7 low, 5 moderate, 10 high).
+- Focused Bubblewrap backend/integration: 2 suites and 20 tests passed.
+- `npm run test:agent-sandbox`: 7 suites and 52 tests passed; 3 macOS-only suites and 9 tests skipped.
+- `npm run test:agent-sandbox:qualification`: capability detection plus focused Jest, full lint, and Babel transform completed inside Bubblewrap.
+- Doubly gated destructive qualification: 1 suite and 1 test passed against its validated temporary fixture.
+- Host `npm run lint`: passed.
+- Full `npm test`: 214 suites and 3,838 tests passed; 8 suites and 26 tests skipped. Jest printed pre-existing late MQTT/WebSocket console warnings but returned success.
+
+The hardening corpus verified that `/`, `/etc`, `/proc`, and the `/dev` root report read-only; `/usr/local` is empty and read-only; `/tmp` and `/dev/shm` report no more than their configured capacities; and only their intended submounts plus `/workspace` accept writes. Distro-symlinked `awk` works through the read-only alternatives view. Exact denial results were `ECONNREFUSED` for a proven-live host loopback service and host abstract socket, `ENETUNREACH` for external IPv4, `ENOENT` for the host pathname socket, and `ENOTFOUND` for DNS. Descriptor 3 remained `EBADF`, nested user namespaces failed closed, `.git` stayed read-only, and direct/symlink/dynamic-hardlink escape attempts failed. Timeout and cancellation reported `SIGKILL`; no TERM trap ran, and neither normal nor detached heartbeat descendants survived receipt resolution.
+
+### Packaged Electron runtime qualification
+
+The packaged-runtime pass used the same Ubuntu 24.04.3 x86-64 host and kernel `6.8.0-90-generic`. Freedom `0.8.1-dev` was packaged with Electron `43.0.0`, embedded Node `24.17.0`, and Chromium `150.0.7871.46`. Host npm/Node were used to build and drive repository tests only. Every sandboxed JavaScript workload invoked `/opt/freedom-toolchain/electron/freedom`, and its in-sandbox `process.execPath` reported that exact path. No NVM, Linuxbrew, home-directory runtime, separately mounted Node root, or host executable path was used as a command fallback.
+
+Trusted main-process discovery canonicalizes `process.execPath` and `process.resourcesPath`. On Linux, `resourcesPath` must be the direct `resources` child of one runtime tree, the active executable must be a direct child of that tree, and packaged discovery confirms `app.asar` with Electron's unpatched `original-fs` view. The successful live helper probe creates a frozen runtime descriptor with private in-process `WeakSet` provenance. The policy rejects serialized or reconstructed lookalikes, then re-canonicalizes the root, executable, resources layout and packaged archive before deriving the neutral mount mapping. Packaged Linux runtimes beneath the user's home are rejected; development runtimes require a fresh live attestation. `APPIMAGE` and `APPDIR` remain diagnostics only and cannot redirect authority.
+
+The qualification-only builder configuration inherits normal Linux metadata, including the Debian package's explicit `bubblewrap` runtime dependency, replaces `main` with the Electron qualification harness, excludes unrelated optional node payloads, and never publishes. Declaring `deb.depends` replaces Electron Builder's defaults, so Freedom pins the complete reviewed default list and adds `bubblewrap`; a regression prevents either the graphical runtime libraries or the sandbox launcher from silently disappearing. The package also preserves the Chromium helper's upstream-required mode in generated artifacts; the Debian post-install script selects either its installed AppArmor `userns` profile or the helper according to host posture.
+
+Build and package commands:
+
+```sh
+npm ci
+npm run build:agent-sandbox:linux:packaged
+dpkg -i out/agent-sandbox-packaged-linux/freedom-browser_0.8.1-dev_amd64.deb
+```
+
+The three non-root launches used fresh validated HOME/XDG/user-data roots and Xvfb:
+
+```sh
+runuser -u freedomqual -- xvfb-run -a env ELECTRON_RUN_AS_NODE=1 \
+  /tmp/freedom-unpacked-qualified-Lvwm33/freedom \
+  /tmp/qualify-agent-sandbox-packaged-linux.js \
+  /tmp/freedom-unpacked-qualified-Lvwm33/freedom
+
+runuser -u freedomqual -- xvfb-run -a env ELECTRON_RUN_AS_NODE=1 \
+  /opt/Freedom/freedom \
+  /tmp/qualify-agent-sandbox-packaged-linux.js \
+  /opt/Freedom/freedom
+
+runuser -u freedomqual -- aa-exec -p freedom-appimage-qualification -- \
+  xvfb-run -a env ELECTRON_RUN_AS_NODE=1 \
+  /tmp/Freedom-0.8.1-dev-qualified.AppImage \
+  /tmp/qualify-agent-sandbox-packaged-linux.js \
+  /tmp/Freedom-0.8.1-dev-qualified.AppImage
+```
+
+Observed layouts and results:
+
+| Layout | Artifact or installed path | Canonical runtime root observed by Electron | Host executable | Sandbox executable | Result |
+| --- | --- | --- | --- | --- | --- |
+| unpacked baseline | `out/agent-sandbox-packaged-linux/linux-unpacked` (root-owned qualification copy used for non-root launch) | `/tmp/freedom-unpacked-qualified-Lvwm33` | `/tmp/freedom-unpacked-qualified-Lvwm33/freedom` | `/opt/freedom-toolchain/electron/freedom` | passed |
+| Debian package | `out/agent-sandbox-packaged-linux/freedom-browser_0.8.1-dev_amd64.deb` | `/opt/Freedom` | `/opt/Freedom/freedom` | `/opt/freedom-toolchain/electron/freedom` | passed |
+| AppImage | `out/agent-sandbox-packaged-linux/Freedom-0.8.1-dev.AppImage` | `/tmp/freedom-packaged-linux-launch-1gwyKu/.mount_FreedojW6oZ7` | `/tmp/freedom-packaged-linux-launch-1gwyKu/.mount_FreedojW6oZ7/freedom` | `/opt/freedom-toolchain/electron/freedom` | conditionally passed with dedicated AppArmor launch profile |
+
+The AppImage used its normal FUSE mount, not extract-and-run. The Electron parent remained alive for each Bubblewrap child; an active cancellation probe proved the transient canonical root and executable remained available until the child receipt completed. The mount disappeared after application exit. A SHA-256 recheck proved the AppImage file was unchanged; the sandbox's private `/tmp` hid the host file, so a same-named write created and removed only a private tmpfs shadow. A forged-`APPDIR`/`APPIMAGE` unit fixture and a user-created `.mount_Freedom-*` directory did not redirect the selected runtime.
+
+The unpacked, installed Debian, and profiled AppImage runs each passed the website build, workspace and `.git` behavior, direct/symlink/hardlink/subprocess denials, filesystem and abstract Unix socket denials, internet/DNS/localhost denials, private storage, output truncation, nonzero failure, timeout, cancellation, and descendant teardown checks. Receipts consistently reported `backend: linux-bubblewrap` and `terminationGuarantee: namespace_scoped`; no heartbeat or process survived receipt completion.
+
+Host-only qualification additions were `libfuse2t64` plus the already installed `xvfb`, `libudev-dev`, Bubblewrap, and AppArmor utilities/profiles. A dedicated throwaway user `freedomqual` was created. The Debian package installed its generated `/etc/apparmor.d/freedom` profile. AppImage required a qualification-only `freedom-appimage-qualification` AppArmor profile granting `userns` to the explicitly wrapped process.
+
+That AppImage condition is important. On this Ubuntu host, an ordinary unprofiled AppImage launch makes Electron Builder's generated AppRun detect a failed user-namespace probe and inject `--no-sandbox`. This qualification rejected that path. The actual FUSE AppImage passed without `--no-sandbox` only under the explicit AppArmor profile. A standalone product AppImage therefore remains unsupported on restricted Ubuntu until Freedom supplies a reviewed, usable profile/launcher design or Electron Builder changes its fail-open behavior. The Debian layout is the credible first packaged path.
+
+Final recorded test results after the packaged changes:
+
+- `npm ci`: passed; 1,167 packages installed, with 22 existing audit findings.
+- Focused runtime/policy/Bubblewrap/Seatbelt/executor tests: 5 suites, 40 tests passed.
+- `npm run test:agent-sandbox`: 7 suites and 52 tests passed; 3 suites and 9 tests skipped normally.
+- `npm run test:agent-sandbox:qualification`: capability detection, focused Jest, lint, and Babel transform passed inside Bubblewrap.
+- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 test passed inside validated synthetic fixtures.
+- `npm run lint`: passed.
+- `npm test`: 214 suites and 3,838 tests passed; 8 suites and 26 tests skipped normally. Jest emitted known late OpenLV MQTT connection logging, but exited zero.
+
+### Inherited-descriptor remediation qualification
+
+The 2026-09-02 corrective rerun used the same disposable Ubuntu 24.04.3 host, kernel `6.8.0-90-generic`, x86-64, Bubblewrap `0.9.0`, and AppArmor-restricted unprivileged-user-namespace posture. Every Bubblewrap and packaged Electron launch ran as `freedomqual` UID/GID 1001. The original Dash-based wrapper at `380593b17348c776c72e80f33393cfbca52b35ce` exited 127 on multi-digit descriptors; the corrective implementation uses canonical `/bin/bash` and does not emit readiness until closure has succeeded.
+
+Capability evidence reported `bashPath: /bin/bash`, `descriptorClosureProbe: passed`, and `descriptorClosureProbeDescriptors: [4, 5, 10, 37]`. The development qualification's non-Node Python child emitted `descriptors: []`. A missing-stdin/procfs wrapper regression exited 97 without a readiness marker, a simulated pre-readiness close failure was classified `sandbox_denied` with `sideEffects: none`, and an unavailable closure probe reported `closedFileDescriptors: false`. Successful capability output reported `closedFileDescriptors: true` only after both namespace and descriptor probes passed.
+
+Electron 43 main-process evidence was recorded before each packaged sandbox launch. The inventories contained runtime resource files, Chromium `/dev/shm` files, Mojo/other sockets, pipes, eventfds, epoll descriptors, inotify, io_uring, memfd, and application resources. The profiled AppImage additionally held its transient FUSE runtime root at descriptor 1023. The exact inventories were emitted as `electron-main-descriptors`; the subsequent Bash and Python children both emitted empty descriptor arrays for unpacked, installed Debian, and profiled real-FUSE AppImage layouts.
+
+All three packaged layouts then completed website build, protected Git, boundary denial, output truncation, ordinary failure, timeout, cancellation, runtime-lifetime, and descendant-cleanup checks. Ordinary failure preserved the exact `ordinary-failure` stderr text. Timeout and cancellation retained `SIGKILL`, `terminationGuarantee: namespace_scoped`, `terminationScope: pid_namespace`, `survivorsPossible: false`, and `completeDescendantTermination: true`. No heartbeat, descendant, qualification process, or FUSE mount survived receipt resolution.
+
+Corrective rerun results:
+
+- focused Bubblewrap backend/integration: 2 suites and 23 tests passed;
+- `npm run test:agent-sandbox`: 7 suites and 61 tests passed; 3 suites and 14 platform tests skipped;
+- `npm run test:agent-sandbox:qualification`: descriptor closure, focused Jest, lint, and Babel transform completed inside Bubblewrap;
+- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 test passed;
+- packaged unpacked-directory, installed Debian, and profiled real-FUSE AppImage corpora: passed;
+- `npm run lint`: passed; and
+- `npm test`: 214 suites and 3,847 tests passed; 8 suites and 31 tests skipped. Jest emitted the known late OpenLV MQTT connection logging but exited zero.
+
+### Full-network posture qualification — 2026-09-03
+
+The experimental `full` posture was qualified on the disposable Ubuntu 24.04.3 server (kernel `6.8.0-90-generic`, x86-64, Bubblewrap `0.9.0`, AppArmor `4.0.1really4.0.1-0ubuntu0.24.04.7`, `kernel.apparmor_restrict_unprivileged_userns=1`, the distribution `bwrap` profile loaded as runtime state, Node `24.18.0` and npm `11.16.0` on the host) as an ordinary non-root user. Every sandboxed process reported the `bwrap//&unpriv_bwrap (enforce)` label. The LAN target was the server's assigned non-loopback IPv4 address, verified by binding and connecting to it on the host before the run; the public target was the default `1.1.1.1:443`.
+
+The first run exposed a code defect: the staged `nsswitch.conf` named only the `files` module for `hosts`, so `--share-net` plus the mounted host `resolv.conf` still left `dns.lookup('example.com')` at `ENOTFOUND`. The correction names glibc's `dns` module only when the policy posture is `full`; every other posture keeps `hosts: files`, and a backend regression pins both staged files and the absence of `--share-net` and `resolv.conf` for offline launches.
+
+Observed from a descendant Node process under `full`: host `127.0.0.1` service `connected`, the same service on the server's non-loopback address `connected`, `1.1.1.1:443` `connected`, `example.com` `resolved`, host abstract Unix socket `connected`, host pathname socket outside the workspace `ENOENT`. The receipt reported `backend: linux-bubblewrap`, `networkPosture: full`, `publicNetworking`, `loopbackNetworking`, and `privateNetworking` as `host_network`, and `hostAbstractUnixSockets: reachable`. The immediately following `none` execution failed to reach the same host loopback service with `ECONNREFUSED` and reported `networkPosture: none`, `loopbackNetworking: private_namespace`, and `hostAbstractUnixSockets: isolated`. `brokered` was refused as `UNSUPPORTED_NETWORK_POSTURE`, and unrecognized partial postures were rejected as `INVALID_POLICY` before any launch.
+
+The offline boundary was reconfirmed in the same session: `ENETUNREACH` to the public internet, `ENOTFOUND` for DNS, `ECONNREFUSED` for host loopback and host abstract sockets, `ENOENT` for the pathname socket, working in-namespace loopback TCP and Unix sockets, `ESRCH` for host PIDs, an unreadable inherited descriptor, a scrubbed credential-shaped variable, and `EROFS` on `.git`. Timeout and cancellation retained `SIGKILL`, `terminationGuarantee: namespace_scoped`, `terminationScope: pid_namespace`, `survivorsPossible: false`, and `completeDescendantTermination: true`; no Bubblewrap process, mount, staging directory, or fixture survived.
+
+Corpus runtime provenance: the server provides no distribution Node or npm under `/usr/bin`, and the integration corpus and repository qualification previously assumed one on the fixed sandbox toolchain `PATH`, so their Node workloads exited 127 there. That ambient assumption was removed rather than satisfied. `qualification-runtime-access.js` resolves the test or qualification process's own runtime (`process.execPath` and the `npm` beside it) through the generic `resolveExecutableAccess()` contract, searching only that executable's directory, and hands the resulting validated read-only runtime roots to the policies of the workloads that need them. Baseline system-toolchain tests (shell, Python, Git, descriptor closure, tmpfs bounds, nested-userns denial, timeout and cancellation) stay on the untouched toolchain view and no longer claim that Node is universally installed. Regressions prove the derivation for a fake non-system prefix, the rejection of ambient `PATH` entries and of a runtime without `npm`, the qualification's baseline/runtime policy selection, and, inside a real sandbox, that `node` and `npm` resolve from the approved mount ahead of `/usr/bin:/bin` while the baseline policy exposes no approved mount at all. The full-network descendant test runs through that approved runtime and is otherwise unchanged.
+
+Results after the corpus correction, all as the ordinary non-root user with `FREEDOM_SANDBOX_LAN_HOST` set to the server's assigned non-loopback IPv4 address:
+
+- focused execution-policy, Bubblewrap backend, and Bubblewrap integration suites: 25, 14, and 15 tests passed, 54 of 54;
+- `npm run test:agent-sandbox`: 11 suites and 90 tests passed; 3 suites and 16 macOS tests skipped; exit 0;
+- `npm run test:agent-sandbox:qualification`: descriptor closure (`descriptors: []`), focused Jest, full lint, and the Babel transform all completed inside Bubblewrap with node and npm from the approved runtime roots; exit 0;
+- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 passed; exit 0;
+- `npm run lint`: passed; and
+- `npm test`: 226 suites and 3,953 tests passed; 8 suites and 33 tests skipped; exit 0.
+
+The full-network descendant observations, the immediate offline revocation, the receipt metadata, and the namespace-scoped teardown with no survivors were unchanged from the run above. No reachable off-host LAN peer exists on this server (its neighbours are the provider gateway and on-host container bridges), so LAN connectivity remains proven only against the server's own non-loopback address.
+
+### Full-network product-path qualification — 2026-09-04
+
+Candidate `12f071fd` (`feat(main): gate full workspace networking`) was qualified as an integrated product path on the disposable Ubuntu 24.04.3 server (kernel `6.8.0-90-generic`, x86-64, Bubblewrap `0.9.0`, AppArmor `4.0.1really4.0.1-0ubuntu0.24.04.7`, `kernel.apparmor_restrict_unprivileged_userns=1`) as an ordinary non-root user. `scripts/qualify-agent-network-product.js` (qualification-only, `npm run test:agent-sandbox:network:product`) composes the production `FreedomAgentService`, the production Pi workspace tools built from the real Pi SDK tool factories, the production approval normalization, the production capability grant store, the production `ManagedWorkspaceController` with its unmodified Electron runtime detector, and the real Bubblewrap executor. Only the Pi session is a deterministic fake with no model provider or credentials. The harness is launched through the checkout's Electron binary in Node mode so the SQLite stores built for Electron's ABI load and so `process.versions.electron` is genuine; the gate is read exactly as `src/main/index.js` reads `FREEDOM_EXPERIMENTAL_AGENT_NETWORK`.
+
+Without the gate, `request_permissions` exposes no `network` property, requires `executables`, keeps `additionalProperties: false`, the Agent instructions do not mention direct networking, a forged `network: full` request fails with `NETWORK_PERMISSION_UNAVAILABLE` and leaves the grant store empty, a hand-built grant object is refused, the lease carries no full-network Agent policy, and ordinary commands stay offline.
+
+With the gate, `request_permissions` accepts `network: full` without an executable and composed with one. The normalized approval projected to the user is bound to the literal command and the canonical workspace-relative directory (a `link` symlink request was bound and later matched as `sub`) and carries the complete bundle: `posture: full`, `publicInternet`, `hostLoopback`, `privateLan`, and `hostAbstractUnixSockets: reachable`. Allow-once semantics held: a different command and a different directory stayed offline without consuming the grant, the exact command then used full networking once, its next execution was offline again, and replaying, JSON-serializing, forging, or re-homing the prepared request was refused with `INVALID_COMMAND_PERMISSION_GRANT`. An incomplete bundle injected below the controller failed closed as `UNSUPPORTED_CAPABILITY_COMBINATION` and an unknown network-prefixed capability as `UNSUPPORTED_WORKSPACE_CAPABILITY`, both before any launch. Conversation scope held: later commands used the full-network policy, the grant survived into the next run of the same conversation, a second conversation neither inherited nor could replay it, and deleting the conversation removed it. Fixed helper operations kept the derived offline helper policy with the embedded runtime while conversation networking existed, and exactly one workspace policy (one hardlink scan) was created per workspace across every command and permission request.
+
+From a descendant Python process of the approved command: DNS resolved, `https://example.com/` returned status 200, `1.1.1.1:443` connected, the host loopback service connected, the server's own non-loopback address connected, the host abstract socket connected, and a host pathname socket outside every mount stayed `ENOENT`; before approval and after consumption the same probes reported `ENETUNREACH`, `ECONNREFUSED`, and `EAI_-2`. One permission composing `node` (generically resolved from the login-shell `PATH` to a narrow prefix root) with full networking gave the exact command both authorities from a `read_execute` root whose tree reported `EROFS` on write, while a mismatching one-shot command received neither. Successful, failed (`exitCode: 7`), timed-out (`SIGKILL`), and cancelled (`SIGKILL`) receipts kept `backend: linux-bubblewrap`, `terminationGuarantee: namespace_scoped`, and `sideEffects: unknown`; heartbeat files stopped growing after timeout and cancellation and no Bubblewrap process survived. No host path or internal authority object reached Pi-visible tool results, durable history activity, workspace command records, or non-approval events.
+
+The qualification's first two integration gaps are closed in the retained corpus: managed `bash` accepts a validated workspace-relative working directory, so the canonical-directory one-shot case runs through the real Pi tool rather than calling the controller directly; and every command receipt records the effective `none` or `full` network posture in the live result, workspace ledger, and durable Agent activity. An intermediate read-only run at `bbcd53a2` passed the enabled product path 25/25 but exposed two qualification/lifecycle defects: its default-off durable-posture assertion incorrectly required `full`, and stopping an in-flight command could persist an activity item as `running` after the command ledger had already recorded `cancelled`/`SIGKILL`/`full`. It also showed that a prepared checkout could conceal Electron's lazy binary installation behind a local cache.
+
+Exact corrective candidate `147f99429614a66163fd132048ac2948dfb76aed` was therefore requalified read-only from a genuinely fresh dependency installation on the same non-root Ubuntu host. Root `postinstall` materialized Electron `43.0.0` through its supplied installer and rebuilt the native modules without a manual repair. The default-off product harness passed 12/12 with zero findings and only `none` postures; the gate-enabled harness passed 26/26 with zero findings. The latter proved the canonical subdirectory through the real Pi `bash` tool and required a stopped full-network command to reach durable activity as a terminal `cancelled` item with `networkPosture: full`, `SIGKILL`, and `terminationGuarantee: namespace_scoped` before `run_finished`. Completed, failed, timed-out, and cancelled ledger postures all matched the executor policy, heartbeat files stopped growing, and no Bubblewrap, supervisor, harness, writer, socket, mount, or new temporary product root survived.
+
+The broader exact-commit gate also passed: `npm run test:agent-sandbox` 92/92, all four repository qualification workloads, the destructive gate 1/1, lint, and the full suite 3,966/3,966. npm 11 still warned that nine dependency install scripts were outside `allowScripts`; this did not affect the qualified Electron/native installation path, but the warning policy remains a deliberate release review item rather than being silently broadened. No off-host LAN peer exists on this server, the host is not stock because its distribution Bubblewrap AppArmor profile was already loaded, host abstract-socket exposure is inherent to `--share-net`, literal command grants do not pin referenced file contents, and aggregate CPU, memory, and PID containment remain absent. The disposable-macOS adversarial product-path gate is still outstanding.
+
+## Seccomp assessment
+
+No general syscall filter is installed, and capability reports say so. `--disable-userns` does apply Bubblewrap's narrow nested-user-namespace prevention, and `--new-session` addresses the terminal-injection concern called out by Bubblewrap, but neither is represented as a general seccomp profile.
+
+Before productization, review at least namespace creation/joining, mount APIs, `ptrace` and cross-process memory APIs, `bpf`, `perf_event_open`, keyring calls, `userfaultfd`, `io_uring`, device/ioctl exposure, and kernel/module/reboot operations. Many already fail because the process has no capability in its user namespace or no relevant device/path, but reducing reachable kernel attack surface is still useful. The filter must be tested against Node, Python, npm/Jest, compilers, and their child sandboxes rather than copied as an unreviewed generic denylist.
+
+Linux seccomp filters are classic BPF programs evaluated on syscall metadata; they are not a pathname policy and must avoid time-of-check/time-of-use arguments. Bubblewrap accepts a filter by file descriptor. Freedom should add a small reviewed helper or generated filter only after its compatibility matrix is explicit.
+
+## Aggregate resource-limit assessment
+
+The VM uses unified cgroup v2 with `cpu`, `memory`, and `pids` controllers. Its systemd 255 user manager successfully created transient scopes with `MemoryMax`, `TasksMax`, and `CPUQuota`, demonstrating a viable direction. Kernel cgroup v2 supplies `memory.max`, `pids.max`, and CPU controller accounting; systemd transient units expose the corresponding controls.
+
+The remaining design work is ownership and lifecycle: create a private transient scope without an approval-prone privileged API, place Bubblewrap in it before untrusted descendants fork, correlate OOM/PID-limit outcomes with the execution receipt, and guarantee scope removal on cancellation/crash. A systemd user manager may be absent in containers, minimal distributions, or unusual desktop sessions. Direct cgroup delegation is the alternative but also requires writable delegated controllers. Until one path is implemented and qualified, requested aggregate limits fail closed and resource-exhaustion payloads remain gated.
+
+## Installation and distribution assessment
+
+Initial recommendation: use `/usr/bin/bwrap` from the distribution and check it at runtime.
+
+- Current Bubblewrap has removed setuid operation; Freedom rejects a setuid bit explicitly.
+- Ubuntu 24.04 enables an AppArmor user-namespace restriction. The executable path matters to the allow profile, so a bundled binary at an application-specific path will not automatically receive the distribution exception.
+- Debian/Ubuntu packages can declare or document a Bubblewrap dependency and install a reviewed profile. AppImage distribution needs an actionable unavailable result and host setup guidance; it must not disable AppArmor globally.
+- Flatpak, Snap, Docker/Kubernetes, WSL, and other nested/container environments may block user namespaces, mount propagation, or fresh `/proc` even when the sysctl appears enabled. The executable probe is authoritative and must remain fail closed.
+- ARM64 is a required later qualification target. No architecture-specific launcher logic was added.
+- Landlock is not a fallback in this spike. It may be added only for an exactly representable policy, never as a silent semantic downgrade.
+
+Bundling should be reconsidered only with an update strategy, exact executable-path AppArmor policy, security-response ownership, and multi-distribution testing. The observed Ubuntu behavior favors the system binary for the first product experiment.
+
+## External implementation references
+
+- [Bubblewrap upstream sandbox/security model](https://github.com/containers/bubblewrap/tree/2fb78e210734316a2765da5251646d411fe34e75) — inspected at commit `2fb78e210734316a2765da5251646d411fe34e75`. Upstream emphasizes that Bubblewrap is a policy construction toolkit and the generated arguments determine the boundary.
+- [Ubuntu 24.04 unprivileged-user-namespace restriction](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions) — explains the default AppArmor restriction and per-application profile approach.
+- [Linux cgroup v2 documentation](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html) — authoritative memory, PID, and CPU controller semantics.
+- [Linux seccomp filter documentation](https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html) — BPF filter model and safety constraints.
+- [systemd transient resource settings](https://github.com/systemd/systemd/blob/main/docs/TRANSIENT-SETTINGS.md#resource-control-settings) — lists `MemoryMax`, `TasksMax`, and `CPUQuota` for transient units.
+- [Codex Linux sandbox](https://github.com/openai/codex/tree/82099786163f3c05facf09078136679e18b64279/codex-rs/linux-sandbox) — inspected at commit `82099786163f3c05facf09078136679e18b64279` as an architectural/behavioral reference only. Freedom code in this spike is independent and contains no copied Codex source.
+
+## Unresolved risks and next decision
+
+1. Implement and qualify cgroup v2 PID/memory containment before calling this a product boundary.
+2. Review and qualify a custom seccomp posture; keep capability reporting honest if it remains absent.
+3. Decide how packaged Freedom installs/enables the Ubuntu AppArmor profile, especially outside `.deb` packaging.
+4. Move Freedom-managed projects onto a lifecycle that prevents same-UID host races after path/hardlink validation.
+5. Ensure the managed-workspace creator initializes `.git` before establishing the execution lease; the policy now makes `.git` protection mandatory and fails closed when it is absent or malformed.
+6. Expand distro coverage to Debian, Fedora, ARM64 Ubuntu, WSL2, and representative nested/container failures.
+7. Add workspace disk/quota handling and reconcile OOM/PID-limit termination into stable receipts. The bounded tmpfs mounts do not replace aggregate cgroup accounting.
+8. Review which `/usr` and TLS/loader paths packaged builds actually need; reduce the system view where positive evidence allows. Host `/usr/local` is now hidden, but the remaining distro `/usr` view is broad.
+9. Decide whether the canonical workspace path disclosed by `/proc/*/mountinfo` is acceptable metadata or requires a different project-storage/mount design.
+10. Document and surface that local hard-linked Git clones and pnpm/bun global-store layouts fail the complete-link accounting rule; Freedom-created projects should avoid those layouts rather than silently weakening validation.
+
+Recommendation: the audit-hardened filesystem/network/namespace boundary is sufficiently qualified for a narrowly gated Freedom-created managed-workspace integration. It is not unrestricted shell authority: aggregate resource containment, seccomp posture, packaging support, hostile-consumer rules, and same-UID workspace lifecycle remain explicit constraints.

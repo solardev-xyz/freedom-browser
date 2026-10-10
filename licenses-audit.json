@@ -25,6 +25,20 @@
   },
   "dependencies": [
     {
+      "name": "codex-windows-sandbox",
+      "version": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+      "type": "native-binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/openai/codex" },
+      "license": { "spdx": ["Apache-2.0"], "raw": "Apache-2.0", "license_files": ["CODEX-LICENSE.txt", "CODEX-NOTICE.txt"], "notice_required": true },
+      "version_pin": "scripts/build-windows-workspace.js REVISION",
+      "bundled_with_app": true,
+      "platforms": ["win"],
+      "linking_or_integration": "native helper process",
+      "risk": "green",
+      "issues": []
+    },
+    {
       "name": "electron",
       "version": "44.7.0",
       "type": "direct",
@@ -819,6 +833,26 @@
   },
   "assets": [
     {
+      "name": "model provider marks",
+      "path": "src/renderer/assets/provider-logos/",
+      "type": "asset",
+      "license": {
+        "spdx": [
+          "UNKNOWN"
+        ],
+        "raw": "Third-party provider marks; nominative identification, no ownership claimed",
+        "notice_required": true
+      },
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "trademark",
+          "details": "Official provider icons bundled locally; source URLs and attribution are recorded in the directory README and NOTICES. Per-mark redistribution terms remain unconfirmed.",
+          "recommended_fix": "Confirm brand terms before a final tag, or use generic glyphs."
+        }
+      ]
+    },
+    {
       "name": "icon.png",
       "path": "assets/icon.png",
       "type": "asset",
@@ -910,7 +944,7 @@
       "issues": []
     }
   ],
-  "summary": { "green": 266, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
+  "summary": { "green": 266, "yellow": 3, "orange": 5, "red": 0, "unknown": 0 },
   "blockers": [],
   "resolved_since_last_audit": [
     {

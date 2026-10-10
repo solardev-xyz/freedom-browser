@@ -173,11 +173,33 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
   - `Cmd+Shift+B` / `Ctrl+Shift+B`: Toggle bookmark bar
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
+  - `Cmd+K` / `Ctrl+K`: Show Agent (opens the floating Agent composer, returns the keyboard to it from the page, or closes it when it already has focus)
   - `F11`: Toggle fullscreen
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
 - **No Keyboard Binding**: Print has no shortcut; use the hamburger menu's Print entry.
+
+## Freedom Agent
+
+Open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`. Connect your own model
+provider or a local Ollama model, then ask it to research pages, compare sources,
+or work on a project. Conversations appear over the page; Agent-first mode gives
+the conversation the full window.
+
+- **Browser work:** Agent uses conversation-owned tabs and can delegate independent
+  work to helpers. Helper cards show progress, reports, and individual Stop controls.
+- **Project work:** Create a managed workspace or attach an existing folder read-only.
+  Grant editing separately. Drag files into the composer to attach them to a prompt.
+  File, diff, and history viewers open in browser tabs; managed workspaces retain Git history.
+- **Connections and permissions:** Manage MCP services from the composer's `+` menu.
+  Permission controls govern consequential actions and command access. The conversation
+  privacy panel reports provider settings and the evidence available for that conversation.
+- **Windows projects:** First use requires administrator setup of restricted execution
+  accounts and network rules. Subsequent commands run without administrator rights.
+  Windows restricts writes and network access but allows broader file reads than the
+  macOS and Linux backends; the approval explains this difference. Windows commands
+  use PowerShell, including `npm.cmd` and `npx.cmd`.
 
 ## Bookmarks
 
@@ -296,3 +318,23 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Profile-Aware Radicle Errors**: Opening `rad://` while Radicle is disabled for the profile shows "Radicle Disabled for This Profile" and points to **Settings → Nodes**; opening it while the node is stopped shows "Cannot Connect to Radicle Node" and points to the Nodes menu.
 - **Retry on Reload**: Pressing reload on an error page retries the original request.
 - **Graceful Degradation**: Navigation errors don't crash the browser.
+
+
+### Experimental Claude subscription connection
+
+The Agent's Anthropic setup also offers an installed Claude Code connection for
+personal Pro/Max subscriptions. It uses the CLI's existing login and Freedom's
+normal tools, approvals, helpers, codemode and conversation UI. Managed installations
+are not supported. See [setup and qualification](agent-claude-subscription.md).
+
+### Experimental custom AI connections
+
+**Models → Add provider → OpenAI-compatible** connects a custom Chat Completions
+endpoint using an optional API key. Models can be discovered or entered manually;
+multiple connections appear independently in the model picker. Saved keys are
+encrypted, and model limits/capabilities can be configured in connection settings.
+After connecting, an optional compatibility check tests streaming chat and a
+synthetic tool round trip for the selected model. It discloses possible token
+charges and allows retrying or continuing despite failure. Privacy guarantees
+remain unknown unless independently established. See
+[setup and qualification](agent-openai-compatible-spike.md).

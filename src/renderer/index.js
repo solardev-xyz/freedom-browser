@@ -1,3 +1,4 @@
+import { closeAgentPrivacy } from './lib/agent-privacy.js';
 // Renderer process entry point
 import {
   updateRegistry,
@@ -39,16 +40,31 @@ import {
   createTab,
   openOrFocusInternalPage,
   getActiveWebview,
+  getActiveTab,
+  getTabById,
+  closeTab,
+  switchTab,
+  setAgentControlledTab,
+  setAgentTabCustody,
+  setAgentTabClaimHandler,
+  isTabAgentOwned,
+  setTabStripProjection,
+  subscribeTabPresentation,
+  getTabPresentation,
+  createWorkspaceViewerTab,
 } from './lib/tabs.js';
 import {
   initNavigation,
   loadTarget,
   reloadPage,
   hardReloadPage,
+  stopPageLoading,
   onSettingsChanged,
   setOnHistoryRecorded,
   setSuggestionPreviewProbe,
   closeTrustPopover,
+  setAgentWorkspaceNavigationProjection,
+  setAgentWorkspaceNavigationEditable,
 } from './lib/navigation.js';
 import {
   initAutocomplete,
@@ -77,6 +93,7 @@ import {
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
 import { initSidebar } from './lib/sidebar.js';
+import { initAgentUi } from './lib/agent-ui.js';
 import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
@@ -161,6 +178,28 @@ setOnOpenDownloads(openDownloadsPage);
 setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
+electronAPI.onAutomationNavigate?.(({ rendererTabId, url }) => {
+  const tab = getTabById(rendererTabId);
+  if (!tab?.webview) return false;
+  loadTarget(url, null, tab.webview);
+  return true;
+});
+electronAPI.onAutomationStopLoading?.(({ rendererTabId }) => {
+  const tab = getTabById(rendererTabId);
+  if (tab?.webview) stopPageLoading(tab.webview);
+});
+electronAPI.onAutomationCreateTab?.(({ url }) => createTab(url)?.id || null);
+electronAPI.onAutomationCloseTab?.(({ rendererTabId }) => {
+  if (!getTabById(rendererTabId)) return false;
+  closeTab(rendererTabId);
+  return !getTabById(rendererTabId);
+});
+electronAPI.onAutomationFocusTab?.(({ rendererTabId }) => {
+  if (!getTabById(rendererTabId)) return false;
+  // Agent switches its working page without taking the user's keyboard focus.
+  switchTab(rendererTabId, { focus: false });
+  return true;
+});
 // When any popover/menu opens, dismiss other transient surfaces so we
 // don't end up with the autocomplete dropdown or any of the address bar's
 // three no-backdrop surfaces -- the ENS trust popover, the permission
@@ -181,6 +220,7 @@ const onAnyMenuOpening = () => {
   closePermissionPopover();
   closePopupBlockedPopover();
   closeGithubBridgePanel();
+  closeAgentPrivacy();
 };
 setOnMenuOpening(onAnyMenuOpening);
 setOnTabContextMenuOpening(onAnyMenuOpening);
@@ -189,6 +229,7 @@ setOnBookmarkContextMenuOpening(onAnyMenuOpening);
 // Initialize platform-specific UI adjustments
 async function initPlatformUI() {
   const platform = await electronAPI.getPlatform();
+  document.body.classList.toggle('platform-mac', platform === 'darwin');
 
   if (platform === 'linux') {
     // The window is only frameless when the user opts in to tabs-in-titlebar;
@@ -741,6 +782,7 @@ const closeAllOverlays = () => {
   closePermissionPopover();
   closePopupBlockedPopover();
   closeGithubBridgePanel();
+  closeAgentPrivacy();
 };
 
 // Listen for close menus from main process (e.g., system menu clicked)
@@ -855,6 +897,21 @@ window.addEventListener('DOMContentLoaded', async () => {
   initLinkStatus();
   initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
+  initAgentUi({
+    getActiveTab,
+    getOpenTabs: getTabPresentation,
+    createWorkspaceViewerTab,
+    closeViewerTab: closeTab,
+    isTabAgentOwned,
+    setAgentControlledTab,
+    setAgentTabCustody,
+    setAgentTabClaimHandler,
+    setTabStripProjection,
+    setWorkspaceNavigationProjection: setAgentWorkspaceNavigationProjection,
+    setWorkspaceNavigationEditable: setAgentWorkspaceNavigationEditable,
+    subscribeTabPresentation,
+    switchTab,
+  }); // Embedded Pi agent panel
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu({ onOpening: onAnyMenuOpening, onReload: hardReloadPage }); // Page context menu for webviews
   // Cut/Copy/Paste/Select All for every editable chrome text field — the

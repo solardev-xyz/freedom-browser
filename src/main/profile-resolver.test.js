@@ -159,6 +159,32 @@ describe('profile resolver', () => {
     expect(profile.id).toBe('default');
   });
 
+  test('runtime mode defaults to an isolated automation profile', () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const { resolveProfile } = require('./profile-resolver');
+
+    resolveProfile(app, {
+      argv: ['electron', '.', '--profile=work'],
+      env: {},
+      now: '2026-05-26T00:00:00.000Z',
+    });
+    const runtimeProfile = resolveProfile(app, {
+      argv: ['electron', '.', '--runtime'],
+      env: {},
+      now: '2026-05-27T00:00:00.000Z',
+    });
+    const explicitProfile = resolveProfile(app, {
+      argv: ['electron', '.', '--runtime', '--profile=ci'],
+      env: {},
+      now: '2026-05-28T00:00:00.000Z',
+    });
+
+    expect(runtimeProfile.id).toBe('automation');
+    expect(runtimeProfile.userDataDir).toBe(path.join(userDataDir, 'Profiles', 'automation'));
+    expect(explicitProfile.id).toBe('ci');
+  });
+
   test('uses FREEDOM_TEST_USER_DATA as the highest-precedence bypass', () => {
     const userDataDir = track(makeTempDir());
     const testUserData = track(makeTempDir());

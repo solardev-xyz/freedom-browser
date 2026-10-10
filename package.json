@@ -16,6 +16,9 @@
     "url": "https://github.com/solardev-xyz/freedom-browser/issues"
   },
   "main": "src/main/index.js",
+  "bin": {
+    "freedom-cli": "src/cli/freedom.js"
+  },
   "desktopName": "freedom.desktop",
   "scripts": {
     "start": "electron .",
@@ -24,11 +27,40 @@
     "test:coverage": "jest --coverage --runInBand --forceExit",
     "test:migration": "jest --runInBand src/main/migrate-user-data.test.js src/main/__tests__/integration/v08-upgrade.test.js src/main/profile-resolver.test.js src/main/profile-paths.test.js src/main/profile-catalog.test.js src/main/identity/__tests__/integration/postage-publisher-continuity.test.js",
     "test:e2e": "playwright test --project=harness",
+    "test:e2e:agent:codex": "playwright test --project=live test-e2e/live/agent-codex-*.spec.js",
+    "test:e2e:agent:ollama": "dotenv -e .env.agent-tests.local -- playwright test --project=harness test-e2e/agent-ollama-live.spec.js",
     "test:e2e:live": "playwright test --project=live",
     "test:e2e:packaged": "playwright test --project=packaged --project=packaged-live",
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
     "test:e2e:startup-smoke": "FREEDOM_STARTUP_SMOKE=1 playwright test --project=live test-e2e/live/startup-responsiveness.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
+    "test:agent-sandbox": "FREEDOM_REQUIRE_BWRAP=1 jest --runInBand src/main/agent/workspace-execution",
+    "test:agent-sandbox:qualification": "FREEDOM_REQUIRE_BWRAP=1 node scripts/qualify-agent-sandbox.js",
+    "test:agent-sandbox:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && FREEDOM_REQUIRE_BWRAP=1 jest --runInBand src/main/agent/workspace-execution/bubblewrap-destructive.test.js",
+    "test:agent-sandbox:macos": "FREEDOM_REQUIRE_SEATBELT=1 jest --runInBand src/main/agent/workspace-execution/seatbelt-backend.test.js src/main/agent/workspace-execution/seatbelt-integration.test.js",
+    "test:agent-sandbox:macos:qualification": "FREEDOM_REQUIRE_SEATBELT=1 node scripts/qualify-agent-sandbox-macos.js",
+    "test:agent-sandbox:macos:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && test \"$FREEDOM_SANDBOX_VM_ONLY\" = 1 && FREEDOM_REQUIRE_SEATBELT=1 jest --runInBand src/main/agent/workspace-execution/seatbelt-destructive.test.js",
+    "test:agent-sandbox:macos:electron": "FREEDOM_REQUIRE_SEATBELT=1 electron src/main/agent/workspace-execution/electron-qualification-main.js",
+    "test:agent-sandbox:macos:electron:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && test \"$FREEDOM_SANDBOX_VM_ONLY\" = 1 && FREEDOM_REQUIRE_SEATBELT=1 electron src/main/agent/workspace-execution/electron-qualification-main.js",
+    "build:agent-sandbox:macos:packaged": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir --config config/electron-builder.agent-sandbox-macos.js",
+    "test:agent-sandbox:macos:packaged": "node scripts/qualify-agent-sandbox-packaged-macos.js",
+    "test:agent-sandbox:macos:packaged:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && test \"$FREEDOM_SANDBOX_VM_ONLY\" = 1 && node scripts/qualify-agent-sandbox-packaged-macos.js --destructive",
+    "test:agent-sandbox:workspace:packaged:macos": "node scripts/qualify-agent-sandbox-packaged-macos.js --workspace-product",
+    "test:agent-sandbox:workspace:macos:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && test \"$FREEDOM_SANDBOX_VM_ONLY\" = 1 && ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js macos-destructive",
+    "test:agent-sandbox:workspace:macos:app-exit": "node scripts/qualify-agent-app-exit-macos.js",
+    "build:agent-sandbox:linux:packaged": "electron-builder --linux dir deb AppImage --config config/electron-builder.agent-sandbox-linux.js --publish never",
+    "test:agent-sandbox:linux:packaged": "node scripts/qualify-agent-sandbox-packaged-linux.js",
+    "test:agent-sandbox:network:product": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-network-product.js",
+    "test:agent-sandbox:network:disabled": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-network-product.js --network-disabled",
+    "test:agent-sandbox:workspace": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js all",
+    "test:agent-sandbox:workspace:network": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js network",
+    "test:agent-sandbox:workspace:processes": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js processes",
+    "test:agent-sandbox:workspace:processes:slow": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js processes --include-slow",
+    "test:agent-sandbox:workspace:reconciliation": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js reconciliation",
+    "test:agent-sandbox:workspace:previews": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js previews",
+    "test:agent-sandbox:workspace:previews:disabled": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js previews --network-disabled",
+    "test:agent-sandbox:workspace:process-controls": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js process-controls",
+    "test:agent-sandbox:workspace:self-test-fault": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js self-test-fault",
     "lint": "eslint .",
     "changelog:assemble": "node scripts/assemble-changelog.js",
     "styles:inventory": "node scripts/update-renderer-color-literals.js",
@@ -79,8 +111,12 @@
     "openlv:ios-harness": "node scripts/openlv-ios-harness.js",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
-    "postinstall": "node scripts/better-sqlite3-prebuilds.js && electron-builder install-app-deps",
-    "radicle:build-addon": "node scripts/build-radicle-addon.js"
+    "postinstall": "install-electron && node scripts/better-sqlite3-prebuilds.js && electron-builder install-app-deps",
+    "radicle:build-addon": "node scripts/build-radicle-addon.js",
+    "prestart": "node scripts/prepare-native-supervisors.js",
+    "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js",
+    "build:linux-workspace-supervisor": "node scripts/build-linux-workspace-supervisor.js",
+    "build:windows-workspace": "node scripts/build-windows-workspace.js"
   },
   "build": {
     "appId": "baby.freedom.browser",
@@ -112,10 +148,7 @@
       "icon": "assets/icon.png",
       "identity": "Solar Dev Ltd (46XPHRBLH5)",
       "hardenedRuntime": true,
-      "binaries": [
-        "Contents/Resources/myotis-node/myotis-supervisor"
-      ],
-      "sign": "./scripts/sign-myotis-helper.js",
+      "binaries": ["Contents/Resources/myotis-node/myotis-supervisor"],
       "gatekeeperAssess": false,
       "extendInfo": {
         "LSMultipleInstancesProhibited": false,
@@ -126,6 +159,11 @@
       "entitlementsInherit": "config/entitlements.mac.plist",
       "notarize": true,
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!**/*.test.c",
         "!**/node_modules/better-sqlite3/prebuilds/!(darwin-${arch}).node"
       ],
       "extraResources": [
@@ -144,10 +182,19 @@
           ]
         },
         {
+          "from": "out/macos-supervisor/${arch}/",
+          "to": "workspace-supervisor",
+          "filter": [
+            "freedom-workspace-supervisor",
+            "manifest.json"
+          ]
+        },
+        {
           "from": "node_modules/electron/dist/LICENSES.chromium.html",
           "to": "LICENSES.chromium.html"
         }
-      ]
+      ],
+      "sign": "./scripts/sign-native-supervisors.js"
     },
     "linux": {
       "target": [
@@ -165,9 +212,19 @@
         "x-scheme-handler/bzz"
       ],
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!**/*.test.c",
         "!**/node_modules/better-sqlite3/prebuilds/!(linux-${arch}).node"
       ],
       "extraResources": [
+        {
+          "from": "out/linux-workspace-owner/${arch}/",
+          "to": "linux-workspace-owner",
+          "filter": ["freedom-linux-workspace-owner", "manifest.json"]
+        },
         {
           "from": "radicle-bin/${os}-${arch}/",
           "to": "radicle-bin",
@@ -182,6 +239,20 @@
             "**/*"
           ]
         }
+      ]
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "bubblewrap"
       ]
     },
     "toolsets": {
@@ -211,9 +282,19 @@
       ],
       "icon": "assets/icon.png",
       "files": [
+        "src/**/*",
+        "package.json",
+        "!**/*.test.js",
+        "!**/coverage/**",
+        "!**/*.test.c",
         "!**/node_modules/better-sqlite3/prebuilds/!(win32-${arch}).node"
       ],
       "extraResources": [
+        {
+          "from": "out/windows-workspace/${arch}/",
+          "to": "windows-workspace",
+          "filter": ["*.exe", "manifest.json", "CODEX-*.txt", "CODEX-*.json"]
+        },
         {
           "from": "radicle-bin/${os}-${arch}/",
           "to": "radicle-bin",
@@ -234,7 +315,8 @@
       "src/**/*",
       "package.json",
       "!**/*.test.js",
-      "!**/coverage/**"
+      "!**/coverage/**",
+      "!**/*.test.c"
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
@@ -287,7 +369,8 @@
         "from": "NOTICES",
         "to": "NOTICES"
       }
-    ]
+    ],
+    "beforePack": "./scripts/prepare-native-supervisors.js"
   },
   "engines": {
     "node": ">=24.11.0 <25"
@@ -312,6 +395,7 @@
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
     "@corpus-core/colibri-stateless": "3.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",
     "@ghostery/adblocker": "^2.18.1",
@@ -320,6 +404,7 @@
     "@metamask/browser-passworder": "^6.0.0",
     "@openlv/core": "^0.2.0",
     "@openlv/session": "^0.2.0",
+    "@phala/dcap-qvl": "0.6.5",
     "@safe-global/protocol-kit": "^8.0.3",
     "@scure/bip39": "^2.2.0",
     "@x402/core": "^2.28.0",
@@ -329,6 +414,7 @@
     "electron-updater": "^6.8.3",
     "ethers": "^6.17.0",
     "micro-key-producer": "^0.10.0",
+    "pdfjs-dist": "6.3.289",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4"
   },

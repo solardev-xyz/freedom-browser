@@ -271,6 +271,17 @@ const SHORTCUTS = [
     category: 'Window',
     editable: true,
   },
+  {
+    id: 'view.toggleAgent',
+    description: 'Show Agent',
+    settingsLabel: 'Show Agent',
+    defaultAccelerator: 'CmdOrCtrl+K',
+    // Enforced twice: the View menu accelerator covers a focused page, the
+    // renderer keydown covers focus already in the chrome.
+    context: 'both',
+    category: 'Window',
+    editable: true,
+  },
 
   // Developer
   {

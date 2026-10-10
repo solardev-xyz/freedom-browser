@@ -475,6 +475,20 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
         }
       },
     },
+    // Agent floats over the page, so its chord has to reach the chrome while
+    // the page holds the keyboard: the renderer's own keydown only sees it
+    // when focus is already in the chrome.
+    {
+      id: 'toggle-agent',
+      label: 'Show Agent',
+      accelerator: acc('view.toggleAgent'),
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('agent:toggle');
+        }
+      },
+    },
     { type: 'separator' },
     {
       id: 'toggle-devtools',

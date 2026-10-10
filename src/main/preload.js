@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // Note: Preload scripts run in a sandboxed context where relative requires
 // can fail. Using hardcoded strings here for reliability.
@@ -95,6 +95,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelDownload: (id) => ipcRenderer.invoke('downloads:cancel', id),
   openDownloadedFile: (id) => ipcRenderer.invoke('downloads:open-file', id),
   showDownloadInFolder: (id) => ipcRenderer.invoke('downloads:show-in-folder', id),
+  openAgentArtifact: (artifactId) => ipcRenderer.invoke('downloads:open-artifact', artifactId),
+  showAgentArtifactInFolder: (artifactId) =>
+    ipcRenderer.invoke('downloads:show-artifact-in-folder', artifactId),
   // Main sends this to the download's owning window only; drives the shelf.
   onDownloadUpdated: (callback) => {
     const handler = (_event, download) => callback(download);
@@ -167,6 +170,219 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // Internal
   getWebviewPreloadPath: () => ipcRenderer.invoke('internal:get-webview-preload-path'),
+  bindAutomationTab: (rendererTabId, guestWebContentsId) =>
+    ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
+  startAgent: (rendererTabId, prompt, approvalMode = 'every_interaction', attachmentIds = [], privacySettings) =>
+    ipcRenderer.invoke('agent:start', {
+      rendererTabId,
+      prompt,
+      approvalMode,
+      ...(attachmentIds.length && { attachmentIds }),
+      ...(privacySettings && { privacySettings }),
+    }),
+  steerAgent: (runId, prompt) => ipcRenderer.invoke('agent:steer', { runId, prompt }),
+  pauseAgent: (runId) => ipcRenderer.invoke('agent:pause', { runId }),
+  resumeAgent: (runId, prompt) => ipcRenderer.invoke('agent:resume', { runId, prompt }),
+  stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
+  stopAgentHelper: (runId, taskId) => ipcRenderer.invoke('agent:stop', { runId, taskId }),
+  decideAgentApproval: (runId, approvalId, approved, options = {}) =>
+    ipcRenderer.invoke('agent:approval:decide', {
+      runId,
+      approvalId,
+      approved,
+      ...(Number.isSafeInteger(options.walletIndex) && options.walletIndex >= 0
+        ? { walletIndex: options.walletIndex }
+        : {}),
+      ...(options.diagnosticScope === 'conversation' ? { diagnosticScope: 'conversation' } : {}),
+      ...(options.workspacePermissionScope === 'conversation'
+        ? { workspacePermissionScope: 'conversation' }
+        : {}),
+    }),
+  handleAgentWalletRequest: (rendererTabId, request) =>
+    ipcRenderer.invoke('agent:wallet:request', { rendererTabId, request }),
+  getAgentState: () => ipcRenderer.invoke('agent:get-state'),
+  getAgentPageActions: (rendererTabId) => ipcRenderer.invoke('agent:page-actions', { rendererTabId }),
+  clearAgentConversation: () => ipcRenderer.invoke('agent:clear-conversation'),
+  readAgentHelperReport: (conversationId, reportId, offset = 0) =>
+    ipcRenderer.invoke('agent:helper-reports', { conversationId, reportId, offset }),
+  listAgentSessions: () => ipcRenderer.invoke('agent:history:list'),
+  openAgentSession: (conversationId) =>
+    ipcRenderer.invoke('agent:history:open', { conversationId }),
+  renameAgentSession: (conversationId, title) =>
+    ipcRenderer.invoke('agent:history:rename', { conversationId, title }),
+  deleteAgentSession: (conversationId) =>
+    ipcRenderer.invoke('agent:history:delete', { conversationId }),
+  pickAgentFiles: () => ipcRenderer.invoke('agent:attachments:pick-files'),
+  dropAgentFiles: async (files) => {
+    // Resolve native File objects in preload; never trust renderer-supplied paths.
+    try {
+      if (!Array.isArray(files) || !files.length || files.length > 10) {
+        throw new Error('Drop between 1 and 10 files');
+      }
+      const filePaths = files.map(file => webUtils.getPathForFile(file));
+      if (filePaths.some(filePath => !filePath)) throw new Error('Drop files from your computer, or use Add files to choose them');
+      return await ipcRenderer.invoke('agent:attachments:drop-files', { filePaths });
+    } catch (error) {
+      return { ok: false, error: { message: error?.message || 'Could not attach these files. Try Add files instead.' } };
+    }
+  },
+  pickAgentFolder: () => ipcRenderer.invoke('agent:attachments:pick-folder'),
+  agentProjectAccess: (action, conversationId = null) => ipcRenderer.invoke('agent:project:access', { action, conversationId }),
+  removeAgentAttachment: (selectionId) =>
+    ipcRenderer.invoke('agent:attachments:remove', { selectionId }),
+  revokeAgentAttachment: (conversationId, resourceId) =>
+    ipcRenderer.invoke('agent:attachments:revoke', { conversationId, resourceId }),
+  getAgentAttachmentPreview: (conversationId, resourceId) =>
+    ipcRenderer.invoke('agent:attachments:preview', { conversationId, resourceId }),
+  setAgentPrivacySettings: (conversationId, settings) =>
+    ipcRenderer.invoke('agent:privacy-settings:set', { conversationId, settings }),
+  setAgentApprovalMode: (conversationId, approvalMode) =>
+    ipcRenderer.invoke('agent:approval-mode:set', { conversationId, approvalMode }),
+  claimAgentTab: (rendererTabId) => ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
+  agentWorkspaceHistory: (conversationId, action, options = {}) =>
+    ipcRenderer.invoke('agent:workspace:history', { conversationId, action,
+      versionId: options.versionId, label: options.label, path: options.path, token: options.token, reason: options.reason,
+      baseId: options.baseId, cursor: options.cursor, offset: options.offset, paths: options.paths }),
+  inspectAgentWorkspace: (conversationId, kind, path = '.', showGenerated = false, options = {}) =>
+    ipcRenderer.invoke('agent:workspace:inspect', { conversationId, kind, path, showGenerated, offset: options.offset, scope: options.scope, revision: options.revision, query: options.query }),
+  stopAgentProcess: (processId) => ipcRenderer.invoke('agent:process:stop', { processId }),
+  openAgentProcessPreview: (processId) =>
+    ipcRenderer.invoke('agent:process:preview-open', { processId }),
+  openAgentPublication: (bzzUrl) => ipcRenderer.invoke('agent:publication:open', { bzzUrl }),
+  agentMcpConnections: (action, input = {}) => ipcRenderer.invoke('agent:mcp:connections', { action, ...input }),
+  getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
+  getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
+  refreshAgentProviderModels: (providerId, apiKey) =>
+    ipcRenderer.invoke('agent:provider:refresh-models', { providerId, apiKey }),
+  setAgentProviderPreferences: (providerId, preferences) =>
+    ipcRenderer.invoke('agent:provider:set-preferences', { providerId, ...preferences }),
+  testAgentProviderConnection: (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:test-connection', { providerId, modelId }),
+  configureHostedAgentProvider: (providerId, modelId, apiKey, privacyPolicy) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey,
+      ...(privacyPolicy !== undefined && { privacyPolicy }) }),
+  configureCompatibleAgentProvider: (connection) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { ...connection, kind: 'compatible' }),
+  configureOllamaAgentProvider: (modelId, baseUrl) =>
+    ipcRenderer.invoke('agent:provider:configure-ollama', { modelId, baseUrl }),
+  loginSubscriptionAgentProvider: (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:login-subscription', { providerId, modelId }),
+  cancelAgentProviderLogin: () => ipcRenderer.invoke('agent:provider:cancel-login'),
+  submitAgentProviderLogin: (requestId, callbackUrl) => ipcRenderer.invoke('agent:provider:submit-login', { requestId, callbackUrl }),
+  selectAgentModel: (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId }),
+  removeAgentProvider: (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId }),
+  clearAgentProvider: () => ipcRenderer.invoke('agent:provider:clear'),
+  onAgentProviderAuthEvent: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('agent:provider:auth-event', handler);
+    return () => ipcRenderer.removeListener('agent:provider:auth-event', handler);
+  },
+  onAgentEvent: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('agent:event', handler);
+    return () => ipcRenderer.removeListener('agent:event', handler);
+  },
+  onAutomationNavigate: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const rendererTabId = payload?.rendererTabId;
+      const url = payload?.url;
+      if (
+        !requestId ||
+        !Number.isSafeInteger(rendererTabId) ||
+        rendererTabId < 1 ||
+        typeof url !== 'string' ||
+        !url
+      ) {
+        return;
+      }
+      Promise.resolve()
+        .then(() => callback({ rendererTabId, url }))
+        .then((accepted) => {
+          ipcRenderer.send('automation:navigate-result', {
+            requestId,
+            ok: accepted === true,
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:navigate-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:navigate', handler);
+    return () => ipcRenderer.removeListener('automation:navigate', handler);
+  },
+  onAutomationStopLoading: (callback) => {
+    const handler = (_event, payload) => {
+      const rendererTabId = payload?.rendererTabId;
+      if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+      callback({ rendererTabId });
+    };
+    ipcRenderer.on('automation:stop-loading', handler);
+    return () => ipcRenderer.removeListener('automation:stop-loading', handler);
+  },
+  onAutomationCreateTab: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const url = payload?.url;
+      if (!requestId || typeof url !== 'string' || !url) return;
+      Promise.resolve()
+        .then(() => callback({ url }))
+        .then((rendererTabId) => {
+          const ok = Number.isSafeInteger(rendererTabId) && rendererTabId > 0;
+          ipcRenderer.send('automation:create-tab-result', {
+            requestId,
+            ok,
+            ...(ok && { rendererTabId }),
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:create-tab-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:create-tab', handler);
+    return () => ipcRenderer.removeListener('automation:create-tab', handler);
+  },
+  onAutomationCloseTab: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const rendererTabId = payload?.rendererTabId;
+      if (!requestId || !Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+      Promise.resolve()
+        .then(() => callback({ rendererTabId }))
+        .then((closed) => {
+          ipcRenderer.send('automation:close-tab-result', {
+            requestId,
+            ok: closed === true,
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:close-tab-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:close-tab', handler);
+    return () => ipcRenderer.removeListener('automation:close-tab', handler);
+  },
+  onAutomationFocusTab: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const rendererTabId = payload?.rendererTabId;
+      if (!requestId || !Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+      Promise.resolve()
+        .then(() => callback({ rendererTabId }))
+        .then((focused) => {
+          ipcRenderer.send('automation:focus-tab-result', {
+            requestId,
+            ok: focused === true,
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:focus-tab-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:focus-tab', handler);
+    return () => ipcRenderer.removeListener('automation:focus-tab', handler);
+  },
   // Context menu
   saveImage: (imageUrl) => ipcRenderer.invoke('context-menu:save-image', imageUrl),
   // Clipboard
@@ -242,6 +458,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = () => callback();
     ipcRenderer.on('focus:address-bar', handler);
     return () => ipcRenderer.removeListener('focus:address-bar', handler);
+  },
+  onToggleAgent: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('agent:toggle', handler);
+    return () => ipcRenderer.removeListener('agent:toggle', handler);
   },
   onCloseMenus: (callback) => {
     const handler = () => callback();
@@ -365,21 +586,27 @@ contextBridge.exposeInMainWorld('myotis', {
   retryCheckpoint: (chainId = 1) => ipcRenderer.invoke('myotis:retryCheckpoint', chainId),
   repairSyncData: (chainId = 1) => ipcRenderer.invoke('myotis:repairSyncData', chainId),
   recoveryHelp: (chainId = 1) => ipcRenderer.invoke('myotis:recoveryHelp', chainId),
-  start: (chainId) => chainId == null
-    ? ipcRenderer.invoke('myotis:start')
-    : ipcRenderer.invoke('myotis:start', chainId),
-  stop: (chainId) => chainId == null
-    ? ipcRenderer.invoke('myotis:stop')
-    : ipcRenderer.invoke('myotis:stop', chainId),
-  getStatus: (chainId) => chainId == null
-    ? ipcRenderer.invoke('myotis:getStatus')
-    : ipcRenderer.invoke('myotis:getStatus', chainId),
+  start: (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:start')
+      : ipcRenderer.invoke('myotis:start', chainId),
+  stop: (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:stop')
+      : ipcRenderer.invoke('myotis:stop', chainId),
+  getStatus: (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:getStatus')
+      : ipcRenderer.invoke('myotis:getStatus', chainId),
   onStatusUpdate: (callback) => {
     const handler = (_event, value) => callback(value);
     ipcRenderer.on('myotis:statusUpdate', handler);
     // The eager snapshot is best-effort; live status events continue to work
     // if startup races handler registration or the window is already closing.
-    ipcRenderer.invoke('myotis:getStatus').then(callback).catch(() => {});
+    ipcRenderer
+      .invoke('myotis:getStatus')
+      .then(callback)
+      .catch(() => {});
     return () => ipcRenderer.removeListener('myotis:statusUpdate', handler);
   },
 });
@@ -579,7 +806,8 @@ contextBridge.exposeInMainWorld('wallet', {
 
 contextBridge.exposeInMainWorld('ledger', {
   getAccounts: (options) => ipcRenderer.invoke('ledger:get-accounts', options),
-  addAccount: (name, address, path) => ipcRenderer.invoke('wallet:add-ledger-wallet', name, address, path),
+  addAccount: (name, address, path) =>
+    ipcRenderer.invoke('wallet:add-ledger-wallet', name, address, path),
 });
 
 // Remote (phone) signing: main publishes signing jobs here; the renderer
@@ -767,7 +995,8 @@ contextBridge.exposeInMainWorld('swarmManifest', {
   check: (request) => ipcRenderer.invoke('swarm:manifest-check', request),
   decide: (token, outcome) => ipcRenderer.invoke('swarm:manifest-decide', { token, outcome }),
   get: (origin) => ipcRenderer.invoke('swarm:manifest-get', origin),
-  useIndividual: (origin, capability) => ipcRenderer.invoke('swarm:manifest-use-individual', { origin, capability }),
+  useIndividual: (origin, capability) =>
+    ipcRenderer.invoke('swarm:manifest-use-individual', { origin, capability }),
   disconnect: (origin) => ipcRenderer.invoke('swarm:manifest-disconnect', origin),
 });
 

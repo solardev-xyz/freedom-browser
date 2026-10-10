@@ -16,9 +16,6 @@
     <script src="./platform-init.js"></script>
   </head>
   <body>
-    <!-- Download shelf (cards inserted dynamically) -->
-    <div id="download-shelf" class="download-shelf" data-test="download-shelf"></div>
-
     <div id="myotis-recovery-notice" class="update-toast" role="status" hidden>
       <div class="update-toast-content">
         <span id="myotis-recovery-notice-text"></span>
@@ -71,6 +68,68 @@
         </button>
       </div>
       <div class="title-bar-drag"></div>
+      <div id="agent-first-titlebar" class="agent-first-titlebar" hidden>
+        <div class="agent-first-titlebar-left">
+          <button
+            id="agent-session-sidebar-toggle"
+            class="agent-titlebar-button"
+            type="button"
+            aria-label="Hide sessions sidebar"
+            aria-expanded="true"
+            title="Toggle sessions sidebar"
+            data-test="agent-session-sidebar-toggle"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16" />
+            </svg>
+          </button>
+        </div>
+        <div class="agent-first-titlebar-center">
+          <span id="agent-first-title" class="agent-first-title">New task</span>
+        </div>
+        <div class="agent-first-titlebar-right">
+          <aside
+            id="agent-task-pages"
+            class="agent-task-pages"
+            aria-label="Agent workspace tabs"
+            data-test="agent-task-pages"
+            hidden
+          >
+            <span id="agent-task-page-count" class="sr-only">0</span>
+            <div id="agent-task-page-list" class="agent-task-page-list"></div>
+            <p id="agent-task-pages-note" class="agent-task-pages-note">
+              Only pages belonging to this conversation are shown.
+            </p>
+          </aside>
+          <button
+            id="agent-workspace-sidebar-toggle"
+            class="agent-titlebar-button"
+            type="button"
+            aria-label="Hide workspace sidebar"
+            aria-expanded="true"
+            title="Toggle workspace sidebar"
+            data-test="agent-workspace-sidebar-toggle"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M15 4v16" />
+            </svg>
+          </button>
+        </div>
+      </div>
       <!-- Window controls for Linux (hidden by default, shown via JS) -->
       <div class="window-controls" id="window-controls">
         <button class="window-control-btn" id="minimize-btn" aria-label="Minimize">
@@ -960,6 +1019,37 @@
         </div>
       </div>
       <button
+        id="agent-toggle-btn"
+        class="agent-toggle-btn"
+        type="button"
+        aria-label="Open Agent"
+        aria-controls="agent-sidebar"
+        aria-expanded="false"
+        data-test="agent-toggle-btn"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z" />
+          <path d="m18.5 13 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+          <path d="m5.5 13 .7 2.3 2.3.7-2.3.7L5.5 19l-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" />
+        </svg>
+      </button>
+      <div id="agent-page-actions-hint" class="agent-page-actions-hint chrome-popover" role="region" aria-label="Page automations" hidden>
+        <div class="agent-page-actions-hint-heading">
+          <strong>This page offers automations</strong>
+          <button type="button" data-page-actions-dismiss aria-label="Dismiss automation hint">×</button>
+        </div>
+        <p>Explore what you can do with Freedom Agent.</p>
+        <button type="button" class="agent-page-actions-explore" data-page-actions-explore>Explore actions</button>
+      </div>
+      <button
         id="wallet-toggle-btn"
         class="wallet-toggle-btn"
         type="button"
@@ -1185,46 +1275,919 @@
       id="bookmarks-bar"
       data-test="bookmarks-bar"
     ></nav>
+        <div id="agent-mode-menu" class="agent-session-actions agent-mode-menu" role="menu" aria-label="Freedom mode" popover="manual" hidden>
+          <button id="agent-mode-agent" type="button" role="menuitemradio" aria-checked="true" aria-labelledby="agent-mode-agent-label" aria-describedby="agent-mode-agent-description">
+            <span class="agent-mode-copy">
+              <span id="agent-mode-agent-label">Freedom Agent</span>
+              <small id="agent-mode-agent-description">Focus on tasks and conversations</small>
+            </span>
+          </button>
+          <button id="agent-mode-browser" type="button" role="menuitemradio" aria-checked="false" aria-labelledby="agent-mode-browser-label" aria-describedby="agent-mode-browser-description">
+            <span class="agent-mode-copy">
+              <span id="agent-mode-browser-label">Freedom Browser</span>
+              <small id="agent-mode-browser-description">Browse websites with Agent alongside</small>
+            </span>
+          </button>
+        </div>
+
     <section class="app-body">
-      <main class="content">
-        <div class="content-page">
-          <div id="webview-container" class="webview-container">
-            <!-- Webviews inserted dynamically by tabs.js -->
-          </div>
-          <div id="link-status" class="link-status" hidden aria-hidden="true">
-            <span id="link-status-url" class="link-status-url"></span>
-          </div>
-          <div id="find-bar" class="find-bar" role="search" aria-label="Find in page" hidden data-test="find-bar">
-            <input
-              id="find-bar-input"
-              class="find-bar-input"
-              type="text"
-              placeholder="Find in page"
-              spellcheck="false"
-              autocomplete="off"
-              aria-label="Find in page"
-              data-test="find-bar-input"
-            />
-            <span id="find-bar-count" class="find-bar-count" aria-live="polite" data-test="find-bar-count"></span>
-            <div class="find-bar-divider"></div>
-            <button id="find-bar-prev" class="find-bar-btn" type="button" disabled aria-label="Previous match" title="Previous match (Shift+Enter)" data-test="find-bar-prev">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m18 15-6-6-6 6"/>
-              </svg>
-            </button>
-            <button id="find-bar-next" class="find-bar-btn" type="button" disabled aria-label="Next match" title="Next match (Enter)" data-test="find-bar-next">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m6 9 6 6 6-6"/>
-              </svg>
-            </button>
-            <button id="find-bar-close" class="find-bar-btn" type="button" aria-label="Close find bar" title="Close (Esc)" data-test="find-bar-close">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M18 6 6 18"/><path d="M6 6 18 18"/>
-              </svg>
-            </button>
+      <aside
+        id="agent-session-sidebar"
+        class="agent-session-sidebar"
+        aria-label="Agent sessions"
+        data-test="agent-session-sidebar"
+        hidden
+      >
+        <div class="agent-session-sidebar-header">
+          <button
+            id="agent-mode-toggle"
+            class="agent-mode-toggle"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="agent-mode-menu"
+          >
+            <span>Freedom Agent</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <button id="agent-session-new-chat" type="button" aria-label="New chat" title="New chat">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        </div>
+        <div class="agent-session-sidebar-content">
+          <span class="agent-session-section-label">Sessions</span>
+          <div id="agent-session-list" class="agent-session-list"></div>
+          <div id="agent-session-history-empty" class="agent-session-history-empty">
+            <p>Your conversations will appear here.</p>
           </div>
         </div>
-      </main>
+        <div
+          id="agent-session-resizer"
+          class="agent-pane-resizer agent-session-resizer"
+          role="separator"
+          aria-label="Resize sessions sidebar"
+          aria-orientation="vertical"
+          aria-valuemin="190"
+          aria-valuemax="520"
+          aria-valuenow="242"
+          tabindex="0"
+          data-test="agent-session-resizer"
+        ></div>
+      </aside>
+      <section id="agent-page-surface" class="agent-page-surface">
+        <div
+          id="agent-workspace-resizer"
+          class="agent-pane-resizer agent-workspace-resizer"
+          role="separator"
+          aria-label="Resize workspace sidebar"
+          aria-orientation="vertical"
+          aria-valuemin="300"
+          aria-valuemax="760"
+          aria-valuenow="420"
+          tabindex="0"
+          data-test="agent-workspace-resizer"
+        ></div>
+        <form
+          id="agent-workspace-nav"
+          class="agent-workspace-nav"
+          aria-label="Workspace navigation"
+        >
+          <div class="agent-workspace-nav-buttons">
+            <button id="agent-workspace-back" type="button" aria-label="Back" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+            <button id="agent-workspace-forward" type="button" aria-label="Forward" title="Forward">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
+            <button id="agent-workspace-reload" type="button" aria-label="Reload" title="Reload">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M20 11a8.1 8.1 0 1 0 1.1 4" />
+                <path d="M20 4v7h-7" />
+              </svg>
+            </button>
+          </div>
+          <div
+            id="agent-workspace-address-host"
+            class="agent-workspace-address-host"
+          ></div>
+        </form>
+        <div id="agent-task-pages-empty" class="agent-task-pages-empty">
+          <p>Pages Agent opens for this task will appear here.</p>
+        </div>
+        <main class="content">
+          <div class="content-page">
+            <div id="webview-container" class="webview-container">
+              <!-- Webviews inserted dynamically by tabs.js -->
+              <div
+                id="agent-page-interlock"
+                class="agent-page-interlock"
+                data-test="agent-page-interlock"
+                hidden
+              >
+                <button
+                  id="agent-page-lock-trigger"
+                  class="agent-page-lock-trigger"
+                  type="button"
+                  aria-label="Agent is controlling this page. Click to take over."
+                >
+                  <span id="agent-page-lock-hint" class="agent-page-lock-hint">
+                    Agent is controlling this page · Click to take over
+                  </span>
+                </button>
+                <section
+                  id="agent-takeover-dialog"
+                  class="agent-takeover-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="agent-takeover-title"
+                  hidden
+                >
+                  <h3 id="agent-takeover-title">Take over this page?</h3>
+                  <p>
+                    Agent will wait while you use its pages. You can resume the task when
+                    you are finished.
+                  </p>
+                  <div class="agent-takeover-actions">
+                    <button id="agent-takeover-cancel" type="button">Keep Agent working</button>
+                    <button id="agent-takeover-confirm" class="primary" type="button">
+                      Take over
+                    </button>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <!-- Browser-owned download shelf (cards inserted dynamically) -->
+            <div id="download-shelf" class="download-shelf" data-test="download-shelf"></div>
+            <div id="link-status" class="link-status" hidden aria-hidden="true">
+              <span id="link-status-url" class="link-status-url"></span>
+            </div>
+            <div
+              id="find-bar"
+              class="find-bar"
+              role="search"
+              aria-label="Find in page"
+              hidden
+              data-test="find-bar"
+            >
+              <input
+                id="find-bar-input"
+                class="find-bar-input"
+                type="text"
+                placeholder="Find in page"
+                spellcheck="false"
+                autocomplete="off"
+                aria-label="Find in page"
+                data-test="find-bar-input"
+              />
+              <span
+                id="find-bar-count"
+                class="find-bar-count"
+                aria-live="polite"
+                data-test="find-bar-count"
+              ></span>
+              <div class="find-bar-divider"></div>
+              <button
+                id="find-bar-prev"
+                class="find-bar-btn"
+                type="button"
+                disabled
+                aria-label="Previous match"
+                title="Previous match (Shift+Enter)"
+                data-test="find-bar-prev"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="m18 15-6-6-6 6" />
+                </svg>
+              </button>
+              <button
+                id="find-bar-next"
+                class="find-bar-btn"
+                type="button"
+                disabled
+                aria-label="Next match"
+                title="Next match (Enter)"
+                data-test="find-bar-next"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </button>
+              <button
+                id="find-bar-close"
+                class="find-bar-btn"
+                type="button"
+                aria-label="Close find bar"
+                title="Close (Esc)"
+                data-test="find-bar-close"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="M6 6 18 18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </main>
+      </section>
+      <aside id="agent-sidebar" class="agent-sidebar collapsed" aria-label="Freedom Agent">
+        <div class="agent-sidebar-inner">
+          <div class="agent-sidebar-header">
+            <div class="agent-sidebar-title-row">
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-sidebar-back"
+                aria-label="Back to Agent"
+                hidden
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+              </button>
+              <button
+                id="agent-browser-mode-toggle"
+                class="agent-mode-toggle"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="agent-mode-menu"
+                hidden
+              >
+                <span>Freedom Browser</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </button>
+              <div>
+                <h2 id="agent-sidebar-title">Agent</h2>
+                <p id="agent-sidebar-subtitle">Give Agent a task</p>
+              </div>
+              <span id="agent-float-title" class="agent-float-title">New task</span>
+            </div>
+            <div class="agent-sidebar-header-actions">
+              <button type="button" class="agent-icon-btn" id="agent-session-privacy"
+                aria-label="Conversation privacy" aria-expanded="false" aria-controls="agent-session-privacy-panel" hidden>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z" />
+                  <path d="M12 8v5m0 3h.01" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-scope-help"
+                aria-label="What Agent can use in this conversation"
+                aria-expanded="false"
+                aria-controls="agent-scope-help-text"
+                title="What Agent can use"
+                hidden
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 11v5" />
+                  <path d="M12 8h.01" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-first-toggle"
+                aria-label="Make Agent the main view"
+                aria-pressed="false"
+                title="Agent-first view"
+                data-test="agent-first-toggle"
+                hidden
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M8 3H3v5" />
+                  <path d="m3 3 6 6" />
+                  <path d="M16 3h5v5" />
+                  <path d="m21 3-6 6" />
+                  <path d="M8 21H3v-5" />
+                  <path d="m3 21 6-6" />
+                  <path d="M16 21h5v-5" />
+                  <path d="m21 21-6-6" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-sidebar-close"
+                aria-label="Close Agent"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <p id="agent-scope-help-text" class="agent-scope-help" role="note" hidden></p>
+
+          <div id="agent-loading-view" class="agent-view agent-loading-view">
+            <p>Loading Agent…</p>
+          </div>
+
+          <div id="agent-setup-view" class="agent-view agent-setup-view" hidden>
+            <div id="agent-provider-home">
+              <div class="agent-setup-intro"><h3>Models &amp; providers</h3><p>Your connected models, all in one place.</p></div>
+              <div id="agent-connected-providers" class="agent-connected-providers" hidden>
+                <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
+              </div>
+              <button id="agent-provider-add" class="agent-button secondary" type="button">＋ Add provider</button>
+            </div>
+            <div id="agent-provider-browser" hidden>
+              <button id="agent-provider-list-back" class="agent-text-button" type="button">‹ Providers</button>
+              <h3>Add a provider</h3>
+              <input id="agent-provider-search" type="search" placeholder="Search providers…" aria-label="Search providers" autocomplete="off" />
+              <div id="agent-provider-choices" class="agent-provider-choices"></div>
+            </div>
+            <section id="agent-provider-detail" aria-labelledby="agent-provider-form-heading" hidden>
+              <button id="agent-provider-detail-back" class="agent-text-button" type="button">‹ Providers</button>
+              <div class="agent-card-heading"><h3 id="agent-provider-form-heading">Choose a provider</h3><span id="agent-provider-status" class="agent-badge">Not connected</span></div>
+              <section id="agent-compatibility" class="agent-compatibility" hidden aria-labelledby="agent-compatibility-heading">
+                <h4 id="agent-compatibility-heading">Optional compatibility check</h4>
+                <label class="agent-field"><span>Model to check</span><span id="agent-compatibility-model"></span></label>
+                <div id="agent-compatibility-note"></div>
+                <p id="agent-compatibility-result" class="agent-message" aria-live="polite"></p>
+                <div id="agent-compatibility-actions" class="agent-config-actions"><button id="agent-compatibility-continue" class="agent-text-button" type="button">Continue without checking</button></div>
+                <p class="agent-catalog-status">Results apply only to this model and saved settings. This is a quick check, not a guarantee of full API compatibility.</p>
+              </section>
+              <select id="agent-provider-select" hidden aria-label="Provider"></select>
+              <div id="agent-provider-methods" hidden>
+                <p class="agent-catalog-status">How would you like to connect?</p>
+                <button id="agent-provider-chatgpt" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong id="agent-subscription-method-title">ChatGPT subscription</strong><span id="agent-subscription-method-help">Use your ChatGPT account</span></span><span id="agent-provider-chatgpt-state" class="agent-provider-method-state">Connect</span></button>
+                <button id="agent-provider-api" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>API key</strong><span>Billed to your API account</span></span><span id="agent-provider-api-state" class="agent-provider-method-state">Connect</span></button>
+              </div>
+              <div id="agent-provider-connection-fields">
+                <button id="agent-provider-disconnect" class="agent-button secondary" type="button" hidden>Disconnect</button>
+                <div id="agent-custom-fields" hidden>
+                  <label class="agent-field"><span>Connection name</span><input id="agent-custom-name" type="text" maxlength="80" placeholder="My AI server" /></label>
+                  <label class="agent-field"><span>API base URL</span><input id="agent-custom-url" type="url" maxlength="2048" spellcheck="false" placeholder="https://example.com/v1" /></label>
+                  <p id="agent-custom-transport" class="agent-catalog-status">Use the API base URL, including any path such as /v1. Requests go directly to this endpoint.</p>
+                  <label class="agent-field"><span>Model IDs (optional, one per line)</span><textarea id="agent-custom-models" rows="3" placeholder="Leave empty to discover models" spellcheck="false"></textarea></label>
+                  <p class="agent-catalog-status">If discovery is unavailable, enter the model IDs supplied by your server.</p>
+                  <label id="agent-custom-clear-key-field" class="agent-field"><span><input id="agent-custom-clear-key" type="checkbox" /> Remove saved API key</span></label>
+                </div>
+                <label id="agent-api-key-field" class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored encrypted on this device" /></label>
+                <div id="agent-subscription-fields" class="hidden">
+                  <p id="agent-subscription-note" class="agent-subscription-note">Connect with your ChatGPT subscription.</p>
+                  <div id="agent-auth-code" class="agent-auth-code" hidden><span id="agent-auth-code-instruction">Enter this code in the OpenAI page</span><strong id="agent-auth-user-code"></strong></div>
+                  <details id="agent-auth-callback" class="agent-auth-callback" hidden><summary>Sign-in did not return?</summary><label class="agent-field"><span>Paste the final redirect URL from the sign-in browser</span><input id="agent-auth-callback-input" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:1455/auth/callback…" /></label><button id="agent-auth-callback-submit" class="agent-button secondary" type="button">Complete sign-in</button></details>
+                  <div class="agent-config-actions"><button id="agent-provider-login" class="agent-button secondary" type="button">Continue with ChatGPT</button><button id="agent-provider-cancel-login" class="agent-text-button" type="button" hidden>Cancel sign-in</button></div>
+                </div>
+                <div id="agent-privacy-controls" hidden>
+                  <label class="agent-field"><span>Privacy requirement</span><select id="agent-privacy-policy"></select></label>
+                  <button id="agent-privacy-save" class="agent-text-button" type="button">Save privacy setting</button>
+                </div>
+                <div class="agent-config-actions"><button id="agent-provider-save" class="agent-button secondary" type="button">Connect provider</button></div>
+                <section class="agent-provider-models" aria-labelledby="agent-provider-models-heading">
+                  <div class="agent-provider-models-heading">
+                    <h4 id="agent-provider-models-heading">Available models</h4>
+                    <button id="agent-model-refresh" class="agent-provider-models-refresh" type="button" aria-label="Refresh available models" title="Refresh available models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
+                  </div>
+                  <ul id="agent-provider-models-list" class="agent-provider-models-list" aria-labelledby="agent-provider-models-heading" tabindex="0" hidden></ul>
+                  <p class="agent-catalog-status">Hover over privacy symbols for details. Hardware checks run when used.</p>
+                  <p id="agent-provider-models-empty" class="agent-provider-models-empty">Connect to discover available models</p>
+                </section>
+                <details id="agent-provider-advanced" class="agent-provider-advanced">
+                  <summary>Details &amp; connection settings</summary>
+                  <div id="agent-ollama-fields" class="hidden">
+                    <label class="agent-field"><span>Local URL</span><input id="agent-ollama-url" type="url" spellcheck="false" value="http://127.0.0.1:11434/v1" /></label>
+                  </div>
+                  <p id="agent-provider-privacy" class="agent-catalog-status"></p>
+                  <div id="agent-hosted-fields">
+                    <p id="agent-catalog-status" class="agent-catalog-status" aria-live="polite"></p>
+                    <select id="agent-model-select" hidden aria-label="Model"></select>
+                  </div>
+                  <p id="agent-model-details" class="agent-catalog-status"></p>
+                  <div id="agent-custom-model-settings" hidden>
+                    <p class="agent-catalog-status">Settings for the selected model. Defaults are estimates; use your server’s documented limits.</p>
+                    <label class="agent-field"><span>Context window (tokens)</span><input id="agent-custom-context" type="number" min="1024" max="10000000" value="32768" /></label>
+                    <label class="agent-field"><span>Maximum output tokens</span><input id="agent-custom-output" type="number" min="128" value="4096" /></label>
+                    <label class="agent-field"><span><input id="agent-custom-vision" type="checkbox" /> Supports images</span></label>
+                    <label class="agent-field"><span><input id="agent-custom-reasoning" type="checkbox" /> Supports reasoning controls</span></label>
+                    <label class="agent-field"><span><input id="agent-custom-schema" type="checkbox" /> Supports strict JSON schema</span></label>
+                  </div>
+                  <div id="agent-provider-key-settings"></div>
+                  <button id="agent-provider-test" class="agent-text-button" type="button" hidden>Send test prompt</button>
+                  <p id="agent-provider-test-note" class="agent-catalog-status" hidden>Sends only “Reply with OK.” to this model. Token charges may apply.</p>
+                </details>
+              </div>
+            </section>
+            <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
+          </div>
+
+          <section id="agent-mcp-panel" class="agent-view agent-setup-view" hidden aria-labelledby="agent-mcp-heading">
+            <div data-mcp-home>
+              <div class="agent-setup-intro"><h3 id="agent-mcp-heading">Connected services</h3><p>Services available to Freedom Agent across your chats.</p></div>
+              <div data-mcp-list></div>
+              <button data-mcp-add class="agent-button primary" type="button">Add service</button>
+            </div>
+            <form class="agent-mcp-form" hidden>
+              <h4>Add a service</h4>
+              <label for="agent-mcp-name">Name</label>
+              <input id="agent-mcp-name" name="connectionName" type="text" maxlength="80" placeholder="My service" required />
+              <label for="agent-mcp-url">MCP server URL</label>
+              <input id="agent-mcp-url" name="connectionUrl" type="url" maxlength="2048" placeholder="https://example.com/mcp" required />
+              <p class="agent-catalog-status">Connections go directly to the service. You’ll approve each tool or resource request before it runs. Services that need an account offer browser sign-in.</p>
+              <button class="agent-button primary" type="submit">Connect service</button>
+            </form>
+            <p data-mcp-message class="agent-inline-message" role="status"></p>
+          </section>
+
+          <div id="agent-workspace-view" class="agent-view agent-workspace-view" hidden>
+            <div id="agent-workspace-body" class="agent-workspace-body">
+              <div class="agent-workspace-scroll">
+                <div class="agent-run-header">
+                  <span id="agent-run-status" class="agent-badge">Idle</span>
+                  <div class="agent-lifecycle-actions">
+                    <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
+                      New chat
+                    </button>
+                  </div>
+                </div>
+                <p id="agent-run-message" class="agent-message" aria-live="polite"></p>
+
+                <div id="agent-empty-state" class="agent-empty-state">
+                  <div class="agent-empty-state-icon" aria-hidden="true">✦</div>
+                  <h3>What would you like to do?</h3>
+                  <p>Research a topic, build an app, or work on a project. Tell Agent what you have in mind.</p>
+                </div>
+
+                <div id="agent-transcript" class="agent-transcript" aria-live="polite" hidden></div>
+              </div>
+
+              <aside
+                id="agent-process-panel"
+                class="agent-process-panel"
+                aria-label="Workspace"
+                hidden
+              >
+                <div id="agent-workspace-inspector-panel" hidden></div>
+                <div id="agent-process-panel-heading" class="agent-process-panel-heading">
+                  <span id="agent-process-panel-label">Running commands</span>
+                  <span id="agent-process-panel-count" class="agent-process-count"></span>
+                </div>
+                <div id="agent-process-panel-list" class="agent-process-list"></div>
+              </aside>
+            </div>
+
+            <div id="agent-composer-wrap" class="agent-composer-wrap">
+              <section id="agent-page-actions" class="agent-page-actions" aria-label="Actions offered by this page" hidden></section>
+              <div id="agent-process-compact" class="agent-process-compact" hidden>
+                <div class="agent-process-compact-header">
+                  <button
+                    id="agent-process-compact-toggle"
+                    class="agent-process-compact-toggle"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="agent-process-compact-popover"
+                  >
+                    <span class="agent-process-live-dot" aria-hidden="true"></span>
+                    <span id="agent-process-compact-label">Process running</span>
+                    <span aria-hidden="true">⌃</span>
+                  </button>
+                  <button id="agent-workspace-refresh" class="agent-workspace-refresh" type="button" aria-label="Refresh workspace" title="Refresh workspace" hidden></button>
+                </div>
+                <div
+                  id="agent-process-compact-popover"
+                  class="agent-process-compact-popover"
+                  role="region"
+                  aria-label="Workspace details"
+                  hidden
+                >
+                  <div id="agent-workspace-inspector-compact" hidden></div>
+                  <div id="agent-process-compact-heading" class="agent-process-panel-heading">
+                    <span id="agent-process-compact-heading-label">Running commands</span>
+                    <span id="agent-process-compact-count" class="agent-process-count"></span>
+                  </div>
+                  <div id="agent-process-compact-list" class="agent-process-list"></div>
+                </div>
+              </div>
+              <div
+                id="agent-attachment-menu"
+                class="agent-attachment-menu"
+                role="menu"
+                aria-label="Add context"
+                hidden
+              >
+                <div class="agent-attachment-menu-label">Add</div>
+                <button id="agent-attach-files" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+                    <path d="M14 3v6h6" />
+                  </svg>
+                  <span><strong>Attach files…</strong><small>Text or images</small></span>
+                </button>
+                <button id="agent-attach-folder" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                  </svg>
+                  <span><strong>Add folder…</strong><small>Read-only for this conversation</small></span>
+                </button>
+                <button id="agent-open-project" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                  </svg>
+                  <span><strong>Open project…</strong><small>Start a chat with an existing project</small></span>
+                </button>
+                <button id="agent-mcp-open" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                  </svg>
+                  <span><strong>Connected services…</strong><small>Manage tools and integrations</small></span>
+                </button>
+              </div>
+              <div id="agent-composer" class="agent-composer">
+                <div class="agent-file-drop-hint" aria-hidden="true">Drop files to attach</div>
+                <div id="agent-page-contexts" class="agent-composer-contexts" hidden>
+                  <button
+                    id="agent-page-context"
+                    class="agent-page-context"
+                    type="button"
+                    aria-label="Remove current page from this conversation"
+                    title="Remove current page"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.7"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M3 12h18" />
+                      <path d="M12 3a15 15 0 0 1 0 18" />
+                      <path d="M12 3a15 15 0 0 0 0 18" />
+                    </svg>
+                    <span id="agent-page-context-label"></span>
+                    <span class="agent-page-context-remove" aria-hidden="true">×</span>
+                  </button>
+                  <div id="agent-attachment-contexts" class="agent-attachment-contexts"></div>
+                </div>
+                <label class="agent-composer-input">
+                  <span class="sr-only">Task for the agent</span>
+                  <textarea
+                    id="agent-prompt"
+                    rows="2"
+                    maxlength="32000"
+                    placeholder="Message Agent…"
+                  ></textarea>
+                </label>
+                <div class="agent-composer-footer">
+                  <div class="agent-composer-tools">
+                    <button
+                      id="agent-attachment-button"
+                      class="agent-composer-icon-button"
+                      type="button"
+                      aria-label="Add context"
+                      title="Add files or a folder"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      aria-controls="agent-attachment-menu"
+                      data-test="agent-attachment"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 5v14" />
+                        <path d="M5 12h14" />
+                      </svg>
+                    </button>
+                    <button
+                      id="agent-approval-mode-button"
+                      class="agent-composer-chip agent-approval-chip"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-expanded="false"
+                      aria-controls="agent-approval-mode-popover"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 3 5 6.5v5.2c0 4.3 2.8 7.7 7 9.3 4.2-1.6 7-5 7-9.3V6.5L12 3Z" />
+                        <circle cx="12" cy="12" r="2.2" />
+                      </svg>
+                      <span id="agent-active-approval-mode-label">Ask when needed</span>
+                    </button>
+                  </div>
+                  <div class="agent-composer-actions">
+                    <button
+                      id="agent-model-menu-button"
+                      class="agent-composer-chip"
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      aria-controls="agent-model-menu"
+                    >
+                      <span id="agent-active-model-label">Choose model</span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </button>
+                    <button
+                      class="agent-composer-icon-button"
+                      type="button"
+                      aria-label="Dictate task (coming soon)"
+                      title="Dictation is coming soon"
+                      data-test="agent-dictation"
+                      disabled
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <rect x="9" y="3" width="6" height="12" rx="3" />
+                        <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" />
+                        <path d="M12 18v3" />
+                      </svg>
+                    </button>
+                    <button
+                      id="agent-run"
+                      class="agent-send-button"
+                      type="button"
+                      aria-label="Run task"
+                      data-action="send"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <g class="agent-run-icon-send">
+                          <path d="m12 19V5" />
+                          <path d="m5 12 7-7 7 7" />
+                        </g>
+                        <rect
+                          class="agent-run-icon-stop"
+                          x="7"
+                          y="7"
+                          width="10"
+                          height="10"
+                          rx="1.5"
+                          fill="currentColor"
+                          stroke="none"
+                        />
+                        <path
+                          class="agent-run-icon-resume"
+                          d="m8.5 6.5 9 5.5-9 5.5Z"
+                          fill="currentColor"
+                          stroke="none"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div id="agent-approval" class="agent-approval" role="alert" hidden>
+                  <div class="agent-approval-content">
+                    <span class="agent-approval-icon" aria-hidden="true">
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M12 3 5 6.5v5.2c0 4.3 2.8 7.7 7 9.3 4.2-1.6 7-5 7-9.3V6.5L12 3Z" />
+                        <path d="m9.2 12 1.8 1.8 3.8-4" />
+                      </svg>
+                    </span>
+                    <div class="agent-approval-copy">
+                      <h4>Approval needed</h4>
+                      <p id="agent-approval-action" class="agent-approval-action"></p>
+                      <p id="agent-approval-origin" class="agent-approval-origin"></p>
+                      <details id="agent-page-tool-details" class="agent-approval-details" hidden>
+                        <summary>Tool arguments</summary>
+                        <pre id="agent-page-tool-arguments"></pre>
+                      </details>
+                      <details
+                        id="agent-workspace-permission-details"
+                        class="agent-approval-details agent-workspace-permission-details"
+                        hidden
+                      >
+                        <summary>More details</summary>
+                        <p id="agent-workspace-permission-summary"></p>
+                      </details>
+                      <div id="agent-wallet-approval-details" class="agent-wallet-approval-details" hidden>
+                        <dl id="agent-wallet-approval-summary"></dl>
+                        <label id="agent-wallet-account-field" class="agent-wallet-account-field" hidden>
+                          <span>Account</span>
+                          <select id="agent-wallet-account"></select>
+                        </label>
+                        <div id="agent-wallet-unlock" class="agent-wallet-unlock" hidden>
+                          <p>Unlock your wallet to approve. Your password is never sent to Agent.</p>
+                          <div class="agent-wallet-unlock-row">
+                            <input
+                              id="agent-wallet-password"
+                              type="password"
+                              autocomplete="current-password"
+                              placeholder="Wallet password"
+                            />
+                            <button id="agent-wallet-unlock-submit" type="button">Unlock</button>
+                          </div>
+                        </div>
+                      </div>
+                      <div id="agent-node-request-details" class="agent-approval-details" hidden>
+                        <dl id="agent-node-request-summary"></dl>
+                      </div>
+                      <div id="agent-publication-details" class="agent-approval-details" hidden>
+                        <dl id="agent-publication-summary"></dl>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="agent-approval-footer">
+                    <div class="agent-approval-status">
+                      <span class="agent-approval-status-dot" aria-hidden="true"></span>
+                      <p id="agent-approval-message" class="agent-message" aria-live="polite"></p>
+                      <button id="agent-approval-stop" class="agent-approval-stop" type="button">
+                        Stop task
+                      </button>
+                    </div>
+                    <div class="agent-approval-actions">
+                      <button
+                        id="agent-approval-decline"
+                        class="agent-approval-button secondary"
+                        type="button"
+                      >
+                        Don’t allow
+                      </button>
+                      <button
+                        id="agent-approval-approve"
+                        class="agent-approval-button primary"
+                        type="button"
+                      >
+                        Allow once
+                      </button>
+                      <button
+                        id="agent-approval-allow-conversation"
+                        class="agent-approval-button agent-approval-allow-conversation primary"
+                        type="button"
+                        hidden
+                      >
+                        Allow for conversation
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div id="agent-model-menu" class="agent-popover agent-model-menu" role="menu" hidden>
+                <input id="agent-model-menu-search" class="agent-model-menu-search" type="search" placeholder="Search all connected models…" aria-label="Search connected models" autocomplete="off" />
+                <div id="agent-model-menu-list"></div>
+                <p class="agent-catalog-status">Hover over privacy symbols for details</p>
+                <div class="agent-popover-divider"></div>
+                <button id="agent-manage-providers" class="agent-popover-action" type="button">
+                  Manage models…
+                </button>
+              </div>
+
+              <div
+                id="agent-approval-mode-popover"
+                class="agent-popover agent-approval-mode-popover"
+                role="dialog"
+                aria-label="Agent approvals"
+                hidden
+              >
+                <div
+                  class="agent-approval-mode-options"
+                  role="group"
+                  aria-label="Agent approval mode"
+                >
+                  <button
+                    id="agent-approval-mode-every"
+                    class="agent-approval-mode-option"
+                    type="button"
+                    aria-pressed="false"
+                  >
+                    <span>
+                      <strong>Ask frequently</strong>
+                      <small>Review each page interaction. Project work continues within permissions you have granted.</small>
+                    </span>
+                    <span class="agent-approval-mode-check" aria-hidden="true"></span>
+                  </button>
+                  <button
+                    id="agent-approval-mode-sensitive"
+                    class="agent-approval-mode-option active"
+                    type="button"
+                    aria-pressed="true"
+                  >
+                    <span>
+                      <strong>Ask when needed</strong>
+                      <small>Let routine browsing and reviewed command access proceed. Ask when a decision needs you.</small>
+                    </span>
+                    <span class="agent-approval-mode-check" aria-hidden="true">✓</span>
+                  </button>
+                  <button
+                    id="agent-approval-mode-allow"
+                    class="agent-approval-mode-option"
+                    type="button"
+                    aria-pressed="false"
+                  >
+                    <span>
+                      <strong>Fewer interruptions</strong>
+                      <small>Let page interactions proceed without review, including form submissions.</small>
+                    </span>
+                    <span class="agent-approval-mode-check" aria-hidden="true"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
       <aside id="sidebar" class="sidebar collapsed">
         <div class="sidebar-inner">
           <div class="sidebar-header">
@@ -1440,12 +2403,16 @@
                         </svg>
                         <span>Create New Wallet</span>
                       </button>
-                      <button type="button" class="wallet-selector-action" id="wallet-connect-ledger-btn">
+                      <button
+                        type="button"
+                        class="wallet-selector-action"
+                        id="wallet-connect-ledger-btn"
+                      >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <rect x="2" y="8" width="14" height="8" rx="2"/>
-                          <path d="M16 12h3"/>
-                          <path d="M19 10v4"/>
-                          <path d="M6 12h.01M10 12h.01"/>
+                          <rect x="2" y="8" width="14" height="8" rx="2" />
+                          <path d="M16 12h3" />
+                          <path d="M19 10v4" />
+                          <path d="M6 12h.01M10 12h.01" />
                         </svg>
                         <span>Connect Hardware Wallet</span>
                       </button>
@@ -2081,15 +3048,15 @@
               <div id="connect-ledger-detect" class="subscreen-content hidden">
                 <div class="connect-ledger-illustration">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <rect x="2" y="8" width="14" height="8" rx="2"/>
-                    <path d="M16 12h3"/>
-                    <path d="M19 10v4"/>
-                    <path d="M6 12h.01M10 12h.01"/>
+                    <rect x="2" y="8" width="14" height="8" rx="2" />
+                    <path d="M16 12h3" />
+                    <path d="M19 10v4" />
+                    <path d="M6 12h.01M10 12h.01" />
                   </svg>
                 </div>
                 <p class="create-wallet-message">
-                  Connect your Ledger via USB, unlock it with your PIN,
-                  and open the <strong>Ethereum</strong> app.
+                  Connect your Ledger via USB, unlock it with your PIN, and open the
+                  <strong>Ethereum</strong> app.
                 </p>
                 <div id="connect-ledger-status" class="connect-ledger-status">
                   <span class="connect-ledger-status-spinner" id="connect-ledger-status-spinner"></span>
@@ -2112,17 +3079,29 @@
                 </div>
 
                 <div id="connect-ledger-account-list" class="connect-ledger-account-list"></div>
-                <button type="button" id="connect-ledger-load-more" class="connect-ledger-load-more">
+                <button
+                  type="button"
+                  id="connect-ledger-load-more"
+                  class="connect-ledger-load-more"
+                >
                   Show more accounts
                 </button>
 
-                <input type="text" id="connect-ledger-name-input"
-                       class="create-wallet-input"
-                       placeholder="Name (e.g. Ledger Stax)"
-                       maxlength="32"
-                       autocomplete="off">
+                <input
+                  type="text"
+                  id="connect-ledger-name-input"
+                  class="create-wallet-input"
+                  placeholder="Name (e.g. Ledger Stax)"
+                  maxlength="32"
+                  autocomplete="off"
+                />
 
-                <button type="button" id="connect-ledger-submit" class="create-wallet-submit-btn" disabled>
+                <button
+                  type="button"
+                  id="connect-ledger-submit"
+                  class="create-wallet-submit-btn"
+                  disabled
+                >
                   Add Account
                 </button>
 
@@ -2133,15 +3112,18 @@
               <div id="connect-ledger-success" class="subscreen-content hidden">
                 <div class="create-wallet-success-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                    <circle cx="12" cy="12" r="10"/>
-                    <polyline points="8 12 11 15 16 9"/>
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="8 12 11 15 16 9" />
                   </svg>
                 </div>
                 <h4 class="create-wallet-success-title">Ledger Account Added!</h4>
 
                 <div class="create-wallet-result">
                   <span class="create-wallet-result-name" id="connect-ledger-result-name"></span>
-                  <code class="create-wallet-result-address" id="connect-ledger-result-address"></code>
+                  <code
+                    class="create-wallet-result-address"
+                    id="connect-ledger-result-address"
+                  ></code>
                 </div>
 
                 <p class="create-wallet-message">
@@ -3198,7 +4180,8 @@
                     >
                   </label>
                   <p class="x402-grant-ledger-note hidden" id="x402-approval-ledger-note">
-                    Auto-pay skips this dialog, but every payment still needs a confirmation on your Ledger.
+                    Auto-pay skips this dialog, but every payment still needs a confirmation on your
+                    Ledger.
                   </p>
                   <div class="x402-grant-fields">
                     <div class="x402-grant-field">
@@ -3585,11 +4568,24 @@
                 </div>
                 <div id="swarm-manifest-rows" class="swarm-manifest-rows"></div>
                 <div id="swarm-manifest-identity-note" class="swarm-connect-warning hidden"></div>
-                <div class="swarm-manifest-choice-note">Allow all applies these permissions now. Asking each time keeps the normal per-action prompts.</div>
+                <div class="swarm-manifest-choice-note">
+                  Allow all applies these permissions now. Asking each time keeps the normal
+                  per-action prompts.
+                </div>
                 <div class="swarm-manifest-actions">
-                  <button type="button" class="swarm-connect-reject-btn" id="swarm-manifest-reject">Don’t allow</button>
-                  <button type="button" class="swarm-connect-reject-btn" id="swarm-manifest-individual">Connect, but ask each time</button>
-                  <button type="button" class="swarm-connect-approve-btn" id="swarm-manifest-allow">Allow all</button>
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-manifest-reject">
+                    Don’t allow
+                  </button>
+                  <button
+                    type="button"
+                    class="swarm-connect-reject-btn"
+                    id="swarm-manifest-individual"
+                  >
+                    Connect, but ask each time
+                  </button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-manifest-allow">
+                    Allow all
+                  </button>
                 </div>
               </div>
             </div>
@@ -3732,7 +4728,9 @@
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
                   <div class="swarm-connect-site" id="swarm-messaging-site">site.eth</div>
-                  <div class="swarm-connect-wants" id="swarm-messaging-wants">wants to send and receive real-time messages</div>
+                  <div class="swarm-connect-wants" id="swarm-messaging-wants">
+                    wants to send and receive real-time messages
+                  </div>
                 </div>
 
                 <div class="swarm-publish-details">
@@ -3752,7 +4750,10 @@
                     <line x1="12" y1="9" x2="12" y2="13"/>
                     <line x1="12" y1="17" x2="12.01" y2="17"/>
                   </svg>
-                  <span id="swarm-messaging-warning">Sending messages uses your stamps. Open subscriptions use bandwidth while the page is loaded.</span>
+                  <span id="swarm-messaging-warning"
+                    >Sending messages uses your stamps. Open subscriptions use bandwidth while the
+                    page is loaded.</span
+                  >
                 </div>
 
                 <label class="auto-approve-checkbox hidden" id="swarm-messaging-auto-approve-label">
@@ -4332,6 +5333,9 @@
       <button class="context-menu-item" data-action="close-others">Close Other Tabs</button>
       <button class="context-menu-item" data-action="close-right">Close Tabs to the Right</button>
       <div class="context-menu-separator"></div>
+      <button class="context-menu-item" data-action="claim-agent-tab" hidden>
+        Claim Agent Tab
+      </button>
       <button class="context-menu-item" data-action="pin">Pin Tab</button>
       <button class="context-menu-item" data-action="mute">Mute Tab</button>
     </div>
@@ -4736,6 +5740,9 @@
       </div>
     </dialog>
 
+    <script src="./vendor/marked.min.js"></script>
+    <script src="./vendor/purify.min.js"></script>
     <script type="module" src="./index.js"></script>
+    <section id="agent-session-privacy-panel" class="agent-privacy-panel chrome-popover" popover="manual" role="region" aria-label="Conversation privacy details" tabindex="-1" hidden></section>
   </body>
 </html>
