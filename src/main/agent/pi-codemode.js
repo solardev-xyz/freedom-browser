@@ -5,6 +5,7 @@
 function createFreedomCodemode(sdk, sessionManager, getSession) {
   let tool;
   sdk.createCodemodeExtension({ mode: 'on', models: false })({
+    getSettings: () => ({}),
     registerTool: definition => { tool = definition; },
     appendEntry: (type, data) => sessionManager.appendCustomEntry(type, data),
     getAllTools: () => getSession()?.getAllTools() || [],

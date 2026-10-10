@@ -14,6 +14,10 @@ const PROVIDER_DEFINITIONS = Object.freeze({
     group: 'Model labs',
     privacy: 'Requests go to OpenAI under its API data policy.',
   },
+  'anthropic-claude': {
+    name: 'Anthropic · Claude subscription', authType: 'subscription', group: 'Subscriptions',
+    privacy: 'Uses your installed Claude Code and its subscription login. Messages and content Agent reads go to Anthropic under your Claude account settings. Freedom does not copy your credentials. CLI-managed diagnostics may be stored separately on this device.',
+  },
   anthropic: {
     name: 'Anthropic',
     group: 'Model labs',

@@ -157,6 +157,13 @@ function withSessionPrivacy(runtime, ledger, role, getSignal = () => undefined) 
       if (methods.has(property)) return methods.get(property);
       const value = Reflect.get(target, property, target);
       if (typeof value !== 'function') return value;
+      if (property === 'createFreedomSession') {
+        const method = options => value.call(target, { ...options, onRequest: () => {
+          ledger.record(options.model, role, '', { providerId: options.model.provider, claim: 'external' });
+        } });
+        methods.set(property, method);
+        return method;
+      }
       const method = ['stream', 'streamSimple', 'complete', 'completeSimple'].includes(property)
         ? (model, context, options = {}) => {
           const fetchImpl = options.fetch || globalThis.fetch;

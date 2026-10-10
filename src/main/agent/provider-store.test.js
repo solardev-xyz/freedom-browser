@@ -414,3 +414,16 @@ describe('AgentProviderStore', () => {
     expect(fs.readFileSync(path.join(dataDir, 'provider.json'), 'utf8')).not.toContain('secret');
   });
 });
+
+
+test('installed Claude connection persists only metadata and needs no copied credential', () => {
+  const { store, dataDir, safeStorage } = createStore();
+  store.saveSubscription({ providerId: 'anthropic-claude', modelId: 'sonnet' });
+  expect(safeStorage.encryptString).not.toHaveBeenCalled();
+  const reopened = createStore({ dataDir, safeStorage }).store;
+  expect(reopened.getSelection()).toEqual({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'sonnet' });
+  reopened.select('anthropic-claude', 'opus');
+  expect(reopened.getSelection().modelId).toBe('opus');
+  reopened.remove('anthropic-claude');
+  expect(reopened.getSelection()).toBeNull();
+});

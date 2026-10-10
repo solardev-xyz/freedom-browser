@@ -10,7 +10,7 @@ const LEGACY_PROVIDER_STORE_VERSION = 1;
 const PROVIDER_STORE_FILE = 'provider.json';
 const MAX_PROVIDER_STORE_BYTES = 256 * 1024;
 const MAX_STORED_OLLAMA_MODELS = 128;
-const SUBSCRIPTION_IDS = new Set(['openai-codex', 'openai-chatgpt', 'meta-subscription']);
+const SUBSCRIPTION_IDS = new Set(['anthropic-claude', 'openai-codex', 'openai-chatgpt', 'meta-subscription']);
 
 class AgentProviderStoreError extends Error {
   constructor(code, message) {
@@ -313,7 +313,7 @@ class AgentProviderStore {
   }
 
   saveSubscription({ providerId, modelId }) {
-    if (!this.#readOAuthCredential(providerId)) {
+    if (providerId !== 'anthropic-claude' && !this.#readOAuthCredential(providerId)) {
       throw new AgentProviderStoreError(
         'AGENT_CREDENTIAL_UNAVAILABLE',
         'The saved provider credential is unavailable'

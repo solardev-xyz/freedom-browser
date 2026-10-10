@@ -86,7 +86,7 @@ test('privacy symbols distinguish conditional encryption, retention policy and l
   const kinds = (...args) => modelPrivacyInfo(...args).symbols.map(symbol => symbol.kind);
   expect(kinds('venice', { attestation: true, e2ee: true })).toEqual(['shield', 'partial-lock']);
   expect(kinds('venice', { id: 'e2ee-name-only', privacy: 'private' })).toEqual(['policy']);
-  for (const provider of ['openai', 'openai-chatgpt', 'openai-codex', 'anthropic', 'meta', 'meta-subscription']) {
+  for (const provider of ['openai', 'openai-chatgpt', 'openai-codex', 'anthropic', 'anthropic-claude', 'meta', 'meta-subscription']) {
     expect(kinds(provider, { privacy: 'standard' })).toEqual([]);
   }
   expect(kinds('openrouter', { id: 'openai/gpt', privacy: 'routing' })).toEqual(['no-retention']);

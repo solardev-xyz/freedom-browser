@@ -25,7 +25,7 @@ test('custom providers stream tool calls and apply privacy to stream and complet
         privacy: 'tee', attestation: false, contextWindow: 32000, maxTokens: 4096 };
       const catalog = { get: (id) => ['venice', 'near-ai', 'openrouter'].includes(id)
         ? { updatedAt: Date.now(), models: [descriptor] } : { models: [] } };
-      const resolver = new AgentProviderResolver({ store, dataDir, catalog });
+      const resolver = new AgentProviderResolver({ store, dataDir, catalog, discoverClaudeModels: async () => [] });
       let requests = [];
       const fetch = async (url, init) => {
         requests.push({ url: String(url), body: JSON.parse(init.body), authorization: new Headers(init.headers).get('authorization') });
@@ -130,7 +130,7 @@ test('native ChatGPT login, refresh and Meta Responses stay separate from API ke
       const safeStorage = { isEncryptionAvailable: () => true,
         encryptString: text => Buffer.from(text), decryptString: buffer => buffer.toString() };
       const store = new AgentProviderStore({ dataDir, safeStorage });
-      const resolver = new AgentProviderResolver({ store, dataDir });
+      const resolver = new AgentProviderResolver({ store, dataDir, discoverClaudeModels: async () => [] });
       store.saveHosted({ providerId: 'openai', modelId: 'gpt-6.1-sol', apiKey: 'sk-api-test' });
       const credentials = store.createCredentialStore();
       await credentials.modify('openai-codex', async () => ({ type: 'oauth', access: 'legacy-test', refresh: 'legacy-refresh', expires: Date.now() + 3600000 }));
@@ -273,7 +273,7 @@ test('OpenAI catalog additions retain native Responses transports, bundled model
         isEncryptionAvailable: () => true,
         encryptString: text => Buffer.from(text), decryptString: buffer => buffer.toString(),
       } });
-      const resolver = new AgentProviderResolver({ store, dataDir });
+      const resolver = new AgentProviderResolver({ store, dataDir, discoverClaudeModels: async () => [] });
       const catalog = await resolver.getCatalog();
       for (const id of ['openai', 'openai-codex']) {
         const models = catalog.find(p => p.providerId === id).models;

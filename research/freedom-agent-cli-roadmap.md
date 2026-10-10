@@ -10,6 +10,28 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-10
 
+### Claude subscription connection — integrated into feature branch, 2026-10-10
+
+The work from `experiment/agent-claude-subscription` is merged into
+`feature/freedom-automation-kernel` for PR #457. It integrates the locally installed
+Claude CLI into the normal Anthropic connection screen and Agent workflow. It uses the
+CLI's existing personal Pro/Max login without copying OAuth credentials or falling
+back to API billing. Streaming conversations, Freedom tools/approvals, helpers,
+codemode, images, cancellation and history recovery use a separate main-process
+session adapter. Managed Claude installations are refused because their hooks
+cannot be constrained by ordinary command-line settings.
+
+Live Mac checks passed for the provider UI in both themes, multi-turn chat,
+privacy reporting, approval/decline/Stop, a browser helper and a managed static-site
+build/checkpoint/preview. The user confirmed the Mac smoke test passed. Model
+choices and versioned names now come from CLI discovery, without inference; the
+connection/chat UI was rechecked in both themes. Lint and **9,509 unit tests** pass
+(129 skipped). No dependencies added. Native Windows/Linux Claude and packaged-app
+qualification remain open.
+Optional later work: managed-account compatibility and richer CLI error/usage
+reporting. See [implementation and qualification notes](../docs/agent-claude-subscription.md).
+
+
 ### Windows x64 implementation and release qualification — 2026-10-10
 
 The Windows executor is integrated into `feature/freedom-automation-kernel`.
