@@ -66,7 +66,7 @@ async function main() {
   }
   const controller = new AbortController();
   let output = '';
-  const server = execute("const fs=require('fs');const h=require('http').createServer((q,r)=>r.end('preview-ok'));h.listen(0,'127.0.0.1',()=>console.log('PORT='+h.address().port));setInterval(()=>fs.writeFileSync('heartbeat',String(Date.now())),100);setTimeout(()=>process.exit(),20000);", {
+  const server = execute("const fs=require('fs');fs.writeFileSync('heartbeat','started');const h=require('http').createServer((q,r)=>r.end('preview-ok'));h.listen(0,'127.0.0.1',()=>console.log('PORT='+h.address().port));setInterval(()=>fs.writeFileSync('heartbeat',String(Date.now())),100);setTimeout(()=>process.exit(),20000);", {
     network: 'full', signal: controller.signal, onOutput: (_stream, bytes) => { output += bytes; },
   });
   let port;
