@@ -115,7 +115,8 @@
     "radicle:build-addon": "node scripts/build-radicle-addon.js",
     "prestart": "node scripts/prepare-native-supervisors.js",
     "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js",
-    "build:linux-workspace-supervisor": "node scripts/build-linux-workspace-supervisor.js"
+    "build:linux-workspace-supervisor": "node scripts/build-linux-workspace-supervisor.js",
+    "build:windows-workspace": "node scripts/build-windows-workspace.js"
   },
   "build": {
     "appId": "baby.freedom.browser",
@@ -274,6 +275,11 @@
         "!**/node_modules/better-sqlite3/prebuilds/!(win32-${arch}).node"
       ],
       "extraResources": [
+        {
+          "from": "out/windows-workspace/${arch}/",
+          "to": "windows-workspace",
+          "filter": ["*.exe", "manifest.json", "CODEX-*.txt"]
+        },
         {
           "from": "radicle-bin/${os}-${arch}/",
           "to": "radicle-bin",

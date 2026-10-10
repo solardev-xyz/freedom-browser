@@ -60,6 +60,12 @@ const TEXT_EXTENSIONS = new Set([...SOURCE_EXTENSIONS, '.svg', '.c', '.h', '.mjs
  * licenses-audit.json's `dependencies`; `pin` says where the version lives.
  */
 const EXTRA_RESOURCES = {
+  'out/windows-workspace/${arch}/': {
+    thirdParty: true, label: 'Codex Windows sandbox', auditName: 'codex-windows-sandbox',
+    noticeMatch: /^Codex Windows sandbox$/m,
+    pin: { file: 'scripts/build-windows-workspace.js', re: /const REVISION = '([^']+)'/ },
+    platformClaims: [{ file: 'NOTICES', line: /^ {2}Windows only\. Freedom builds the sandbox library.*$/m }],
+  },
   'out/macos-supervisor/${arch}/': { firstParty: true, label: 'Freedom workspace supervisor' },
   'out/linux-workspace-owner/${arch}/': { firstParty: true, label: 'Freedom workspace owner' },
   'ant-bin/${os}-${arch}/': {
@@ -185,6 +191,12 @@ const VENDOR_FILES = {
  * every `auditName` in licenses-audit.json.
  */
 const SRC_ASSETS = {
+  'src/main/agent/workspace-execution/native/windows/': {
+    thirdParty: false, label: "Freedom's Windows sandbox adapter manifest",
+  },
+  'src/main/agent/workspace-execution/native/windows/src/': {
+    thirdParty: false, label: "Freedom's Windows sandbox adapter source",
+  },
   'src/renderer/assets/provider-logos/': {
     thirdParty: true,
     label: 'model provider marks',

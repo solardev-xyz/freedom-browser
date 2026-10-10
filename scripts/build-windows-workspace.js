@@ -72,6 +72,8 @@ async function buildWindowsWorkspace(arch = process.arch) {
   }
   const workspace = path.join(source, 'codex-rs');
   patchSandbox(path.join(workspace, 'windows-sandbox-rs'));
+  fs.copyFileSync(path.join(workspace, 'windows-sandbox-rs/codex-windows-sandbox-setup.manifest'),
+    path.join(workspace, 'windows-sandbox-rs/freedom-windows-sandbox-setup.manifest'));
   const manifest = path.join(workspace, 'Cargo.toml');
   let text = fs.readFileSync(manifest, 'utf8');
   if (!text.includes('"freedom-windows-workspace",')) {

@@ -574,12 +574,13 @@ function normalizeWorkspaceApproval(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.available !== true) {
     return null;
   }
-  if (!['linux-bubblewrap', 'macos-seatbelt'].includes(value.backend)) return null;
+  if (!['linux-bubblewrap', 'macos-seatbelt', 'windows-elevated'].includes(value.backend)) return null;
   return Object.freeze({
     available: true,
     backend: value.backend,
+    ...(value.backend === 'windows-elevated' && value.setupRequired === true && { setupRequired: true }),
     network: 'disabled',
-    filesystem: 'managed_workspace_only',
+    filesystem: value.backend === 'windows-elevated' ? 'windows_broad_reads_scoped_writes' : 'managed_workspace_only',
     cancellationGuarantee:
       value.cancellationGuarantee === 'namespace_scoped' ? 'namespace_scoped' : 'best_effort',
     survivorsPossible: value.survivorsPossible === true,
@@ -1852,6 +1853,7 @@ class FreedomAgentService {
         }
         if (this.workspaceController) {
           systemPrompt = `${systemPrompt}\n\n${WORKSPACE_SYSTEM_PROMPT}\n\n${WORKSPACE_HISTORY_SYSTEM_PROMPT}`;
+          if (process.platform === 'win32') systemPrompt += '\n\nThis computer runs Windows. The bash tool executes Windows PowerShell, not a POSIX shell. Use PowerShell syntax and npm.cmd/npx.cmd for package commands. Use the file tools for reading and writing source. Windows sandboxing permits broad reads but restricts writes to the project and private temporary storage; do not claim project-only read isolation. One-time project protection setup may require administrator approval.';
           if (this.workspaceController.fullNetworkPermissionsEnabled?.() === true) {
             systemPrompt = `${systemPrompt}\n\n${WORKSPACE_NETWORK_SYSTEM_PROMPT}`;
           }

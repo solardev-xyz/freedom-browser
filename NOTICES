@@ -15,6 +15,21 @@ refuses only one thing, a missing `LICENSES.chromium.html`
 
 == External binaries and native addons (resources/) ==
 
+Codex Windows sandbox
+  License: Apache-2.0
+  https://github.com/openai/codex/tree/092d3acd6bec3e3a14bdc7e7a2810ab628ab759d/codex-rs/windows-sandbox-rs
+  Windows only. Freedom builds the sandbox library and helpers with separate
+  Freedom accounts, mutexes, firewall rules and helper names. The wrapper is
+  Freedom's own MPL-2.0 code. Upstream LICENSE and NOTICE accompany the binaries.
+
+  Upstream NOTICE:
+  OpenAI Codex
+  Copyright 2025 OpenAI
+
+  This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+  Copyright (c) 2016-2022 Florian Dehau
+  Copyright (c) 2023-2025 The Ratatui Developers
+
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
   Copyright (c) solardev-xyz contributors

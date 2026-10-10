@@ -742,11 +742,13 @@ function publicCapabilities(capabilities) {
   return Object.freeze({
     available: true,
     backend: capabilities.backend,
+    ...(capabilities.setupRequired && { setupRequired: true }),
     network: 'disabled',
     fullNetworkAvailable: Boolean(enforcement.networkFull),
     fullNetworkIncludesHostAbstractUnixSockets:
       enforcement.fullNetworkIncludesHostAbstractUnixSockets === true,
-    filesystem: 'managed_workspace_only',
+    filesystem: enforcement.filesystemReadScope === 'windows_user_readable'
+      ? 'windows_broad_reads_scoped_writes' : 'managed_workspace_only',
     cancellationGuarantee: enforcement.cancellationGuarantee || 'backend_reported',
     survivorsPossible: enforcement.survivorsPossible === true,
     completeDescendantTermination: enforcement.completeDescendantTermination === true,
@@ -930,9 +932,18 @@ class ManagedWorkspaceController {
   }
 
   async enable(conversationId, request = {}) {
-    const capabilities = request.disclosureVerified
+    let capabilities = request.disclosureVerified
       ? await this.getCapabilities(request)
       : await this.disclosure(conversationId, request);
+    if (capabilities.setupRequired) {
+      throwIfWorkspaceAborted(request.signal);
+      await this.executor.setup(request);
+      this.capabilities = null;
+      capabilities = await this.getCapabilities(request);
+      if (!capabilities.available || capabilities.setupRequired) {
+        throw new ManagedWorkspaceError('WINDOWS_SANDBOX_SETUP_REQUIRED', 'Windows project protection setup did not complete');
+      }
+    }
     reportWorkspacePhase(request, 'creating_workspace');
     const workspace = await awaitWorkspaceStep(
       this.store.ensureForConversation(conversationId),
@@ -1531,8 +1542,13 @@ class ManagedWorkspaceController {
     try {
       if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) throw new Error('Project access changed');
       receipt = await this.executor.execute(lease.helperPolicy, {
-        command: '/bin/sh',
-        args: [
+        command: capabilities.backend === 'windows-elevated' ? lease.runtime.sandboxExecutablePath : '/bin/sh',
+        args: capabilities.backend === 'windows-elevated' ? [
+          '-e', WORKSPACE_FILE_HELPER, operation, relative,
+          content ? content.toString('base64') : '',
+          (workspace.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId)) && operation === 'write' ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
+          grant ? `${grant.dev}:${grant.ino}` : '',
+        ] : [
           '-c',
           'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6" "$7" "$8"',
           'freedom-workspace-file',
@@ -2183,8 +2199,12 @@ class ManagedWorkspaceController {
     let receipt;
     try {
       receipt = await this.executor.execute(agentPolicy.policy, {
-        command: '/bin/sh',
-        args: [
+        command: capabilities.backend === 'windows-elevated'
+          ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe') : '/bin/sh',
+        args: capabilities.backend === 'windows-elevated'
+          ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(
+            `Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''")}';\n${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`, 'utf16le').toString('base64')]
+          : [
           '-c',
           'cd "$1" && exec /bin/sh -c "$2"',
           'freedom-workspace',

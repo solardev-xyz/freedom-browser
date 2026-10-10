@@ -79,6 +79,15 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
                 WindowsSandboxProvisioningSettings::default())?;
             return emit(json!({"type":"setup", "complete":true}));
         }
+        "setup-interactive" => {
+            std::fs::create_dir_all(&request.home)?;
+            let permissions = codex_windows_sandbox::ResolvedWindowsSandboxPermissions::try_from_permission_profile(&PermissionProfile::read_only())?;
+            codex_windows_sandbox::run_elevated_setup(codex_windows_sandbox::SandboxSetupRequest {
+                permissions: &permissions, command_cwd: &request.home, env_map: &HashMap::new(),
+                codex_home: &request.home, proxy_enforced: false,
+            })?;
+            return emit(json!({"type":"setup", "complete":true}));
+        }
         "execute" => {}
         _ => bail!("Unsupported operation"),
     }

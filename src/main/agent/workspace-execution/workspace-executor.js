@@ -3,6 +3,7 @@
 const { EXECUTION_STATES } = require('./execution-policy');
 const { BubblewrapExecutor } = require('./bubblewrap-backend');
 const { SeatbeltExecutor } = require('./seatbelt-backend');
+const { WindowsWorkspaceExecutor } = require('./windows-backend');
 
 class UnavailableWorkspaceExecutor {
   constructor(platform) {
@@ -50,6 +51,7 @@ function createWorkspaceExecutor(options = {}) {
   const platform = options.platform || process.platform;
   if (platform === 'darwin') return new SeatbeltExecutor(options.seatbelt);
   if (platform === 'linux') return new BubblewrapExecutor(options.bubblewrap);
+  if (platform === 'win32') return new WindowsWorkspaceExecutor(options.windows);
   return new UnavailableWorkspaceExecutor(platform);
 }
 

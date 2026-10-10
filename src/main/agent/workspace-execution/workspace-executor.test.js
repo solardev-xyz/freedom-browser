@@ -2,16 +2,18 @@
 
 const { BubblewrapExecutor } = require('./bubblewrap-backend');
 const { SeatbeltExecutor } = require('./seatbelt-backend');
+const { WindowsWorkspaceExecutor } = require('./windows-backend');
 const { createWorkspaceExecutor } = require('./workspace-executor');
 
 describe('backend-neutral workspace executor selection', () => {
   test('selects a backend without requiring callers to import platform implementations', () => {
     expect(createWorkspaceExecutor({ platform: 'darwin' })).toBeInstanceOf(SeatbeltExecutor);
     expect(createWorkspaceExecutor({ platform: 'linux' })).toBeInstanceOf(BubblewrapExecutor);
+    expect(createWorkspaceExecutor({ platform: 'win32' })).toBeInstanceOf(WindowsWorkspaceExecutor);
   });
 
   test('returns structured capabilities and receipts on unsupported platforms', async () => {
-    const executor = createWorkspaceExecutor({ platform: 'win32' });
+    const executor = createWorkspaceExecutor({ platform: 'freebsd' });
     await expect(executor.detectCapabilities()).resolves.toMatchObject({
       backend: 'unavailable',
       available: false,

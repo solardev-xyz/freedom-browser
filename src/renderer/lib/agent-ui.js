@@ -3112,6 +3112,9 @@ function approvalOriginSummary(request) {
 }
 
 function workspaceEnablementDetails(workspace) {
+  if (workspace?.backend === 'windows-elevated') {
+    return `${workspace.setupRequired ? 'One-time setup creates dedicated Windows sandbox accounts and firewall rules. Windows will ask for administrator approval. Freedom and Agent commands continue running without administrator privileges.\n\n' : ''}Commands can read files accessible to the sandbox accounts, including files outside the project. Writes are limited to the project and private temporary storage; protected Git metadata stays read-only. Internet, localhost and LAN access require separate permission. Stopping commands is best-effort; Freedom does not yet guarantee that every detached process has stopped.`;
+  }
   const lifecycle =
     workspace?.backend === 'macos-seatbelt'
       ? 'On macOS, stopping detached subprocesses is best-effort. Any survivor remains inside the same filesystem and network boundary.'
@@ -3225,7 +3228,7 @@ function renderApproval(request) {
     : workspacePermission
     ? `Run “${workspacePermission.command}”?`
     : workspace
-      ? 'Enable a managed project workspace for this conversation?'
+      ? workspace.setupRequired ? 'Set up Windows project protection?' : 'Enable a managed project workspace for this conversation?'
       : publication
         ? publication.kind === 'text'
           ? 'Publish this text to Swarm?'
@@ -3268,7 +3271,9 @@ function renderApproval(request) {
     : workspacePermission
     ? workspaceCommandPermissionSummary(workspacePermission, request.label)
     : workspace
-      ? 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
+      ? workspace.backend === 'windows-elevated'
+        ? `${workspace.setupRequired ? 'An administrator must approve this one-time Windows setup. ' : ''}Agent can write inside this project and read other files accessible to the sandbox accounts.`
+        : 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
       : publication
         ? publication.workspacePath
           ? 'This publishes the managed project source snapshot listed below using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
@@ -3305,7 +3310,7 @@ function renderApproval(request) {
     : workspacePermission
     ? 'Allow once'
     : workspace
-      ? 'Enable workspace'
+      ? workspace.setupRequired ? 'Set up protection' : 'Enable workspace'
       : publication
         ? 'Publish'
         : diagnostic
