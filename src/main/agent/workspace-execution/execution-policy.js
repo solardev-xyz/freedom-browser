@@ -1,5 +1,7 @@
 'use strict';
 
+const { unsafeWindowsRelativePath } = require('./windows-paths');
+
 // Sandbox boundaries describe physical files. Electron's patched fs treats ASAR
 // archives as virtual directories with synthetic identities, which cannot be
 // used for directory/hardlink validation or physical path ownership.
@@ -126,7 +128,7 @@ function validateWorkspaceRelativePath(value, label, { allowDot = false } = {}) 
     throw new ExecutionPolicyError('INVALID_POLICY', `${label} must be a safe relative path`);
   }
   if (allowDot && value === '.') return value;
-  if (!value || path.isAbsolute(value)) {
+  if (!value || path.isAbsolute(value) || unsafeWindowsRelativePath(value)) {
     throw new ExecutionPolicyError('INVALID_POLICY', `${label} must be a safe relative path`);
   }
   const segments = value.split('/');

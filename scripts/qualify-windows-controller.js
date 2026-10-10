@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { parseArgs } = require('node:util');
-const { ManagedWorkspaceStore } = require('../src/main/agent/managed-workspace-store');
+const { AgentManagedWorkspaceStore } = require('../src/main/agent/managed-workspace-store');
 const { ManagedWorkspaceController } = require('../src/main/agent/managed-workspace-controller');
 const { values } = parseArgs({ options: { root: { type: 'string' } } });
 async function main() {
@@ -16,7 +16,7 @@ async function main() {
   assert.ok(values.root && path.isAbsolute(values.root));
   fs.mkdirSync(values.root, { recursive: true });
   const profile = fs.mkdtempSync(path.join(values.root, 'controller-'));
-  const store = new ManagedWorkspaceStore({ userDataDir: profile });
+  const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
   const controller = new ManagedWorkspaceController({ store, runtimeOptions: { resourcesPath: path.join(path.dirname(process.execPath), 'resources') } });
   const record = (name, details) => {
     const line = JSON.stringify({ name, ...details });

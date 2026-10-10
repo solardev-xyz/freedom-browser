@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { unsafeWindowsRelativePath } = require('./workspace-execution/windows-paths');
 const { collectCommandReviewEvidence } = require('./command-review-evidence');
 const { ManagedWorkspaceServers } = require('./managed-workspace-servers');
 const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
@@ -64,6 +65,7 @@ const MAX_WORKSPACE_SCAN_ENTRIES = 50_000;
 const MAX_WORKSPACE_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_WORKSPACE_SEARCH_PATTERN_LENGTH = 1_000;
 const WORKSPACE_FILE_HELPER = String.raw`
+${unsafeWindowsRelativePath.toString()}
 const fs = process.versions.electron ? require('original-fs') : require('fs');
 const path = require('path');
 const READ_LIMIT = 524288;
@@ -88,6 +90,7 @@ function fail(code) {
 function checkedRelative(value, allowRoot = false) {
   if (typeof value !== 'string' || !value || value.includes('\0') || value.includes('\\') || path.posix.isAbsolute(value)) fail('INVALID_WORKSPACE_REQUEST');
   if (value === '.' && allowRoot) return value;
+  if (unsafeWindowsRelativePath(value)) fail('INVALID_WORKSPACE_REQUEST');
   const parts = value.split('/');
   if (parts.some((part) => !part || part === '.' || part === '..')) fail('INVALID_WORKSPACE_REQUEST');
   return parts.join('/');
@@ -556,7 +559,7 @@ function validateWorkingDirectory(value = '.') {
     );
   }
   if (value === '.') return value;
-  if (path.isAbsolute(value) || value.includes('\\')) {
+  if (path.isAbsolute(value) || value.includes('\\') || unsafeWindowsRelativePath(value)) {
     throw new ManagedWorkspaceError(
       'INVALID_WORKSPACE_REQUEST',
       'workingDirectory must be a workspace-relative path'
@@ -624,6 +627,7 @@ function validateWorkspacePath(value, options = {}) {
     );
   }
   if (value === '.' && options.allowRoot === true) return value;
+  if (unsafeWindowsRelativePath(value)) throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'File paths must not use Windows device names, streams or aliases');
   const segments = value.split('/');
   if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
     throw new ManagedWorkspaceError(
@@ -2203,7 +2207,8 @@ class ManagedWorkspaceController {
           ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe') : '/bin/sh',
         args: capabilities.backend === 'windows-elevated'
           ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(
-            `Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''")}';\n${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`, 'utf16le').toString('base64')]
+            `$ErrorActionPreference = 'Stop';
+Set-Location -LiteralPath '${workingDirectory.executionPath.replaceAll("'", "''")}';\n${command}\nif ($LASTEXITCODE) { exit $LASTEXITCODE }`, 'utf16le').toString('base64')]
           : [
           '-c',
           'cd "$1" && exec /bin/sh -c "$2"',
