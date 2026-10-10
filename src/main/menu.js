@@ -1,6 +1,11 @@
 const log = require('./logger');
 const { BrowserWindow, Menu, app, dialog, ipcMain } = require('electron');
-const { isMainBrowserWindow, getMainWindows, createMainWindow } = require('./windows/mainWindow');
+const {
+  isMainBrowserWindow,
+  getMainWindows,
+  getLastFocusedMainWindow,
+  createMainWindow,
+} = require('./windows/mainWindow');
 const { createPrivateWindow } = require('./private/private-windows');
 const {
   checkForUpdates,
@@ -59,14 +64,16 @@ onSettingsChanged((merged, previous) => {
 });
 
 // Helper to get the best target window for tab operations
-// Only returns main browser windows we created (not DevTools or other system windows)
+// Only returns main browser windows we created (not DevTools or other system windows).
+// With focus elsewhere (detached DevTools), fall back to the main window the
+// user focused last, not getMainWindows()[0]: that list is kept in focus
+// order, so its first entry is the window left longest ago.
 function getTargetWindow() {
   const focused = BrowserWindow.getFocusedWindow();
   if (focused && isMainBrowserWindow(focused)) {
     return focused;
   }
-  const mainWindows = getMainWindows();
-  return mainWindows[0] || null;
+  return getLastFocusedMainWindow();
 }
 
 function openProfilesManager() {

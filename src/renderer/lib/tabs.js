@@ -1631,6 +1631,29 @@ const resolveInternalPageUrl = (url) => {
   return target.subPath ? `${pageUrl}#${target.subPath}` : pageUrl;
 };
 
+// Run `fn` once `webview`'s guest is attached. Navigation methods
+// (`loadURL`) need the guest; called before it exists, the load is dropped.
+// Electron throws from `getWebContentsId()` until then, which is how an
+// attached webview is told apart; otherwise wait for its first `dom-ready`
+// (the about:blank / page it was created with), which only fires once attached.
+const whenWebviewAttached = (webview, fn) => {
+  let attached = true;
+  try {
+    webview.getWebContentsId?.();
+  } catch {
+    attached = false;
+  }
+  if (attached) {
+    fn();
+    return;
+  }
+  const onReady = () => {
+    webview.removeEventListener('dom-ready', onReady);
+    fn();
+  };
+  webview.addEventListener('dom-ready', onReady);
+};
+
 // Create a new tab.
 //
 // `options.background` leaves the current tab active and keeps its keyboard
@@ -1703,7 +1726,11 @@ export const createTab = (url = null, options = {}) => {
   // the user is still looking at (#303).
   if (!isDirect) {
     setTimeout(() => {
-      if (onLoadTarget) onLoadTarget(url, null, webview);
+      // Same cold-start race as the initial tab (see initTabs): a window's
+      // first tabs can outrun their guest's attach.
+      whenWebviewAttached(webview, () => {
+        if (onLoadTarget) onLoadTarget(url, null, webview);
+      });
     }, 50);
   }
 
@@ -2777,7 +2804,9 @@ export const initTabs = async () => {
 
   // Create initial tab - check for initialUrl query parameter (from "open in new window")
   const urlParams = new URLSearchParams(window.location.search);
-  const initialUrl = urlParams.get('initialUrl');
+  // A launch given several links (src/main/launch-urls.js) repeats the
+  // parameter: the first takes the initial tab, the rest open after it.
+  const [initialUrl, ...moreInitialUrls] = urlParams.getAll('initialUrl');
   if (initialUrl) {
     // Create tab with about:blank to avoid home page flash, then navigate to target
     const tab = createTab('about:blank');
@@ -2788,7 +2817,18 @@ export const initTabs = async () => {
         addressInput.value = initialUrl;
       }
       // Use loadTarget for proper URL resolution (handles dweb URLs, ENS, etc.)
-      setTimeout(() => onLoadTarget(initialUrl), 50);
+      // Name the webview: the tabs opened below take over as active tab.
+      // In a cold-started process the guest is not attached yet after 50ms,
+      // and a `loadURL` then is simply lost (the tab stays on about:blank), so
+      // the load waits for the webview to be live.
+      setTimeout(
+        () => whenWebviewAttached(tab.webview, () => onLoadTarget(initialUrl, null, tab.webview)),
+        50
+      );
+      // A timer of their own, so a throw while loading the first cannot stop them.
+      setTimeout(() => {
+        for (const url of moreInitialUrls) openInNewTabWithTarget(url, null);
+      }, 50);
     }
   } else {
     createTab(defaultNewTabUrl());

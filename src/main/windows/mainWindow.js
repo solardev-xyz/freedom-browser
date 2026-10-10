@@ -8,8 +8,13 @@ const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
 
 let currentWindowTitle = 'Freedom';
 
-// Track all main browser windows we create
+// Track all main browser windows we create. Kept in focus order: a window is
+// moved to the end whenever it gains focus, so the last entry is the most
+// recently focused one (focusOrCreateMainWindow picks from the end).
 const mainWindows = new Set();
+// Private windows, so links handed over from outside (a second launch, macOS
+// open-url) never land in a private partition the user didn't open them in.
+const privateWindows = new WeakSet();
 
 // Get the app icon path (works in both dev and packaged)
 function getIconPath() {
@@ -25,6 +30,13 @@ function getIconPath() {
   log.info(`[icon] Path: ${iconPath}, exists: ${exists}`);
 
   return iconPath;
+}
+
+// `initialUrl` arguments take one URL or a list of them (launch-urls.js).
+function toUrlList(urls) {
+  return (Array.isArray(urls) ? urls : [urls]).filter(
+    (url) => typeof url === 'string' && url.length > 0
+  );
 }
 
 function createMainWindow(initialUrl = null, options = {}) {
@@ -106,20 +118,23 @@ function createMainWindow(initialUrl = null, options = {}) {
     : attachAutomationToHostWebContents(window.webContents, { ipcMain });
   window.once('closed', detachAutomation);
 
-  // Load index.html with optional initial URL / private partition as query
-  // parameters
+  // Load index.html with optional initial URL(s) / private partition as query
+  // parameters. Several URLs (a launch given more than one link) repeat
+  // `initialUrl`; the renderer opens each in its own tab.
   const indexPath = path.join(__dirname, '..', '..', 'renderer', 'index.html');
-  const query = {};
-  if (initialUrl) query.initialUrl = initialUrl;
-  if (privatePartition) query.privatePartition = privatePartition;
-  if (Object.keys(query).length > 0) {
-    window.loadFile(indexPath, { query });
+  const query = new URLSearchParams();
+  for (const url of toUrlList(initialUrl)) query.append('initialUrl', url);
+  if (privatePartition) query.append('privatePartition', privatePartition);
+  const search = query.toString();
+  if (search) {
+    window.loadFile(indexPath, { search });
   } else {
     window.loadFile(indexPath);
   }
 
   // Track this window
   mainWindows.add(window);
+  if (privatePartition) privateWindows.add(window);
 
   // PRIVATE MODE GUARD (window title): `currentWindowTitle` is the shared
   // last-seen title, and private senders deliberately never seed it. Private
@@ -152,6 +167,13 @@ function createMainWindow(initialUrl = null, options = {}) {
 
   window.on('closed', () => {
     mainWindows.delete(window);
+  });
+
+  // Keep `mainWindows` in focus order (see its declaration).
+  window.on('focus', () => {
+    if (!mainWindows.has(window)) return;
+    mainWindows.delete(window);
+    mainWindows.add(window);
   });
 
   // Close renderer menus when window loses focus (e.g., clicking system menu)
@@ -230,14 +252,25 @@ function focusBrowserWindow(window) {
 }
 
 function focusOrCreateMainWindow(initialUrl = null) {
-  let window = [...mainWindows].find((candidate) => !candidate.isDestroyed());
+  const urls = toUrlList(initialUrl);
+  // Most recently focused window first. Links from outside (a second launch,
+  // macOS open-url, the Profiles manager) belong in a normal window, like
+  // Chrome: a private window's partition has no history or logins and is wiped
+  // on close. With no normal window open, they get a new one. A plain focus
+  // request (no URLs) raises whichever window the user used last.
+  const live = [...mainWindows].reverse().filter((candidate) => !candidate.isDestroyed());
+  let window =
+    urls.length === 0 ? live[0] : live.find((candidate) => !privateWindows.has(candidate));
   if (!window) {
-    window = createMainWindow(initialUrl);
-  } else if (initialUrl) {
+    window = createMainWindow(urls.length > 0 ? urls : null);
+  } else {
     // A window already exists, so createMainWindow's initialUrl path doesn't
-    // run — open the target in a new tab on the existing window instead (e.g.
-    // the Profiles manager's edit button focusing an already-running profile).
-    window.webContents.send('tab:new-with-url', initialUrl);
+    // run — open each target in a new tab on the existing window instead (e.g.
+    // the Profiles manager's edit button focusing an already-running profile,
+    // or a second launch handing over the links it was started with).
+    for (const url of urls) {
+      window.webContents.send('tab:new-with-url', url);
+    }
   }
   focusBrowserWindow(window);
   return window;
@@ -256,9 +289,17 @@ function isMainBrowserWindow(window) {
   return window && mainWindows.has(window);
 }
 
-// Get all main browser windows
+// Get all main browser windows, least recently focused first.
 function getMainWindows() {
   return [...mainWindows];
+}
+
+// The main browser window the user focused last (private included), or null.
+// For callers that act "on the window the user is in" while focus sits
+// somewhere else, e.g. a menu shortcut pressed in detached DevTools.
+function getLastFocusedMainWindow() {
+  const live = [...mainWindows].reverse().find((candidate) => !candidate.isDestroyed());
+  return live || null;
 }
 
 module.exports = {
@@ -269,4 +310,5 @@ module.exports = {
   getWindowTitle,
   isMainBrowserWindow,
   getMainWindows,
+  getLastFocusedMainWindow,
 };

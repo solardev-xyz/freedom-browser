@@ -21,6 +21,9 @@ let stampManagerScreen;
 let stampManagerBackBtn;
 let batchListContainer;
 let emptyText;
+let loadingStatus;
+let loadingText;
+let staleNotice;
 let scanStatus;
 let scanWarning;
 let scanWarningText;
@@ -30,16 +33,55 @@ let depositTopUpBtn;
 
 let isOpen = false;
 let setupState = null;
-// Batches in the list last rendered; null until this visit's getStamps lands.
+// Batches in the list last rendered; null until this visit has a list to
+// show (the cached one, or its own getStamps).
 let batchCount = null;
 let loadedKey = null;
 let loadRequestId = 0;
+// True while this visit's getStamps is in flight: the spinner line shows.
+let refreshing = false;
+// What the rendered cards show, so a refresh that brings the same list leaves
+// them (and any open extension form) alone.
+let renderedSignature = null;
+// True while the cards on screen are the cache rather than this visit's
+// getStamps: their actions are off, and once no refresh is running a line
+// says the list may be out of date.
+let listStale = false;
+// True once this visit's own getStamps list is on screen.
+let listFresh = false;
+// Whether the card actions (and an open extension form's presets) may start
+// an operation.
+let actionsLive = false;
+// This visit's getStamps failed before the wallet was confirmed while a cached
+// list exists: it may be this wallet's, so the screen neither draws it nor
+// says "no storage yet" until a state names the wallet. 'waiting' keeps the
+// loading line up; 'unknown' (getState failed) shows the stale line instead.
+let failedBeforeWallet = null;
+// Whether this visit has heard which node wallet is current (getState, or a
+// state pushed while open). Until then the cache is not drawn: the wallet may
+// have changed while the screen was closed and nothing pushed a state.
+let walletConfirmed = false;
+// This visit's getState settled without naming a state (it threw or answered
+// nothing), so only a push can confirm the wallet now. A list that fails
+// after that says it couldn't be checked rather than holding the spinner.
+let stateUnanswered = false;
+// Bumped on every open, so a getState from an earlier visit lands on nothing.
+let openVisit = 0;
+// The last non-empty list getStamps returned, when, and for which node
+// wallet. A return visit shows it at once while the fresh list loads (#595).
+// Profiles run in their own processes, so this never crosses one.
+let cachedBatches = null;
+// The node wallet the last state with an account named.
+let knownWallet = null;
 
 export function initStampManager() {
   stampManagerScreen = document.getElementById('sidebar-stamp-manager');
   stampManagerBackBtn = document.getElementById('stamp-manager-back');
   batchListContainer = document.getElementById('stamp-batch-list');
   emptyText = document.getElementById('stamp-list-empty');
+  loadingStatus = document.getElementById('stamp-list-loading');
+  loadingText = document.getElementById('stamp-list-loading-text');
+  staleNotice = document.getElementById('stamp-list-stale');
   scanStatus = document.getElementById('stamp-scan-status');
   scanWarning = document.getElementById('stamp-scan-warning');
   scanWarningText = document.getElementById('stamp-scan-warning-text');
@@ -57,11 +99,15 @@ export function initStampManager() {
   depositTopUpBtn?.addEventListener('click', () => startOperation({ kind: 'deposit' }));
 
   window.publishSetup?.onState((state) => {
-    setupState = state;
+    const walletChanged = adoptState(state);
     if (!isOpen) return;
+    walletConfirmed = true;
+    // Another wallet's cards must not stay up while its own list loads.
+    if (walletChanged) clearBatchList();
+    else showCachedList();
     renderDepositWarning();
     renderScanStatus();
-    if (stampsKey(state) !== loadedKey) loadBatchList();
+    if (walletChanged || stampsKey(state) !== loadedKey) loadBatchList();
   });
 }
 
@@ -72,18 +118,38 @@ export async function openStampManager() {
   stampManagerScreen?.classList.remove('hidden');
   isOpen = true;
   loadedKey = null;
+  walletConfirmed = false;
+  stateUnanswered = false;
+  const visit = ++openVisit;
   clearBatchList();
   void window.publishSetup?.watch('storage', true);
 
   renderDepositWarning();
   renderScanStatus();
   loadBatchList();
+  let walletChanged = false;
+  let confirmed = false;
   try {
-    setupState = (await window.publishSetup?.getState()) || setupState;
+    const state = await window.publishSetup?.getState();
+    confirmed = Boolean(state);
+    walletChanged = adoptState(state || setupState);
   } catch {
     // The push subscription fills it in.
   }
-  if (isOpen) {
+  if (isOpen && visit === openVisit) {
+    if (confirmed) walletConfirmed = true;
+    else stateUnanswered = true;
+    if (walletChanged) {
+      clearBatchList();
+      loadBatchList();
+    } else showCachedList();
+    // No answer, and none may be pushed: a list that failed meanwhile stops
+    // reading "loading" and says it couldn't be checked. (One that fails
+    // later sees stateUnanswered in loadBatchList.)
+    if (!confirmed && !walletConfirmed && failedBeforeWallet === 'waiting') {
+      failedBeforeWallet = 'unknown';
+      renderLoadingStatus();
+    }
     renderDepositWarning();
     renderScanStatus();
   }
@@ -95,6 +161,51 @@ export function closeStampManager() {
   clearBatchList();
   stampManagerScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
+}
+
+function walletKey() {
+  return setupState?.account?.walletAddress || null;
+}
+
+// Takes a publish-setup state; true when it names a different node wallet
+// than the last one, which drops the cached list. A state with no account
+// says nothing about which wallet it is.
+function adoptState(state) {
+  setupState = state;
+  const wallet = walletKey();
+  if (wallet === null) return false;
+  const changed = knownWallet !== null && wallet !== knownWallet;
+  knownWallet = wallet;
+  if (changed) cachedBatches = null;
+  // A list that landed before any state named the wallet is this one's.
+  else if (cachedBatches?.wallet === null) cachedBatches.wallet = wallet;
+  return changed;
+}
+
+// The wallet is known now, so its cached list can show, unless this visit's
+// own list has already landed. A list that failed before the wallet was
+// known gives way to the cache, or, with none for this wallet, to the empty
+// state it held back.
+function showCachedList() {
+  if (!walletConfirmed || listFresh) return;
+  const cached = cachedStampsForWallet();
+  if (cached) renderBatchList(cached, { stale: true });
+  else if (failedBeforeWallet && !refreshing) renderBatchList([], { stale: true });
+}
+
+// This wallet's cached list, its time remaining counted down by the time
+// since it was fetched, so a days-old list doesn't show its old expiry.
+// A batch whose time ran out since then is shown as not usable rather than
+// with its old "Usable" badge. Nothing until this visit knows the wallet.
+function cachedStampsForWallet() {
+  const wallet = walletKey();
+  if (!walletConfirmed || !wallet || cachedBatches?.wallet !== wallet) return null;
+  const elapsed = Math.max(0, Math.floor((Date.now() - cachedBatches.fetchedAt) / 1000));
+  return cachedBatches.stamps.map((batch) => {
+    const ttlSeconds = Math.max(0, (batch.ttlSeconds || 0) - elapsed);
+    const ranOut = batch.ttlSeconds > 0 && ttlSeconds === 0;
+    return { ...batch, ttlSeconds, ...(ranOut ? { usable: false, pending: false } : {}) };
+  });
 }
 
 // A finished purchase or a change in the node's batches reloads the list.
@@ -149,29 +260,85 @@ function renderEmptyText() {
   );
 }
 
-// Nothing is listed until a visit's getStamps lands: the cards, the count and
-// the buy button's wording go together, so a previous visit's cards never
-// show, and neither does the empty text until this visit knows it is empty.
-// The button stays (with the neutral "Buy Storage") so a slow or stuck
-// /stamps never leaves the screen without a way to buy.
+// The cards, the count and the buy button's wording go together, so they are
+// only ever set as one snapshot: this wallet's cached list, or this visit's
+// getStamps. Clearing drops all three, so the empty text stays hidden until a
+// visit knows the list is empty. The button stays (with the neutral "Buy
+// Storage") so a slow or stuck /stamps never leaves the screen without a way
+// to buy.
 function clearBatchList() {
   if (batchListContainer) batchListContainer.innerHTML = '';
   batchCount = null;
+  renderedSignature = null;
+  refreshing = false;
+  listStale = false;
+  listFresh = false;
+  actionsLive = false;
+  failedBeforeWallet = null;
+  renderLoadingStatus();
   if (buyMoreBtn) buyMoreBtn.textContent = 'Buy Storage';
+}
+
+// The spinner line while /stamps loads: in place of the list on a first
+// visit, over the cached cards on a return one.
+function renderLoadingStatus() {
+  const show = isOpen && (refreshing || failedBeforeWallet === 'waiting');
+  loadingStatus?.classList.toggle('hidden', !show);
+  if (loadingText) {
+    // Any list on screen, even an empty one, is being checked; only a screen
+    // with no list yet is loading it.
+    loadingText.textContent = !show
+      ? ''
+      : batchCount === null
+        ? 'Loading your storage…'
+        : 'Checking for changes…';
+  }
+  // Cached cards left after a refresh that failed: they may be out of date
+  // (a batch expired or topped up since), and their actions are off.
+  staleNotice?.classList.toggle(
+    'hidden',
+    !(isOpen && !refreshing && (listStale || failedBeforeWallet === 'unknown'))
+  );
 }
 
 async function loadBatchList() {
   const requestId = ++loadRequestId;
   loadedKey = stampsKey(setupState);
+  refreshing = true;
+  failedBeforeWallet = null;
+  renderLoadingStatus();
+  let stamps;
   try {
     const result = await window.swarmNode?.getStamps();
     if (!isOpen || requestId !== loadRequestId) return;
-    const stamps = result?.success ? result.stamps : [];
-    renderBatchList(stamps);
+    if (result?.success) {
+      stamps = result.stamps || [];
+      // A wallet change starts a new request, so this list is the current
+      // wallet's (or, before any state named one, the first wallet's).
+      cachedBatches =
+        stamps.length > 0 ? { wallet: knownWallet, stamps, fetchedAt: Date.now() } : null;
+    }
   } catch {
     if (!isOpen || requestId !== loadRequestId) return;
-    renderBatchList([]);
   }
+  // A failed refresh keeps this wallet's cached list rather than claiming
+  // it has no storage; its cards stay without actions, as they may be stale.
+  refreshing = false;
+  if (stamps) return renderBatchList(stamps);
+  const cached = cachedStampsForWallet();
+  if (cached) return renderBatchList(cached, { stale: true });
+  // A cached list nobody has matched to a wallet yet: drawing it could show
+  // another wallet's cards, and drawing nothing would say "no storage yet"
+  // for a wallet that has some. Wait for the wallet (showCachedList).
+  // If getState has already settled without a state, nothing but a push will
+  // confirm the wallet, so say the list couldn't be checked instead of
+  // holding a spinner no hand-off will ever clear.
+  if (!walletConfirmed && cachedBatches) {
+    failedBeforeWallet = stateUnanswered ? 'unknown' : 'waiting';
+    renderLoadingStatus();
+    return;
+  }
+  renderBatchList([], { stale: true });
 }
 
 async function startOperation(request) {
@@ -187,12 +354,52 @@ async function startOperation(request) {
 // Batch list rendering
 // ============================================
 
-function renderBatchList(stamps) {
+// What a card shows and acts on. Batches carry fields that drift on every
+// /stamps call (expiresApprox, the exact ttlSeconds), so comparing whole
+// batches would rebuild the cards on every refresh.
+function cardSignature(batch) {
+  const ttl = batch.ttlSeconds;
+  return [
+    batch.batchId,
+    batch.usable,
+    batch.pending,
+    batch.sizeBytes,
+    batch.usagePercent,
+    batch.depth,
+    formatDuration(ttl),
+    ttl > 0 && ttl < TTL_CRITICAL_SECONDS
+      ? 'critical'
+      : ttl > 0 && ttl < TTL_WARN_SECONDS
+        ? 'warn'
+        : '',
+  ];
+}
+
+// A stale list (the cache, before or without a fresh /stamps) is drawn with
+// its Keep Longer / Make Bigger buttons disabled: the batch may have expired
+// or changed since. A fresh list with the same signature turns them on in
+// place, so the cards (and any open form) stay.
+function renderBatchList(stamps, { stale = false } = {}) {
   if (!batchListContainer) return;
 
-  batchListContainer.innerHTML = '';
+  const signature = JSON.stringify([
+    stamps.map(cardSignature),
+    setupState?.canBuy,
+    (setupState?.plans || []).map((plan) => plan.depth),
+  ]);
   batchCount = stamps.length;
+  failedBeforeWallet = null;
+  listStale = stale && stamps.length > 0;
+  listFresh = !stale;
+  renderLoadingStatus();
   renderEmptyText();
+  if (signature === renderedSignature) {
+    setActionsLive(!stale);
+    return;
+  }
+  renderedSignature = signature;
+
+  batchListContainer.innerHTML = '';
   if (buyMoreBtn) buyMoreBtn.textContent = stamps.length > 0 ? 'Buy More Storage' : 'Buy Storage';
   buyMoreBtn?.classList.toggle('hidden', setupState?.canBuy === false);
 
@@ -256,6 +463,20 @@ function renderBatchList(stamps) {
     }
 
     batchListContainer.appendChild(card);
+  });
+  setActionsLive(!stale);
+}
+
+// Covers an extension form opened while the list was live, too: a reload
+// that then fails must not leave its presets able to start an operation.
+function setActionsLive(live) {
+  actionsLive = live;
+  batchListContainer?.querySelectorAll('.stamp-batch-action-btn').forEach((btn) => {
+    btn.disabled = !live;
+    btn.title = live ? '' : 'Available once your storage list is up to date.';
+  });
+  batchListContainer?.querySelectorAll('.stamp-extend-preset-btn').forEach((btn) => {
+    btn.disabled = !live || btn.dataset.quoted !== 'true';
   });
 }
 
@@ -342,7 +563,8 @@ async function loadExtensionOptions(form, presetRow, statusEl, batch, type) {
     btn.type = 'button';
     btn.className = 'stamp-extend-preset-btn';
     btn.textContent = option.quote ? `${label} · ${option.quote.price.display} xDAI` : label;
-    btn.disabled = !option.quote;
+    btn.dataset.quoted = option.quote ? 'true' : '';
+    btn.disabled = !option.quote || !actionsLive;
     btn.addEventListener('click', () => startOperation(request));
     presetRow.appendChild(btn);
   });

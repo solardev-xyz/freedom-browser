@@ -104,6 +104,16 @@ const {
   requestProfileFocusSync,
   startProfileFocusRequestWatcher,
 } = require('./profile-focus-handoff');
+const {
+  buildColdStartUrls,
+  createFirstWindowLinkQueue,
+  extractLaunchUrls,
+  sanitizeLaunchUrls,
+} = require('./launch-urls');
+// Links this launch was given (an OS link handler, `freedom <url>`), checked
+// against the schemes Freedom opens. A cold start opens them in its first
+// window; a second launch of an already-open profile hands them over below.
+const launchUrls = extractLaunchUrls(process.argv);
 let activeProfileLock = null;
 try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
@@ -121,7 +131,7 @@ try {
       });
     } else {
       const profileName = activeProfile.displayName || activeProfile.id || 'selected';
-      const focusResult = requestProfileFocusSync(activeProfile);
+      const focusResult = requestProfileFocusSync(activeProfile, { urls: launchUrls });
       if (!focusResult.ok) {
         dialog.showErrorBox(
           'Freedom profile is already open',
@@ -140,15 +150,24 @@ try {
 // `--open-settings` launch flag); this is the only place it becomes a URL.
 const PROFILE_SETTINGS_DEEPLINK = 'freedom://settings/profile';
 let focusCurrentProfileWindow = null;
+// Links handed to this process before its first window exists (an early macOS
+// `open-url`, a second launch's focus request during cold start). bootstrap()
+// drains them into that window's initial tabs; see createFirstWindowLinkQueue.
+const firstWindowLinks = createFirstWindowLinkQueue();
 const profileFocusWatcher = startProfileFocusRequestWatcher(
   activeProfile,
-  (request) =>
-    app.whenReady().then(() => {
-      if (typeof focusCurrentProfileWindow !== 'function') {
-        throw new Error('Main window focus handler is not ready');
-      }
-      return focusCurrentProfileWindow(request?.openSettings ? PROFILE_SETTINGS_DEEPLINK : null);
-    }),
+  (request) => {
+    // The request file is only a transport: re-check the URLs it carries.
+    const urls = request?.openSettings
+      ? [PROFILE_SETTINGS_DEEPLINK]
+      : sanitizeLaunchUrls(request?.urls);
+    // A handoff that lands while this process is still cold-starting goes to
+    // the first window bootstrap() is about to open (which comes up focused),
+    // not to a window of its own racing it. The ack can go out right away:
+    // the queue is drained into that window when it is created.
+    if (firstWindowLinks.queue(urls)) return Promise.resolve();
+    return app.whenReady().then(() => focusCurrentProfileWindow(urls));
+  },
   {
     logger: console,
     // Another Freedom process asked us to close — e.g. it is deleting this
@@ -160,6 +179,17 @@ const profileFocusWatcher = startProfileFocusRequestWatcher(
     },
   }
 );
+
+// macOS hands a link to the running app through `open-url` rather than argv,
+// including the one that launches it, which can arrive before `ready`. Those
+// wait for the first window, which opens them; later ones get a new tab.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const urls = sanitizeLaunchUrls([url]);
+  if (urls.length === 0) return;
+  if (firstWindowLinks.queue(urls)) return;
+  focusCurrentProfileWindow(urls);
+});
 
 const { version } = require('../../package.json');
 const iconPath = app.isPackaged
@@ -731,11 +761,18 @@ async function bootstrap() {
   // manager) carries --open-settings; land its first tab on Profile settings.
   let mainWindow = null;
   if (!RUNTIME_MODE) {
-    const coldStartUrl = process.argv.includes('--open-settings')
-      ? PROFILE_SETTINGS_DEEPLINK
-      : null;
-    mainWindow = createMainWindow(coldStartUrl);
-    // Defer upgrade cleanup until a visible window is ready (#526).
+    // Otherwise the first window opens the links the launch was given, if any.
+    // Links that arrived before this window (an early macOS `open-url`, a second
+    // launch handed over during this cold start) are opened either way, after
+    // the settings tab when there is one.
+    const coldStartUrls = buildColdStartUrls(process.argv, {
+      settingsUrl: PROFILE_SETTINGS_DEEPLINK,
+      pendingOpenUrls: firstWindowLinks.drainForFirstWindow(),
+    });
+    mainWindow = createMainWindow(coldStartUrls.length > 0 ? coldStartUrls : null);
+    // One-off big deletes wait until the window is up, so an upgrade never
+    // shows up as a slow launch (#526). Interrupted purges (quit before it
+    // finished) are picked up on the next launch.
     mainWindow.once('ready-to-show', () => {
       void purgeSetAsideBeeData({ logger: log });
     });
@@ -745,7 +782,7 @@ async function bootstrap() {
     await promptForDefaultExternalCandidates(activeProfile, {
       window: mainWindow,
       enabledProtocols: {
-        bee: settings.startBeeAtLaunch !== false,
+        bee: settings.startAntAtLaunch !== false,
         ipfs: settings.startIpfsAtLaunch !== false,
         tor: settings.enableTorIntegration === true && settings.startTorAtLaunch === true,
       },
@@ -989,9 +1026,11 @@ async function windDown() {
   if (!myotisExits || myotisExits.some((exited) => !exited)) {
     log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
   }
-  log.info(myotisExits && myotisExits.every(Boolean)
-    ? '[App] All processes stopped, quitting...'
-    : '[App] Quitting with Myotis exit unconfirmed');
+  log.info(
+    myotisExits && myotisExits.every(Boolean)
+      ? '[App] All processes stopped, quitting...'
+      : '[App] Quitting with Myotis exit unconfirmed'
+  );
 }
 
 app.on('before-quit', async (event) => {
