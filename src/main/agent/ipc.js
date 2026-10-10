@@ -13,6 +13,9 @@ const AGENT_IPC_ERROR_CODES = Object.freeze({
 });
 const OPENAI_DEVICE_VERIFICATION_URL = 'https://auth.openai.com/codex/device';
 const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
+  AGENT_CLAUDE_VERSION: 'Update Claude Code to version 2.1.290 or newer, then connect again.',
+  AGENT_CLAUDE_MANAGED: 'This connection supports personal Claude Pro and Max accounts without managed policies. Managed Claude installations can run hooks outside Freedom’s permissions; use the Anthropic API connection instead.',
+  AGENT_CLAUDE_UNAVAILABLE: 'Could not connect to Claude Code. Install or update its native CLI, run claude auth login with your subscription in a terminal, then try again.',
   AGENT_SECURE_STORAGE_UNAVAILABLE: 'Secure credential storage is unavailable',
   AGENT_CREDENTIAL_UNAVAILABLE: 'The saved provider credential is unavailable',
   AGENT_PROVIDER_STORE_UNSAFE: 'Agent provider storage is unsafe',

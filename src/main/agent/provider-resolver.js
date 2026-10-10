@@ -4,6 +4,8 @@ const { checkProviderAttestation } = require('./privacy-attestation');
 const { fetchNearWithEvidence, fetchVeniceEncrypted } = require('./privacy-request');
 
 const path = require('path');
+const { CLAUDE_PROVIDER_ID, CLAUDE_MODELS, checkClaudeLogin } = require('./claude-cli');
+const { createClaudeSession } = require('./claude-session');
 const { loadPiSdk } = require('./pi-sdk');
 const { loginChatGPT } = require('./chatgpt-login');
 const {
@@ -22,6 +24,7 @@ const HOSTED_PROVIDERS = Object.freeze(
   )
 );
 const SUBSCRIPTION_PROVIDERS = Object.freeze({
+  'anthropic-claude': 'Anthropic · Claude subscription',
   'openai-chatgpt': 'OpenAI · ChatGPT',
   'meta-subscription': 'Meta · Muse',
   'openai-codex': 'OpenAI · ChatGPT (legacy)',
@@ -92,6 +95,7 @@ class AgentProviderResolver {
     this.dataDir = path.resolve(options.dataDir);
     this.loadSdk = options.loadSdk || loadPiSdk;
     this.fetch = options.fetch || globalThis.fetch;
+    this.checkClaudeLogin = options.checkClaudeLogin || checkClaudeLogin;
     this.catalog =
       options.catalog || new ProviderCatalog({ dataDir: this.dataDir, fetch: options.fetch });
     if (typeof this.store.createCredentialStore !== 'function') {
@@ -122,14 +126,13 @@ class AgentProviderResolver {
       providerId,
       name,
       authType,
-      defaultModelId: providerId === 'openai-chatgpt' ? 'gpt-6.1-sol' : runtimeProviderId(providerId) === 'meta' ? 'muse-spark-1.3' : undefined,
+      defaultModelId: providerId === CLAUDE_PROVIDER_ID ? 'sonnet' : providerId === 'openai-chatgpt' ? 'gpt-6.1-sol' : runtimeProviderId(providerId) === 'meta' ? 'muse-spark-1.3' : undefined,
       group: PROVIDER_DEFINITIONS[providerId].group,
       privacy: PROVIDER_DEFINITIONS[providerId].privacy,
       policies: PROVIDER_DEFINITIONS[providerId].policies || [],
       canRefresh: Boolean(PROVIDER_DEFINITIONS[providerId].catalogUrl),
       updatedAt: this.catalog.get(providerId).updatedAt || null,
-      models: runtime
-        .getModels(runtimeProviderId(providerId))
+      models: (providerId === CLAUDE_PROVIDER_ID ? CLAUDE_MODELS : runtime.getModels(runtimeProviderId(providerId)))
         .filter(
           (model) =>
             !this.catalog.get(providerId).updatedAt ||
@@ -239,6 +242,13 @@ class AgentProviderResolver {
         'Subscription provider is not supported'
       );
     }
+    if (providerId === CLAUDE_PROVIDER_ID) {
+      if (!CLAUDE_MODELS.some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
+      await this.checkClaudeLogin({ signal: interaction?.signal });
+      interaction?.signal?.throwIfAborted();
+      this.store.saveSubscription({ providerId, modelId });
+      return this.getStatus();
+    }
     if (this.store.isEncryptionAvailable() !== true) {
       throw new AgentProviderError(
         'AGENT_SECURE_STORAGE_UNAVAILABLE',
@@ -285,7 +295,8 @@ class AgentProviderResolver {
     if (!connection) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not configured');
     }
-    if (providerId !== 'ollama') {
+    if (providerId === CLAUDE_PROVIDER_ID && !CLAUDE_MODELS.some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
+    if (providerId !== 'ollama' && providerId !== CLAUDE_PROVIDER_ID) {
       const runtime = await this.#createRuntime();
       if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
         throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
@@ -479,6 +490,31 @@ class AgentProviderResolver {
     const selection = saved && { ...saved, ...(input?.modelId && { modelId: input.modelId }) };
     if (!selection) {
       throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'No agent model is configured');
+    }
+    if (selection.providerId === CLAUDE_PROVIDER_ID && selection.kind === 'subscription') {
+      const model = CLAUDE_MODELS.find(model => model.id === selection.modelId);
+      if (!model) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
+      const executable = await this.checkClaudeLogin();
+      const modelRuntime = {
+        createFreedomSession: options => createClaudeSession({ ...options, executable }),
+        async completeSimple(model, context, options = {}) {
+          const sdk = await loadPiSdk();
+          const { session } = await createClaudeSession({ sdk, executable, model, customTools: [],
+            systemPrompt: 'Respond concisely to the user.' });
+          let text = '';
+          session.subscribe(event => {
+            if (event.type === 'message_update') text += event.assistantMessageEvent?.delta || '';
+          });
+          const stop = () => { void session.abort(); };
+          options.signal?.addEventListener('abort', stop, { once: true });
+          try {
+            options.signal?.throwIfAborted();
+            await session.prompt(context.messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n'));
+            return { content: [{ type: 'text', text }], stopReason: 'stop' };
+          } finally { options.signal?.removeEventListener('abort', stop); await session.dispose(); }
+        },
+      };
+      return { model: { ...model }, modelRuntime, thinkingLevel: 'medium' };
     }
     if (selection.kind === 'hosted' && !Object.hasOwn(HOSTED_PROVIDERS, selection.providerId)) {
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Hosted provider is not supported');

@@ -13,6 +13,7 @@ let sessionPrivacy;
 const PROVIDER_NAMES = Object.freeze({
   anthropic: 'Anthropic',
   openai: 'OpenAI · API',
+  'anthropic-claude': 'Anthropic · Claude subscription',
   'openai-chatgpt': 'OpenAI · ChatGPT',
   'meta-subscription': 'Meta · Muse',
   'openai-codex': 'OpenAI · ChatGPT (legacy)',
@@ -611,7 +612,7 @@ function providerPrivacyMessage(providerId) {
 function providerAuthType(providerId) {
   return (
     providerCatalog.find((candidate) => candidate.providerId === providerId)?.authType ||
-    (['openai-chatgpt', 'openai-codex', 'meta-subscription'].includes(providerId) ? 'subscription' : 'api_key')
+    (['anthropic-claude', 'openai-chatgpt', 'openai-codex', 'meta-subscription'].includes(providerId) ? 'subscription' : 'api_key')
   );
 }
 
@@ -1773,6 +1774,7 @@ function renderProviderFields() {
   const connection = providerConnection(providerId);
   const isConnectedSubscription = connection?.kind === 'subscription';
   const isMeta = ['meta', 'meta-subscription'].includes(providerId);
+  const isClaude = ['anthropic', 'anthropic-claude'].includes(providerId);
   const canUpgradeChatgpt = providerId === 'openai-codex' && isConnectedSubscription;
   const descriptor = providerCatalog.find((item) => item.providerId === providerId);
   elements.providerHeading.textContent = providerName(providerId);
@@ -1789,10 +1791,10 @@ function renderProviderFields() {
   elements.subscriptionNote.hidden = Boolean(connection) && !canUpgradeChatgpt;
   elements.subscriptionNote.textContent = canUpgradeChatgpt
     ? 'This connection uses the older Codex login. Sign in with ChatGPT to use the new connection. Your current connection stays available.'
-    : isMeta ? 'Connect with your Meta account.' : 'Connect with your ChatGPT subscription.';
+    : isClaude ? 'Install Claude Code and sign in with claude auth login in your terminal, then connect here. Uses a personal Pro or Max subscription; managed installations are not supported. Freedom never copies your login credentials.' : isMeta ? 'Connect with your Meta account.' : 'Connect with your ChatGPT subscription.';
   elements.loginProvider.hidden =
     !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt) || providerLoginPending;
-  elements.loginProvider.textContent = canUpgradeChatgpt ? 'Upgrade ChatGPT sign-in' : isMeta ? 'Sign in with Meta' : 'Continue with ChatGPT';
+  elements.loginProvider.textContent = canUpgradeChatgpt ? 'Upgrade ChatGPT sign-in' : isClaude ? 'Connect installed Claude' : isMeta ? 'Sign in with Meta' : 'Continue with ChatGPT';
   elements.cancelProviderLogin.hidden = !isSubscription || !providerLoginPending;
   elements.provider.disabled = providerLoginPending;
   elements.model.disabled = providerLoginPending;
@@ -1821,17 +1823,17 @@ function renderProviderFields() {
     : descriptor?.canRefresh ? 'Refresh to discover current models. No prompts are sent.' : 'Bundled model catalog';
   if (!isOllama) renderModelOptions(providerId);
   else renderProviderModelPreview(providerId);
-  const subscriptionConnected = Boolean(isMeta ? providerConnection('meta-subscription') : providerConnection('openai-chatgpt') || providerConnection('openai-codex'));
-  elements.subscriptionMethodTitle.textContent = isMeta ? 'Meta subscription' : 'ChatGPT subscription';
-  elements.subscriptionMethodHelp.textContent = isMeta ? 'Use your Meta account' : 'Use your ChatGPT account';
+  const subscriptionConnected = Boolean(isClaude ? providerConnection('anthropic-claude') : isMeta ? providerConnection('meta-subscription') : providerConnection('openai-chatgpt') || providerConnection('openai-codex'));
+  elements.subscriptionMethodTitle.textContent = isClaude ? 'Claude subscription' : isMeta ? 'Meta subscription' : 'ChatGPT subscription';
+  elements.subscriptionMethodHelp.textContent = isClaude ? 'Use your installed Claude Code login' : isMeta ? 'Use your Meta account' : 'Use your ChatGPT account';
   elements.authCodeInstruction.textContent = `Enter this code on the ${isMeta ? 'Meta' : 'OpenAI'} page`;
-  const apiConnected = Boolean(providerConnection(isMeta ? 'meta' : 'openai'));
+  const apiConnected = Boolean(providerConnection(isClaude ? 'anthropic' : isMeta ? 'meta' : 'openai'));
   elements.chatgptConnectionState.textContent = subscriptionConnected ? 'Connected' : 'Connect';
   elements.apiConnectionState.textContent = apiConnected ? 'Connected' : 'Connect';
   elements.chatgptConnectionState.classList.toggle('active', subscriptionConnected);
   elements.apiConnectionState.classList.toggle('active', apiConnected);
   if (choosingProviderMethod) {
-    elements.providerHeading.textContent = isMeta ? 'Meta (Muse)' : 'OpenAI';
+    elements.providerHeading.textContent = isClaude ? 'Anthropic' : isMeta ? 'Meta (Muse)' : 'OpenAI';
     elements.providerStatus.textContent = subscriptionConnected || apiConnected ? 'Connected' : 'Not connected';
     elements.providerStatus.classList.toggle('active', subscriptionConnected || apiConnected);
   }
@@ -1902,7 +1904,7 @@ function openProviderDetail(providerId, chooseMethod = false) {
 
 function createProviderLogo(providerId) {
   const files = {
-    openai: 'openai.png', 'openai-chatgpt': 'openai.png', 'openai-codex': 'openai.png', anthropic: 'anthropic.png',
+    openai: 'openai.png', 'openai-chatgpt': 'openai.png', 'openai-codex': 'openai.png', anthropic: 'anthropic.png', 'anthropic-claude': 'anthropic.png',
     xai: 'xai-light.svg', meta: 'meta.svg', 'meta-subscription': 'meta.svg', openrouter: 'openrouter.png',
     venice: 'venice.png', 'near-ai': 'near-ai.svg', ollama: 'ollama.png',
   };
@@ -1952,7 +1954,7 @@ function renderProviderOptions() {
   let groupRows;
   const descriptions = {
     openai: 'ChatGPT subscription or API key',
-    anthropic: 'Claude models',
+    anthropic: 'Claude subscription or API key',
     xai: 'Grok models',
     meta: 'Meta subscription or API key',
     openrouter: 'Many model providers, one API key',
@@ -1961,7 +1963,7 @@ function renderProviderOptions() {
     ollama: 'Models running on your computer',
   };
   for (const definition of definitions) {
-    if (['openai-chatgpt', 'openai-codex', 'meta-subscription'].includes(definition.providerId)) continue;
+    if (['anthropic-claude', 'openai-chatgpt', 'openai-codex', 'meta-subscription'].includes(definition.providerId)) continue;
     const name = definition.providerId === 'openai' ? 'OpenAI' : definition.name;
     if (!`${name} ${definition.providerId} ${definition.providerId === 'openai' ? 'ChatGPT subscription API' : ''}`.toLowerCase().includes(query)) continue;
     if (!groupRows || group !== definition.group) {
@@ -1988,7 +1990,8 @@ function renderProviderOptions() {
     copy.appendChild(description);
     const connected = Boolean(providerConnection(definition.providerId) ||
       (definition.providerId === 'openai' && (providerConnection('openai-chatgpt') || providerConnection('openai-codex'))) ||
-      (definition.providerId === 'meta' && providerConnection('meta-subscription')));
+      (definition.providerId === 'meta' && providerConnection('meta-subscription')) ||
+      (definition.providerId === 'anthropic' && providerConnection('anthropic-claude')));
     const indicator = document.createElement('span');
     indicator.className = 'agent-provider-indicator';
     indicator.textContent = connected ? '✓' : '›';
@@ -1997,7 +2000,7 @@ function renderProviderOptions() {
     button.appendChild(avatar);
     button.appendChild(copy);
     button.appendChild(indicator);
-    button.addEventListener('click', () => openProviderDetail(definition.providerId, ['openai', 'meta'].includes(definition.providerId)));
+    button.addEventListener('click', () => openProviderDetail(definition.providerId, ['openai', 'meta', 'anthropic'].includes(definition.providerId)));
     groupRows.appendChild(button);
   }
   if (!content.length) {
@@ -2436,8 +2439,8 @@ async function loginSubscriptionProvider() {
   elements.authCallbackInput.value = '';
   elements.authCode.hidden = true;
   elements.authUserCode.textContent = '';
-  const accountName = providerId === 'meta-subscription' ? 'Meta' : 'ChatGPT';
-  setMessage(elements.providerMessage, `Starting ${accountName} sign-in…`);
+  const accountName = providerId === 'anthropic-claude' ? 'Claude' : providerId === 'meta-subscription' ? 'Meta' : 'ChatGPT';
+  setMessage(elements.providerMessage, providerId === 'anthropic-claude' ? 'Checking your installed Claude login…' : `Starting ${accountName} sign-in…`);
   renderProviderFields();
   try {
     const response = await window.electronAPI.loginSubscriptionAgentProvider(providerId, modelId);
@@ -5277,8 +5280,8 @@ export function initAgentUi(options = {}) {
   elements.providerAdd.addEventListener('click', () => { renderProviderOptions(); showProviderScreen('browser'); });
   elements.providerListBack.addEventListener('click', () => showProviderScreen('home'));
   elements.providerDetailBack.addEventListener('click', () => { if (!providerLoginPending) showProviderScreen('home'); });
-  elements.providerChatgpt.addEventListener('click', () => openProviderDetail(elements.provider.value === 'meta' ? 'meta-subscription' : 'openai-chatgpt'));
-  elements.providerApi.addEventListener('click', () => openProviderDetail(elements.provider.value === 'meta' ? 'meta' : 'openai'));
+  elements.providerChatgpt.addEventListener('click', () => openProviderDetail(elements.provider.value === 'anthropic' ? 'anthropic-claude' : elements.provider.value === 'meta' ? 'meta-subscription' : 'openai-chatgpt'));
+  elements.providerApi.addEventListener('click', () => openProviderDetail(elements.provider.value === 'anthropic' ? 'anthropic' : elements.provider.value === 'meta' ? 'meta' : 'openai'));
   elements.providerSearch.addEventListener('input', renderProviderOptions);
   elements.model.addEventListener('change', renderModelDetails);
   elements.modelRefresh.addEventListener('click', refreshModelCatalog);

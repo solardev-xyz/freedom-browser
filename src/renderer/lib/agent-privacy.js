@@ -29,7 +29,7 @@ const PRIVACY_SYMBOLS = {
 function modelPrivacySymbols(providerId, model, baseUrl, settings) {
   // Keep direct lab connections visually plain; marketplace routes still show
   // their own protections, regardless of which lab made the underlying model.
-  if (['openai', 'openai-chatgpt', 'openai-codex', 'anthropic', 'meta', 'meta-subscription'].includes(providerId)) return [];
+  if (['openai', 'openai-chatgpt', 'openai-codex', 'anthropic', 'anthropic-claude', 'meta', 'meta-subscription'].includes(providerId)) return [];
   const symbols = [];
   const add = (kind, label, detail) => symbols.push({ kind, label, detail });
   if (providerId === 'ollama') {
@@ -236,9 +236,10 @@ export function createAgentPrivacy(button, panel, saveSettings = async () => {})
       else if (hardware.some(h => h.status === 'pending')) section.append(el('p', 'Checking hardware…'));
       const details = el('details', '');
       details.append(el('summary', 'Technical details'));
-      details.append(el('p', route.origin || 'Destination not recorded', 'agent-privacy-origin'));
+      const viaClaude = route.providerId === 'anthropic-claude';
+      details.append(el('p', viaClaude ? 'Connection handled by installed Claude Code' : route.origin || 'Destination not recorded', 'agent-privacy-origin'));
       const encrypted = route.origin?.startsWith('https:');
-      details.append(el('p', encrypted ? 'HTTPS encrypts traffic to the service. It is not end-to-end encryption to the model.' : 'This endpoint does not use HTTPS.'));
+      details.append(el('p', viaClaude ? 'Messages go to Anthropic through your Claude login. Freedom does not inspect the CLI’s network connection, retries or background context requests. Claude may keep its own diagnostics locally; Freedom stores this conversation in its history.' : encrypted ? 'HTTPS encrypts traffic to the service. It is not end-to-end encryption to the model.' : 'This endpoint does not use HTTPS.'));
       const claims = [...new Set(group.map(r => r.claim).filter(c => c && c !== 'unknown'))];
       if (claims.length) details.append(el('p', `Provider claims: ${claims.join(', ')}. These labels are not independent proof.`));
       if (route.providerId === 'openrouter') details.append(el('p', 'Zero retention is an endpoint policy enforced through routing, not a cryptographic guarantee. OpenRouter account-level prompt logging is controlled separately in your OpenRouter account.'));

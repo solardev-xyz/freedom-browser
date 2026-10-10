@@ -292,6 +292,10 @@ When asked which model or provider you are using, report these configured identi
   const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt + (options.enableCodemode ? `\n\n${codemodePrompt}` : ''), {
     enableBuiltInSkills,
   });
+  if (typeof options.modelRuntime.createFreedomSession === 'function') {
+    return options.modelRuntime.createFreedomSession({ ...options, sdk, customTools: sessionTools,
+      systemPrompt: resourceLoader.getSystemPrompt() + `\n\n${currentTimeContext(Date.now())}\n\nBuilt-in skills: read the relevant skill file with the read tool before using it. ${JSON.stringify(resourceLoader.getSkills().skills.map(({ name, description, filePath }) => ({ name, description, filePath })))}` });
+  }
   const settingsManager = sdk.SettingsManager.inMemory({
     compaction: { enabled: true },
     cacheWarming: 'off',

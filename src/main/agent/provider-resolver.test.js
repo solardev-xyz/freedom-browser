@@ -468,6 +468,7 @@ describe('AgentProviderResolver', () => {
       'openrouter',
       'venice',
       'near-ai',
+      'anthropic-claude',
       'openai-chatgpt',
       'meta-subscription',
       'openai-codex',
@@ -505,4 +506,29 @@ test('refreshes cached Venice encryption metadata before resolving a model, incl
   delete model.e2ee;
   refresh.mockRejectedValue(new Error('offline'));
   await expect(ctx.resolver.resolveModel()).rejects.toMatchObject({ code: 'AGENT_CATALOG_UNAVAILABLE' });
+});
+
+
+test('Claude subscription uses the installed login without reading or creating OAuth credentials', async () => {
+  const checkClaudeLogin = jest.fn(async () => '/native/claude');
+  const { resolver, store, runtime } = createResolver(null, { checkClaudeLogin });
+  const signal = new AbortController().signal;
+  await resolver.loginSubscription({ providerId: 'anthropic-claude', modelId: 'sonnet' }, { signal });
+  expect(checkClaudeLogin).toHaveBeenCalledWith({ signal });
+  expect(store.saveSubscription).toHaveBeenCalledWith({ providerId: 'anthropic-claude', modelId: 'sonnet' });
+  expect(runtime.login).not.toHaveBeenCalled();
+  expect(runtime.setRuntimeApiKey).not.toHaveBeenCalled();
+  await expect(resolver.loginSubscription({ providerId: 'anthropic-claude', modelId: 'unknown' }, { signal })).rejects.toMatchObject({ code: 'AGENT_MODEL_INVALID' });
+});
+
+test('Claude runtime never falls back to a Pi API transport', async () => {
+  const checkClaudeLogin = jest.fn(async () => '/native/claude');
+  const { resolver, runtime } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus' }, { checkClaudeLogin });
+  const resolved = await resolver.resolveModel();
+  expect(resolved.model.provider).toBe('anthropic-claude');
+  expect(typeof resolved.modelRuntime.createFreedomSession).toBe('function');
+  expect(resolved.modelRuntime.streamSimple).toBeUndefined();
+  expect(runtime.setRuntimeApiKey).not.toHaveBeenCalled();
+  checkClaudeLogin.mockRejectedValueOnce(new Error('CLI unavailable'));
+  await expect(resolver.resolveModel()).rejects.toThrow('CLI unavailable');
 });

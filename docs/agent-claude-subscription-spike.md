@@ -1,5 +1,7 @@
 # Local Claude subscription integration spike
 
+Historical feasibility report. The subsequent [integrated implementation](agent-claude-subscription.md) is now available on this experimental branch.
+
 Date: 2026-10-10. Branch: `experiment/agent-claude-subscription`, based on
 `c717eb65`. This is opt-in qualification tooling, not a shipped provider.
 

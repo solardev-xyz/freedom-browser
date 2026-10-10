@@ -98,6 +98,7 @@ const WORKSPACE_PHASE_MESSAGES = Object.freeze({
   executing_operation: 'Running the workspace operation…',
 });
 const PROVIDER_LABELS = Object.freeze({
+  'anthropic-claude': 'Anthropic · Claude subscription',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',

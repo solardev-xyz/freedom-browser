@@ -318,3 +318,11 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Profile-Aware Radicle Errors**: Opening `rad://` while Radicle is disabled for the profile shows "Radicle Disabled for This Profile" and points to **Settings → Nodes**; opening it while the node is stopped shows "Cannot Connect to Radicle Node" and points to the Nodes menu.
 - **Retry on Reload**: Pressing reload on an error page retries the original request.
 - **Graceful Degradation**: Navigation errors don't crash the browser.
+
+
+### Experimental Claude subscription connection
+
+The Agent's Anthropic setup also offers an installed Claude Code connection for
+personal Pro/Max subscriptions. It uses the CLI's existing login and Freedom's
+normal tools, approvals, helpers, codemode and conversation UI. Managed installations
+are not supported. See [setup and qualification](agent-claude-subscription.md).
