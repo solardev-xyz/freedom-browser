@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use codex_protocol::config_types::{WindowsSandboxLevel, WindowsSandboxProxySettingsMode};
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::{FileSystemSandboxPolicy, FileSystemSandboxEntry, FileSystemPath, FileSystemAccessMode};
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_windows_sandbox::{WindowsSandboxProvisioningSettings, WindowsSandboxSessionRequest};
@@ -105,7 +106,16 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
     let denied: Vec<AbsolutePathBuf> = request.protected_paths.into_iter()
         .map(AbsolutePathBuf::try_from).collect::<Result<_, _>>()?;
     let network = if request.network { NetworkSandboxPolicy::Enabled } else { NetworkSandboxPolicy::Restricted };
-    let profile = PermissionProfile::workspace_write_with(&writable, network, true, true);
+    // Do not use the workspace-write preset: it implicitly grants the workspace
+    // even for read-only file operations. Every write root must be explicit.
+    let mut filesystem = FileSystemSandboxPolicy::read_only();
+    for root in writable {
+        filesystem.entries.push(FileSystemSandboxEntry::new(FileSystemPath::Path { path: root.into() }, FileSystemAccessMode::Write));
+    }
+    for root in &denied {
+        filesystem.entries.push(FileSystemSandboxEntry::new(FileSystemPath::Path { path: root.clone().into() }, FileSystemAccessMode::Read));
+    }
+    let profile = PermissionProfile::from_runtime_permissions(&filesystem, network);
     let mut process = codex_windows_sandbox::spawn_windows_sandbox_session_for_level(WindowsSandboxSessionRequest {
         permission_profile: &profile,
         workspace_roots: &roots,

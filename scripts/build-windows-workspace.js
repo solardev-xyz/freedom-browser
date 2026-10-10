@@ -81,8 +81,11 @@ async function buildWindowsWorkspace(arch = process.arch) {
     fs.writeFileSync(manifest, text);
   }
   fs.cpSync(ADAPTER, path.join(workspace, 'freedom-windows-workspace'), { recursive: true });
+  const locked = spawnSync('tar.exe', ['-xOf', archive, `codex-${REVISION}/codex-rs/Cargo.lock`], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+  if (locked.status !== 0) throw new Error('Cannot read the pinned sandbox lockfile');
+  fs.writeFileSync(path.join(workspace, 'Cargo.lock'), `${locked.stdout}\n[[package]]\nname = "freedom-windows-workspace"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n "base64 0.22.1",\n "codex-protocol",\n "codex-utils-absolute-path",\n "codex-windows-sandbox",\n "serde",\n "serde_json",\n "tokio",\n]\n`);
   const cargo = process.env.FREEDOM_CARGO || path.join(process.env.USERPROFILE, '.cargo/bin/cargo.exe');
-  run(cargo, ['build', '--release', '-p', 'freedom-windows-workspace', '-p', 'codex-windows-sandbox',
+  run(cargo, ['build', '--locked', '--release', '-p', 'freedom-windows-workspace', '-p', 'codex-windows-sandbox',
     '--bin', 'freedom-windows-workspace', '--bin', 'freedom-windows-sandbox-setup', '--bin', 'freedom-workspace-runner'], workspace);
   const output = path.join(ROOT, 'out/windows-workspace', arch);
   fs.mkdirSync(output, { recursive: true });
@@ -93,7 +96,8 @@ async function buildWindowsWorkspace(arch = process.arch) {
   }
   fs.copyFileSync(path.join(source, 'LICENSE'), path.join(output, 'CODEX-LICENSE.txt'));
   if (fs.existsSync(path.join(source, 'NOTICE'))) fs.copyFileSync(path.join(source, 'NOTICE'), path.join(output, 'CODEX-NOTICE.txt'));
-  fs.writeFileSync(path.join(output, 'manifest.json'), `${JSON.stringify({ version: 1, backend: 'elevated', arch, revision: REVISION, archiveSha256: ARCHIVE_SHA256, binaries: hashes }, null, 2)}\n`);
+  const adapterSha256 = digest(path.join(ADAPTER, 'src/main.rs'));
+  fs.writeFileSync(path.join(output, 'manifest.json'), `${JSON.stringify({ version: 1, backend: 'elevated', arch, revision: REVISION, archiveSha256: ARCHIVE_SHA256, adapterSha256, binaries: hashes }, null, 2)}\n`);
   console.log(`Windows workspace helper built: ${output}`);
   return output;
 }

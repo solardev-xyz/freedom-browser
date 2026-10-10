@@ -20,6 +20,8 @@ async function resolveWindowsSandbox(options = {}) {
   if (manifest.version !== 1 || manifest.backend !== 'elevated' || manifest.revision !== REVISION || manifest.arch !== arch) {
     throw new Error('Windows sandbox helper is incompatible; rebuild it');
   }
+  const source = await fs.promises.readFile(path.join(__dirname, 'native/windows/src/main.rs'));
+  if (crypto.createHash('sha256').update(source).digest('hex') !== manifest.adapterSha256) throw new Error('Windows sandbox adapter is stale; rebuild it');
   for (const name of BINARIES) {
     const filename = path.join(directory, name);
     const stat = await fs.promises.lstat(filename);
