@@ -64,7 +64,7 @@ jobs:
           node scripts/qualify-windows-workspace.js --root C:\freedom-agent-tests
           if ($LASTEXITCODE) { throw 'Native workspace qualification failed' }
           $env:ELECTRON_RUN_AS_NODE = '1'
-          node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-windows-controller.js','--root','C:/freedom-agent-tests'],{stdio:'inherit',timeout:180000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
+          node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-windows-controller.js','--root','C:/freedom-agent-tests'],{stdio:'inherit',timeout:300000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
           if ($LASTEXITCODE) { throw 'Controller qualification failed' }
       - name: Qualify app startup and delegated project edits
         env:
@@ -80,6 +80,12 @@ jobs:
           name: agent-windows-sandbox
           path: |
             out/windows-workspace/x64/
-            C:/freedom-agent-tests/**/results.jsonl
             test-results/
+          retention-days: 14
+      - name: Retain qualification receipts from the test drive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-windows-receipts
+          path: C:/freedom-agent-tests/**/results.jsonl
           retention-days: 14

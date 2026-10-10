@@ -597,6 +597,8 @@ test('delegated reports are expandable, inert and coherent in both themes and la
         { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'running', report: '' }] });
   });
   await expect(window.locator('.agent-subagent-report')).toHaveCount(2);
+  await expect(window.locator('.agent-tool-item:visible')).toHaveCount(0);
+  await window.locator('.agent-turn-activity > summary').click();
   await expect(window.locator('.agent-tool-item:visible')).toHaveCount(1);
   await window.locator('.agent-subagent-report').first().locator('summary').click();
   const helperStop = window.getByRole('button', { name: 'Stop helper: Review accessibility' });
@@ -943,9 +945,11 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-model-menu')).toBeVisible();
   await expect(window.locator('#agent-model-menu-list')).toContainText(hostedModelName);
   await expect(window.locator('#agent-model-menu-list')).toContainText('freedom-e2e-no-server');
-  await window.getByRole('menuitemradio', { name: hostedModelName, exact: true }).click();
+  await window.locator('#agent-model-menu-search').fill(hostedModelName);
+  await window.locator('#agent-model-menu-list').getByText(hostedModelName, { exact: true }).click();
   await expect(window.locator('#agent-active-model-label')).toHaveText(hostedModelName);
   await window.locator('#agent-model-menu-button').click();
+  await window.locator('#agent-model-menu-search').fill('freedom-e2e-no-server');
   await window.getByRole('menuitemradio', { name: 'freedom-e2e-no-server' }).click();
   await expect(window.locator('#agent-active-model-label')).toHaveText('freedom-e2e-no-server');
   await window.locator('#agent-model-menu-button').click();
@@ -1567,6 +1571,7 @@ test('upgrades populated legacy helper history with the Electron SQLite driver',
       store.getDb().prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ?').run(JSON.stringify([{ operation: 'delegate_task', subagent }]), runId);
     }
     store.getDb().exec('DROP TABLE agent_helper_reports');
+    store.getDb().exec('ALTER TABLE agent_sessions DROP COLUMN privacy_json');
     store.getDb().pragma('user_version = 4'); store.close();
     let injectFailure = true;
     class FaultOnceDatabase extends Database {
@@ -1610,7 +1615,7 @@ test('upgrades populated legacy helper history with the Electron SQLite driver',
   expect(result.versionAfterFailure).toBe(4);
   expect(result.legacyAfterFailure.report).toBe('Legacy findings 0');
   expect(result.legacyAfterFailure.reportId).toBeUndefined();
-  expect(result).toMatchObject({ version: 5, count: 205, reopenedCount: 205, allReportsMatch: true, lastTruncated: true });
+  expect(result).toMatchObject({ version: 6, count: 205, reopenedCount: 205, allReportsMatch: true, lastTruncated: true });
 });
 
 test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {

@@ -2233,6 +2233,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-page-interlock.dialog-open {
+  /* The confirmation must sit above the floating conversation (z-index 40). */
+  z-index: 45;
   background: var(--agent-interlock-overlay);
 }
 

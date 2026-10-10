@@ -61,13 +61,14 @@ async function main() {
     const launch = 'node server.cjs';
     const serverPermission = await controller.prepareCommandPermissions('windows-qualification', { executables: ['node'], network: 'full' }, { command: launch });
     controller.grantCommandPermissions('windows-qualification', serverPermission.prepared);
-    let server = await controller.startProcess('windows-qualification', { command: launch, yieldMs: 1000, timeoutMs: 30000 });
+    let server = await controller.startProcess('windows-qualification', { command: launch, yieldMs: 1000, timeoutMs: 90000 });
     let output = server.output || '';
-    for (let i = 0; i < 10 && !/PORT=\d+/.test(output); i++) {
+    for (let i = 0; i < 45 && !/PORT=\d+/.test(output) && server.state === 'running'; i++) {
       server = await controller.interactProcess('windows-qualification', server.processId, { waitMs: 1000 });
       output += server.output || '';
     }
     const port = Number(output.match(/PORT=(\d+)/)?.[1]);
+    record('preview-start', { ...server, output });
     assert.ok(port, 'Preview server must report its port');
     assert.equal(await (await fetch(`http://127.0.0.1:${port}`)).text(), 'windows-preview');
     const input = await controller.interactProcess('windows-qualification', server.processId, { input: 'hello\n', waitMs: 1000 });

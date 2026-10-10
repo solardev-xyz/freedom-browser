@@ -2,4 +2,4 @@
   - Sign in with ChatGPT or Meta Muse, connect model-provider API keys, or use local Ollama models
   - Website actions, parallel helpers, connected MCP services, and permission controls
   - Sandboxed tool scripts for multi-step tasks
-  - Local projects, file comparisons, Git history, app previews, and Swarm publishing
+  - Local projects on macOS, Linux, and Windows; file comparisons, Git history, previews, and Swarm publishing
