@@ -349,6 +349,42 @@ jobs:
         if: matrix.target == 'win-x64'
         run: npm run radicle:download -- --win --arm64
 
+  # Package an unpacked `--dir` build for every shipped platform and fail if
+  # app.asar holds anything outside the `build.files` allowlist (#576). The
+  # same check runs from scripts/after-pack.js in release.yml, but only at tag
+  # time; this runs the guard's mac (`.app/Contents/Resources`) and win paths
+  # on every pull request. One ubuntu runner cross-packages all three: the
+  # check reads the asar header and the better-sqlite3 prebuild names, nothing
+  # that needs the target OS. scripts/ci/check-packed-asar.js lists what it
+  # drops from the release config (native rebuilds, signing, fuses).
+  packed-asar-contents:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        flags: ['--mac --arm64', '--linux --x64', '--win --x64']
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: Package and check app.asar
+        run: node scripts/ci/check-packed-asar.js ${{ matrix.flags }}
+
   # Load every native Myotis addon target that release packaging requires.
   # The live network proof below remains one representative architecture per
   # shipped OS; this fast matrix closes the packaging gap for Intel macOS and
@@ -1831,6 +1867,7 @@ jobs:
         migration-cross-platform,
         myotis-addon-load,
         myotis-native-e2e,
+        packed-asar-contents,
         radicle-addon-load,
         renderer-changed,
         test,
