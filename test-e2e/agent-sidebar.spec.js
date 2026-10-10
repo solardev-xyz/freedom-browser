@@ -401,7 +401,7 @@ for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} fi
         try { await controller.createDelegatedWriter(conversationId, ['README.md']); } catch (error) { permissionError = error.code; }
         await controller.setProjectAccess(conversationId, 'write');
       }
-      let parentDenied = false; let scopeDenied = false; let toolFailure; let toolStage;
+      let parentDenied = false; let scopeDenied; let toolFailure; let toolStage;
       const tool = createSubagentTool({ sdk, getOwner: () => owner,
         createWriter: (_owner, files, signal) => controller.createDelegatedWriter(conversationId, files, { signal }),
         createTools: (_owner, scoped) => createWorkspaceTools({ sdk, controller: scoped, conversationId, requestApproval: () => { throw new Error('Unexpected approval'); } }),
@@ -411,7 +411,7 @@ for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} fi
           return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
             prompt: async () => {
               try { await controller.execute(conversationId, { command: 'echo competing' }); } catch (error) { parentDenied = error.code === 'WORKSPACE_WRITER_BUSY'; }
-              try { await get('write').execute('outside', { path: 'outside.md', content: 'denied' }); } catch (error) { scopeDenied = error.code === 'DELEGATED_PATH_DENIED'; }
+              try { await get('write').execute('outside', { path: 'outside.md', content: 'denied' }); } catch (error) { scopeDenied = error.code; }
               try {
               toolStage = 'read'; await get('read').execute('read', { path: 'README.md' });
               toolStage = 'edit'; await get('edit').execute('edit', { path: 'README.md', edits: [{ oldText: 'before', newText: 'after' }] });
@@ -436,7 +436,7 @@ for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} fi
   }, { root: repositoryRoot, userDataDir, kind });
   expect(result.toolFailure).toBeUndefined();
   expect(result).toMatchObject({ report: { mode: 'edit', state: 'completed', changedFiles: ['README.md', 'docs/helper.md'], writesPending: false },
-    parentDenied: true, scopeDenied: true, staleDenied: 'WORKSPACE_HISTORY_CHANGED', current: 'external change', created: 'created by helper', outsideExists: false });
+    parentDenied: true, scopeDenied: 'DELEGATED_PATH_DENIED', staleDenied: 'WORKSPACE_HISTORY_CHANGED', current: 'external change', created: 'created by helper', outsideExists: false });
   if (kind === 'external') expect(result.permissionError).toBe('PROJECT_READ_ONLY');
 });
 
