@@ -71,7 +71,10 @@ const withInput = (step, key) => {
 const releaseYml = withoutComments(read('.github/workflows/release.yml'));
 const actionYml = withoutComments(read('.github/actions/install-node-deps/action.yml'));
 
-const INSTALL = /^\s*(?:- )?uses:\s*\.\/\.github\/actions\/install-node-deps\s*$/;
+// Any YAML spelling of the local action: bare, single- or double-quoted, with
+// or without a trailing slash, with or without a trailing comment.
+const INSTALL =
+  /^\s*(?:- )?uses:\s*(['"]?)\.\/\.github\/actions\/install-node-deps\/?\1\s*(?:#.*)?$/;
 
 describe('release.yml restores no caches (#635)', () => {
   const installSteps = steps(releaseYml).filter((s) => s.lines.some((l) => INSTALL.test(l)));
@@ -81,6 +84,18 @@ describe('release.yml restores no caches (#635)', () => {
     const raw = releaseYml.split('\n').filter((l) => INSTALL.test(l)).length;
     expect(raw).toBeGreaterThan(0);
     expect(installSteps).toHaveLength(raw);
+  });
+
+  test('every reference to install-node-deps is one the parser recognises', () => {
+    // Allowlist, not denylist: a spelling INSTALL does not know (a new quoting
+    // style, a path variant) must fail here rather than silently drop out of
+    // both the step filter and the count above.
+    const offenders = releaseYml
+      .split('\n')
+      .map((l, i) => ({ l, n: i + 1 }))
+      .filter(({ l }) => /install-node-deps/.test(l) && !INSTALL.test(l))
+      .map(({ l, n }) => `release.yml:${n} ${l.trim()}`);
+    expect(offenders).toEqual([]);
   });
 
   test("every install-node-deps step passes electron-cache: 'false'", () => {
