@@ -1,0 +1,236 @@
+const {
+  MAX_LAUNCH_URLS,
+  MAX_LAUNCH_URL_LENGTH,
+  buildColdStartUrls,
+  createFirstWindowLinkQueue,
+  extractLaunchUrls,
+  isAcceptedLaunchUrl,
+  relaunchArgs,
+  sanitizeLaunchUrls,
+} = require('./launch-urls');
+
+describe('launch URLs (#597)', () => {
+  describe('isAcceptedLaunchUrl', () => {
+    test.each([
+      'https://freedombrowser.eth.limo/',
+      'http://example.com/path?q=1#top',
+      'freedom://settings',
+      'freedom://settings/profile',
+      'bzz://ab12cd34/index.html',
+      'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
+      'ipns://docs.ipfs.tech',
+      'ens://vitalik.eth',
+      'web3://0x1234567890123456789012345678901234567890',
+      'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',
+    ])('accepts %s', (url) => {
+      expect(isAcceptedLaunchUrl(url)).toBe(true);
+    });
+
+    test.each([
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'ethereum:0x1234567890123456789012345678901234567890@1?value=1e18',
+      'chrome://settings',
+      'about:blank',
+      'example.com',
+      '/home/user/page.html',
+      'C:\\Users\\me\\page.html',
+      '.',
+      '',
+      'https://example.com/ with-space',
+      'https://example.com/\nfile:///etc/passwd',
+      `https://example.com/${'a'.repeat(MAX_LAUNCH_URL_LENGTH)}`,
+      null,
+      42,
+      { href: 'https://example.com' },
+    ])('rejects %p', (value) => {
+      expect(isAcceptedLaunchUrl(value)).toBe(false);
+    });
+  });
+
+  describe('extractLaunchUrls', () => {
+    test('a packaged launch: the URL after the executable', () => {
+      expect(extractLaunchUrls(['/opt/Freedom/freedom', 'freedom://settings'])).toEqual([
+        'freedom://settings',
+      ]);
+    });
+
+    test('a development launch: the app path is not a URL', () => {
+      expect(
+        extractLaunchUrls(['/path/to/electron', '.', 'https://freedombrowser.eth.limo/'])
+      ).toEqual(['https://freedombrowser.eth.limo/']);
+    });
+
+    test('never treats argv[0] as a URL', () => {
+      expect(extractLaunchUrls(['https://example.com/'])).toEqual([]);
+    });
+
+    test('skips switches and the values of --profile / --profile-dir', () => {
+      expect(
+        extractLaunchUrls([
+          'freedom',
+          '--profile',
+          'https://not-a-url-to-open.example/',
+          '--profile-dir',
+          'bzz://also-a-value',
+          '--open-settings',
+          '--profile=work',
+          '--no-sandbox',
+          'bzz://ab12cd34/',
+          'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
+        ])
+      ).toEqual([
+        'bzz://ab12cd34/',
+        'ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
+      ]);
+    });
+
+    test('drops schemes Freedom does not open', () => {
+      expect(
+        extractLaunchUrls([
+          'freedom',
+          'file:///etc/passwd',
+          'javascript:alert(1)',
+          'https://a.example/',
+        ])
+      ).toEqual(['https://a.example/']);
+    });
+
+    test('keeps the URL as given, case included', () => {
+      expect(
+        extractLaunchUrls(['freedom', 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG'])
+      ).toEqual(['ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG']);
+    });
+
+    test('tolerates a missing or odd argv', () => {
+      expect(extractLaunchUrls(undefined)).toEqual([]);
+      expect(extractLaunchUrls(['freedom', 7, null])).toEqual([]);
+    });
+  });
+
+  describe('sanitizeLaunchUrls', () => {
+    test('keeps accepted URLs in order, without duplicates', () => {
+      expect(
+        sanitizeLaunchUrls([
+          'https://b.example/',
+          'file:///etc/passwd',
+          'https://a.example/',
+          'https://b.example/',
+        ])
+      ).toEqual(['https://b.example/', 'https://a.example/']);
+    });
+
+    test(`caps the list at ${MAX_LAUNCH_URLS}`, () => {
+      const urls = Array.from({ length: MAX_LAUNCH_URLS + 5 }, (_, i) => `https://e${i}.example/`);
+      expect(sanitizeLaunchUrls(urls)).toEqual(urls.slice(0, MAX_LAUNCH_URLS));
+    });
+
+    test('anything but an array yields no URLs', () => {
+      expect(sanitizeLaunchUrls(undefined)).toEqual([]);
+      expect(sanitizeLaunchUrls('https://example.com/')).toEqual([]);
+      expect(sanitizeLaunchUrls({ 0: 'https://example.com/' })).toEqual([]);
+    });
+  });
+  describe('buildColdStartUrls', () => {
+    const SETTINGS = 'freedom://settings#profile';
+
+    test('opens the argv links, then links macOS queued before the window', () => {
+      expect(
+        buildColdStartUrls(['freedom', 'https://a.example/'], {
+          settingsUrl: SETTINGS,
+          pendingOpenUrls: ['https://b.example/', 'https://a.example/', 'file:///etc/passwd'],
+        })
+      ).toEqual(['https://a.example/', 'https://b.example/']);
+    });
+
+    test('--open-settings lands on settings and still opens queued open-url links', () => {
+      expect(
+        buildColdStartUrls(['freedom', '--open-settings', 'https://a.example/'], {
+          settingsUrl: SETTINGS,
+          pendingOpenUrls: ['https://b.example/'],
+        })
+      ).toEqual([SETTINGS, 'https://b.example/']);
+    });
+
+    test('nothing to open yields an empty list', () => {
+      expect(buildColdStartUrls(['freedom'], { settingsUrl: SETTINGS })).toEqual([]);
+    });
+  });
+
+  describe('relaunchArgs', () => {
+    test('drops the launch links and --open-settings, keeps everything else', () => {
+      expect(
+        relaunchArgs([
+          '/usr/bin/electron',
+          '.',
+          '--profile',
+          'work',
+          'https://x.example/',
+          '--open-settings',
+          '--profile-dir=/data/p',
+          'bzz://ab12cd34/',
+          'file:///etc/passwd',
+          '--no-sandbox',
+        ])
+      ).toEqual([
+        '.',
+        '--profile',
+        'work',
+        '--profile-dir=/data/p',
+        'file:///etc/passwd',
+        '--no-sandbox',
+      ]);
+    });
+
+    test('a switch value that looks like a link is kept with its switch', () => {
+      expect(relaunchArgs(['freedom', '--profile-dir', 'https://x.example/'])).toEqual([
+        '--profile-dir',
+        'https://x.example/',
+      ]);
+    });
+
+    test('tolerates a missing argv', () => {
+      expect(relaunchArgs(undefined)).toEqual([]);
+    });
+  });
+
+  describe('createFirstWindowLinkQueue', () => {
+    // A second launch handed over while this process is still cold-starting
+    // must land in the first window, not open a racing window of its own.
+    test('queues links until the first window drains them', () => {
+      const queue = createFirstWindowLinkQueue();
+      expect(queue.queue(['https://second.example/'])).toBe(true);
+      expect(queue.queue(['freedom://history', 'bzz://ab12cd34/'])).toBe(true);
+      expect(queue.drainForFirstWindow()).toEqual([
+        'https://second.example/',
+        'freedom://history',
+        'bzz://ab12cd34/',
+      ]);
+    });
+
+    test('refuses links once drained, so the caller opens them itself', () => {
+      const queue = createFirstWindowLinkQueue();
+      expect(queue.drainForFirstWindow()).toEqual([]);
+      expect(queue.queue(['https://late.example/'])).toBe(false);
+      expect(queue.drainForFirstWindow()).toEqual([]);
+    });
+
+    test('a plain focus request (no links) is still held for the first window', () => {
+      const queue = createFirstWindowLinkQueue();
+      expect(queue.queue([])).toBe(true);
+      expect(queue.queue(undefined)).toBe(true);
+      expect(queue.drainForFirstWindow()).toEqual([]);
+    });
+
+    test('the drained links open after the launch’s own links', () => {
+      const queue = createFirstWindowLinkQueue();
+      queue.queue(['https://second.example/']);
+      expect(
+        buildColdStartUrls(['electron', '.', 'https://first.example/'], {
+          pendingOpenUrls: queue.drainForFirstWindow(),
+        })
+      ).toEqual(['https://first.example/', 'https://second.example/']);
+    });
+  });
+});

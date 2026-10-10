@@ -83,7 +83,7 @@ describe('Settings → About Freedom → Updates', () => {
     });
   });
 
-  test('downloading: progress bar, detail line, Check now disabled', () => {
+  test('downloading: progress bar, detail line, Check now disabled, no last-checked line', () => {
     const els = makeEls();
     renderUpdateSection(els, {
       ...base,
@@ -102,7 +102,8 @@ describe('Settings → About Freedom → Updates', () => {
     expect(els.progressBar.style.width).toBe('42.5%');
     expect(els.detail).toMatchObject({ hidden: false, textContent: '1.0 MB of 10 MB' });
     expect(els.check.disabled).toBe(true);
-    expect(els.lastChecked.textContent).toMatch(/^Last checked .*2026/);
+    // The check plainly happened; the line would only compete with the detail (#594).
+    expect(els.lastChecked).toMatchObject({ hidden: true, textContent: '' });
   });
 
   test('checking relabels the button', () => {
@@ -121,8 +122,10 @@ describe('Settings → About Freedom → Updates', () => {
       message: 'Freedom 0.9.0 is ready to install.',
       installLabel: 'Install update and close',
       installNote: 'Freedom will close after installing.',
+      lastChecked: Date.UTC(2026, 9, 5, 12, 0),
     });
     expect(els.check.hidden).toBe(true);
+    expect(els.lastChecked).toMatchObject({ hidden: true, textContent: '' });
     expect(els.restart).toMatchObject({
       hidden: false,
       disabled: false,

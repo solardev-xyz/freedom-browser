@@ -109,7 +109,9 @@ test('check → download → ready walks both surfaces, and the actions reach th
   await expect(settings.locator('#update-progress')).toBeVisible();
   await expect(settings.locator('#update-progress')).toHaveAttribute('aria-valuenow', '42');
   await expect(settings.locator('#update-status-detail')).toHaveText('42 MB of 100 MB · 3.0 MB/s');
-  await expect(settings.locator('#update-last-checked')).toHaveText('Last checked just now.');
+  // The check plainly happened; the line would only compete with the detail (#594).
+  await expect(settings.locator('#update-last-checked')).toBeHidden();
+  await expect(settings.locator('#update-last-checked')).toHaveText('');
 
   const ready = await dispatch(electronApp, { type: 'downloaded', version: '9.9.9' });
   // The harness launches on an explicit --user-data profile, which can't be
@@ -129,6 +131,7 @@ test('check → download → ready walks both surfaces, and the actions reach th
     `Freedom 9.9.9 is ready to install. ${ready.installNote}`
   );
   await expect(checkNow).toBeHidden();
+  await expect(settings.locator('#update-last-checked')).toBeHidden();
   const restart = settings.locator('#update-restart');
   await expect(restart).toBeVisible();
   await expect(restart).toHaveText('Install update and close');
