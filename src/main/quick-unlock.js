@@ -11,7 +11,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { getIdentityDataDir, getQuickUnlockCredentialPath } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
-const vault = require('./identity/vault');
+const { vaultBackend } = require('./core/vault-backend');
+
+// The vault file in the identity directory. Its hash binds a credential to
+// this vault; the file is public (encrypted), so main reads it directly.
+const VAULT_FILE = 'identity-vault.json';
 
 const CREDENTIAL_VERSION = 2;
 
@@ -37,7 +41,7 @@ function getCurrentBinding() {
 }
 
 function getVaultFingerprint() {
-  const vaultPath = vault.getVaultPath(getIdentityDataDir());
+  const vaultPath = path.join(getIdentityDataDir(), VAULT_FILE);
   if (!fs.existsSync(vaultPath)) {
     return null;
   }
@@ -108,7 +112,8 @@ function writeCredential(password) {
 }
 
 async function verifyCredentialPassword(password) {
-  await vault.verifyPassword(getIdentityDataDir(), password);
+  // Shares the core's unlock throttle (design 0001).
+  await vaultBackend.verifyPassword(password);
 }
 
 /**
@@ -258,7 +263,7 @@ async function exportMnemonicWithTouchId() {
     const password = await retrievePasswordWithTouchId();
     const identity = identityManager();
     await identity.unlockVault(password);
-    const mnemonic = await identity.exportMnemonic();
+    const mnemonic = await identity.exportMnemonic(password);
     return { success: true, mnemonic };
   } catch (err) {
     console.error('[QuickUnlock] Failed to export recovery phrase:', err.message);
@@ -280,7 +285,7 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
     identity.assertPrivateKeyExportable(accountIndex);
     const password = await retrievePasswordWithTouchId();
     await identity.unlockVault(password);
-    const privateKey = await identity.exportPrivateKeyForAccount(accountIndex);
+    const privateKey = await identity.exportPrivateKeyForAccount(accountIndex, password);
     return { success: true, privateKey };
   } catch (err) {
     console.error('[QuickUnlock] Failed to export private key:', err.message);

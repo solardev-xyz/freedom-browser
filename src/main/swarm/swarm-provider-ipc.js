@@ -37,7 +37,6 @@ const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissi
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
-const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const { getOriginEntry, getFeed, setFeed, updateFeedReference, hasFeedGrant, getAllFeeds } = require('./feed-store');
 const {
   publishChunk,
@@ -53,7 +52,11 @@ const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
-const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
+const {
+  getBeeWalletPrivateKey,
+  getPublisherKey,
+  getUserWalletKey,
+} = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
 
@@ -1032,11 +1035,8 @@ function getIdentityMode(identity) {
 async function resolveSignerKey(identity) {
   const identityMode = getIdentityMode(identity);
   if (identityMode === 'bee-wallet') {
-    const keys = getDerivedKeys();
-    if (!keys) {
-      throw new Error(VAULT_LOCKED_MESSAGE);
-    }
-    return keys.beeWallet.privateKey;
+    // compat.bee_wallet_key; refused with VAULT_LOCKED_MESSAGE while locked.
+    return getBeeWalletPrivateKey();
   }
 
   if (identityMode === 'app-scoped') {

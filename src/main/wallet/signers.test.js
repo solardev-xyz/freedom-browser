@@ -27,8 +27,19 @@ const mockRemoteBackend = {
 };
 const mockCreateRemoteBackend = jest.fn(() => mockRemoteBackend);
 
+// The identity core's compat.private_key, driven by mockIdentity: refused
+// with "Vault is locked" while locked.
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: {
+    compat: {
+      privateKey: async (index) => {
+        if (!mockIdentity.isUnlocked()) throw new Error('Vault is locked');
+        return mockIdentity.exportPrivateKey(index);
+      },
+    },
+  },
+}));
 jest.mock('../identity-manager', () => ({
-  loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).

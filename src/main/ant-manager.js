@@ -8,6 +8,7 @@ const https = require('https');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
 const registry = require('./networks/network-registry');
+const { nodeBlockReason } = require('./core/node-identity-guard');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
 const {
@@ -638,6 +639,16 @@ async function startAnt() {
 
   if (isExternalAntConfig(profileConfig)) {
     await startExternalAnt(profileConfig);
+    return;
+  }
+
+  // Every remaining path runs this profile's own antd on the injected
+  // identity. If the core couldn't finish writing that identity, don't start
+  // it on a mismatched keystore and config (freedom-core design 0001).
+  const identityBlock = nodeBlockReason('bee');
+  if (identityBlock) {
+    updateState(STATUS.ERROR, identityBlock);
+    setStatusMessage('ant', 'Node failed to start');
     return;
   }
 

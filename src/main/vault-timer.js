@@ -8,12 +8,11 @@
 
 function resetVaultAutoLockTimer() {
   try {
-    const identity = require('./identity');
-    if (identity.isUnlocked()) {
-      identity.resetAutoLockTimer();
-    }
+    // vault.touch: restarts the core's auto-lock timer if unlocked; sent
+    // without waiting for the reply.
+    require('./core/vault-backend').vaultBackend.touch();
   } catch {
-    // Non-critical — vault module may not be loaded yet
+    // Non-critical — the core may not be running yet
   }
 }
 

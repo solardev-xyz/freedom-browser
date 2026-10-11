@@ -30,8 +30,8 @@ const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { withOriginLock } = require('./origin-mutation-lock');
 const {
-  getDerivedKeys,
-  getPublisherKey,
+  getBeeWalletAddress,
+  getPublisherAddress,
   getDerivedWallets,
   WALLET_TYPES,
 } = require('../identity-manager');
@@ -531,13 +531,13 @@ function getOriginIdentityState(origin) {
 async function enrichIdentityOwner(identity, options = {}) {
   const stored = options.stored !== false;
   if (identity.mode === 'bee-wallet') {
-    const keys = getDerivedKeys();
-    if (!keys?.beeWallet?.address) {
+    const owner = await getBeeWalletAddress();
+    if (!owner) {
       throw new Error('Vault must be unlocked to inspect publisher identities');
     }
     return {
       ...identity,
-      owner: keys.beeWallet.address,
+      owner,
       stored,
     };
   }
@@ -546,10 +546,9 @@ async function enrichIdentityOwner(identity, options = {}) {
     if (typeof identity.publisherKeyIndex !== 'number') {
       throw new Error('App-scoped identity is missing a publisher key index');
     }
-    const publisherKey = await getPublisherKey(identity.publisherKeyIndex);
     return {
       ...identity,
-      owner: publisherKey.address,
+      owner: await getPublisherAddress(identity.publisherKeyIndex),
       stored,
     };
   }

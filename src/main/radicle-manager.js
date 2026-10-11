@@ -7,6 +7,7 @@ const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
+const { nodeBlockReason } = require('./core/node-identity-guard');
 const seedStatus = require('./radicle/seed-status');
 const {
   MODE,
@@ -141,6 +142,12 @@ async function startRadicleInternal() {
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Node disabled for this profile');
     updateState(STATUS.STOPPED);
+    return getCurrentStatus();
+  }
+  const identityBlock = nodeBlockReason('radicle');
+  if (identityBlock) {
+    clearService('radicle');
+    updateState(STATUS.ERROR, identityBlock);
     return getCurrentStatus();
   }
   if (!embedded.isAvailable()) {

@@ -1,12 +1,17 @@
-const mockIdentity = {
-  isUnlocked: jest.fn(),
-  exportPrivateKey: jest.fn(),
-};
+// The identity core's compat.private_key: refused with "Vault is locked"
+// while mockVault.unlocked is false.
+const mockVault = { unlocked: true, key: null };
+const mockCompatPrivateKey = jest.fn(async () => {
+  if (!mockVault.unlocked) throw new Error('Vault is locked');
+  return mockVault.key;
+});
 const mockResetVaultAutoLockTimer = jest.fn();
 const mockGetWalletRecord = jest.fn();
 
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: { compat: { privateKey: (...args) => mockCompatPrivateKey(...args) } },
+}));
 jest.mock('../identity-manager', () => ({
-  loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
@@ -26,8 +31,9 @@ beforeEach(() => {
   // because individual tests below flip isUnlocked / exportPrivateKey
   // mid-flight (locked-vault, throwing-callback) and we don't want one
   // test's tampering to leak into the next.
-  mockIdentity.isUnlocked.mockReset().mockReturnValue(true);
-  mockIdentity.exportPrivateKey.mockReset().mockReturnValue(TEST_KEY);
+  mockVault.unlocked = true;
+  mockVault.key = TEST_KEY;
+  mockCompatPrivateKey.mockClear();
   mockGetWalletRecord.mockReset().mockReturnValue(null);
   mockResetVaultAutoLockTimer.mockClear();
 });
@@ -36,7 +42,7 @@ describe('withVaultPrivateKey', () => {
   test('passes the exported key to the callback and returns its result', async () => {
     const result = await withVaultPrivateKey(0, (pk) => `signed:${pk}`);
     expect(result).toBe(`signed:${TEST_KEY}`);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0);
+    expect(mockCompatPrivateKey).toHaveBeenCalledWith(0);
   });
 
   test('awaits async callbacks', async () => {
@@ -53,10 +59,10 @@ describe('withVaultPrivateKey', () => {
   });
 
   test('throws "Vault is locked" when the vault is locked', async () => {
-    mockIdentity.isUnlocked.mockReturnValue(false);
+    mockVault.unlocked = false;
     await expect(withVaultPrivateKey(0, () => 'unreachable'))
       .rejects.toThrow('Vault is locked');
-    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+    // The core is asked, and refuses: no key, no callback.
     expect(mockResetVaultAutoLockTimer).not.toHaveBeenCalled();
   });
 
@@ -72,7 +78,7 @@ describe('withVaultPrivateKey', () => {
 
   test('forwards the wallet index to exportPrivateKey', async () => {
     await withVaultPrivateKey(3, () => undefined);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3);
+    expect(mockCompatPrivateKey).toHaveBeenCalledWith(3);
   });
 
   test.each([
@@ -84,7 +90,7 @@ describe('withVaultPrivateKey', () => {
     mockGetWalletRecord.mockReturnValue({ index: 3, type, address });
     await expect(withVaultPrivateKey(3, () => 'unreachable'))
       .rejects.toThrow('This account keeps its key on another device');
-    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+    expect(mockCompatPrivateKey).not.toHaveBeenCalled();
   });
 
   test('refuses to derive a vault key for a deleted hardware account', async () => {
@@ -96,8 +102,7 @@ describe('withVaultPrivateKey', () => {
     mockGetWalletRecord.mockReturnValue(null);
     await expect(withVaultPrivateKey(1000000, () => 'unreachable'))
       .rejects.toThrow('This account keeps its key on another device');
-    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
-    expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
+    expect(mockCompatPrivateKey).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -110,8 +115,7 @@ describe('withVaultPrivateKey', () => {
   ])('rejects %s walletIndex without touching the vault', async (_label, badIndex) => {
     await expect(withVaultPrivateKey(badIndex, () => 'unreachable'))
       .rejects.toThrow('Invalid wallet index');
-    expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
-    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+    expect(mockCompatPrivateKey).not.toHaveBeenCalled();
     expect(mockResetVaultAutoLockTimer).not.toHaveBeenCalled();
   });
 });

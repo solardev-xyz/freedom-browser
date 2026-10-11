@@ -4,11 +4,11 @@
  * Every caller that needs to sign with a vault key — wallet IPC handlers,
  * the x402 client, future signers — performs the same sequence:
  *
- *   1. `loadIdentityModule()` — lazy-load the identity module.
- *   2. `isUnlocked()` — refuse if the vault is locked.
- *   3. `exportPrivateKey(walletIndex)` — derive the key.
- *   4. (do the work)
- *   5. `resetVaultAutoLockTimer()` — keep the vault alive through multi-
+ *   1. Guard the account record (no device or Safe accounts).
+ *   2. `compat.private_key(walletIndex)` from the identity core — refused
+ *      with VAULT_LOCKED_MESSAGE while the vault is locked.
+ *   3. (do the work)
+ *   4. `resetVaultAutoLockTimer()` — keep the vault alive through multi-
  *       step flows (server settlement, follow-up retries, etc.).
  *
  * Open-coded across six places before this helper existed; one of those
@@ -16,14 +16,9 @@
  * incidentally by the consolidation.
  */
 
-const {
-  loadIdentityModule,
-  getWalletRecord,
-  isHardwareWalletIndex,
-  WALLET_TYPES,
-} = require('../identity-manager');
+const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
+const { vaultBackend } = require('../core/vault-backend');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
-const { VAULT_LOCKED_MESSAGE } = require('./vault-errors');
 
 /**
  * Check that a wallet index is a non-negative integer. dApp IPC handlers
@@ -72,11 +67,9 @@ async function withVaultPrivateKey(walletIndex, callback) {
   if (isHardwareWalletIndex(walletIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
     throw new Error('This account keeps its key on another device; sign via its device signer');
   }
-  const identity = await loadIdentityModule();
-  if (!identity.isUnlocked()) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
-  const privateKey = identity.exportPrivateKey(walletIndex);
+  // compat.private_key (removed in Phase 2); `vault_locked` comes back with
+  // VAULT_LOCKED_MESSAGE.
+  const privateKey = await vaultBackend.compat.privateKey(walletIndex);
   const result = await callback(privateKey);
   resetVaultAutoLockTimer();
   return result;

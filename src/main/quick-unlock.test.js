@@ -43,7 +43,7 @@ function loadQuickUnlock({
   const identityManagerPath = require.resolve('./identity-manager');
   const ipcHandlers = new Map();
   const ipcMain = { handle: jest.fn((channel, fn) => ipcHandlers.set(channel, fn)) };
-  const vaultModulePath = require.resolve('./identity/vault');
+  const vaultBackendPath = require.resolve('./core/vault-backend');
   const systemPreferences = {
     canPromptTouchID: jest.fn(() => true),
     promptTouchID: jest.fn().mockResolvedValue(undefined),
@@ -66,9 +66,8 @@ function loadQuickUnlock({
         getActiveProfile: () => activeProfile,
       }),
       [identityManagerPath]: () => identityManager,
-      [vaultModulePath]: () => ({
-        getVaultPath: (dataDir) => path.join(dataDir, 'identity-vault.json'),
-        verifyPassword: verifyPasswordImpl,
+      [vaultBackendPath]: () => ({
+        vaultBackend: { verifyPassword: (...args) => verifyPasswordImpl(...args) },
       }),
     },
   });
@@ -149,7 +148,7 @@ describe('quick-unlock', () => {
     );
 
     await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
-    expect(verifyPassword).toHaveBeenCalledWith(identityDir, 'password-a');
+    expect(verifyPassword).toHaveBeenCalledWith('password-a');
   });
 
   test('hides a bound credential when the active profile does not match', async () => {
@@ -267,6 +266,8 @@ describe('quick-unlock', () => {
       expect(result).toEqual({ success: true, mnemonic: 'word '.repeat(23) + 'word' });
       expect(leaks(result)).toBe(false);
       expect(identityManager.unlockVault).toHaveBeenCalledWith('s3cret-vault-pw');
+      // The core verifies the unsealed password again before exporting.
+      expect(identityManager.exportMnemonic).toHaveBeenCalledWith('s3cret-vault-pw');
     });
 
     test('quick-unlock:export-private-key returns the key, not the password', async () => {
@@ -276,7 +277,7 @@ describe('quick-unlock', () => {
 
       expect(result).toEqual({ success: true, privateKey: '0x' + '11'.repeat(32) });
       expect(leaks(result)).toBe(false);
-      expect(identityManager.exportPrivateKeyForAccount).toHaveBeenCalledWith(3);
+      expect(identityManager.exportPrivateKeyForAccount).toHaveBeenCalledWith(3, 's3cret-vault-pw');
     });
 
     test('export-private-key refuses a device account before prompting Touch ID', async () => {

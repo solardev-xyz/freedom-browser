@@ -29,44 +29,64 @@ function restoreEnv(snapshot) {
   }
 }
 
-function makeProfileIdentityMock() {
+/**
+ * A fake of core/vault-backend: the identity core's vault, as main sees it.
+ * Addresses are derived as `0xderived<index>`; the Bee wallet is `0xbee`.
+ */
+function makeVaultBackendMock({ exists = true, unlocked = true } = {}) {
+  const state = { exists, unlocked };
+  const locked = () => Object.assign(new Error('Vault is locked'), { code: 'vault_locked' });
+  const addresses = { user_wallet: '0xuser', bee_wallet: '0xbee' };
   return {
-    createVault: jest.fn().mockResolvedValue('test mnemonic'),
-    unlockVault: jest.fn().mockResolvedValue(undefined),
-    deriveAllKeys: jest.fn(() => ({
-      userWallet: { address: '0xuser', privateKey: '0xuser-private' },
-      beeWallet: { address: '0xbee', privateKey: '0xbee-private' },
-      ipfsKey: { privateKey: Buffer.from('ipfs-private'), publicKey: Buffer.from('ipfs-public') },
-      radicleKey: {
-        privateKey: Buffer.from('radicle-private'),
-        publicKey: Buffer.from('radicle-public'),
-      },
+    state,
+    status: jest.fn(async () => ({
+      exists: state.exists,
+      unlocked: state.unlocked,
+      epoch: null,
+      fingerprint: null,
     })),
-    injectBeeKey: jest.fn().mockResolvedValue(undefined),
-    createBeeConfig: jest.fn(),
-    injectIpfsKey: jest.fn(() => '12D3KooProfilePeer'),
-    injectRadicleKey: jest.fn(() => 'did:key:zProfileRadicle'),
+    createVault: jest.fn(async () => {
+      Object.assign(state, { exists: true, unlocked: true });
+      return { mnemonic: 'test mnemonic', addresses };
+    }),
+    importVault: jest.fn(async () => {
+      Object.assign(state, { exists: true, unlocked: true });
+      return { addresses };
+    }),
+    unlock: jest.fn(async () => {
+      state.unlocked = true;
+      return { addresses };
+    }),
+    lock: jest.fn(async () => {
+      state.unlocked = false;
+    }),
+    touch: jest.fn(),
+    addresses: jest.fn(async ({ accounts = [], publishers = [] } = {}) => {
+      if (!state.unlocked) throw locked();
+      return {
+        user_wallets: accounts.map((account) => ({ account, address: `0xderived${account}` })),
+        bee_wallet: '0xbee',
+        publishers: publishers.map((index) => ({ origin_index: index, address: `0xpub${index}` })),
+        radicle: { public_key: '00', did: 'did:key:zTest', node_id: 'zTest' },
+      };
+    }),
+    writeNodeIdentity: jest.fn(async (spec) =>
+      spec.node === 'bee'
+        ? { status: 'installed', address: '0xbee' }
+        : { status: 'installed', did: 'did:key:zTest', node_id: 'zTest' }
+    ),
+    radicleDid: jest.fn(async () => 'did:key:zTest'),
+    compat: {
+      privateKey: jest.fn(async () => {
+        if (!state.unlocked) throw locked();
+        return '0x01';
+      }),
+    },
   };
 }
 
-function makeRestartIdentityMock() {
-  return {
-    createVault: jest.fn(async () => 'test test test test test test test test test test test about'),
-    unlockVault: jest.fn(async () => {}),
-    vaultExists: jest.fn(async () => true),
-    isUnlocked: jest.fn(async () => true),
-    deriveAllKeys: jest.fn(() => ({
-      userWallet: { address: '0xuser', privateKey: '0x01' },
-      beeWallet: { address: '0xbee', privateKey: '0x02' },
-      ipfsKey: { privateKey: '0x03', publicKey: '0x04' },
-      radicleKey: { privateKey: '0x05', publicKey: '0x06' },
-    })),
-    injectBeeKey: jest.fn(async () => {}),
-    createBeeConfig: jest.fn(() => {}),
-    injectIpfsKey: jest.fn(() => 'QmTestPeerId'),
-    injectRadicleKey: jest.fn(() => 'did:key:zTest'),
-    createRadicleIdentity: jest.fn(() => ({ did: 'did:key:zTest' })),
-  };
+function vaultBackendMocks(backend) {
+  return { [require.resolve('./core/vault-backend')]: () => ({ vaultBackend: backend }) };
 }
 
 describe('identity-manager profile paths', () => {
@@ -105,7 +125,7 @@ describe('identity-manager profile paths', () => {
     process.env.FREEDOM_IPFS_DATA = ipfsDir;
     process.env.FREEDOM_RADICLE_DATA = radicleDir;
 
-    const identityMock = makeProfileIdentityMock();
+    const backend = makeVaultBackendMock({ exists: false, unlocked: false });
     const activeProfile = {
       id: 'profiled',
       source: 'catalog',
@@ -118,7 +138,7 @@ describe('identity-manager profile paths', () => {
     const { mod } = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir,
       extraMocks: {
-        [require.resolve('./identity')]: () => identityMock,
+        ...vaultBackendMocks(backend),
         [require.resolve('./profile-resolver')]: () => ({
           getActiveProfile: jest.fn(() => activeProfile),
         }),
@@ -135,24 +155,17 @@ describe('identity-manager profile paths', () => {
     expect(mod.getIpfsDataDir()).toBe(ipfsDir);
     expect(mod.getRadicleDataDir()).toBe(radicleDir);
 
-    expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
-      antDir,
-      '0xbee-private',
+    // The core writes the node identities, into the profile's directories,
+    // with the profile's Bee ports.
+    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
+      { node: 'bee', data_dir: antDir, api_port: 11644, p2p_port: 12644 },
       expect.any(String)
     );
-    expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
-      antDir,
-      expect.any(String),
-      11644,
-      12644
+    expect(backend.writeNodeIdentity).toHaveBeenCalledWith(
+      { node: 'radicle', home: radicleDir, alias: 'ProfileAlias' },
+      expect.any(String)
     );
-    expect(identityMock.injectIpfsKey).not.toHaveBeenCalled();
-    expect(identityMock.injectRadicleKey).toHaveBeenCalledWith(
-      radicleDir,
-      Buffer.from('radicle-private'),
-      Buffer.from('radicle-public'),
-      'ProfileAlias'
-    );
+    expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -291,10 +304,8 @@ describe('identity-manager ledger accounts', () => {
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
-        [require.resolve('./identity')]: () => ({
-          getMnemonic: jest.fn(() => null), // vault locked — ledger ops must not need it
-          isUnlocked: jest.fn(() => false),
-        }),
+        // Vault locked — ledger ops must not need it.
+        ...vaultBackendMocks(makeVaultBackendMock({ unlocked: false })),
       },
     }).mod;
   });
@@ -466,10 +477,8 @@ describe('identity-manager safe accounts', () => {
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
-        [require.resolve('./identity')]: () => ({
-          getMnemonic: jest.fn(() => null), // vault locked — safe ops must not need it
-          isUnlocked: jest.fn(() => false),
-        }),
+        // Vault locked — safe ops must not need it.
+        ...vaultBackendMocks(makeVaultBackendMock({ unlocked: false })),
       },
     }).mod;
   });
@@ -688,13 +697,8 @@ describe('identity-manager wallet index allocation', () => {
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
-        [require.resolve('./identity')]: () => ({
-          getMnemonic: jest.fn(() => 'test mnemonic'),
-          isUnlocked: jest.fn(() => true),
-          deriveUserWallet: jest.fn((_mnemonic, index) => ({
-            address: `0xderived${index}`,
-          })),
-        }),
+        // Unlocked: the core derives `0xderived<index>`.
+        ...vaultBackendMocks(makeVaultBackendMock()),
         [require.resolve('./swarm/feed-store')]: () => ({
           getEthereumWalletIdentityReferences: jest.fn(() => []),
         }),
@@ -853,7 +857,7 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
   function loadIdentityManager(dataDirsForLoad, fsOffloadOverrides = null) {
     return loadMainModule(require.resolve('./identity-manager'), {
       extraMocks: {
-        [require.resolve('./identity')]: () => makeRestartIdentityMock(),
+        ...vaultBackendMocks(makeVaultBackendMock()),
         ...(fsOffloadOverrides
           ? {
               [require.resolve('./fs-offload')]: () => ({
@@ -931,7 +935,7 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
   test('waits for a pending Radicle home migration before judging injection', async () => {
     const mgr = loadMainModule(require.resolve('./identity-manager'), {
       extraMocks: {
-        [require.resolve('./identity')]: () => makeRestartIdentityMock(),
+        ...vaultBackendMocks(makeVaultBackendMock()),
         [require.resolve('./profile-paths')]: () => ({
           ...jest.requireActual('./profile-paths'),
           prepareRadicleDataDir: async () => {
