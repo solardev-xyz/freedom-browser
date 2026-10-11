@@ -779,6 +779,29 @@ describe('CoreClient', () => {
       await secondStopped;
     });
 
+    test('the waiting byte budget counts method and context too', async () => {
+      const { client, children } = makeClient([() => {}]);
+      client.start().catch(() => {});
+      const page = 'p'.repeat(500 * 1000);
+      const results = [];
+      for (let i = 0; i < 32; i += 1) {
+        results.push(
+          client.request('vault.status', {}, { caller: 'chrome', page }).catch((e) => e)
+        );
+      }
+      // ~0.5 MB each: the 17th crosses 8 MiB.
+      expect(await results[16]).toMatchObject({ code: 'busy' });
+      expect(client.waitingRequests).toBe(16);
+      expect(client.waitingBytes).toBeGreaterThan(8_000_000);
+      await expect(
+        client.request('vault.status', {}, { caller: 'chrome', page: 'q'.repeat(1024 * 1024) })
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+      const stopped = client.stop();
+      children[0].exit(0);
+      await stopped;
+      expect(client.waitingBytes).toBe(0);
+    });
+
     test('unknown error codes are never logged', async () => {
       const { client, log } = makeClient([
         (m, core) =>

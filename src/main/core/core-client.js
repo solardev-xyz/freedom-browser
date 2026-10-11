@@ -235,10 +235,13 @@ class CoreClient extends EventEmitter {
    */
   async request(method, params = {}, context = { caller: 'chrome' }) {
     if (this.state !== STATE.READY) {
-      // Requests waiting for readiness are bounded like those in flight.
+      // Requests waiting for readiness are bounded like those in flight:
+      // by count, and by the size of the whole request as it will be framed
+      // (method, params and context, with the largest possible ID).
       let size;
       try {
-        size = Buffer.byteLength(JSON.stringify(params) ?? 'null', 'utf8');
+        const request = { type: 'request', id: MAX_ID, method, params, context };
+        size = Buffer.byteLength(JSON.stringify(request), 'utf8');
       } catch {
         throw new CoreError('invalid_argument', 'Request is not serializable');
       }
