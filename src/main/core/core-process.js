@@ -2,7 +2,8 @@
  * Wires the freedom-cored child process into the app (freedom-core design
  * 0001, migration step 1). For now this is **dev builds only**, behind
  * `FREEDOM_CORE=1`, and changes no behavior: the core starts, completes its
- * handshake and is supervised, but nothing calls it yet.
+ * handshake and is supervised, but nothing calls it yet. Once wind-down has
+ * called `stopCore()`, `startCore()` never starts it again.
  */
 
 const path = require('path');
@@ -13,6 +14,8 @@ const { getIdentityDataDir } = require('../profile-paths');
 const { CoreClient } = require('./core-client');
 
 let client = null;
+// Set once app wind-down has stopped the core; nothing starts it again.
+let shutDown = false;
 
 function isCoreEnabled() {
   return !app.isPackaged && process.env.FREEDOM_CORE === '1';
@@ -36,7 +39,7 @@ function getLockDir() {
 }
 
 async function startCore() {
-  if (!isCoreEnabled() || client) return client;
+  if (!isCoreEnabled() || shutDown || client) return client;
   client = new CoreClient({
     spawn,
     command: getCoredBinaryPath(),
@@ -52,13 +55,25 @@ async function startCore() {
     log,
     shellVersion: app.getVersion(),
   });
-  client.on('failed', (reason) => log.error('[Core] not available:', reason));
-  const hello = await client.start();
-  log.info('[Core] ready', hello);
-  return client;
+  client.on('failed', (reason) => log.error('[Core] not available', { reason }));
+  const starting = client;
+  let hello;
+  try {
+    hello = await starting.start();
+  } catch (err) {
+    // Wind-down began while the core was starting: not a failure.
+    if (shutDown) return null;
+    throw err;
+  }
+  log.info('[Core] ready', {
+    core_version: hello.core_version,
+    capabilities: hello.capabilities.length,
+  });
+  return starting;
 }
 
 async function stopCore() {
+  shutDown = true;
   if (!client) return;
   const stopping = client;
   client = null;

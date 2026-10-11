@@ -54,6 +54,43 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(core.state).toBe('stopped');
   });
 
+  test('stop() racing the handshake settles without a restart', async () => {
+    let spawned = 0;
+    const core = new CoreClient({
+      spawn: (...args) => {
+        spawned += 1;
+        return spawn(...args);
+      },
+      command: binary,
+      args: [
+        'serve',
+        '--data-dir',
+        path.join(root, 'identity'),
+        '--lock-dir',
+        path.join(root, 'locks'),
+      ],
+      log: quietLog,
+    });
+    const started = core.start().catch((e) => e);
+    await core.stop();
+    expect(core.state).toBe('stopped');
+    expect((await started).code).toBe('core_unavailable');
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(spawned).toBe(1);
+  });
+
+  test('a core whose stdin closes is supervised and restarted', async () => {
+    const core = client(path.join(root, 'identity'), path.join(root, 'locks'));
+    await core.start();
+    // Close stdin behind the client's back: the core exits on EOF, and the
+    // next request fails cleanly instead of raising an uncaught EPIPE.
+    core.current.child.stdin.end();
+    await expect(core.request('vault.status')).rejects.toMatchObject({ code: 'core_unavailable' });
+    await core.whenReady();
+    await expect(core.request('vault.status')).resolves.toMatchObject({ exists: false });
+    await core.stop();
+  }, 20_000);
+
   test('a second core on the same identity directory fails without retrying', async () => {
     const first = client(path.join(root, 'identity'), path.join(root, 'locks'));
     await first.start();

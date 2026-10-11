@@ -8,29 +8,64 @@
  * - JSON requests framed over stdin/stdout;
  * - events from the core;
  * - restarts after 0.5 s, 2 s, then 10 s, until three crashes within 60 s;
- * - no restart for the exit codes that mean "don't retry".
+ * - no restart after a protocol mismatch, a requested stop, or the exit
+ *   codes that mean "don't retry" (64 usage, 74 storage, 75 lock held).
  *
- * Every pending request is bound to the child generation that received it.
- * A child that exits rejects its own pending requests and nothing else, and
- * a late reply from a retired child is ignored.
+ * **Generations.** Each child is one `Generation` record: its pending
+ * requests, its writer budget, its decoder, stderr and timers. Its lifecycle
+ * is live → exited (the process is gone; stdout may still hold final
+ * replies, which are delivered) → retired (stdio closed; remaining requests
+ * are rejected). Nothing from an exited or retired generation can emit
+ * events or make the client ready, and callbacks of a retired generation do
+ * nothing.
+ *
+ * **Stopping is sticky.** Once `stop()` is called, no handshake, timer or
+ * exit can make the client ready or restart it, until `start()` is called
+ * again after the stop completed.
+ *
+ * **Logs** carry fixed categories and validated public fields only: never
+ * request or response bodies, peer-supplied IDs, types or error text.
  */
 
 const { EventEmitter } = require('events');
-const { encodeFrame, FrameDecoder } = require('./frame');
+const { StringDecoder } = require('string_decoder');
+const { encodeFrame, FrameDecoder, FrameError } = require('./frame');
 
 const PROTOCOL_VERSION = 1;
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
 const HELLO_TIMEOUT_MS = 10_000;
 const SHUTDOWN_GRACE_MS = 3_000;
+// After the process exits, how long its stdout may take to close.
+const DRAIN_MS = 2_000;
 const RESTART_DELAYS_MS = [500, 2_000, 10_000];
 const CRASH_WINDOW_MS = 60_000;
 const MAX_CRASHES_IN_WINDOW = 3;
 // sysexits codes after which the core must not be restarted: usage (64),
-// storage or refused filesystem (74), lock held by another process (75),
-// protocol or handshake failure (76).
-const NO_RESTART_EXIT_CODES = new Set([64, 74, 75, 76]);
+// storage or refused filesystem (74), lock held by another process (75).
+// 76 (protocol) is restarted under the crash policy, unless the handshake
+// reported a protocol mismatch.
+const NO_RESTART_EXIT_CODES = new Set([64, 74, 75]);
+// Admission limits per generation. Control frames (hello, shutdown) don't
+// count, so they always get through.
+const MAX_PENDING = 256;
+const MAX_WRITE_BYTES = 8 * 1024 * 1024;
+// The longest stderr line kept; longer lines are truncated.
+const MAX_STDERR_LINE = 16 * 1024;
+const MAX_FORWARDED_TEXT = 1024;
+const LOG_LEVELS = { error: 'error', warn: 'warn', info: 'info', debug: 'info' };
+const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
+const ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+const CORE_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 // The only environment variables the core gets (design 0001).
 const ENV_ALLOWLIST = ['PATH', 'HOME', 'USERPROFILE', 'LANG', 'RUST_LOG', 'SystemRoot'];
+
+const STATE = {
+  STOPPED: 'stopped',
+  STARTING: 'starting',
+  READY: 'ready',
+  STOPPING: 'stopping',
+  FAILED: 'failed',
+};
 
 class CoreError extends Error {
   /**
@@ -46,12 +81,69 @@ class CoreError extends Error {
   }
 }
 
+function unavailable(message = 'The core is not running') {
+  return new CoreError('core_unavailable', message);
+}
+
+function clip(text) {
+  return text.length > MAX_FORWARDED_TEXT
+    ? `${text.slice(0, MAX_FORWARDED_TEXT)} …(truncated)`
+    : text;
+}
+
+function isObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function scrubbedEnv(env = process.env) {
   const out = {};
   for (const key of ENV_ALLOWLIST) {
     if (env[key] !== undefined) out[key] = env[key];
   }
   return out;
+}
+
+/** The public part of a valid hello result, or null. */
+function validHello(result) {
+  if (!isObject(result) || result.protocol !== PROTOCOL_VERSION) return null;
+  if (typeof result.core_version !== 'string' || !CORE_VERSION.test(result.core_version)) {
+    return null;
+  }
+  const { capabilities } = result;
+  if (
+    !Array.isArray(capabilities) ||
+    capabilities.length > 256 ||
+    !capabilities.every((c) => typeof c === 'string' && c.length <= 64)
+  ) {
+    return null;
+  }
+  return { protocol: PROTOCOL_VERSION, core_version: result.core_version, capabilities };
+}
+
+/** One child process and everything bound to it. */
+class Generation {
+  constructor(number) {
+    this.number = number;
+    this.child = null;
+    this.pending = new Map(); // id -> { settle(outcome) }
+    this.nextId = 1;
+    this.writeBytes = 0;
+    this.decoder = new FrameDecoder();
+    this.stderrText = new StringDecoder('utf8');
+    this.stderrLine = '';
+    this.stderrDropping = false;
+    this.timers = new Set();
+    this.helloTimer = null;
+    this.ready = false; // a valid handshake completed while live
+    this.exited = false; // the process is gone (stdout may still drain)
+    this.retired = false; // stdio closed; nothing more is accepted
+    this.ending = false; // we killed it or asked it to stop
+    this.distrusted = false; // a protocol fault: its output is ignored
+    this.stdinEnded = false;
+    this.cause = null; // shutdown | mismatch | protocol | transport | handshake_timeout | spawn
+    this.exitCode = null;
+    this.exitSignal = null;
+  }
 }
 
 class CoreClient extends EventEmitter {
@@ -79,22 +171,24 @@ class CoreClient extends EventEmitter {
     this.setTimer = options.setTimer || setTimeout;
     this.clearTimer = options.clearTimer || clearTimeout;
 
-    this.state = 'stopped'; // stopped | starting | ready | stopping | failed
-    this.generation = 0;
-    this.exitedGeneration = 0;
-    this.child = null;
-    this.pending = new Map();
-    this.nextId = 1;
+    this.state = STATE.STOPPED;
+    this.generations = 0;
+    this.current = null; // the live or draining Generation, if any
+    this.hello = null;
+    this.stopRequested = false;
     this.crashTimes = [];
     this.restartTimer = null;
-    this.helloTimer = null;
     this.readyWaiters = [];
     this.stopWaiters = [];
   }
 
   /** Spawns the core and completes the handshake. */
   start() {
-    if (this.state === 'stopped' || this.state === 'failed') {
+    if (this.state === STATE.STOPPING) {
+      return Promise.reject(unavailable('The core is stopping'));
+    }
+    if (this.state === STATE.STOPPED || this.state === STATE.FAILED) {
+      this.stopRequested = false;
       this.crashTimes = [];
       this.spawnGeneration();
     }
@@ -108,52 +202,59 @@ class CoreClient extends EventEmitter {
    * @param {object} [context] - { caller: 'chrome' | 'shell', page? }
    */
   async request(method, params = {}, context = { caller: 'chrome' }) {
-    if (this.state !== 'ready') await this.whenReady();
-    return this.send(method, params, context);
+    if (this.state !== STATE.READY) await this.whenReady();
+    return this.send(this.current, method, params, context, null);
   }
 
-  /** Graceful shutdown: core.shutdown, close stdin, kill after 3 s. */
+  /**
+   * Graceful shutdown: core.shutdown (if the handshake completed), close
+   * stdin, SIGKILL after 3 s. Resolves once the child is gone.
+   */
   stop() {
+    this.stopRequested = true;
     if (this.restartTimer) {
       this.clearTimer(this.restartTimer);
       this.restartTimer = null;
     }
-    if (!this.child) {
-      this.state = 'stopped';
+    this.rejectReadyWaiters('The core is stopping');
+    const gen = this.current;
+    if (!gen) {
+      this.state = STATE.STOPPED;
       return Promise.resolve();
     }
-    this.state = 'stopping';
+    this.state = STATE.STOPPING;
     const stopped = new Promise((resolve) => this.stopWaiters.push(resolve));
-    const child = this.child;
-    this.send('core.shutdown', {}, { caller: 'shell' }).catch(() => {});
-    try {
-      child.stdin.end();
-    } catch {
-      // Already closed.
-    }
-    const killTimer = this.setTimer(() => {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        // Already gone.
+    if (!gen.exited && !gen.ending) {
+      gen.ending = true;
+      gen.cause = gen.cause || 'shutdown';
+      if (gen.ready) {
+        this.send(
+          gen,
+          'core.shutdown',
+          {},
+          { caller: 'shell' },
+          { control: true, onReply: () => {} }
+        );
       }
-    }, SHUTDOWN_GRACE_MS);
-    return stopped.finally(() => this.clearTimer(killTimer));
+      this.endStdin(gen);
+      this.timer(gen, () => this.kill(gen), SHUTDOWN_GRACE_MS);
+    }
+    return stopped;
   }
 
   whenReady() {
-    if (this.state === 'ready') return Promise.resolve();
-    if (this.state !== 'starting') {
-      return Promise.reject(new CoreError('core_unavailable', 'The core is not running'));
-    }
+    if (this.state === STATE.READY) return Promise.resolve(this.hello);
+    if (this.state !== STATE.STARTING) return Promise.reject(unavailable());
     return new Promise((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
   }
 
+  // ---- generations ----
+
   spawnGeneration() {
-    this.generation += 1;
-    const generation = this.generation;
-    this.state = 'starting';
-    this.nextId = 1;
+    this.generations += 1;
+    const gen = new Generation(this.generations);
+    this.current = gen;
+    this.state = STATE.STARTING;
     let child;
     try {
       child = this.spawnFn(this.command, this.args, {
@@ -161,44 +262,36 @@ class CoreClient extends EventEmitter {
         env: scrubbedEnv(),
         windowsHide: true,
       });
-    } catch (err) {
-      this.log.error('[Core] spawn failed:', err.message);
-      this.onExit(generation, null, null, err);
+    } catch {
+      this.log.error('[Core] spawn failed');
+      gen.cause = 'spawn';
+      gen.exited = true;
+      this.retire(gen);
       return;
     }
-    this.child = child;
+    gen.child = child;
 
-    const decoder = new FrameDecoder();
-    child.stdout.on('data', (chunk) => {
-      if (generation !== this.generation) return;
-      let messages;
-      try {
-        messages = decoder.push(chunk);
-      } catch (err) {
-        this.protocolError(generation, err.message);
-        return;
-      }
-      for (const message of messages) this.onMessage(generation, message);
-    });
-    let stderrBuffered = '';
-    child.stderr.on('data', (chunk) => {
-      stderrBuffered += chunk.toString('utf8');
-      let newline;
-      while ((newline = stderrBuffered.indexOf('\n')) !== -1) {
-        this.forwardLog(stderrBuffered.slice(0, newline));
-        stderrBuffered = stderrBuffered.slice(newline + 1);
-      }
-    });
-    child.on('error', (err) => this.onExit(generation, null, null, err));
-    child.on('exit', (code, signal) => this.onExit(generation, code, signal, null));
+    child.stdout.on('data', (chunk) => this.onStdout(gen, chunk));
+    child.stdout.on('end', () => this.onStdoutEnd(gen));
+    child.stderr.on('data', (chunk) => this.onStderr(gen, chunk));
+    for (const name of ['stdin', 'stdout', 'stderr']) {
+      child[name].on('error', () => this.connectionFailed(gen, `${name}_error`));
+    }
+    child.on('error', () => this.onChildError(gen));
+    child.on('exit', (code, signal) => this.onChildExit(gen, code, signal));
+    child.on('close', () => this.retire(gen));
 
-    this.helloTimer = this.setTimer(() => {
-      if (generation === this.generation && this.state === 'starting') {
+    gen.helloTimer = this.timer(
+      gen,
+      () => {
+        if (gen.ready || gen.exited) return;
         this.log.error('[Core] no core.hello reply within 10 s');
-        this.kill(child);
-      }
-    }, HELLO_TIMEOUT_MS);
+        this.end(gen, 'handshake_timeout');
+      },
+      HELLO_TIMEOUT_MS
+    );
     this.send(
+      gen,
       'core.hello',
       {
         protocol: PROTOCOL_VERSION,
@@ -206,151 +299,378 @@ class CoreClient extends EventEmitter {
         auto_lock_ms: this.autoLockMs,
       },
       { caller: 'shell' },
-      { duringHandshake: true }
-    ).then(
-      (result) => {
-        if (generation !== this.generation) return;
-        this.clearTimer(this.helloTimer);
-        if (result.protocol !== PROTOCOL_VERSION) {
-          this.log.error('[Core] protocol mismatch:', result.protocol);
-          this.kill(child);
-          return;
-        }
-        this.state = 'ready';
-        this.emit('ready', result);
-        for (const waiter of this.readyWaiters.splice(0)) waiter.resolve(result);
-      },
-      (err) => {
-        if (generation !== this.generation) return;
-        this.log.error('[Core] handshake failed:', err.message);
-        this.kill(child);
-      }
+      { control: true, onReply: (outcome) => this.onHelloReply(gen, outcome) }
     );
   }
 
-  send(method, params, context, { duringHandshake = false } = {}) {
-    const child = this.child;
-    if (!child || (!duringHandshake && this.state !== 'ready' && this.state !== 'stopping')) {
-      return Promise.reject(new CoreError('core_unavailable', 'The core is not running'));
-    }
-    if (this.nextId > MAX_ID) {
-      this.protocolError(this.generation, 'request IDs exhausted');
-      return Promise.reject(new CoreError('core_unavailable', 'The core is not running'));
-    }
-    const id = this.nextId++;
-    const generation = this.generation;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, generation, method });
-      try {
-        child.stdin.write(encodeFrame({ type: 'request', id, method, params, context }));
-      } catch (err) {
-        this.pending.delete(id);
-        reject(new CoreError('core_unavailable', err.message));
-      }
-    });
-  }
-
-  onMessage(generation, message) {
-    if (message.type === 'response') {
-      const entry = this.pending.get(message.id);
-      if (!entry || entry.generation !== generation) {
-        this.protocolError(generation, `unsolicited response ${message.id}`);
-        return;
-      }
-      const hasResult = Object.prototype.hasOwnProperty.call(message, 'result');
-      const hasError = Object.prototype.hasOwnProperty.call(message, 'error');
-      if (hasResult === hasError) {
-        this.protocolError(generation, 'a response needs exactly one of result and error');
-        return;
-      }
-      this.pending.delete(message.id);
-      if (hasResult) {
-        entry.resolve(message.result);
+  onHelloReply(gen, outcome) {
+    if (gen.exited || gen.retired || gen.ending) return;
+    if (outcome.error) {
+      if (outcome.error.code === 'protocol_mismatch') {
+        this.log.error('[Core] protocol mismatch');
+        this.end(gen, 'mismatch');
       } else {
-        const { code, message: text, data } = message.error || {};
-        entry.reject(new CoreError(code, text, data));
+        this.log.error('[Core] handshake refused', { code: outcome.error.code });
+        this.end(gen, 'protocol');
       }
-    } else if (message.type === 'event') {
-      this.emit('event', message.event, message.data);
-    } else {
-      this.protocolError(generation, `unexpected message type ${message.type}`);
+      return;
     }
+    const hello = validHello(outcome.result);
+    if (!hello) {
+      const result = outcome.result;
+      const mismatch =
+        isObject(result) &&
+        Number.isInteger(result.protocol) &&
+        result.protocol !== PROTOCOL_VERSION;
+      this.log.error(mismatch ? '[Core] protocol mismatch' : '[Core] invalid core.hello result');
+      this.end(gen, mismatch ? 'mismatch' : 'protocol');
+      return;
+    }
+    this.cancelTimer(gen, gen.helloTimer);
+    if (this.stopRequested || gen !== this.current) return;
+    gen.ready = true;
+    this.hello = hello;
+    this.state = STATE.READY;
+    this.emit('ready', hello);
+    for (const waiter of this.readyWaiters.splice(0)) waiter.resolve(hello);
   }
 
-  protocolError(generation, reason) {
-    if (generation !== this.generation || !this.child) return;
-    this.log.error('[Core] protocol error:', reason);
-    this.kill(this.child);
+  /** The process exited. Its stdout may still hold final replies. */
+  onChildExit(gen, code, signal) {
+    if (gen.exited || gen.retired) return;
+    gen.exited = true;
+    gen.exitCode = code;
+    gen.exitSignal = signal;
+    this.cancelTimer(gen, gen.helloTimer);
+    if (this.state === STATE.READY && gen === this.current) this.state = STATE.STARTING;
+    // Normally 'close' follows once stdio is closed; don't wait forever.
+    this.timer(gen, () => this.retire(gen), DRAIN_MS);
   }
 
-  kill(child) {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      // Already gone.
+  /**
+   * A ChildProcess 'error': the spawn failed (no pid; the process never
+   * existed), or a signal couldn't be delivered (the process may live on, so
+   * nothing is released until it actually exits).
+   */
+  onChildError(gen) {
+    if (gen.retired) return;
+    if (gen.child && gen.child.pid === undefined) {
+      this.log.error('[Core] spawn failed');
+      gen.cause = gen.cause || 'spawn';
+      gen.exited = true;
+      this.retire(gen);
+      return;
     }
+    this.log.error('[Core] child process error');
+    if (!gen.exited) this.end(gen, 'transport');
   }
 
-  onExit(generation, code, signal, err) {
-    // 'error' and 'exit' can both fire for one child: handle the first only.
-    if (generation !== this.generation || this.exitedGeneration === generation) return;
-    this.exitedGeneration = generation;
-    this.child = null;
-    this.clearTimer(this.helloTimer);
-    for (const [id, entry] of this.pending) {
-      if (entry.generation === generation) {
-        this.pending.delete(id);
-        entry.reject(new CoreError('core_unavailable', 'The core exited'));
-      }
-    }
-    this.emit('exit', { code, signal, error: err ? err.message : undefined });
+  /**
+   * Final: stdio is closed (or the drain timed out). Rejects what is still
+   * pending, then decides between stopped, failed and a restart.
+   */
+  retire(gen) {
+    if (gen.retired) return;
+    gen.retired = true;
+    gen.exited = true;
+    for (const timer of gen.timers) this.clearTimer(timer);
+    gen.timers.clear();
+    const pending = [...gen.pending.values()];
+    gen.pending.clear();
+    for (const entry of pending) entry.settle({ error: unavailable('The core exited') });
+    if (gen !== this.current) return;
+    this.current = null;
+    this.hello = null;
+    const code = gen.exitCode;
+    this.emit('exit', { code, signal: gen.exitSignal, cause: gen.cause });
 
-    if (this.state === 'stopping') {
-      this.state = 'stopped';
+    if (this.stopRequested) {
+      this.state = STATE.STOPPED;
       for (const resolve of this.stopWaiters.splice(0)) resolve();
       return;
     }
+    if (gen.cause === 'mismatch') {
+      this.fail('protocol mismatch');
+      return;
+    }
     if (code !== null && NO_RESTART_EXIT_CODES.has(code)) {
-      this.fail(`the core exited with code ${code}`);
+      this.fail(`exit code ${code}`);
       return;
     }
     const now = this.now();
     this.crashTimes = this.crashTimes.filter((t) => now - t < CRASH_WINDOW_MS).concat(now);
     if (this.crashTimes.length >= MAX_CRASHES_IN_WINDOW) {
-      this.fail('the core crashed three times within a minute');
+      this.fail('three crashes within a minute');
       return;
     }
     const delay =
       RESTART_DELAYS_MS[Math.min(this.crashTimes.length - 1, RESTART_DELAYS_MS.length - 1)];
-    this.log.warn(`[Core] exited (code ${code}, signal ${signal}); restarting in ${delay} ms`);
-    this.state = 'starting';
+    this.log.warn('[Core] exited; restarting', {
+      code,
+      signal: gen.exitSignal,
+      cause: gen.cause,
+      delay_ms: delay,
+    });
+    this.state = STATE.STARTING;
     this.restartTimer = this.setTimer(() => {
       this.restartTimer = null;
-      this.spawnGeneration();
+      if (!this.stopRequested) this.spawnGeneration();
     }, delay);
   }
 
   fail(reason) {
-    this.log.error('[Core] giving up:', reason);
-    this.state = 'failed';
+    this.log.error('[Core] giving up', { reason });
+    this.state = STATE.FAILED;
     this.emit('failed', reason);
-    for (const waiter of this.readyWaiters.splice(0)) {
-      waiter.reject(new CoreError('core_unavailable', reason));
+    this.rejectReadyWaiters(reason);
+  }
+
+  rejectReadyWaiters(reason) {
+    for (const waiter of this.readyWaiters.splice(0)) waiter.reject(unavailable(reason));
+  }
+
+  /** Ends a generation we no longer trust: records why, then kills it. */
+  end(gen, cause) {
+    if (gen.retired) return;
+    gen.cause = gen.cause || cause;
+    gen.ending = true;
+    this.kill(gen);
+  }
+
+  kill(gen) {
+    if (gen.exited || !gen.child) return;
+    try {
+      gen.child.kill('SIGKILL');
+    } catch {
+      // Reported through 'error' if it matters.
     }
   }
 
+  endStdin(gen) {
+    if (gen.stdinEnded || !gen.child) return;
+    gen.stdinEnded = true;
+    try {
+      gen.child.stdin.end();
+    } catch {
+      // Already closed.
+    }
+  }
+
+  connectionFailed(gen, category) {
+    if (gen.retired || gen.exited) return;
+    this.log.error('[Core] connection failed', { category });
+    this.end(gen, 'transport');
+  }
+
+  protocolFault(gen, category) {
+    if (gen.retired || gen.distrusted) return;
+    gen.distrusted = true;
+    this.log.error('[Core] protocol error', { category });
+    this.end(gen, 'protocol');
+  }
+
+  timer(gen, fn, ms) {
+    const timer = this.setTimer(() => {
+      gen.timers.delete(timer);
+      fn();
+    }, ms);
+    gen.timers.add(timer);
+    return timer;
+  }
+
+  cancelTimer(gen, timer) {
+    if (!timer || !gen.timers.has(timer)) return;
+    gen.timers.delete(timer);
+    this.clearTimer(timer);
+  }
+
+  // ---- writing ----
+
+  /**
+   * Writes one request. `control` frames (hello, shutdown) skip the
+   * admission limits; `onReply` receives the outcome synchronously instead
+   * of a promise.
+   */
+  send(gen, method, params, context, options) {
+    const { control = false, onReply = null } = options || {};
+    // Callback-style callers get every outcome through the callback.
+    const refuse = (error) => {
+      if (!onReply) return Promise.reject(error);
+      onReply({ error });
+      return null;
+    };
+    if (!gen || gen.retired || gen.exited || gen.stdinEnded || (gen.ending && !control)) {
+      return refuse(unavailable());
+    }
+    if (!control && gen.pending.size >= MAX_PENDING) {
+      return refuse(new CoreError('busy', 'Too many requests in flight'));
+    }
+    if (gen.nextId > MAX_ID) {
+      this.protocolFault(gen, 'ids_exhausted');
+      return refuse(unavailable());
+    }
+    const id = gen.nextId;
+    let frame;
+    try {
+      frame = encodeFrame({ type: 'request', id, method, params, context });
+    } catch (err) {
+      if (err instanceof FrameError) {
+        return refuse(new CoreError('invalid_argument', 'Request too large'));
+      }
+      return refuse(new CoreError('invalid_argument', 'Request is not serializable'));
+    }
+    if (!control && gen.writeBytes + frame.length > MAX_WRITE_BYTES) {
+      return refuse(new CoreError('busy', 'Too much data in flight'));
+    }
+    gen.nextId += 1;
+
+    let promise = null;
+    let entry;
+    if (onReply) {
+      entry = { settle: onReply };
+    } else {
+      promise = new Promise((resolve, reject) => {
+        entry = {
+          settle: (outcome) => (outcome.error ? reject(outcome.error) : resolve(outcome.result)),
+        };
+      });
+    }
+    gen.pending.set(id, entry);
+    gen.writeBytes += frame.length;
+    const written = (err) => {
+      gen.writeBytes -= frame.length;
+      if (err) this.connectionFailed(gen, 'stdin_error');
+    };
+    try {
+      gen.child.stdin.write(frame, written);
+    } catch {
+      gen.pending.delete(id);
+      gen.writeBytes -= frame.length;
+      this.connectionFailed(gen, 'stdin_error');
+      entry.settle({ error: unavailable() });
+    }
+    return promise;
+  }
+
+  // ---- reading ----
+
+  onStdout(gen, chunk) {
+    // After a protocol fault nothing more from this child is trusted.
+    if (gen.retired || gen.distrusted) return;
+    let messages;
+    try {
+      messages = gen.decoder.push(chunk);
+    } catch (err) {
+      this.protocolFault(gen, err instanceof FrameError ? err.category : 'decode');
+      return;
+    }
+    for (const message of messages) {
+      if (gen.retired || gen.distrusted) return;
+      try {
+        this.onMessage(gen, message);
+      } catch {
+        this.protocolFault(gen, 'handler');
+      }
+    }
+  }
+
+  onStdoutEnd(gen) {
+    if (gen.retired) return;
+    if (!gen.decoder.isAtBoundary()) this.log.warn('[Core] stdout closed in the middle of a frame');
+    // A live child that closes stdout can't answer any more.
+    if (!gen.exited) this.connectionFailed(gen, 'stdout_closed');
+  }
+
+  onMessage(gen, message) {
+    if (!isObject(message)) return this.protocolFault(gen, 'not_object');
+    if (message.type === 'response') return this.onResponse(gen, message);
+    if (message.type === 'event') return this.onEvent(gen, message);
+    return this.protocolFault(gen, 'unknown_type');
+  }
+
+  onResponse(gen, message) {
+    const { id } = message;
+    if (!Number.isSafeInteger(id) || id < 1) return this.protocolFault(gen, 'bad_id');
+    const entry = gen.pending.get(id);
+    if (!entry) return this.protocolFault(gen, 'unsolicited_response');
+    const hasResult = Object.prototype.hasOwnProperty.call(message, 'result');
+    const hasError = Object.prototype.hasOwnProperty.call(message, 'error');
+    if (hasResult === hasError) return this.protocolFault(gen, 'result_and_error');
+    let outcome;
+    if (hasError) {
+      const { error } = message;
+      if (
+        !isObject(error) ||
+        typeof error.code !== 'string' ||
+        !ERROR_CODE.test(error.code) ||
+        typeof error.message !== 'string'
+      ) {
+        return this.protocolFault(gen, 'bad_error');
+      }
+      outcome = { error: new CoreError(error.code, error.message, error.data) };
+    } else {
+      outcome = { result: message.result };
+    }
+    gen.pending.delete(id);
+    entry.settle(outcome);
+    return undefined;
+  }
+
+  onEvent(gen, message) {
+    if (typeof message.event !== 'string' || !EVENT_NAME.test(message.event)) {
+      return this.protocolFault(gen, 'bad_event');
+    }
+    const hasData = Object.prototype.hasOwnProperty.call(message, 'data');
+    if (hasData && !isObject(message.data)) return this.protocolFault(gen, 'bad_event');
+    // Only a live, ready, current generation speaks for the core.
+    if (gen.exited || !gen.ready || gen !== this.current) return undefined;
+    this.emit('event', message.event, hasData ? message.data : {});
+    return undefined;
+  }
+
+  // ---- stderr ----
+
+  onStderr(gen, chunk) {
+    if (gen.retired) return;
+    let text = gen.stderrText.write(chunk);
+    while (text.length) {
+      const newline = text.indexOf('\n');
+      const part = newline === -1 ? text : text.slice(0, newline);
+      text = newline === -1 ? '' : text.slice(newline + 1);
+      if (!gen.stderrDropping) {
+        gen.stderrLine += part;
+        if (gen.stderrLine.length > MAX_STDERR_LINE) {
+          this.forwardLog(gen.stderrLine);
+          gen.stderrLine = '';
+          gen.stderrDropping = newline === -1;
+          continue;
+        }
+      }
+      if (newline !== -1) {
+        if (!gen.stderrDropping) this.forwardLog(gen.stderrLine);
+        gen.stderrLine = '';
+        gen.stderrDropping = false;
+      }
+    }
+  }
+
+  /** Forwards one core log line (JSON from the core's logger, or plain text). */
   forwardLog(line) {
     if (!line) return;
-    let entry;
+    let entry = null;
     try {
       entry = JSON.parse(line);
     } catch {
-      this.log.info('[Core]', line);
+      // Plain text, e.g. a panic message.
+    }
+    if (!isObject(entry) || typeof entry.msg !== 'string') {
+      this.log.info('[Core]', clip(line));
       return;
     }
     const { level, msg, ...fields } = entry;
-    const logger = this.log[level] || this.log.info;
-    logger.call(this.log, `[Core] ${msg}`, Object.keys(fields).length ? fields : '');
+    const name = LOG_LEVELS[level] || 'info';
+    const logger = typeof this.log[name] === 'function' ? this.log[name] : this.log.info;
+    logger.call(this.log, `[Core] ${clip(msg)}`, Object.keys(fields).length ? fields : '');
   }
 }
 
@@ -361,4 +681,6 @@ module.exports = {
   PROTOCOL_VERSION,
   NO_RESTART_EXIT_CODES,
   RESTART_DELAYS_MS,
+  MAX_PENDING,
+  MAX_WRITE_BYTES,
 };
