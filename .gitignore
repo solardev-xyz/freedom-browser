@@ -15,6 +15,7 @@ tmp/
 *.swp
 .env
 ant-bin/
+freedom-cored-bin/
 myotis-bin/
 ant-data/
 assets/adblock/

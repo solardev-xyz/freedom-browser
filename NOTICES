@@ -15,6 +15,12 @@ refuses only one thing, a missing `LICENSES.chromium.html`
 
 == External binaries and native addons (resources/) ==
 
+freedom-cored (Rust identity core)
+  https://github.com/solardev-xyz/freedom-core
+  Release v0.1.0 and its license are pending. The upstream README currently
+  says no license has been chosen. Confirm the release's license and its
+  statically linked dependencies' notices before enabling the download pin.
+
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
   Copyright (c) solardev-xyz contributors

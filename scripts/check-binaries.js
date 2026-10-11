@@ -4,6 +4,7 @@ const { validateInstalledAddon } = require('./fetch-myotis');
 const { checkInstalledElectronVersion } = require('./check-electron-version');
 
 const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
+const CORE_BIN_DIR = path.join(__dirname, '..', 'freedom-cored-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
   __dirname,
   '..',
@@ -112,6 +113,10 @@ function checkBinaries(platforms) {
     if (!fs.existsSync(antPath)) {
       missing.push(`antd binary for ${platformDir}: ${antPath}`);
     }
+    const corePath = path.join(CORE_BIN_DIR, platformDir, `freedom-cored${antExt}`);
+    if (!fs.existsSync(corePath)) {
+      missing.push(`freedom-cored binary for ${platformDir}: ${corePath}`);
+    }
 
     const freedomIpfsAddonPath = path.join(
       FREEDOM_IPFS_NATIVE_PREBUILDS_DIR,
@@ -137,10 +142,15 @@ function checkBinaries(platforms) {
       }
       const provenanceError = validateInstalledAddon(path.dirname(myotisAddonPath));
       if (provenanceError) {
-        missing.push(`myotis checkpoint addon for ${platformDir}: ${provenanceError}; run npm run myotis:download`);
+        missing.push(
+          `myotis checkpoint addon for ${platformDir}: ${provenanceError}; run npm run myotis:download`
+        );
       }
-      const supervisorPath = path.join(MYOTIS_BIN_DIR, platformDir,
-        `myotis-supervisor${os === 'win' ? '.exe' : ''}`);
+      const supervisorPath = path.join(
+        MYOTIS_BIN_DIR,
+        platformDir,
+        `myotis-supervisor${os === 'win' ? '.exe' : ''}`
+      );
       if (!fs.existsSync(supervisorPath)) {
         missing.push(`myotis supervisor for ${platformDir}: ${supervisorPath}`);
       }
@@ -199,6 +209,7 @@ function main() {
     missing.forEach((m) => console.error(`  - ${m}`));
     console.error('\nRun the following commands to download binaries:');
     console.error('  npm run ant:download');
+    console.error('  npm run core:download');
     console.error('  npm run ipfs:download');
     for (const { os, arch } of platforms) {
       console.error(`  npm run radicle:download -- --${os} --${arch}`);

@@ -25,6 +25,33 @@
   },
   "dependencies": [
     {
+      "name": "freedom-cored",
+      "version": "v0.1.0",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/solardev-xyz/freedom-core"
+      },
+      "license": {
+        "spdx": [],
+        "raw": "Not selected; release v0.1.0 pending",
+        "license_files": [],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-freedom-cored.js PINNED_RELEASE_TAG",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "red",
+      "issues": [
+        {
+          "kind": "missing-license",
+          "details": "The freedom-core README says no license has been chosen yet. The download digest is a failing placeholder until v0.1.0 exists.",
+          "recommended_fix": "Confirm the release license and statically linked dependency notices before filling the real digest and shipping."
+        }
+      ]
+    },
+    {
       "name": "electron",
       "version": "44.7.0",
       "type": "direct",

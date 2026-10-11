@@ -19,17 +19,17 @@
 
 ### Key Findings
 
-| Category                                                    | Count       | Status                                                             |
-| ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
-| Production npm packages (unique name@version)               | 273         | See distribution below                                             |
-| Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
-| External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
-| Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
-| Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
-| GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
-| Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
-| Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                          |
-| Weak copyleft (LGPL-2.1) in the Linux AppImage runtime      | 1 library   | Separate program, upstream source — **decided** (see below)        |
+| Category                                                    | Count       | Status                                                               |
+| ----------------------------------------------------------- | ----------- | -------------------------------------------------------------------- |
+| Production npm packages (unique name@version)               | 273         | See distribution below                                               |
+| Dev npm dependencies                                        | not bundled | Do not affect the distributed product                                |
+| External binaries / native addons shipped in `resources/`   | 6           | Ant, freedom-ipfs, libradicle, Myotis, Arti, freedom-cored (pending) |
+| Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                              |
+| Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                    |
+| GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410)   |
+| Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                               |
+| Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                            |
+| Weak copyleft (LGPL-2.1) in the Linux AppImage runtime      | 1 library   | Separate program, upstream source — **decided** (see below)          |
 
 ### Resolved during this audit: a GPL-3.0 library was shipping
 
@@ -57,6 +57,7 @@ Freedom Browser is distributed as:
   - `myotis-node.node` (`resources/myotis-node/`)
 - **External binaries** shipped in `resources/`:
   - Ant (`antd`, Swarm node)
+  - `freedom-cored` (Rust identity core) — v0.1.0 and its license are pending; see below
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
@@ -78,6 +79,13 @@ Freedom Browser is distributed as:
 ## Downloaded Runtime Artifacts
 
 Versions here are the pinned values in the repo, not observed downloads; each row names its pin so a drift is checkable. `licenses-audit.test.js` asserts these match.
+
+### freedom-cored (Rust Identity Core) — pending release
+
+- **Pin:** `v0.1.0` in `scripts/fetch-freedom-cored.js`; its SHA256SUMS digest is a failing placeholder until publication.
+- **Integration:** a separate binary under `resources/freedom-cored/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation.
+- **License:** not selected yet according to freedom-core's README. No license is inferred from Freedom Browser's license. Confirm the release's license, statically linked dependency licenses and required notices before setting the real download digest and shipping it.
+- **Source:** <https://github.com/solardev-xyz/freedom-core>.
 
 ### Ant (antd, Swarm Node)
 
@@ -298,6 +306,8 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 13. **Chain and token marks** committed under `src/renderer/assets/` — third-party marks, terms unconfirmed (see _Assets_)
 14. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
 15. **AppImage runtime** (Linux `.AppImage` only) — MIT runtime with statically linked LGPL-2.1 libfuse, BSD squashfuse/zstd, MIT musl/mimalloc and Zlib zlib; not checked by `licenses-audit.test.js`, see _AppImage runtime_
+
+The pending freedom-cored release and its license also need confirmation before shipping.
 
 `licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 

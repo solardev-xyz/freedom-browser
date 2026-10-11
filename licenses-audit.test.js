@@ -60,6 +60,13 @@ const TEXT_EXTENSIONS = new Set([...SOURCE_EXTENSIONS, '.svg', '.c', '.h', '.mjs
  * licenses-audit.json's `dependencies`; `pin` says where the version lives.
  */
 const EXTRA_RESOURCES = {
+  'freedom-cored-bin/${os}-${arch}/': {
+    thirdParty: true,
+    label: 'freedom-cored',
+    auditName: 'freedom-cored',
+    noticeMatch: /^freedom-cored \(Rust identity core\)$/m,
+    pin: { file: 'scripts/fetch-freedom-cored.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
+  },
   'ant-bin/${os}-${arch}/': {
     thirdParty: true,
     label: 'Ant',

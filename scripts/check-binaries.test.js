@@ -19,10 +19,13 @@ describe('ad-blocking build inputs', () => {
   // #410: a lists dir fetched by the old script has a manifest but no
   // scriptlet resources or GPL-3.0 text — packaging it would silently ship
   // without YouTube ad blocking.
-  test.each(['resources.json', 'COPYING.GPL-3.0.txt'])('flags a stale lists dir missing %s', (file) => {
-    fs.existsSync.mockImplementation((target) => !target.endsWith(path.join('adblock', file)));
-    expect(checkBinaries([])).toEqual([expect.stringContaining(`adblock ${file}`)]);
-  });
+  test.each(['resources.json', 'COPYING.GPL-3.0.txt'])(
+    'flags a stale lists dir missing %s',
+    (file) => {
+      fs.existsSync.mockImplementation((target) => !target.endsWith(path.join('adblock', file)));
+      expect(checkBinaries([])).toEqual([expect.stringContaining(`adblock ${file}`)]);
+    }
+  );
 
   test('a missing lists dir is reported once, as before', () => {
     fs.existsSync.mockImplementation((target) => !target.includes(path.join('assets', 'adblock')));
@@ -79,27 +82,73 @@ describe('Radicle build inputs', () => {
   });
 });
 
-
 describe('Myotis supervisor build inputs', () => {
-  test.each([['mac', 'arm64'], ['linux', 'x64'], ['win', 'x64']])(
-    'requires a source-built helper on %s-%s', (os, arch) => {
-      fs.existsSync.mockImplementation((target) => !target.includes('myotis-supervisor'));
-      expect(checkBinaries([{ os, arch }])).toEqual([
-        expect.stringContaining(`myotis supervisor for ${os}-${arch}`),
-      ]);
-    }
-  );
+  test.each([
+    ['mac', 'arm64'],
+    ['linux', 'x64'],
+    ['win', 'x64'],
+  ])('requires a source-built helper on %s-%s', (os, arch) => {
+    fs.existsSync.mockImplementation((target) => !target.includes('myotis-supervisor'));
+    expect(checkBinaries([{ os, arch }])).toEqual([
+      expect.stringContaining(`myotis supervisor for ${os}-${arch}`),
+    ]);
+  });
   test('refuses a vanilla or modified addon without valid checkpoint provenance', () => {
     fs.existsSync.mockReturnValue(true);
     validateInstalledAddon.mockReturnValueOnce('checkpoint-addon checksum mismatch');
     expect(checkBinaries([{ os: 'mac', arch: 'arm64' }])).toEqual([
-      expect.stringContaining('myotis checkpoint addon for mac-arm64: checkpoint-addon checksum mismatch'),
+      expect.stringContaining(
+        'myotis checkpoint addon for mac-arm64: checkpoint-addon checksum mismatch'
+      ),
     ]);
   });
   test('packages both helper names and only adds the mac helper to explicit signing', () => {
     const resource = packageJson.build.extraResources.find(({ to }) => to === 'myotis-node');
-    expect(resource.filter).toEqual(['myotis-node.node', 'myotis-supervisor', 'myotis-supervisor.exe']);
-    expect(packageJson.build.mac.binaries).toEqual(['Contents/Resources/myotis-node/myotis-supervisor']);
+    expect(resource.filter).toEqual([
+      'myotis-node.node',
+      'myotis-supervisor',
+      'myotis-supervisor.exe',
+    ]);
+    expect(packageJson.build.mac.binaries).toContain(
+      'Contents/Resources/myotis-node/myotis-supervisor'
+    );
+  });
+});
+
+describe('freedom-cored build inputs', () => {
+  test.each([
+    ['mac', 'x64'],
+    ['mac', 'arm64'],
+    ['linux', 'x64'],
+    ['linux', 'arm64'],
+    ['win', 'x64'],
+    ['win', 'arm64'],
+  ])('requires the core binary for %s-%s', (os, arch) => {
+    fs.existsSync.mockImplementation((target) => !target.includes('freedom-cored-bin'));
+    expect(checkBinaries([{ os, arch }])).toEqual([
+      expect.stringContaining(`freedom-cored binary for ${os}-${arch}`),
+    ]);
+    expect(fs.existsSync).toHaveBeenCalledWith(
+      path.join(
+        __dirname,
+        '..',
+        'freedom-cored-bin',
+        `${os}-${arch}`,
+        `freedom-cored${os === 'win' ? '.exe' : ''}`
+      )
+    );
+  });
+
+  test('packages only the executable and explicitly signs it on macOS', () => {
+    expect(packageJson.build.extraResources.find(({ to }) => to === 'freedom-cored')).toEqual({
+      from: 'freedom-cored-bin/${os}-${arch}/',
+      to: 'freedom-cored',
+      filter: ['freedom-cored', 'freedom-cored.exe'],
+    });
+    expect(packageJson.build.mac.binaries).toContain(
+      'Contents/Resources/freedom-cored/freedom-cored'
+    );
+    expect(packageJson.scripts['core:download']).toBe('node scripts/fetch-freedom-cored.js');
   });
 });
 
