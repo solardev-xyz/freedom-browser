@@ -29,7 +29,7 @@
 
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
-const { encodeFrame, FrameDecoder, FrameError } = require('./frame');
+const { encodeFrame, FrameDecoder, FrameError, MAX_PAYLOAD } = require('./frame');
 
 const PROTOCOL_VERSION = 1;
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
@@ -49,12 +49,38 @@ const NO_RESTART_EXIT_CODES = new Set([64, 74, 75]);
 // count, so they always get through.
 const MAX_PENDING = 256;
 const MAX_WRITE_BYTES = 8 * 1024 * 1024;
+// A failed SIGKILL is retried this often, this many times in all.
+const KILL_RETRY_MS = 1_000;
+const MAX_KILL_ATTEMPTS = 3;
 // The longest stderr line kept; longer lines are truncated.
 const MAX_STDERR_LINE = 16 * 1024;
 const MAX_FORWARDED_TEXT = 1024;
 const LOG_LEVELS = { error: 'error', warn: 'warn', info: 'info', debug: 'info' };
 const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 const ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+// fc-protocol's ErrorCode (crates/fc-protocol/src/error.rs). Only these are
+// ever logged; callers still get any well-formed code.
+const KNOWN_ERROR_CODES = new Set([
+  'vault_locked',
+  'incorrect_password',
+  'throttled',
+  'no_vault',
+  'vault_exists',
+  'unsupported_vault_version',
+  'corrupt_vault',
+  'invalid_mnemonic',
+  'invalid_argument',
+  'weak_password',
+  'storage',
+  'node_identity_corrupt',
+  'forbidden',
+  'busy',
+  'cancelled',
+  'deadline',
+  'protocol_mismatch',
+  'unknown_method',
+  'internal',
+]);
 const CORE_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 // The only environment variables the core gets (design 0001).
 const ENV_ALLOWLIST = ['PATH', 'HOME', 'USERPROFILE', 'LANG', 'RUST_LOG', 'SystemRoot'];
@@ -138,6 +164,9 @@ class Generation {
     this.exited = false; // the process is gone (stdout may still drain)
     this.retired = false; // stdio closed; nothing more is accepted
     this.ending = false; // we killed it or asked it to stop
+    this.stopping = false; // stop() closed stdin and armed the grace kill
+    this.killing = false; // inside child.kill (it can emit 'error' synchronously)
+    this.killAttempts = 0;
     this.distrusted = false; // a protocol fault: its output is ignored
     this.stdinEnded = false;
     this.cause = null; // shutdown | mismatch | protocol | transport | handshake_timeout | spawn
@@ -180,6 +209,9 @@ class CoreClient extends EventEmitter {
     this.restartTimer = null;
     this.readyWaiters = [];
     this.stopWaiters = [];
+    // Requests waiting for readiness, and their serialized parameter bytes.
+    this.waitingRequests = 0;
+    this.waitingBytes = 0;
   }
 
   /** Spawns the core and completes the handshake. */
@@ -202,7 +234,27 @@ class CoreClient extends EventEmitter {
    * @param {object} [context] - { caller: 'chrome' | 'shell', page? }
    */
   async request(method, params = {}, context = { caller: 'chrome' }) {
-    if (this.state !== STATE.READY) await this.whenReady();
+    if (this.state !== STATE.READY) {
+      // Requests waiting for readiness are bounded like those in flight.
+      let size;
+      try {
+        size = Buffer.byteLength(JSON.stringify(params) ?? 'null', 'utf8');
+      } catch {
+        throw new CoreError('invalid_argument', 'Request is not serializable');
+      }
+      if (size > MAX_PAYLOAD) throw new CoreError('invalid_argument', 'Request too large');
+      if (this.waitingRequests >= MAX_PENDING || this.waitingBytes + size > MAX_WRITE_BYTES) {
+        throw new CoreError('busy', 'Too many requests waiting for the core');
+      }
+      this.waitingRequests += 1;
+      this.waitingBytes += size;
+      try {
+        await this.whenReady();
+      } finally {
+        this.waitingRequests -= 1;
+        this.waitingBytes -= size;
+      }
+    }
     return this.send(this.current, method, params, context, null);
   }
 
@@ -224,10 +276,14 @@ class CoreClient extends EventEmitter {
     }
     this.state = STATE.STOPPING;
     const stopped = new Promise((resolve) => this.stopWaiters.push(resolve));
-    if (!gen.exited && !gen.ending) {
-      gen.ending = true;
+    // Also for a generation already ending after a fault: stdin is closed
+    // once and the grace kill is armed.
+    if (!gen.exited && !gen.stopping) {
+      gen.stopping = true;
       gen.cause = gen.cause || 'shutdown';
-      if (gen.ready) {
+      const shutdown = gen.ready && !gen.ending;
+      gen.ending = true;
+      if (shutdown) {
         this.send(
           gen,
           'core.shutdown',
@@ -273,7 +329,13 @@ class CoreClient extends EventEmitter {
 
     child.stdout.on('data', (chunk) => this.onStdout(gen, chunk));
     child.stdout.on('end', () => this.onStdoutEnd(gen));
-    child.stderr.on('data', (chunk) => this.onStderr(gen, chunk));
+    child.stderr.on('data', (chunk) => {
+      try {
+        this.onStderr(gen, chunk);
+      } catch {
+        // Malformed log input never escapes the data handler.
+      }
+    });
     for (const name of ['stdin', 'stdout', 'stderr']) {
       child[name].on('error', () => this.connectionFailed(gen, `${name}_error`));
     }
@@ -310,7 +372,10 @@ class CoreClient extends EventEmitter {
         this.log.error('[Core] protocol mismatch');
         this.end(gen, 'mismatch');
       } else {
-        this.log.error('[Core] handshake refused', { code: outcome.error.code });
+        const { code } = outcome.error;
+        this.log.error('[Core] handshake refused', {
+          code: KNOWN_ERROR_CODES.has(code) ? code : 'unknown',
+        });
         this.end(gen, 'protocol');
       }
       return;
@@ -361,8 +426,17 @@ class CoreClient extends EventEmitter {
       this.retire(gen);
       return;
     }
+    if (gen.exited) return;
     this.log.error('[Core] child process error');
-    if (!gen.exited) this.end(gen, 'transport');
+    if (gen.killing) {
+      // The SIGKILL itself failed (emitted synchronously from child.kill):
+      // retry on a timer, a bounded number of times, never recursively.
+      if (gen.killAttempts < MAX_KILL_ATTEMPTS) {
+        this.timer(gen, () => this.kill(gen), KILL_RETRY_MS);
+      }
+      return;
+    }
+    this.end(gen, 'transport');
   }
 
   /**
@@ -375,6 +449,7 @@ class CoreClient extends EventEmitter {
     gen.exited = true;
     for (const timer of gen.timers) this.clearTimer(timer);
     gen.timers.clear();
+    this.teardown(gen);
     const pending = [...gen.pending.values()];
     gen.pending.clear();
     for (const entry of pending) entry.settle({ error: unavailable('The core exited') });
@@ -438,12 +513,36 @@ class CoreClient extends EventEmitter {
   }
 
   kill(gen) {
-    if (gen.exited || !gen.child) return;
+    if (gen.exited || !gen.child || gen.killing) return;
+    gen.killing = true;
+    gen.killAttempts += 1;
     try {
       gen.child.kill('SIGKILL');
     } catch {
       // Reported through 'error' if it matters.
+    } finally {
+      gen.killing = false;
     }
+  }
+
+  /**
+   * Releases a retired generation: destroys its stdio (a pipe held open by
+   * someone else would otherwise stay alive) and detaches its listeners,
+   * keeping error sinks so teardown can't raise unhandled errors.
+   */
+  teardown(gen) {
+    const { child } = gen;
+    if (!child) return;
+    const sink = () => {};
+    for (const name of ['stdin', 'stdout', 'stderr']) {
+      const stream = child[name];
+      if (!stream) continue;
+      stream.removeAllListeners();
+      stream.on('error', sink);
+      stream.destroy();
+    }
+    child.removeAllListeners();
+    child.on('error', sink);
   }
 
   endStdin(gen) {
@@ -668,7 +767,8 @@ class CoreClient extends EventEmitter {
       return;
     }
     const { level, msg, ...fields } = entry;
-    const name = LOG_LEVELS[level] || 'info';
+    const name =
+      typeof level === 'string' && Object.hasOwn(LOG_LEVELS, level) ? LOG_LEVELS[level] : 'info';
     const logger = typeof this.log[name] === 'function' ? this.log[name] : this.log.info;
     logger.call(this.log, `[Core] ${clip(msg)}`, Object.keys(fields).length ? fields : '');
   }

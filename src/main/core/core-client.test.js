@@ -1,5 +1,9 @@
 const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const childProcess = require('child_process');
 const {
   CoreClient,
   CoreError,
@@ -24,6 +28,8 @@ class FakeCore extends EventEmitter {
     this.stderr = new PassThrough();
     this.killed = null;
     this.exitOnKill = options.exitOnKill ?? true;
+    this.failKill = options.failKill ?? false; // kill emits 'error' synchronously
+    this.killCalls = 0;
     this.stuck = false; // stdin accepts bytes but never completes writes
     this.requests = [];
     const decoder = new FrameDecoder();
@@ -57,6 +63,12 @@ class FakeCore extends EventEmitter {
   }
 
   kill(signal) {
+    this.killCalls += 1;
+    if (this.failKill) {
+      // Like Node's ChildProcess.kill on EPERM: 'error' before returning.
+      this.emit('error', new Error('kill EPERM'));
+      return false;
+    }
     this.killed = signal;
     if (this.exitOnKill) setImmediate(() => this.exit(null, signal));
     return true;
@@ -692,5 +704,163 @@ describe('CoreClient', () => {
       expect(JSON.stringify(hello)).not.toContain(SENTINEL);
       expect(logged(extra.log)).not.toContain(SENTINEL);
     });
+  });
+
+  describe('confirmation pass', () => {
+    test('a failed kill is retried on a timer, boundedly, and stop still closes stdin', async () => {
+      const { client, children, runTimers } = makeClient([helloHandler()], {
+        child: { failKill: true },
+      });
+      await client.start();
+      children[0].reply({ type: 'response', id: 999, result: {} });
+      await tick();
+      expect(children[0].killCalls).toBe(1);
+      runTimers(1_000);
+      expect(children[0].killCalls).toBe(2);
+      runTimers(1_000);
+      expect(children[0].killCalls).toBe(3);
+      runTimers(1_000);
+      expect(children[0].killCalls).toBe(3);
+      // stop() on the ending generation still closes stdin and arms the grace kill.
+      const closed = new Promise((resolve) => children[0].once('stdin-closed', resolve));
+      const stopped = client.stop();
+      await closed;
+      runTimers(3_000);
+      expect(children[0].killCalls).toBe(4);
+      children[0].exit(null, 'SIGKILL');
+      await stopped;
+      expect(client.state).toBe('stopped');
+    });
+
+    test('log levels of any JSON shape never throw', async () => {
+      const { client, children, log } = makeClient([
+        helloHandler((m, core) => core.reply({ type: 'response', id: m.id, result: { ok: true } })),
+      ]);
+      await client.start();
+      for (const level of ['null', '5', '[]', '{"toString":null}', '"__proto__"']) {
+        children[0].stderr.write(`{"level":${level},"msg":"m"}\n`);
+      }
+      await tick();
+      expect(log.info).toHaveBeenCalledTimes(5);
+      await expect(client.request('vault.status')).resolves.toEqual({ ok: true });
+    });
+
+    test('requests waiting for readiness are bounded', async () => {
+      const { client, children } = makeClient([() => {}]);
+      client.start().catch(() => {});
+      const waiting = [];
+      for (let i = 0; i < MAX_PENDING; i += 1) {
+        waiting.push(client.request('vault.status').catch((e) => e));
+      }
+      await expect(client.request('vault.status')).rejects.toMatchObject({ code: 'busy' });
+      await expect(
+        client.request('vault.status', { blob: 'x'.repeat(1024 * 1024) })
+      ).rejects.toMatchObject({ code: 'invalid_argument' });
+      const stopped = client.stop();
+      children[0].exit(0);
+      for (const result of await Promise.all(waiting)) {
+        expect(result.code).toBe('core_unavailable');
+      }
+      await stopped;
+      expect(client.waitingRequests).toBe(0);
+      expect(client.waitingBytes).toBe(0);
+
+      // Bytes count too: nine ~1 MB requests exceed 8 MiB.
+      const second = makeClient([() => {}]);
+      second.client.start().catch(() => {});
+      const big = { blob: 'y'.repeat(1000 * 1000) };
+      const results = [];
+      for (let i = 0; i < 9; i += 1) {
+        results.push(second.client.request('vault.status', big).catch((e) => e));
+      }
+      expect(await results[8]).toMatchObject({ code: 'busy' });
+      const secondStopped = second.client.stop();
+      second.children[0].exit(0);
+      await secondStopped;
+    });
+
+    test('unknown error codes are never logged', async () => {
+      const { client, log } = makeClient([
+        (m, core) =>
+          m.method === 'core.hello' &&
+          core.reply({
+            type: 'response',
+            id: m.id,
+            error: { code: 'secret_sentinel_password', message: 'x' },
+          }),
+      ]);
+      client.start().catch(() => {});
+      await tick();
+      const logged = JSON.stringify(log.error.mock.calls);
+      expect(logged).not.toContain('secret_sentinel_password');
+      expect(log.error).toHaveBeenCalledWith('[Core] handshake refused', { code: 'unknown' });
+      await client.stop();
+    });
+
+    test('retirement after the drain timeout destroys the stdio', async () => {
+      const { client, children, runTimers } = makeClient([helloHandler()]);
+      await client.start();
+      children[0].exit(1, null, { close: false });
+      await tick();
+      runTimers(2_000);
+      for (const name of ['stdin', 'stdout', 'stderr']) {
+        expect(children[0][name].destroyed).toBe(true);
+      }
+      expect(children[0].listenerCount('exit')).toBe(0);
+      await client.stop();
+    });
+
+    test('a real child whose pipes outlive it is released after the drain', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'core-client-held-'));
+      const pidFile = path.join(dir, 'holder.pid');
+      // A fake core: answers hello, starts a grandchild that inherits
+      // stdout/stderr (so 'close' never comes), then exits.
+      const script = `
+        const { spawn } = require('child_process');
+        const fs = require('fs');
+        const { FrameDecoder, encodeFrame } = require(${JSON.stringify(require.resolve('./frame'))});
+        const decoder = new FrameDecoder();
+        process.stdin.on('data', (chunk) => {
+          for (const m of decoder.push(chunk)) {
+            if (m.method !== 'core.hello') continue;
+            const reply = { type: 'response', id: m.id,
+              result: { protocol: 1, core_version: '0.0.0', capabilities: [] } };
+            process.stdout.write(encodeFrame(reply), () => {
+              const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'],
+                { stdio: ['ignore', 'inherit', 'inherit'] });
+              fs.writeFileSync(${JSON.stringify(pidFile)}, String(holder.pid));
+              process.exit(1);
+            });
+          }
+        });`;
+      const spawned = [];
+      const client = new CoreClient({
+        spawn: (...args) => {
+          const child = childProcess.spawn(...args);
+          spawned.push(child);
+          return child;
+        },
+        command: process.execPath,
+        args: ['-e', script],
+        log: quietLog(),
+      });
+      try {
+        await client.start();
+        const exited = new Promise((resolve) => client.once('exit', resolve));
+        await exited; // retired: the drain timer fired, 'close' never came
+        await client.stop();
+        const child = spawned[0];
+        expect(child.stdout.destroyed).toBe(true);
+        expect(child.stderr.destroyed).toBe(true);
+        expect(spawned).toHaveLength(1);
+      } finally {
+        try {
+          process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL');
+        } catch {
+          // Already gone.
+        }
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }, 15_000);
   });
 });
