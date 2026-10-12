@@ -5,7 +5,7 @@
  * Runs in the main process only; provider-ipc owns permission checks.
  */
 
-const { PrivateKey, BeeResponseError, Identifier, EthAddress } = require('@ethersphere/bee-js');
+const { BeeResponseError, Identifier, EthAddress } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError } = require('./batch-errors');
 
@@ -68,33 +68,45 @@ async function selectChunkBatch() {
   return batchId;
 }
 
-function getSignerAddress(signerPrivateKey) {
-  const signer = new PrivateKey(signerPrivateKey);
-  return signer.publicKey().address().toChecksum();
+function hexOf(value) {
+  return Buffer.from(value).toString('hex');
 }
 
-function makeSocUploadBody(soc) {
-  return Buffer.concat([
-    Buffer.from(soc.span.toUint8Array()),
-    Buffer.from(soc.payload.toUint8Array()),
-  ]);
+/** span (8 bytes, little endian) ‖ payload: what Bee's /soc endpoint takes. */
+function makeSocUploadBody(chunk) {
+  const span = Buffer.alloc(8);
+  span.writeBigUInt64LE(chunk.span);
+  return Buffer.concat([span, Buffer.from(chunk.payload)]);
 }
 
-async function uploadSingleOwnerChunk(bee, batchId, soc) {
-  const expectedReference = normalizeReference(toHex(soc.address));
+/**
+ * POST a signed single-owner chunk to Bee's /soc endpoint.
+ *
+ * @param {object} bee
+ * @param {string} batchId
+ * @param {{ owner: string, identifier: Uint8Array, signature: string, span: bigint,
+ *   payload: Uint8Array, socAddress: string }} chunk - from a Swarm signer
+ * @param {{ pin?: boolean, deferred?: boolean }} [options] - sent only when
+ *   given, as bee-js does (its feed writes send neither)
+ */
+async function uploadSingleOwnerChunk(bee, batchId, chunk, options = {}) {
+  const expectedReference = normalizeReference(chunk.socAddress);
   const baseUrl = bee.url.endsWith('/') ? bee.url : `${bee.url}/`;
-  const uploadUrl = new URL(`soc/${toHex(soc.owner)}/${soc.identifier.toHex()}`, baseUrl);
-  uploadUrl.searchParams.set('sig', soc.signature.toHex());
+  const owner = chunk.owner.replace(/^0x/, '').toLowerCase();
+  const uploadUrl = new URL(`soc/${owner}/${hexOf(chunk.identifier)}`, baseUrl);
+  uploadUrl.searchParams.set('sig', chunk.signature.replace(/^0x/, ''));
+
+  const headers = {
+    'content-type': 'application/octet-stream',
+    'swarm-postage-batch-id': batchId,
+  };
+  if (typeof options.pin === 'boolean') headers['swarm-pin'] = String(options.pin);
+  if (typeof options.deferred === 'boolean') headers['swarm-deferred-upload'] = String(options.deferred);
 
   const response = await fetch(uploadUrl, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/octet-stream',
-      'swarm-postage-batch-id': batchId,
-      'swarm-pin': 'true',
-      'swarm-deferred-upload': 'false',
-    },
-    body: makeSocUploadBody(soc),
+    headers,
+    body: makeSocUploadBody(chunk),
   });
 
   if (!response.ok) {
@@ -110,6 +122,7 @@ async function uploadSingleOwnerChunk(bee, batchId, soc) {
   if (reference !== expectedReference) {
     throw new Error(`SOC upload returned unexpected reference: ${reference}`);
   }
+  return reference;
 }
 
 async function publishChunk(data, options = {}) {
@@ -158,19 +171,31 @@ async function readChunk(reference) {
   };
 }
 
-async function writeSingleOwnerChunk(signerPrivateKey, identifier, data, options = {}) {
+/**
+ * Sign (in the identity core, through `signer`) and publish a single-owner
+ * chunk. bee-js still validates the chunk first, so size errors read as
+ * before.
+ *
+ * @param {import('./swarm-signer').SwarmSigner} signer
+ */
+async function writeSingleOwnerChunk(signer, identifier, data, options = {}) {
   const bee = getBee();
-  const signer = new PrivateKey(signerPrivateKey);
-  const chunk = bee.makeContentAddressedChunk(data, options.span);
-  const soc = chunk.toSingleOwnerChunk(identifier, signer);
+  bee.makeContentAddressedChunk(data, options.span);
+  const id = new Identifier(identifier);
+  const signed = await signer.signSoc({ identifier: id.toUint8Array(), payload: data, span: options.span });
   const batchId = await selectChunkBatch();
 
-  await uploadSingleOwnerChunk(bee, batchId, soc);
+  const reference = await uploadSingleOwnerChunk(
+    bee,
+    batchId,
+    { ...signed, identifier: id.toUint8Array(), payload: data },
+    { pin: true, deferred: false }
+  );
 
   return {
-    reference: toHex(soc.address),
-    owner: soc.owner.toChecksum(),
-    identifier: soc.identifier.toHex(),
+    reference,
+    owner: signed.owner,
+    identifier: id.toHex(),
     batchIdUsed: batchId,
   };
 }
@@ -219,7 +244,7 @@ module.exports = {
   readChunk,
   writeSingleOwnerChunk,
   readSingleOwnerChunk,
-  getSignerAddress,
+  uploadSingleOwnerChunk,
   spanToResult,
   isChunkNotFoundError,
 };

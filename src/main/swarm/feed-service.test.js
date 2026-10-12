@@ -1,5 +1,4 @@
 const mockCreateFeedManifest = jest.fn();
-const mockMakeFeedWriter = jest.fn();
 const mockMakeFeedReader = jest.fn();
 const mockGetPostageBatches = jest.fn();
 const mockCalculateSingleOwnerChunkAddress = jest.fn();
@@ -7,6 +6,9 @@ const mockDownloadChunk = jest.fn();
 const mockUnmarshalSingleOwnerChunk = jest.fn();
 const mockMakeContentAddressedChunk = jest.fn();
 const mockDownloadData = jest.fn();
+const mockUploadData = jest.fn();
+const mockUnmarshalContentAddressedChunk = jest.fn();
+const mockUploadSingleOwnerChunk = jest.fn();
 
 // Minimal stand-ins for bee-js typed bytes used in assertions
 class MockReference {
@@ -28,20 +30,6 @@ class MockEthAddress {
   toHex() { return this._hex; }
   toChecksum() { return `0x${this._hex}`; }
   toUint8Array() { return Buffer.from(this._hex, 'hex'); }
-}
-
-class MockPublicKey {
-  constructor(addr) { this._addr = addr; }
-  address() { return this._addr; }
-}
-
-class MockPrivateKey {
-  constructor(hex) {
-    this._hex = hex;
-    // Derive a deterministic fake address from the key
-    this._addr = new MockEthAddress(hex.replace('0x', '').slice(0, 40));
-  }
-  publicKey() { return new MockPublicKey(this._addr); }
 }
 
 class MockFeedIndex {
@@ -95,7 +83,6 @@ jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
     feed: {
       createManifest: mockCreateFeedManifest,
-      makeWriter: mockMakeFeedWriter,
       makeReader: mockMakeFeedReader,
     },
     stamp: {
@@ -107,11 +94,13 @@ jest.mock('@ethersphere/bee-js', () => ({
     },
     unmarshalSingleOwnerChunk: mockUnmarshalSingleOwnerChunk,
     makeContentAddressedChunk: mockMakeContentAddressedChunk,
+    unmarshalContentAddressedChunk: mockUnmarshalContentAddressedChunk,
     data: {
       download: mockDownloadData,
+      upload: mockUploadData,
     },
   })),
-  PrivateKey: MockPrivateKey,
+  Reference: MockReference,
   Topic: MockTopic,
   EthAddress: MockEthAddress,
   Bytes: MockBytes,
@@ -124,6 +113,11 @@ jest.mock('../service-registry', () => ({
   getAntApiUrl: jest.fn().mockReturnValue('http://127.0.0.1:1633'),
 }));
 
+// The SOC upload (chunk-service); feed-service hands it the signed chunk.
+jest.mock('./chunk-service', () => ({
+  uploadSingleOwnerChunk: (...args) => mockUploadSingleOwnerChunk(...args),
+}));
+
 jest.mock('electron-log', () => ({
   info: jest.fn(),
   error: jest.fn(),
@@ -131,7 +125,21 @@ jest.mock('electron-log', () => ({
 
 const { buildTopicString, createFeed, updateFeed, writeFeedPayload, readFeedPayload, withWriteLock, feedIndexToNumber, isNotFoundError } = require('./feed-service');
 
-const TEST_PRIVATE_KEY = '0x' + 'ab'.repeat(32);
+// A Swarm signer (swarm-signer.js): the identity core signs; the test
+// stands in for its checked result.
+const SIGNER_OWNER = '0x' + 'ab'.repeat(20);
+function makeSigner() {
+  return {
+    owner: SIGNER_OWNER,
+    signSoc: jest.fn(async ({ payload, span }) => ({
+      span: span ?? BigInt(payload.length),
+      chunkAddress: '0x' + 'cd'.repeat(32),
+      signature: '0x' + 'ef'.repeat(65),
+      owner: SIGNER_OWNER,
+      socAddress: '0x' + '12'.repeat(32),
+    })),
+  };
+}
 const MOCK_MANIFEST_REF = 'ff'.repeat(32);
 const MOCK_BATCH_ID = 'aa'.repeat(32);
 const MOCK_OWNER = '0x' + 'ab'.repeat(20);
@@ -143,22 +151,6 @@ function mockBatchForAutoSelect() {
     duration: { toSeconds: () => 86400 },
     batchID: { toHex: () => MOCK_BATCH_ID },
   }]);
-}
-
-function createMockWriter({ downloadPayloadResult, uploadPayloadFn, uploadReferenceFn, downloadPayloadFn } = {}) {
-  const writer = {
-    upload: jest.fn().mockResolvedValue(undefined),
-    uploadPayload: uploadPayloadFn || jest.fn().mockResolvedValue(undefined),
-    uploadReference: uploadReferenceFn || jest.fn().mockResolvedValue(undefined),
-    downloadPayload: downloadPayloadFn || jest.fn(),
-  };
-  if (downloadPayloadResult !== undefined) {
-    writer.downloadPayload.mockResolvedValue(downloadPayloadResult);
-  } else {
-    // Default: empty feed (BeeResponseError 404)
-    writer.downloadPayload.mockRejectedValue(make404());
-  }
-  return writer;
 }
 
 function createMockReader({ downloadPayloadResult, downloadPayloadFn } = {}) {
@@ -241,81 +233,70 @@ describe('feed-service', () => {
   });
 
   describe('createFeed', () => {
-    test('calls feed.createManifest with correct args', async () => {
+    test('creates the manifest for the signer owner', async () => {
       mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
       mockBatchForAutoSelect();
 
-      await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog');
+      await createFeed(makeSigner(), 'myapp.eth/blog');
 
       expect(mockCreateFeedManifest).toHaveBeenCalledTimes(1);
       const [batchId, topic, owner] = mockCreateFeedManifest.mock.calls[0];
       expect(typeof batchId).toBe('string');
       expect(topic).toBeInstanceOf(MockTopic);
-      expect(owner.toHex()).toBeTruthy();
+      expect(owner.toHex()).toBe(SIGNER_OWNER.slice(2));
     });
 
     test('returns normalized result', async () => {
       mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
       mockBatchForAutoSelect();
 
-      const result = await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog');
+      const result = await createFeed(makeSigner(), 'myapp.eth/blog');
 
       expect(result.topic).toMatch(/^[0-9a-f]+$/);
-      expect(result.owner).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      expect(result.owner).toBe(SIGNER_OWNER);
       expect(result.manifestReference).toBe(MOCK_MANIFEST_REF);
       expect(result.bzzUrl).toBe(`bzz://${MOCK_MANIFEST_REF}`);
+    });
+
+    test('signs nothing', async () => {
+      mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
+      mockBatchForAutoSelect();
+      const signer = makeSigner();
+
+      await createFeed(signer, 'myapp.eth/blog');
+
+      expect(signer.signSoc).not.toHaveBeenCalled();
     });
 
     test('uses explicit batchId when provided', async () => {
       mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
 
-      await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'explicit_batch');
+      await createFeed(makeSigner(), 'myapp.eth/blog', 'explicit_batch');
 
       const [batchId] = mockCreateFeedManifest.mock.calls[0];
       expect(batchId).toBe('explicit_batch');
       expect(mockGetPostageBatches).not.toHaveBeenCalled();
     });
 
-    test('auto-selects batch when none provided', async () => {
-      mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
-      mockBatchForAutoSelect();
-
-      await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog');
-
-      expect(mockGetPostageBatches).toHaveBeenCalled();
-    });
-
     test('throws when no usable batch available', async () => {
       mockGetPostageBatches.mockResolvedValue([]);
 
-      await expect(createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog'))
-        .rejects.toThrow('No usable postage batch');
-    });
-
-    test('same key produces same owner', async () => {
-      mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
-      mockBatchForAutoSelect();
-
-      const result1 = await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog');
-      const result2 = await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/profile');
-
-      expect(result1.owner).toBe(result2.owner);
+      await expect(createFeed(makeSigner(), 'myapp.eth/blog')).rejects.toThrow('No usable postage batch');
     });
 
     test('propagates bee-js errors', async () => {
       mockCreateFeedManifest.mockRejectedValue(new Error('manifest creation failed'));
       mockBatchForAutoSelect();
 
-      await expect(createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog'))
-        .rejects.toThrow('manifest creation failed');
+      await expect(createFeed(makeSigner(), 'myapp.eth/blog')).rejects.toThrow('manifest creation failed');
     });
 
     test('different topics produce different topic hashes', async () => {
       mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
       mockBatchForAutoSelect();
 
-      const result1 = await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog');
-      const result2 = await createFeed(TEST_PRIVATE_KEY, 'myapp.eth/profile');
+      const result1 = await createFeed(makeSigner(), 'myapp.eth/blog');
+      const result2 = await createFeed(makeSigner(), 'myapp.eth/profile');
 
       expect(result1.topic).not.toBe(result2.topic);
     });
@@ -324,75 +305,66 @@ describe('feed-service', () => {
   describe('updateFeed', () => {
     const CONTENT_REF = 'cc'.repeat(32);
 
-    test('calls uploadReference (not deprecated upload)', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
-      mockBatchForAutoSelect();
-
-      await updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF);
-
-      expect(writer.uploadReference).toHaveBeenCalledTimes(1);
-      expect(writer.upload).not.toHaveBeenCalled();
+    beforeEach(() => {
+      mockUploadSingleOwnerChunk.mockResolvedValue('12'.repeat(32));
     });
 
-    test('passes batchId and reference to uploadReference', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('signs the update in the core and uploads it as bee-js did', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
       mockBatchForAutoSelect();
+      const signer = makeSigner();
+      const before = Math.floor(Date.now() / 1000);
 
-      await updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF);
+      await updateFeed(signer, 'myapp.eth/blog', CONTENT_REF);
 
-      const [batchId, ref, options] = writer.uploadReference.mock.calls[0];
-      expect(typeof batchId).toBe('string');
-      expect(ref).toBe(CONTENT_REF);
-      expect(options).toHaveProperty('index', 0);
+      // The index comes from a reader for the signer's owner.
+      const [, owner] = mockMakeFeedReader.mock.calls[0];
+      expect(owner.toHex()).toBe(SIGNER_OWNER.slice(2));
+      // Payload: unix seconds (uint64 BE) ‖ reference; the span is its length.
+      const [{ identifier, payload, span }] = signer.signSoc.mock.calls[0];
+      expect(identifier).toHaveLength(32);
+      expect(span).toBeUndefined();
+      expect(payload).toHaveLength(40);
+      const seconds = Number(Buffer.from(payload).readBigUInt64BE(0));
+      expect(seconds).toBeGreaterThanOrEqual(before);
+      expect(Buffer.from(payload.subarray(8)).toString('hex')).toBe(CONTENT_REF);
+      // Uploaded with only the batch header (no pin/deferred options).
+      const [, batchId, chunk, options] = mockUploadSingleOwnerChunk.mock.calls[0];
+      expect(batchId).toBe(MOCK_BATCH_ID);
+      expect(chunk).toMatchObject({ owner: SIGNER_OWNER, identifier, payload });
+      expect(options).toBeUndefined();
     });
 
-    test('returns index', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('returns index 0 on an empty feed', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
       mockBatchForAutoSelect();
 
-      const result = await updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF);
-
-      expect(typeof result.index).toBe('number');
+      await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF)).resolves.toEqual({ index: 0 });
     });
 
     test('resolves next index from non-empty feed', async () => {
-      const writer = createMockWriter({
-        downloadPayloadResult: {
-          payload: Buffer.from('data'),
-          feedIndex: new MockFeedIndex(5),
-          feedIndexNext: new MockFeedIndex(6),
-        },
-      });
-      mockMakeFeedWriter.mockReturnValue(writer);
+      mockMakeFeedReader.mockReturnValue(
+        createMockReader({
+          downloadPayloadResult: {
+            payload: Buffer.from('data'),
+            feedIndex: new MockFeedIndex(5),
+            feedIndexNext: new MockFeedIndex(6),
+          },
+        })
+      );
       mockBatchForAutoSelect();
 
-      const result = await updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF);
+      const result = await updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF);
 
       expect(result.index).toBe(6);
-      const [, , options] = writer.uploadReference.mock.calls[0];
-      expect(options.index).toBe(6);
-    });
-
-    test('defaults to index 0 on empty feed', async () => {
-      const writer = createMockWriter(); // default: downloadPayload rejects
-      mockMakeFeedWriter.mockReturnValue(writer);
-      mockBatchForAutoSelect();
-
-      const result = await updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF);
-
-      expect(result.index).toBe(0);
     });
 
     test('uses explicit batchId when provided', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
+      mockMakeFeedReader.mockReturnValue(createMockReader());
 
-      await updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF, 'explicit_batch');
+      await updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF, 'explicit_batch');
 
-      const [batchId] = writer.uploadReference.mock.calls[0];
+      const [, batchId] = mockUploadSingleOwnerChunk.mock.calls[0];
       expect(batchId).toBe('explicit_batch');
       expect(mockGetPostageBatches).not.toHaveBeenCalled();
     });
@@ -400,198 +372,199 @@ describe('feed-service', () => {
     test('throws when no usable batch available', async () => {
       mockGetPostageBatches.mockResolvedValue([]);
 
-      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF))
-        .rejects.toThrow('No usable postage batch');
+      await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF)).rejects.toThrow(
+        'No usable postage batch'
+      );
     });
 
-    test('propagates bee-js errors', async () => {
-      const writer = createMockWriter();
-      writer.uploadReference.mockRejectedValue(new Error('network error'));
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('propagates upload errors', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockUploadSingleOwnerChunk.mockRejectedValue(new Error('network error'));
       mockBatchForAutoSelect();
 
-      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF))
-        .rejects.toThrow('network error');
+      await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF)).rejects.toThrow('network error');
+    });
+
+    test('propagates signing errors (a locked vault) without uploading', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockBatchForAutoSelect();
+      const signer = makeSigner();
+      signer.signSoc.mockRejectedValue(new Error('Vault is locked'));
+
+      await expect(updateFeed(signer, 'myapp.eth/blog', CONTENT_REF)).rejects.toThrow('Vault is locked');
+      expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
     });
 
     test('propagates non-404 errors from resolveNextIndex (does not default to 0)', async () => {
-      const writer = createMockWriter();
-      writer.downloadPayload.mockRejectedValue(new Error('network timeout'));
-      mockMakeFeedWriter.mockReturnValue(writer);
+      const reader = createMockReader();
+      reader.downloadPayload.mockRejectedValue(new Error('network timeout'));
+      mockMakeFeedReader.mockReturnValue(reader);
       mockBatchForAutoSelect();
 
-      await expect(updateFeed(TEST_PRIVATE_KEY, 'myapp.eth/blog', CONTENT_REF))
-        .rejects.toThrow('network timeout');
+      await expect(updateFeed(makeSigner(), 'myapp.eth/blog', CONTENT_REF)).rejects.toThrow('network timeout');
     });
   });
 
   describe('writeFeedPayload', () => {
-    test('calls uploadPayload with data', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
-      mockBatchForAutoSelect();
-
-      await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'hello world');
-
-      expect(writer.uploadPayload).toHaveBeenCalledTimes(1);
-      const [batchId, data, options] = writer.uploadPayload.mock.calls[0];
-      expect(typeof batchId).toBe('string');
-      expect(data).toBe('hello world');
-      expect(options).toHaveProperty('index', 0);
+    beforeEach(() => {
+      mockUploadSingleOwnerChunk.mockResolvedValue('12'.repeat(32));
     });
 
-    test('auto-increments on empty feed (index 0)', async () => {
-      const writer = createMockWriter(); // downloadPayload rejects → empty feed
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('signs and uploads a small payload (strings as UTF-8)', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
       mockBatchForAutoSelect();
+      const signer = makeSigner();
 
-      const result = await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data');
+      const result = await writeFeedPayload(signer, 'myapp.eth/blog', 'hello wörld');
 
       expect(result.index).toBe(0);
+      const [{ payload, span }] = signer.signSoc.mock.calls[0];
+      expect(Buffer.from(payload)).toEqual(Buffer.from('hello wörld', 'utf-8'));
+      expect(span).toBeUndefined();
+      const [, , , options] = mockUploadSingleOwnerChunk.mock.calls[0];
+      expect(options).toBeUndefined();
+    });
+
+    test('the one-chunk limit is in UTF-8 bytes, not characters', async () => {
+      // 2,048 two-byte characters fill one chunk exactly; one more character
+      // goes through /bytes. (bee-js counted UTF-16 units first, then
+      // refused the oversized chunk.)
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockBatchForAutoSelect();
+      const signer = makeSigner();
+      await writeFeedPayload(signer, 'myapp.eth/blog', 'é'.repeat(2048));
+      expect(mockUploadData).not.toHaveBeenCalled();
+      expect(signer.signSoc.mock.calls[0][0].payload.length).toBe(4096);
+
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockUploadData.mockResolvedValue({ reference: new MockReference('ab'.repeat(32)) });
+      mockDownloadChunk.mockResolvedValue(new MockBytes('raw root'));
+      mockUnmarshalContentAddressedChunk.mockReturnValue({
+        payload: new MockBytes(Buffer.alloc(64, 9)),
+        span: new MockSpan(4098),
+      });
+      await writeFeedPayload(signer, 'myapp.eth/blog', 'é'.repeat(2049));
+      expect(Buffer.from(mockUploadData.mock.calls[0][1])).toEqual(Buffer.from('é'.repeat(2049), 'utf-8'));
+    });
+
+    test('accepts Buffer data as is', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockBatchForAutoSelect();
+      const signer = makeSigner();
+
+      const buf = Buffer.from('binary data');
+      await writeFeedPayload(signer, 'myapp.eth/blog', buf);
+
+      expect(signer.signSoc.mock.calls[0][0].payload).toBe(buf);
     });
 
     test('auto-increments on non-empty feed', async () => {
-      const writer = createMockWriter({
-        downloadPayloadResult: {
-          payload: Buffer.from('prev'),
-          feedIndex: new MockFeedIndex(3),
-          feedIndexNext: new MockFeedIndex(4),
-        },
-      });
-      mockMakeFeedWriter.mockReturnValue(writer);
+      mockMakeFeedReader.mockReturnValue(
+        createMockReader({
+          downloadPayloadResult: {
+            payload: Buffer.from('prev'),
+            feedIndex: new MockFeedIndex(3),
+            feedIndexNext: new MockFeedIndex(4),
+          },
+        })
+      );
       mockBatchForAutoSelect();
 
-      const result = await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data');
+      const result = await writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data');
 
       expect(result.index).toBe(4);
-      const [, , options] = writer.uploadPayload.mock.calls[0];
-      expect(options.index).toBe(4);
     });
 
     test('uses explicit index when provided', async () => {
-      const writer = createMockWriter();
+      const reader = createMockReader();
+      mockMakeFeedReader.mockReturnValue(reader);
       mockDownloadChunk.mockRejectedValue(make404());
-      mockMakeFeedWriter.mockReturnValue(writer);
       mockBatchForAutoSelect();
 
-      const result = await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 10 });
+      const result = await writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data', { index: 10 });
 
       expect(result.index).toBe(10);
-      const [, , options] = writer.uploadPayload.mock.calls[0];
-      expect(options.index).toBe(10);
-      expect(writer.downloadPayload).not.toHaveBeenCalled();
+      expect(reader.downloadPayload).not.toHaveBeenCalled();
       expect(mockCalculateSingleOwnerChunkAddress).toHaveBeenCalled();
     });
 
     test('rejects explicit index that already has an entry (overwrite protection)', async () => {
-      const writer = createMockWriter();
+      mockMakeFeedReader.mockReturnValue(createMockReader());
       mockExactFeedPayload('existing');
-      mockMakeFeedWriter.mockReturnValue(writer);
       mockBatchForAutoSelect();
+      const signer = makeSigner();
 
-      await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
-        .rejects.toThrow('Feed entry already exists at index 5');
+      const error = await writeFeedPayload(signer, 'myapp.eth/blog', 'data', { index: 5 }).catch((e) => e);
 
-      // uploadPayload should NOT have been called
-      expect(writer.uploadPayload).not.toHaveBeenCalled();
-      expect(writer.downloadPayload).not.toHaveBeenCalled();
+      expect(error.message).toBe('Feed entry already exists at index 5');
+      expect(error.reason).toBe('index_already_exists');
+      expect(signer.signSoc).not.toHaveBeenCalled();
+      expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
     });
 
-    test('overwrite protection error has reason property', async () => {
-      const writer = createMockWriter();
-      mockExactFeedPayload('existing');
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('propagates non-404 errors during overwrite check (does not treat as free index)', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockDownloadChunk.mockRejectedValue(new Error('network timeout'));
       mockBatchForAutoSelect();
 
-      try {
-        await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 0 });
-        throw new Error('should have thrown');
-      } catch (err) {
-        expect(err.reason).toBe('index_already_exists');
-      }
+      await expect(writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data', { index: 5 })).rejects.toThrow(
+        'network timeout'
+      );
+      expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
     });
 
-    test('auto-selects batch', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('a payload over one chunk goes up through /bytes; the SOC wraps its root chunk', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
       mockBatchForAutoSelect();
+      const root = { payload: new MockBytes(Buffer.alloc(64, 9)), span: new MockSpan(50000) };
+      mockUploadData.mockResolvedValue({ reference: new MockReference('ab'.repeat(32)) });
+      mockDownloadChunk.mockResolvedValue(new MockBytes('raw root'));
+      mockUnmarshalContentAddressedChunk.mockReturnValue(root);
+      const signer = makeSigner();
 
-      await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data');
+      await writeFeedPayload(signer, 'myapp.eth/blog', 'x'.repeat(50000));
 
-      expect(mockGetPostageBatches).toHaveBeenCalled();
+      const [batchId, data] = mockUploadData.mock.calls[0];
+      expect(batchId).toBe(MOCK_BATCH_ID);
+      expect(Buffer.from(data)).toEqual(Buffer.from('x'.repeat(50000)));
+      expect(mockDownloadChunk).toHaveBeenCalledWith('ab'.repeat(32));
+      const [{ payload, span }] = signer.signSoc.mock.calls[0];
+      expect(Buffer.from(payload)).toEqual(Buffer.alloc(64, 9));
+      expect(span).toBe(50000n);
     });
 
     test('uses explicit batchId when provided', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
+      mockMakeFeedReader.mockReturnValue(createMockReader());
 
-      await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { batchId: 'my_batch' });
+      await writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data', { batchId: 'my_batch' });
 
-      const [batchId] = writer.uploadPayload.mock.calls[0];
+      const [, batchId] = mockUploadSingleOwnerChunk.mock.calls[0];
       expect(batchId).toBe('my_batch');
     });
 
     test('throws when no usable batch available', async () => {
       mockGetPostageBatches.mockResolvedValue([]);
 
-      await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data'))
-        .rejects.toThrow('No usable postage batch');
+      await expect(writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data')).rejects.toThrow(
+        'No usable postage batch'
+      );
     });
 
-    test('propagates bee-js upload errors', async () => {
-      const writer = createMockWriter();
-      writer.uploadPayload.mockRejectedValue(new Error('chunk too large'));
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('propagates upload errors', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockUploadSingleOwnerChunk.mockRejectedValue(new Error('chunk too large'));
       mockBatchForAutoSelect();
 
-      await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'x'.repeat(10000)))
-        .rejects.toThrow('chunk too large');
-    });
-
-    test('propagates non-404 errors during overwrite check (does not treat as free index)', async () => {
-      const writer = createMockWriter();
-      mockDownloadChunk.mockRejectedValue(new Error('network timeout'));
-      mockMakeFeedWriter.mockReturnValue(writer);
-      mockBatchForAutoSelect();
-
-      await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data', { index: 5 }))
-        .rejects.toThrow('network timeout');
-
-      expect(writer.uploadPayload).not.toHaveBeenCalled();
+      await expect(writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data')).rejects.toThrow('chunk too large');
     });
 
     test('propagates non-404 errors during auto-increment (does not default to 0)', async () => {
-      const writer = createMockWriter();
-      writer.downloadPayload.mockRejectedValue(new Error('Bee internal error'));
-      mockMakeFeedWriter.mockReturnValue(writer);
+      const reader = createMockReader();
+      reader.downloadPayload.mockRejectedValue(new Error('Bee internal error'));
+      mockMakeFeedReader.mockReturnValue(reader);
       mockBatchForAutoSelect();
 
-      await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', 'data'))
-        .rejects.toThrow('Bee internal error');
-    });
-
-    test('estimates batch size from actual payload size', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
-      mockBatchForAutoSelect();
-
-      const largePayload = 'x'.repeat(50000);
-      await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', largePayload);
-
-      // selectBestBatch should have been called with at least the payload size
-      expect(mockGetPostageBatches).toHaveBeenCalled();
-    });
-
-    test('accepts Buffer data', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
-      mockBatchForAutoSelect();
-
-      const buf = Buffer.from('binary data');
-      await writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', buf);
-
-      const [, data] = writer.uploadPayload.mock.calls[0];
-      expect(data).toBe(buf);
+      await expect(writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data')).rejects.toThrow('Bee internal error');
     });
   });
 

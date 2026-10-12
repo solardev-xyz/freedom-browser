@@ -18,6 +18,9 @@ const ABANDON =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const ABANDON_WALLET = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
 const ABANDON_KEY = '0x1ab42cc412b618bdea3a599e3c9bae199ebf030895b039e9db1e30dafb12b727';
+// freedom-core vectors/keys.json, abandon-12: the Bee wallet and publisher 0.
+const ABANDON_BEE_KEY = '9a983cb3d832fbde5ab49d692b7a8bf5b5d232479c99333d0fc8e1d21f1b55b6';
+const ABANDON_PUBLISHER_0 = 'df966bcf0abf71a56bb1230058c13ce73a0e127f093ff77594de6a964ea521ad';
 
 describeIfBinary('vault-backend with the real freedom-cored', () => {
   let root;
@@ -63,12 +66,13 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
       vaultBackend.radicleDid(Buffer.from(derived.radicle.public_key, 'hex'))
     ).resolves.toBe(derived.radicle.did);
 
-    await expect(vaultBackend.compat.privateKey(0)).resolves.toBe(ABANDON_KEY);
     await expect(vaultBackend.exportPrivateKey('testpass1', 0)).resolves.toBe(ABANDON_KEY);
     await expect(vaultBackend.exportMnemonic('testpass1')).resolves.toBe(ABANDON);
 
     await vaultBackend.lock();
-    await expect(vaultBackend.compat.privateKey(0)).rejects.toMatchObject({
+    await expect(
+      vaultBackend.sign.message({ kind: 'account', index: 0 }, Buffer.from('x'))
+    ).rejects.toMatchObject({
       code: 'vault_locked',
       message: 'Vault is locked',
     });
@@ -179,6 +183,36 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
     expect(await vaultBackend.typedDataHash(data)).toBe(
       TypedDataEncoder.hash(domain, types, message)
     );
+  }, 60_000);
+
+  test('single-owner chunks are signed as bee-js signs them (design 0002)', async () => {
+    const { Bee, PrivateKey } = require('@ethersphere/bee-js');
+    const bee = new Bee('http://127.0.0.1:1633');
+    await vaultBackend.importVault('testpass1', ABANDON);
+    const identifier = Buffer.alloc(32, 0x5a);
+    for (const [key, secret] of [
+      [{ kind: 'bee_wallet' }, ABANDON_BEE_KEY],
+      [{ kind: 'publisher', origin_index: 0 }, ABANDON_PUBLISHER_0],
+      [{ kind: 'account', index: 0 }, ABANDON_KEY.slice(2)],
+    ]) {
+      for (const [payload, span] of [
+        [Buffer.from('feed update'), undefined],
+        [Buffer.alloc(4096, 7), undefined],
+        [Buffer.alloc(64, 9), 50000n],
+        [Buffer.from('zero span'), 0n],
+      ]) {
+        const result = await vaultBackend.sign.soc(key, { identifier, payload, span });
+        const cac = bee.makeContentAddressedChunk(payload, span || undefined);
+        const soc = cac.toSingleOwnerChunk(identifier, new PrivateKey(secret));
+        expect(result).toEqual({
+          signature: '0x' + soc.signature.toHex(),
+          owner: soc.owner.toChecksum(),
+          chunk_address: '0x' + cac.address.toHex(),
+          soc_address: '0x' + soc.address.toHex(),
+          span: soc.span.toBigInt().toString(),
+        });
+      }
+    }
   }, 60_000);
 
   test('node identities', async () => {

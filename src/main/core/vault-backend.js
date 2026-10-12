@@ -359,24 +359,25 @@ const vaultBackend = {
     async typedData(key, typedData) {
       return (await call('sign.typed_data', { key, typed_data: typedData })).signature;
     },
+    /**
+     * A Swarm single-owner chunk; the core computes the chunk address from
+     * the payload. `span` defaults to the payload length (as does 0).
+     * @param {{ identifier: Uint8Array, payload: Uint8Array, span?: bigint }} chunk
+     * @returns {{ signature, owner, chunk_address, soc_address, span }}
+     */
+    soc(key, { identifier, payload, span }) {
+      return call('swarm.sign_soc', {
+        key,
+        identifier: '0x' + Buffer.from(identifier).toString('hex'),
+        payload: '0x' + Buffer.from(payload).toString('hex'),
+        ...(span !== undefined && span !== null ? { span: String(span) } : {}),
+      });
+    },
   },
 
   /** EIP-712 digest with the core's strict rules; public, works while locked. */
   async typedDataHash(typedData) {
     return (await call('typed_data.hash', { typed_data: typedData })).hash;
-  },
-
-  // Temporary raw-key exports for signing (design 0001, Phase 2 removes them).
-  compat: {
-    async privateKey(account) {
-      return (await call('compat.private_key', { account })).private_key_hex;
-    },
-    async beeWalletKey() {
-      return (await call('compat.bee_wallet_key')).private_key_hex;
-    },
-    async publisherKey(originIndex) {
-      return (await call('compat.publisher_key', { origin_index: originIndex })).private_key_hex;
-    },
   },
 
   /**
