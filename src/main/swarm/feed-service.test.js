@@ -425,6 +425,28 @@ describe('feed-service', () => {
       expect(options).toBeUndefined();
     });
 
+    test('the one-chunk limit is in UTF-8 bytes, not characters', async () => {
+      // 2,048 two-byte characters fill one chunk exactly; one more character
+      // goes through /bytes. (bee-js counted UTF-16 units first, then
+      // refused the oversized chunk.)
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockBatchForAutoSelect();
+      const signer = makeSigner();
+      await writeFeedPayload(signer, 'myapp.eth/blog', 'é'.repeat(2048));
+      expect(mockUploadData).not.toHaveBeenCalled();
+      expect(signer.signSoc.mock.calls[0][0].payload.length).toBe(4096);
+
+      mockMakeFeedReader.mockReturnValue(createMockReader());
+      mockUploadData.mockResolvedValue({ reference: new MockReference('ab'.repeat(32)) });
+      mockDownloadChunk.mockResolvedValue(new MockBytes('raw root'));
+      mockUnmarshalContentAddressedChunk.mockReturnValue({
+        payload: new MockBytes(Buffer.alloc(64, 9)),
+        span: new MockSpan(4098),
+      });
+      await writeFeedPayload(signer, 'myapp.eth/blog', 'é'.repeat(2049));
+      expect(Buffer.from(mockUploadData.mock.calls[0][1])).toEqual(Buffer.from('é'.repeat(2049), 'utf-8'));
+    });
+
     test('accepts Buffer data as is', async () => {
       mockMakeFeedReader.mockReturnValue(createMockReader());
       mockBatchForAutoSelect();

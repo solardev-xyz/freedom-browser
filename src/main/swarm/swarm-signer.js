@@ -7,7 +7,14 @@
  * under another owner.
  */
 
-const { getAddress, getBytes, hashMessage, keccak256, recoverAddress, concat } = require('ethers');
+const { getAddress, getBytes, hashMessage, keccak256, recoverAddress, concat, isHexString } = require('ethers');
+
+/** A SOC signature as Bee takes it: r ‖ s ‖ v, 65 bytes, v 27 or 28. */
+function isWireSignature(signature) {
+  if (!isHexString(signature, 65)) return false;
+  const v = getBytes(signature)[64];
+  return v === 27 || v === 28;
+}
 const { Identifier } = require('@ethersphere/bee-js');
 const { vaultBackend } = require('../core/vault-backend');
 const {
@@ -54,6 +61,8 @@ function createSwarmSigner(key, owner) {
         result.span !== cac.span.toBigInt().toString() ||
         getAddress(result.owner) !== expectedOwner ||
         result.soc_address !== socAddress ||
+        // recoverAddress also takes forms Bee refuses (64-byte compact, other v).
+        !isWireSignature(result.signature) ||
         recoverAddress(hashMessage(getBytes(digest)), result.signature) !== expectedOwner
       ) {
         throw new Error('The identity core returned a chunk signature that does not match');

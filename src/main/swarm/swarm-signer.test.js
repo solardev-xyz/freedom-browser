@@ -140,6 +140,18 @@ describe('the core result is checked before use', () => {
     ['another owner', async (r) => ({ ...r, owner: mockAddressOf('account:2') })],
     ['another SOC address', async (r) => ({ ...r, soc_address: '0x' + '00'.repeat(32) })],
     ['another span', async (r) => ({ ...r, span: '999' })],
+    [
+      'the same signature in 64-byte compact form',
+      async (r) => ({ ...r, signature: require('ethers').Signature.from(r.signature).compactSerialized }),
+    ],
+    [
+      'the same signature with v as 0/1',
+      async (r) => {
+        const bytes = Buffer.from(r.signature.slice(2), 'hex');
+        bytes[64] -= 27;
+        return { ...r, signature: '0x' + bytes.toString('hex') };
+      },
+    ],
   ])('%s is refused', async (_label, tamper) => {
     const signer = await resolveSwarmSigner({ mode: 'bee-wallet' });
     const original = mockCore.tamper;
