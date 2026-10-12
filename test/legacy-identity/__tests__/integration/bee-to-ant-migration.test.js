@@ -27,7 +27,7 @@ const { injectBeeKey, createBeeConfig } = require('../../injection');
 const {
   createAppMock,
   loadMainModule,
-} = require('../../../../../test/helpers/main-process-test-utils');
+} = require('../../../helpers/main-process-test-utils');
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -60,7 +60,7 @@ function getAntBinaryPath() {
   const platform = platformMap[process.platform] || process.platform;
   const binName = process.platform === 'win32' ? 'antd.exe' : 'antd';
 
-  const projectRoot = path.resolve(__dirname, '../../../../..');
+  const projectRoot = path.resolve(__dirname, '../../../..');
   const binPath = path.join(projectRoot, 'ant-bin', `${platform}-${arch}`, binName);
 
   return fs.existsSync(binPath) ? binPath : null;
@@ -196,10 +196,10 @@ describe('bee-data → ant-data migration (real antd)', () => {
   });
 
   function loadMigrationModule() {
-    return loadMainModule(require.resolve('../../../migrate-user-data'), {
+    return loadMainModule(require.resolve('../../../../src/main/migrate-user-data'), {
       app: createAppMock({ isPackaged: true, userDataDir }),
       extraMocks: {
-        [require.resolve('../../../logger')]: () => ({
+        [require.resolve('../../../../src/main/logger')]: () => ({
           info: jest.fn(),
           warn: jest.fn(),
           error: jest.fn(),

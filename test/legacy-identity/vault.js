@@ -11,7 +11,7 @@ const { encrypt, decrypt } = require('@metamask/browser-passworder');
 const fs = require('fs');
 const path = require('path');
 const { isValidMnemonic, createMnemonic, deriveUserWallet } = require('./derivation');
-const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
+const { VAULT_LOCKED_MESSAGE } = require('../../src/main/wallet/vault-errors');
 
 // Vault state
 let unlockedMnemonic = null;

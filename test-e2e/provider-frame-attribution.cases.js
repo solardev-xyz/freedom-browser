@@ -32,7 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('./fixtures');
 
-const identity = require(path.join(__dirname, '..', 'src', 'main', 'identity'));
+const identity = require(path.join(__dirname, '..', 'test', 'legacy-identity'));
 
 // Harness-served bzz:// content (http/https are stubbed out in test mode).
 // Different hashes are different sites, so the iframe is out-of-process.

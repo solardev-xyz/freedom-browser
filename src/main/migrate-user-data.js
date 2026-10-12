@@ -272,7 +272,7 @@ function getNodeDataBaseDir() {
  * migration. If a future antd version wrote that path on self-init, this
  * precondition would become permanently false and a funded bee-era identity
  * would be silently abandoned with no retry. The real-binary integration test
- * (src/main/identity/__tests__/integration/bee-to-ant-migration.test.js)
+ * (test/legacy-identity/__tests__/integration/bee-to-ant-migration.test.js)
  * asserts this invariant on a fresh antd start and runs in CI on every
  * platform — re-validate it on every antd version bump.
  *

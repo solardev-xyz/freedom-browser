@@ -32,7 +32,7 @@ function getIpfsBinaryPath() {
   const platform = platformMap[process.platform] || process.platform;
   const binName = process.platform === 'win32' ? 'ipfs.exe' : 'ipfs';
 
-  const projectRoot = path.resolve(__dirname, '../../../../..');
+  const projectRoot = path.resolve(__dirname, '../../../..');
   const binPath = path.join(projectRoot, 'ipfs-bin', `${platform}-${arch}`, binName);
 
   if (fs.existsSync(binPath)) {
