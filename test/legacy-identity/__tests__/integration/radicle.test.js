@@ -24,7 +24,7 @@ function getRadicleAddonPath() {
     win32: 'win',
   };
   const platform = platformMap[process.platform] || process.platform;
-  const projectRoot = path.resolve(__dirname, '../../../../..');
+  const projectRoot = path.resolve(__dirname, '../../../..');
   const addonPath = path.join(
     projectRoot,
     'radicle-bin',

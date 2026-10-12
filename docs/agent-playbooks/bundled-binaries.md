@@ -249,7 +249,7 @@ This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull
    node scripts/fetch-ant.js            # every target, not just the host
    ./ant-bin/<os>-<arch>/antd --version
    npx jest scripts/fetch-ant.test.js
-   npx jest src/main/identity/__tests__/integration/bee-to-ant-migration.test.js
+   npx jest test/legacy-identity/__tests__/integration/bee-to-ant-migration.test.js
    npx jest licenses-audit.test.js
    npm run test:unit
    npm run lint

@@ -48,7 +48,8 @@ Renaming anything below breaks protocol or identity compatibility — leave it.
   (`config/ant.yaml`); the *keys* cannot.
 - On-disk identity contract: `keys/swarm.key` (Web3 v3 keystore), the Swarm
   data-dir layout Ant reads, and the BIP-44 derivation `BEE_WALLET` at
-  `m/44'/60'/0'/0/1` (`src/main/identity/derivation.js`). The node identity is
+  `m/44'/60'/0'/0/1` (freedom-core's `fc-keys`; the frozen JS reference is
+  `test/legacy-identity/derivation.js`). The node identity is
   derived from the vault mnemonic and re-injected as `keys/swarm.key` on every
   start, so the data dir holds only disposable cache.
 - The word "Swarm" where it names the **network/protocol** (accurate regardless
@@ -56,8 +57,8 @@ Renaming anything below breaks protocol or identity compatibility — leave it.
 
 **Kept `bee`-named identifiers (deny-list):** these wrap the Ring 0 identity
 contract above; renaming them risks breaking key injection / node startup, so
-they intentionally stay `bee`-named. Mostly in `src/main/identity/*` and
-`src/main/identity-manager.js`:
+they intentionally stay `bee`-named. Mostly in `src/main/identity-manager.js`
+and the frozen JS reference in `test/legacy-identity/*`:
 
 - `injectBeeKey`, `injectBeeIdentity`, `createBeeConfig`, `getBeeAddress`
 - `BEE_WALLET` (derivation path label)

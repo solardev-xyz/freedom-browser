@@ -16,7 +16,7 @@ const path = require('path');
 const fs = require('fs');
 
 const repoRoot = path.resolve(__dirname, '..');
-const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
+const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
 const { closeApp } = require('./close-app');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-2026!';
