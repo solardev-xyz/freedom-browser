@@ -23,9 +23,15 @@ jest.mock('../networks/network-registry', () => ({
   validateRpcUrl: () => null,
 }));
 
-const { attachNaming, detachNaming, namingDriver, namingSettingsChanged } = require('./naming');
+const {
+  attachNaming,
+  detachNaming,
+  namingDriver,
+  namingSettingsChanged,
+  namingCachesCleared,
+} = require('./naming');
 
-test('attached before the core starts: executors, driver, transitions and settings', async () => {
+test('attached before the core starts: executors, driver, transitions, settings and caches', async () => {
   const client = new EventEmitter();
   const handled = [];
   client.handle = (method) => handled.push(method);
@@ -47,11 +53,16 @@ test('attached before the core starts: executors, driver, transitions and settin
   expect(availability).toHaveBeenCalledTimes(1);
   namingSettingsChanged();
   expect(configure).toHaveBeenCalledWith({ reset: true });
-  // Stopped for good: today's resolvers run again.
+  // clearEnsResolutionCaches: what a Myotis transition clears, no settings.
+  namingCachesCleared();
+  expect(availability).toHaveBeenCalledTimes(2);
+  expect(configure).toHaveBeenCalledTimes(1);
+  // Stopped for good: no driver, so lookups fail; nothing reaches the core.
   detachNaming();
   expect(namingDriver()).toBeNull();
   namingSettingsChanged();
+  namingCachesCleared();
   mockTransitions.forEach((listener) => listener({ chainId: 1 }));
   expect(configure).toHaveBeenCalledTimes(1);
-  expect(availability).toHaveBeenCalledTimes(1);
+  expect(availability).toHaveBeenCalledTimes(2);
 });

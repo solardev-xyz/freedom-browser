@@ -1,10 +1,13 @@
 /**
- * End-to-end battery for the Colibri-backed ENS resolution path.
+ * End-to-end battery for the Colibri-backed ENS resolution path: the
+ * resolvers' lookups go to a real naming core (freedom-cored), which runs
+ * its verified operations through main's Colibri adapter.
  *
  * Gated by ENS_COLIBRI_E2E=1 — CI does not hit the partner prover by
  * default. Run locally with:
  *
  *   NODE_OPTIONS=--experimental-vm-modules ENS_COLIBRI_E2E=1 \
+ *     FREEDOM_CORED_PATH=…/freedom-core/target/debug/freedom-cored \
  *     npx jest src/main/__tests__/integration/colibri-e2e.test.js
  *
  * The Colibri CJS shim loads the emscripten glue via dynamic import, so
@@ -36,10 +39,16 @@ jest.mock('electron', () => ({
   app: { getPath: () => mockTempUserData },
   ipcMain: { handle: jest.fn() },
 }));
+// No Electron session here: the core's exchanges go through Node's fetch.
+jest.mock('../../ipfs/gateway-transport', () => ({
+  ...jest.requireActual('../../ipfs/gateway-transport'),
+  netGatewayFetch: (url, init) => globalThis.fetch(url, init),
+}));
+process.env.ENS_DISABLE_PREFETCH = '1';
 
 const TIMEOUT_MS = 60_000;
 
-// Nothing is stubbed: the real network-registry reads the builtin
+// Nothing else is stubbed: the real network-registry reads the builtin
 // chains.json / endpoint-sources.json, and the fresh temp userData dir has
 // no user config — so mainnet resolves to its `colibri` default against the
 // default prover. The Colibri package is NOT mocked — real WASM, real prover.
@@ -50,12 +59,20 @@ const {
   clearEnsResolutionCaches,
 } = require('../../ens-resolver');
 const { clearColibriClientForTest } = require('../../ens/colibri-resolver');
+const { startNamingCore } = require('./naming-core-harness');
+
+let core = null;
+
+beforeAll(async () => {
+  if (E2E_ENABLED) core = await startNamingCore();
+}, TIMEOUT_MS);
 
 beforeEach(() => {
   clearEnsResolutionCaches();
 });
 
-afterAll(() => {
+afterAll(async () => {
+  await core?.stop();
   clearColibriClientForTest();
   try { fs.rmSync(mockTempUserData, { recursive: true, force: true }); }
   catch { /* best-effort cleanup */ }

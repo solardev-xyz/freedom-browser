@@ -11,8 +11,8 @@
  * Those layers are session-agnostic by design: a resolver is a pure
  * name→contenthash function shared by every window, and threading an
  * `isPrivate` flag through every hop (protocol handler → content-name
- * resolver → ENS resolver → consensus wave → cache-and-log) would mean a
- * dozen signature changes where a single missed hop is a silent leak.
+ * resolver → ENS resolver → the naming core's driver) would mean a dozen
+ * signature changes where a single missed hop is a silent leak.
  *
  * Instead the two entry points that DO know the session mark the whole
  * async subtree once:
@@ -23,12 +23,9 @@
  * then sees `isPrivateLogContext()`, and each log site redacts its
  * browsing-identifying values through `redactForLog()`.
  *
- * Deliberate edge: concurrent resolves of the same name share one
- * in-flight promise. If a private caller creates it and a normal window
- * joins, the shared body logs redacted (safe direction — we lose a
- * diagnostic, not a secret). If a normal caller created it first, its own
- * logging already happened in a normal context, and the private joiner's
- * own log line ("joining in-flight resolution") is still redacted.
+ * Name resolution itself runs in the naming core (freedom-core design
+ * 0004), which logs no names; the driver still tells it, with each lookup,
+ * whether the lookup is private.
  */
 
 const { AsyncLocalStorage } = require('async_hooks');

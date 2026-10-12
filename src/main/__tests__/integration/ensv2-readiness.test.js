@@ -1,5 +1,6 @@
-// Explicit opt-in: these assertions hit mainnet and real CCIP gateways.
-// NODE_OPTIONS=--experimental-vm-modules ENSV2_E2E=1 npm run test:unit -- --runInBand src/main/__tests__/integration/ensv2-readiness.test.js
+// Explicit opt-in: these assertions hit mainnet and real CCIP gateways,
+// through a real naming core (freedom-cored).
+// NODE_OPTIONS=--experimental-vm-modules ENSV2_E2E=1 FREEDOM_CORED_PATH=…/freedom-cored npm run test:unit -- --runInBand src/main/__tests__/integration/ensv2-readiness.test.js
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,8 +11,15 @@ jest.mock('electron', () => ({
 }));
 jest.mock('../../logger', () => ({ info() {}, warn() {}, error() {}, debug() {} }));
 jest.mock('../../private/private-windows', () => ({ isPrivateWebContents: () => false }));
+// No Electron session here: the core's exchanges go through Node's fetch.
+jest.mock('../../ipfs/gateway-transport', () => ({
+  ...jest.requireActual('../../ipfs/gateway-transport'),
+  netGatewayFetch: (url, init) => globalThis.fetch(url, init),
+}));
+process.env.ENS_DISABLE_PREFETCH = '1';
 const registry = require('../../networks/network-registry');
 const resolver = require('../../ens-resolver');
+const { startNamingCore } = require('./naming-core-harness');
 const enabled = process.env.ENSV2_E2E === '1';
 const methods = (process.env.ENSV2_METHODS || 'direct,quorum,default').split(',');
 const cases = [
@@ -21,6 +29,11 @@ const cases = [
   ['test.ses.eth', '0x2B0F09F23193de2Fb66258a10886B9f06903276c', 1],
   ['test.ses.eth', '0x7d3a48269416507E6d207a9449E7800971823Ffa', 8453],
 ];
+let core = null;
+beforeAll(async () => {
+  if (enabled) core = await startNamingCore();
+}, 60000);
+afterAll(() => core?.stop());
 (enabled ? describe : describe.skip).each(methods)('ENSv2 mainnet via %s', (method) => {
   let original;
   beforeAll(() => {

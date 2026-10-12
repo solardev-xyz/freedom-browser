@@ -123,7 +123,8 @@ async function resolveRecordsThroughMyotis(electronApp, paths, options) {
           preferVerified: options.policyPreferVerified,
         },
       });
-      resolver.clearEnsResolutionCaches();
+      // The policy reaches the naming core as a settings change does.
+      resolver.invalidateCachedProvider();
       try {
         return {
           readyBefore,
@@ -156,7 +157,7 @@ async function resolveRecordsThroughMyotis(electronApp, paths, options) {
             preferVerified: true,
           },
         });
-        resolver.clearEnsResolutionCaches();
+        resolver.invalidateCachedProvider();
       }
     }, { ...paths, ...options });
 

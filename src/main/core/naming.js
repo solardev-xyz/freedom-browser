@@ -1,9 +1,10 @@
 /**
  * The naming core in main (freedom-core design 0004, implementation step
- * 3), with the core itself: dev builds only, behind `FREEDOM_CORE=1`. It
- * attaches the configuration, main's executors and the resolvers' driver to
- * the core client before the client starts. Without it, today's resolvers
- * run as they are.
+ * 3): it attaches the configuration, main's executors and the resolvers'
+ * driver to the core client before the client starts. ENS and Tezos names
+ * resolve in the core alone: without a driver (the core not attached yet,
+ * or stopped for good), a lookup fails as the driver's does when no core
+ * process serves it.
  */
 
 const log = require('../logger');
@@ -30,7 +31,7 @@ function attachNaming(client) {
   registerNamingShell(client, config);
   registerNamingVerified(client, config);
   driver = new NamingDriver({ client, config, normalize: ens.fastNormalize });
-  // Today's ENS listener, for chain 1: the core clears and advances its own
+  // A Myotis transition, for chain 1: the core clears and advances its own
   // lifecycle.
   myotis.onAvailabilityTransition((event) => {
     if (event?.chainId != null && Number(event.chainId) !== 1) return;
@@ -39,7 +40,8 @@ function attachNaming(client) {
   return { config, driver };
 }
 
-/** The core has stopped for good: today's resolvers run again. */
+/** The core has stopped for good: lookups fail from now on, as the
+ * driver's do when no core process serves them. */
 function detachNaming() {
   driver = null;
   config = null;
@@ -56,4 +58,17 @@ function namingSettingsChanged() {
   if (config) config.configure({ reset: true }).catch(() => {});
 }
 
-module.exports = { attachNaming, detachNaming, namingDriver, namingSettingsChanged };
+/** Every cached ENS resolution dropped (clearEnsResolutionCaches): the
+ * core clears its content, address and reverse caches and advances its
+ * lifecycle, as `naming.availability` does (design 0004, Configuration). */
+function namingCachesCleared() {
+  if (config) config.availability().catch(() => {});
+}
+
+module.exports = {
+  attachNaming,
+  detachNaming,
+  namingDriver,
+  namingSettingsChanged,
+  namingCachesCleared,
+};

@@ -136,12 +136,12 @@ function hasEncodedSeparator(bzzUrl) {
  *
  * `<host>` is either:
  *  - a 64- or 128-char hex Swarm ref (synchronous path), OR
- *  - a supported Ethereum name, resolved via the in-process
- *    `ens-resolver` cache. Name resolution running here (not just in the
- *    renderer's address-bar pipeline) is what makes `bzz://name.eth/`
- *    survive as the URL Chromium loads — so DevTools, `window.location`,
- *    storage origin, and subresource fetches all see the name rather
- *    than the resolved hash.
+ *  - a supported Ethereum name, resolved by the naming core (through
+ *    `ens-resolver`), whose cache answers repeat lookups. Name resolution
+ *    running here (not just in the renderer's address-bar pipeline) is
+ *    what makes `bzz://name.eth/` survive as the URL Chromium loads — so
+ *    DevTools, `window.location`, storage origin, and subresource fetches
+ *    all see the name rather than the resolved hash.
  *
  * Returns one of:
  *  - `{ ok: true, url }`              — usable Bee gateway URL.

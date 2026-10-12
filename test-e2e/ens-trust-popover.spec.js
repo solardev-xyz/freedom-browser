@@ -10,7 +10,7 @@
 //
 // Names resolve through the harness' stubbed `ens:resolve` (`setEnsFixture`),
 // so nothing here touches a real RPC. Each fixture's trust object has the
-// shape `ens-resolver.js`'s `buildTrust` emits for that verdict — a conflict,
+// shape the naming core's ENS results carry for that verdict — a conflict,
 // for instance, has nobody in `agreed` and every queried host in `dissented`.
 
 const { test, expect, clickOverGuest } = require('./fixtures');

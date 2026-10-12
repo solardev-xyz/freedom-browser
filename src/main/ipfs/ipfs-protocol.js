@@ -130,12 +130,12 @@ function sanitizeRequestHeaders(requestHeaders) {
  * `namespace` is `'ipfs'` or `'ipns'`. `<host>` is either:
  *  - a CID (ipfs) / IPNS key or DNSLink name (ipns), routed to the raw
  *    `/ipfs/...` or `/ipns/...` path, OR
- *  - a supported Ethereum name, resolved via the in-process ens-resolver
- *    cache. Resolving here (not just in the renderer's address-bar
- *    pipeline) is what makes `ipfs://name.eth/` survive as the URL
- *    Chromium loads — DevTools, `window.location`, storage origin, and
- *    subresource fetches all see the name rather than the resolved
- *    CID.
+ *  - a supported Ethereum name, resolved by the naming core (through
+ *    ens-resolver), whose cache answers repeat lookups. Resolving here
+ *    (not just in the renderer's address-bar pipeline) is what makes
+ *    `ipfs://name.eth/` survive as the URL Chromium loads — DevTools,
+ *    `window.location`, storage origin, and subresource fetches all see
+ *    the name rather than the resolved CID.
  *
  * Returns one of:
  *  - `{ ok: true, url }`              — gateway-shaped URL with usable path.

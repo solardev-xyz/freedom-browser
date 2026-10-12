@@ -414,7 +414,7 @@ describe('settings.html keeps jargon out of the visible layer (#270)', () => {
     const copy = networkSourceCopy();
     expect(copy.myotis.advanced).toMatch(/^Myotis — /);
     // WNS/GNS go through Myotis's generic eth_call, pinned to the optimistic
-    // head (ens-resolver.js tryMyotisContractPath), not finalized state.
+    // head (the naming core's Myotis contract path), not finalized state.
     expect(copy.myotis.advanced).toMatch(/\.wei\/\.gwei names .*optimistic/);
     expect(copy.colibri.advanced).toMatch(/^Colibri — /);
     expect(copy.quorum.advanced).toMatch(/^RPC quorum — /);
