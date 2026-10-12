@@ -29,7 +29,7 @@
 
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
-const { encodeFrame, FrameDecoder, FrameError, MAX_PAYLOAD } = require('./frame');
+const { encodeFrame, encodeJsonFrame, FrameDecoder, FrameError, MAX_PAYLOAD } = require('./frame');
 
 const PROTOCOL_VERSION = 1;
 const MAX_ID = Number.MAX_SAFE_INTEGER; // 2^53 - 1: exact in JS
@@ -151,7 +151,7 @@ function shellErrorBody(err, signal) {
 
 /** `code`'s error body, with its fixed message; an unknown code is internal. */
 function shellError(code) {
-  return Object.hasOwn(SHELL_ERRORS, code)
+  return typeof code === 'string' && Object.hasOwn(SHELL_ERRORS, code)
     ? { code, message: SHELL_ERRORS[code] }
     : { code: 'internal', message: SHELL_ERRORS.internal };
 }
@@ -792,14 +792,20 @@ class CoreClient extends EventEmitter {
       .then(() => {
         // Fenced before it started (its generation ended), or cancelled in
         // the same read as it arrived: the handler never runs.
+        // Checked and started in the same job: nothing can fence or
+        // cancel it in between.
         if (gen.incoming.get(id) !== controller) return null;
         if (controller.signal.aborted) return { error: shellError('cancelled') };
-        return Promise.resolve()
-          .then(() => handler(params ?? {}, { signal: controller.signal }))
-          .then(
-            (result) => ({ result: result ?? {} }),
-            (err) => ({ error: shellErrorBody(err, controller.signal) })
-          );
+        let pending;
+        try {
+          pending = handler(params ?? {}, { signal: controller.signal });
+        } catch (err) {
+          return { error: shellErrorBody(err, controller.signal) };
+        }
+        return Promise.resolve(pending).then(
+          (result) => ({ result: result ?? {} }),
+          (err) => ({ error: shellErrorBody(err, controller.signal) })
+        );
       })
       .then((outcome) => {
         if (outcome) this.respond(gen, id, controller, outcome);
@@ -844,12 +850,16 @@ class CoreClient extends EventEmitter {
     }
     let frame;
     try {
-      // A result JSON can't represent (a function, a symbol, a toJSON
-      // returning nothing) would leave the response without an outcome.
-      if ('result' in outcome && JSON.stringify(outcome.result) === undefined) {
+      // Serialized once, so a result's toJSON runs once and what is checked
+      // is what is sent: a result JSON can't represent (a function, a
+      // symbol, a toJSON returning nothing) leaves no outcome, and is
+      // internal instead.
+      const json = JSON.stringify({ type: 'response', id, ...outcome });
+      const sent = JSON.parse(json);
+      if (!Object.hasOwn(sent, 'result') && !Object.hasOwn(sent, 'error')) {
         throw new TypeError('unrepresentable result');
       }
-      frame = encodeFrame({ type: 'response', id, ...outcome });
+      frame = encodeJsonFrame(json);
     } catch (err) {
       const error = shellError(err instanceof FrameError ? 'too_large' : 'internal');
       frame = encodeFrame({ type: 'response', id, error });

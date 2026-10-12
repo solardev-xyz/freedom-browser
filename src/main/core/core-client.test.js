@@ -1101,5 +1101,80 @@ describe('CoreClient', () => {
         { type: 'response', id: 3, error: internal },
       ]);
     });
+
+    test('nothing comes between the dispatch check and the handler starting', async () => {
+      for (const between of [
+        (client, gen) => client.fence(gen),
+        (client, gen) => client.onMessage(gen, { type: 'cancel', id: 1 }),
+        (client) => client.stop(),
+      ]) {
+        const handler = jest.fn(() => new Promise(() => {}));
+        const { client, replies } = await served((c) => c.handle('shell.rpc', handler));
+        const gen = client.current;
+        client.onMessage(gen, { type: 'request', id: 1, method: 'shell.rpc', params: {} });
+        between(client, gen);
+        for (let i = 0; i < 4; i++) await tick();
+        expect(handler).not.toHaveBeenCalled();
+        expect(replies().filter((r) => r.result)).toEqual([]);
+      }
+    });
+
+    test('a cancel right after dispatch still reaches a started handler', async () => {
+      const handler = jest.fn(
+        (_params, { signal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')));
+          })
+      );
+      const { client, replies } = await served((c) => c.handle('shell.rpc', handler));
+      const gen = client.current;
+      client.onMessage(gen, { type: 'request', id: 1, method: 'shell.rpc', params: {} });
+      // Queued behind the dispatch job: the handler has started, with a live
+      // signal, so it sees the abort.
+      queueMicrotask(() => client.onMessage(gen, { type: 'cancel', id: 1 }));
+      for (let i = 0; i < 4; i++) await tick();
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'cancelled', message: 'Cancelled' } },
+      ]);
+    });
+
+    test('a code that is not a string is internal', async () => {
+      const { send, replies } = await served((client) =>
+        client.handle('shell.rpc', async () => {
+          throw new ShellError(['network']);
+        })
+      );
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'internal', message: 'Internal error' } },
+      ]);
+    });
+
+    test('a result is serialized once, as it is sent', async () => {
+      let calls = 0;
+      const { send, replies } = await served((client) => {
+        // Different by key: nothing for `result`.
+        client.handle('shell.rpc', async () => ({
+          toJSON: (key) => (key === '' ? { a: 1 } : undefined),
+        }));
+        // Different by call: its first answer is the one sent.
+        client.handle('shell.tezos', async () => ({
+          toJSON: () => {
+            calls += 1;
+            return calls === 1 ? { status: 200 } : undefined;
+          },
+        }));
+      });
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      send({ id: 2, method: 'shell.tezos', params: {} });
+      for (let i = 0; i < 6; i++) await tick();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'internal', message: 'Internal error' } },
+        { type: 'response', id: 2, result: { status: 200 } },
+      ]);
+      expect(calls).toBe(1);
+    });
   });
 });
