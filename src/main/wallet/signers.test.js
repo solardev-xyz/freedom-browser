@@ -229,6 +229,23 @@ describe('getSigner (vault-backed)', () => {
     }
   });
 
+  test('the type-graph guard bounds its work before scanning shared field arrays', () => {
+    const { assertBoundedTypeGraph } = require('./signing-utils');
+    // A structured clone keeps aliases: 16,000 types sharing one 16,000-field
+    // array is a small message but 256 million field visits.
+    const shared = Array.from({ length: 16000 }, (_, i) => ({ name: `f${i}`, type: 'uint8' }));
+    const types = Object.fromEntries(Array.from({ length: 16000 }, (_, i) => [`T${i}`, shared]));
+    const started = Date.now();
+    expect(() => assertBoundedTypeGraph(structuredClone(types))).toThrow('too many');
+    expect(Date.now() - started).toBeLessThan(1000);
+    // Below the type cap, the shared array still counts once per type.
+    const few = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`T${i}`, shared.slice(0, 6)]));
+    expect(() => assertBoundedTypeGraph(few)).toThrow('too many fields');
+    // The core's limits themselves are accepted.
+    const atLimit = Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`T${i}`, shared.slice(0, 256)]));
+    expect(() => assertBoundedTypeGraph(atLimit)).not.toThrow();
+  });
+
   test('a field named __proto__ reaches the core as data', () => {
     // (ethers' own Wallet.signTypedData drops it; the core's encoder keeps
     // it, so the conversion must too.)

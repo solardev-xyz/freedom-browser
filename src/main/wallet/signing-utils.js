@@ -83,6 +83,11 @@ function toCoreValue(value) {
 // diamond-shaped type graph costs it exponential time; the Ledger and phone
 // backends run it on dApp input. This bound is far above any real payload.
 const MAX_TYPE_PATHS = 10000;
+// The identity core's own caps (freedom-core design 0002), checked first so
+// the scan below is bounded even when a structured clone shares one field
+// array between many types.
+const MAX_TYPES = 256;
+const MAX_FIELDS = 1024;
 
 /**
  * Refuses a type graph ethers would take too long to walk: counts, in linear
@@ -92,6 +97,13 @@ const MAX_TYPE_PATHS = 10000;
 function assertBoundedTypeGraph(types) {
   if (!types || typeof types !== 'object') return;
   const names = Object.keys(types);
+  if (names.length > MAX_TYPES) throw new Error('Typed data has too many types');
+  let fields = 0;
+  for (const name of names) {
+    // Counted per type, so an array shared between types counts each time.
+    if (Array.isArray(types[name])) fields += types[name].length;
+    if (fields > MAX_FIELDS) throw new Error('Typed data has too many fields');
+  }
   const children = new Map(names.map((name) => [name, new Set()]));
   for (const name of names) {
     for (const field of Array.isArray(types[name]) ? types[name] : []) {
