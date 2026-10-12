@@ -673,6 +673,7 @@ function registerTezosDomainsIpc() {
 }
 
 module.exports = {
+  getRpcEndpoints,
   invalidateTezosDomain,
   isTezosDomainName,
   parsePublishedUri,
