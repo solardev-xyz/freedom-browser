@@ -12,6 +12,7 @@ const log = require('../logger');
 const { getIdentityDataDir } = require('../profile-paths');
 const { CoreClient } = require('./core-client');
 const guard = require('./node-identity-guard');
+const { attachNaming, detachNaming } = require('./naming');
 
 let client = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
@@ -85,6 +86,8 @@ async function startCore() {
     guard.setStartupRecovery(hello.node_recovery);
   });
   client.on('exit', () => guard.setRecoveryUnknown());
+  // Before it starts, so its first handshake configures naming.
+  attachNaming(client);
   const starting = client;
   let hello;
   try {
@@ -103,6 +106,7 @@ async function startCore() {
 
 async function stopCore() {
   shutDown = true;
+  detachNaming();
   if (!client) return;
   const stopping = client;
   client = null;

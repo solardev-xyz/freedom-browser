@@ -6,6 +6,7 @@ const {
   wireQuorum,
   MAX_REMEMBERED,
   MAX_RPC_ENDPOINTS,
+  CONTROL_WATCHDOG_MS,
 } = require('./naming-config');
 
 function sources(overrides = {}) {
@@ -403,5 +404,156 @@ describe('NamingConfig', () => {
     release();
     await change;
     expect(config.generations.ens).toBe(2);
+  });
+
+  test('a lookup waits for the controls queued before it, in order', async () => {
+    let release;
+    const client = fakeClient((method) =>
+      method === 'naming.configure' && release === null
+        ? new Promise((resolve) => {
+            release = () => resolve({ ens: 2, tezos: 1, lifecycle: 1 });
+          })
+        : { ens: 1, tezos: 1, lifecycle: 1 }
+    );
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    // A settings change goes out and waits for its reply; an invalidation
+    // queues behind it; then a lookup asks for the process.
+    release = null;
+    const change = config.configure({ reset: true });
+    const invalidation = config.invalidate('naming.invalidate_content', { name: 'a.eth' });
+    let served = null;
+    config.whenServing().then((gen) => (served = gen));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(served).toBeNull();
+    expect(methods(client).slice(-1)).toEqual(['1:naming.configure']);
+    release();
+    await change;
+    await invalidation;
+    await new Promise(setImmediate);
+    // Served only after both, with the generation the change brought.
+    expect(served).toBe(client.current);
+    expect(methods(client).slice(-2)).toEqual([
+      '1:naming.configure',
+      '1:naming.invalidate_content',
+    ]);
+    expect(config.generations.ens).toBe(2);
+  });
+
+  test('control requests carry a hang watchdog', async () => {
+    const client = fakeClient();
+    make(client);
+    client.start();
+    await new Promise(setImmediate);
+    const watched = client.requestTo.mock.calls.map(([, method, , , options]) => [
+      method,
+      options?.watchdogMs,
+    ]);
+    expect(watched).toEqual([
+      ['naming.configure', CONTROL_WATCHDOG_MS],
+      ['naming.availability', CONTROL_WATCHDOG_MS],
+    ]);
+  });
+
+  test('a process gone keeps its references and generations for its last replies', async () => {
+    const client = fakeClient((method) =>
+      method === 'naming.configure' ? { ens: 3, tezos: 1, lifecycle: 1 } : { lifecycle: 2 }
+    );
+    const config = make(client);
+    client.start();
+    const first = client.current;
+    await config.whenReady();
+    const ref = client.sent[0][2].rpc[0].endpoint;
+    client.exit();
+    client.start();
+    // The current process knows nothing of it; the first still does.
+    expect(config.endpointUrl(ref)).toBeUndefined();
+    expect(config.endpointUrl(ref, first)).toBe('https://a.rpc.example');
+    expect(config.generationsOf(first)).toEqual({ ens: 3, tezos: 1, lifecycle: 2 });
+  });
+
+  test('a control that fails is owed: nothing is served until it goes', async () => {
+    let refuse = false;
+    const client = fakeClient((method) => {
+      if (refuse && method !== 'naming.resolve_tezos') {
+        throw Object.assign(new Error('busy'), { code: 'busy' });
+      }
+      return method === 'naming.configure' ? { ens: 2, tezos: 2, lifecycle: 1 } : { lifecycle: 1 };
+    });
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    const before = client.sent.length;
+    // A settings change fails locally (the client is full).
+    refuse = true;
+    await expect(config.configure({ reset: true })).rejects.toMatchObject({ code: 'busy' });
+    // While it can't go, the process isn't served.
+    expect(await config.whenServing()).toBeNull();
+    // Once it can, it goes first, with its reset, and then the process is served.
+    refuse = false;
+    expect(await config.whenServing()).toBe(client.current);
+    const resent = client.sent.slice(before).filter(([, method]) => method === 'naming.configure');
+    expect(resent.at(-1)[2].reset).toBe('providers');
+    expect(await config.whenServing()).toBe(client.current);
+  });
+
+  test('a failed invalidation is owed as clearing its cache', async () => {
+    let refuse = true;
+    const client = fakeClient((method) => {
+      if (refuse && method.startsWith('naming.invalidate')) throw new Error('busy');
+      return method === 'naming.configure' ? { ens: 1, tezos: 1, lifecycle: 1 } : { lifecycle: 1 };
+    });
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    await expect(
+      config.invalidate('naming.invalidate_content', { name: 'a.eth' })
+    ).rejects.toThrow();
+    await expect(config.invalidate('naming.invalidate_tezos', { name: 'a.tez' })).rejects.toThrow();
+    refuse = false;
+    const before = client.sent.length;
+    expect(await config.whenServing()).toBe(client.current);
+    // ENS content: a provider reset clears every ENS cache; Tezos: all of it.
+    expect(client.sent.slice(before).map(([, method, params]) => [method, params.reset])).toEqual([
+      ['naming.configure', 'providers'],
+      ['naming.invalidate_tezos', undefined],
+    ]);
+  });
+
+  test('a process is idle only with no control queued or owed', async () => {
+    let refuse = false;
+    let release = null;
+    const client = fakeClient(async (method) => {
+      if (method === 'naming.availability' && release === null) {
+        await new Promise((resolve) => (release = resolve));
+      }
+      if (refuse) throw Object.assign(new Error('busy'), { code: 'busy' });
+      return method === 'naming.configure' ? { ens: 1, tezos: 1, lifecycle: 1 } : { lifecycle: 1 };
+    });
+    const config = make(client);
+    client.start();
+    release = () => {};
+    await config.whenReady();
+    const gen = client.current;
+    expect(config.idle(gen)).toBe(true);
+    // Queued: not idle at once, before it is sent.
+    release = null;
+    const pending = config.availability();
+    expect(config.idle(gen)).toBe(false);
+    for (let i = 0; i < 5 && !release; i++) await Promise.resolve();
+    release();
+    await pending;
+    expect(config.idle(gen)).toBe(true);
+    // Owed: not idle until it goes.
+    refuse = true;
+    release = () => {};
+    await expect(config.configure({ reset: false })).rejects.toMatchObject({ code: 'busy' });
+    expect(config.idle(gen)).toBe(false);
+    refuse = false;
+    expect(await config.whenServing()).toBe(gen);
+    expect(config.idle(gen)).toBe(true);
+    // Another process's never is.
+    expect(config.idle({ id: 'other' })).toBe(false);
   });
 });

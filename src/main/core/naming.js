@@ -1,0 +1,59 @@
+/**
+ * The naming core in main (freedom-core design 0004, implementation step
+ * 3), with the core itself: dev builds only, behind `FREEDOM_CORE=1`. It
+ * attaches the configuration, main's executors and the resolvers' driver to
+ * the core client before the client starts. Without it, today's resolvers
+ * run as they are.
+ */
+
+const log = require('../logger');
+const { NamingConfig } = require('./naming-config');
+const { registerNamingShell } = require('./naming-shell');
+const { registerNamingVerified } = require('./naming-verified');
+const { NamingDriver } = require('./naming-driver');
+
+let driver = null;
+let config = null;
+
+/**
+ * Attaches naming to `client`, before it starts.
+ *
+ * @param {import('./core-client').CoreClient} client
+ */
+function attachNaming(client) {
+  // Loaded here: they load this module back, when they resolve.
+  const ens = require('../ens-resolver');
+  const tezos = require('../tezos-domains-resolver');
+  const registry = require('../networks/network-registry');
+  const myotis = require('../myotis/myotis-manager');
+  config = new NamingConfig({ client, sources: { ens, tezos, registry, myotis }, log });
+  registerNamingShell(client, config);
+  registerNamingVerified(client, config);
+  driver = new NamingDriver({ client, config, normalize: ens.fastNormalize });
+  // Today's ENS listener, for chain 1: the core clears and advances its own
+  // lifecycle.
+  myotis.onAvailabilityTransition((event) => {
+    if (event?.chainId != null && Number(event.chainId) !== 1) return;
+    if (config) config.availability().catch(() => {});
+  });
+  return { config, driver };
+}
+
+/** The core has stopped for good: today's resolvers run again. */
+function detachNaming() {
+  driver = null;
+  config = null;
+}
+
+/** The resolvers' driver while the core runs naming, or null. */
+function namingDriver() {
+  return driver;
+}
+
+/** A settings change, where today's code calls invalidateCachedProvider:
+ * the core gets the snapshot again, its providers reset. */
+function namingSettingsChanged() {
+  if (config) config.configure({ reset: true }).catch(() => {});
+}
+
+module.exports = { attachNaming, detachNaming, namingDriver, namingSettingsChanged };
