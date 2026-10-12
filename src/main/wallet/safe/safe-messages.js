@@ -29,10 +29,12 @@ const { getEip712MessageTypes, buildSignatureBytes } = require('@safe-global/pro
 
 const { SAFE_VERSION } = require('./safe-executor');
 const { getSafeRecord, DEPLOY_CHAIN_ID } = require('./safe-service');
+const { vaultBackend } = require('../../core/vault-backend');
 const {
   normalizeMessage,
   normalizeTypedData,
   withoutDomainType,
+  toCoreTypedData,
 } = require('../signing-utils');
 const {
   release,
@@ -55,13 +57,15 @@ const store = { get: getSession, set: setSession, idOf: (entry) => entry.hash };
  * (protocol-kit's hashSafeMessage is deliberately not used for personal
  * messages: viem hashes hex STRINGS as UTF-8 text.)
  */
-function requestDigest(method, params) {
+async function requestDigest(method, params) {
   if (method === 'personal_sign') {
     return hashMessage(normalizeMessage(params[0]));
   }
   if (method === 'eth_signTypedData_v4') {
-    const { domain, types, message } = normalizeTypedData(params[1]);
-    return TypedDataEncoder.hash(domain, withoutDomainType(types), message);
+    // The identity core's hash, with the same strict rules as its signing
+    // (freedom-core design 0002): ethers would hash a `bool` given "false"
+    // as true, and the owners' signature over this digest would carry that.
+    return vaultBackend.typedDataHash(toCoreTypedData(normalizeTypedData(params[1])));
   }
   throw new Error(`Unsupported signing method for Safe accounts: ${method}`);
 }
@@ -211,7 +215,7 @@ async function startSafeMessage({ safeIndex, request, display, requester }) {
   if (!record.deployed?.[DEPLOY_CHAIN_ID]) {
     throw new Error('Activate this account on Gnosis before signing for apps');
   }
-  const digest = requestDigest(request.method, request.params);
+  const digest = await requestDigest(request.method, request.params);
   const safeAddress = getAddress(record.address);
   const typedData = {
     types: getEip712MessageTypes(SAFE_VERSION),
