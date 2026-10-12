@@ -311,6 +311,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-cored binaries
+        # Direct node plus the same bounded watchdog as the Ant download.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       # fetch-freedom-ipfs-native.js downloads release assets directly and
       # makes no API calls, so it needs no token.
       - name: Download IPFS native addon
@@ -565,6 +573,14 @@ jobs:
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download freedom-cored binaries
+        # Direct node plus the same bounded watchdog as the Ant download.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -1183,6 +1199,14 @@ jobs:
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-ant.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download freedom-cored binaries
+        # Direct node plus the same bounded watchdog as the Ant download.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

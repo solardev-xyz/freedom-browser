@@ -23,7 +23,7 @@
 | ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
 | Production npm packages (unique name@version)               | 273         | See distribution below                                             |
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
-| External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
+| External binaries / native addons shipped in `resources/`   | 6           | Ant, freedom-ipfs, libradicle, Myotis, Arti, freedom-cored         |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
 | Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
@@ -57,6 +57,7 @@ Freedom Browser is distributed as:
   - `myotis-node.node` (`resources/myotis-node/`)
 - **External binaries** shipped in `resources/`:
   - Ant (`antd`, Swarm node)
+  - `freedom-cored` (Rust identity core) — its license is pending; see below
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
@@ -78,6 +79,14 @@ Freedom Browser is distributed as:
 ## Downloaded Runtime Artifacts
 
 Versions here are the pinned values in the repo, not observed downloads; each row names its pin so a drift is checkable. `licenses-audit.test.js` asserts these match.
+
+### freedom-cored (Rust Identity Core) — license pending
+
+- **Pin:** `v0.1.0` (an immutable release) in `scripts/fetch-freedom-cored.js`, together with the sha256 of its `SHA256SUMS` (`PINNED_SHA256SUMS_DIGEST`).
+- **Integration:** a separate binary under `resources/freedom-cored/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation.
+- **License:** not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
+- **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, plus the Rust toolchain runtime: the standard library's crates, compiler-builtins and, on Linux, musl and LLVM's libunwind and crt objects) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). `scripts/fetch-freedom-cored.js` installs both next to the binary, `package.json` ships them in `resources/freedom-cored/`, and `scripts/check-binaries.js` requires them.
+- **Source:** <https://github.com/solardev-xyz/freedom-core>.
 
 ### Ant (antd, Swarm Node)
 
@@ -298,6 +307,8 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 13. **Chain and token marks** committed under `src/renderer/assets/` — third-party marks, terms unconfirmed (see _Assets_)
 14. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
 15. **AppImage runtime** (Linux `.AppImage` only) — MIT runtime with statically linked LGPL-2.1 libfuse, BSD squashfuse/zstd, MIT musl/mimalloc and Zlib zlib; not checked by `licenses-audit.test.js`, see _AppImage runtime_
+
+freedom-cored's own license is still to be chosen; it must be settled before shipping.
 
 `licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 

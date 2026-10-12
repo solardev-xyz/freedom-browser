@@ -50,6 +50,7 @@
     "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
+    "core:download": "node scripts/fetch-freedom-cored.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
     "myotis:download": "node scripts/fetch-myotis.js",
     "myotis:smoke": "node scripts/smoke-myotis.js",
@@ -113,7 +114,8 @@
       "identity": "Solar Dev Ltd (46XPHRBLH5)",
       "hardenedRuntime": true,
       "binaries": [
-        "Contents/Resources/myotis-node/myotis-supervisor"
+        "Contents/Resources/myotis-node/myotis-supervisor",
+        "Contents/Resources/freedom-cored/freedom-cored"
       ],
       "sign": "./scripts/sign-myotis-helper.js",
       "gatekeeperAssess": false,
@@ -265,6 +267,16 @@
       "**/*.node"
     ],
     "extraResources": [
+      {
+        "from": "freedom-cored-bin/${os}-${arch}/",
+        "to": "freedom-cored",
+        "filter": [
+          "freedom-cored",
+          "freedom-cored.exe",
+          "THIRD-PARTY-NOTICES",
+          "THIRD-PARTY-NOTICES-rust-std.html"
+        ]
+      },
       {
         "from": "ant-bin/${os}-${arch}/",
         "to": "ant-bin",
