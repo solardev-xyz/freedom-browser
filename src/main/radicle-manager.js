@@ -7,6 +7,7 @@ const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
+const { nodeBlockReason } = require('./core/node-identity-guard');
 const seedStatus = require('./radicle/seed-status');
 const {
   MODE,
@@ -143,6 +144,12 @@ async function startRadicleInternal() {
     updateState(STATUS.STOPPED);
     return getCurrentStatus();
   }
+  const identityBlock = nodeBlockReason('radicle');
+  if (identityBlock) {
+    clearService('radicle');
+    updateState(STATUS.ERROR, identityBlock);
+    return getCurrentStatus();
+  }
   if (!embedded.isAvailable()) {
     const message = 'libradicle addon is not installed';
     clearService('radicle');
@@ -153,6 +160,13 @@ async function startRadicleInternal() {
   updateState(STATUS.STARTING);
   try {
     const radHome = await prepareRadicleDataDir();
+    // Again at the boundary: an identity write may have begun meanwhile.
+    const blockedNow = nodeBlockReason('radicle');
+    if (blockedNow) {
+      clearService('radicle');
+      updateState(STATUS.ERROR, blockedNow);
+      return getCurrentStatus();
+    }
     const result = await embedded.start(radHome, 'FreedomBrowser');
     updateService('radicle', {
       api: 'radapi://local',

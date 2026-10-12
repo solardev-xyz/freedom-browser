@@ -24,8 +24,10 @@ const mockGetPublisherKey = jest.fn();
 const mockGetDerivedWallets = jest.fn();
 
 jest.mock('../identity-manager', () => ({
-  getDerivedKeys: (...args) => mockGetDerivedKeys(...args),
-  getPublisherKey: (...args) => mockGetPublisherKey(...args),
+  // Owner lookups use addresses only (keys.addresses in the core); the mocks
+  // keep the old derived-key shapes as their source.
+  getBeeWalletAddress: async () => mockGetDerivedKeys()?.beeWallet?.address ?? null,
+  getPublisherAddress: async (index) => (await mockGetPublisherKey(index)).address,
   getDerivedWallets: (...args) => mockGetDerivedWallets(...args),
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
 }));

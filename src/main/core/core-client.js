@@ -143,7 +143,37 @@ function validHello(result) {
   ) {
     return null;
   }
-  return { protocol: PROTOCOL_VERSION, core_version: result.core_version, capabilities };
+  const nodeRecovery = validNodeRecovery(result.node_recovery);
+  if (nodeRecovery === undefined) return null;
+  return {
+    protocol: PROTOCOL_VERSION,
+    core_version: result.core_version,
+    capabilities,
+    node_recovery: nodeRecovery,
+  };
+}
+
+const NODE_RECOVERY_STATUS = new Set(['pending_recovery', 'corrupt']);
+const OP_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * hello's `node_recovery`: a node identity write startup recovery couldn't
+ * finish. `null` (or absent, from older cores) when there is none; undefined
+ * for a malformed value.
+ */
+function validNodeRecovery(value) {
+  if (value === undefined || value === null) return null;
+  if (!isObject(value) || !NODE_RECOVERY_STATUS.has(value.status)) return undefined;
+  const out = { status: value.status };
+  if (value.op_id !== undefined) {
+    if (typeof value.op_id !== 'string' || !OP_ID.test(value.op_id)) return undefined;
+    out.op_id = value.op_id;
+  }
+  if (value.node !== undefined) {
+    if (value.node !== 'bee' && value.node !== 'radicle') return undefined;
+    out.node = value.node;
+  }
+  return out;
 }
 
 /** One child process and everything bound to it. */

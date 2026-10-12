@@ -439,8 +439,9 @@ async function bootstrap() {
   registerServiceRegistryIpc();
   registerIdentityIpc();
   registerQuickUnlockIpc();
-  // Dev builds only, behind FREEDOM_CORE=1: supervise the Rust core. Nothing
-  // calls it yet (freedom-core design 0001, migration step 1).
+  // The Rust identity core owns the vault and keys (freedom-core design 0001,
+  // migration step 2). The client exists as soon as this call returns, so
+  // the vault calls below (hasVault) wait for its handshake.
   startCore().catch((err) => log.error('[Core] failed to start:', err.message));
   registerWalletIpc();
   registerLedgerIpc();

@@ -348,7 +348,9 @@ function loadAntManagerModule(options = {}) {
         getAntApiUrl: () => null,
       }),
     },
-  });
+  });  // The core has started and reported no pending node recovery.
+  require('./core/node-identity-guard').setStartupRecovery(null);
+
 
   return {
     antBinPath,
@@ -1678,6 +1680,25 @@ describe('Ant private chain transport lifecycle', () => {
     await starting;
     expect(ctx.bridge.close).toHaveBeenCalled();
     expect(ctx.spawn).not.toHaveBeenCalled();
+  });
+
+  test('an identity block that arrives during bridge startup stops the start', async () => {
+    let ready, entered;
+    const began = new Promise((resolve) => { entered = resolve; });
+    const startBridge = jest.fn(() => {
+      entered();
+      return new Promise((resolve) => { ready = resolve; });
+    });
+    const ctx = loadAntManagerModule({ startBridge });
+    const starting = ctx.mod.startAnt();
+    await began;
+    // Identity injection begins re-keying Bee meanwhile.
+    require('./core/node-identity-guard').blockNode('bee', 'writing');
+    ready(ctx.bridge);
+    await starting;
+    expect(ctx.bridge.close).toHaveBeenCalled();
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.mod.getStatus().status).toBe('error');
   });
 
   test('unexpected exit and spawn error revoke their bridge; URLs stay out of logs', async () => {

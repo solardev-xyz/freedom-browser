@@ -155,7 +155,7 @@ describe('CoreClient', () => {
       }),
     ]);
     const hello = await client.start();
-    expect(hello).toEqual(helloResult());
+    expect(hello).toEqual({ ...helloResult(), node_recovery: null });
     const [command, args, options] = spawn.mock.calls[0];
     expect(command).toBe('/bin/freedom-cored');
     expect(args).toEqual(['serve']);
@@ -550,7 +550,31 @@ describe('CoreClient', () => {
       ['null', null],
       ['a bad version', helloResult({ core_version: 'x y' })],
       ['non-string capabilities', helloResult({ capabilities: [1] })],
+      ['an unknown node_recovery status', helloResult({ node_recovery: { status: 'ok' } })],
+      [
+        'a bad node_recovery node',
+        helloResult({ node_recovery: { status: 'corrupt', node: 'x' } }),
+      ],
+      [
+        'a bad node_recovery op id',
+        helloResult({ node_recovery: { status: 'corrupt', op_id: 'a b' } }),
+      ],
     ];
+    test('a valid node_recovery report is kept, extra fields dropped', async () => {
+      const report = { status: 'pending_recovery', op_id: 'op-1', node: 'bee' };
+      const { client } = makeClient([
+        (m, core) =>
+          m.method === 'core.hello' &&
+          core.reply({
+            type: 'response',
+            id: m.id,
+            result: helloResult({ node_recovery: { ...report, secret: 'x' } }),
+          }),
+      ]);
+      const hello = await client.start();
+      expect(hello.node_recovery).toEqual(report);
+    });
+
     test.each(badHellos)('a hello result with %s is refused', async (_name, result) => {
       const { client, children, spawn } = makeClient([
         (m, core) =>

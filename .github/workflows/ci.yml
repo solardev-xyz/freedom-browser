@@ -577,6 +577,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run Freedom Myotis resolver E2E
         shell: bash
         env:
@@ -722,6 +731,15 @@ jobs:
           # GitHub's API; the token avoids its anonymous rate limit.
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run settings + internal-page E2E
         run: >-
           xvfb-run -a npm run test:e2e --
@@ -779,6 +797,15 @@ jobs:
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run zoom + shortcuts E2E
         run: xvfb-run -a npm run test:e2e -- test-e2e/zoom.spec.js test-e2e/shortcuts.spec.js
@@ -918,6 +945,15 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + popup-close + ant-api-guard E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
@@ -1000,6 +1036,15 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run address-bar + ENSv2 + name-interstitial E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
@@ -1062,6 +1107,15 @@ jobs:
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run wallet approval E2E
         run: |
@@ -1162,6 +1216,15 @@ jobs:
           node -e "require('electron')"
           npx jest src/main/ens/colibri-runtime.test.js
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run Safe E2E
         env:
           FREEDOM_SAFE_E2E_REQUIRED: '1'
@@ -1216,6 +1279,15 @@ jobs:
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads E2E
         run: |
@@ -1375,6 +1447,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run the IPFS clean-quit E2E (headless)
         run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/ipfs-quit.spec.js
 
@@ -1496,6 +1577,15 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run ad blocking E2E (headless)
         run: >-
           xvfb-run -a npm run test:e2e:live --
@@ -1554,6 +1644,15 @@ jobs:
       - name: Warm the Electron binary download
         run: node -e "require('electron')"
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run Chrome Web Store live E2E (headless)
         run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/chrome-webstore.spec.js
 
@@ -1601,6 +1700,15 @@ jobs:
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run address-bar clipboard E2E
         shell: bash
@@ -1674,6 +1782,15 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run close-tab and tab-switch shortcut E2E
         shell: bash
         run: |
@@ -1729,6 +1846,15 @@ jobs:
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run profile lifecycle E2E
         shell: bash
@@ -1836,6 +1962,15 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run theme parity E2E
         run: xvfb-run -a npm run test:e2e -- test-e2e/theme-parity.spec.js
 
@@ -1885,6 +2020,15 @@ jobs:
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Compare renderer screenshots
         run: xvfb-run -a npm run test:e2e:screenshots

@@ -14,13 +14,8 @@ jest.mock('electron-log', () => ({
 }));
 
 jest.mock('../identity-manager', () => ({
-  getDerivedKeys: jest.fn(() => ({
-    beeWallet: { address: '0xbee', privateKey: '0xkey' },
-  })),
-  getPublisherKey: jest.fn(async (index) => ({
-    address: `0xpublisher${index}`,
-    privateKey: `0xpublisherkey${index}`,
-  })),
+  getBeeWalletAddress: jest.fn(async () => '0xbee'),
+  getPublisherAddress: jest.fn(async (index) => `0xpublisher${index}`),
   getDerivedWallets: jest.fn(async () => []),
 }));
 
