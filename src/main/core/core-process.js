@@ -11,7 +11,7 @@ const { app } = require('electron');
 const log = require('../logger');
 const { getIdentityDataDir } = require('../profile-paths');
 const { CoreClient } = require('./core-client');
-const { setStartupRecovery } = require('./node-identity-guard');
+const guard = require('./node-identity-guard');
 
 let client = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
@@ -58,6 +58,7 @@ function getLockDir() {
 
 async function startCore() {
   if (!isCoreEnabled() || shutDown || client) return client;
+  guard.setIdentityDir(getIdentityDataDir());
   client = new CoreClient({
     spawn,
     command: getCoredBinaryPath(),
@@ -75,13 +76,15 @@ async function startCore() {
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
   // Every (re)start reports node identity writes recovery couldn't finish;
-  // those nodes stay stopped.
+  // those nodes stay stopped. Between an exit and the next report, nothing
+  // is known (node-identity-guard.js).
   client.on('ready', (hello) => {
     if (hello.node_recovery) {
       log.error('[Core] node identity recovery pending', hello.node_recovery);
     }
-    setStartupRecovery(hello.node_recovery);
+    guard.setStartupRecovery(hello.node_recovery);
   });
+  client.on('exit', () => guard.setRecoveryUnknown());
   const starting = client;
   let hello;
   try {

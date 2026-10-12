@@ -160,6 +160,13 @@ async function startRadicleInternal() {
   updateState(STATUS.STARTING);
   try {
     const radHome = await prepareRadicleDataDir();
+    // Again at the boundary: an identity write may have begun meanwhile.
+    const blockedNow = nodeBlockReason('radicle');
+    if (blockedNow) {
+      clearService('radicle');
+      updateState(STATUS.ERROR, blockedNow);
+      return getCurrentStatus();
+    }
     const result = await embedded.start(radHome, 'FreedomBrowser');
     updateService('radicle', {
       api: 'radapi://local',

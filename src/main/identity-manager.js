@@ -54,6 +54,8 @@ let injectedNodes = {
 
 // Vault metadata file
 const VAULT_META_FILE = 'vault-meta.json';
+// The core's vault file (freedom-core fc-vault); only its existence is read here.
+const VAULT_FILE = 'identity-vault.json';
 const LEGACY_NON_CATALOG_BEE_API_PORT = 1633;
 const LEGACY_NON_CATALOG_BEE_P2P_PORT = 1634;
 
@@ -134,11 +136,35 @@ function saveNewVaultMeta(addresses, userKnowsPassword) {
 }
 
 /**
+ * Finishes a create or import whose reply was lost, once the core has
+ * confirmed it committed (design 0001, "Reconciliation"): main does what the
+ * caller's success path would have done. vault-meta.json must be written (a
+ * failure is retried); a Quick Setup vault's random password is stored for
+ * quick unlock, because nobody else knows it.
+ */
+async function finishLostSetup(found, password, userKnowsPassword) {
+  saveNewVaultMeta(found.addresses, userKnowsPassword);
+  if (userKnowsPassword) return;
+  try {
+    await require('./quick-unlock').completeQuickSetup(password);
+  } catch (err) {
+    console.error('[IdentityManager] Could not store the Quick Setup credential:', err.message);
+  }
+}
+
+/**
  * Check if a vault exists
  * @returns {Promise<boolean>}
  */
 async function hasVault() {
-  return (await vaultBackend.status()).exists;
+  try {
+    return (await vaultBackend.status()).exists;
+  } catch (err) {
+    if (err.code !== 'core_unavailable') throw err;
+    // The core is down. The file still tells whether this profile has a
+    // vault (as before the core), so nodes keep their vault-backed mode.
+    return fs.existsSync(path.join(getIdentityDataDir(), VAULT_FILE));
+  }
 }
 
 /**
@@ -159,9 +185,7 @@ async function isVaultUnlocked() {
 async function createNewVault(password, strength = 256, userKnowsPassword = true) {
   const { mnemonic, addresses } = await vaultBackend.createVault(password, strength, {
     userKnowsPassword,
-    // If the reply was lost and the core only came back later, the
-    // reconciled vault still gets its metadata (design 0001).
-    onCommitted: (found) => saveNewVaultMeta(found.addresses, userKnowsPassword),
+    onCommitted: (found) => finishLostSetup(found, password, userKnowsPassword),
   });
   console.log('[IdentityManager] New vault created');
   // The core unlocks after creation, as before; save the public addresses
@@ -180,7 +204,7 @@ async function createNewVault(password, strength = 256, userKnowsPassword = true
 async function importExistingMnemonic(password, mnemonic, userKnowsPassword = true) {
   const { addresses } = await vaultBackend.importVault(password, mnemonic, {
     overwrite: false,
-    onCommitted: (found) => saveNewVaultMeta(found.addresses, userKnowsPassword),
+    onCommitted: (found) => finishLostSetup(found, password, userKnowsPassword),
   });
   console.log('[IdentityManager] Mnemonic imported to vault');
   saveNewVaultMeta(addresses, userKnowsPassword);
@@ -554,21 +578,35 @@ async function injectBeeIdentity() {
   const apiPort = getBeeApiPortForIdentityConfig();
   const p2pPort = getBeeP2pPortForIdentityConfig();
 
+  // The public address first: a write reconciled after a lost reply only
+  // reports its status.
+  const expected = await deriveAddresses();
+  if (!expected) throw new Error(VAULT_LOCKED_MESSAGE);
+
   // Ensure directory exists
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // Stop Bee (if running) and wipe its stale state before writing fresh keys.
-  const beeWasRunning = await wipeStaleBeeState(dataDir);
-
-  // The core writes keys/swarm.key (under a fresh random keystore password,
-  // separate from the vault password) and config.yaml together, through its
-  // journal, so the keystore and its password always match.
-  const result = await vaultBackend.writeNodeIdentity(
-    { node: 'bee', data_dir: dataDir, api_port: apiPort, p2p_port: p2pPort },
-    crypto.randomUUID()
-  );
+  // From here until the write is known to be installed, Bee must not start:
+  // its files may be wiped or half written (node-identity-guard.js).
+  blockNode('bee', 'writing');
+  let beeWasRunning;
+  let result;
+  try {
+    // Stop Bee (if running) and wipe its stale state before writing fresh keys.
+    beeWasRunning = await wipeStaleBeeState(dataDir);
+    // The core writes keys/swarm.key (under a fresh random keystore password,
+    // separate from the vault password) and config.yaml together, through
+    // its journal, so the keystore and its password always match.
+    result = await vaultBackend.writeNodeIdentity(
+      { node: 'bee', data_dir: dataDir, api_port: apiPort, p2p_port: p2pPort },
+      crypto.randomUUID()
+    );
+  } catch (err) {
+    blockNode('bee', 'pending_recovery');
+    throw err;
+  }
   if (result.status !== 'installed') {
     // Keep Bee stopped until a later write installs its identity.
     blockNode('bee', result.status);
@@ -588,7 +626,7 @@ async function injectBeeIdentity() {
     }
   }
 
-  const address = result.address || (await getBeeWalletAddress());
+  const address = result.address || expected.bee_wallet;
   console.log(`[IdentityManager] Bee identity injected: ${address}`);
   return { address };
 }
@@ -634,21 +672,31 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
-  // routing db, etc.) becomes invalid. Remove stale state directories.
-  const staleDirs = ['node', 'cobs', 'storage'];
-  for (const dir of staleDirs) {
-    if (await removePathWithRetry(path.join(dataDir, dir))) {
-      console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
-    }
-  }
+  const expected = await deriveAddresses();
+  if (!expected) throw new Error(VAULT_LOCKED_MESSAGE);
 
-  // The core writes keys/radicle, keys/radicle.pub and the config.json alias
-  // together, through its journal.
-  const result = await vaultBackend.writeNodeIdentity(
-    { node: 'radicle', home: dataDir, alias },
-    crypto.randomUUID()
-  );
+  blockNode('radicle', 'writing');
+  let result;
+  try {
+    // When re-injecting with a new key, Radicle's persisted node state
+    // (fingerprint, routing db, etc.) becomes invalid. Remove stale state
+    // directories.
+    const staleDirs = ['node', 'cobs', 'storage'];
+    for (const dir of staleDirs) {
+      if (await removePathWithRetry(path.join(dataDir, dir))) {
+        console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+      }
+    }
+    // The core writes keys/radicle, keys/radicle.pub and the config.json
+    // alias together, through its journal.
+    result = await vaultBackend.writeNodeIdentity(
+      { node: 'radicle', home: dataDir, alias },
+      crypto.randomUUID()
+    );
+  } catch (err) {
+    blockNode('radicle', 'pending_recovery');
+    throw err;
+  }
   if (result.status !== 'installed') {
     blockNode('radicle', result.status);
     throw new Error(`The Radicle identity write did not finish (${result.status})`);
@@ -657,7 +705,7 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
 
   injectedNodes.radicle = true;
 
-  const did = result.did || (await deriveAddresses())?.radicle?.did;
+  const did = result.did || expected.radicle.did;
   console.log(`[IdentityManager] Radicle identity injected: ${did}`);
   return { did };
 }

@@ -192,6 +192,20 @@ async function enableQuickUnlock(password) {
 }
 
 /**
+ * Stores a Quick Setup vault's random password as the quick-unlock
+ * credential, for a setup the core confirmed only after its reply was lost
+ * (freedom-core design 0001, "Reconciliation"). The onboarding renderer that
+ * started it may be gone and nobody else knows this password, so main
+ * finishes the setup the user chose. Main-internal only.
+ */
+async function completeQuickSetup(password) {
+  if (!isSecureStorageAvailable()) throw new Error('Secure storage not available');
+  await verifyCredentialPassword(password);
+  writeCredential(password);
+  console.log('[QuickUnlock] Quick Setup credential stored after reconciliation');
+}
+
+/**
  * Touch ID, then the stored vault password — main-internal only. The
  * password never crosses IPC: every caller below finishes the job
  * (unlock, export) in main and returns only its outcome (security audit
@@ -355,6 +369,7 @@ function registerQuickUnlockIpc() {
 
 module.exports = {
   CREDENTIAL_VERSION,
+  completeQuickSetup,
   canUseTouchId,
   isSecureStorageAvailable,
   isQuickUnlockEnabled,

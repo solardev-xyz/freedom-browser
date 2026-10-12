@@ -607,6 +607,15 @@ function startDisabledAnt() {
   log.info('[Ant] Disabled for active profile');
 }
 
+/** Reports and returns true if Bee's identity must not be used now. */
+function identityBlockedNow() {
+  const identityBlock = nodeBlockReason('bee');
+  if (!identityBlock) return false;
+  updateState(STATUS.ERROR, identityBlock);
+  setStatusMessage('ant', 'Node failed to start');
+  return true;
+}
+
 async function startAnt() {
   if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
     log.info(`[Ant] Ignoring start request, current state: ${currentState}`);
@@ -645,12 +654,7 @@ async function startAnt() {
   // Every remaining path runs this profile's own antd on the injected
   // identity. If the core couldn't finish writing that identity, don't start
   // it on a mismatched keystore and config (freedom-core design 0001).
-  const identityBlock = nodeBlockReason('bee');
-  if (identityBlock) {
-    updateState(STATUS.ERROR, identityBlock);
-    setStatusMessage('ant', 'Node failed to start');
-    return;
-  }
+  if (identityBlockedNow()) return;
 
   // Step 1: Legacy/profile-dir launches may still opt into a system daemon,
   // as answered in the launch prompt (profile-external-candidates.js, #218).
@@ -821,6 +825,10 @@ async function startAnt() {
   noteAntApiUrl(currentApiUrl);
   currentMode = MODE.BUNDLED;
 
+  // Again at the boundary: an identity write may have begun during the
+  // awaits above (node-identity-guard.js).
+  if (identityBlockedNow()) return;
+
   let configPath;
   try {
     configPath = ensureConfig(dataDir, apiPort, p2pPort);
@@ -856,6 +864,10 @@ async function startAnt() {
   try {
     bridge = await startAntChainBridge({ allowBroadcast: true });
     if (generation !== startGeneration) {
+      await bridge.close();
+      return;
+    }
+    if (identityBlockedNow()) {
       await bridge.close();
       return;
     }

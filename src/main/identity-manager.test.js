@@ -169,6 +169,118 @@ describe('identity-manager profile paths', () => {
   });
 });
 
+describe('identity-manager and the core (freedom-browser#651 review)', () => {
+  let tempDirs = [];
+  let envSnapshot;
+
+  beforeEach(() => {
+    tempDirs = [];
+    envSnapshot = snapshotEnv();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    restoreEnv(envSnapshot);
+    for (const dir of tempDirs) removeTempUserDataDir(dir);
+    jest.restoreAllMocks();
+  });
+
+  function setup(backend, extraMocks = {}) {
+    const dirs = {};
+    for (const name of ['userData', 'identity', 'ant', 'radicle']) {
+      dirs[name] = createTempUserDataDir(`identity-manager-${name}-`);
+      tempDirs.push(dirs[name]);
+    }
+    process.env.FREEDOM_IDENTITY_DATA = dirs.identity;
+    process.env.FREEDOM_ANT_DATA = dirs.ant;
+    process.env.FREEDOM_RADICLE_DATA = dirs.radicle;
+    const activeProfile = {
+      id: 'profiled',
+      source: 'catalog',
+      metadata: { nodes: { bee: { apiPort: 11644, p2pPort: 12644 } } },
+    };
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: dirs.userData,
+      extraMocks: {
+        ...vaultBackendMocks(backend),
+        [require.resolve('./profile-resolver')]: () => ({
+          getActiveProfile: jest.fn(() => activeProfile),
+        }),
+        ...extraMocks,
+      },
+    });
+    const guard = require('./core/node-identity-guard');
+    guard.setStartupRecovery(null);
+    return { mod, guard, dirs };
+  }
+
+  const unavailable = () =>
+    Object.assign(new Error('The core exited'), { code: 'core_unavailable' });
+
+  test('a node is blocked from before its wipe until a write installs it', async () => {
+    const backend = makeVaultBackendMock({ exists: true, unlocked: true });
+    const { mod, guard } = setup(backend);
+    let duringWrite;
+    backend.writeNodeIdentity.mockImplementationOnce(async () => {
+      duringWrite = guard.nodeBlockReason('bee');
+      throw unavailable();
+    });
+    await expect(mod.injectBeeIdentity()).rejects.toThrow('The core exited');
+    expect(duringWrite).toMatch(/being updated/);
+    // Outcome unknown: Bee stays blocked, even after the core reports again.
+    expect(guard.nodeBlockReason('bee')).toMatch(/did not finish/);
+    guard.setStartupRecovery(null);
+    expect(guard.nodeBlockReason('bee')).toMatch(/did not finish/);
+    // A reconciled install reports only its status; the address comes from
+    // the vault, read before the write.
+    backend.writeNodeIdentity.mockResolvedValueOnce({ status: 'installed', reconciled: true });
+    await expect(mod.injectBeeIdentity()).resolves.toEqual({ address: '0xbee' });
+    expect(guard.nodeBlockReason('bee')).toBeNull();
+
+    backend.writeNodeIdentity.mockResolvedValueOnce({ status: 'corrupt', reconciled: true });
+    await expect(mod.injectRadicleIdentity()).rejects.toThrow('(corrupt)');
+    expect(guard.nodeBlockReason('radicle')).toMatch(/set up node identities again/);
+    backend.writeNodeIdentity.mockResolvedValueOnce({ status: 'installed', reconciled: true });
+    await expect(mod.injectRadicleIdentity()).resolves.toEqual({ did: 'did:key:zTest' });
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
+  });
+
+  test('hasVault reads the vault file while the core is down', async () => {
+    const backend = makeVaultBackendMock({ exists: false, unlocked: false });
+    const { mod, dirs } = setup(backend);
+    backend.status.mockRejectedValue(unavailable());
+    await expect(mod.hasVault()).resolves.toBe(false);
+    fs.writeFileSync(path.join(dirs.identity, 'identity-vault.json'), '{}');
+    await expect(mod.hasVault()).resolves.toBe(true);
+    backend.status.mockRejectedValueOnce(Object.assign(new Error('bad'), { code: 'internal' }));
+    await expect(mod.hasVault()).rejects.toThrow('bad');
+  });
+
+  test('a lost Quick Setup is finished by main: metadata, then the credential', async () => {
+    const completeQuickSetup = jest.fn(async () => {});
+    const backend = makeVaultBackendMock({ exists: false, unlocked: false });
+    const { mod, dirs } = setup(backend, {
+      [require.resolve('./quick-unlock')]: () => ({ completeQuickSetup }),
+    });
+    await mod.importExistingMnemonic('random-pass', 'abandon about', false);
+    const { onCommitted } = backend.importVault.mock.calls[0][2];
+    const metaPath = path.join(dirs.identity, 'vault-meta.json');
+    fs.rmSync(metaPath);
+    await onCommitted({ addresses: { user_wallet: '0xu', bee_wallet: '0xb' } });
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    expect(meta).toMatchObject({
+      userKnowsPassword: false,
+      addresses: { userWallet: '0xu', beeWallet: '0xb' },
+    });
+    expect(completeQuickSetup).toHaveBeenCalledWith('random-pass');
+    // A password the user knows needs no credential.
+    await mod.createNewVault('password123');
+    await backend.createVault.mock.calls[0][2].onCommitted({ addresses: {} });
+    expect(completeQuickSetup).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('identity-manager wallet deletion', () => {
   let tmpDir;
   let envSnapshot;

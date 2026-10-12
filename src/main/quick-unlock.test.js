@@ -151,6 +151,29 @@ describe('quick-unlock', () => {
     expect(verifyPassword).toHaveBeenCalledWith('password-a');
   });
 
+  test('completeQuickSetup stores a verified password without prompting', async () => {
+    const userDataDir = tempUserData();
+    const identityDir = path.join(userDataDir, 'identity');
+    writeVault(identityDir);
+    const profile = makeProfile('work', userDataDir);
+    const { mod, verifyPassword, systemPreferences } = loadQuickUnlock({
+      activeProfile: profile,
+      userDataDir,
+    });
+
+    await mod.completeQuickSetup('random-pass');
+    expect(verifyPassword).toHaveBeenCalledWith('random-pass');
+    expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+    const payload = JSON.parse(
+      fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'), 'utf-8')
+    );
+    expect(payload.encrypted).toBe(Buffer.from('encrypted:random-pass').toString('base64'));
+
+    // A password the vault doesn't take is never stored.
+    verifyPassword.mockRejectedValueOnce(new Error('Incorrect password'));
+    await expect(mod.completeQuickSetup('wrong')).rejects.toThrow('Incorrect password');
+  });
+
   test('hides a bound credential when the active profile does not match', async () => {
     const sharedIdentityDir = tempUserData();
     process.env.FREEDOM_IDENTITY_DATA = sharedIdentityDir;

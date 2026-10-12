@@ -207,6 +207,135 @@ describe('vaultBackend', () => {
     ).resolves.toEqual({ status: 'installed', reconciled: true });
   });
 
+  test('mutations run one at a time, through reconciliation (M1)', async () => {
+    let releaseImport;
+    const order = [];
+    const core = new FakeCore(async (method) => {
+      order.push(method);
+      if (method === 'vault.status') return { exists: true, fingerprint: FP };
+      if (method === 'vault.import') {
+        await new Promise((resolve) => (releaseImport = resolve));
+        throw coreError('core_unavailable', 'The core exited');
+      }
+      if (method === 'vault.reconcile') return { status: 'committed', addresses: {} };
+      return {};
+    });
+    const { vaultBackend } = load(core);
+    const importing = vaultBackend.importVault('password1', 'abandon about', { overwrite: true });
+    const changing = vaultBackend.changePassword('password1', 'password2');
+    await new Promise((resolve) => setImmediate(resolve));
+    // The change waits for the import, including its reconciliation.
+    expect(order).not.toContain('vault.change_password');
+    releaseImport();
+    await expect(importing).resolves.toMatchObject({ addresses: {} });
+    await changing;
+    expect(order.indexOf('vault.reconcile')).toBeLessThan(order.indexOf('vault.change_password'));
+  });
+
+  test('a pending mutation is settled as soon as the core is ready (M2)', async () => {
+    let up = false;
+    const onCommitted = jest.fn();
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      if (method === 'vault.import') throw coreError('core_unavailable', 'The core exited');
+      if (method === 'vault.reconcile') {
+        if (!up) throw coreError('core_unavailable', 'The core is not running');
+        return { status: 'committed', addresses: { user_wallet: '0x1' } };
+      }
+      return {};
+    });
+    const { vaultBackend, _internal } = load(core);
+    await expect(
+      vaultBackend.importVault('password1', 'abandon about', { onCommitted })
+    ).rejects.toMatchObject({ code: 'core_unavailable' });
+    expect(_internal.hasPending()).toBe(true);
+    up = true;
+    core.emit('ready', {});
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onCommitted).toHaveBeenCalledWith(
+      expect.objectContaining({ addresses: { user_wallet: '0x1' } })
+    );
+    expect(_internal.hasPending()).toBe(false);
+  });
+
+  test('a failed continuation stays pending and is retried (N1)', async () => {
+    const onCommitted = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockResolvedValueOnce(undefined);
+    let reconciles = 0;
+    let up = false;
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      if (method === 'vault.create') throw coreError('core_unavailable', 'The core exited');
+      if (method === 'vault.reconcile') {
+        if (!up) throw coreError('core_unavailable', 'The core is not running');
+        reconciles += 1;
+        return { status: 'committed', mnemonic_b64: b64('m'), addresses: {} };
+      }
+      return {};
+    });
+    const { vaultBackend, _internal } = load(core);
+    await expect(vaultBackend.createVault('password1', 256, { onCommitted })).rejects.toThrow();
+    up = true;
+    // The continuation fails: still pending, and the delete isn't sent.
+    await expect(vaultBackend.deleteVault('password1')).rejects.toThrow('disk full');
+    expect(_internal.hasPending()).toBe(true);
+    expect(core.calls.some((c) => c.method === 'vault.delete')).toBe(false);
+    // Retried without reconciling again; then the delete runs.
+    await vaultBackend.deleteVault('password1');
+    expect(onCommitted).toHaveBeenCalledTimes(2);
+    expect(reconciles).toBe(1);
+    expect(core.calls.some((c) => c.method === 'vault.delete')).toBe(true);
+  });
+
+  test('retrying the same lost request returns what it committed', async () => {
+    let up = false;
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: !!up, fingerprint: up ? FP : null };
+      if (method === 'vault.create') throw coreError('core_unavailable', 'The core exited');
+      if (method === 'vault.reconcile') {
+        if (!up) throw coreError('core_unavailable', 'The core is not running');
+        return { status: 'committed', mnemonic_b64: b64('abandon about'), addresses: {} };
+      }
+      return {};
+    });
+    const { vaultBackend } = load(core);
+    await expect(vaultBackend.createVault('password1', 128)).rejects.toThrow();
+    up = true;
+    // Not "vault exists": the same create, committed by the first attempt.
+    await expect(vaultBackend.createVault('password1', 128)).resolves.toMatchObject({
+      mnemonic: 'abandon about',
+    });
+    expect(core.calls.filter((c) => c.method === 'vault.create')).toHaveLength(1);
+    // A different create still finds the vault.
+    await expect(vaultBackend.createVault('other-pass1', 128)).rejects.toMatchObject({
+      code: 'vault_exists',
+    });
+  });
+
+  test('node writes: an unknown or uncommitted outcome throws; others report status', async () => {
+    let status = 'pending_recovery';
+    let ready = true;
+    const core = new FakeCore((method) => {
+      if (method === 'nodes.write_identity') throw coreError('core_unavailable', 'The core exited');
+      if (method === 'nodes.op_status') {
+        if (!ready) throw coreError('core_unavailable', 'The core is not running');
+        return { status };
+      }
+      return {};
+    });
+    const { vaultBackend } = load(core);
+    const write = () => vaultBackend.writeNodeIdentity({ node: 'radicle', home: '/h' }, 'op-2');
+    await expect(write()).resolves.toEqual({ status: 'pending_recovery', reconciled: true });
+    status = 'corrupt';
+    await expect(write()).resolves.toEqual({ status: 'corrupt', reconciled: true });
+    status = 'not_committed';
+    await expect(write()).rejects.toMatchObject({ code: 'core_unavailable' });
+    ready = false;
+    await expect(write()).rejects.toMatchObject({ code: 'core_unavailable' });
+  });
+
   test('radicle DID from raw public key bytes', async () => {
     const core = new FakeCore((method, params) => ({ did: `did:key:${params.public_key}` }));
     const { vaultBackend } = load(core);

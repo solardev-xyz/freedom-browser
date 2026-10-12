@@ -8,13 +8,16 @@
  *   or as `private_key_hex`.
  * - Core errors become `Error`s with the JS message (the core sends the
  *   parity strings) and a `code`.
- * - Lost replies are reconciled (design 0001, "Reconciliation"): every vault
- *   mutation records `vault.status` first. If the core dies before replying,
- *   this waits for the restarted core and asks `vault.reconcile` whether the
- *   mutation committed. If the core can't come back, the operation stays
- *   pending and no other mutation runs until it has been reconciled.
+ * - Vault mutations run one at a time (design 0001, "Reconciliation"), so
+ *   the `vault.status` recorded before each belongs to exactly that
+ *   operation. If the core dies before replying, this waits for the
+ *   restarted core and asks `vault.reconcile` whether the mutation committed.
+ *   If the core can't come back, the operation stays pending: it is settled,
+ *   with its continuation, as soon as the core is ready again, and no other
+ *   mutation runs before that.
  */
 
+const log = require('../logger');
 const { getCoreClient } = require('./core-process');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
@@ -62,18 +65,38 @@ async function call(method, params = {}) {
 let locks = 0;
 let watchedClient = null;
 
-function watchLocks() {
+function watchCore() {
   const core = getCoreClient();
   if (!core || core === watchedClient) return;
   watchedClient = core;
   core.on('event', (name) => {
     if (name === 'vault.locked') locks += 1;
   });
+  // A lost mutation is settled as soon as the core is back.
+  core.on('ready', () => {
+    if (pending) drain();
+  });
 }
 
-// ---- reconciliation ----
+// ---- mutations: one at a time, with reconciliation ----
 
-/** A mutation whose reply was lost and that couldn't be reconciled yet. */
+// Everything from settling an earlier lost mutation, through the status
+// snapshot and the call, to reconciliation and its continuation, runs in
+// this queue. Locks, unlocks and reads stay outside it.
+let queue = Promise.resolve();
+
+function serialized(task) {
+  const run = queue.then(task);
+  queue = run.catch(() => {});
+  return run;
+}
+
+/**
+ * A mutation whose reply was lost and that isn't settled yet:
+ * `{ op, password, mnemonic?, install, before, locksAtStart, onCommitted? }`.
+ * `found` is set once reconciliation has established the commit; the record
+ * stays until its continuation has succeeded too.
+ */
 let pending = null;
 
 async function reconcile(record) {
@@ -87,41 +110,78 @@ async function reconcile(record) {
   return result.status === 'committed' ? result : null;
 }
 
-/** Settles an earlier lost mutation before any new one runs. */
+/**
+ * Settles the pending mutation, if any: reconciles it (throws while the core
+ * is still down), then runs its continuation (a failure keeps it pending, to
+ * be retried). Returns `{ record, found }` when it had committed.
+ */
 async function settlePending() {
-  if (!pending) return;
+  if (!pending) return null;
   const record = pending;
-  const found = await reconcile(record); // throws while the core is still down
+  if (!record.found) {
+    const found = await reconcile(record);
+    if (!found) {
+      pending = null;
+      return null;
+    }
+    record.found = found;
+  }
+  if (record.onCommitted) await record.onCommitted(record.found);
   pending = null;
-  if (found && record.onCommitted) await record.onCommitted(found);
+  return { record, found: record.found };
+}
+
+function drain() {
+  serialized(settlePending).catch((err) => {
+    log.warn('[VaultBackend] A lost vault operation is still unsettled', { code: err.code });
+  });
+}
+
+function sameRequest(a, b) {
+  return (
+    a.op === b.op && a.password === b.password && (a.mnemonic || null) === (b.mnemonic || null)
+  );
 }
 
 /**
  * Runs a vault mutation with lost-reply reconciliation.
+ * @param {string} method
+ * @param {object|Function} params - or a function returning them, called
+ *   after `precheck`
  * @param {object} record - { op, password, mnemonic?, install, onCommitted? }
+ * @param {Function} [precheck] - runs once earlier work is settled
  */
-async function mutate(method, params, record) {
-  watchLocks();
-  await settlePending();
-  const status = await call('vault.status');
-  const full = { ...record, before: status.fingerprint, locksAtStart: locks };
-  try {
-    return await call(method, params);
-  } catch (err) {
-    // Error replies always mean "not committed"; only a missing reply needs
-    // reconciliation.
-    if (err.code !== CORE_UNAVAILABLE) throw err;
-    let found;
-    try {
-      await client().whenReady();
-      found = await reconcile(full);
-    } catch {
-      pending = full;
-      throw err;
+function mutate(method, params, record, precheck) {
+  watchCore();
+  return serialized(async () => {
+    const settled = await settlePending();
+    // The same request again (a retry after `core_unavailable`) gets the
+    // result its first attempt committed.
+    if (settled && sameRequest(settled.record, record)) {
+      return { ...settled.found, reconciled: true };
     }
-    if (!found) throw err;
-    return { ...found, reconciled: true };
-  }
+    if (precheck) await precheck();
+    const request = typeof params === 'function' ? params() : params;
+    const status = await call('vault.status');
+    const full = { ...record, before: status.fingerprint, locksAtStart: locks };
+    try {
+      return await call(method, request);
+    } catch (err) {
+      // Error replies always mean "not committed"; only a missing reply needs
+      // reconciliation.
+      if (err.code !== CORE_UNAVAILABLE) throw err;
+      let found;
+      try {
+        await client().whenReady();
+        found = await reconcile(full);
+      } catch {
+        pending = full;
+        throw err;
+      }
+      if (!found) throw err;
+      return { ...found, reconciled: true };
+    }
+  });
 }
 
 // ---- local checks main keeps (parity with the JS it replaces) ----
@@ -166,18 +226,21 @@ const vaultBackend = {
    *   the core only came back later (e.g. writing vault-meta.json)
    */
   async createVault(password, strength = 256, { userKnowsPassword = true, onCommitted } = {}) {
-    // JS order: an existing vault, then the strength, then the password.
-    if ((await call('vault.status')).exists) {
-      throw new VaultBackendError(
-        'vault_exists',
-        'Vault already exists. Use importVault to replace.'
-      );
-    }
-    const words = wordsFor(strength);
+    let words;
     const result = await mutate(
       'vault.create',
-      { password_b64: b64(password), words, user_knows_password: userKnowsPassword },
-      { op: 'create', password, install: true, onCommitted }
+      () => ({ password_b64: b64(password), words, user_knows_password: userKnowsPassword }),
+      { op: 'create', password, install: true, onCommitted },
+      // JS order: an existing vault, then the strength, then the password.
+      async () => {
+        if ((await call('vault.status')).exists) {
+          throw new VaultBackendError(
+            'vault_exists',
+            'Vault already exists. Use importVault to replace.'
+          );
+        }
+        words = wordsFor(strength);
+      }
     );
     return { mnemonic: unb64(result.mnemonic_b64), addresses: result.addresses };
   },
@@ -196,12 +259,12 @@ const vaultBackend = {
 
   /** @returns {{ addresses: { user_wallet, bee_wallet } }} */
   unlock(password) {
-    watchLocks();
+    watchCore();
     return call('vault.unlock', { password_b64: b64(password) });
   },
 
   async lock() {
-    watchLocks();
+    watchCore();
     locks += 1;
     await call('vault.lock');
   },
@@ -284,10 +347,17 @@ const vaultBackend = {
       return await call('nodes.write_identity', { op_id: opId, ...spec });
     } catch (err) {
       if (err.code !== CORE_UNAVAILABLE) throw err;
-      await client().whenReady();
-      const { status } = await call('nodes.op_status', { op_id: opId });
-      if (status === 'installed') return { status, reconciled: true };
-      throw err;
+      let status;
+      try {
+        await client().whenReady();
+        ({ status } = await call('nodes.op_status', { op_id: opId }));
+      } catch {
+        throw err; // outcome unknown
+      }
+      // Never committed: the caller's node may already be wiped.
+      if (status === 'not_committed') throw err;
+      // installed, pending_recovery or corrupt; only the status is known.
+      return { status, reconciled: true };
     }
   },
 };
@@ -302,6 +372,7 @@ module.exports = {
       locks = 0;
       watchedClient = null;
       pending = null;
+      queue = Promise.resolve();
     },
     hasPending: () => pending !== null,
   },
