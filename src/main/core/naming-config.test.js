@@ -50,8 +50,9 @@ describe('EndpointReferences', () => {
 
   test('a lookup counts as a use, and the current configuration is never forgotten', () => {
     const refs = new EndpointReferences();
+    refs.propose();
     const pinned = refs.ref('https://pinned.example');
-    refs.pin([pinned]);
+    refs.settle(true);
     const looked = refs.ref('https://looked.example');
     for (let i = 0; i < MAX_REMEMBERED + 10; i++) {
       refs.ref(`https://n${i}.example`);
@@ -135,93 +136,255 @@ describe('the snapshot', () => {
 });
 
 describe('NamingConfig', () => {
-  function fakeClient() {
+  const unavailable = () => Object.assign(new Error('unavailable'), { code: 'core_unavailable' });
+
+  /** A client whose core processes answer as `answer` says: `start()` makes
+   * a ready one, `end()` its child's exit (the 'exit' event comes with
+   * `exit()`, later). */
+  function fakeClient(
+    answer = (method) =>
+      method === 'naming.configure' ? { ens: 1, tezos: 1, lifecycle: 1 } : { lifecycle: 2 }
+  ) {
     const client = new EventEmitter();
-    client.request = jest.fn(async (method) =>
-      method === 'naming.configure' ? { ens: 1, tezos: 1 } : { lifecycle: 2 }
-    );
+    client.sent = []; // [process, method, params, context]
+    let number = 0;
+    client.start = () => {
+      number += 1;
+      client.current = { number, ready: true, ended: false };
+      client.hello = { protocol: 1 };
+      client.emit('ready', client.hello);
+    };
+    client.end = () => {
+      client.current.ended = true;
+    };
+    client.exit = () => {
+      client.current = null;
+      client.hello = null;
+      client.emit('exit', {});
+    };
+    client.requestTo = jest.fn(async (gen, method, params, context) => {
+      if (!gen || gen !== client.current || gen.ended) throw unavailable();
+      client.sent.push([gen.number, method, params, context]);
+      return answer(method, params, gen.number);
+    });
     return client;
   }
 
+  const methods = (client) => client.sent.map(([n, m]) => `${n}:${m}`);
+  const make = (client, extra = {}) =>
+    new NamingConfig({ client, sources: sources(extra), log: { warn: jest.fn() } });
+
   test('each handshake configures, then sends availability, under a new key', async () => {
     const client = fakeClient();
-    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
-    client.emit('ready');
-    await tick();
-    expect(client.request.mock.calls.map(([method]) => method)).toEqual([
-      'naming.configure',
-      'naming.availability',
-    ]);
-    const [, params, context] = client.request.mock.calls[0];
+    const config = make(client);
+    client.start();
+    expect(await config.whenReady()).toBe(true);
+    expect(methods(client)).toEqual(['1:naming.configure', '1:naming.availability']);
+    const [, , params, context] = client.sent[0];
     expect(params.reset).toBe('none');
     expect(context).toEqual({ caller: 'shell' });
-    expect(client.request.mock.calls[1][1]).toEqual({ ready: false, enabled: true });
+    expect(client.sent[1][2]).toEqual({ ready: false, enabled: true });
     expect(config.generations).toEqual({ ens: 1, tezos: 1, lifecycle: 2 });
-    const first = params.rpc[0].endpoint;
     // A new core process: a new key, so new references.
-    client.emit('exit');
-    client.emit('ready');
-    await tick();
-    expect(client.request.mock.calls[2][1].rpc[0].endpoint).not.toBe(first);
+    client.exit();
+    client.start();
+    await config.whenReady();
+    expect(client.sent[2][2].rpc[0].endpoint).not.toBe(params.rpc[0].endpoint);
   });
 
   test('a settings change resets providers; nothing goes without a core', async () => {
     const client = fakeClient();
-    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
+    const config = make(client);
     await config.configure({ reset: true });
-    expect(client.request).not.toHaveBeenCalled();
-    client.emit('ready');
-    await tick();
+    expect(client.sent).toEqual([]);
+    client.start();
     await config.configure({ reset: true });
-    expect(client.request.mock.calls.at(-1)[1].reset).toBe('providers');
+    // In order: after the initialization.
+    expect(methods(client)).toEqual([
+      '1:naming.configure',
+      '1:naming.availability',
+      '1:naming.configure',
+    ]);
+    expect(client.sent[2][2].reset).toBe('providers');
   });
 
   test('naming waits for initialization, which a failure leaves to retry', async () => {
-    const client = new EventEmitter();
     let fail = true;
-    client.request = jest.fn(async (method) => {
+    const client = fakeClient((method) => {
       if (method === 'naming.configure' && fail)
         throw Object.assign(new Error('x'), { code: 'invalid_argument' });
       return method === 'naming.configure' ? { ens: 1, tezos: 1, lifecycle: 0 } : { lifecycle: 1 };
     });
-    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
+    const config = make(client);
     expect(await config.whenReady()).toBe(false);
-    client.emit('ready');
+    client.start();
     expect(await config.whenReady()).toBe(false);
     // Availability waits for a configuration that took.
-    expect(client.request.mock.calls.map(([m]) => m)).toEqual([
-      'naming.configure',
-      'naming.configure',
-    ]);
+    expect(methods(client)).toEqual(['1:naming.configure', '1:naming.configure']);
     fail = false;
     expect(await config.whenReady()).toBe(true);
-    expect(client.request.mock.calls.map(([m]) => m).slice(-2)).toEqual([
-      'naming.configure',
-      'naming.availability',
-    ]);
+    expect(methods(client).slice(-2)).toEqual(['1:naming.configure', '1:naming.availability']);
     expect(config.generations).toEqual({ ens: 1, tezos: 1, lifecycle: 1 });
+  });
+
+  test('waiters on a failed initialization share one retry', async () => {
+    let fail = true;
+    const client = fakeClient((method) => {
+      if (method === 'naming.configure' && fail) throw unavailable();
+      return { ens: 1, tezos: 1, lifecycle: 1 };
+    });
+    const config = make(client);
+    client.start();
+    const waiting = [config.whenReady(), config.whenReady(), config.whenReady()];
+    // They all wait on the failing attempt, then on one retry.
+    await Promise.resolve();
+    fail = false;
+    expect(await Promise.all(waiting)).toEqual([true, true, true]);
+    expect(methods(client)).toEqual([
+      '1:naming.configure',
+      '1:naming.configure',
+      '1:naming.availability',
+    ]);
   });
 
   test('built after the handshake, it initializes at once', async () => {
     const client = fakeClient();
-    client.hello = { protocol: 1 };
-    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
+    client.start();
+    const config = make(client);
     expect(await config.whenReady()).toBe(true);
   });
 
   test('a provider reset takes the lifecycle the reply reports', async () => {
-    const client = fakeClient();
-    client.request = jest.fn(async (method, params) => {
+    const client = fakeClient((method, params) => {
       if (method === 'naming.availability') return { lifecycle: 1 };
       return { ens: 1, tezos: 1, lifecycle: params.reset === 'providers' ? 2 : 1 };
     });
-    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
-    client.emit('ready');
+    const config = make(client);
+    client.start();
     await config.whenReady();
     await config.configure({ reset: true });
     expect(config.generations.lifecycle).toBe(2);
     // A late, lower report never moves it back.
-    config.adopt({ lifecycle: 1 }, ['lifecycle']);
+    config.adopt(config.core, { lifecycle: 1 }, ['lifecycle']);
     expect(config.generations.lifecycle).toBe(2);
+  });
+
+  test('a new core process counts its generations from zero', async () => {
+    const client = fakeClient((method, _params, n) =>
+      n === 1 ? { ens: 20, tezos: 12, lifecycle: 9 } : { ens: 1, tezos: 0, lifecycle: 1 }
+    );
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    expect(config.generations).toEqual({ ens: 20, tezos: 12, lifecycle: 9 });
+    client.exit();
+    expect(config.generations).toEqual({ ens: 0, tezos: 0, lifecycle: 0 });
+    client.start();
+    expect(await config.whenReady()).toBe(true);
+    expect(config.generations).toEqual({ ens: 1, tezos: 0, lifecycle: 1 });
+  });
+
+  test('nothing meant for one core process reaches another', async () => {
+    let release;
+    const client = fakeClient((method, _params, n) => {
+      // The first process's first configure is held.
+      if (n === 1 && method === 'naming.configure' && !release) {
+        return new Promise((resolve) => {
+          release = () => resolve({ ens: 1, tezos: 1, lifecycle: 1 });
+        });
+      }
+      return { ens: 1, tezos: 1, lifecycle: 1 };
+    });
+    const config = make(client);
+    client.start();
+    const first = config.whenReady();
+    await Promise.resolve();
+    // Its child exits before the reply; a settings change comes while the
+    // client restarts, before 'exit'.
+    client.end();
+    const change = config.configure({ reset: true });
+    release();
+    expect(await first).toBe(false);
+    // Bound to the process that exited: it fails, and the next process's
+    // initialization reads the settings afresh.
+    await expect(change).rejects.toMatchObject({ code: 'core_unavailable' });
+    client.exit();
+    client.start();
+    expect(await config.whenReady()).toBe(true);
+    // The first process got its one configure; the second only its own.
+    expect(methods(client)).toEqual([
+      '1:naming.configure',
+      '2:naming.configure',
+      '2:naming.availability',
+    ]);
+    const second = config.core.refs;
+    expect(second.url(client.sent[1][2].rpc[0].endpoint)).toBe('https://a.rpc.example');
+  });
+
+  test('a refused proposal leaves the configuration the core runs mapped', async () => {
+    let urls = ['https://a.rpc.example'];
+    let refuse = false;
+    const client = fakeClient((method) => {
+      if (method === 'naming.configure' && refuse) throw unavailable();
+      return { ens: 1, tezos: 1, lifecycle: 1 };
+    });
+    const config = new NamingConfig({
+      client,
+      sources: sources({
+        ens: {
+          getEffectiveRpcEndpoints: () => urls,
+          getDirectRpcCandidate: () => ({ url: null }),
+          resolutionPolicy: () => ({ order: ['quorum'] }),
+        },
+      }),
+      log: { warn: jest.fn() },
+    });
+    client.start();
+    await config.whenReady();
+    const active = client.sent[0][2].rpc[0].endpoint;
+    refuse = true;
+    for (let round = 0; round < 20; round++) {
+      urls = Array.from({ length: MAX_RPC_ENDPOINTS }, (_, i) => `https://r${round}-${i}.example`);
+      await expect(config.configure()).rejects.toMatchObject({ code: 'core_unavailable' });
+    }
+    expect(config.core.refs.url(active)).toBe('https://a.rpc.example');
+    // Accepted, a proposal replaces it.
+    refuse = false;
+    await config.configure();
+    const accepted = client.sent.at(-1)[2].rpc[0].endpoint;
+    for (let i = 0; i < MAX_REMEMBERED; i++) config.core.refs.ref(`https://n${i}.example`);
+    expect(config.core.refs.url(accepted)).toBe('https://r19-0.example');
+    expect(config.core.refs.url(active)).toBeUndefined();
+  });
+
+  test('a proposal stays mapped while the core considers it', async () => {
+    let urls = ['https://a.rpc.example'];
+    let release;
+    const client = fakeClient((method) =>
+      method === 'naming.configure' && release === null
+        ? new Promise((resolve) => {
+            release = () => resolve({ ens: 2, tezos: 2, lifecycle: 1 });
+          })
+        : { ens: 1, tezos: 1, lifecycle: 1 }
+    );
+    const config = make(client, {
+      ens: {
+        getEffectiveRpcEndpoints: () => urls,
+        getDirectRpcCandidate: () => ({ url: null }),
+        resolutionPolicy: () => ({ order: ['quorum'] }),
+      },
+    });
+    client.start();
+    await config.whenReady();
+    urls = ['https://new.rpc.example'];
+    release = null;
+    const change = config.configure();
+    await Promise.resolve();
+    const proposed = client.sent.at(-1)[2].rpc[0].endpoint;
+    for (let i = 0; i < MAX_REMEMBERED + 10; i++) config.core.refs.ref(`https://n${i}.example`);
+    expect(config.core.refs.url(proposed)).toBe('https://new.rpc.example');
+    release();
+    await change;
+    expect(config.generations.ens).toBe(2);
   });
 });

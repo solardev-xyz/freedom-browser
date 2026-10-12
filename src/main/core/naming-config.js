@@ -20,14 +20,17 @@ class EndpointReferences {
   constructor(key = crypto.randomBytes(32)) {
     this.key = key;
     this.urls = new Map(); // ref -> URL, least recently used first
-    // The current configuration's references: never forgotten while it is.
+    // Never forgotten: the references of the configuration the core runs,
+    // and of the one proposed to it, until it accepts or refuses.
     this.pinned = new Set();
+    this.proposal = null;
   }
 
   /** The reference for `url`, remembered for mapping back. */
   ref(url) {
     const digest = crypto.createHmac('sha256', this.key).update(url, 'utf8').digest('hex');
     const ref = `e${digest.slice(0, 32)}`;
+    this.proposal?.add(ref);
     this.touch(ref, url);
     return ref;
   }
@@ -41,9 +44,17 @@ class EndpointReferences {
     return url;
   }
 
-  /** Pins `refs`, the configuration being sent, in place of the last one. */
-  pin(refs) {
-    this.pinned = new Set(refs);
+  /** Opens a proposal: references made until it settles are pinned, along
+   * with the accepted configuration's. */
+  propose() {
+    this.proposal = new Set();
+  }
+
+  /** Settles the open proposal: accepted, its references replace the pinned
+   * ones; refused, they're left to be forgotten. */
+  settle(accepted) {
+    if (accepted && this.proposal) this.pinned = this.proposal;
+    this.proposal = null;
   }
 
   touch(ref, url) {
@@ -51,7 +62,7 @@ class EndpointReferences {
     this.urls.set(ref, url);
     if (this.urls.size <= MAX_REMEMBERED) return;
     for (const old of this.urls.keys()) {
-      if (!this.pinned.has(old)) {
+      if (!this.pinned.has(old) && !this.proposal?.has(old)) {
         this.urls.delete(old);
         return;
       }
@@ -84,13 +95,14 @@ function wireQuorum(quorum) {
  * The configuration snapshot, read where today's resolvers read it:
  * `getEffectiveRpcEndpoints()` (with ETH_RPC), `getDirectRpcCandidate(1)`,
  * the prover endpoint, `resolutionPolicy()`, the raw quorum, whether Myotis
- * is enabled, and the Tezos endpoints (with TEZOS_RPC). Its references are
- * pinned while it is the current configuration.
+ * is enabled, and the Tezos endpoints (with TEZOS_RPC). It is a proposal:
+ * its references stay pinned until it is settled.
  *
  * @param {EndpointReferences} refs
  * @param {object} sources - { ens, tezos, registry, myotis }
  */
 function buildSnapshot(refs, { ens, tezos, registry, myotis }) {
+  refs.propose();
   const network = registry.getNetwork(1) || {};
   const direct = ens.getDirectRpcCandidate(1);
   const [prover] = registry.getEndpoints(1, 'prover');
@@ -109,12 +121,6 @@ function buildSnapshot(refs, { ens, tezos, registry, myotis }) {
     myotis_enabled: myotis.isEnabled() === true,
     tezos: tezos.getRpcEndpoints().map((url) => refs.ref(url)),
   };
-  refs.pin([
-    ...snapshot.rpc.map((e) => e.endpoint),
-    ...(snapshot.direct ? [snapshot.direct.endpoint] : []),
-    ...(snapshot.prover ? [snapshot.prover.endpoint] : []),
-    ...snapshot.tezos,
-  ]);
   return snapshot;
 }
 
@@ -123,6 +129,10 @@ function buildSnapshot(refs, { ens, tezos, registry, myotis }) {
  * new reference key), on `configure()` (a settings change, `reset: true`
  * where today's code calls invalidateCachedProvider) and on `availability()`
  * (a Myotis transition). It tracks the generations the core returns.
+ *
+ * Everything is kept per core process: its references, its generations (a
+ * new process counts from zero) and its control requests, which go one at
+ * a time to that process alone, so nothing meant for one reaches another.
  *
  * Naming is usable only once a core process is initialized (configured,
  * then told Myotis' availability): `whenReady()` is that barrier, and a
@@ -139,94 +149,120 @@ class NamingConfig {
     this.client = client;
     this.sources = sources;
     this.log = log || console;
-    this.refs = null;
-    this.initialized = null; // the current process's initialization
-    this.generations = { ens: 0, tezos: 0, lifecycle: 0 };
-    client.on('ready', () => this.onReady());
+    this.core = null; // the current core process's state
+    client.on('ready', () => this.attach());
     client.on('exit', () => {
-      this.refs = null;
-      this.initialized = null;
+      this.core = null;
     });
     // Built after the handshake: initialize now.
-    if (client.hello) this.onReady();
+    if (client.hello) this.attach();
   }
 
-  onReady() {
-    const refs = new EndpointReferences();
-    this.refs = refs;
-    this.initialized = this.initialize(refs);
+  /** The generations the current core process has reported. */
+  get generations() {
+    return this.core ? { ...this.core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };
+  }
+
+  attach() {
+    const core = {
+      gen: this.client.current,
+      refs: new EndpointReferences(),
+      generations: { ens: 0, tezos: 0, lifecycle: 0 },
+      queue: Promise.resolve(), // its control requests, in order
+      initialized: null,
+    };
+    this.core = core;
+    core.initialized = this.initialize(core);
   }
 
   /** Configures, then sends availability: true once both succeed. */
-  async initialize(refs) {
-    try {
-      await this.sendConfigure(refs, false);
-      await this.sendAvailability(refs);
+  initialize(core) {
+    return this.run(core, async () => {
+      await this.sendConfigure(core, false);
+      if (this.core !== core) return false;
+      await this.sendAvailability(core);
       return true;
-    } catch {
-      return false;
-    }
+    }).catch(() => false);
   }
 
   /** Resolves true once the current core process is initialized, retrying
-   * a failed initialization; false while there is none to use. */
+   * a failed initialization (one retry, however many wait on it); false
+   * while there is none to use. */
   async whenReady() {
-    const refs = this.refs;
-    if (!refs || !this.initialized) return false;
-    if (await this.initialized) return this.refs === refs;
-    if (this.refs !== refs) return false;
-    this.initialized = this.initialize(refs);
-    return (await this.initialized) && this.refs === refs;
+    const core = this.core;
+    if (!core) return false;
+    const attempt = core.initialized;
+    if ((await attempt) === true) return this.core === core;
+    if (this.core !== core) return false;
+    if (core.initialized === attempt) core.initialized = this.initialize(core);
+    return (await core.initialized) === true && this.core === core;
   }
 
   /** Sends the current snapshot (a settings change). */
   async configure({ reset = false } = {}) {
-    const refs = this.refs;
-    if (!refs) return this.generations;
-    await this.sendConfigure(refs, reset);
+    const core = this.core;
+    if (core) await this.run(core, () => this.sendConfigure(core, reset));
     return this.generations;
   }
 
   /** Sends whether Myotis is ready and enabled (a transition). */
   async availability() {
-    const refs = this.refs;
-    if (!refs) return this.generations;
-    await this.sendAvailability(refs);
+    const core = this.core;
+    if (core) await this.run(core, () => this.sendAvailability(core));
     return this.generations;
   }
 
-  async sendConfigure(refs, reset) {
-    const params = { reset: reset ? 'providers' : 'none', ...buildSnapshot(refs, this.sources) };
+  /** Runs `task` once the core's earlier control requests have settled,
+   * unless the core has gone by then. */
+  run(core, task) {
+    const result = core.queue.then(() => (this.core === core ? task() : false));
+    core.queue = result.catch(() => {});
+    return result;
+  }
+
+  async sendConfigure(core, reset) {
+    // Built as it is sent, with the settings of that moment.
+    const params = {
+      reset: reset ? 'providers' : 'none',
+      ...buildSnapshot(core.refs, this.sources),
+    };
     let result;
     try {
-      result = await this.client.request('naming.configure', params, { caller: 'shell' });
+      result = await this.client.requestTo(core.gen, 'naming.configure', params, {
+        caller: 'shell',
+      });
     } catch (err) {
+      core.refs.settle(false);
       this.log.warn('[Core] naming.configure failed', { code: err?.code });
       throw err;
     }
+    core.refs.settle(true);
     // All three: a provider reset advances the lifecycle too.
-    if (this.refs === refs) this.adopt(result, ['ens', 'tezos', 'lifecycle']);
+    this.adopt(core, result, ['ens', 'tezos', 'lifecycle']);
   }
 
-  async sendAvailability(refs) {
+  async sendAvailability(core) {
     const { myotis } = this.sources;
     const params = { ready: myotis.isReady() === true, enabled: myotis.isEnabled() === true };
     let result;
     try {
-      result = await this.client.request('naming.availability', params, { caller: 'shell' });
+      result = await this.client.requestTo(core.gen, 'naming.availability', params, {
+        caller: 'shell',
+      });
     } catch (err) {
       this.log.warn('[Core] naming.availability failed', { code: err?.code });
       throw err;
     }
-    if (this.refs === refs) this.adopt(result, ['lifecycle']);
+    this.adopt(core, result, ['lifecycle']);
   }
 
-  /** Takes the generations a reply reports; they only ever increase. */
-  adopt(result, scopes) {
+  /** Takes the generations a core process reports; within it, they only
+   * ever increase. */
+  adopt(core, result, scopes) {
     for (const scope of scopes) {
       const value = result?.[scope];
-      if (Number.isSafeInteger(value) && value > this.generations[scope]) {
-        this.generations[scope] = value;
+      if (Number.isSafeInteger(value) && value > core.generations[scope]) {
+        core.generations[scope] = value;
       }
     }
   }

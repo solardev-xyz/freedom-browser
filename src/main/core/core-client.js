@@ -327,6 +327,16 @@ class CoreClient extends EventEmitter {
   }
 
   /**
+   * Sends a request to one core process, the ready one `gen` names (the
+   * client's `current` when it emitted 'ready'), without waiting: once that
+   * process has ended it fails `unavailable`, so it never reaches another.
+   */
+  requestTo(gen, method, params = {}, context = { caller: 'chrome' }) {
+    if (!gen?.ready || gen !== this.current) return Promise.reject(unavailable());
+    return this.send(gen, method, params, context, null);
+  }
+
+  /**
    * Graceful shutdown: core.shutdown (if the handshake completed), close
    * stdin, SIGKILL after 3 s. Resolves once the child is gone.
    */

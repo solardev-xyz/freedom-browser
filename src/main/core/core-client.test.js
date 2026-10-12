@@ -207,6 +207,36 @@ describe('CoreClient', () => {
     expect(client.state).toBe('ready');
   });
 
+  test('requestTo reaches only the process it names, and never waits', async () => {
+    const answer = (message, core) =>
+      core.reply({ type: 'response', id: message.id, result: { ok: true } });
+    const { client, children, runTimers } = makeClient([
+      helloHandler(answer),
+      helloHandler(answer),
+    ]);
+    await client.start();
+    const first = client.current;
+    expect(await client.requestTo(first, 'vault.status')).toEqual({ ok: true });
+    // Exited, not yet retired: request() would wait for the next process,
+    // requestTo fails at once.
+    children[0].exit(1, null, { close: false });
+    await expect(client.requestTo(first, 'naming.configure')).rejects.toMatchObject({
+      code: 'core_unavailable',
+    });
+    children[0].close(1);
+    await tick();
+    runTimers(RESTART_DELAYS_MS[0]);
+    await client.whenReady();
+    await expect(client.requestTo(first, 'naming.configure')).rejects.toMatchObject({
+      code: 'core_unavailable',
+    });
+    await expect(client.requestTo(null, 'vault.status')).rejects.toMatchObject({
+      code: 'core_unavailable',
+    });
+    expect(children[1].requests.map((m) => m.method)).toEqual(['core.hello']);
+    expect(await client.requestTo(client.current, 'vault.status')).toEqual({ ok: true });
+  });
+
   test('exit codes that mean "do not retry" fail without restarting', async () => {
     for (const code of [64, 74, 75]) {
       const { client, children } = makeClient([helloHandler()]);
