@@ -26,7 +26,15 @@ class FrameError extends Error {
  * @returns {Buffer} one framed JSON message
  */
 function encodeFrame(message) {
-  const payload = Buffer.from(JSON.stringify(message), 'utf8');
+  return encodeJsonFrame(JSON.stringify(message));
+}
+
+/**
+ * @param {string} json - one message, already serialized
+ * @returns {Buffer} it, framed
+ */
+function encodeJsonFrame(json) {
+  const payload = Buffer.from(json, 'utf8');
   if (payload.length > MAX_PAYLOAD) {
     throw new FrameError('too_large');
   }
@@ -91,4 +99,11 @@ class FrameDecoder {
   }
 }
 
-module.exports = { encodeFrame, FrameDecoder, FrameError, KIND_JSON, MAX_PAYLOAD };
+module.exports = {
+  encodeFrame,
+  encodeJsonFrame,
+  FrameDecoder,
+  FrameError,
+  KIND_JSON,
+  MAX_PAYLOAD,
+};
