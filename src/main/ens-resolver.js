@@ -2854,6 +2854,9 @@ module.exports = {
   invalidateEnsContent,
   universalResolverCall,
   universalResolverReverse,
+  // The naming core's verified operations name their call resolver.
+  nameNftResolverCall,
+  nameNftReverseResolverCall,
   isResolverNotFoundError,
   clearEnsResolutionCaches,
   hostOf,
