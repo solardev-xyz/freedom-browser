@@ -30,7 +30,7 @@ function attachNaming(client) {
   registerNamingShell(client, config);
   registerNamingVerified(client, config);
   driver = new NamingDriver({ client, config, normalize: ens.fastNormalize });
-  // Today's ENS listener, for chain 1: the core clears and advances its own
+  // A Myotis transition, for chain 1: the core clears and advances its own
   // lifecycle.
   myotis.onAvailabilityTransition((event) => {
     if (event?.chainId != null && Number(event.chainId) !== 1) return;
@@ -56,4 +56,17 @@ function namingSettingsChanged() {
   if (config) config.configure({ reset: true }).catch(() => {});
 }
 
-module.exports = { attachNaming, detachNaming, namingDriver, namingSettingsChanged };
+/** Every cached ENS resolution dropped (clearEnsResolutionCaches): the
+ * core clears its content, address and reverse caches and advances its
+ * lifecycle, as `naming.availability` does (design 0004, Configuration). */
+function namingCachesCleared() {
+  if (config) config.availability().catch(() => {});
+}
+
+module.exports = {
+  attachNaming,
+  detachNaming,
+  namingDriver,
+  namingSettingsChanged,
+  namingCachesCleared,
+};

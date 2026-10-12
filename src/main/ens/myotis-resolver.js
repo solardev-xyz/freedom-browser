@@ -1,6 +1,11 @@
 const { ethers } = require('ethers');
 const myotis = require('../myotis/myotis-manager');
 const { ccipReadFetch, isHexData } = require('./ccip-fetch');
+const {
+  universalResolverCall,
+  universalResolverReverse,
+  isResolverNotFoundError,
+} = require('../ens-resolver');
 
 // Myotis 0.1.7's ENS API walks the legacy registry. Its generic EVM API
 // verifies arbitrary calls against an attested optimistic root, so use that
@@ -43,12 +48,6 @@ class MyotisProvider extends ethers.AbstractProvider {
 }
 
 async function resolveRecord({ method, name, addressHex, coinType = 60n }) {
-  // Lazy import: ens-resolver invokes this adapter after module initialization.
-  const {
-    universalResolverCall,
-    universalResolverReverse,
-    isResolverNotFoundError,
-  } = require('../ens-resolver');
   const provider = new MyotisProvider();
   // This provider requests latest (optimistic) state. Each callback
   // is independently verified; never claim finalized or block-pinned results.
