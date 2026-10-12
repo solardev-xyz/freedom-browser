@@ -43,7 +43,6 @@ const {
   readChunk,
   writeSingleOwnerChunk,
   readSingleOwnerChunk,
-  getSignerAddress,
 } = require('./chunk-service');
 const { addEntry, updateEntry } = require('./publish-history');
 const messagingService = require('./messaging-service');
@@ -52,11 +51,7 @@ const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
-const {
-  getBeeWalletPrivateKey,
-  getPublisherKey,
-  getUserWalletKey,
-} = require('../identity-manager');
+const { resolveSwarmSigner, getIdentityMode } = require('./swarm-signer');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
 
@@ -1023,39 +1018,15 @@ function getFeedIdentity(originEntry, feed) {
   return getActiveOriginIdentity(originEntry);
 }
 
-function getIdentityMode(identity) {
-  return identity?.mode || identity?.identityMode || null;
-}
 
 /**
- * Resolve the signer private key for a feed/SOC identity.
+ * The signer for a feed/SOC identity: its key reference and owner address.
+ * The identity core signs; no key reaches main (freedom-core design 0002).
  * @param {Object} identity - Identity record from feed-store
- * @returns {Promise<string>} 0x-prefixed hex private key
+ * @returns {Promise<import('./swarm-signer').SwarmSigner>}
  */
-async function resolveSignerKey(identity) {
-  const identityMode = getIdentityMode(identity);
-  if (identityMode === 'bee-wallet') {
-    // compat.bee_wallet_key; refused with VAULT_LOCKED_MESSAGE while locked.
-    return getBeeWalletPrivateKey();
-  }
-
-  if (identityMode === 'app-scoped') {
-    if (typeof identity.publisherKeyIndex !== 'number') {
-      throw new Error('App-scoped identity is missing a publisher key index');
-    }
-    const publisherKey = await getPublisherKey(identity.publisherKeyIndex);
-    return publisherKey.privateKey;
-  }
-
-  if (identityMode === 'ethereum-wallet') {
-    if (typeof identity.walletIndex !== 'number') {
-      throw new Error('Ethereum wallet identity is missing a wallet index');
-    }
-    const walletKey = await getUserWalletKey(identity.walletIndex);
-    return walletKey.privateKey;
-  }
-
-  throw new Error(`Unknown identity mode: ${identityMode}`);
+function resolveSignerKey(identity) {
+  return resolveSwarmSigner(identity);
 }
 
 /**
@@ -1079,7 +1050,7 @@ async function handleGetSigningIdentity(origin) {
   try {
     return {
       result: {
-        owner: getSignerAddress(signerKey),
+        owner: signerKey.owner,
         identityMode: getIdentityMode(activeIdentity),
       },
     };

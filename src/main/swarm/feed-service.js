@@ -8,8 +8,9 @@
  * to prevent index collisions from concurrent callers.
  */
 
-const { PrivateKey, Topic, EthAddress, BeeResponseError, Bytes, Identifier, FeedIndex } = require('@ethersphere/bee-js');
+const { Topic, EthAddress, BeeResponseError, Bytes, Identifier, FeedIndex, Reference } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
+const { uploadSingleOwnerChunk } = require('./chunk-service');
 const { noUsableBatchError } = require('./batch-errors');
 const log = require('electron-log');
 
@@ -127,6 +128,19 @@ async function downloadExactFeedPayload(bee, owner, topic, index) {
 }
 
 /**
+ * Sign one feed update in the identity core and upload it the way bee-js's
+ * feed writer did: the chunk's span is its payload length, unless it wraps
+ * the root chunk of a larger upload; only the postage batch header is sent.
+ *
+ * @param {import('./swarm-signer').SwarmSigner} signer
+ */
+async function uploadFeedChunk(bee, signer, batchId, topic, index, payload, span) {
+  const identifier = makeFeedIdentifier(topic, index).toUint8Array();
+  const signed = await signer.signSoc({ identifier, payload, span });
+  await uploadSingleOwnerChunk(bee, batchId, { ...signed, identifier, payload });
+}
+
+/**
  * Resolve the next available feed index using the public FeedReader API.
  * On a non-empty feed, downloads the latest payload to get feedIndexNext.
  * On an empty feed (BeeResponseError 404/500), defaults to 0.
@@ -160,15 +174,14 @@ async function resolveNextIndex(reader) {
  * The manifest provides a stable bzz:// URL that always resolves to the
  * latest feed update.
  *
- * @param {string} signerPrivateKey - 0x-prefixed hex private key
+ * @param {import('./swarm-signer').SwarmSigner} signer - signs in the identity core
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string} [batchId] - Postage batch ID. Auto-selected if omitted.
  * @returns {Promise<{ topic: string, owner: string, manifestReference: string, bzzUrl: string }>}
  */
-async function createFeed(signerPrivateKey, topicString, batchId) {
+async function createFeed(signer, topicString, batchId) {
   const bee = getBee();
-  const privateKey = new PrivateKey(signerPrivateKey);
-  const owner = privateKey.publicKey().address();
+  const owner = new EthAddress(signer.owner);
   const topic = Topic.fromString(topicString);
 
   const resolvedBatchId = batchId || await selectBestBatch(4096);
@@ -193,16 +206,16 @@ async function createFeed(signerPrivateKey, topicString, batchId) {
  * Update a feed to point at a new content reference.
  * Wrapped in the per-topic write lock to prevent index collisions.
  *
- * @param {string} signerPrivateKey - 0x-prefixed hex private key
+ * @param {import('./swarm-signer').SwarmSigner} signer - signs in the identity core
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string} contentReference - Swarm reference to point the feed at
  * @param {string} [batchId] - Postage batch ID. Auto-selected if omitted.
  * @returns {Promise<{ index: number }>}
  */
-async function updateFeed(signerPrivateKey, topicString, contentReference, batchId) {
+async function updateFeed(signer, topicString, contentReference, batchId) {
   const bee = getBee();
-  const privateKey = new PrivateKey(signerPrivateKey);
   const topic = Topic.fromString(topicString);
+  const reference = new Reference(contentReference);
 
   const resolvedBatchId = batchId || await selectBestBatch(4096);
   if (!resolvedBatchId) {
@@ -212,9 +225,13 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
   const topicHex = topic.toHex();
 
   const result = await withWriteLock(topicHex, async () => {
-    const writer = bee.feed.makeWriter(topic, privateKey);
-    const nextIndex = await resolveNextIndex(writer);
-    await writer.uploadReference(resolvedBatchId, contentReference, { index: nextIndex });
+    const reader = bee.feed.makeReader(topic, new EthAddress(signer.owner));
+    const nextIndex = await resolveNextIndex(reader);
+    // bee-js's update payload: unix seconds (uint64, big endian) ‖ reference.
+    const timestamp = Buffer.alloc(8);
+    timestamp.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000)));
+    const payload = Buffer.concat([timestamp, Buffer.from(reference.toUint8Array())]);
+    await uploadFeedChunk(bee, signer, resolvedBatchId, topic, nextIndex, payload);
     return { index: nextIndex };
   });
 
@@ -234,17 +251,17 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
  * wrapping the root chunk into the SOC. The batch size estimate uses the
  * actual payload size so stamp selection accounts for larger entries.
  *
- * @param {string} signerPrivateKey - 0x-prefixed hex private key
+ * @param {import('./swarm-signer').SwarmSigner} signer - signs in the identity core
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string|Buffer|Uint8Array} data - Payload to write
  * @param {{ batchId?: string, index?: number }} [options]
  * @returns {Promise<{ index: number }>}
  */
-async function writeFeedPayload(signerPrivateKey, topicString, data, options = {}) {
+async function writeFeedPayload(signer, topicString, data, options = {}) {
   const { batchId, index } = options;
   const bee = getBee();
-  const privateKey = new PrivateKey(signerPrivateKey);
   const topic = Topic.fromString(topicString);
+  const owner = new EthAddress(signer.owner);
 
   const dataSize = typeof data === 'string' ? Buffer.byteLength(data, 'utf-8') : data.length;
   const resolvedBatchId = batchId || await selectBestBatch(Math.max(dataSize, 4096));
@@ -255,13 +272,13 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
   const topicHex = topic.toHex();
 
   const result = await withWriteLock(topicHex, async () => {
-    const writer = bee.feed.makeWriter(topic, privateKey);
+    const reader = bee.feed.makeReader(topic, owner);
 
     let writeIndex;
     if (index !== undefined && index !== null) {
       // Explicit index — check for existing entry (overwrite protection)
       try {
-        await downloadExactFeedPayload(bee, privateKey.publicKey().address(), topic, index);
+        await downloadExactFeedPayload(bee, owner, topic, index);
         const err = new Error(`Feed entry already exists at index ${index}`);
         err.reason = 'index_already_exists';
         throw err;
@@ -273,10 +290,27 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
       writeIndex = index;
     } else {
       // Auto-increment — resolve next available index
-      writeIndex = await resolveNextIndex(writer);
+      writeIndex = await resolveNextIndex(reader);
     }
 
-    await writer.uploadPayload(resolvedBatchId, data, { index: writeIndex });
+    // As bee-js's writer: strings are UTF-8; more than one chunk goes up
+    // through /bytes and the SOC wraps that upload's root chunk.
+    const bytes = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+    if (bytes.length > 4096) {
+      const upload = await bee.data.upload(resolvedBatchId, bytes);
+      const root = bee.unmarshalContentAddressedChunk(await bee.chunk.download(toHex(upload.reference)));
+      await uploadFeedChunk(
+        bee,
+        signer,
+        resolvedBatchId,
+        topic,
+        writeIndex,
+        root.payload.toUint8Array(),
+        root.span.toBigInt()
+      );
+    } else {
+      await uploadFeedChunk(bee, signer, resolvedBatchId, topic, writeIndex, bytes);
+    }
     return { index: writeIndex };
   });
 

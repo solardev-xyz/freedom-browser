@@ -103,7 +103,6 @@ jest.mock('./chunk-service', () => ({
   readChunk: mockReadChunk,
   writeSingleOwnerChunk: mockWriteSingleOwnerChunk,
   readSingleOwnerChunk: mockReadSingleOwnerChunk,
-  getSignerAddress: mockGetSignerAddress,
 }));
 
 // Mock bee-js Topic for readFeedEntry topic resolution
@@ -131,20 +130,41 @@ jest.mock('./feed-store', () => ({
   getAllFeeds: mockGetAllFeeds,
 }));
 
+// The Swarm signer for an identity (swarm-signer.js resolves a key
+// reference and owner; the core signs). Here a signer is { key, owner },
+// with `key` a stand-in naming which identity's key was chosen, driven by
+// the per-mode mocks below.
 const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
 const mockGetUserWalletKey = jest.fn();
-jest.mock('../identity-manager', () => ({
-  // The Bee wallet key comes from the core (compat.bee_wallet_key); the
-  // mock keeps the old derived-keys shape as its source.
-  getBeeWalletPrivateKey: async () => {
-    const keys = mockGetDerivedKeys();
-    if (!keys) throw new Error('Vault is locked');
-    return keys.beeWallet.privateKey;
-  },
-  getPublisherKey: mockGetPublisherKey,
-  getUserWalletKey: mockGetUserWalletKey,
-}));
+jest.mock('./swarm-signer', () => {
+  const signerOf = (key) => ({ key, owner: mockGetSignerAddress(key) });
+  return {
+    getIdentityMode: (identity) => identity?.mode || identity?.identityMode || null,
+    resolveSwarmSigner: async (identity) => {
+      const mode = identity?.mode || identity?.identityMode || null;
+      if (mode === 'bee-wallet') {
+        const keys = mockGetDerivedKeys();
+        if (!keys) throw new Error('Vault is locked');
+        return signerOf(keys.beeWallet.privateKey);
+      }
+      if (mode === 'app-scoped') {
+        if (typeof identity.publisherKeyIndex !== 'number') {
+          throw new Error('App-scoped identity is missing a publisher key index');
+        }
+        return signerOf((await mockGetPublisherKey(identity.publisherKeyIndex)).privateKey);
+      }
+      if (mode === 'ethereum-wallet') {
+        if (typeof identity.walletIndex !== 'number') {
+          throw new Error('Ethereum wallet identity is missing a wallet index');
+        }
+        return signerOf((await mockGetUserWalletKey(identity.walletIndex)).privateKey);
+      }
+      throw new Error(`Unknown identity mode: ${mode}`);
+    },
+  };
+});
+const signerFor = (key) => expect.objectContaining({ key });
 
 const mockAddEntry = jest.fn().mockReturnValue({ id: 'test-id' });
 const mockUpdateEntry = jest.fn();
@@ -971,7 +991,7 @@ describe('swarm-provider-ipc', () => {
         owner: VALID_OWNER,
         identifier: VALID_IDENTIFIER,
       });
-      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
+      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith(signerFor('0xkey'), VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
       expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
         type: 'soc',
         name: 'SOC chunk',
@@ -997,7 +1017,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result.owner).toBe(VALID_OWNER);
       expect(mockGetUserWalletKey).toHaveBeenCalledWith(2);
-      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith('0xwalletkey', VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
+      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith(signerFor('0xwalletkey'), VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
     });
 
     test('rejects SOC writes without feed grant', async () => {
@@ -1237,7 +1257,7 @@ describe('swarm-provider-ipc', () => {
       expect(result.result.owner).toBe('0xOwnerAddr');
       expect(result.result.bzzUrl).toBe('bzz://manifesthex');
       expect(result.result.identityMode).toBe('app-scoped');
-      expect(mockCreateFeed).toHaveBeenCalledWith('0xpublisherkey', 'myapp.eth/blog');
+      expect(mockCreateFeed).toHaveBeenCalledWith(signerFor('0xpublisherkey'), 'myapp.eth/blog');
       expect(mockSetFeed).toHaveBeenCalledWith('myapp.eth', 'blog', expect.objectContaining({
         topic: 'topichex',
         owner: '0xOwnerAddr',
@@ -1259,7 +1279,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_createFeed', { name: 'blog' }, 'myapp.eth');
 
       expect(result.result.identityMode).toBe('bee-wallet');
-      expect(mockCreateFeed).toHaveBeenCalledWith('0xbeekey', 'myapp.eth/blog');
+      expect(mockCreateFeed).toHaveBeenCalledWith(signerFor('0xbeekey'), 'myapp.eth/blog');
       expect(mockGetPublisherKey).not.toHaveBeenCalled();
     });
 
@@ -1279,7 +1299,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result.identityMode).toBe('ethereum-wallet');
       expect(mockGetUserWalletKey).toHaveBeenCalledWith(2);
-      expect(mockCreateFeed).toHaveBeenCalledWith('0xwalletkey', 'myapp.eth/blog');
+      expect(mockCreateFeed).toHaveBeenCalledWith(signerFor('0xwalletkey'), 'myapp.eth/blog');
       expect(mockSetFeed).toHaveBeenCalledWith('myapp.eth', 'blog', expect.objectContaining({
         identityId: 'ethereum-wallet:2',
       }));
@@ -1389,7 +1409,7 @@ describe('swarm-provider-ipc', () => {
       expect(result.result.reference).toBe(VALID_REF);
       expect(result.result.bzzUrl).toBe('bzz://mref');
       expect(result.result.index).toBe(7);
-      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey', 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith(signerFor('0xpubkey'), 'myapp.eth/blog', VALID_REF);
       expect(mockUpdateFeedReference).toHaveBeenCalledWith('myapp.eth', 'blog', VALID_REF);
     });
 
@@ -1409,7 +1429,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result.index).toBe(8);
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockUpdateFeed).toHaveBeenCalledWith('0xpubkey1', 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith(signerFor('0xpubkey1'), 'myapp.eth/blog', VALID_REF);
     });
 
     test('records publish history as feed-update', async () => {
@@ -1525,7 +1545,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello' }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 0 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey'), 'myapp.eth/feed', 'hello', { index: undefined });
     });
 
     test('writes feed entry with the identity that created the feed', async () => {
@@ -1544,7 +1564,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result).toEqual({ index: 0 });
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey1', 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey1'), 'myapp.eth/feed', 'hello', { index: undefined });
     });
 
     test('passes explicit index to writeFeedPayload', async () => {
@@ -1557,7 +1577,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 5 }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 5 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith('0xkey', 'myapp.eth/feed', 'hello', { index: 5 });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey'), 'myapp.eth/feed', 'hello', { index: 5 });
     });
 
     test('records publish history on success', async () => {

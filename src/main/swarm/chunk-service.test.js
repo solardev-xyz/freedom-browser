@@ -39,22 +39,10 @@ class MockOwner extends MockHexValue {
   toChecksum() { return `0x${this._hex}`; }
 }
 
-class MockPublicKey {
-  constructor(owner) { this._owner = owner; }
-  address() { return this._owner; }
-}
-
-class MockPrivateKey {
-  constructor(hex) {
-    this._hex = hex;
-    this._owner = new MockOwner(hex.replace(/^0x/, '').slice(0, 40));
-  }
-  publicKey() { return new MockPublicKey(this._owner); }
-}
-
 class MockIdentifier {
   constructor(hex) { this._hex = hex; }
   toUint8Array() { return Buffer.from(this._hex, 'hex'); }
+  toHex() { return this._hex; }
 }
 
 class MockEthAddress {
@@ -75,7 +63,6 @@ var mockBee = {
 };
 
 jest.mock('@ethersphere/bee-js', () => ({
-  PrivateKey: MockPrivateKey,
   BeeResponseError: MockBeeResponseError,
   Identifier: MockIdentifier,
   EthAddress: MockEthAddress,
@@ -92,7 +79,6 @@ const {
   readChunk,
   writeSingleOwnerChunk,
   readSingleOwnerChunk,
-  getSignerAddress,
   spanToResult,
   isChunkNotFoundError,
 } = require('./chunk-service');
@@ -103,7 +89,20 @@ const SOC_REFERENCE = 'cc'.repeat(32);
 const IDENTIFIER = 'dd'.repeat(32);
 const SIGNATURE = 'ee'.repeat(65);
 const OWNER = '11'.repeat(20);
-const PRIVATE_KEY = `0x${OWNER}${'22'.repeat(12)}`;
+// A Swarm signer (swarm-signer.js): the identity core signs; the test
+// stands in for its checked result.
+function makeSigner() {
+  return {
+    owner: `0x${OWNER}`,
+    signSoc: jest.fn(async ({ span }) => ({
+      span: span || 5n,
+      chunkAddress: `0x${CAC_REFERENCE}`,
+      signature: `0x${SIGNATURE}`,
+      owner: `0x${OWNER}`,
+      socAddress: `0x${SOC_REFERENCE}`,
+    })),
+  };
+}
 
 global.fetch = jest.fn();
 
@@ -170,10 +169,6 @@ describe('chunk-service', () => {
       Buffer.from(JSON.stringify({ code: 500, message: 'node exploded politely' }))
     ))).toBe(false);
     expect(isChunkNotFoundError(new Error('network'))).toBe(false);
-  });
-
-  test('getSignerAddress returns the signer owner', () => {
-    expect(getSignerAddress(PRIVATE_KEY)).toBe(`0x${OWNER}`);
   });
 
   test('publishChunk uploads a CAC and returns its address', async () => {
@@ -264,10 +259,17 @@ describe('chunk-service', () => {
     const cac = makeCac();
     mockMakeContentAddressedChunk.mockReturnValue(cac);
 
-    const result = await writeSingleOwnerChunk(PRIVATE_KEY, IDENTIFIER, Buffer.from('hello'), { span: 5n });
+    const signer = makeSigner();
+    const result = await writeSingleOwnerChunk(signer, IDENTIFIER, Buffer.from('hello'), { span: 5n });
 
+    // bee-js validates the chunk; the core signs it, given bytes, not a key.
     expect(mockMakeContentAddressedChunk).toHaveBeenCalledWith(Buffer.from('hello'), 5n);
-    expect(cac.toSingleOwnerChunk).toHaveBeenCalledWith(IDENTIFIER, expect.any(MockPrivateKey));
+    expect(signer.signSoc).toHaveBeenCalledWith({
+      identifier: Buffer.from(IDENTIFIER, 'hex'),
+      payload: Buffer.from('hello'),
+      span: 5n,
+    });
+    expect(cac.toSingleOwnerChunk).not.toHaveBeenCalled();
     expect(mockUploadChunk).not.toHaveBeenCalled();
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const [url, request] = global.fetch.mock.calls[0];
@@ -299,7 +301,7 @@ describe('chunk-service', () => {
       json: async () => ({ reference: 'ff'.repeat(32) }),
     });
 
-    await expect(writeSingleOwnerChunk(PRIVATE_KEY, IDENTIFIER, Buffer.from('hello')))
+    await expect(writeSingleOwnerChunk(makeSigner(), IDENTIFIER, Buffer.from('hello')))
       .rejects.toThrow('SOC upload returned unexpected reference');
   });
 
@@ -313,7 +315,7 @@ describe('chunk-service', () => {
       text: async () => 'boom',
     });
 
-    await expect(writeSingleOwnerChunk(PRIVATE_KEY, IDENTIFIER, Buffer.from('hello')))
+    await expect(writeSingleOwnerChunk(makeSigner(), IDENTIFIER, Buffer.from('hello')))
       .rejects.toThrow('SOC upload failed (500): boom');
   });
 

@@ -76,12 +76,6 @@ function makeVaultBackendMock({ exists = true, unlocked = true } = {}) {
         : { status: 'installed', did: 'did:key:zTest', node_id: 'zTest' }
     ),
     radicleDid: jest.fn(async () => 'did:key:zTest'),
-    compat: {
-      privateKey: jest.fn(async () => {
-        if (!state.unlocked) throw locked();
-        return '0x01';
-      }),
-    },
   };
 }
 
@@ -544,14 +538,6 @@ describe('identity-manager ledger accounts', () => {
     expect(identityManager.getWalletRecord(99)).toBeNull();
   });
 
-  test('getUserWalletKey refuses to derive for a ledger account', async () => {
-    seedMainWallet();
-    await identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH);
-
-    await expect(identityManager.getUserWalletKey(HARDWARE_INDEX_BASE))
-      .rejects.toThrow('This account has no derivable private key');
-  });
-
   test('getActiveWalletAddress returns the device address for an active ledger account', async () => {
     seedMainWallet();
     const wallet = await identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH);
@@ -593,8 +579,6 @@ describe('identity-manager ledger accounts', () => {
       type: 'remote',
       address: LEDGER_ADDRESS,
     });
-    await expect(identityManager.getUserWalletKey(wallet.index))
-      .rejects.toThrow('This account has no derivable private key');
 
     await identityManager.setActiveWalletIndex(wallet.index);
     await expect(identityManager.getActiveWalletAddress()).resolves.toBe(LEDGER_ADDRESS);
@@ -743,8 +727,6 @@ describe('identity-manager safe accounts', () => {
     const wallets = await identityManager.getDerivedWallets();
     expect(wallets[2]).toMatchObject({ type: 'safe', owners: ownerIndexes, threshold: 1 });
 
-    await expect(identityManager.getUserWalletKey(wallet.index))
-      .rejects.toThrow('This account has no derivable private key');
   });
 
   test('markSafeDeployed persists per-chain deployment state', async () => {
