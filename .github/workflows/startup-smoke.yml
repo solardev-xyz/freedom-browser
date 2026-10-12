@@ -70,6 +70,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-cored binaries
+        # Direct node plus the same bounded watchdog as the Ant download.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Download IPFS native addon
         run: npm run ipfs:download
 

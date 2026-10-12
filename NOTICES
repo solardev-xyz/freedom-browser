@@ -15,6 +15,14 @@ refuses only one thing, a missing `LICENSES.chromium.html`
 
 == External binaries and native addons (resources/) ==
 
+freedom-cored (Rust identity core)
+  https://github.com/solardev-xyz/freedom-core
+  License: not chosen yet (pending the maintainer's decision).
+  Statically links third-party Rust crates and the Rust toolchain's runtime
+  (on Linux also musl and LLVM's libunwind). Their notices ship beside the
+  binary: resources/freedom-cored/THIRD-PARTY-NOTICES and
+  resources/freedom-cored/THIRD-PARTY-NOTICES-rust-std.html.
+
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
   Copyright (c) solardev-xyz contributors
