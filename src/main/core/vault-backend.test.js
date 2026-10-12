@@ -314,6 +314,32 @@ describe('vaultBackend', () => {
     });
   });
 
+  test('a same-request retry after the automatic settlement still gets its result', async () => {
+    let up = false;
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: !!up, fingerprint: up ? FP : null };
+      if (method === 'vault.create') throw coreError('core_unavailable', 'The core exited');
+      if (method === 'vault.reconcile') {
+        if (!up) throw coreError('core_unavailable', 'The core is not running');
+        return { status: 'committed', mnemonic_b64: b64('abandon about'), addresses: {} };
+      }
+      return {};
+    });
+    const { vaultBackend, _internal } = load(core);
+    await expect(vaultBackend.createVault('password1', 128)).rejects.toThrow();
+    up = true;
+    core.emit('ready', {});
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(_internal.hasPending()).toBe(false);
+    await expect(vaultBackend.createVault('password1', 128)).resolves.toMatchObject({
+      mnemonic: 'abandon about',
+    });
+    // Consumed: the next one sees the vault.
+    await expect(vaultBackend.createVault('password1', 128)).rejects.toMatchObject({
+      code: 'vault_exists',
+    });
+  });
+
   test('node writes: an unknown or uncommitted outcome throws; others report status', async () => {
     let status = 'pending_recovery';
     let ready = true;

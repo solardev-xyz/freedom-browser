@@ -191,18 +191,51 @@ async function enableQuickUnlock(password) {
   }
 }
 
+// A lost Quick Setup's password until it is stored (see completeQuickSetup).
+let pendingSetup = null;
+const SETUP_RETRY_MS = 30_000;
+
 /**
  * Stores a Quick Setup vault's random password as the quick-unlock
  * credential, for a setup the core confirmed only after its reply was lost
  * (freedom-core design 0001, "Reconciliation"). The onboarding renderer that
  * started it may be gone and nobody else knows this password, so main
  * finishes the setup the user chose. Main-internal only.
+ *
+ * Until the credential is stored, main keeps the password and retries
+ * (secure storage or the core may come back). It stops only when the vault
+ * no longer takes the password: it was replaced or deleted. Other vault
+ * operations aren't held up meanwhile, so a restore still works.
+ * @returns {Promise<boolean>} whether it was stored now
  */
 async function completeQuickSetup(password) {
-  if (!isSecureStorageAvailable()) throw new Error('Secure storage not available');
-  await verifyCredentialPassword(password);
-  writeCredential(password);
-  console.log('[QuickUnlock] Quick Setup credential stored after reconciliation');
+  if (pendingSetup) clearTimeout(pendingSetup.timer);
+  pendingSetup = { password, timer: null };
+  return trySetupCredential(pendingSetup);
+}
+
+async function trySetupCredential(setup) {
+  try {
+    if (!isSecureStorageAvailable()) throw new Error('Secure storage not available');
+    await verifyCredentialPassword(setup.password);
+    if (pendingSetup !== setup) return false; // superseded meanwhile
+    writeCredential(setup.password);
+    pendingSetup = null;
+    console.log('[QuickUnlock] Quick Setup credential stored after reconciliation');
+    return true;
+  } catch (err) {
+    if (pendingSetup !== setup) return false;
+    if (err.code === 'incorrect_password' || err.code === 'no_vault') {
+      // The vault this password belonged to is gone.
+      pendingSetup = null;
+      console.error('[QuickUnlock] Lost Quick Setup credential dropped:', err.message);
+      return false;
+    }
+    console.error('[QuickUnlock] Quick Setup credential not stored yet:', err.message);
+    setup.timer = setTimeout(() => void trySetupCredential(setup), SETUP_RETRY_MS);
+    setup.timer.unref?.();
+    return false;
+  }
 }
 
 /**

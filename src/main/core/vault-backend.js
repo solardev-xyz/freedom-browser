@@ -131,8 +131,24 @@ async function settlePending() {
   return { record, found: record.found };
 }
 
+// What an automatic settlement found, kept briefly for a caller that retries
+// the same request (see mutate). Consumed by the next mutation.
+let lastSettled = null;
+let lastSettledTimer = null;
+const SETTLED_KEEP_MS = 5 * 60_000;
+
+function keepSettled(settled) {
+  clearTimeout(lastSettledTimer);
+  lastSettled = settled;
+  if (!settled) return;
+  lastSettledTimer = setTimeout(() => {
+    lastSettled = null;
+  }, SETTLED_KEEP_MS);
+  lastSettledTimer.unref?.();
+}
+
 function drain() {
-  serialized(settlePending).catch((err) => {
+  serialized(async () => keepSettled(await settlePending())).catch((err) => {
     log.warn('[VaultBackend] A lost vault operation is still unsettled', { code: err.code });
   });
 }
@@ -154,7 +170,8 @@ function sameRequest(a, b) {
 function mutate(method, params, record, precheck) {
   watchCore();
   return serialized(async () => {
-    const settled = await settlePending();
+    const settled = (await settlePending()) || lastSettled;
+    keepSettled(null);
     // The same request again (a retry after `core_unavailable`) gets the
     // result its first attempt committed.
     if (settled && sameRequest(settled.record, record)) {
@@ -373,6 +390,7 @@ module.exports = {
       watchedClient = null;
       pending = null;
       queue = Promise.resolve();
+      keepSettled(null);
     },
     hasPending: () => pending !== null,
   },

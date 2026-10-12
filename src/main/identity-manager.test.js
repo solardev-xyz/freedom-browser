@@ -246,6 +246,38 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
     expect(guard.nodeBlockReason('radicle')).toBeNull();
   });
 
+  test('injections of one node run one at a time', async () => {
+    const backend = makeVaultBackendMock({ exists: true, unlocked: true });
+    const { mod, guard } = setup(backend);
+    const writes = [];
+    backend.writeNodeIdentity.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          writes.push(() => resolve({ status: 'installed', address: '0xbee' }));
+        })
+    );
+    const waitForWrites = async (count) => {
+      for (let i = 0; i < 200 && writes.length < count; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    const first = mod.injectBeeIdentity();
+    const second = mod.injectBeeIdentity();
+    await waitForWrites(1);
+    // Give the second attempt every chance to start too early.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(writes).toHaveLength(1);
+    writes[0]();
+    await first;
+    // The second attempt starts only now, and blocks Bee until it installs.
+    await waitForWrites(2);
+    expect(writes).toHaveLength(2);
+    expect(guard.nodeBlockReason('bee')).toMatch(/being updated/);
+    writes[1]();
+    await second;
+    expect(guard.nodeBlockReason('bee')).toBeNull();
+  });
+
   test('hasVault reads the vault file while the core is down', async () => {
     const backend = makeVaultBackendMock({ exists: false, unlocked: false });
     const { mod, dirs } = setup(backend);

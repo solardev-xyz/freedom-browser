@@ -144,12 +144,8 @@ function saveNewVaultMeta(addresses, userKnowsPassword) {
  */
 async function finishLostSetup(found, password, userKnowsPassword) {
   saveNewVaultMeta(found.addresses, userKnowsPassword);
-  if (userKnowsPassword) return;
-  try {
-    await require('./quick-unlock').completeQuickSetup(password);
-  } catch (err) {
-    console.error('[IdentityManager] Could not store the Quick Setup credential:', err.message);
-  }
+  // Keeps the password and retries until the credential is stored.
+  if (!userKnowsPassword) await require('./quick-unlock').completeQuickSetup(password);
 }
 
 /**
@@ -563,13 +559,28 @@ async function wipeStaleBeeState(dataDir) {
   return beeWasRunning;
 }
 
+// One re-keying per node at a time: stop, wipe, write and restart are one
+// unit, so one attempt's success can't lift the block of another that is
+// still wiping or writing (node-identity-guard.js).
+const nodeInjections = new Map();
+
+function serializedInjection(node, task) {
+  const run = (nodeInjections.get(node) || Promise.resolve()).then(task);
+  nodeInjections.set(node, run.catch(() => {}));
+  return run;
+}
+
 /**
  * Inject Bee identity
  * Generates its own random password for the keystore (stored in config.yaml)
  * This is intentionally different from the vault password
  * @returns {Promise<{address: string}>}
  */
-async function injectBeeIdentity() {
+function injectBeeIdentity() {
+  return serializedInjection('bee', injectBeeIdentityNow);
+}
+
+async function injectBeeIdentityNow() {
   if (!(await isVaultUnlocked())) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
@@ -660,7 +671,11 @@ async function injectIpfsIdentity() {
  * @param {string} alias - Node alias
  * @returns {Promise<{did: string}>}
  */
-async function injectRadicleIdentity(alias = 'FreedomBrowser') {
+function injectRadicleIdentity(alias = 'FreedomBrowser') {
+  return serializedInjection('radicle', () => injectRadicleIdentityNow(alias));
+}
+
+async function injectRadicleIdentityNow(alias) {
   if (!(await isVaultUnlocked())) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }

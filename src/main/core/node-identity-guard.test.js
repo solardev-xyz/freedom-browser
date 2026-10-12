@@ -74,6 +74,17 @@ describe('node identity guard', () => {
     expect(guard.nodeBlockReason('bee')).toBeNull();
   });
 
+  test('an unreadable identity directory is not "nothing to protect"', () => {
+    const spy = jest.spyOn(fs, 'lstatSync').mockImplementation(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    });
+    try {
+      expect(guard.nodeBlockReason('bee')).toMatch(/identity core is not available/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test('without an identity directory, unknown means blocked', () => {
     guard._internal.reset();
     expect(guard.nodeBlockReason('bee')).not.toBeNull();

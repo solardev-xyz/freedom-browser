@@ -161,7 +161,7 @@ describe('quick-unlock', () => {
       userDataDir,
     });
 
-    await mod.completeQuickSetup('random-pass');
+    await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
     expect(verifyPassword).toHaveBeenCalledWith('random-pass');
     expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
     const payload = JSON.parse(
@@ -169,9 +169,44 @@ describe('quick-unlock', () => {
     );
     expect(payload.encrypted).toBe(Buffer.from('encrypted:random-pass').toString('base64'));
 
-    // A password the vault doesn't take is never stored.
-    verifyPassword.mockRejectedValueOnce(new Error('Incorrect password'));
-    await expect(mod.completeQuickSetup('wrong')).rejects.toThrow('Incorrect password');
+    // A password the vault doesn't take (it was replaced) is never stored,
+    // and not retried.
+    verifyPassword.mockRejectedValueOnce(
+      Object.assign(new Error('Incorrect password'), { code: 'incorrect_password' })
+    );
+    await expect(mod.completeQuickSetup('wrong')).resolves.toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'), 'utf-8')).encrypted)
+      .toBe(Buffer.from('encrypted:random-pass').toString('base64'));
+  });
+
+  test('completeQuickSetup keeps the password and retries until it is stored', async () => {
+    jest.useFakeTimers();
+    try {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      const { mod, verifyPassword } = loadQuickUnlock({
+        activeProfile: makeProfile('work', userDataDir),
+        userDataDir,
+      });
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      // The core is down at first.
+      verifyPassword.mockRejectedValueOnce(
+        Object.assign(new Error('The core is not running'), { code: 'core_unavailable' })
+      );
+      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(verifyPassword).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fs.readFileSync(credentialPath, 'utf-8')).encrypted).toBe(
+        Buffer.from('encrypted:random-pass').toString('base64')
+      );
+      // Stored: no more retries.
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(verifyPassword).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('hides a bound credential when the active profile does not match', async () => {

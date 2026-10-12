@@ -71,13 +71,19 @@ function unblockNode(node) {
   reported.delete(node);
 }
 
+/** Only a confirmed absence counts: an unreadable entry may hold anything. */
+function absent(file) {
+  try {
+    fs.lstatSync(file);
+    return false;
+  } catch (err) {
+    return err.code === 'ENOENT';
+  }
+}
+
 function nothingToProtect() {
   if (!identityDir) return false;
-  try {
-    return IDENTITY_FILES.every((name) => !fs.existsSync(path.join(identityDir, name)));
-  } catch {
-    return false;
-  }
+  return IDENTITY_FILES.every((name) => absent(path.join(identityDir, name)));
 }
 
 function describe(status) {
