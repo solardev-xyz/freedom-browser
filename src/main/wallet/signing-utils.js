@@ -96,7 +96,9 @@ const MAX_FIELDS = 1024;
  */
 function assertBoundedTypeGraph(types) {
   if (!types || typeof types !== 'object') return;
-  const names = Object.keys(types);
+  // EIP712Domain is stripped by every backend (withoutDomainType), so it
+  // counts toward nothing here either.
+  const names = Object.keys(types).filter((name) => name !== 'EIP712Domain');
   if (names.length > MAX_TYPES) throw new Error('Typed data has too many types');
   let fields = 0;
   for (const name of names) {

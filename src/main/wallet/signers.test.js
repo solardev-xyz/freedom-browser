@@ -244,6 +244,12 @@ describe('getSigner (vault-backed)', () => {
     // The core's limits themselves are accepted.
     const atLimit = Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`T${i}`, shared.slice(0, 256)]));
     expect(() => assertBoundedTypeGraph(atLimit)).not.toThrow();
+    // EIP712Domain is stripped before the core sees it, so it isn't counted:
+    // 256 message types, and 1,024 message fields, each plus the domain.
+    const domain = [{ name: 'name', type: 'string' }];
+    const maxTypes = Object.fromEntries(Array.from({ length: 256 }, (_, i) => [`T${i}`, shared.slice(0, 1)]));
+    expect(() => assertBoundedTypeGraph({ ...maxTypes, EIP712Domain: domain })).not.toThrow();
+    expect(() => assertBoundedTypeGraph({ ...atLimit, EIP712Domain: domain })).not.toThrow();
   });
 
   test('a field named __proto__ reaches the core as data', () => {
