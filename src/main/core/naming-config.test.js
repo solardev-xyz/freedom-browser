@@ -8,8 +8,6 @@ const {
   MAX_RPC_ENDPOINTS,
 } = require('./naming-config');
 
-const tick = () => new Promise(setImmediate);
-
 function sources(overrides = {}) {
   const network = {
     zkProof: true,
@@ -162,8 +160,9 @@ describe('NamingConfig', () => {
       client.hello = null;
       client.emit('exit', {});
     };
+    client.serves = (gen) => Boolean(gen) && gen === client.current && !gen.ended;
     client.requestTo = jest.fn(async (gen, method, params, context) => {
-      if (!gen || gen !== client.current || gen.ended) throw unavailable();
+      if (!client.serves(gen)) throw unavailable();
       client.sent.push([gen.number, method, params, context]);
       return answer(method, params, gen.number);
     });
@@ -267,6 +266,23 @@ describe('NamingConfig', () => {
     // A late, lower report never moves it back.
     config.adopt(config.core, { lifecycle: 1 }, ['lifecycle']);
     expect(config.generations.lifecycle).toBe(2);
+  });
+
+  test('an initialized process whose child has exited is not ready', async () => {
+    const client = fakeClient();
+    const config = make(client);
+    client.start();
+    const first = client.current;
+    expect(await config.whenServing()).toBe(first);
+    // Its child exits; the client's 'exit' comes later, after the drain.
+    client.end();
+    expect(await config.whenReady()).toBe(false);
+    expect(await config.whenServing()).toBeNull();
+    // No retry for a process that has gone.
+    expect(methods(client)).toEqual(['1:naming.configure', '1:naming.availability']);
+    client.exit();
+    client.start();
+    expect(await config.whenServing()).toBe(client.current);
   });
 
   test('a new core process counts its generations from zero', async () => {

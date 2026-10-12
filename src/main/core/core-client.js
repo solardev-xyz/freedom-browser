@@ -332,8 +332,21 @@ class CoreClient extends EventEmitter {
    * process has ended it fails `unavailable`, so it never reaches another.
    */
   requestTo(gen, method, params = {}, context = { caller: 'chrome' }) {
-    if (!gen?.ready || gen !== this.current) return Promise.reject(unavailable());
+    if (!this.serves(gen)) return Promise.reject(unavailable());
     return this.send(gen, method, params, context, null);
+  }
+
+  /** Whether `gen` is the process requests go to now: the current one,
+   * past its handshake, and neither exited, ending nor retired. */
+  serves(gen) {
+    return Boolean(
+      gen?.ready &&
+      gen === this.current &&
+      !gen.exited &&
+      !gen.retired &&
+      !gen.ending &&
+      !gen.stdinEnded
+    );
   }
 
   /**

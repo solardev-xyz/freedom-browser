@@ -189,13 +189,29 @@ class NamingConfig {
    * a failed initialization (one retry, however many wait on it); false
    * while there is none to use. */
   async whenReady() {
+    return (await this.whenServing()) !== null;
+  }
+
+  /** As whenReady(), but resolves the initialized process itself (null
+   * without one): naming's requests go to it alone, with
+   * `client.requestTo`, so none reaches a replacement not yet
+   * initialized. */
+  async whenServing() {
     const core = this.core;
-    if (!core) return false;
+    if (!core) return null;
     const attempt = core.initialized;
-    if ((await attempt) === true) return this.core === core;
-    if (this.core !== core) return false;
-    if (core.initialized === attempt) core.initialized = this.initialize(core);
-    return (await core.initialized) === true && this.core === core;
+    if ((await attempt) !== true) {
+      if (!this.serving(core)) return null;
+      if (core.initialized === attempt) core.initialized = this.initialize(core);
+      if ((await core.initialized) !== true) return null;
+    }
+    return this.serving(core) ? core.gen : null;
+  }
+
+  /** Whether `core` is current and its process still takes requests (its
+   * child can exit well before the client's 'exit'). */
+  serving(core) {
+    return this.core === core && this.client.serves(core.gen);
   }
 
   /** Sends the current snapshot (a settings change). */

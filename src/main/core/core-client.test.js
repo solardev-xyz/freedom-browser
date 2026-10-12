@@ -219,7 +219,9 @@ describe('CoreClient', () => {
     expect(await client.requestTo(first, 'vault.status')).toEqual({ ok: true });
     // Exited, not yet retired: request() would wait for the next process,
     // requestTo fails at once.
+    expect(client.serves(first)).toBe(true);
     children[0].exit(1, null, { close: false });
+    expect(client.serves(first)).toBe(false);
     await expect(client.requestTo(first, 'naming.configure')).rejects.toMatchObject({
       code: 'core_unavailable',
     });
