@@ -95,7 +95,10 @@ function assertBoundedTypeGraph(types) {
   const children = new Map(names.map((name) => [name, new Set()]));
   for (const name of names) {
     for (const field of Array.isArray(types[name]) ? types[name] : []) {
-      const base = String(field?.type ?? '').replace(/\[.*$/, '');
+      // indexOf, not a regex: this runs on dApp input, so it must stay linear.
+      const type = String(field?.type ?? '');
+      const bracket = type.indexOf('[');
+      const base = bracket === -1 ? type : type.slice(0, bracket);
       if (base !== name && children.has(base)) children.get(name).add(base);
     }
   }

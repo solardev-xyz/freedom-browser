@@ -203,6 +203,16 @@ describe('getSigner (vault-backed)', () => {
     expect(mockCore.calls).toEqual([]);
   });
 
+  test('the type-graph guard is linear on malformed type text', async () => {
+    // Many '[' then a newline: an unanchored /\[.*$/ would rescan from each.
+    const type = 'Inner' + '['.repeat(200000) + '\nx';
+    const types = { Outer: [{ name: 'f', type }], Inner: [{ name: 'v', type: 'uint8' }] };
+    const { assertBoundedTypeGraph } = require('./signing-utils');
+    const started = Date.now();
+    assertBoundedTypeGraph(types);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
   test('a field named __proto__ reaches the core as data', () => {
     // (ethers' own Wallet.signTypedData drops it; the core's encoder keeps
     // it, so the conversion must too.)
