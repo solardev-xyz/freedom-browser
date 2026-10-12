@@ -2843,6 +2843,10 @@ function clearEnsResolutionCaches() {
 
 module.exports = {
   registerEnsIpc,
+  // The naming core's configuration reads them as these resolvers do.
+  getEffectiveRpcEndpoints,
+  getDirectRpcCandidate,
+  resolutionPolicy,
   resolveEnsContent,
   resolveEnsAddress,
   resolveEnsReverse,
