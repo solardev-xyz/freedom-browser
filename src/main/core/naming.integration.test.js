@@ -95,6 +95,31 @@ describeIfBinary('naming with the real freedom-cored', () => {
     }
   });
 
+  // The resolvers send every string name and finite chain ID on: the core
+  // refuses the invalid ones before any network.
+  test('the core refuses invalid names, chain IDs and addresses before any network', async () => {
+    const { driver } = await start(failing);
+    const dialled = failing.mock.calls.length;
+    for (const chainId of [0, -1, 1.5, 2147483648]) {
+      await expect(driver.resolveAddress('test.eth', chainId)).rejects.toThrow(
+        'Invalid ENS destination chain ID'
+      );
+    }
+    await expect(driver.resolveContent('  ')).rejects.toThrow('ENS name is empty');
+    await expect(driver.resolveReverse('0x1234', 1)).resolves.toEqual({
+      success: false,
+      address: '0x1234',
+      reason: 'INVALID_ADDRESS',
+      error: 'Invalid address: 0x1234',
+    });
+    await expect(driver.resolveTezos('not a domain')).resolves.toEqual({
+      type: 'not_found',
+      reason: 'invalid .tez domain',
+      system: 'tezos',
+    });
+    expect(failing.mock.calls).toHaveLength(dialled);
+  });
+
   test("a Tezos lookup's result comes back in today's shape", async () => {
     const { driver } = await start(failing);
     expect(await driver.resolveTezos('alice.tez')).toEqual({
