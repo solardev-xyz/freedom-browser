@@ -13,6 +13,9 @@ const crypto = require('crypto');
 
 /** References main can map back: far more than a configuration holds. */
 const MAX_REMEMBERED = 1024;
+/** A control request's hang watchdog (design 0001): the core answers it at
+ * once, so its deadline is just the watchdog's margin. */
+const CONTROL_WATCHDOG_MS = 15_000;
 /** The core takes at most this many RPC endpoints (design 0004). */
 const MAX_RPC_ENDPOINTS = 64;
 
@@ -150,6 +153,9 @@ class NamingConfig {
     this.sources = sources;
     this.log = log || console;
     this.core = null; // the current core process's state
+    // Every process's state by its client generation, while anything (a
+    // reply still being published) holds the generation.
+    this.processes = new WeakMap();
     client.on('ready', () => this.attach());
     client.on('exit', () => {
       this.core = null;
@@ -158,15 +164,35 @@ class NamingConfig {
     if (client.hello) this.attach();
   }
 
-  /** The URL behind one of the current core process's references, or
-   * undefined. */
-  endpointUrl(ref) {
-    return this.core?.refs.url(ref);
+  /** The URL behind one of a core process's references (`gen`'s, or the
+   * current one's), or undefined. A reply is mapped by the process that
+   * made it, even after that process has gone. */
+  endpointUrl(ref, gen) {
+    const core = gen ? this.processes.get(gen) : this.core;
+    return core?.refs.url(ref);
   }
 
   /** The generations the current core process has reported. */
   get generations() {
     return this.core ? { ...this.core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };
+  }
+
+  /** The generations a core process (`gen`'s) has reported. */
+  generationsOf(gen) {
+    const core = this.processes.get(gen);
+    return core ? { ...core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };
+  }
+
+  /**
+   * Whether `gen`'s process is current and no control is in flight on it:
+   * none queued, none owed. A lookup is sent only then, so it can't
+   * overtake a control main has asked for, and its reply is judged only
+   * then, once the generations of every control it may have crossed are
+   * known.
+   */
+  idle(gen) {
+    const core = this.processes.get(gen);
+    return Boolean(core) && this.core === core && core.pending === 0 && !this.owes(core);
   }
 
   attach() {
@@ -176,8 +202,14 @@ class NamingConfig {
       generations: { ens: 0, tezos: 0, lifecycle: 0 },
       queue: Promise.resolve(), // its control requests, in order
       initialized: null,
+      ready: false, // initialized
+      pending: 0, // control requests queued and not yet settled
+      // Controls that failed: owed before anything more is served, so no
+      // lookup runs on a snapshot main has moved from.
+      owed: { configure: false, reset: false, availability: false, tezosCache: false },
     };
     this.core = core;
+    this.processes.set(core.gen, core);
     core.initialized = this.initialize(core);
   }
 
@@ -187,6 +219,7 @@ class NamingConfig {
       await this.sendConfigure(core, false);
       if (this.core !== core) return false;
       await this.sendAvailability(core);
+      core.ready = true;
       return true;
     }).catch(() => false);
   }
@@ -205,13 +238,80 @@ class NamingConfig {
   async whenServing() {
     const core = this.core;
     if (!core) return null;
+    // Every control queued before this (a settings change, an
+    // invalidation) goes first: a lookup must not reach the core before a
+    // configuration main has already moved to.
+    const queued = core.queue;
     const attempt = core.initialized;
     if ((await attempt) !== true) {
       if (!this.serving(core)) return null;
       if (core.initialized === attempt) core.initialized = this.initialize(core);
       if ((await core.initialized) !== true) return null;
     }
+    // The queue never rejects: run() keeps failures to their caller.
+    await queued;
+    if (this.owes(core)) {
+      const settled = await this.run(core, () => this.resync(core)).then(
+        () => true,
+        () => false
+      );
+      if (!settled) return null;
+    }
     return this.serving(core) ? core.gen : null;
+  }
+
+  owes(core) {
+    const { owed } = core;
+    return owed.configure || owed.availability || owed.tezosCache;
+  }
+
+  /** Sends what failed before, from the settings of now. */
+  async resync(core) {
+    const { owed } = core;
+    if (owed.configure) {
+      await this.sendConfigure(core, owed.reset);
+      owed.configure = false;
+      owed.reset = false;
+    }
+    if (owed.availability) {
+      await this.sendAvailability(core);
+      owed.availability = false;
+    }
+    if (owed.tezosCache) {
+      await this.sendControl(core, 'naming.invalidate_tezos', {});
+      owed.tezosCache = false;
+    }
+  }
+
+  /**
+   * Queues an invalidation behind the core's earlier control requests, so it
+   * keeps its order with them and with the lookups after it. Resolves its
+   * result, or undefined without a core. One that fails is owed as a
+   * clearing of its whole cache (a provider reset for ENS content, every
+   * Tezos result), which covers it.
+   */
+  invalidate(method, params) {
+    const core = this.core;
+    if (!core) return Promise.resolve(undefined);
+    return this.run(core, () => this.sendControl(core, method, params)).catch((err) => {
+      if (method === 'naming.invalidate_tezos') {
+        core.owed.tezosCache = true;
+      } else {
+        core.owed.configure = true;
+        core.owed.reset = true;
+      }
+      throw err;
+    });
+  }
+
+  sendControl(core, method, params) {
+    return this.client.requestTo(
+      core.gen,
+      method,
+      params,
+      { caller: 'shell' },
+      { watchdogMs: CONTROL_WATCHDOG_MS }
+    );
   }
 
   /** Whether `core` is current and its process still takes requests (its
@@ -220,17 +320,32 @@ class NamingConfig {
     return this.core === core && this.client.serves(core.gen);
   }
 
-  /** Sends the current snapshot (a settings change). */
+  /** Sends the current snapshot (a settings change). Failed, it is owed:
+   * nothing is served until it goes. */
   async configure({ reset = false } = {}) {
     const core = this.core;
-    if (core) await this.run(core, () => this.sendConfigure(core, reset));
+    if (!core) return this.generations;
+    try {
+      await this.run(core, () => this.sendConfigure(core, reset));
+    } catch (err) {
+      core.owed.configure = true;
+      core.owed.reset ||= reset;
+      throw err;
+    }
     return this.generations;
   }
 
-  /** Sends whether Myotis is ready and enabled (a transition). */
+  /** Sends whether Myotis is ready and enabled (a transition). Failed, it
+   * is owed likewise. */
   async availability() {
     const core = this.core;
-    if (core) await this.run(core, () => this.sendAvailability(core));
+    if (!core) return this.generations;
+    try {
+      await this.run(core, () => this.sendAvailability(core));
+    } catch (err) {
+      core.owed.availability = true;
+      throw err;
+    }
     return this.generations;
   }
 
@@ -238,7 +353,13 @@ class NamingConfig {
    * unless the core has gone by then. */
   run(core, task) {
     const result = core.queue.then(() => (this.core === core ? task() : false));
-    core.queue = result.catch(() => {});
+    // Counted at once, so a lookup about to be sent sees it; settled
+    // before the queue moves on.
+    core.pending += 1;
+    const settle = () => {
+      core.pending -= 1;
+    };
+    core.queue = result.then(settle, settle);
     return result;
   }
 
@@ -250,9 +371,13 @@ class NamingConfig {
     };
     let result;
     try {
-      result = await this.client.requestTo(core.gen, 'naming.configure', params, {
-        caller: 'shell',
-      });
+      result = await this.client.requestTo(
+        core.gen,
+        'naming.configure',
+        params,
+        { caller: 'shell' },
+        { watchdogMs: CONTROL_WATCHDOG_MS }
+      );
     } catch (err) {
       core.refs.settle(false);
       this.log.warn('[Core] naming.configure failed', { code: err?.code });
@@ -268,9 +393,13 @@ class NamingConfig {
     const params = { ready: myotis.isReady() === true, enabled: myotis.isEnabled() === true };
     let result;
     try {
-      result = await this.client.requestTo(core.gen, 'naming.availability', params, {
-        caller: 'shell',
-      });
+      result = await this.client.requestTo(
+        core.gen,
+        'naming.availability',
+        params,
+        { caller: 'shell' },
+        { watchdogMs: CONTROL_WATCHDOG_MS }
+      );
     } catch (err) {
       this.log.warn('[Core] naming.availability failed', { code: err?.code });
       throw err;
@@ -297,4 +426,5 @@ module.exports = {
   wireQuorum,
   MAX_REMEMBERED,
   MAX_RPC_ENDPOINTS,
+  CONTROL_WATCHDOG_MS,
 };

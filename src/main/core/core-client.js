@@ -330,10 +330,12 @@ class CoreClient extends EventEmitter {
    * Sends a request to one core process, the ready one `gen` names (the
    * client's `current` when it emitted 'ready'), without waiting: once that
    * process has ended it fails `unavailable`, so it never reaches another.
+   * `watchdogMs` is the request's hang watchdog: the core's deadline for it
+   * plus 15 s.
    */
-  requestTo(gen, method, params = {}, context = { caller: 'chrome' }) {
+  requestTo(gen, method, params = {}, context = { caller: 'chrome' }, { watchdogMs = null } = {}) {
     if (!this.serves(gen)) return Promise.reject(unavailable());
-    return this.send(gen, method, params, context, null);
+    return this.send(gen, method, params, context, { watchdogMs });
   }
 
   /** Whether `gen` is the process requests go to now: the current one,
@@ -689,7 +691,7 @@ class CoreClient extends EventEmitter {
    * of a promise.
    */
   send(gen, method, params, context, options) {
-    const { control = false, onReply = null } = options || {};
+    const { control = false, onReply = null, watchdogMs = null } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
       if (!onReply) return Promise.reject(error);
@@ -731,6 +733,25 @@ class CoreClient extends EventEmitter {
           settle: (outcome) => (outcome.error ? reject(outcome.error) : resolve(outcome.result)),
         };
       });
+    }
+    if (watchdogMs !== null) {
+      // The hang watchdog (design 0001): the core enforces the request's
+      // deadline and always replies, so no reply by deadline + 15 s means
+      // it is hung. It is killed, which fails what it holds, and restarted.
+      const settle = entry.settle;
+      const watchdog = this.timer(
+        gen,
+        () => {
+          if (gen.pending.get(id) !== entry) return;
+          this.log.error('[Core] request hung; restarting the core', { method });
+          this.end(gen, 'hang');
+        },
+        watchdogMs
+      );
+      entry.settle = (outcome) => {
+        this.cancelTimer(gen, watchdog);
+        settle(outcome);
+      };
     }
     gen.pending.set(id, entry);
     gen.writeBytes += frame.length;
