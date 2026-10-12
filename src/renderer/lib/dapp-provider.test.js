@@ -111,7 +111,12 @@ const loadProvider = async (options = {}) => {
   };
   jest.doMock('./wallet/safe-signing.js', () => safeSigning);
   jest.doMock('./origin-utils.js', () => ({
-    getPermissionKey: jest.fn((url) => url),
+    getPermissionKey: jest.fn((url) => url || null),
+  }));
+  // Each tab's committed display URL, which keys its requests.
+  const committedUrls = new Map();
+  jest.doMock('./tabs.js', () => ({
+    getDisplayUrlForWebview: jest.fn((wv) => committedUrls.get(wv) ?? ''),
   }));
 
   const mod = await import('./dapp-provider.js');
@@ -121,6 +126,7 @@ const loadProvider = async (options = {}) => {
   const webview = createElement('webview');
   webview.send = jest.fn();
   webview.getURL = jest.fn(() => options.webviewUrl || 'https://app.example');
+  committedUrls.set(webview, options.committedUrl ?? 'https://app.example');
   mod.setupWebviewProvider(webview);
   // The guest's main frame commits, as Electron reports it before any
   // message from the new document (see guest-main-frame.js).
@@ -137,11 +143,30 @@ const loadProvider = async (options = {}) => {
     });
   };
 
+  // Another tab: its own webview, committed at `url`, top frame live.
+  const addTab = (url) => {
+    const other = createElement('webview');
+    other.send = jest.fn();
+    other.getURL = jest.fn(() => url);
+    committedUrls.set(other, url);
+    mod.setupWebviewProvider(other);
+    other.dispatch('did-frame-navigate', {
+      isMainFrame: true,
+      frameProcessId: MAIN_FRAME[0],
+      frameRoutingId: MAIN_FRAME[1],
+    });
+    const send = (request) =>
+      other.dispatch('ipc-message', { channel: 'dapp:provider-request', frameId: MAIN_FRAME, args: [request] });
+    return { webview: other, sendRequest: send };
+  };
+
   return {
     mod,
     webview,
     sendRequest,
     commitMainFrame,
+    addTab,
+    addressInput,
     state,
     walletMocks,
     dappPermissions,
@@ -549,6 +574,82 @@ describe('dapp-provider only serves the guest main frame', () => {
 // own reading of the site's auto-approve policy. The renderer's side of
 // that contract: auto-approved requests say so (and carry no token), and a
 // user approval mints a token bound to exactly what is signed.
+describe('dapp-provider keys each request by its own tab', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  // Only app.example is connected, with signing auto-approve.
+  const grantOnlyApp = (dappPermissions) =>
+    dappPermissions.getPermission.mockImplementation(async (key) =>
+      key === 'https://app.example' ? { walletIndex: 0, chainId: 100, autoApprove: { signing: true } } : null
+    );
+
+  test("a background tab's request uses its own site, not the active tab's", async () => {
+    // The active tab (address bar) is the connected app.example.
+    const { addTab, dappPermissions, walletMocks, walletUi } = await loadProvider();
+    grantOnlyApp(dappPermissions);
+    const background = addTab('https://other.example');
+
+    background.sendRequest({ id: 1, method: 'personal_sign', params: ['0xdead', '0xeoa'] });
+    await flushMicrotasks();
+
+    expect(dappPermissions.getPermission.mock.calls.map(([key]) => key)).toEqual(['https://other.example']);
+    expect(walletMocks.signMessage).not.toHaveBeenCalled();
+    expect(walletUi.showDappSignApproval).not.toHaveBeenCalled();
+    expect(responsesSentTo(background.webview)[0][1].error.code).toBe(4100);
+  });
+
+  test('an unsubmitted address-bar draft does not re-key the page', async () => {
+    const { sendRequest, webview, addressInput, dappPermissions, walletMocks } = await loadProvider({
+      committedUrl: 'https://other.example',
+    });
+    grantOnlyApp(dappPermissions);
+    addressInput.value = 'https://app.example';
+
+    sendRequest({ id: 1, method: 'personal_sign', params: ['0xdead', '0xeoa'] });
+    await flushMicrotasks();
+
+    expect(walletMocks.signMessage).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview)[0][1].error.code).toBe(4100);
+  });
+
+  test('a connect from a background tab names that tab', async () => {
+    const { addTab, walletUi } = await loadProvider();
+    const background = addTab('https://other.example');
+
+    background.sendRequest({ id: 1, method: 'eth_requestAccounts', params: [] });
+    await flushMicrotasks();
+
+    const [displayUrl, permissionKey, , , target] = walletUi.showDappConnect.mock.calls[0];
+    expect([displayUrl, permissionKey]).toEqual(['https://other.example', 'https://other.example']);
+    expect(target).toBe(background.webview);
+  });
+
+  test('a page with no committed URL cannot connect, sign or switch chains', async () => {
+    const { sendRequest, webview, dappPermissions, walletUi } = await loadProvider({ committedUrl: '' });
+
+    sendRequest({ id: 1, method: 'eth_accounts', params: [] });
+    sendRequest({ id: 2, method: 'eth_requestAccounts', params: [] });
+    sendRequest({ id: 3, method: 'personal_sign', params: ['0xdead', '0xeoa'] });
+    sendRequest({ id: 4, method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+    await flushMicrotasks();
+
+    const byId = Object.fromEntries(responsesSentTo(webview).map(([, r]) => [r.id, r]));
+    expect(byId[1].result).toEqual([]);
+    for (const id of [2, 3, 4]) expect(byId[id].error.code).toBe(4100);
+    expect(dappPermissions.getPermission).not.toHaveBeenCalled();
+    expect(walletUi.showDappConnect).not.toHaveBeenCalled();
+    expect(walletUi.setSelectedChainId).not.toHaveBeenCalled();
+  });
+});
+
 describe('dapp-provider signing authorization', () => {
   beforeEach(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});

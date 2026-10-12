@@ -99,7 +99,10 @@ async function loadDappSign() {
     return { settled, promise };
   }
 
-  return { mod, elements: elementsById, sign, setSigningAutoApprove, openApproval };
+  // The screen hider this module registered (another screen opening).
+  const hideForOtherScreen = () => require('./wallet-state.js').registerScreenHider.mock.calls[0][0]();
+
+  return { mod, elements: elementsById, sign, setSigningAutoApprove, openApproval, executeSign, hideForOtherScreen };
 }
 
 describe('dapp-sign approval lifecycle', () => {
@@ -107,6 +110,37 @@ describe('dapp-sign approval lifecycle', () => {
     global.window = originalWindow;
     global.document = originalDocument;
     jest.restoreAllMocks();
+  });
+
+  test('a newcomer never replaces the message on screen', async () => {
+    const { mod, elements, sign, openApproval, executeSign } = await loadDappSign();
+    const first = await openApproval();
+
+    const second = mod.showDappSignApproval({}, 'https://other.example', 'personal_sign', ['0xbad0', '0xledger']);
+    await expect(second).rejects.toMatchObject({ code: -32002 });
+    expect(elements['dapp-sign-site'].textContent).toBe('https://app.example');
+
+    elements['dapp-sign-approve'].dispatch('click');
+    await flush();
+    expect(JSON.stringify(executeSign.mock.calls[0])).toContain('0xdeadbeef');
+    expect(JSON.stringify(executeSign.mock.calls[0])).not.toContain('0xbad0');
+    sign.resolve('0xsignature');
+    await first.promise;
+
+    const third = await openApproval();
+    expect(third.settled.state).toBe('pending');
+  });
+
+  test('a prompt another screen hides is rejected and frees the slot', async () => {
+    const { openApproval, hideForOtherScreen } = await loadDappSign();
+    const first = await openApproval();
+
+    hideForOtherScreen();
+    await first.promise;
+    expect(first.settled.value).toMatchObject({ code: 4001 });
+
+    const second = await openApproval();
+    expect(second.settled.state).toBe('pending');
   });
 
   test('reject and back are inert while a Ledger signature is in flight', async () => {

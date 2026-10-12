@@ -21,6 +21,11 @@ import {
   isSafeAccount,
 } from './wallet-utils.js';
 import { isSafeSigningBoardOpen } from './safe-signing.js';
+import {
+  assertNoDappApprovalPending,
+  claimDappApproval,
+  releaseDappApproval,
+} from './dapp-approval-slot.js';
 
 // DOM references
 let dappSignScreen;
@@ -65,7 +70,18 @@ export function initDappSign() {
   dappSignAutoApproveCheckbox = document.getElementById('dapp-sign-auto-approve');
 
   // Register screen hider
-  registerScreenHider(() => dappSignScreen?.classList.add('hidden'));
+  registerScreenHider(() => {
+    // Another screen took the sidebar while this prompt was showing and
+    // undecided: answer the dApp and free the slot (dapp-approval-slot.js).
+    // Not while signing: a Safe signature hands the screen to its board.
+    const showing = dappSignScreen && !dappSignScreen.classList.contains('hidden');
+    if (showing && dappSignPending && !dappSignPending.signing) {
+      rejectDappSign();
+      releaseDappApproval(dappSignPending);
+      dappSignPending = null;
+    }
+    dappSignScreen?.classList.add('hidden');
+  });
 
   setupDappSignScreen();
 }
@@ -128,6 +144,7 @@ function setupDappSignScreen() {
  */
 export async function showDappSignApproval(webview, permissionKey, method, params) {
   assertNoSignatureInFlight();
+  assertNoDappApprovalPending();
 
   const permission = await window.dappPermissions.getPermission(permissionKey);
   if (!permission) {
@@ -139,6 +156,9 @@ export async function showDappSignApproval(webview, permissionKey, method, param
     // the moment we take it over.
     assertNoSignatureInFlight();
     const request = { permissionKey, walletIndex: permission.walletIndex, method, params, resolve, reject, webview };
+    // Throws (rejecting this promise) if another prompt is pending: a
+    // newcomer never replaces the message the user is reading.
+    claimDappApproval(request);
     dappSignPending = request;
     if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
     setDappSignCancelEnabled(true);
@@ -166,6 +186,7 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       // over a live confirmation.
       if (isSignatureInFlight()) {
         if (dappSignPending === request) dappSignPending = null;
+        releaseDappApproval(request);
         reject(signatureInFlightError());
         return;
       }
@@ -422,6 +443,7 @@ function closeDappSign() {
   if (!isSafeSigningBoardOpen()) {
     walletState.identityView?.classList.remove('hidden');
   }
+  releaseDappApproval(dappSignPending);
   dappSignPending = null;
   hideDappSignError();
   if (dappSignPasswordInput) dappSignPasswordInput.value = '';

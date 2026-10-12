@@ -11,6 +11,12 @@ import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../side
 import { getActiveWebview, emitAccountsChanged, getPermissionKey } from '../dapp-provider.js';
 import { showDappPermissions } from './permission-manage.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
+import {
+  isDappApprovalPending,
+  requestPendingError,
+  claimDappApproval,
+  releaseDappApproval,
+} from './dapp-approval-slot.js';
 
 // DOM references
 let dappConnectScreen;
@@ -63,7 +69,18 @@ export function initDappConnect() {
   dappConnectionManage = document.getElementById('dapp-connection-manage');
 
   // Register screen hider
-  registerScreenHider(() => dappConnectScreen?.classList.add('hidden'));
+  registerScreenHider(() => {
+    // Another screen took the sidebar while this prompt was showing and
+    // undecided: answer the dApp and free the slot (dapp-approval-slot.js).
+    const showing = dappConnectScreen && !dappConnectScreen.classList.contains('hidden');
+    if (showing && dappConnectPending && !dappConnectPending.deciding) {
+      rejectDappConnect();
+      releaseDappApproval(dappConnectPending);
+      dappConnectPending = null;
+      closeDappConnectWalletDropdown();
+    }
+    dappConnectScreen?.classList.add('hidden');
+  });
 
   setupDappConnectScreen();
 }
@@ -228,6 +245,11 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
     reject(signatureInFlightError());
     return;
   }
+  // Never replace the prompt the user is looking at (dapp-approval-slot.js).
+  if (isDappApprovalPending()) {
+    reject(requestPendingError());
+    return;
+  }
 
   // Pin the chain at prompt time from the app's own origin. The global chain
   // can still move while the prompt is up (another tab's
@@ -235,6 +257,7 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
   // contract-hosted app's chain is not the user's to change anyway.
   const pinnedChainId = parseOnchainAppUrl(displayUrl)?.chainId || null;
   dappConnectPending = { permissionKey, resolve, reject, webview, pinnedChainId };
+  claimDappApproval(dappConnectPending);
 
   if (dappConnectSite) {
     dappConnectSite.textContent = permissionKey || displayUrl || 'Unknown';
@@ -284,6 +307,7 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
 function closeDappConnect() {
   dappConnectScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
+  releaseDappApproval(dappConnectPending);
   dappConnectPending = null;
   closeDappConnectWalletDropdown();
 }
@@ -298,6 +322,8 @@ async function approveDappConnect() {
     console.error('[WalletUI] No wallet selected for dApp connect');
     return;
   }
+  // Decided: a screen opening during the grant below must not reject it.
+  dappConnectPending.deciding = true;
 
   const grantedChainId = pinnedChainId || walletState.selectedChainId;
 

@@ -18,6 +18,7 @@ import { confirmSigning } from './wallet/signing-confirmation.js';
 import { getPermissionKey } from './origin-utils.js';
 import { parseOnchainAppUrl } from './url-utils.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
+import { getDisplayUrlForWebview } from './tabs.js';
 
 // Feature flag state
 let identityWalletEnabled = false;
@@ -63,15 +64,6 @@ const ERRORS = {
   INVALID_PARAMS: { code: -32602, message: 'Invalid parameters' },
   INTERNAL_ERROR: { code: -32603, message: 'Internal error' },
 };
-
-/**
- * Get the display URL from the address bar
- * This is what the user sees (e.g., ipfs://QmXxx, vitalik.eth, https://example.com)
- */
-function getDisplayUrl() {
-  const addressInput = document.getElementById('address-input');
-  return addressInput?.value || '';
-}
 
 /**
  * Methods that can be handled without user approval (read-only)
@@ -129,9 +121,26 @@ function getOnchainApp(webview) {
   }
 }
 
+/**
+ * The URL a request is keyed by: the requesting tab's committed display URL
+ * (e.g. ipfs://QmXxx, vitalik.eth, https://example.com). Never the address
+ * bar: it shows the active tab, which need not be the requester, and may
+ * hold an unsubmitted draft.
+ */
 function getRequestDisplayUrl(webview) {
-  return getOnchainApp(webview)?.url || getDisplayUrl();
+  return getOnchainApp(webview)?.url || getDisplayUrlForWebview(webview);
 }
+
+// Methods that act for the site: without a committed URL a page has no
+// identity to hold a grant, so these are refused rather than keyed to
+// nothing.
+const SITE_METHODS = new Set([
+  'eth_requestAccounts',
+  'wallet_switchEthereumChain',
+  'eth_sendTransaction',
+  'personal_sign',
+  'eth_signTypedData_v4',
+]);
 
 async function getCurrentChainId(webview = null) {
   try {
@@ -182,6 +191,10 @@ async function handleProviderRequest(webview, request) {
   try {
     let result;
 
+    if (!permissionKey && SITE_METHODS.has(method)) {
+      throw { ...ERRORS.UNAUTHORIZED, message: 'This page has no address to connect from yet' };
+    }
+
     // Handle different method categories
     if (method === 'eth_chainId') {
       result = await getCurrentChainId(webview);
@@ -190,7 +203,9 @@ async function handleProviderRequest(webview, request) {
       result = String(parseInt(chainId, 16));
     } else if (method === 'eth_accounts') {
       // Return connected accounts (empty if not connected)
-      const permission = await window.dappPermissions.getPermission(permissionKey);
+      const permission = permissionKey
+        ? await window.dappPermissions.getPermission(permissionKey)
+        : null;
       if (permission) {
         const walletsResult = await window.wallet.getDerivedWallets();
         const wallets = walletsResult.success ? walletsResult.wallets : [];
@@ -671,7 +686,7 @@ export function broadcastProviderEvent(event, data) {
 }
 
 // Exported for use by swarm-provider.js and swarm-connect.js
-export { getPermissionKey, getDisplayUrl, executeSign };
+export { getPermissionKey, executeSign };
 
 // Export state for wallet UI to access
 export const walletState = {

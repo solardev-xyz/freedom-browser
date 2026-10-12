@@ -176,7 +176,19 @@ async function loadDappTx() {
       .map((call) => call[3]?.rememberAutoApprove)
       .filter(Boolean);
 
-  return { mod, elements: elementsById, send, rememberedRules, confirmSigning, openApproval, txParams };
+  // The screen hider this module registered (another screen opening).
+  const hideForOtherScreen = () => require('./wallet-state.js').registerScreenHider.mock.calls[0][0]();
+
+  return {
+    mod,
+    elements: elementsById,
+    send,
+    rememberedRules,
+    confirmSigning,
+    openApproval,
+    txParams,
+    hideForOtherScreen,
+  };
 }
 
 describe('dapp-tx approval lifecycle', () => {
@@ -184,6 +196,66 @@ describe('dapp-tx approval lifecycle', () => {
     global.window = originalWindow;
     global.document = originalDocument;
     jest.restoreAllMocks();
+  });
+
+  test('a newcomer never replaces the transaction on screen', async () => {
+    const { mod, elements, send, openApproval, txParams } = await loadDappTx();
+    const first = await openApproval();
+
+    // Another page asks while the user reads the first transaction.
+    const other = { to: '0xAttacker000000000000000000000000000000beef', value: '5', data: '0x' };
+    const second = mod.showDappTxApproval({}, 'https://other.example', other);
+    await expect(second).rejects.toMatchObject({ code: -32002 });
+    expect(elements['dapp-tx-site'].textContent).toBe('https://app.example');
+
+    // Confirm sends what was shown: the first transaction.
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    expect(window.wallet.dappSendTransaction.mock.calls[0][0]).toMatchObject({
+      to: txParams.to,
+      data: txParams.data,
+    });
+    send.resolve({ success: true, hash: '0xhash' });
+    await first.promise;
+    expect(first.settled.state).toBe('resolved');
+
+    // Answered: the next request is served.
+    const third = await openApproval();
+    expect(third.settled.state).toBe('pending');
+  });
+
+  test('a prompt another screen hides is rejected and frees the slot', async () => {
+    const { openApproval, hideForOtherScreen } = await loadDappTx();
+    const first = await openApproval();
+
+    hideForOtherScreen();
+    await first.promise;
+    expect(first.settled.state).toBe('rejected');
+    expect(first.settled.value).toMatchObject({ code: 4001 });
+
+    const second = await openApproval();
+    expect(second.settled.state).toBe('pending');
+  });
+
+  test('a quote that lands after its request was answered is dropped', async () => {
+    const { openApproval, hideForOtherScreen, elements } = await loadDappTx();
+    const gas = deferred();
+    window.wallet.estimateGas.mockReturnValueOnce(gas.promise);
+    const first = await openApproval();
+
+    // Answered while its fee quote is still out.
+    hideForOtherScreen();
+    await first.promise;
+    const second = await openApproval();
+    const fee = elements['dapp-tx-fee'].textContent;
+
+    gas.resolve({ success: true, gasLimit: '999999' });
+    await flush();
+    expect(elements['dapp-tx-fee'].textContent).toBe(fee);
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    expect(window.wallet.dappSendTransaction.mock.calls[0][0].gasLimit).not.toBe('999999');
+    expect(second.settled.state).toBe('pending');
   });
 
   test('reject and back are inert while a Ledger signature is in flight', async () => {

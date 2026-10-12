@@ -24,6 +24,11 @@ import {
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
+import {
+  assertNoDappApprovalPending,
+  claimDappApproval,
+  releaseDappApproval,
+} from './dapp-approval-slot.js';
 
 // DOM references
 let dappTxScreen;
@@ -96,7 +101,19 @@ export function initDappTx() {
   dappTxAutoApproveCheckbox = document.getElementById('dapp-tx-auto-approve');
 
   // Register screen hider
-  registerScreenHider(() => dappTxScreen?.classList.add('hidden'));
+  registerScreenHider(() => {
+    // Another screen took the sidebar while this prompt was showing and
+    // undecided: the user moved on, so answer the dApp and free the slot
+    // (see dapp-approval-slot.js). Not while sending: a Safe send hands
+    // the screen to its signing board mid-flight.
+    const showing = dappTxScreen && !dappTxScreen.classList.contains('hidden');
+    if (showing && dappTxPending && !dappTxPending.signing) {
+      rejectDappTx();
+      releaseDappApproval(dappTxPending);
+      dappTxPending = null;
+    }
+    dappTxScreen?.classList.add('hidden');
+  });
 
   setupDappTxScreen();
 }
@@ -168,6 +185,7 @@ function setupDappTxScreen() {
  */
 export async function showDappTxApproval(webview, permissionKey, txParams, requestChainId = null) {
   assertNoSignatureInFlight();
+  assertNoDappApprovalPending();
 
   const permission = await window.dappPermissions.getPermission(permissionKey);
   if (!permission) {
@@ -185,6 +203,9 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
     // the moment we take it over.
     assertNoSignatureInFlight();
     const request = { permissionKey, walletIndex: permission.walletIndex, txParams, resolve, reject, webview, chainId, selector };
+    // Throws (rejecting this promise) if another prompt is pending: a
+    // newcomer never replaces the request the user is looking at.
+    claimDappApproval(request);
     dappTxPending = request;
 
     if (dappTxSite) {
@@ -199,7 +220,7 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
     }
 
     Promise.all([
-      populateDappTxDetails(txParams, chainId),
+      populateDappTxDetails(request),
       checkDappTxUnlockStatus(),
     ]).then(() => {
       // Another surface may have started a device signature while we were
@@ -208,6 +229,7 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
       // rather than paint over a live confirmation.
       if (isSignatureInFlight()) {
         if (dappTxPending === request) dappTxPending = null;
+        releaseDappApproval(request);
         reject(signatureInFlightError());
         return;
       }
@@ -220,8 +242,12 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
   });
 }
 
-async function populateDappTxDetails(txParams, chainId) {
+// Paints and quotes `request` only while it is still the pending one: each
+// await is a point where it may have been answered and replaced.
+async function populateDappTxDetails(request) {
+  const { txParams, chainId } = request;
   const chainsResult = await window.networks.getChains();
+  if (dappTxPending !== request) return;
   const chains = chainsResult.success ? chainsResult.chains : {};
   const chain = chains[chainId];
 
@@ -256,17 +282,18 @@ async function populateDappTxDetails(txParams, chainId) {
     dappTxNetwork.textContent = chain?.name || `Chain ${chainId}`;
   }
 
-  if (dappTxFee && isSafeAccount(dappTxPending?.walletIndex)) {
+  if (dappTxFee && isSafeAccount(request.walletIndex)) {
     // The executor EOA pays the execution fee, quoted after signing.
-    renderSafeFeePayer(dappTxFee, dappTxPending.walletIndex);
+    renderSafeFeePayer(dappTxFee, request.walletIndex);
     return;
   }
 
   if (dappTxFee) {
     try {
       const walletsResult = await window.wallet.getDerivedWallets();
+      if (dappTxPending !== request) return;
       const wallets = walletsResult.success ? walletsResult.wallets : [];
-      const wallet = wallets.find(w => w.index === dappTxPending?.walletIndex);
+      const wallet = wallets.find(w => w.index === request.walletIndex);
 
       if (wallet) {
         const gasResult = await window.wallet.estimateGas({
@@ -278,6 +305,7 @@ async function populateDappTxDetails(txParams, chainId) {
         });
 
         const priceResult = await window.wallet.getGasPrice(chainId);
+        if (dappTxPending !== request) return;
 
         if (gasResult.success && priceResult.success) {
           const gasLimit = BigInt(gasResult.gasLimit);
@@ -287,18 +315,16 @@ async function populateDappTxDetails(txParams, chainId) {
           const symbol = chain?.nativeSymbol || 'ETH';
           dappTxFee.textContent = `~${feeEth.toFixed(6)} ${symbol}`;
 
-          if (dappTxPending) {
-            dappTxPending.gasLimit = gasResult.gasLimit;
-            dappTxPending.gasPrice = priceResult;
-            dappTxPending.chainId = chainId;
-          }
+          request.gasLimit = gasResult.gasLimit;
+          request.gasPrice = priceResult;
+          request.chainId = chainId;
         } else {
           dappTxFee.textContent = 'Unable to estimate';
         }
       }
     } catch (err) {
       console.error('[WalletUI] Gas estimation failed:', err);
-      dappTxFee.textContent = 'Unable to estimate';
+      if (dappTxPending === request) dappTxFee.textContent = 'Unable to estimate';
     }
   }
 }
@@ -598,6 +624,7 @@ function closeDappTx() {
   if (!isSafeSigningBoardOpen()) {
     walletState.identityView?.classList.remove('hidden');
   }
+  releaseDappApproval(dappTxPending);
   dappTxPending = null;
   hideDappTxError();
   if (dappTxPasswordInput) dappTxPasswordInput.value = '';
