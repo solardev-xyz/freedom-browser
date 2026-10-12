@@ -632,6 +632,66 @@ describe('ens-resolver', () => {
       expect(mockUrResolve.mock.calls.length).toBe(callsAfterCold);
     });
 
+    // Leg errors through ethers' own conversion of a JSON-RPC error body.
+    const callError = (rpcError, calldata = '0x9061b923') => {
+      const provider = new actualEthers.JsonRpcProvider('http://127.0.0.1:1', 1, { staticNetwork: true });
+      try {
+        return provider.getRpcError(
+          { method: 'eth_call', params: [{ to: '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe', data: calldata }, 'latest'], id: 1, jsonrpc: '2.0' },
+          { id: 1, jsonrpc: '2.0', error: rpcError }
+        );
+      } finally {
+        provider.destroy();
+      }
+    };
+    const revertReason = (reason) => '0x08c379a0' + actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], [reason]).slice(2);
+    // Call data is hex, so it can hold any run of digits: ethers' message
+    // for a failed call embeds it.
+    const DIGITS_CALLDATA = '0x9061b923' + '00'.repeat(30) + '4295035040' + '00'.repeat(30);
+
+    test.each([
+      ['a custom-error revert whose call data holds 429 and 50x digits', { code: 3, message: 'execution reverted', data: '0x12345678' }, DIGITS_CALLDATA],
+      ['a revert whose reason says timeout', { code: 3, message: 'execution reverted: timeout', data: revertReason('timeout') }, undefined],
+      ['a revert whose reason says no response', { code: -32000, message: 'execution reverted: no response' }, undefined],
+      ['a revert whose reason names an HTTP status', { code: -32000, message: 'execution reverted: 503 Service Unavailable' }, undefined],
+    ])('%s is an execution outcome and quarantines no endpoint', async (label, rpcError, calldata) => {
+      const error = callError(rpcError, calldata);
+      if (calldata) expect(error.message).toMatch(/429|50[234]/);
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: error }])));
+      const slug = label.replace(/\W+/g, '-');
+      const failing = await resolveEnsContent(`${slug}.box`);
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+      expect(failing.trust.level).toBe('verified');
+
+      // Every endpoint is still healthy: the next name uses the full pool.
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent(`healthy-after-${slug}.box`);
+      expect(healthy.trust).toMatchObject({ level: 'verified' });
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test.each([
+      ['a JSON-RPC internal error', { code: -32603, message: 'internal error' }],
+      ['a node that did not respond', { code: -32000, message: 'no response' }],
+      ['a relayed HTTP 429', { code: -32000, message: '429 Too Many Requests' }],
+    ])('%s still quarantines the endpoint', async (label, rpcError) => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: callError(rpcError) }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: callError(rpcError) }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+      const slug = label.replace(/\W+/g, '-');
+      await resolveEnsContent(`${slug}.box`);
+
+      // Two endpoints sit in quarantine: one source is left.
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const next = await resolveEnsContent(`after-${slug}.box`);
+      expect(next.trust.level).toBe('unverified');
+      expect(next.trust.queried).toEqual([new URL(TEST_PROVIDERS[2]).host]);
+    });
+
     test('does not cache transient NO_CONTENTHASH errors', async () => {
       mockUrResolve.mockRejectedValue(
         new Error('response not found during CCIP fetch: 3dnsService:: CCIP_001')
