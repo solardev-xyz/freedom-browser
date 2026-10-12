@@ -332,7 +332,7 @@ The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"
 
 ### Weak copyleft: present and handled
 
-- **MPL-2.0** (13 packages) — file-level copyleft, same license as Freedom itself, all consumed unmodified. No obligation beyond notice.
+- **MPL-2.0** (10 packages) — file-level copyleft, same license as Freedom itself, all consumed unmodified. No obligation beyond notice.
 - **LGPL-3.0** (5 packages: `@openlv/{core,session,signaling,transport}`, `websocket-mqtt`) — shipped as one isolated, regenerable bundle so §4 relinking is possible. See _The LGPL question_ above.
 - **LGPL-2.1** (libfuse, statically linked into the Linux AppImage runtime) — a separate upstream program, attributed in `NOTICES`, whose published upstream source meets §6 (maintainer decision, 2026-10-07). See _AppImage runtime_ above.
 
