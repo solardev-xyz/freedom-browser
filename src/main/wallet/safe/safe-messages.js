@@ -29,10 +29,12 @@ const { getEip712MessageTypes, buildSignatureBytes } = require('@safe-global/pro
 
 const { SAFE_VERSION } = require('./safe-executor');
 const { getSafeRecord, DEPLOY_CHAIN_ID } = require('./safe-service');
+const { vaultBackend } = require('../../core/vault-backend');
 const {
   normalizeMessage,
   normalizeTypedData,
   withoutDomainType,
+  toCoreTypedData,
 } = require('../signing-utils');
 const {
   release,
@@ -55,13 +57,15 @@ const store = { get: getSession, set: setSession, idOf: (entry) => entry.hash };
  * (protocol-kit's hashSafeMessage is deliberately not used for personal
  * messages: viem hashes hex STRINGS as UTF-8 text.)
  */
-function requestDigest(method, params) {
+async function requestDigest(method, params) {
   if (method === 'personal_sign') {
     return hashMessage(normalizeMessage(params[0]));
   }
   if (method === 'eth_signTypedData_v4') {
-    const { domain, types, message } = normalizeTypedData(params[1]);
-    return TypedDataEncoder.hash(domain, withoutDomainType(types), message);
+    // The identity core's hash, with the same strict rules as its signing
+    // (freedom-core design 0002): ethers would hash a `bool` given "false"
+    // as true, and the owners' signature over this digest would carry that.
+    return vaultBackend.typedDataHash(toCoreTypedData(normalizeTypedData(params[1])));
   }
   throw new Error(`Unsupported signing method for Safe accounts: ${method}`);
 }
@@ -105,6 +109,33 @@ function requesterGone(entry) {
   }
   const contents = requesterWebContents(entry.requester);
   return !contents || contents.isDestroyed();
+}
+
+/**
+ * Notes whether the requesting page navigates or closes during an await.
+ * @returns {{ gone: () => boolean, stop: () => void }}
+ */
+function watchRequester(requester) {
+  if (requester?.webContentsId == null) {
+    return { gone: () => false, stop: () => {} };
+  }
+  const contents = requesterWebContents(requester);
+  if (!contents) {
+    return { gone: () => true, stop: () => {} };
+  }
+  let left = false;
+  const mark = () => {
+    left = true;
+  };
+  contents.on('destroyed', mark);
+  contents.on('did-navigate', mark);
+  return {
+    gone: () => left || contents.isDestroyed(),
+    stop: () => {
+      contents.removeListener('destroyed', mark);
+      contents.removeListener('did-navigate', mark);
+    },
+  };
 }
 
 /**
@@ -205,13 +236,29 @@ function getSafeMessageState(safeIndex, token) {
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
 async function startSafeMessage({ safeIndex, request, display, requester }) {
-  const record = getSafeRecord(safeIndex);
+  const initial = getSafeRecord(safeIndex);
   // isValidSignature lives on the deployed contract — nothing to verify
   // against before activation.
-  if (!record.deployed?.[DEPLOY_CHAIN_ID]) {
+  if (!initial.deployed?.[DEPLOY_CHAIN_ID]) {
     throw new Error('Activate this account on Gnosis before signing for apps');
   }
-  const digest = requestDigest(request.method, request.params);
+  // Hashing awaits the identity core: watch the requesting page meanwhile,
+  // since its lifecycle listeners are only attached to the session later.
+  const watch = watchRequester(requester);
+  let digest;
+  try {
+    digest = await requestDigest(request.method, request.params);
+  } finally {
+    watch.stop();
+  }
+  if (watch.gone()) {
+    throw new Error('The requesting page went away before the signature request opened');
+  }
+  // The account may have changed meanwhile (deleted: getSafeRecord throws).
+  const record = getSafeRecord(safeIndex);
+  if (getAddress(record.address) !== getAddress(initial.address) || !record.deployed?.[DEPLOY_CHAIN_ID]) {
+    throw new Error('This account changed while the signature request was opening');
+  }
   const safeAddress = getAddress(record.address);
   const typedData = {
     types: getEip712MessageTypes(SAFE_VERSION),
