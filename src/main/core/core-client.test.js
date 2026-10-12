@@ -1139,6 +1139,28 @@ describe('CoreClient', () => {
       ]);
     });
 
+    test('a result that stops the client while serialized is never written', async () => {
+      let stopping;
+      const { client, core, send, replies } = await served((c) =>
+        c.handle('shell.rpc', async () => ({
+          toJSON: () => {
+            stopping = c.stop();
+            return { status: 200 };
+          },
+        }))
+      );
+      core.on('stdin-closed', () => core.exit(0));
+      const errors = [];
+      core.stdin.on('error', (err) => errors.push(err));
+      send({ id: 1, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 4; i++) await tick();
+      await stopping;
+      expect(replies()).toEqual([]);
+      expect(errors).toEqual([]);
+      expect(core.killCalls).toBe(0);
+      expect(client.current).toBeNull();
+    });
+
     test('a code that is not a string is internal', async () => {
       const { send, replies } = await served((client) =>
         client.handle('shell.rpc', async () => {

@@ -842,12 +842,20 @@ class CoreClient extends EventEmitter {
    * account, so they never take the room requests (vault.lock, shutdown)
    * need.
    */
-  respond(gen, id, controller, outcome) {
-    if (gen.incoming.get(id) !== controller) return;
+  /** Whether a reply is still owed and can be written: its entry is the
+   * current one and its generation's stdin is open. One that can't is
+   * dropped. */
+  owes(gen, id, controller) {
+    if (gen.incoming.get(id) !== controller) return false;
     if (gen.retired || gen.exited || gen.stdinEnded || !gen.child) {
       gen.incoming.delete(id);
-      return;
+      return false;
     }
+    return true;
+  }
+
+  respond(gen, id, controller, outcome) {
+    if (!this.owes(gen, id, controller)) return;
     let frame;
     try {
       // Serialized once, so a result's toJSON runs once and what is checked
@@ -864,6 +872,8 @@ class CoreClient extends EventEmitter {
       const error = shellError(err instanceof FrameError ? 'too_large' : 'internal');
       frame = encodeFrame({ type: 'response', id, error });
     }
+    // Serializing ran the result's own code, which may have fenced it.
+    if (!this.owes(gen, id, controller)) return;
     gen.replyBytes += frame.length;
     const written = (err) => {
       gen.replyBytes -= frame.length;
