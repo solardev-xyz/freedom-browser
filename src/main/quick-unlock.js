@@ -182,6 +182,8 @@ async function enableQuickUnlock(password) {
     await systemPreferences.promptTouchID('enable Touch ID unlock for Freedom Browser');
 
     writeCredential(password);
+    // The user's own choice replaces a lost Quick Setup's pending one.
+    cancelPendingSetup();
 
     console.log('[QuickUnlock] Touch ID unlock enabled');
     return { success: true };
@@ -212,6 +214,13 @@ async function completeQuickSetup(password) {
   if (pendingSetup) clearTimeout(pendingSetup.timer);
   pendingSetup = { password, timer: null };
   return trySetupCredential(pendingSetup);
+}
+
+/** Drops a lost Quick Setup's retained password; an attempt in flight won't write. */
+function cancelPendingSetup() {
+  if (!pendingSetup) return;
+  clearTimeout(pendingSetup.timer);
+  pendingSetup = null;
 }
 
 async function trySetupCredential(setup) {
@@ -345,6 +354,8 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
  * @returns {{success: boolean, error?: string}}
  */
 function disableQuickUnlock() {
+  // A lost Quick Setup's retry must not bring the credential back.
+  cancelPendingSetup();
   try {
     const credPath = getCredentialPath();
     if (fs.existsSync(credPath)) {

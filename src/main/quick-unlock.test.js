@@ -209,6 +209,43 @@ describe('quick-unlock', () => {
     }
   });
 
+  test('disabling quick unlock cancels a pending Quick Setup credential', async () => {
+    jest.useFakeTimers();
+    try {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      let releaseVerify;
+      const verifyPasswordImpl = jest
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('The core is not running'), { code: 'core_unavailable' })
+        )
+        .mockImplementationOnce(() => new Promise((resolve) => (releaseVerify = resolve)));
+      const { mod } = loadQuickUnlock({
+        activeProfile: makeProfile('work', userDataDir),
+        userDataDir,
+        verifyPasswordImpl,
+      });
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+      // A scheduled retry: disable cancels it.
+      expect(mod.disableQuickUnlock()).toEqual({ success: true });
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(verifyPasswordImpl).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      // An attempt in flight when disabled doesn't write either.
+      const attempt = mod.completeQuickSetup('random-pass');
+      await Promise.resolve();
+      mod.disableQuickUnlock();
+      releaseVerify();
+      await expect(attempt).resolves.toBe(false);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('hides a bound credential when the active profile does not match', async () => {
     const sharedIdentityDir = tempUserData();
     process.env.FREEDOM_IDENTITY_DATA = sharedIdentityDir;
