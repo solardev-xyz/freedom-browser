@@ -239,6 +239,34 @@ describe('CoreClient', () => {
     expect(await client.requestTo(client.current, 'vault.status')).toEqual({ ok: true });
   });
 
+  test('a request past its hang watchdog kills the core, which fails it; one answered clears it', async () => {
+    const WATCHDOG = 135_000;
+    const answer = (message, core) => {
+      if (message.method === 'naming.answered') {
+        core.reply({ type: 'response', id: message.id, result: {} });
+      }
+    };
+    const { client, children, runTimers, timers } = makeClient([
+      helloHandler(answer),
+      helloHandler(answer),
+    ]);
+    await client.start();
+    const gen = client.current;
+    await client.requestTo(gen, 'naming.answered', {}, undefined, { watchdogMs: WATCHDOG });
+    expect(timers.filter((t) => t.ms === WATCHDOG && !t.cleared)).toEqual([]);
+    const hung = client
+      .requestTo(gen, 'naming.resolve_content', {}, undefined, { watchdogMs: WATCHDOG })
+      .catch((e) => e);
+    await tick();
+    expect(children[0].killed).toBeNull();
+    runTimers(WATCHDOG);
+    expect(children[0].killed).toBe('SIGKILL');
+    expect((await hung).code).toBe('core_unavailable');
+    runTimers(RESTART_DELAYS_MS[0]);
+    await client.whenReady();
+    expect(children).toHaveLength(2);
+  });
+
   test('exit codes that mean "do not retry" fail without restarting', async () => {
     for (const code of [64, 74, 75]) {
       const { client, children } = makeClient([helloHandler()]);

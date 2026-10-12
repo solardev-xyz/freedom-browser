@@ -176,6 +176,7 @@ class NamingConfig {
       generations: { ens: 0, tezos: 0, lifecycle: 0 },
       queue: Promise.resolve(), // its control requests, in order
       initialized: null,
+      ready: false, // initialized
     };
     this.core = core;
     core.initialized = this.initialize(core);
@@ -187,8 +188,17 @@ class NamingConfig {
       await this.sendConfigure(core, false);
       if (this.core !== core) return false;
       await this.sendAvailability(core);
+      core.ready = true;
       return true;
     }).catch(() => false);
+  }
+
+  /** The initialized process, if one serves right now: for a request that
+   * must keep its order with what follows it (an invalidation before a
+   * lookup), sent without waiting. */
+  servingNow() {
+    const core = this.core;
+    return core?.ready && this.serving(core) ? core.gen : null;
   }
 
   /** Resolves true once the current core process is initialized, retrying

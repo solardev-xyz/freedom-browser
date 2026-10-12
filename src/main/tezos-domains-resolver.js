@@ -508,7 +508,12 @@ function cacheDuration(result) {
   return Math.max(1_000, duration);
 }
 
-async function resolveTezosDomain(name, { fetchImpl = fetch, endpoints = getRpcEndpoints() } = {}) {
+async function resolveTezosDomain(name, options) {
+  // The naming core's driver while FREEDOM_CORE=1 runs one (dev builds);
+  // a caller that brings its own transport keeps today's resolver.
+  const core = options === undefined ? require('./core/naming').namingDriver() : null;
+  if (core) return core.resolveTezos(String(name || ''));
+  const { fetchImpl = fetch, endpoints = getRpcEndpoints() } = options || {};
   const normalized = String(name || '').trim().toLowerCase();
   if (!isTezosDomainName(normalized)) {
     return { type: 'not_found', reason: 'invalid .tez domain', system: 'tezos' };
@@ -647,6 +652,11 @@ async function resolveTezosDomainUncached(normalized, fetchImpl, endpoints) {
 }
 
 function invalidateTezosDomain(name) {
+  const core = require('./core/naming').namingDriver();
+  if (core) {
+    core.invalidateTezos(name ? String(name) : undefined).catch(() => {});
+    return;
+  }
   if (name) {
     resultCache.delete(String(name).trim().toLowerCase());
     return;

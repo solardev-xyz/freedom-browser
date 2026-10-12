@@ -506,7 +506,16 @@ function invalidateCachedProvider() {
   invalidateProviderPool();
   clearEnsResolutionCaches();
   registry.invalidate();
+  require('./core/naming').namingSettingsChanged();
 }
+
+// The naming core's driver while FREEDOM_CORE=1 runs one (dev builds):
+// lookups go to the core, with the inputs it takes. Others, which today's
+// code refuses before any network, stay here.
+function coreNaming() {
+  return require('./core/naming').namingDriver();
+}
+const isName = (name) => name == null || typeof name === 'string';
 
 // Check if an error is a provider/network error that warrants retry
 function isProviderError(err) {
@@ -1848,6 +1857,8 @@ async function consensusResolve(normalizedName, callData, kind = 'content', opti
 }
 
 async function resolveEnsContent(name) {
+  const core = coreNaming();
+  if (core && isName(name)) return core.resolveContent(name ?? '');
   return resolveWithCache(name, ensResultCache, doResolveEnsContent, 'content');
 }
 
@@ -2042,6 +2053,10 @@ function chainCacheKey(name, chainId) {
 }
 
 async function resolveEnsAddress(name, chainId = 1) {
+  const core = coreNaming();
+  if (core && isName(name) && Number.isFinite(chainId)) {
+    return core.resolveAddress(name ?? '', chainId);
+  }
   ensCoinType(chainId);
   return resolveWithCache(name, ensAddressCache,
     (normalized) => doResolveEnsAddress(normalized, chainId), 'addr', chainId);
@@ -2296,6 +2311,10 @@ function cacheAndLog(cache, normalized, result, okValue) {
 // with ReverseAddressMismatch if not — so a successful return is already
 // a trusted name. Spoofed/stale reverses surface as UNVERIFIED.
 async function resolveEnsReverse(address, chainId = 1) {
+  const core = coreNaming();
+  if (core && typeof address === 'string' && Number.isFinite(chainId)) {
+    return core.resolveReverse(address, chainId);
+  }
   if (typeof address !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
     return {
       success: false,
@@ -2814,6 +2833,8 @@ function registerEnsIpc() {
 // Drop the contenthash cache entry for `name` (no-op if absent). Returns
 // true when an entry was evicted, false otherwise.
 function invalidateEnsContent(name) {
+  const core = coreNaming();
+  if (core && isName(name)) return core.invalidateContent(name ?? '');
   const trimmed = (name || '').trim();
   if (!trimmed) return false;
   let key;
@@ -2854,6 +2875,8 @@ module.exports = {
   invalidateEnsContent,
   universalResolverCall,
   universalResolverReverse,
+  // The naming core's driver names a subject as today's errors do.
+  fastNormalize,
   // The naming core's verified operations name their call resolver.
   nameNftResolverCall,
   nameNftReverseResolverCall,

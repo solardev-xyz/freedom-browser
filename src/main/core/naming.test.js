@@ -1,0 +1,57 @@
+const { EventEmitter } = require('events');
+
+jest.mock('electron', () => ({ net: {}, session: {}, app: { isPackaged: false } }));
+jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
+jest.mock('../ipfs/gateway-transport', () => ({ netGatewayFetch: jest.fn() }));
+const mockTransitions = [];
+jest.mock('../myotis/myotis-manager', () => ({
+  isEnabled: () => true,
+  isReady: () => false,
+  onAvailabilityTransition: (listener) => mockTransitions.push(listener),
+}));
+jest.mock('../ens-resolver', () => ({
+  getEffectiveRpcEndpoints: () => ['https://a.rpc.example'],
+  getDirectRpcCandidate: () => ({ url: null }),
+  resolutionPolicy: () => ({ order: ['quorum'] }),
+  fastNormalize: (name) => name.toLowerCase(),
+}));
+jest.mock('../tezos-domains-resolver', () => ({ getRpcEndpoints: () => [] }));
+jest.mock('../networks/network-registry', () => ({
+  getNetwork: () => ({}),
+  getEndpoints: () => [],
+  validateRpcUrl: () => null,
+}));
+
+const { attachNaming, detachNaming, namingDriver, namingSettingsChanged } = require('./naming');
+
+test('attached before the core starts: executors, driver, transitions and settings', async () => {
+  const client = new EventEmitter();
+  const handled = [];
+  client.handle = (method) => handled.push(method);
+  const { config } = attachNaming(client);
+  expect(handled.sort()).toEqual([
+    'shell.gateway',
+    'shell.prefetch',
+    'shell.rpc',
+    'shell.tezos',
+    'shell.verified',
+  ]);
+  expect(namingDriver()).not.toBeNull();
+  const availability = jest.spyOn(config, 'availability').mockResolvedValue({});
+  const configure = jest.spyOn(config, 'configure').mockResolvedValue({});
+  // Today's ENS listener reacts to chain 1 alone.
+  mockTransitions.forEach((listener) => listener({ chainId: 10 }));
+  expect(availability).not.toHaveBeenCalled();
+  mockTransitions.forEach((listener) => listener({ chainId: 1, ready: true }));
+  expect(availability).toHaveBeenCalledTimes(1);
+  namingSettingsChanged();
+  expect(configure).toHaveBeenCalledWith({ reset: true });
+  // Stopped for good: today's resolvers run again.
+  detachNaming();
+  expect(namingDriver()).toBeNull();
+  namingSettingsChanged();
+  mockTransitions.forEach((listener) => listener({ chainId: 1 }));
+  expect(configure).toHaveBeenCalledTimes(1);
+  expect(availability).toHaveBeenCalledTimes(1);
+});

@@ -1,5 +1,9 @@
 jest.mock('electron', () => ({ ipcMain: { handle: jest.fn() } }));
 jest.mock('./logger', () => ({ error: jest.fn(), warn: jest.fn(), info: jest.fn() }));
+// The naming core's driver (FREEDOM_CORE=1): none unless a test installs
+// one.
+let mockCoreDriver = null;
+jest.mock('./core/naming', () => ({ namingDriver: () => mockCoreDriver }));
 // Private-ness is decided from the IPC sender; the registry itself needs a
 // real BrowserWindow, so stub the one predicate this module uses.
 jest.mock('./private/private-windows', () => ({
@@ -440,10 +444,32 @@ describe('Tezos Domains private-window logging', () => {
     log.warn.mockClear();
     log.error.mockClear();
     invalidateTezosDomain();
-    await resolve(
-      { sender: { isPrivate: false } },
-      { name: 'public-site.tez' }
-    );
+    await resolve({ sender: { isPrivate: false } }, { name: 'public-site.tez' });
     expect(loggedText()).toContain('disagreed with the majority for public-site.tez');
+  });
+});
+
+describe('tezos-domains-resolver with the naming core (FREEDOM_CORE=1)', () => {
+  afterEach(() => {
+    mockCoreDriver = null;
+  });
+
+  test("lookups and invalidations go to the core; a caller's own transport stays here", async () => {
+    mockCoreDriver = {
+      resolveTezos: jest.fn(async () => ({ type: 'ok', from: 'core' })),
+      invalidateTezos: jest.fn(async () => undefined),
+    };
+    expect(await resolveTezosDomain(' Alice.TEZ ')).toEqual({ type: 'ok', from: 'core' });
+    await resolveTezosDomain(undefined);
+    expect(mockCoreDriver.resolveTezos.mock.calls).toEqual([[' Alice.TEZ '], ['']]);
+    const fetchImpl = jest.fn(async () => {
+      throw new Error('offline');
+    });
+    await resolveTezosDomain('alice.tez', { fetchImpl, endpoints: ['https://t.example'] });
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(mockCoreDriver.resolveTezos).toHaveBeenCalledTimes(2);
+    invalidateTezosDomain(' Alice.TEZ ');
+    invalidateTezosDomain();
+    expect(mockCoreDriver.invalidateTezos.mock.calls).toEqual([[' Alice.TEZ '], [undefined]]);
   });
 });

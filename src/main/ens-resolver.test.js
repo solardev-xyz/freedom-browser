@@ -8,6 +8,15 @@ jest.mock('electron', () => ({
 const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 jest.mock('./logger', () => mockLog);
 
+// The naming core's driver (FREEDOM_CORE=1): none unless a test installs
+// one.
+let mockCoreDriver = null;
+const mockNamingSettingsChanged = jest.fn();
+jest.mock('./core/naming', () => ({
+  namingDriver: () => mockCoreDriver,
+  namingSettingsChanged: (...args) => mockNamingSettingsChanged(...args),
+}));
+
 // Private-ness is decided from the IPC sender; the registry itself needs a
 // real BrowserWindow, so stub the one predicate ens-resolver uses.
 jest.mock('./private/private-windows', () => ({
@@ -64,17 +73,28 @@ jest.mock('./networks/network-registry', () => {
     const list = [];
     if (s.enableEnsCustomRpc === true && (s.ensRpcUrl || '').trim()) {
       list.push({
-        id: 'user-eth-custom', role: 'rpc', keyed: false,
-        builtin: false, removed: false, coverage: { '1': s.ensRpcUrl.trim() },
+        id: 'user-eth-custom',
+        role: 'rpc',
+        keyed: false,
+        builtin: false,
+        removed: false,
+        coverage: { 1: s.ensRpcUrl.trim() },
       });
     }
-    const pool = Array.isArray(s.ensPublicRpcProviders) && s.ensPublicRpcProviders.length > 0
-      ? s.ensPublicRpcProviders
-      : DEFAULT_RPC;
-    pool.forEach((url, i) => list.push({
-      id: 'eth-builtin-' + i, role: 'rpc', keyed: false,
-      builtin: true, removed: false, coverage: { '1': url },
-    }));
+    const pool =
+      Array.isArray(s.ensPublicRpcProviders) && s.ensPublicRpcProviders.length > 0
+        ? s.ensPublicRpcProviders
+        : DEFAULT_RPC;
+    pool.forEach((url, i) =>
+      list.push({
+        id: 'eth-builtin-' + i,
+        role: 'rpc',
+        keyed: false,
+        builtin: true,
+        removed: false,
+        coverage: { 1: url },
+      })
+    );
     return list;
   };
   return {
@@ -107,9 +127,10 @@ jest.mock('./networks/network-registry', () => {
         // Empty setting → the builtin prover (stand-in for colibri-corpus).
         return [(s.ensColibriProverUrl || 'https://test-prover.example').trim()];
       }
-      const pool = Array.isArray(s.ensPublicRpcProviders) && s.ensPublicRpcProviders.length > 0
-        ? s.ensPublicRpcProviders
-        : DEFAULT_RPC;
+      const pool =
+        Array.isArray(s.ensPublicRpcProviders) && s.ensPublicRpcProviders.length > 0
+          ? s.ensPublicRpcProviders
+          : DEFAULT_RPC;
       const custom = s.enableEnsCustomRpc === true && (s.ensRpcUrl || '').trim();
       return custom ? [custom, ...pool] : [...pool];
     },
@@ -160,7 +181,9 @@ jest.mock('./myotis/myotis-manager', () => ({
   onAvailabilityTransition: (cb) => mockMyotisAvailabilityListeners.push(cb),
 }));
 
-jest.mock('./ens/myotis-resolver', () => ({ resolveRecord: (...args) => mockMyotisResolveEnsRecord(...args) }));
+jest.mock('./ens/myotis-resolver', () => ({
+  resolveRecord: (...args) => mockMyotisResolveEnsRecord(...args),
+}));
 
 // The block-pinned CCIP loop uses the shared bounded gateway fetcher
 // (`ens/ccip-fetch`), not the provider's unbounded inherited one.
@@ -297,17 +320,22 @@ const {
   resolveEnsAddress,
   resolveEnsReverse,
   invalidateCachedProvider,
+  invalidateEnsContent,
   clearEnsResolutionCaches,
   universalResolverCall,
   isResolverNotFoundError,
 } = require('./ens-resolver');
+const { isPrivateLogContext } = require('./private/private-log-context');
 const resolverLog = require('./logger');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 
 // Fake block anchor — stable hash so consensus legs querying the same
 // block get deterministic agreement.
-const FAKE_BLOCK = { number: 12345678, hash: '0xabcdef0000000000000000000000000000000000000000000000000000000000' };
+const FAKE_BLOCK = {
+  number: 12345678,
+  hash: '0xabcdef0000000000000000000000000000000000000000000000000000000000',
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -506,7 +534,9 @@ describe('ens-resolver', () => {
     });
 
     test('maps UR ResolverNotFound revert to NO_RESOLVER', async () => {
-      mockUrResolve.mockRejectedValue(new Error('execution reverted: ResolverNotFound("unreg.box")'));
+      mockUrResolve.mockRejectedValue(
+        new Error('execution reverted: ResolverNotFound("unreg.box")')
+      );
 
       const result = await resolveEnsContent('unreg.box');
 
@@ -605,11 +635,13 @@ describe('ens-resolver', () => {
       providerError.code = 'SERVER_ERROR';
       const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
 
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'reject', payload: providerError }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: goodBytes }],
-        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
-      ]));
+      routeByProvider(
+        new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: providerError }],
+          [TEST_PROVIDERS[1], { kind: 'data', payload: goodBytes }],
+          [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+        ])
+      );
 
       const result = await resolveEnsContent('retry.box');
 
@@ -669,11 +701,7 @@ describe('ens-resolver', () => {
 
       expect(ethers.JsonRpcProvider).toHaveBeenCalled();
       for (const call of ethers.JsonRpcProvider.mock.calls) {
-        expect(call).toEqual([
-          expect.any(String),
-          1,
-          { staticNetwork: true },
-        ]);
+        expect(call).toEqual([expect.any(String), 1, { staticNetwork: true }]);
       }
     });
   });
@@ -765,10 +793,15 @@ describe('ens-resolver', () => {
     test('keeps address caches and concurrent queries separate for each chain', async () => {
       const l1 = '0x1111111111111111111111111111111111111111';
       const base = '0x2222222222222222222222222222222222222222';
-      mockUrResolve.mockImplementation((_name, data) => data.startsWith('0xf1cb7e06')
-        ? [ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], [base]), FAKE_RESOLVER]
-        : urReturnsAddress(l1));
-      const [a, b] = await Promise.all([resolveEnsAddress('test.ses.eth'), resolveEnsAddress('test.ses.eth', 8453)]);
+      mockUrResolve.mockImplementation((_name, data) =>
+        data.startsWith('0xf1cb7e06')
+          ? [ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], [base]), FAKE_RESOLVER]
+          : urReturnsAddress(l1)
+      );
+      const [a, b] = await Promise.all([
+        resolveEnsAddress('test.ses.eth'),
+        resolveEnsAddress('test.ses.eth', 8453),
+      ]);
       expect(a.address).toBe(l1);
       expect(b.address).toBe(base);
       const data = mockUrResolve.mock.calls.find((args) => args[1].startsWith('0xf1cb7e06'))[1];
@@ -780,19 +813,34 @@ describe('ens-resolver', () => {
     });
 
     test('never falls back to an Ethereum address when the chain record is absent', async () => {
-      mockUrResolve.mockResolvedValue([ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], ['0x']), FAKE_RESOLVER]);
-      expect(await resolveEnsAddress('missing-base.eth', 8453)).toMatchObject({ success: false, reason: 'NO_ADDRESS' });
+      mockUrResolve.mockResolvedValue([
+        ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], ['0x']),
+        FAKE_RESOLVER,
+      ]);
+      expect(await resolveEnsAddress('missing-base.eth', 8453)).toMatchObject({
+        success: false,
+        reason: 'NO_ADDRESS',
+      });
       expect(mockUrResolve.mock.calls.every((args) => args[1].startsWith('0xf1cb7e06'))).toBe(true);
     });
 
-    test.each([0, -1, 1.5, '8453', 2147483648])('rejects invalid destination chain %s before RPC', async (chain) => {
-      await expect(resolveEnsAddress('test.eth', chain)).rejects.toThrow('Invalid ENS destination');
-      expect(mockUrResolve).not.toHaveBeenCalled();
-    });
+    test.each([0, -1, 1.5, '8453', 2147483648])(
+      'rejects invalid destination chain %s before RPC',
+      async (chain) => {
+        await expect(resolveEnsAddress('test.eth', chain)).rejects.toThrow(
+          'Invalid ENS destination'
+        );
+        expect(mockUrResolve).not.toHaveBeenCalled();
+      }
+    );
 
     test('requests and caches primary names for the selected chain', async () => {
       const address = '0x1111111111111111111111111111111111111111';
-      mockUrReverse.mockImplementation((_address, coinType) => [coinType === 60n ? 'l1.eth' : 'base.eth', FAKE_RESOLVER, FAKE_RESOLVER]);
+      mockUrReverse.mockImplementation((_address, coinType) => [
+        coinType === 60n ? 'l1.eth' : 'base.eth',
+        FAKE_RESOLVER,
+        FAKE_RESOLVER,
+      ]);
       expect((await resolveEnsReverse(address)).name).toBe('l1.eth');
       expect((await resolveEnsReverse(address, 8453)).name).toBe('base.eth');
       mockUrReverse.mockClear();
@@ -841,27 +889,30 @@ describe('ens-resolver', () => {
     test.each([
       ['alice.wei', 'wns', 'WNS'],
       ['apoorv.gwei', 'gns', 'GNS'],
-    ])('refuses to resolve %s off mainnet instead of reusing its L1 record', async (name, system, label) => {
-      mockWnsAddr.mockResolvedValue('0x1111111111111111111111111111111111111111');
-      mockGnsAddr.mockResolvedValue('0x2222222222222222222222222222222222222222');
+    ])(
+      'refuses to resolve %s off mainnet instead of reusing its L1 record',
+      async (name, system, label) => {
+        mockWnsAddr.mockResolvedValue('0x1111111111111111111111111111111111111111');
+        mockGnsAddr.mockResolvedValue('0x2222222222222222222222222222222222222222');
 
-      const result = await resolveEnsAddress(name, 8453);
+        const result = await resolveEnsAddress(name, 8453);
 
-      expect(result).toMatchObject({
-        success: false,
-        name,
-        system,
-        reason: 'CHAIN_UNSUPPORTED',
-      });
-      expect(result.address).toBeUndefined();
-      expect(result.error).toContain(`${label} names resolve on Ethereum mainnet only`);
-      expect(mockWnsAddr).not.toHaveBeenCalled();
-      expect(mockGnsAddr).not.toHaveBeenCalled();
-      expect(mockUrResolve).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          success: false,
+          name,
+          system,
+          reason: 'CHAIN_UNSUPPORTED',
+        });
+        expect(result.address).toBeUndefined();
+        expect(result.error).toContain(`${label} names resolve on Ethereum mainnet only`);
+        expect(mockWnsAddr).not.toHaveBeenCalled();
+        expect(mockGnsAddr).not.toHaveBeenCalled();
+        expect(mockUrResolve).not.toHaveBeenCalled();
 
-      // Mainnet for the same name is unaffected and still answers.
-      expect(await resolveEnsAddress(name)).toMatchObject({ success: true, system });
-    });
+        // Mainnet for the same name is unaffected and still answers.
+        expect(await resolveEnsAddress(name)).toMatchObject({ success: true, system });
+      }
+    );
 
     test('normalizes mixed-case input to lowercase', async () => {
       mockUrResolve.mockResolvedValue(
@@ -875,7 +926,9 @@ describe('ens-resolver', () => {
     });
 
     test('returns NO_ADDRESS for zero-address return (resolver says no addr set)', async () => {
-      mockUrResolve.mockResolvedValue(urReturnsAddress('0x0000000000000000000000000000000000000000'));
+      mockUrResolve.mockResolvedValue(
+        urReturnsAddress('0x0000000000000000000000000000000000000000')
+      );
 
       const result = await resolveEnsAddress('no-addr.eth');
 
@@ -919,11 +972,13 @@ describe('ens-resolver', () => {
       providerError.code = 'SERVER_ERROR';
       const good = urReturnsAddress('0x0000000000000000000000000000000000000001');
 
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'reject', payload: providerError }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: good }],
-        [TEST_PROVIDERS[2], { kind: 'data', payload: good }],
-      ]));
+      routeByProvider(
+        new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: providerError }],
+          [TEST_PROVIDERS[1], { kind: 'data', payload: good }],
+          [TEST_PROVIDERS[2], { kind: 'data', payload: good }],
+        ])
+      );
 
       const result = await resolveEnsAddress('retry.eth');
 
@@ -947,7 +1002,9 @@ describe('ens-resolver', () => {
     });
 
     test('caches negative results too (NO_ADDRESS misses)', async () => {
-      mockUrResolve.mockResolvedValue(urReturnsAddress('0x0000000000000000000000000000000000000000'));
+      mockUrResolve.mockResolvedValue(
+        urReturnsAddress('0x0000000000000000000000000000000000000000')
+      );
 
       const first = await resolveEnsAddress('no-addr-cached.eth');
       const callsAfterCold = mockUrResolve.mock.calls.length;
@@ -1250,10 +1307,7 @@ describe('ens-resolver', () => {
 
   describe('universalResolverCall', () => {
     test('encodes name, opts into CCIP-Read, returns raw resolvedData', async () => {
-      const rawResponse = actualEthers.AbiCoder.defaultAbiCoder().encode(
-        ['bytes'],
-        ['0xdeadbeef']
-      );
+      const rawResponse = actualEthers.AbiCoder.defaultAbiCoder().encode(['bytes'], ['0xdeadbeef']);
       mockUrResolve.mockResolvedValue([rawResponse, FAKE_RESOLVER]);
 
       const provider = new ethers.JsonRpcProvider('http://localhost:8545');
@@ -1296,10 +1350,16 @@ describe('ens-resolver', () => {
   describe('CCIP at a pinned quorum block', () => {
     const urAddress = '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe';
     const abi = ethers.AbiCoder.defaultAbiCoder();
-    const offchain = (sender = urAddress) => ({ data: '0x556f1830' + abi.encode(
-      ['address', 'string[]', 'bytes', 'bytes4', 'bytes'],
-      [sender, ['https://gateway.example/{data}'], '0xbeef', '0x12345678', '0xdead']
-    ).slice(2) });
+    const offchain = (sender = urAddress) => ({
+      data:
+        '0x556f1830' +
+        abi
+          .encode(
+            ['address', 'string[]', 'bytes', 'bytes4', 'bytes'],
+            [sender, ['https://gateway.example/{data}'], '0xbeef', '0x12345678', '0xdead']
+          )
+          .slice(2),
+    });
     beforeEach(() => {
       mockCcipReadFetch.mockReset();
       mockCcipReadFetch.mockResolvedValue('0xcafe');
@@ -1310,25 +1370,43 @@ describe('ens-resolver', () => {
         // Present, and deliberately never used: ethers' inherited
         // implementation has no size cap and a 300s default timeout.
         ccipReadFetch: jest.fn().mockResolvedValue('0xdeadbeef'),
-        call: jest.fn().mockRejectedValueOnce(offchain()).mockResolvedValue(
-          abi.encode(['bytes', 'address'], [abi.encode(['address'], [urAddress]), urAddress])
-        ),
+        call: jest
+          .fn()
+          .mockRejectedValueOnce(offchain())
+          .mockResolvedValue(
+            abi.encode(['bytes', 'address'], [abi.encode(['address'], [urAddress]), urAddress])
+          ),
       };
-      const result = await universalResolverCall(provider, 'test.offchaindemo.eth', '0x1234', { blockTag: 12345 });
+      const result = await universalResolverCall(provider, 'test.offchaindemo.eth', '0x1234', {
+        blockTag: 12345,
+      });
       expect(result.resolverAddress).toBe(urAddress);
       expect(mockCcipReadFetch).toHaveBeenCalledTimes(2);
       expect(provider.ccipReadFetch).not.toHaveBeenCalled();
       expect(mockCcipReadFetch.mock.calls[0][0]).toEqual({ to: urAddress });
-      expect(provider.call.mock.calls.every(([tx]) => tx.blockTag === 12345 && tx.enableCcipRead === false)).toBe(true);
-      expect(provider.call.mock.calls[0][0].data).toBe('0x12345678' + abi.encode(['bytes', 'bytes'], ['0xcafe', '0xdead']).slice(2));
+      expect(
+        provider.call.mock.calls.every(
+          ([tx]) => tx.blockTag === 12345 && tx.enableCcipRead === false
+        )
+      ).toBe(true);
+      expect(provider.call.mock.calls[0][0].data).toBe(
+        '0x12345678' + abi.encode(['bytes', 'bytes'], ['0xcafe', '0xdead']).slice(2)
+      );
     });
     test('rejects forged senders and bounds repeated lookups', async () => {
-      const provider = { ccipReadFetch: jest.fn().mockResolvedValue('0xcafe'), call: jest.fn().mockRejectedValue(offchain()) };
+      const provider = {
+        ccipReadFetch: jest.fn().mockResolvedValue('0xcafe'),
+        call: jest.fn().mockRejectedValue(offchain()),
+      };
       mockUrResolve.mockRejectedValue(offchain(ethers.ZeroAddress));
-      await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('sender');
+      await expect(
+        universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })
+      ).rejects.toThrow('sender');
       expect(mockCcipReadFetch).not.toHaveBeenCalled();
       mockUrResolve.mockRejectedValue(offchain());
-      await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('recursion');
+      await expect(
+        universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })
+      ).rejects.toThrow('recursion');
       expect(provider.call).toHaveBeenCalledTimes(10);
     });
     // A gateway that never answers must not hold a resolution open for
@@ -1336,7 +1414,9 @@ describe('ens-resolver', () => {
     // and the loop surfaces that as a failed resolution, not a hang.
     test('surfaces an exhausted-gateway failure instead of stalling', async () => {
       mockUrResolve.mockRejectedValue(offchain());
-      mockCcipReadFetch.mockRejectedValue(new Error('CCIP gateways unavailable or returned invalid data'));
+      mockCcipReadFetch.mockRejectedValue(
+        new Error('CCIP gateways unavailable or returned invalid data')
+      );
       const provider = { call: jest.fn() };
       await expect(
         universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })
@@ -1345,47 +1425,59 @@ describe('ens-resolver', () => {
     });
 
     test.each([
-      ['quorum', 'timeout'], ['direct', 'timeout'],
-      ['quorum', 'rejection'], ['direct', 'rejection'],
-      ['quorum', 'callback-budget'], ['direct', 'callback-budget'],
-    ])('a gateway failure via %s (%s) leaves healthy RPCs available for another name', async (method, failure) => {
-      jest.useFakeTimers();
-      try {
-        mockLoadSettings.mockReturnValue({
-          ...mockLoadSettings(), ensResolutionMethod: method, ensResolutionOrder: [method],
-          ...(method === 'direct' ? { enableEnsCustomRpc: true, ensRpcUrl: TEST_PROVIDERS[0] } : {}),
-        });
-        mockUrResolve.mockRejectedValue(offchain());
-        mockProviderCall.mockImplementation(() => new Promise(() => {}));
-        const signals = [];
-        mockCcipReadFetch.mockImplementation((_tx, _data, _urls, signal) => {
-          signals.push(signal);
-          if (failure === 'rejection') {
-            return Promise.reject(Object.assign(new Error('CCIP gateway timeout'), { code: 'CCIP_GATEWAY_FAILED' }));
-          }
-          if (failure === 'callback-budget') {
-            return new Promise((resolve) => setTimeout(() => resolve('0xcafe'), 4500));
-          }
-          return new Promise((_resolve, reject) => {
-            signal?.addEventListener('abort', () => reject(new Error('CCIP cancelled')));
+      ['quorum', 'timeout'],
+      ['direct', 'timeout'],
+      ['quorum', 'rejection'],
+      ['direct', 'rejection'],
+      ['quorum', 'callback-budget'],
+      ['direct', 'callback-budget'],
+    ])(
+      'a gateway failure via %s (%s) leaves healthy RPCs available for another name',
+      async (method, failure) => {
+        jest.useFakeTimers();
+        try {
+          mockLoadSettings.mockReturnValue({
+            ...mockLoadSettings(),
+            ensResolutionMethod: method,
+            ensResolutionOrder: [method],
+            ...(method === 'direct'
+              ? { enableEnsCustomRpc: true, ensRpcUrl: TEST_PROVIDERS[0] }
+              : {}),
           });
-        });
-        const pending = resolveEnsContent('slow-gateway.eth').catch((error) => error);
-        await jest.advanceTimersByTimeAsync(5001);
-        expect(await pending).toBeInstanceOf(Error);
-        expect(signals.length).toBeGreaterThan(0);
-        expect(signals.every((signal) => signal?.aborted)).toBe(true);
+          mockUrResolve.mockRejectedValue(offchain());
+          mockProviderCall.mockImplementation(() => new Promise(() => {}));
+          const signals = [];
+          mockCcipReadFetch.mockImplementation((_tx, _data, _urls, signal) => {
+            signals.push(signal);
+            if (failure === 'rejection') {
+              return Promise.reject(
+                Object.assign(new Error('CCIP gateway timeout'), { code: 'CCIP_GATEWAY_FAILED' })
+              );
+            }
+            if (failure === 'callback-budget') {
+              return new Promise((resolve) => setTimeout(() => resolve('0xcafe'), 4500));
+            }
+            return new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(new Error('CCIP cancelled')));
+            });
+          });
+          const pending = resolveEnsContent('slow-gateway.eth').catch((error) => error);
+          await jest.advanceTimersByTimeAsync(5001);
+          expect(await pending).toBeInstanceOf(Error);
+          expect(signals.length).toBeGreaterThan(0);
+          expect(signals.every((signal) => signal?.aborted)).toBe(true);
 
-        // Do not reset provider health: an unrelated name must work at once,
-        // before the 60-second quarantine would have elapsed.
-        mockUrResolve.mockResolvedValue(urReturnsBytes(swarmContenthashFor('a'.repeat(64))));
-        const next = await resolveEnsContent('healthy-next.eth');
-        expect(next.type).toBe('ok');
-        expect((await resolveEnsContent('slow-gateway.eth')).type).toBe('ok');
-      } finally {
-        jest.useRealTimers();
+          // Do not reset provider health: an unrelated name must work at once,
+          // before the 60-second quarantine would have elapsed.
+          mockUrResolve.mockResolvedValue(urReturnsBytes(swarmContenthashFor('a'.repeat(64))));
+          const next = await resolveEnsContent('healthy-next.eth');
+          expect(next.type).toBe('ok');
+          expect((await resolveEnsContent('slow-gateway.eth')).type).toBe('ok');
+        } finally {
+          jest.useRealTimers();
+        }
       }
-    });
+    );
   });
 
   describe('isResolverNotFoundError', () => {
@@ -1396,9 +1488,9 @@ describe('ens-resolver', () => {
     });
 
     test('matches ResolverNotContract in error message', () => {
-      expect(
-        isResolverNotFoundError(new Error('execution reverted: ResolverNotContract'))
-      ).toBe(true);
+      expect(isResolverNotFoundError(new Error('execution reverted: ResolverNotContract'))).toBe(
+        true
+      );
     });
 
     // ethers v6 surfaces revert selectors on err.data directly — this is
@@ -1743,7 +1835,7 @@ describe('ens-resolver', () => {
       expect(mockUrResolve).toHaveBeenCalled();
       expect(infoSpy).toHaveBeenCalledWith(
         '[ens] policy name=myotis-notready.eth kind=content ' +
-        'order=[myotis,quorum] preferVerified=false'
+          'order=[myotis,quorum] preferVerified=false'
       );
       expect(infoSpy).toHaveBeenCalledWith(
         expect.stringMatching(
@@ -1765,9 +1857,12 @@ describe('ens-resolver', () => {
       mockMyotisIsEnabled.mockImplementation(() => true);
       mockMyotisIsReady.mockImplementation(() => ready);
       mockMyotisGetAvailabilityEpoch.mockImplementation(() => epoch);
-      mockMyotisResolveEnsRecord.mockImplementation(() => new Promise((resolve) => {
-        finishMyotis = resolve;
-      }));
+      mockMyotisResolveEnsRecord.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishMyotis = resolve;
+          })
+      );
       withColibri({
         ensResolutionOrder: ['myotis', 'colibri'],
         ensPreferVerified: true,
@@ -2046,11 +2141,27 @@ describe('ens-resolver', () => {
     test('conflict: ≥2 providers return different bytes → type=conflict with groups', async () => {
       const hashA = 'a'.repeat(64);
       const hashB = 'b'.repeat(64);
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
-        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA + '').slice(0, 4) + 'cc'.repeat(40)) }],
-      ]));
+      routeByProvider(
+        new Map([
+          [
+            TEST_PROVIDERS[0],
+            { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) },
+          ],
+          [
+            TEST_PROVIDERS[1],
+            { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) },
+          ],
+          [
+            TEST_PROVIDERS[2],
+            {
+              kind: 'data',
+              payload: urReturnsBytes(
+                swarmContenthashFor(hashA + '').slice(0, 4) + 'cc'.repeat(40)
+              ),
+            },
+          ],
+        ])
+      );
 
       const result = await resolveEnsContent('conflict.box');
 
@@ -2067,11 +2178,19 @@ describe('ens-resolver', () => {
       const honest = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
       const liar = urReturnsBytes(swarmContenthashFor('f'.repeat(64)));
       // Two providers return different data, third errors — no M-group on data.
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'data', payload: honest }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: liar }],
-        [TEST_PROVIDERS[2], { kind: 'reject', payload: Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' }) }],
-      ]));
+      routeByProvider(
+        new Map([
+          [TEST_PROVIDERS[0], { kind: 'data', payload: honest }],
+          [TEST_PROVIDERS[1], { kind: 'data', payload: liar }],
+          [
+            TEST_PROVIDERS[2],
+            {
+              kind: 'reject',
+              payload: Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' }),
+            },
+          ],
+        ])
+      );
 
       const result = await resolveEnsContent('liar.eth');
 
@@ -2087,11 +2206,19 @@ describe('ens-resolver', () => {
       const hashC = 'c'.repeat(64);
       const bytesB = urReturnsBytes(swarmContenthashFor(hashB));
 
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: bytesB }],
-        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashC)) }],
-      ]));
+      routeByProvider(
+        new Map([
+          [
+            TEST_PROVIDERS[0],
+            { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) },
+          ],
+          [TEST_PROVIDERS[1], { kind: 'data', payload: bytesB }],
+          [
+            TEST_PROVIDERS[2],
+            { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashC)) },
+          ],
+        ])
+      );
 
       const first = await resolveEnsContent('conflict-cache.box');
       expect(first.type).toBe('conflict');
@@ -2100,11 +2227,13 @@ describe('ens-resolver', () => {
       const realNow = Date.now;
       try {
         Date.now = () => realNow() + 11_000;
-        routeByProvider(new Map([
-          [TEST_PROVIDERS[0], { kind: 'data', payload: bytesB }],
-          [TEST_PROVIDERS[1], { kind: 'data', payload: bytesB }],
-          [TEST_PROVIDERS[2], { kind: 'data', payload: bytesB }],
-        ]));
+        routeByProvider(
+          new Map([
+            [TEST_PROVIDERS[0], { kind: 'data', payload: bytesB }],
+            [TEST_PROVIDERS[1], { kind: 'data', payload: bytesB }],
+            [TEST_PROVIDERS[2], { kind: 'data', payload: bytesB }],
+          ])
+        );
 
         const second = await resolveEnsContent('conflict-cache.box');
         expect(second.type).toBe('ok');
@@ -2240,12 +2369,14 @@ describe('ens-resolver', () => {
       });
       const bytes = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
       const networkErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
-      routeByProvider(new Map([
-        ['http://my-node.local:8545', { kind: 'reject', payload: networkErr }],
-        [TEST_PROVIDERS[0], { kind: 'data', payload: bytes }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: bytes }],
-        [TEST_PROVIDERS[2], { kind: 'data', payload: bytes }],
-      ]));
+      routeByProvider(
+        new Map([
+          ['http://my-node.local:8545', { kind: 'reject', payload: networkErr }],
+          [TEST_PROVIDERS[0], { kind: 'data', payload: bytes }],
+          [TEST_PROVIDERS[1], { kind: 'data', payload: bytes }],
+          [TEST_PROVIDERS[2], { kind: 'data', payload: bytes }],
+        ])
+      );
 
       const result = await resolveEnsContent('fallback-to-public.eth');
 
@@ -2256,11 +2387,13 @@ describe('ens-resolver', () => {
 
     test('all providers error → throws (no positive result)', async () => {
       const err = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'reject', payload: err }],
-        [TEST_PROVIDERS[1], { kind: 'reject', payload: err }],
-        [TEST_PROVIDERS[2], { kind: 'reject', payload: err }],
-      ]));
+      routeByProvider(
+        new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: err }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: err }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: err }],
+        ])
+      );
 
       await expect(resolveEnsContent('all-down.eth')).rejects.toThrow(/providers failed/i);
     });
@@ -2333,18 +2466,27 @@ describe('ens-resolver', () => {
       // providers return the current hash; attacker returns a stale hash
       // → hash quorum is M=2 of honest → verified at current state.
       mockProviderAnchorMap = new Map([
-        [TEST_PROVIDERS[0], {
-          headNumber: HONEST_HEAD - 1_000_000,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 1_000_008, hash: STALE_HASH }),
-        }],
-        [TEST_PROVIDERS[1], {
-          headNumber: HONEST_HEAD,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
-        }],
-        [TEST_PROVIDERS[2], {
-          headNumber: HONEST_HEAD + 1,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 7, hash: CURRENT_HASH }),
-        }],
+        [
+          TEST_PROVIDERS[0],
+          {
+            headNumber: HONEST_HEAD - 1_000_000,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 1_000_008, hash: STALE_HASH }),
+          },
+        ],
+        [
+          TEST_PROVIDERS[1],
+          {
+            headNumber: HONEST_HEAD,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+          },
+        ],
+        [
+          TEST_PROVIDERS[2],
+          {
+            headNumber: HONEST_HEAD + 1,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 7, hash: CURRENT_HASH }),
+          },
+        ],
       ]);
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
 
@@ -2361,18 +2503,27 @@ describe('ens-resolver', () => {
     // the result reflects the honest block, not the attacker's.
     test('lone malicious RPC cannot forge anchor hash quorum', async () => {
       mockProviderAnchorMap = new Map([
-        [TEST_PROVIDERS[0], {
-          headNumber: HONEST_HEAD - 500_000,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 500_008, hash: STALE_HASH }),
-        }],
-        [TEST_PROVIDERS[1], {
-          headNumber: HONEST_HEAD,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
-        }],
-        [TEST_PROVIDERS[2], {
-          headNumber: HONEST_HEAD,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
-        }],
+        [
+          TEST_PROVIDERS[0],
+          {
+            headNumber: HONEST_HEAD - 500_000,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 500_008, hash: STALE_HASH }),
+          },
+        ],
+        [
+          TEST_PROVIDERS[1],
+          {
+            headNumber: HONEST_HEAD,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+          },
+        ],
+        [
+          TEST_PROVIDERS[2],
+          {
+            headNumber: HONEST_HEAD,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+          },
+        ],
       ]);
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
 
@@ -2386,18 +2537,30 @@ describe('ens-resolver', () => {
     // silently picking one.
     test('no hash quorum at anchor → resolution throws', async () => {
       mockProviderAnchorMap = new Map([
-        [TEST_PROVIDERS[0], {
-          headNumber: HONEST_HEAD,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'a'.repeat(64) }),
-        }],
-        [TEST_PROVIDERS[1], {
-          headNumber: HONEST_HEAD,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'b'.repeat(64) }),
-        }],
-        [TEST_PROVIDERS[2], {
-          headNumber: HONEST_HEAD,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'c'.repeat(64) }),
-        }],
+        [
+          TEST_PROVIDERS[0],
+          {
+            headNumber: HONEST_HEAD,
+            getBlock: () =>
+              Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'a'.repeat(64) }),
+          },
+        ],
+        [
+          TEST_PROVIDERS[1],
+          {
+            headNumber: HONEST_HEAD,
+            getBlock: () =>
+              Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'b'.repeat(64) }),
+          },
+        ],
+        [
+          TEST_PROVIDERS[2],
+          {
+            headNumber: HONEST_HEAD,
+            getBlock: () =>
+              Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'c'.repeat(64) }),
+          },
+        ],
       ]);
 
       await expect(resolveEnsContent('anchor-conflict.eth')).rejects.toThrow(/hash quorum/);
@@ -2410,11 +2573,13 @@ describe('ens-resolver', () => {
     test('2 NO_RESOLVER + 1 NO_CONTENTHASH → verified NO_RESOLVER (quorum still reached)', async () => {
       const resolverNotFoundErr = new Error('execution reverted: ResolverNotFound("foo.box")');
       const ccipErr = new Error('response not found during CCIP fetch: 3dns CCIP_001');
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'reject', payload: resolverNotFoundErr }],
-        [TEST_PROVIDERS[1], { kind: 'reject', payload: resolverNotFoundErr }],
-        [TEST_PROVIDERS[2], { kind: 'reject', payload: ccipErr }],
-      ]));
+      routeByProvider(
+        new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: resolverNotFoundErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: resolverNotFoundErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: ccipErr }],
+        ])
+      );
 
       const result = await resolveEnsContent('mixed-negative.eth');
 
@@ -2430,18 +2595,26 @@ describe('ens-resolver', () => {
     test('1 NO_RESOLVER + 1 NO_CONTENTHASH + 1 data bytes → conflict (three distinct groups)', async () => {
       const resolverNotFoundErr = new Error('execution reverted: ResolverNotFound("foo.eth")');
       const ccipErr = new Error('response not found during CCIP fetch');
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'reject', payload: resolverNotFoundErr }],
-        [TEST_PROVIDERS[1], { kind: 'reject', payload: ccipErr }],
-        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
-      ]));
+      routeByProvider(
+        new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: resolverNotFoundErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: ccipErr }],
+          [
+            TEST_PROVIDERS[2],
+            { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) },
+          ],
+        ])
+      );
 
       const result = await resolveEnsContent('three-way-split.eth');
 
       expect(result.type).toBe('conflict');
       // Three distinct groups: data bytes, NO_RESOLVER, NO_CONTENTHASH.
       expect(result.groups.length).toBe(3);
-      const reasons = result.groups.filter((g) => g.reason).map((g) => g.reason).sort();
+      const reasons = result.groups
+        .filter((g) => g.reason)
+        .map((g) => g.reason)
+        .sort();
       expect(reasons).toEqual(['NO_CONTENTHASH', 'NO_RESOLVER']);
     });
 
@@ -2490,16 +2663,22 @@ describe('ens-resolver', () => {
         ensPublicRpcProviders: [TEST_PROVIDERS[0], TEST_PROVIDERS[1]],
       });
       mockProviderAnchorMap = new Map([
-        [TEST_PROVIDERS[0], {
-          // Attacker claims 10 blocks in the past (within a hypothetical
-          // drift tolerance that the OLD K=2 logic allowed).
-          headNumber: HONEST_HEAD - 10,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 18, hash: STALE_HASH }),
-        }],
-        [TEST_PROVIDERS[1], {
-          headNumber: HONEST_HEAD,
-          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
-        }],
+        [
+          TEST_PROVIDERS[0],
+          {
+            // Attacker claims 10 blocks in the past (within a hypothetical
+            // drift tolerance that the OLD K=2 logic allowed).
+            headNumber: HONEST_HEAD - 10,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 18, hash: STALE_HASH }),
+          },
+        ],
+        [
+          TEST_PROVIDERS[1],
+          {
+            headNumber: HONEST_HEAD,
+            getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+          },
+        ],
       ]);
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
 
@@ -2533,9 +2712,7 @@ describe('ens-resolver', () => {
       // First provider in the pool errors on getBlockNumber; the other
       // four all respond cleanly. Resolution should still succeed.
       const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
-      mockProviderAnchorMap = new Map([
-        [TEST_PROVIDERS[0], { headNumber: flakyErr }],
-      ]);
+      mockProviderAnchorMap = new Map([[TEST_PROVIDERS[0], { headNumber: flakyErr }]]);
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
 
       const result = await resolveEnsContent('one-flaky.eth');
@@ -2674,13 +2851,24 @@ describe('ens-resolver', () => {
         // and land on unverified_data from the single healthy leg; with
         // the fix they're filtered out and three healthy providers reach
         // a verified quorum.
-        routeByProvider(new Map([
-          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
-          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
-          [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
-          ['https://test-d.example.com', { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
-          ['https://test-e.example.com', { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
-        ]));
+        routeByProvider(
+          new Map([
+            [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+            [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+            [
+              TEST_PROVIDERS[2],
+              { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) },
+            ],
+            [
+              'https://test-d.example.com',
+              { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) },
+            ],
+            [
+              'https://test-e.example.com',
+              { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) },
+            ],
+          ])
+        );
 
         const result = await resolveEnsContent('anchor-quarantine.eth');
 
@@ -2748,7 +2936,12 @@ describe('ens-resolver', () => {
       const origRandom = Math.random;
       Math.random = () => 0.999;
       invalidateCachedProvider();
-      return { fiveProviders, restore: () => { Math.random = origRandom; } };
+      return {
+        fiveProviders,
+        restore: () => {
+          Math.random = origRandom;
+        },
+      };
     }
 
     test('1 data + 2 errors → escalates and reaches verified via fresh providers', async () => {
@@ -2756,23 +2949,22 @@ describe('ens-resolver', () => {
       try {
         const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
         const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
-        routeByProvider(new Map([
-          [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
-          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
-          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
-          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
-          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
-        ]));
+        routeByProvider(
+          new Map([
+            [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
+            [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+            [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+            ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+            ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+          ])
+        );
 
         const result = await resolveEnsContent('flaky-network-upgrade.eth');
 
         expect(result.type).toBe('ok');
         expect(result.trust.level).toBe('verified');
         // Trust metadata reflects the second wave that actually agreed.
-        expect(result.trust.queried).toEqual([
-          'test-d.example.com',
-          'test-e.example.com',
-        ]);
+        expect(result.trust.queried).toEqual(['test-d.example.com', 'test-e.example.com']);
       } finally {
         restore();
       }
@@ -2781,10 +2973,7 @@ describe('ens-resolver', () => {
     test('1 data + 2 errors with too few fresh providers → no escalation, stays unverified', async () => {
       // 4-provider pool: first wave runs against 3, leaving only 1
       // fresh provider — below effectiveM=2, so escalation must not run.
-      const fourProviders = [
-        ...TEST_PROVIDERS,
-        'https://test-d.example.com',
-      ];
+      const fourProviders = [...TEST_PROVIDERS, 'https://test-d.example.com'];
       mockLoadSettings.mockReturnValue({
         enableEnsCustomRpc: false,
         ensRpcUrl: '',
@@ -2802,14 +2991,16 @@ describe('ens-resolver', () => {
         invalidateCachedProvider();
         const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
         const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
-        routeByProvider(new Map([
-          [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
-          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
-          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
-          // Even though this provider would have agreed, the guard
-          // prevents a second wave from running against it alone.
-          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
-        ]));
+        routeByProvider(
+          new Map([
+            [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
+            [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+            [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+            // Even though this provider would have agreed, the guard
+            // prevents a second wave from running against it alone.
+            ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ])
+        );
 
         const result = await resolveEnsContent('insufficient-remaining.eth');
 
@@ -2826,17 +3017,19 @@ describe('ens-resolver', () => {
         const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
         const firstPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
         const altPayload = urReturnsBytes(ipfsContenthashFor(ALT_HASH));
-        routeByProvider(new Map([
-          // First wave: 1 data + 2 errors → unverified_data with IPFS_HASH.
-          [TEST_PROVIDERS[0], { kind: 'data', payload: firstPayload }],
-          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
-          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
-          // Second wave: 1 data (different hash) + 1 error → unverified
-          // again. Replacing first wave with this would downgrade the
-          // single piece of evidence we already had.
-          ['https://test-d.example.com', { kind: 'data', payload: altPayload }],
-          ['https://test-e.example.com', { kind: 'reject', payload: flakyErr }],
-        ]));
+        routeByProvider(
+          new Map([
+            // First wave: 1 data + 2 errors → unverified_data with IPFS_HASH.
+            [TEST_PROVIDERS[0], { kind: 'data', payload: firstPayload }],
+            [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+            [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+            // Second wave: 1 data (different hash) + 1 error → unverified
+            // again. Replacing first wave with this would downgrade the
+            // single piece of evidence we already had.
+            ['https://test-d.example.com', { kind: 'data', payload: altPayload }],
+            ['https://test-e.example.com', { kind: 'reject', payload: flakyErr }],
+          ])
+        );
 
         const result = await resolveEnsContent('second-wave-no-quorum.eth');
 
@@ -2874,11 +3067,22 @@ describe('ens-resolver', () => {
       const hashA = 'a'.repeat(64);
       const hashB = 'b'.repeat(64);
       const hashC = 'c'.repeat(64);
-      routeByProvider(new Map([
-        [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
-        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashC)) }],
-      ]));
+      routeByProvider(
+        new Map([
+          [
+            TEST_PROVIDERS[0],
+            { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) },
+          ],
+          [
+            TEST_PROVIDERS[1],
+            { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) },
+          ],
+          [
+            TEST_PROVIDERS[2],
+            { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashC)) },
+          ],
+        ])
+      );
 
       const result = await resolveEnsContent('prefetch-conflict.box');
 
@@ -3055,13 +3259,14 @@ describe('ens-resolver', () => {
 
     test('CALL_EXCEPTION without revert data falls through to public RPC quorum', async () => {
       withColibri();
-      const err = Object.assign(new Error(
-        'missing revert data transaction={ data: "0x' + 'ab'.repeat(200) + '" }'
-      ), {
-        code: 'CALL_EXCEPTION',
-        shortMessage: 'missing revert data',
-        info: { error: { code: -32603, message: 'no response from prover' } },
-      });
+      const err = Object.assign(
+        new Error('missing revert data transaction={ data: "0x' + 'ab'.repeat(200) + '" }'),
+        {
+          code: 'CALL_EXCEPTION',
+          shortMessage: 'missing revert data',
+          info: { error: { code: -32603, message: 'no response from prover' } },
+        }
+      );
       mockResolveViaColibri.mockRejectedValue(err);
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
       const warnSpy = jest.spyOn(resolverLog, 'warn').mockImplementation(() => {});
@@ -3075,8 +3280,8 @@ describe('ens-resolver', () => {
       expect(result.trust.quorum).toEqual({ k: 3, m: 2, achieved: true });
       expect(warnSpy).toHaveBeenCalledWith(
         '[ens] colibri-fallback name=prover-down.eth kind=content ' +
-        'error="missing revert data" code=CALL_EXCEPTION rpcCode=-32603 ' +
-        'rpcMessage="no response from prover" revert=none'
+          'error="missing revert data" code=CALL_EXCEPTION rpcCode=-32603 ' +
+          'rpcMessage="no response from prover" revert=none'
       );
       expect(warnSpy.mock.calls.flat().join(' ')).not.toContain('abababababababab');
       warnSpy.mockRestore();
@@ -3153,9 +3358,10 @@ describe('ens-resolver', () => {
       withColibri();
       mockResolveReverseViaColibri.mockResolvedValue({ name: '' });
       mockResolveViaColibri.mockImplementation(async (name) => {
-        const resolvedData = name === 'reverse.wei'
-          ? actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['alice.wei'])
-          : actualEthers.AbiCoder.defaultAbiCoder().encode(['address'], [ADDR]);
+        const resolvedData =
+          name === 'reverse.wei'
+            ? actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], ['alice.wei'])
+            : actualEthers.AbiCoder.defaultAbiCoder().encode(['address'], [ADDR]);
         return { resolvedData, resolverAddress: WNS_ADDRESS };
       });
 
@@ -3225,19 +3431,19 @@ describe('ens-resolver', () => {
         expect(result).toMatchObject({ success: false, reason: 'NO_REVERSE' });
         expect(infoSpy).toHaveBeenCalledWith(
           `[ens] reverse policy address=${ADDR} order=[myotis,colibri,quorum] ` +
-          'preferVerified=true'
+            'preferVerified=true'
         );
         expect(infoSpy).toHaveBeenCalledWith(
           `[ens] reverse method=myotis address=${ADDR} outcome=UNAVAILABLE ` +
-          'system=none trust=none action=continue reason=disabled'
+            'system=none trust=none action=continue reason=disabled'
         );
         expect(infoSpy).toHaveBeenCalledWith(
           `[ens] reverse method=colibri address=${ADDR} outcome=UNVERIFIED ` +
-          'system=ens trust=verified action=continue reason=prefer-verified'
+            'system=ens trust=verified action=continue reason=prefer-verified'
         );
         expect(infoSpy).toHaveBeenCalledWith(
           `[ens] reverse method=quorum address=${ADDR} outcome=NO_REVERSE ` +
-          'system=ens,wns,gns trust=verified action=accept'
+            'system=ens,wns,gns trust=verified action=accept'
         );
       } finally {
         infoSpy.mockRestore();
@@ -3250,7 +3456,7 @@ describe('ens-resolver', () => {
       // Building a real revert payload here so the decoder is exercised end-to-end.
       const args = actualEthers.AbiCoder.defaultAbiCoder().encode(
         ['string', 'bytes'],
-        ['spoofed.eth', '0xabcd'],
+        ['spoofed.eth', '0xabcd']
       );
       const err = Object.assign(new Error('ReverseAddressMismatch'), {
         data: '0xef9c03ce' + args.slice(2),
@@ -3384,9 +3590,7 @@ describe('ens-resolver private-window logging', () => {
   });
 
   test('a private address lookup and cache invalidation stay out of the log', async () => {
-    mockUrResolve.mockResolvedValue(
-      urReturnsAddress('0x1111111111111111111111111111111111111111')
-    );
+    mockUrResolve.mockResolvedValue(urReturnsAddress('0x1111111111111111111111111111111111111111'));
     await handlerFor(IPC.ENS_RESOLVE_ADDRESS)(privateEvent, { name: SECRET });
     expect(loggedText()).not.toContain(SECRET);
 
@@ -3475,5 +3679,87 @@ describe('ens-resolver private-window logging', () => {
 
     await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: 'public-site.eth' });
     expect(loggedText()).toContain('[ens] Resolved: public-site.eth');
+  });
+});
+
+describe('ens-resolver with the naming core (FREEDOM_CORE=1)', () => {
+  const ADDRESS = '0x' + 'ab'.repeat(20);
+  const driver = () => ({
+    resolveContent: jest.fn(async () => ({ type: 'ok', from: 'core' })),
+    resolveAddress: jest.fn(async () => ({ success: true, from: 'core' })),
+    resolveReverse: jest.fn(async () => ({ success: true, from: 'core' })),
+    invalidateContent: jest.fn(async () => true),
+  });
+
+  function handlerFor(channel) {
+    const entry = ipcMain.handle.mock.calls.find(([name]) => name === channel);
+    if (!entry) throw new Error(`no handler registered for ${channel}`);
+    return entry[1];
+  }
+
+  beforeEach(() => {
+    clearEnsResolutionCaches();
+    mockUrResolve.mockClear();
+  });
+  afterEach(() => {
+    mockCoreDriver = null;
+  });
+
+  test('lookups go to the core, with the inputs it takes', async () => {
+    mockCoreDriver = driver();
+    expect(await resolveEnsContent('vitalik.eth')).toEqual({ type: 'ok', from: 'core' });
+    await resolveEnsContent(undefined);
+    await resolveEnsAddress('nick.eth', 10);
+    await resolveEnsAddress('nick.eth');
+    await resolveEnsReverse(ADDRESS);
+    expect(await invalidateEnsContent('vitalik.eth')).toBe(true);
+    expect(mockCoreDriver.resolveContent.mock.calls).toEqual([['vitalik.eth'], ['']]);
+    expect(mockCoreDriver.resolveAddress.mock.calls).toEqual([
+      ['nick.eth', 10],
+      ['nick.eth', 1],
+    ]);
+    expect(mockCoreDriver.resolveReverse.mock.calls).toEqual([[ADDRESS, 1]]);
+    expect(mockCoreDriver.invalidateContent.mock.calls).toEqual([['vitalik.eth']]);
+    expect(mockUrResolve).not.toHaveBeenCalled();
+  });
+
+  test("inputs today's code refuses before any network stay here", async () => {
+    mockCoreDriver = driver();
+    await expect(resolveEnsContent(5)).rejects.toThrow();
+    await resolveEnsAddress('nick.eth', 'mainnet').catch(() => {});
+    expect(await resolveEnsReverse(42)).toMatchObject({
+      success: false,
+      reason: 'INVALID_ADDRESS',
+    });
+    expect(mockCoreDriver.resolveContent).not.toHaveBeenCalled();
+    expect(mockCoreDriver.resolveAddress).not.toHaveBeenCalled();
+    expect(mockCoreDriver.resolveReverse).not.toHaveBeenCalled();
+  });
+
+  test('a settings change reconfigures the core', () => {
+    mockNamingSettingsChanged.mockClear();
+    invalidateCachedProvider();
+    expect(mockNamingSettingsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  test("the IPC handlers keep today's shapes and privacy around the core's lookups", async () => {
+    mockCoreDriver = {
+      ...driver(),
+      resolveContent: jest.fn(async () => {
+        throw new Error('No enabled name-resolution method could resolve x.eth');
+      }),
+      resolveAddress: jest.fn(async () => ({ private: isPrivateLogContext() })),
+    };
+    ipcMain.handle.mockClear();
+    registerEnsIpc();
+    expect(await handlerFor(IPC.ENS_RESOLVE)({ sender: {} }, { name: ' X.eth ' })).toEqual({
+      type: 'error',
+      name: 'x.eth',
+      reason: 'RESOLUTION_ERROR',
+      error: 'No enabled name-resolution method could resolve x.eth',
+    });
+    expect(
+      await handlerFor(IPC.ENS_RESOLVE_ADDRESS)({ sender: { isPrivate: true } }, { name: 'a.eth' })
+    ).toEqual({ private: true });
   });
 });
