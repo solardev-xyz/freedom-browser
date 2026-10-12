@@ -16,6 +16,10 @@ const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
 const { withDeadline, unlessAborted } = require('./naming-shell');
 const { MAX_PAYLOAD } = require('./frame');
+// `0x` and whole bytes, checked in constant stack: a large value can't
+// exhaust a backtracking regexp's stack (see ccip-fetch's VALIDATING THE
+// ANSWER).
+const { isHexData } = require('../ens/ccip-fetch');
 
 /** Operations running per verifier, counted until the adapter settles
  * (not when the core cancels): more are `unavailable` at once. */
@@ -29,7 +33,6 @@ const ENVELOPE_BYTES =
     JSON.stringify({ type: 'response', id: Number.MAX_SAFE_INTEGER, result: null })
   ) - 'null'.length;
 
-const HEX = /^0x(?:[0-9a-f]{2})*$/i;
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
 const RECORD_METHODS = new Set(['contenthash', 'addr', 'reverse']);
 
@@ -69,7 +72,7 @@ function failureClass(err) {
  * no byte form, so the error is a failure instead. */
 function revertOf(err) {
   const data = err?.data ?? err?.info?.error?.data;
-  return typeof data === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(data) ? data : null;
+  return isHexData(data) ? data : null;
 }
 
 /** Today's adapters, loaded when first used (they load the resolvers). */
@@ -123,7 +126,7 @@ function operation(params, adapters) {
   if (params.myotis === 'call') {
     const { to, data } = params;
     if (typeof to !== 'string' || !ADDRESS.test(to)) throw refused();
-    if (typeof data !== 'string' || !HEX.test(data)) throw refused();
+    if (!isHexData(data)) throw refused();
     return {
       verifier: 'myotis',
       // tryMyotisContractPath: anything but `ok` with result data throws,
@@ -144,7 +147,7 @@ function operation(params, adapters) {
   if (params.colibri === 'resolve') {
     const { name, call_data: callData } = params;
     if (typeof name !== 'string') throw refused();
-    if (typeof callData !== 'string' || !HEX.test(callData)) throw refused();
+    if (!isHexData(callData)) throw refused();
     if (!['ur', 'name_nft', 'name_nft_reverse'].includes(params.resolver)) throw refused();
     const callResolver = adapters.callResolver(params.resolver);
     return {

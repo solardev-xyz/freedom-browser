@@ -265,6 +265,32 @@ describe('shell.verified', () => {
     });
   });
 
+  test('a large revert is checked in constant stack, even on the slow regexp path', () => {
+    // V8's unoptimized regexp tier backtracks on the stack: run the executor
+    // there with a 2 MB revert, which must come out too_large, not throw.
+    const { execFileSync } = require('child_process');
+    const script = `
+      const { registerNamingVerified } = require(${JSON.stringify(require.resolve('./naming-verified'))});
+      const handlers = new Map();
+      registerNamingVerified({ handle: (m, fn) => handlers.set(m, fn) }, { generations: { lifecycle: 0 } }, {
+        adapters: {
+          colibriReverse: async () => {
+            throw Object.assign(new Error('r'), { data: '0x' + 'ab'.repeat(2_000_000) });
+          },
+        },
+      });
+      handlers.get('shell.verified')(
+        { colibri: 'reverse', address: '0x' + 'ab'.repeat(20), coin_type: 60, generations: { lifecycle: 0 } },
+        { signal: new AbortController().signal }
+      ).then((r) => process.stdout.write(JSON.stringify(r)), (e) => process.stdout.write('threw ' + e.name));
+    `;
+    const out = execFileSync(process.execPath, ['--no-regexp-optimization', '-e', script], {
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    expect(JSON.parse(out)).toEqual({ failure: 'too_large' });
+  });
+
   test('a result JSON cannot carry is an error', async () => {
     const { call } = setUp({ colibriReverse: jest.fn(async () => ({ name: 1n })) });
     expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
