@@ -213,6 +213,22 @@ describe('getSigner (vault-backed)', () => {
     expect(Date.now() - started).toBeLessThan(100);
   });
 
+  test('the type-graph guard refuses non-string field types without coercing them', () => {
+    // A nested array would be stringified level by level: quadratic.
+    let type = 'x'.repeat(1000);
+    for (let level = 0; level < 2000; level += 1) type = [type, 1];
+    const types = { Outer: [{ name: 'f', type }] };
+    const { assertBoundedTypeGraph } = require('./signing-utils');
+    const started = Date.now();
+    expect(() => assertBoundedTypeGraph(types)).toThrow('field types must be strings');
+    expect(Date.now() - started).toBeLessThan(100);
+    for (const bad of [undefined, null, 7, {}]) {
+      expect(() => assertBoundedTypeGraph({ M: [{ name: 'f', type: bad }] })).toThrow(
+        'field types must be strings'
+      );
+    }
+  });
+
   test('a field named __proto__ reaches the core as data', () => {
     // (ethers' own Wallet.signTypedData drops it; the core's encoder keeps
     // it, so the conversion must too.)

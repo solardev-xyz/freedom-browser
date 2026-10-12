@@ -95,8 +95,12 @@ function assertBoundedTypeGraph(types) {
   const children = new Map(names.map((name) => [name, new Set()]));
   for (const name of names) {
     for (const field of Array.isArray(types[name]) ? types[name] : []) {
-      // indexOf, not a regex: this runs on dApp input, so it must stay linear.
-      const type = String(field?.type ?? '');
+      // This runs on dApp input, so it must stay linear: no coercion (an
+      // array's toString rebuilds nested text), and indexOf, not a regex.
+      const type = field?.type;
+      if (typeof type !== 'string') {
+        throw new Error('Typed data field types must be strings');
+      }
       const bracket = type.indexOf('[');
       const base = bracket === -1 ? type : type.slice(0, bracket);
       if (base !== name && children.has(base)) children.get(name).add(base);
