@@ -746,10 +746,10 @@
     }
   ],
   "production_license_distribution": {
-    "unique_packages": 244,
+    "unique_packages": 241,
     "counts": {
-      "MIT": 176,
-      "Apache-2.0": 20,
+      "MIT": 174,
+      "Apache-2.0": 19,
       "ISC": 18,
       "MPL-2.0": 10,
       "LGPL-3.0-only": 4,
@@ -863,7 +863,7 @@
       "issues": []
     }
   ],
-  "summary": { "green": 237, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
+  "summary": { "green": 234, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
   "blockers": [],
   "resolved_since_last_audit": [
     {

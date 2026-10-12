@@ -21,7 +21,7 @@
 
 | Category                                                    | Count       | Status                                                             |
 | ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
-| Production npm packages (unique name@version)               | 244         | See distribution below                                             |
+| Production npm packages (unique name@version)               | 241         | See distribution below                                             |
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
 | External binaries / native addons shipped in `resources/`   | 6           | Ant, freedom-ipfs, libradicle, Myotis, Arti, freedom-cored         |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
@@ -220,8 +220,8 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 
 | License                           | Count   |
 | --------------------------------- | ------- |
-| MIT                               | 176     |
-| Apache-2.0                        | 20      |
+| MIT                               | 174     |
+| Apache-2.0                        | 19      |
 | ISC                               | 18      |
 | MPL-2.0                           | 10      |
 | BSD-3-Clause                      | 4       |
@@ -235,7 +235,7 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 | Zlib OR MIT OR Apache-2.0         | 1       |
 | Python-2.0                        | 1       |
 | BlueOak-1.0.0                     | 1       |
-| **Total**                         | **244** |
+| **Total**                         | **241** |
 
 ---
 
