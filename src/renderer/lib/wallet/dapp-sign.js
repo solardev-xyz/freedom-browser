@@ -333,6 +333,8 @@ async function checkDappSignUnlockStatus(request) {
     }
   } catch (err) {
     console.error('[WalletUI] Failed to check vault status:', err);
+    // A replaced request's failure paints nothing on its successor.
+    if (dappSignPending !== request) return;
     dappSignUnlock?.classList.remove('hidden');
     dappSignTouchIdBtn?.classList.add('hidden');
     dappSignPasswordLink?.classList.add('hidden');

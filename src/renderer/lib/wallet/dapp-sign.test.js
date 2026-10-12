@@ -177,6 +177,23 @@ describe('dapp-sign approval lifecycle', () => {
     await expect(b).resolves.toBe('0xsig');
   });
 
+  test("a replaced request's failed vault check paints nothing on its successor", async () => {
+    const { mod, elements } = await loadDappSign();
+    require('./wallet-utils.js').bypassUnlockGateForDevice.mockReturnValueOnce(false);
+    let failA;
+    window.identity = { getStatus: jest.fn(() => new Promise((_resolve, reject) => (failA = reject))) };
+    const a = mod.showDappSignApproval({}, 'https://a.example', 'personal_sign', ['0xaaaa', '0xvault']);
+    a.catch(() => {});
+    await flush();
+    // B (a device account) replaces A and shows, with no unlock section.
+    mod.showDappSignApproval({}, 'https://b.example', 'personal_sign', ['0xbbbb', '0xledger']).catch(() => {});
+    await flush();
+    elements['dapp-sign-unlock'].classList.add('hidden');
+    failA(new Error('status unavailable'));
+    await flush();
+    expect(elements['dapp-sign-unlock'].classList.contains('hidden')).toBe(true);
+  });
+
   test('a message that cannot be displayed is refused and holds off nothing', async () => {
     const { mod, openApproval } = await loadDappSign();
     await expect(mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', [12345, '0xledger'])).rejects.toThrow();

@@ -386,6 +386,8 @@ async function checkDappTxUnlockStatus(request) {
     }
   } catch (err) {
     console.error('[WalletUI] Failed to check vault status:', err);
+    // A replaced request's failure paints nothing on its successor.
+    if (dappTxPending !== request) return;
     dappTxUnlock?.classList.remove('hidden');
     dappTxTouchIdBtn?.classList.add('hidden');
     dappTxPasswordLink?.classList.add('hidden');
