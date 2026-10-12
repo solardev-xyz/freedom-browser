@@ -432,6 +432,7 @@ function registerNamingShell(client, config, deps = {}) {
 
 module.exports = {
   registerNamingShell,
+  withDeadline,
   unlessAborted,
   MAX_ABANDONED,
   fetchLoop,
