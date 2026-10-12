@@ -1,0 +1,23 @@
+# Keeps the commit-SHA pins on every `uses:` in .github/workflows and
+# .github/actions current (#633): Dependabot rewrites both the SHA and its
+# `# vX.Y.Z` comment. GitHub Actions only; npm dependencies are bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    # `/` covers .github/workflows; the composite actions are listed so their
+    # own pins (install-node-deps' actions/cache) are bumped too.
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    # Wait a week after a release before proposing it, so a compromised or
+    # broken release has time to be noticed and pulled first.
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+    commit-message:
+      prefix: ci

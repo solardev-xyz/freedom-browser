@@ -1,0 +1,1 @@
+- Smaller downloads and installs, as the app no longer packs the source repository's docs, tests and other platforms' node binaries ([#576](https://github.com/solardev-xyz/freedom-browser/issues/576))
