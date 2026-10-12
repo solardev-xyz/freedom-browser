@@ -23,8 +23,12 @@ const EXCHANGE_MS = 300_000;
 /** Any answer body: 720 KiB, which is 960 KiB in base64 (response-caps). */
 const ANSWER_BYTES = 720 * 1024;
 const REDIRECTS = new Set([301, 302, 307, 308]);
-/** The statuses today's `fetch` (undici) follows when they carry a Location. */
+/** The statuses `fetch` treats as redirects when they carry a Location:
+ * Tezos' `fetch` follows them, the gateway's `redirect: 'error'` refuses
+ * them. */
 const FOLLOWED = new Set([301, 302, 303, 307, 308]);
+/** Today's Tezos and gateway reads discard any other body unread. */
+const isOk = (status) => status >= 200 && status < 300;
 
 function isAbort(err) {
   return err?.name === 'AbortError';
@@ -58,16 +62,53 @@ function sleep(ms, signal) {
   });
 }
 
+/** Hops abandoned while their fetch hadn't returned (a proxy lookup
+ * that ignores the abort): past this many, new hops fail at once. */
+const MAX_ABANDONED = 64;
+
+/** Settles as `promise` does, or rejects with the abort as `signal`
+ * aborts first. */
+function unlessAborted(promise, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
 /**
  * One HTTP exchange through the session's network stack (`netGatewayFetch`:
  * its proxy policy and onion gate, no cookies, credentials or cache, and no
- * redirect taken). The body is read up to `max` bytes; `inactivityMs` of
- * silence ends the attempt as `timeout`.
+ * redirect taken). `read(status)` says whether the body is wanted: one that
+ * isn't, as the references discard it, is cancelled unread and answered
+ * empty. A body is read up to `max` bytes (a larger declared length is
+ * refused unread); `inactivityMs` of silence ends the attempt as `timeout`.
+ * Every wait settles as the request is cancelled or times out, even one the
+ * transport can't abort (its proxy lookup): that work is abandoned, its late
+ * response discarded, and bounded.
  *
  * @returns {Promise<{status: number, headers: object, body: Buffer}>}
  */
 function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
-  return async (url, { method = 'GET', headers, body, signal, max = ANSWER_BYTES }) => {
+  let abandoned = 0;
+  const hop = async (
+    url,
+    { method = 'GET', headers, body, signal, max = ANSWER_BYTES, read = () => true }
+  ) => {
+    if (abandoned >= MAX_ABANDONED) throw new ShellError('network');
     const idle = new AbortController();
     let timer = null;
     const touch = () => {
@@ -82,38 +123,59 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
     };
     touch();
     try {
+      const fetching = Promise.resolve().then(() =>
+        fetch(url, { method, headers, body, signal: combined, redirect: 'manual' })
+      );
       let response;
       try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body,
-          signal: combined,
-          redirect: 'manual',
-        });
+        response = await unlessAborted(fetching, combined);
       } catch (err) {
+        if (combined.aborted) {
+          // The transport may still be waiting (its proxy lookup ignores
+          // the abort): count it until it settles, and discard what it
+          // brings.
+          abandoned += 1;
+          fetching
+            .then(
+              (late) => late?.body?.cancel().catch(() => {}),
+              () => {}
+            )
+            .finally(() => {
+              abandoned -= 1;
+            });
+        }
         throw failed(err);
       }
       touch();
       const responseHeaders = {};
       for (const [name, value] of response.headers) responseHeaders[name.toLowerCase()] = value;
+      const discard = () => response.body?.cancel().catch(() => {});
+      if (!read(response.status)) {
+        discard();
+        return { status: response.status, headers: responseHeaders, body: Buffer.alloc(0) };
+      }
+      if (Number(responseHeaders['content-length']) > max) {
+        discard();
+        throw new ShellError('too_large');
+      }
       const chunks = [];
       let size = 0;
       if (response.body) {
         const reader = response.body.getReader();
         try {
           for (;;) {
-            const next = await reader.read();
+            const next = await unlessAborted(reader.read(), combined);
             if (next.done) break;
             touch();
             size += next.value.byteLength;
             if (size > max) {
-              await reader.cancel().catch(() => {});
+              reader.cancel().catch(() => {});
               throw new ShellError('too_large');
             }
             chunks.push(next.value);
           }
         } catch (err) {
+          if (combined.aborted) reader.cancel().catch(() => {});
           throw failed(err);
         }
       }
@@ -122,6 +184,8 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
       clearTimeout(timer);
     }
   };
+  hop.abandoned = () => abandoned;
+  return hop;
 }
 
 /**
@@ -258,6 +322,8 @@ function registerNamingShell(client, config, deps = {}) {
   client.handle('shell.rpc', (params, { signal }) => {
     stale(params, 'ens');
     const url = endpoint(params.endpoint);
+    // Every hop meets the endpoint policy, the first one too.
+    if (validateRpcUrl(url) !== null) throw new ShellError('refused');
     if (typeof params.body !== 'string') throw new ShellError('refused');
     return withDeadline(params, signal, (within) =>
       fetchLoop(url, params.body, {
@@ -285,6 +351,7 @@ function registerNamingShell(client, config, deps = {}) {
         headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
         body,
         signal: within,
+        read: isOk,
       });
       if (FOLLOWED.has(response.status) && response.headers.location)
         throw new ShellError('refused');
@@ -308,8 +375,11 @@ function registerNamingShell(client, config, deps = {}) {
         },
         body: post ? params.body : undefined,
         signal: within,
+        read: isOk,
       });
-      if (REDIRECTS.has(response.status)) throw new ShellError('refused');
+      if (FOLLOWED.has(response.status) && response.headers.location) {
+        throw new ShellError('refused');
+      }
       return answer(response);
     });
   });
@@ -324,7 +394,14 @@ function registerNamingShell(client, config, deps = {}) {
     const onAbort = () => handle.abort();
     signal.addEventListener('abort', onAbort, { once: true });
     try {
-      await handle.done;
+      // Its own wait (a proxy lookup) may not end with the abort: the reply
+      // doesn't wait for it.
+      await withDeadline(params, signal, (within) => {
+        within.addEventListener('abort', onAbort, { once: true });
+        return unlessAborted(handle.done, within);
+      });
+    } catch {
+      // Cancelled, or past its deadline: ended all the same.
     } finally {
       signal.removeEventListener('abort', onAbort);
     }
@@ -334,6 +411,8 @@ function registerNamingShell(client, config, deps = {}) {
 
 module.exports = {
   registerNamingShell,
+  unlessAborted,
+  MAX_ABANDONED,
   fetchLoop,
   makeHop,
   gatewayAllowed,

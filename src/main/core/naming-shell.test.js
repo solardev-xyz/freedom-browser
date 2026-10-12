@@ -6,11 +6,36 @@ const {
   makeHop,
   gatewayAllowed,
   MAX_ATTEMPTS,
+  MAX_ABANDONED,
 } = require('./naming-shell');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 
 const START = 'https://a.rpc.example/';
+const tick = () => new Promise(setImmediate);
+
+/** A body that streams `first`, then never ends; `state.cancelled` records
+ * its cancel. */
+function endless(first = '') {
+  const state = { cancelled: false };
+  const stream = new ReadableStream({
+    start(controller) {
+      if (first) controller.enqueue(new Uint8Array(Buffer.from(first)));
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { stream, state };
+}
+
+/** A fetch that never settles by itself and ignores its signal (a proxy
+ * lookup that doesn't observe the abort); `settle[i]` settles call i. */
+function stuckFetch() {
+  const settle = [];
+  const fetch = jest.fn(() => new Promise((resolve) => settle.push(resolve)));
+  return { fetch, settle };
+}
 const BODY = '{"method":"eth_blockNumber","params":[],"id":1,"jsonrpc":"2.0"}';
 
 /** Answers in order: { status, headers?, body? }. */
@@ -206,6 +231,93 @@ describe('a hop', () => {
     await expect(hop('https://a.example', { max: 9 })).rejects.toMatchObject({ code: 'too_large' });
   });
 
+  test("a body the caller doesn't want is cancelled unread, however large or silent", async () => {
+    for (const first of ['', 'x'.repeat(100)]) {
+      const { stream, state } = endless(first);
+      const hop = makeHop({
+        fetch: jest.fn(async () => new Response(stream, { status: 404 })),
+        inactivityMs: 1000,
+      });
+      const response = await hop('https://t.example/x', {
+        max: 10,
+        read: (status) => status === 200,
+      });
+      expect(response.status).toBe(404);
+      expect(response.body.length).toBe(0);
+      await tick();
+      expect(state.cancelled).toBe(true);
+    }
+  });
+
+  test('a declared length over the cap is refused unread', async () => {
+    const { stream, state } = endless();
+    const hop = makeHop({
+      fetch: jest.fn(
+        async () => new Response(stream, { status: 200, headers: { 'content-length': '11' } })
+      ),
+    });
+    await expect(hop('https://a.example', { max: 10 })).rejects.toMatchObject({
+      code: 'too_large',
+    });
+    await tick();
+    expect(state.cancelled).toBe(true);
+  });
+
+  test('a fetch that ignores the abort is abandoned: the hop settles, the work is bounded', async () => {
+    const { fetch, settle } = stuckFetch();
+    const hop = makeHop({ fetch, inactivityMs: 60_000 });
+    const cancel = new AbortController();
+    const pending = hop('https://a.onion', { signal: cancel.signal }).catch((e) => e);
+    await tick();
+    cancel.abort();
+    expect((await pending).name).toBe('AbortError');
+    expect(hop.abandoned()).toBe(1);
+    // Inactivity likewise ends it, as timeout.
+    const idle = makeHop({ fetch: stuckFetch().fetch, inactivityMs: 5 });
+    await expect(idle('https://a.onion', {})).rejects.toMatchObject({ code: 'timeout' });
+    expect(idle.abandoned()).toBe(1);
+    // Its late response is discarded, and it no longer counts.
+    const { stream, state } = endless('x');
+    settle[0](new Response(stream));
+    await tick();
+    await tick();
+    expect(state.cancelled).toBe(true);
+    expect(hop.abandoned()).toBe(0);
+    // With MAX_ABANDONED of them stuck, a new hop fails at once.
+    for (let i = 0; i < MAX_ABANDONED; i++) {
+      const c = new AbortController();
+      const p = hop('https://a.onion', { signal: c.signal }).catch(() => {});
+      await tick();
+      c.abort();
+      await p;
+    }
+    expect(hop.abandoned()).toBe(MAX_ABANDONED);
+    const dialled = fetch.mock.calls.length;
+    await expect(hop('https://b.example', {})).rejects.toMatchObject({ code: 'network' });
+    expect(fetch.mock.calls.length).toBe(dialled);
+  });
+
+  test('a body that stalls, its stream deaf to the abort, still ends', async () => {
+    const cancel = new AbortController();
+    const first = endless('x');
+    const hop = makeHop({
+      fetch: jest.fn(async () => new Response(first.stream)),
+      inactivityMs: 60_000,
+    });
+    const pending = hop('https://a.example', { signal: cancel.signal }).catch((e) => e);
+    await tick();
+    cancel.abort();
+    expect((await pending).name).toBe('AbortError');
+    await tick();
+    expect(first.state.cancelled).toBe(true);
+    const second = endless('x');
+    const idle = makeHop({
+      fetch: jest.fn(async () => new Response(second.stream)),
+      inactivityMs: 5,
+    });
+    await expect(idle('https://a.example', {})).rejects.toMatchObject({ code: 'timeout' });
+  });
+
   test('a network failure, an onion refusal and inactivity', async () => {
     await expect(
       makeHop({ fetch: fakeFetch({ fail: new Error('ECONNRESET') }) })('https://a.example', {})
@@ -226,6 +338,8 @@ describe('the executors', () => {
     const client = { handle: (method, fn) => handlers.set(method, fn) };
     const urls = new Map([
       ['e1', 'https://a.rpc.example'],
+      ['e2', 'http://public.example'],
+      ['e3', 'http://127.0.0.1:8545'],
       ['t1', 'https://t1.tez.example'],
     ]);
     const config = {
@@ -268,6 +382,76 @@ describe('the executors', () => {
     expect(hop).not.toHaveBeenCalled();
     await call('shell.rpc', { endpoint: 'e1', body: BODY, generations: { ens: 3 } });
     expect(hop).toHaveBeenCalledTimes(1);
+  });
+
+  test('the first RPC hop meets the endpoint policy too', async () => {
+    const { call, hop } = setUp();
+    await expect(
+      call('shell.rpc', { endpoint: 'e2', body: BODY, generations: { ens: 2 } })
+    ).rejects.toMatchObject({ code: 'refused' });
+    expect(hop).not.toHaveBeenCalled();
+    await call('shell.rpc', { endpoint: 'e3', body: BODY, generations: { ens: 2 } });
+    expect(hop).toHaveBeenCalledWith('http://127.0.0.1:8545', expect.anything());
+  });
+
+  test("RPC reads any status's body; Tezos and gateways only a 2xx's, as today", async () => {
+    const answer = (status, first) => {
+      const { stream, state } = endless(first);
+      return { state, fetch: jest.fn(async () => new Response(stream, { status })) };
+    };
+    // ethers keeps a 500's body: here it ends, so it is read.
+    const rpc = setUp({
+      hop: makeHop({
+        fetch: jest.fn(async () => new Response('node error', { status: 500 })),
+      }),
+    });
+    expect(
+      await rpc.call('shell.rpc', { endpoint: 'e1', body: BODY, generations: { ens: 2 } })
+    ).toEqual({ status: 500, body: Buffer.from('node error').toString('base64') });
+    // A silent or huge 404 from a Tezos node is a 404 at once.
+    for (const first of ['', 'x'.repeat(800 * 1024)]) {
+      const { state, fetch } = answer(404, first);
+      const tezos = setUp({ hop: makeHop({ fetch, inactivityMs: 60_000 }) });
+      expect(
+        await tezos.call('shell.tezos', { endpoint: 't1', path: '/x', generations: { tezos: 1 } })
+      ).toEqual({ status: 404, body: '' });
+      await tick();
+      expect(state.cancelled).toBe(true);
+    }
+    const { state, fetch } = answer(500, 'x');
+    const gateway = setUp({ hop: makeHop({ fetch, inactivityMs: 60_000 }) });
+    expect(
+      await gateway.call('shell.gateway', {
+        url: 'https://gw.example/',
+        method: 'GET',
+        generations: { ens: 2 },
+      })
+    ).toEqual({ status: 500, body: '' });
+    await tick();
+    expect(state.cancelled).toBe(true);
+  });
+
+  test('a stuck transport ends with the deadline or the cancel; a prefetch too', async () => {
+    const { call } = setUp({ hop: makeHop({ fetch: stuckFetch().fetch, inactivityMs: 60_000 }) });
+    await expect(
+      call('shell.rpc', { endpoint: 'e1', body: BODY, generations: { ens: 2 }, deadline_ms: 10 })
+    ).rejects.toMatchObject({ code: 'timeout' });
+    const cancel = new AbortController();
+    const cancelled = call(
+      'shell.tezos',
+      { endpoint: 't1', path: '/x', generations: { tezos: 1 } },
+      cancel.signal
+    ).catch((e) => e);
+    await tick();
+    cancel.abort();
+    expect((await cancelled).name).toBe('AbortError');
+    // A prefetch whose own wait never ends.
+    const abort = jest.fn();
+    const stuck = setUp({ prefetch: jest.fn(() => ({ abort, done: new Promise(() => {}) })) });
+    await expect(
+      stuck.call('shell.prefetch', { uri: 'ipfs://bafy', generations: { ens: 2 }, deadline_ms: 10 })
+    ).resolves.toEqual({});
+    expect(abort).toHaveBeenCalled();
   });
 
   test('an unknown reference is refused', async () => {
@@ -351,16 +535,30 @@ describe('the executors', () => {
         call('shell.gateway', { url, method: 'GET', generations: { ens: 2 } })
       ).rejects.toMatchObject({ code: 'refused' });
     }
-    const redirecting = setUp({
-      hop: async () => ({ status: 302, headers: { location: 'https://x' }, body: Buffer.alloc(0) }),
+    // redirect: 'error' refuses every redirect status with a Location; one
+    // without is an ordinary answer.
+    for (const status of [301, 302, 303, 307, 308]) {
+      const redirecting = setUp({
+        hop: async () => ({ status, headers: { location: 'https://x' }, body: Buffer.alloc(0) }),
+      });
+      await expect(
+        redirecting.call('shell.gateway', {
+          url: 'https://gw.example/',
+          method: 'GET',
+          generations: { ens: 2 },
+        })
+      ).rejects.toMatchObject({ code: 'refused' });
+    }
+    const bare = setUp({
+      hop: async () => ({ status: 302, headers: {}, body: Buffer.alloc(0) }),
     });
-    await expect(
-      redirecting.call('shell.gateway', {
+    expect(
+      await bare.call('shell.gateway', {
         url: 'https://gw.example/',
         method: 'GET',
         generations: { ens: 2 },
       })
-    ).rejects.toMatchObject({ code: 'refused' });
+    ).toEqual({ status: 302, body: '' });
   });
 
   test('shell.prefetch replies when the prefetch ends, and a cancel aborts it', async () => {
