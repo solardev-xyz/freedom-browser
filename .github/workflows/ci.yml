@@ -1383,7 +1383,7 @@ jobs:
       # Windows leg matters most — EPERM-on-locked-handle is the historical
       # failure class for these data-dir moves (issue #90).
       - name: Run bee-data → ant-data migration integration test
-        run: npx jest --forceExit src/main/identity/__tests__/integration/bee-to-ant-migration.test.js
+        run: npx jest --forceExit test/legacy-identity/__tests__/integration/bee-to-ant-migration.test.js
 
       - name: Run onboarding identity E2E
         shell: bash

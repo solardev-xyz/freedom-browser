@@ -19,7 +19,7 @@ const path = require('path');
 const fs = require('fs');
 
 const repoRoot = path.resolve(__dirname, '..');
-const identity = require(path.join(repoRoot, 'src', 'main', 'identity'));
+const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
 const { createBridgeServer } = require(path.join(repoRoot, 'scripts', 'serve-bridge.js'));
 const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 'local-mqtt-broker.js'));
 

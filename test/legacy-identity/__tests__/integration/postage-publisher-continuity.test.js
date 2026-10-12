@@ -36,7 +36,7 @@ const vault = require('../../vault');
 const {
   createAppMock,
   loadMainModule,
-} = require('../../../../../test/helpers/main-process-test-utils');
+} = require('../../../helpers/main-process-test-utils');
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -83,10 +83,10 @@ function writeStamperstore(beeDataDir) {
 }
 
 function loadMigrationModule(userDataDir) {
-  return loadMainModule(require.resolve('../../../migrate-user-data'), {
+  return loadMainModule(require.resolve('../../../../src/main/migrate-user-data'), {
     app: createAppMock({ isPackaged: true, userDataDir }),
     extraMocks: {
-      [require.resolve('../../../logger')]: () => ({
+      [require.resolve('../../../../src/main/logger')]: () => ({
         info: jest.fn(),
         warn: jest.fn(),
         error: jest.fn(),
