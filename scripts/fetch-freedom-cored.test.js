@@ -270,7 +270,7 @@ describe('verified installation', () => {
     ).toBe(true);
   });
 
-  test('the pending pinned digest fails closed before extracting any binary', async () => {
+  test('a SHA256SUMS that differs from the pinned digest fails closed before extracting', async () => {
     load(PINNED_TAG);
     const calls = installResponses(releaseFixture(PINNED_TAG));
     await fetcher.main({ outputDir: dir });

@@ -35,7 +35,7 @@
       },
       "license": {
         "spdx": [],
-        "raw": "Not selected; release v0.1.0 pending",
+        "raw": "Not selected yet",
         "license_files": [],
         "notice_required": true
       },
@@ -46,7 +46,7 @@
       "issues": [
         {
           "kind": "missing-license",
-          "details": "freedom-core has no license yet (the maintainer's decision). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html). The download digest is a failing placeholder until v0.1.0 exists.",
+          "details": "freedom-core has no license yet (the maintainer's decision). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
           "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
         }
       ]
