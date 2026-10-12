@@ -1,5 +1,11 @@
 const { ShellError } = require('./core-client');
-const { registerNamingVerified, MAX_PER_VERIFIER, MAX_REPLY_BYTES } = require('./naming-verified');
+const {
+  registerNamingVerified,
+  MAX_PER_VERIFIER,
+  MAX_REPLY_BYTES,
+  ENVELOPE_BYTES,
+} = require('./naming-verified');
+const { encodeJsonFrame } = require('./frame');
 
 const ADDRESS = '0x' + 'ab'.repeat(20);
 const GEN = { generations: { lifecycle: 3 } };
@@ -181,6 +187,13 @@ describe('shell.verified', () => {
       ],
       [new Error('https://secret@prover.example failed'), { failure: 'error' }],
       [Object.assign(new Error('not hex'), { data: 'reverted' }), { failure: 'error' }],
+      // Bytes as the core reads them, in either case of digit; an odd digit
+      // or a capital 0X has no byte form, so it is a failure, never a reply
+      // the core would refuse.
+      [Object.assign(new Error('r'), { data: '0xABcd' }), { revert: '0xABcd' }],
+      [Object.assign(new Error('r'), { data: '0x123' }), { failure: 'error' }],
+      [{ info: { error: { code: -32000, data: '0x123' } } }, { failure: 'error' }],
+      [Object.assign(new Error('r'), { data: '0X12' }), { failure: 'error' }],
       ['a string', { failure: 'error' }],
     ];
     for (const [err, expected] of cases) {
@@ -222,9 +235,14 @@ describe('shell.verified', () => {
     expect(await next).toEqual({ result_hex: '0x05', optimistic_block_number: 21_000_000 });
   });
 
-  test('a reply over 1 MiB serialized is too_large, a revert too', async () => {
-    // {"name":"…"} is 11 bytes besides the name.
-    const fits = 'a'.repeat(MAX_REPLY_BYTES - 11);
+  test('a reply whose response would not fit a frame is too_large, a revert too', async () => {
+    // {"name":"…"} is 11 bytes besides the name; the response's envelope,
+    // with the largest ID, counts too.
+    const fits = 'a'.repeat(MAX_REPLY_BYTES - ENVELOPE_BYTES - 11);
+    const framed = (result) =>
+      encodeJsonFrame(JSON.stringify({ type: 'response', id: Number.MAX_SAFE_INTEGER, result }));
+    expect(() => framed({ name: fits })).not.toThrow();
+    expect(() => framed({ name: `${fits}a` })).toThrow();
     for (const [name, expected] of [
       [fits, { name: fits }],
       [`${fits}a`, { failure: 'too_large' }],

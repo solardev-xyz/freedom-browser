@@ -15,13 +15,19 @@
 const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
 const { withDeadline, unlessAborted } = require('./naming-shell');
+const { MAX_PAYLOAD } = require('./frame');
 
 /** Operations running per verifier, counted until the adapter settles
  * (not when the core cancels): more are `unavailable` at once. */
 const MAX_PER_VERIFIER = 8;
-/** A reply over this, serialized, is `too_large` (deviation
- * `verified-reply-size`). */
-const MAX_REPLY_BYTES = 1024 * 1024;
+/** A reply whose response can't fit one frame (1 MiB) is `too_large`
+ * (deviation `verified-reply-size`): its envelope, with the largest ID,
+ * counts too. */
+const MAX_REPLY_BYTES = MAX_PAYLOAD;
+const ENVELOPE_BYTES =
+  Buffer.byteLength(
+    JSON.stringify({ type: 'response', id: Number.MAX_SAFE_INTEGER, result: null })
+  ) - 'null'.length;
 
 const HEX = /^0x(?:[0-9a-f]{2})*$/i;
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
@@ -58,10 +64,12 @@ function failureClass(err) {
   return 'error';
 }
 
-/** The revert data an adapter's error carries, if any. */
+/** The revert data an adapter's error carries, if any: bytes as the core
+ * reads them, `0x` and whole bytes. Anything else (an odd digit, `0X`) has
+ * no byte form, so the error is a failure instead. */
 function revertOf(err) {
   const data = err?.data ?? err?.info?.error?.data;
-  return typeof data === 'string' && /^0x[0-9a-f]*$/i.test(data) ? data : null;
+  return typeof data === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(data) ? data : null;
 }
 
 /** Today's adapters, loaded when first used (they load the resolvers). */
@@ -166,7 +174,9 @@ function bounded(reply) {
     return { failure: 'error' };
   }
   if (json === undefined) return { failure: 'error' };
-  return Buffer.byteLength(json, 'utf8') > MAX_REPLY_BYTES ? { failure: 'too_large' } : reply;
+  return Buffer.byteLength(json, 'utf8') + ENVELOPE_BYTES > MAX_REPLY_BYTES
+    ? { failure: 'too_large' }
+    : reply;
 }
 
 /**
@@ -210,4 +220,5 @@ module.exports = {
   registerNamingVerified,
   MAX_PER_VERIFIER,
   MAX_REPLY_BYTES,
+  ENVELOPE_BYTES,
 };
