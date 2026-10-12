@@ -20,8 +20,8 @@ class MyotisProvider extends ethers.AbstractProvider {
     return ethers.Network.from(1);
   }
 
-  // Bounds live in the shared helper — see `ccip-fetch.js`. The block-pinned
-  // quorum legs' manual CCIP loop calls the same function directly.
+  // Bounds live in the shared helper — see `ccip-fetch.js`. The Colibri
+  // provider uses the same function.
   async ccipReadFetch(transaction, data, urls) {
     return ccipReadFetch(transaction, data, urls);
   }

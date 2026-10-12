@@ -170,7 +170,7 @@ async function buildClient({ chainId, key, proverUrl, zkProof, generation }) {
   const provider = new ethers.BrowserProvider(client);
   // Colibri pins EVM reads internally, so ethers sees "latest" and follows
   // OffchainLookup automatically. Its inherited gateway fetch has no body
-  // cap and a 300s timeout; use the same bounds as Myotis and pinned RPCs.
+  // cap and a 300s timeout; use the same bounds as Myotis.
   provider.ccipReadFetch = ccipReadFetch;
   clients.set(chainId, { client, key, provider });
   retireClient(previousClient);
@@ -212,11 +212,12 @@ async function getClient(chainId = 1) {
   }
 }
 
-// Drop-in for what a single `consensusResolve` leg does today, but the
-// answer is cryptographically verified by Colibri rather than corroborated
-// across multiple public RPCs. No blockTag override — Colibri's verifier
-// pins to head − 1 by construction (sync committee signatures for block N
-// live in block N+1).
+// One resolver call (`callResolver`: the Universal Resolver or a NameNFT
+// contract), its answer cryptographically verified by Colibri rather than
+// corroborated across multiple public RPCs; the naming core's verified
+// operations run it (core/naming-verified.js). No blockTag override —
+// Colibri's verifier pins to head − 1 by construction (sync committee
+// signatures for block N live in block N+1).
 async function resolveCallViaColibri(name, callData, callResolver = universalResolverCall) {
   return withColibriClientRetry(1, ({ provider }) =>
     callResolver(provider, name, callData)
@@ -230,7 +231,7 @@ async function resolveViaColibri(name, callData) {
 // Reverse counterpart: cryptographically-verified `ur.reverse` for an
 // address. Returns { name } on a successful (forward-verified) lookup.
 // Throws on revert (UR's ResolverNotFound / ReverseAddressMismatch) or
-// network/verification failure — the orchestrator classifies.
+// network/verification failure — the naming core classifies.
 async function resolveReverseViaColibri(addressBytes, coinType = 60n) {
   return withColibriClientRetry(1, ({ provider }) =>
     universalResolverReverse(provider, addressBytes, {}, coinType)
