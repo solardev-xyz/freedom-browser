@@ -8,15 +8,15 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { escapeHtml, isSafeAccount, isSafeDeployed } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getActiveWebview, emitAccountsChanged, getPermissionKey } from '../dapp-provider.js';
+import {
+  getActiveWebview,
+  emitAccountsChanged,
+  getNavigationGeneration,
+  permissionKeyForWebview,
+} from '../dapp-provider.js';
+import { registerDappPrompt, isDappPromptShowing, requestPendingError } from './dapp-prompt-guard.js';
 import { showDappPermissions } from './permission-manage.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
-import {
-  isDappApprovalPending,
-  requestPendingError,
-  claimDappApproval,
-  releaseDappApproval,
-} from './dapp-approval-slot.js';
 
 // DOM references
 let dappConnectScreen;
@@ -69,18 +69,11 @@ export function initDappConnect() {
   dappConnectionManage = document.getElementById('dapp-connection-manage');
 
   // Register screen hider
-  registerScreenHider(() => {
-    // Another screen took the sidebar while this prompt was showing and
-    // undecided: answer the dApp and free the slot (dapp-approval-slot.js).
-    const showing = dappConnectScreen && !dappConnectScreen.classList.contains('hidden');
-    if (showing && dappConnectPending && !dappConnectPending.deciding) {
-      rejectDappConnect();
-      releaseDappApproval(dappConnectPending);
-      dappConnectPending = null;
-      closeDappConnectWalletDropdown();
-    }
-    dappConnectScreen?.classList.add('hidden');
-  });
+  registerScreenHider(() => dappConnectScreen?.classList.add('hidden'));
+  // Showing an undecided connection: newcomers wait (dapp-prompt-guard.js).
+  registerDappPrompt(
+    () => dappConnectPending !== null && Boolean(dappConnectScreen) && !dappConnectScreen.classList.contains('hidden')
+  );
 
   setupDappConnectScreen();
 }
@@ -88,6 +81,8 @@ export function initDappConnect() {
 function setupDappConnectScreen() {
   if (dappConnectBackBtn) {
     dappConnectBackBtn.addEventListener('click', () => {
+      // Not while the grant is being written: it is decided.
+      if (dappConnectPending?.deciding) return;
       rejectDappConnect();
       closeDappConnect();
     });
@@ -106,6 +101,7 @@ function setupDappConnectScreen() {
 
   if (dappConnectRejectBtn) {
     dappConnectRejectBtn.addEventListener('click', () => {
+      if (dappConnectPending?.deciding) return;
       rejectDappConnect();
       closeDappConnect();
     });
@@ -245,8 +241,8 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
     reject(signatureInFlightError());
     return;
   }
-  // Never replace the prompt the user is looking at (dapp-approval-slot.js).
-  if (isDappApprovalPending()) {
+  // Never take the screen from a request the user is looking at.
+  if (isDappPromptShowing()) {
     reject(requestPendingError());
     return;
   }
@@ -256,8 +252,10 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
   // wallet_switchEthereumChain, or the user flipping the switcher), and a
   // contract-hosted app's chain is not the user's to change anyway.
   const pinnedChainId = parseOnchainAppUrl(displayUrl)?.chainId || null;
-  dappConnectPending = { permissionKey, resolve, reject, webview, pinnedChainId };
-  claimDappApproval(dappConnectPending);
+  // The document that asked: the grant's events go to it only if it is
+  // still there when the grant completes.
+  const generation = webview ? getNavigationGeneration(webview) : null;
+  dappConnectPending = { permissionKey, resolve, reject, webview, pinnedChainId, generation };
 
   if (dappConnectSite) {
     dappConnectSite.textContent = permissionKey || displayUrl || 'Unknown';
@@ -307,23 +305,23 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
 function closeDappConnect() {
   dappConnectScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
-  releaseDappApproval(dappConnectPending);
   dappConnectPending = null;
   closeDappConnectWalletDropdown();
 }
 
 async function approveDappConnect() {
-  if (!dappConnectPending) return;
+  if (!dappConnectPending || dappConnectPending.deciding) return;
 
-  const { permissionKey, resolve, webview, pinnedChainId } = dappConnectPending;
+  const request = dappConnectPending;
+  const { permissionKey, resolve, reject, webview, pinnedChainId, generation } = request;
   const wallet = walletState.derivedWallets.find(w => w.index === dappConnectSelectedWalletIndex);
 
   if (!wallet) {
     console.error('[WalletUI] No wallet selected for dApp connect');
     return;
   }
-  // Decided: a screen opening during the grant below must not reject it.
-  dappConnectPending.deciding = true;
+  // Decided: the way out is closed until the grant is written.
+  request.deciding = true;
 
   const grantedChainId = pinnedChainId || walletState.selectedChainId;
 
@@ -337,7 +335,7 @@ async function approveDappConnect() {
     const accounts = [wallet.address];
     resolve(accounts);
 
-    if (webview && webview.send) {
+    if (webview && webview.send && getNavigationGeneration(webview) === generation) {
       webview.send('dapp:provider-event', {
         event: 'accountsChanged',
         data: accounts,
@@ -353,9 +351,11 @@ async function approveDappConnect() {
     updateConnectionBanner(permissionKey);
   } catch (err) {
     console.error('[WalletUI] Failed to grant permission:', err);
+    reject({ code: -32603, message: 'Failed to save the connection' });
   }
 
-  closeDappConnect();
+  // Only this request's screen: another may have opened since.
+  if (dappConnectPending === request) closeDappConnect();
 }
 
 function rejectDappConnect() {
@@ -369,14 +369,19 @@ function rejectDappConnect() {
 /**
  * Update the connection banner for the current tab
  */
+let bannerUpdate = 0;
+
 export async function updateConnectionBanner(permissionKey = null) {
   if (!dappConnectionBanner) return;
 
-  if (!permissionKey) {
-    const addressInput = document.getElementById('address-input');
-    const displayUrl = addressInput?.value || '';
-    permissionKey = getPermissionKey(displayUrl);
-  }
+  // The banner belongs to the active tab, keyed by its committed URL (never
+  // the editable address bar). An update for another site (a background
+  // tab's connection) leaves it alone.
+  const activeKey = permissionKeyForWebview(getActiveWebview());
+  if (permissionKey && permissionKey !== activeKey) return;
+  permissionKey = activeKey;
+  // Only the latest update paints, whatever order the awaits finish in.
+  const update = ++bannerUpdate;
 
   if (!permissionKey) {
     dappConnectionBanner.classList.add('hidden');
@@ -386,9 +391,11 @@ export async function updateConnectionBanner(permissionKey = null) {
 
   try {
     const permission = await window.dappPermissions.getPermission(permissionKey);
+    if (update !== bannerUpdate) return;
 
     if (permission) {
       const walletsResult = await window.wallet.getDerivedWallets();
+      if (update !== bannerUpdate) return;
       const wallets = walletsResult.success ? walletsResult.wallets : [];
       const wallet = wallets.find(w => w.index === permission.walletIndex);
       const walletName = wallet?.name || 'Unknown Wallet';
@@ -428,8 +435,9 @@ export async function disconnectDapp(permissionKey = null) {
     dappConnectionBanner?.classList.add('hidden');
     currentBannerPermissionKey = null;
 
+    // Tell the active tab only if it is the site that was disconnected.
     const webview = getActiveWebview();
-    if (webview) {
+    if (webview && permissionKeyForWebview(webview) === key) {
       emitAccountsChanged(webview, []);
     }
   } catch (err) {
@@ -437,4 +445,3 @@ export async function disconnectDapp(permissionKey = null) {
   }
 }
 
-// getPermissionKey imported from ../dapp-provider.js (shared origin normalization)

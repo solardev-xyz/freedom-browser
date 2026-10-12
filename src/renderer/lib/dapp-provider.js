@@ -686,7 +686,12 @@ export function broadcastProviderEvent(event, data) {
 }
 
 // Exported for use by swarm-provider.js and swarm-connect.js
-export { getPermissionKey, executeSign };
+/** The permission key a webview's requests are filed under. */
+function permissionKeyForWebview(webview) {
+  return webview ? getPermissionKey(getRequestDisplayUrl(webview)) : null;
+}
+
+export { getPermissionKey, executeSign, getNavigationGeneration, permissionKeyForWebview };
 
 // Export state for wallet UI to access
 export const walletState = {

@@ -45,6 +45,8 @@ async function loadDappSign() {
   elementsById['dapp-sign-auto-approve'].checked = false;
   const messageParent = createElement('div');
   messageParent.appendChild(elementsById['dapp-sign-message']);
+  // As in index.html: the prompt starts hidden.
+  elementsById['sidebar-dapp-sign'].classList.add('hidden');
   global.document = createDocument({ elementsById });
 
   const sign = deferred();
@@ -131,16 +133,21 @@ describe('dapp-sign approval lifecycle', () => {
     expect(third.settled.state).toBe('pending');
   });
 
-  test('a prompt another screen hides is rejected and frees the slot', async () => {
+  test('a prompt another screen hid holds off nothing', async () => {
     const { openApproval, hideForOtherScreen } = await loadDappSign();
-    const first = await openApproval();
+    await openApproval();
 
     hideForOtherScreen();
-    await first.promise;
-    expect(first.settled.value).toMatchObject({ code: 4001 });
-
     const second = await openApproval();
     expect(second.settled.state).toBe('pending');
+  });
+
+  test('a message that cannot be displayed is refused and holds off nothing', async () => {
+    const { mod, openApproval } = await loadDappSign();
+    await expect(mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', [12345, '0xledger'])).rejects.toThrow();
+
+    const next = await openApproval();
+    expect(next.settled.state).toBe('pending');
   });
 
   test('reject and back are inert while a Ledger signature is in flight', async () => {

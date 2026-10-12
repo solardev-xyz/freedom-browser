@@ -24,11 +24,7 @@ import {
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
-import {
-  assertNoDappApprovalPending,
-  claimDappApproval,
-  releaseDappApproval,
-} from './dapp-approval-slot.js';
+import { registerDappPrompt, assertNoDappPromptShowing } from './dapp-prompt-guard.js';
 
 // DOM references
 let dappTxScreen;
@@ -101,19 +97,11 @@ export function initDappTx() {
   dappTxAutoApproveCheckbox = document.getElementById('dapp-tx-auto-approve');
 
   // Register screen hider
-  registerScreenHider(() => {
-    // Another screen took the sidebar while this prompt was showing and
-    // undecided: the user moved on, so answer the dApp and free the slot
-    // (see dapp-approval-slot.js). Not while sending: a Safe send hands
-    // the screen to its signing board mid-flight.
-    const showing = dappTxScreen && !dappTxScreen.classList.contains('hidden');
-    if (showing && dappTxPending && !dappTxPending.signing) {
-      rejectDappTx();
-      releaseDappApproval(dappTxPending);
-      dappTxPending = null;
-    }
-    dappTxScreen?.classList.add('hidden');
-  });
+  registerScreenHider(() => dappTxScreen?.classList.add('hidden'));
+  // Showing an undecided transaction: newcomers wait (dapp-prompt-guard.js).
+  registerDappPrompt(
+    () => dappTxPending !== null && Boolean(dappTxScreen) && !dappTxScreen.classList.contains('hidden')
+  );
 
   setupDappTxScreen();
 }
@@ -185,7 +173,7 @@ function setupDappTxScreen() {
  */
 export async function showDappTxApproval(webview, permissionKey, txParams, requestChainId = null) {
   assertNoSignatureInFlight();
-  assertNoDappApprovalPending();
+  assertNoDappPromptShowing();
 
   const permission = await window.dappPermissions.getPermission(permissionKey);
   if (!permission) {
@@ -202,10 +190,8 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
     // Re-checked after the awaits above: the screen must still be free at
     // the moment we take it over.
     assertNoSignatureInFlight();
+    assertNoDappPromptShowing();
     const request = { permissionKey, walletIndex: permission.walletIndex, txParams, resolve, reject, webview, chainId, selector };
-    // Throws (rejecting this promise) if another prompt is pending: a
-    // newcomer never replaces the request the user is looking at.
-    claimDappApproval(request);
     dappTxPending = request;
 
     if (dappTxSite) {
@@ -229,7 +215,6 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
       // rather than paint over a live confirmation.
       if (isSignatureInFlight()) {
         if (dappTxPending === request) dappTxPending = null;
-        releaseDappApproval(request);
         reject(signatureInFlightError());
         return;
       }
@@ -238,6 +223,11 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
       dappTxScreen?.classList.remove('hidden');
 
       openSidebarPanel();
+    }).catch((err) => {
+      // Preparing failed (a malformed value, say): answer the dApp rather
+      // than leaving it waiting on a screen that never appeared.
+      if (dappTxPending === request) dappTxPending = null;
+      reject(err);
     });
   });
 }
@@ -624,7 +614,6 @@ function closeDappTx() {
   if (!isSafeSigningBoardOpen()) {
     walletState.identityView?.classList.remove('hidden');
   }
-  releaseDappApproval(dappTxPending);
   dappTxPending = null;
   hideDappTxError();
   if (dappTxPasswordInput) dappTxPasswordInput.value = '';

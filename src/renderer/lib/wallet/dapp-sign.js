@@ -21,11 +21,7 @@ import {
   isSafeAccount,
 } from './wallet-utils.js';
 import { isSafeSigningBoardOpen } from './safe-signing.js';
-import {
-  assertNoDappApprovalPending,
-  claimDappApproval,
-  releaseDappApproval,
-} from './dapp-approval-slot.js';
+import { registerDappPrompt, assertNoDappPromptShowing } from './dapp-prompt-guard.js';
 
 // DOM references
 let dappSignScreen;
@@ -70,18 +66,11 @@ export function initDappSign() {
   dappSignAutoApproveCheckbox = document.getElementById('dapp-sign-auto-approve');
 
   // Register screen hider
-  registerScreenHider(() => {
-    // Another screen took the sidebar while this prompt was showing and
-    // undecided: answer the dApp and free the slot (dapp-approval-slot.js).
-    // Not while signing: a Safe signature hands the screen to its board.
-    const showing = dappSignScreen && !dappSignScreen.classList.contains('hidden');
-    if (showing && dappSignPending && !dappSignPending.signing) {
-      rejectDappSign();
-      releaseDappApproval(dappSignPending);
-      dappSignPending = null;
-    }
-    dappSignScreen?.classList.add('hidden');
-  });
+  registerScreenHider(() => dappSignScreen?.classList.add('hidden'));
+  // Showing an undecided message: newcomers wait (dapp-prompt-guard.js).
+  registerDappPrompt(
+    () => dappSignPending !== null && Boolean(dappSignScreen) && !dappSignScreen.classList.contains('hidden')
+  );
 
   setupDappSignScreen();
 }
@@ -144,7 +133,7 @@ function setupDappSignScreen() {
  */
 export async function showDappSignApproval(webview, permissionKey, method, params) {
   assertNoSignatureInFlight();
-  assertNoDappApprovalPending();
+  assertNoDappPromptShowing();
 
   const permission = await window.dappPermissions.getPermission(permissionKey);
   if (!permission) {
@@ -155,10 +144,8 @@ export async function showDappSignApproval(webview, permissionKey, method, param
     // Re-checked after the awaits above: the screen must still be free at
     // the moment we take it over.
     assertNoSignatureInFlight();
+    assertNoDappPromptShowing();
     const request = { permissionKey, walletIndex: permission.walletIndex, method, params, resolve, reject, webview };
-    // Throws (rejecting this promise) if another prompt is pending: a
-    // newcomer never replaces the message the user is reading.
-    claimDappApproval(request);
     dappSignPending = request;
     if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
     setDappSignCancelEnabled(true);
@@ -167,10 +154,16 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       dappSignSite.textContent = permissionKey;
     }
 
-    if (method === 'personal_sign') {
-      displayPersonalSignMessage(params);
-    } else if (method === 'eth_signTypedData_v4') {
-      displayTypedDataMessage(params);
+    try {
+      if (method === 'personal_sign') {
+        displayPersonalSignMessage(params);
+      } else if (method === 'eth_signTypedData_v4') {
+        displayTypedDataMessage(params);
+      }
+    } catch (err) {
+      // A message that can't be displayed is never shown, so never signed.
+      if (dappSignPending === request) dappSignPending = null;
+      throw err;
     }
 
     // Multi-owner accounts sign as a smart contract — be upfront that
@@ -186,7 +179,6 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       // over a live confirmation.
       if (isSignatureInFlight()) {
         if (dappSignPending === request) dappSignPending = null;
-        releaseDappApproval(request);
         reject(signatureInFlightError());
         return;
       }
@@ -195,6 +187,9 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       dappSignScreen?.classList.remove('hidden');
 
       openSidebarPanel();
+    }).catch((err) => {
+      if (dappSignPending === request) dappSignPending = null;
+      reject(err);
     });
   });
 }
@@ -443,7 +438,6 @@ function closeDappSign() {
   if (!isSafeSigningBoardOpen()) {
     walletState.identityView?.classList.remove('hidden');
   }
-  releaseDappApproval(dappSignPending);
   dappSignPending = null;
   hideDappSignError();
   if (dappSignPasswordInput) dappSignPasswordInput.value = '';

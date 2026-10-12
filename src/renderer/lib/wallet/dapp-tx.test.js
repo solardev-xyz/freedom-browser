@@ -84,6 +84,8 @@ async function loadDappTx() {
     DAPP_TX_ELEMENT_IDS.map((id) => [id, createElement('button')])
   );
   elementsById['dapp-tx-auto-approve'].checked = false;
+  // As in index.html: the prompt starts hidden.
+  elementsById['sidebar-dapp-tx'].classList.add('hidden');
   global.document = createDocument({ elementsById });
 
   const send = deferred();
@@ -224,28 +226,32 @@ describe('dapp-tx approval lifecycle', () => {
     expect(third.settled.state).toBe('pending');
   });
 
-  test('a prompt another screen hides is rejected and frees the slot', async () => {
+  test('a prompt another screen hid holds off nothing', async () => {
     const { openApproval, hideForOtherScreen } = await loadDappTx();
-    const first = await openApproval();
+    await openApproval();
 
     hideForOtherScreen();
+    const second = await openApproval();
+    expect(second.settled.state).toBe('pending');
+  });
+
+  test('a failed preparation answers the dApp and holds off nothing', async () => {
+    const { openApproval } = await loadDappTx();
+    window.networks.getChains.mockRejectedValueOnce(new Error('chains unavailable'));
+    const first = await openApproval();
     await first.promise;
-    expect(first.settled.state).toBe('rejected');
-    expect(first.settled.value).toMatchObject({ code: 4001 });
+    expect(first.settled).toMatchObject({ state: 'rejected', value: { message: 'chains unavailable' } });
 
     const second = await openApproval();
     expect(second.settled.state).toBe('pending');
   });
 
-  test('a quote that lands after its request was answered is dropped', async () => {
-    const { openApproval, hideForOtherScreen, elements } = await loadDappTx();
+  test('a quote that lands after its request was replaced is dropped', async () => {
+    const { openApproval, elements } = await loadDappTx();
     const gas = deferred();
     window.wallet.estimateGas.mockReturnValueOnce(gas.promise);
-    const first = await openApproval();
-
-    // Answered while its fee quote is still out.
-    hideForOtherScreen();
-    await first.promise;
+    // Never shown (its quote is still out), so a newcomer may replace it.
+    await openApproval();
     const second = await openApproval();
     const fee = elements['dapp-tx-fee'].textContent;
 
