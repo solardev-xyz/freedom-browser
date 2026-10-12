@@ -26,6 +26,7 @@ jest.mock('./safe/safe-transactions', () => ({
 jest.mock('./safe/safe-messages', () => ({
   startSafeMessage: jest.fn(async () => ({ token: 'session' })),
 }));
+jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn() }));
 
 const { buildTxRecordContext, registerWalletIpc } = require('./wallet-ipc');
 const { ipcMain } = require('electron');
@@ -301,6 +302,28 @@ describe('signing handlers require a main-side confirmation', () => {
       const wrongChain = await handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 1, { confirmation: again });
       expect(wrongChain).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(startSafeSend).toHaveBeenCalledTimes(1);
+    });
+
+    test('a locked vault reaches the renderer as VAULT_LOCKED, whatever the core calls it', async () => {
+      // The identity core's errors carry their own code; the renderer walks
+      // the user through unlock only on VAULT_LOCKED.
+      const locked = () => Object.assign(new Error('Vault is locked'), { code: 'vault_locked' });
+      const { activateSafe } = require('./safe/safe-service');
+      activateSafe.mockRejectedValueOnce(locked());
+      await expect(handlers['wallet:activate-safe']({}, 7)).resolves.toMatchObject({
+        success: false,
+        code: 'VAULT_LOCKED',
+      });
+      startSafeSend.mockRejectedValueOnce(locked());
+      const confirmation = await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 });
+      await expect(
+        handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 100, { confirmation })
+      ).resolves.toMatchObject({ success: false, code: 'VAULT_LOCKED' });
+      // Other codes pass through unchanged.
+      activateSafe.mockRejectedValueOnce(Object.assign(new Error('Needs funds'), { code: 'NEEDS_FUNDS' }));
+      await expect(handlers['wallet:activate-safe']({}, 7)).resolves.toMatchObject({
+        code: 'NEEDS_FUNDS',
+      });
     });
 
     test('wallet:safe-send has no auto-approve', async () => {

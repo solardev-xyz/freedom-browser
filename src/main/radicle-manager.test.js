@@ -54,7 +54,10 @@ function loadManager(options = {}) {
   jest.doMock('./logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
   jest.doMock('./profile-paths', () => ({
     getRadicleDataDir: jest.fn(() => dataDir),
-    prepareRadicleDataDir: jest.fn(async () => dataDir),
+    prepareRadicleDataDir: jest.fn(async () => {
+      if (options.prepare) await options.prepare();
+      return dataDir;
+    }),
   }));
   jest.doMock('./profile-resolver', () => ({
     getActiveProfile: jest.fn(() => options.profile || { metadata: { nodes: {} } }),
@@ -63,6 +66,8 @@ function loadManager(options = {}) {
   jest.doMock('./service-registry', () => registry);
 
   const mod = require('./radicle-manager');
+  // The core has started and reported no pending node recovery.
+  require('./core/node-identity-guard').setStartupRecovery(null);
   return { mod, embedded, registry, ipcMain, handlers, dataDir, statusSend };
 }
 
@@ -113,6 +118,15 @@ test('fails closed when the addon is unavailable', async () => {
   await expect(ctx.mod.startRadicle()).resolves.toEqual({
     status: 'error', error: 'libradicle addon is not installed',
   });
+  expect(ctx.embedded.start).not.toHaveBeenCalled();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+test('an identity block that arrives while the home is prepared stops the start', async () => {
+  const ctx = loadManager({
+    prepare: async () => require('./core/node-identity-guard').blockNode('radicle', 'writing'),
+  });
+  await expect(ctx.mod.startRadicle()).resolves.toMatchObject({ status: 'error' });
   expect(ctx.embedded.start).not.toHaveBeenCalled();
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });

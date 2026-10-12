@@ -1638,6 +1638,15 @@ jobs:
           # GitHub's API; the token avoids its anonymous rate limit.
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download freedom-cored binaries
+        # The identity core owns the vault (migration step 2), so every app
+        # launch needs it. Same bounded watchdog as the other downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Run the full harness E2E suite
         run: xvfb-run -a npm run test:e2e
 

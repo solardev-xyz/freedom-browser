@@ -49,11 +49,14 @@ test.each([
   expect(getCoredBinaryPath()).toBe(path.join(process.resourcesPath, 'freedom-cored', binary));
 });
 
-test('core startup remains opt-in and dev-only after packaging', () => {
-  delete process.env.FREEDOM_CORE;
-  expect(isCoreEnabled()).toBe(false);
-  process.env.FREEDOM_CORE = '1';
-  expect(isCoreEnabled()).toBe(true);
-  app.isPackaged = true;
-  expect(isCoreEnabled()).toBe(false);
+test('the core always runs: it owns the vault (migration step 2)', () => {
+  // No runtime switch back to the JS stack (design 0001, "Rollback").
+  for (const value of [undefined, '0', '1']) {
+    if (value === undefined) delete process.env.FREEDOM_CORE;
+    else process.env.FREEDOM_CORE = value;
+    app.isPackaged = false;
+    expect(isCoreEnabled()).toBe(true);
+    app.isPackaged = true;
+    expect(isCoreEnabled()).toBe(true);
+  }
 });

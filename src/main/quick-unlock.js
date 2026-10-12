@@ -11,7 +11,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { getIdentityDataDir, getQuickUnlockCredentialPath } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
-const vault = require('./identity/vault');
+const { vaultBackend } = require('./core/vault-backend');
+
+// The vault file in the identity directory. Its hash binds a credential to
+// this vault; the file is public (encrypted), so main reads it directly.
+const VAULT_FILE = 'identity-vault.json';
 
 const CREDENTIAL_VERSION = 2;
 
@@ -37,7 +41,7 @@ function getCurrentBinding() {
 }
 
 function getVaultFingerprint() {
-  const vaultPath = vault.getVaultPath(getIdentityDataDir());
+  const vaultPath = path.join(getIdentityDataDir(), VAULT_FILE);
   if (!fs.existsSync(vaultPath)) {
     return null;
   }
@@ -108,7 +112,8 @@ function writeCredential(password) {
 }
 
 async function verifyCredentialPassword(password) {
-  await vault.verifyPassword(getIdentityDataDir(), password);
+  // Shares the core's unlock throttle (design 0001).
+  await vaultBackend.verifyPassword(password);
 }
 
 /**
@@ -177,12 +182,68 @@ async function enableQuickUnlock(password) {
     await systemPreferences.promptTouchID('enable Touch ID unlock for Freedom Browser');
 
     writeCredential(password);
+    // The user's own choice replaces a lost Quick Setup's pending one.
+    cancelPendingSetup();
 
     console.log('[QuickUnlock] Touch ID unlock enabled');
     return { success: true };
   } catch (err) {
     console.error('[QuickUnlock] Failed to enable:', err.message);
     return { success: false, error: err.message };
+  }
+}
+
+// A lost Quick Setup's password until it is stored (see completeQuickSetup).
+let pendingSetup = null;
+const SETUP_RETRY_MS = 30_000;
+
+/**
+ * Stores a Quick Setup vault's random password as the quick-unlock
+ * credential, for a setup the core confirmed only after its reply was lost
+ * (freedom-core design 0001, "Reconciliation"). The onboarding renderer that
+ * started it may be gone and nobody else knows this password, so main
+ * finishes the setup the user chose. Main-internal only.
+ *
+ * Until the credential is stored, main keeps the password and retries
+ * (secure storage or the core may come back). It stops only when the vault
+ * no longer takes the password: it was replaced or deleted. Other vault
+ * operations aren't held up meanwhile, so a restore still works.
+ * @returns {Promise<boolean>} whether it was stored now
+ */
+async function completeQuickSetup(password) {
+  if (pendingSetup) clearTimeout(pendingSetup.timer);
+  pendingSetup = { password, timer: null };
+  return trySetupCredential(pendingSetup);
+}
+
+/** Drops a lost Quick Setup's retained password; an attempt in flight won't write. */
+function cancelPendingSetup() {
+  if (!pendingSetup) return;
+  clearTimeout(pendingSetup.timer);
+  pendingSetup = null;
+}
+
+async function trySetupCredential(setup) {
+  try {
+    if (!isSecureStorageAvailable()) throw new Error('Secure storage not available');
+    await verifyCredentialPassword(setup.password);
+    if (pendingSetup !== setup) return false; // superseded meanwhile
+    writeCredential(setup.password);
+    pendingSetup = null;
+    console.log('[QuickUnlock] Quick Setup credential stored after reconciliation');
+    return true;
+  } catch (err) {
+    if (pendingSetup !== setup) return false;
+    if (err.code === 'incorrect_password' || err.code === 'no_vault') {
+      // The vault this password belonged to is gone.
+      pendingSetup = null;
+      console.error('[QuickUnlock] Lost Quick Setup credential dropped:', err.message);
+      return false;
+    }
+    console.error('[QuickUnlock] Quick Setup credential not stored yet:', err.message);
+    setup.timer = setTimeout(() => void trySetupCredential(setup), SETUP_RETRY_MS);
+    setup.timer.unref?.();
+    return false;
   }
 }
 
@@ -258,7 +319,7 @@ async function exportMnemonicWithTouchId() {
     const password = await retrievePasswordWithTouchId();
     const identity = identityManager();
     await identity.unlockVault(password);
-    const mnemonic = await identity.exportMnemonic();
+    const mnemonic = await identity.exportMnemonic(password);
     return { success: true, mnemonic };
   } catch (err) {
     console.error('[QuickUnlock] Failed to export recovery phrase:', err.message);
@@ -280,7 +341,7 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
     identity.assertPrivateKeyExportable(accountIndex);
     const password = await retrievePasswordWithTouchId();
     await identity.unlockVault(password);
-    const privateKey = await identity.exportPrivateKeyForAccount(accountIndex);
+    const privateKey = await identity.exportPrivateKeyForAccount(accountIndex, password);
     return { success: true, privateKey };
   } catch (err) {
     console.error('[QuickUnlock] Failed to export private key:', err.message);
@@ -293,6 +354,8 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
  * @returns {{success: boolean, error?: string}}
  */
 function disableQuickUnlock() {
+  // A lost Quick Setup's retry must not bring the credential back.
+  cancelPendingSetup();
   try {
     const credPath = getCredentialPath();
     if (fs.existsSync(credPath)) {
@@ -350,6 +413,7 @@ function registerQuickUnlockIpc() {
 
 module.exports = {
   CREDENTIAL_VERSION,
+  completeQuickSetup,
   canUseTouchId,
   isSecureStorageAvailable,
   isQuickUnlockEnabled,

@@ -460,7 +460,9 @@ function registerWalletIpc() {
       const result = await activateSafe(index);
       return { success: true, ...result };
     } catch (err) {
-      const code = err.code ?? (isVaultLockedError(err) ? 'VAULT_LOCKED' : undefined);
+      // The identity core's errors carry their own code (`vault_locked`);
+      // the renderer's contract is VAULT_LOCKED.
+      const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err.code;
       return { success: false, error: err.message, code };
     }
   });
@@ -476,7 +478,9 @@ function registerWalletIpc() {
     } catch (err) {
       // A locked vault is recoverable — the renderer walks the user
       // through the standard unlock and retries.
-      const code = err.code ?? (isVaultLockedError(err) ? 'VAULT_LOCKED' : undefined);
+      // The identity core's errors carry their own code (`vault_locked`);
+      // the renderer's contract is VAULT_LOCKED.
+      const code = isVaultLockedError(err) ? 'VAULT_LOCKED' : err.code;
       return { success: false, error: err.message, code };
     }
   };

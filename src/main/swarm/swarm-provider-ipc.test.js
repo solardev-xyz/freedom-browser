@@ -135,7 +135,13 @@ const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
 const mockGetUserWalletKey = jest.fn();
 jest.mock('../identity-manager', () => ({
-  getDerivedKeys: mockGetDerivedKeys,
+  // The Bee wallet key comes from the core (compat.bee_wallet_key); the
+  // mock keeps the old derived-keys shape as its source.
+  getBeeWalletPrivateKey: async () => {
+    const keys = mockGetDerivedKeys();
+    if (!keys) throw new Error('Vault is locked');
+    return keys.beeWallet.privateKey;
+  },
   getPublisherKey: mockGetPublisherKey,
   getUserWalletKey: mockGetUserWalletKey,
 }));

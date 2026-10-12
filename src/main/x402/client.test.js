@@ -10,8 +10,19 @@ const mockIdentity = {
 };
 const mockResetVaultAutoLockTimer = jest.fn();
 
+// The identity core's compat.private_key, driven by mockIdentity: refused
+// with "Vault is locked" while locked.
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: {
+    compat: {
+      privateKey: async (index) => {
+        if (!mockIdentity.isUnlocked()) throw new Error('Vault is locked');
+        return mockIdentity.exportPrivateKey(index);
+      },
+    },
+  },
+}));
 jest.mock('../identity-manager', () => ({
-  loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: jest.fn(() => null),
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },

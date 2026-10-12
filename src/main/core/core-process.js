@@ -1,9 +1,8 @@
 /**
  * Wires the freedom-cored child process into the app (freedom-core design
- * 0001, migration step 1). For now this is **dev builds only**, behind
- * `FREEDOM_CORE=1`, and changes no behavior: the core starts, completes its
- * handshake and is supervised, but nothing calls it yet. Once wind-down has
- * called `stopCore()`, `startCore()` never starts it again.
+ * 0001). It owns the vault and the keys (migration step 2): main reaches it
+ * through core/vault-backend.js. Once wind-down has called `stopCore()`,
+ * `startCore()` never starts it again.
  */
 
 const path = require('path');
@@ -12,13 +11,19 @@ const { app } = require('electron');
 const log = require('../logger');
 const { getIdentityDataDir } = require('../profile-paths');
 const { CoreClient } = require('./core-client');
+const guard = require('./node-identity-guard');
 
 let client = null;
 // Set once app wind-down has stopped the core; nothing starts it again.
 let shutDown = false;
 
+/**
+ * The vault and keys live in the core (migration step 2), so it always runs.
+ * There is no runtime switch back to the JS stack: two writers must never
+ * share one identity directory (design 0001, "Rollback").
+ */
 function isCoreEnabled() {
-  return !app.isPackaged && process.env.FREEDOM_CORE === '1';
+  return true;
 }
 
 /** Dev overrides or downloaded binaries; packaged builds always use resources. */
@@ -53,6 +58,7 @@ function getLockDir() {
 
 async function startCore() {
   if (!isCoreEnabled() || shutDown || client) return client;
+  guard.setIdentityDir(getIdentityDataDir());
   client = new CoreClient({
     spawn,
     command: getCoredBinaryPath(),
@@ -69,6 +75,16 @@ async function startCore() {
     shellVersion: app.getVersion(),
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
+  // Every (re)start reports node identity writes recovery couldn't finish;
+  // those nodes stay stopped. Between an exit and the next report, nothing
+  // is known (node-identity-guard.js).
+  client.on('ready', (hello) => {
+    if (hello.node_recovery) {
+      log.error('[Core] node identity recovery pending', hello.node_recovery);
+    }
+    guard.setStartupRecovery(hello.node_recovery);
+  });
+  client.on('exit', () => guard.setRecoveryUnknown());
   const starting = client;
   let hello;
   try {

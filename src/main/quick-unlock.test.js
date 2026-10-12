@@ -43,7 +43,7 @@ function loadQuickUnlock({
   const identityManagerPath = require.resolve('./identity-manager');
   const ipcHandlers = new Map();
   const ipcMain = { handle: jest.fn((channel, fn) => ipcHandlers.set(channel, fn)) };
-  const vaultModulePath = require.resolve('./identity/vault');
+  const vaultBackendPath = require.resolve('./core/vault-backend');
   const systemPreferences = {
     canPromptTouchID: jest.fn(() => true),
     promptTouchID: jest.fn().mockResolvedValue(undefined),
@@ -66,9 +66,8 @@ function loadQuickUnlock({
         getActiveProfile: () => activeProfile,
       }),
       [identityManagerPath]: () => identityManager,
-      [vaultModulePath]: () => ({
-        getVaultPath: (dataDir) => path.join(dataDir, 'identity-vault.json'),
-        verifyPassword: verifyPasswordImpl,
+      [vaultBackendPath]: () => ({
+        vaultBackend: { verifyPassword: (...args) => verifyPasswordImpl(...args) },
       }),
     },
   });
@@ -149,7 +148,102 @@ describe('quick-unlock', () => {
     );
 
     await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
-    expect(verifyPassword).toHaveBeenCalledWith(identityDir, 'password-a');
+    expect(verifyPassword).toHaveBeenCalledWith('password-a');
+  });
+
+  test('completeQuickSetup stores a verified password without prompting', async () => {
+    const userDataDir = tempUserData();
+    const identityDir = path.join(userDataDir, 'identity');
+    writeVault(identityDir);
+    const profile = makeProfile('work', userDataDir);
+    const { mod, verifyPassword, systemPreferences } = loadQuickUnlock({
+      activeProfile: profile,
+      userDataDir,
+    });
+
+    await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
+    expect(verifyPassword).toHaveBeenCalledWith('random-pass');
+    expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+    const payload = JSON.parse(
+      fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'), 'utf-8')
+    );
+    expect(payload.encrypted).toBe(Buffer.from('encrypted:random-pass').toString('base64'));
+
+    // A password the vault doesn't take (it was replaced) is never stored,
+    // and not retried.
+    verifyPassword.mockRejectedValueOnce(
+      Object.assign(new Error('Incorrect password'), { code: 'incorrect_password' })
+    );
+    await expect(mod.completeQuickSetup('wrong')).resolves.toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'), 'utf-8')).encrypted)
+      .toBe(Buffer.from('encrypted:random-pass').toString('base64'));
+  });
+
+  test('completeQuickSetup keeps the password and retries until it is stored', async () => {
+    jest.useFakeTimers();
+    try {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      const { mod, verifyPassword } = loadQuickUnlock({
+        activeProfile: makeProfile('work', userDataDir),
+        userDataDir,
+      });
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      // The core is down at first.
+      verifyPassword.mockRejectedValueOnce(
+        Object.assign(new Error('The core is not running'), { code: 'core_unavailable' })
+      );
+      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(verifyPassword).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fs.readFileSync(credentialPath, 'utf-8')).encrypted).toBe(
+        Buffer.from('encrypted:random-pass').toString('base64')
+      );
+      // Stored: no more retries.
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(verifyPassword).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('disabling quick unlock cancels a pending Quick Setup credential', async () => {
+    jest.useFakeTimers();
+    try {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      let releaseVerify;
+      const verifyPasswordImpl = jest
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('The core is not running'), { code: 'core_unavailable' })
+        )
+        .mockImplementationOnce(() => new Promise((resolve) => (releaseVerify = resolve)));
+      const { mod } = loadQuickUnlock({
+        activeProfile: makeProfile('work', userDataDir),
+        userDataDir,
+        verifyPasswordImpl,
+      });
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+      // A scheduled retry: disable cancels it.
+      expect(mod.disableQuickUnlock()).toEqual({ success: true });
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(verifyPasswordImpl).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      // An attempt in flight when disabled doesn't write either.
+      const attempt = mod.completeQuickSetup('random-pass');
+      await Promise.resolve();
+      mod.disableQuickUnlock();
+      releaseVerify();
+      await expect(attempt).resolves.toBe(false);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('hides a bound credential when the active profile does not match', async () => {
@@ -267,6 +361,8 @@ describe('quick-unlock', () => {
       expect(result).toEqual({ success: true, mnemonic: 'word '.repeat(23) + 'word' });
       expect(leaks(result)).toBe(false);
       expect(identityManager.unlockVault).toHaveBeenCalledWith('s3cret-vault-pw');
+      // The core verifies the unsealed password again before exporting.
+      expect(identityManager.exportMnemonic).toHaveBeenCalledWith('s3cret-vault-pw');
     });
 
     test('quick-unlock:export-private-key returns the key, not the password', async () => {
@@ -276,7 +372,7 @@ describe('quick-unlock', () => {
 
       expect(result).toEqual({ success: true, privateKey: '0x' + '11'.repeat(32) });
       expect(leaks(result)).toBe(false);
-      expect(identityManager.exportPrivateKeyForAccount).toHaveBeenCalledWith(3);
+      expect(identityManager.exportPrivateKeyForAccount).toHaveBeenCalledWith(3, 's3cret-vault-pw');
     });
 
     test('export-private-key refuses a device account before prompting Touch ID', async () => {

@@ -1,11 +1,12 @@
 /**
  * Identity Manager
  *
- * Orchestrates the unified identity system:
- * - Manages vault state (locked/unlocked)
- * - Derives keys from mnemonic when unlocked
- * - Injects keys into node data directories
- * - Provides IPC handlers for renderer communication
+ * Orchestrates the unified identity system on top of the identity core
+ * (freedom-cored, through core/vault-backend.js):
+ * - vault lifecycle and lock state live in the core; nothing here holds keys
+ * - vault-meta.json (public addresses, wallet records) stays here
+ * - node identities are written by the core (nodes.write_identity)
+ * - IPC handlers for the renderer
  */
 
 const { ipcMain } = require('electron');
@@ -22,10 +23,9 @@ const {
   prepareRadicleDataDir,
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
-const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
-
-// Identity module - loaded lazily
-let identityModule = null;
+const { VAULT_LOCKED_MESSAGE, isVaultLockedError } = require('./wallet/vault-errors');
+const { vaultBackend } = require('./core/vault-backend');
+const { blockNode, unblockNode } = require('./core/node-identity-guard');
 
 // Optional Bee node lifecycle hooks, wired by the main process (see index.js).
 // Bee holds an exclusive LevelDB lock on statestore while running, so it must be
@@ -45,9 +45,6 @@ function setBeeLifecycle(hooks = {}) {
   };
 }
 
-// Cached derived keys (only available when unlocked)
-let derivedKeys = null;
-
 // Track which nodes have been injected
 let injectedNodes = {
   bee: false,
@@ -57,6 +54,8 @@ let injectedNodes = {
 
 // Vault metadata file
 const VAULT_META_FILE = 'vault-meta.json';
+// The core's vault file (freedom-core fc-vault); only its existence is read here.
+const VAULT_FILE = 'identity-vault.json';
 const LEGACY_NON_CATALOG_BEE_API_PORT = 1633;
 const LEGACY_NON_CATALOG_BEE_P2P_PORT = 1634;
 
@@ -99,18 +98,54 @@ function saveVaultMeta(meta) {
 }
 
 /**
- * Load the ESM identity module dynamically
+ * Addresses of mnemonic accounts and publisher keys from the core, or null
+ * while the vault is locked. Public data only.
+ * @param {{accounts?: number[], publishers?: number[]}} request
  */
-function loadIdentityModule() {
-  if (identityModule) return identityModule;
-
+async function deriveAddresses({ accounts = [], publishers = [] } = {}) {
   try {
-    identityModule = require('./identity');
-    return identityModule;
+    // keys.addresses takes at most 64 indices of each kind per request.
+    const result = { user_wallets: [], publishers: [] };
+    for (let i = 0; i === 0 || i < accounts.length || i < publishers.length; i += 64) {
+      const part = await vaultBackend.addresses({
+        accounts: accounts.slice(i, i + 64),
+        publishers: publishers.slice(i, i + 64),
+      });
+      result.user_wallets.push(...part.user_wallets);
+      result.publishers.push(...part.publishers);
+      result.bee_wallet = part.bee_wallet;
+      result.radicle = part.radicle;
+    }
+    return result;
   } catch (err) {
-    console.error('[IdentityManager] Failed to load identity module:', err);
+    if (isVaultLockedError(err)) return null;
     throw err;
   }
+}
+
+/** Writes vault-meta.json for a freshly created or imported vault. */
+function saveNewVaultMeta(addresses, userKnowsPassword) {
+  saveVaultMeta({
+    userKnowsPassword,
+    createdAt: new Date().toISOString(),
+    addresses: {
+      userWallet: addresses.user_wallet,
+      beeWallet: addresses.bee_wallet,
+    },
+  });
+}
+
+/**
+ * Finishes a create or import whose reply was lost, once the core has
+ * confirmed it committed (design 0001, "Reconciliation"): main does what the
+ * caller's success path would have done. vault-meta.json must be written (a
+ * failure is retried); a Quick Setup vault's random password is stored for
+ * quick unlock, because nobody else knows it.
+ */
+async function finishLostSetup(found, password, userKnowsPassword) {
+  saveNewVaultMeta(found.addresses, userKnowsPassword);
+  // Keeps the password and retries until the credential is stored.
+  if (!userKnowsPassword) await require('./quick-unlock').completeQuickSetup(password);
 }
 
 /**
@@ -118,9 +153,14 @@ function loadIdentityModule() {
  * @returns {Promise<boolean>}
  */
 async function hasVault() {
-  const identity = await loadIdentityModule();
-  const dataDir = getIdentityDataDir();
-  return identity.vaultExists(dataDir);
+  try {
+    return (await vaultBackend.status()).exists;
+  } catch (err) {
+    if (err.code !== 'core_unavailable') throw err;
+    // The core is down. The file still tells whether this profile has a
+    // vault (as before the core), so nodes keep their vault-backed mode.
+    return fs.existsSync(path.join(getIdentityDataDir(), VAULT_FILE));
+  }
 }
 
 /**
@@ -128,8 +168,7 @@ async function hasVault() {
  * @returns {Promise<boolean>}
  */
 async function isVaultUnlocked() {
-  const identity = await loadIdentityModule();
-  return identity.isUnlocked();
+  return (await vaultBackend.status()).unlocked;
 }
 
 /**
@@ -140,31 +179,14 @@ async function isVaultUnlocked() {
  * @returns {Promise<string>} The generated mnemonic (for backup display)
  */
 async function createNewVault(password, strength = 256, userKnowsPassword = true) {
-  const identity = await loadIdentityModule();
-  const dataDir = getIdentityDataDir();
-
-  // Ensure directory exists
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
-  const mnemonic = await identity.createVault(dataDir, password, strength);
-  console.log('[IdentityManager] New vault created');
-
-  // Auto-unlock after creation
-  await identity.unlockVault(dataDir, password);
-  derivedKeys = identity.deriveAllKeys(mnemonic);
-
-  // Save vault metadata including public addresses (so we can display without unlock)
-  saveVaultMeta({
+  const { mnemonic, addresses } = await vaultBackend.createVault(password, strength, {
     userKnowsPassword,
-    createdAt: new Date().toISOString(),
-    addresses: {
-      userWallet: derivedKeys.userWallet.address,
-      beeWallet: derivedKeys.beeWallet.address,
-    },
+    onCommitted: (found) => finishLostSetup(found, password, userKnowsPassword),
   });
-
+  console.log('[IdentityManager] New vault created');
+  // The core unlocks after creation, as before; save the public addresses
+  // so they can be shown without unlocking.
+  saveNewVaultMeta(addresses, userKnowsPassword);
   return mnemonic;
 }
 
@@ -176,30 +198,12 @@ async function createNewVault(password, strength = 256, userKnowsPassword = true
  * @returns {Promise<void>}
  */
 async function importExistingMnemonic(password, mnemonic, userKnowsPassword = true) {
-  const identity = await loadIdentityModule();
-  const dataDir = getIdentityDataDir();
-
-  // Ensure directory exists
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
-  await identity.importVault(dataDir, password, mnemonic, false);
-  console.log('[IdentityManager] Mnemonic imported to vault');
-
-  // Auto-unlock after import
-  await identity.unlockVault(dataDir, password);
-  derivedKeys = identity.deriveAllKeys(mnemonic);
-
-  // Save vault metadata including public addresses (so we can display without unlock)
-  saveVaultMeta({
-    userKnowsPassword,
-    createdAt: new Date().toISOString(),
-    addresses: {
-      userWallet: derivedKeys.userWallet.address,
-      beeWallet: derivedKeys.beeWallet.address,
-    },
+  const { addresses } = await vaultBackend.importVault(password, mnemonic, {
+    overwrite: false,
+    onCommitted: (found) => finishLostSetup(found, password, userKnowsPassword),
   });
+  console.log('[IdentityManager] Mnemonic imported to vault');
+  saveNewVaultMeta(addresses, userKnowsPassword);
 }
 
 /**
@@ -208,18 +212,8 @@ async function importExistingMnemonic(password, mnemonic, userKnowsPassword = tr
  * @returns {Promise<void>}
  */
 async function unlockVault(password) {
-  const identity = await loadIdentityModule();
-  const dataDir = getIdentityDataDir();
-
-  await identity.unlockVault(dataDir, password);
-
-  const mnemonic = identity.getMnemonic();
-  if (!mnemonic) {
-    throw new Error('Failed to retrieve mnemonic after unlock');
-  }
-
-  derivedKeys = identity.deriveAllKeys(mnemonic);
-  console.log('[IdentityManager] Vault unlocked, keys derived');
+  const { addresses } = await vaultBackend.unlock(password);
+  console.log('[IdentityManager] Vault unlocked');
 
   // Migrate old vaults: save addresses to metadata if not present
   const meta = getVaultMeta();
@@ -228,8 +222,8 @@ async function unlockVault(password) {
     saveVaultMeta({
       ...meta,
       addresses: {
-        userWallet: derivedKeys.userWallet.address,
-        beeWallet: derivedKeys.beeWallet.address,
+        userWallet: addresses.user_wallet,
+        beeWallet: addresses.bee_wallet,
       },
     });
   }
@@ -239,36 +233,63 @@ async function unlockVault(password) {
  * Lock the vault
  */
 async function lockVault() {
-  const identity = await loadIdentityModule();
-  identity.lockVault();
-  derivedKeys = null;
+  await vaultBackend.lock();
   console.log('[IdentityManager] Vault locked');
 }
 
 /**
- * Get derived keys (only if unlocked)
- * @returns {Object|null}
+ * The Bee wallet's private key, for Swarm signing (compat.bee_wallet_key,
+ * removed in Phase 2). Throws VAULT_LOCKED_MESSAGE while locked.
+ * @returns {Promise<string>} 0x private key
  */
-function getDerivedKeys() {
-  return derivedKeys;
+async function getBeeWalletPrivateKey() {
+  return vaultBackend.compat.beeWalletKey();
 }
 
 /**
- * Derive a Swarm publisher key at a specific origin index.
- * Vault must be unlocked. Keys are derived on-demand (not pre-cached)
- * because the number of origins is unbounded.
+ * The Bee wallet's address, or null while the vault is locked.
+ * @returns {Promise<string|null>}
+ */
+async function getBeeWalletAddress() {
+  const addresses = await deriveAddresses();
+  return addresses ? addresses.bee_wallet : null;
+}
+
+/**
+ * A Swarm publisher key at an origin index, for signing (compat.publisher_key,
+ * removed in Phase 2). Vault must be unlocked.
  * @param {number} originIndex - Origin index (0, 1, 2, ...)
- * @returns {Promise<Object>} { privateKey, publicKey, address, path, originIndex }
+ * @returns {Promise<{privateKey: string, originIndex: number}>}
  */
 async function getPublisherKey(originIndex) {
-  const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
+  if (typeof originIndex !== 'number' || originIndex < 0 || !Number.isInteger(originIndex)) {
+    throw new Error('Origin index must be a non-negative integer');
+  }
+  try {
+    const privateKey = await vaultBackend.compat.publisherKey(originIndex);
+    return { privateKey, originIndex };
+  } catch (err) {
+    if (isVaultLockedError(err)) {
+      throw new Error('Vault must be unlocked to derive publisher keys', { cause: err });
+    }
+    throw err;
+  }
+}
 
-  if (!mnemonic) {
+/**
+ * A Swarm publisher key's address (owner lookups need no private key).
+ * @param {number} originIndex
+ * @returns {Promise<string>}
+ */
+async function getPublisherAddress(originIndex) {
+  if (typeof originIndex !== 'number' || originIndex < 0 || !Number.isInteger(originIndex)) {
+    throw new Error('Origin index must be a non-negative integer');
+  }
+  const addresses = await deriveAddresses({ publishers: [originIndex] });
+  if (!addresses) {
     throw new Error('Vault must be unlocked to derive publisher keys');
   }
-
-  return identity.derivePublisherKey(mnemonic, originIndex);
+  return addresses.publishers[0].address;
 }
 
 /**
@@ -276,7 +297,7 @@ async function getPublisherKey(originIndex) {
  * Vault must be unlocked. This returns the same key material used by
  * wallet transaction/message signing without persisting it elsewhere.
  * @param {number} walletIndex - Wallet account index (0, 1, 2, ...)
- * @returns {Promise<Object>} { privateKey, publicKey, address, path, accountIndex }
+ * @returns {Promise<{privateKey: string, accountIndex: number}>}
  */
 async function getUserWalletKey(walletIndex) {
   if (typeof walletIndex !== 'number' || !Number.isInteger(walletIndex) || walletIndex < 0) {
@@ -291,13 +312,15 @@ async function getUserWalletKey(walletIndex) {
     throw new Error('This account has no derivable private key — the key never leaves its device');
   }
 
-  const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
-  if (!mnemonic) {
-    throw new Error('Vault must be unlocked to derive wallet keys');
+  try {
+    const privateKey = await vaultBackend.compat.privateKey(walletIndex);
+    return { privateKey, accountIndex: walletIndex };
+  } catch (err) {
+    if (isVaultLockedError(err)) {
+      throw new Error('Vault must be unlocked to derive wallet keys', { cause: err });
+    }
+    throw err;
   }
-
-  return identity.deriveUserWallet(mnemonic, walletIndex);
 }
 
 /**
@@ -358,7 +381,6 @@ async function readRadicleDid() {
   }
 
   try {
-    const identity = await loadIdentityModule();
     // Read the OpenSSH format public key
     const pubKeyContent = fs.readFileSync(pubKeyPath, 'utf-8').trim();
     // Format: "ssh-ed25519 <base64> <comment>"
@@ -378,21 +400,13 @@ async function readRadicleDid() {
     const pubkeyLen = blob.readUInt32BE(pubkeyOffset);
     const publicKey = blob.slice(pubkeyOffset + 4, pubkeyOffset + 4 + pubkeyLen);
 
-    return identity.didFromPublicKey(publicKey);
+    return await vaultBackend.radicleDid(publicKey);
   } catch (err) {
     console.error('[IdentityManager] Failed to read Radicle DID:', err.message);
     return null;
   }
 }
 
-/**
- * Generate a random password for Bee keystore
- * This password is separate from the vault password for defense in depth
- * @returns {string}
- */
-function generateBeeKeystorePassword() {
-  return crypto.randomBytes(32).toString('hex');
-}
 
 function getBeeApiPortForIdentityConfig() {
   const profile = getActiveProfile();
@@ -545,42 +559,71 @@ async function wipeStaleBeeState(dataDir) {
   return beeWasRunning;
 }
 
+// One re-keying per node at a time: stop, wipe, write and restart are one
+// unit, so one attempt's success can't lift the block of another that is
+// still wiping or writing (node-identity-guard.js).
+const nodeInjections = new Map();
+
+function serializedInjection(node, task) {
+  const run = (nodeInjections.get(node) || Promise.resolve()).then(task);
+  nodeInjections.set(node, run.catch(() => {}));
+  return run;
+}
+
 /**
  * Inject Bee identity
  * Generates its own random password for the keystore (stored in config.yaml)
  * This is intentionally different from the vault password
  * @returns {Promise<{address: string}>}
  */
-async function injectBeeIdentity() {
-  if (!derivedKeys) {
+function injectBeeIdentity() {
+  return serializedInjection('bee', injectBeeIdentityNow);
+}
+
+async function injectBeeIdentityNow() {
+  if (!(await isVaultUnlocked())) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
-
-  const identity = await loadIdentityModule();
   const dataDir = getAntDataDir();
+  // Read the ports first: a missing one fails before anything is wiped.
+  const apiPort = getBeeApiPortForIdentityConfig();
+  const p2pPort = getBeeP2pPortForIdentityConfig();
+
+  // The public address first: a write reconciled after a lost reply only
+  // reports its status.
+  const expected = await deriveAddresses();
+  if (!expected) throw new Error(VAULT_LOCKED_MESSAGE);
 
   // Ensure directory exists
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // Stop Bee (if running) and wipe its stale state before writing fresh keys.
-  const beeWasRunning = await wipeStaleBeeState(dataDir);
-
-  // Generate a random password for the Bee keystore
-  // This is separate from the vault password - defense in depth
-  const beePassword = generateBeeKeystorePassword();
-
-  // Inject the key with the random password
-  await identity.injectBeeKey(dataDir, derivedKeys.beeWallet.privateKey, beePassword);
-
-  // Store the password in config so Bee can decrypt the keystore on startup
-  identity.createBeeConfig(
-    dataDir,
-    beePassword,
-    getBeeApiPortForIdentityConfig(),
-    getBeeP2pPortForIdentityConfig()
-  );
+  // From here until the write is known to be installed, Bee must not start:
+  // its files may be wiped or half written (node-identity-guard.js).
+  blockNode('bee', 'writing');
+  let beeWasRunning;
+  let result;
+  try {
+    // Stop Bee (if running) and wipe its stale state before writing fresh keys.
+    beeWasRunning = await wipeStaleBeeState(dataDir);
+    // The core writes keys/swarm.key (under a fresh random keystore password,
+    // separate from the vault password) and config.yaml together, through
+    // its journal, so the keystore and its password always match.
+    result = await vaultBackend.writeNodeIdentity(
+      { node: 'bee', data_dir: dataDir, api_port: apiPort, p2p_port: p2pPort },
+      crypto.randomUUID()
+    );
+  } catch (err) {
+    blockNode('bee', 'pending_recovery');
+    throw err;
+  }
+  if (result.status !== 'installed') {
+    // Keep Bee stopped until a later write installs its identity.
+    blockNode('bee', result.status);
+    throw new Error(`The Bee identity write did not finish (${result.status})`);
+  }
+  unblockNode('bee');
 
   injectedNodes.bee = true;
 
@@ -594,8 +637,9 @@ async function injectBeeIdentity() {
     }
   }
 
-  console.log(`[IdentityManager] Bee identity injected: ${derivedKeys.beeWallet.address}`);
-  return { address: derivedKeys.beeWallet.address };
+  const address = result.address || expected.bee_wallet;
+  console.log(`[IdentityManager] Bee identity injected: ${address}`);
+  return { address };
 }
 
 /**
@@ -607,7 +651,7 @@ async function injectBeeIdentity() {
  * @returns {Promise<{mode: string, active: boolean, peerId: null, stableIdentitySupported: boolean}>}
  */
 async function injectIpfsIdentity() {
-  if (!derivedKeys) {
+  if (!(await isVaultUnlocked())) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
 
@@ -627,12 +671,15 @@ async function injectIpfsIdentity() {
  * @param {string} alias - Node alias
  * @returns {Promise<{did: string}>}
  */
-async function injectRadicleIdentity(alias = 'FreedomBrowser') {
-  if (!derivedKeys) {
+function injectRadicleIdentity(alias = 'FreedomBrowser') {
+  return serializedInjection('radicle', () => injectRadicleIdentityNow(alias));
+}
+
+async function injectRadicleIdentityNow(alias) {
+  if (!(await isVaultUnlocked())) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
 
-  const identity = await loadIdentityModule();
   const dataDir = await prepareRadicleDataDir();
 
   // Ensure directory exists
@@ -640,24 +687,40 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
-  // routing db, etc.) becomes invalid. Remove stale state directories.
-  const staleDirs = ['node', 'cobs', 'storage'];
-  for (const dir of staleDirs) {
-    if (await removePathWithRetry(path.join(dataDir, dir))) {
-      console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
-    }
-  }
+  const expected = await deriveAddresses();
+  if (!expected) throw new Error(VAULT_LOCKED_MESSAGE);
 
-  const did = identity.injectRadicleKey(
-    dataDir,
-    derivedKeys.radicleKey.privateKey,
-    derivedKeys.radicleKey.publicKey,
-    alias
-  );
+  blockNode('radicle', 'writing');
+  let result;
+  try {
+    // When re-injecting with a new key, Radicle's persisted node state
+    // (fingerprint, routing db, etc.) becomes invalid. Remove stale state
+    // directories.
+    const staleDirs = ['node', 'cobs', 'storage'];
+    for (const dir of staleDirs) {
+      if (await removePathWithRetry(path.join(dataDir, dir))) {
+        console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+      }
+    }
+    // The core writes keys/radicle, keys/radicle.pub and the config.json
+    // alias together, through its journal.
+    result = await vaultBackend.writeNodeIdentity(
+      { node: 'radicle', home: dataDir, alias },
+      crypto.randomUUID()
+    );
+  } catch (err) {
+    blockNode('radicle', 'pending_recovery');
+    throw err;
+  }
+  if (result.status !== 'installed') {
+    blockNode('radicle', result.status);
+    throw new Error(`The Radicle identity write did not finish (${result.status})`);
+  }
+  unblockNode('radicle');
 
   injectedNodes.radicle = true;
 
+  const did = result.did || expected.radicle.did;
   console.log(`[IdentityManager] Radicle identity injected: ${did}`);
   return { did };
 }
@@ -669,19 +732,20 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
  * @returns {Promise<Object>}
  */
 async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = false) {
-  if (!derivedKeys) {
+  const addresses = await deriveAddresses({ accounts: [0] });
+  if (!addresses) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
 
   const results = {
     // Include user wallet (Account 0) - not injected anywhere, just derived
-    userWallet: { address: derivedKeys.userWallet.address },
+    userWallet: { address: addresses.user_wallets[0].address },
     // Track if any node was re-injected (needs restart)
     needsRestart: [],
   };
 
   // Inject Bee (only if not already injected OR force)
-  // Bee generates its own random keystore password internally
+  // The core generates its own random keystore password
   if (force || !isBeeIdentityInjected()) {
     const wasInjected = isBeeIdentityInjected();
     results.bee = await injectBeeIdentity();
@@ -693,7 +757,7 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
       results.bee.reinjected = true;
     }
   } else {
-    results.bee = { address: derivedKeys.beeWallet.address, alreadyInjected: true };
+    results.bee = { address: addresses.bee_wallet, alreadyInjected: true };
   }
 
   // Native freedom-ipfs uses ephemeral libp2p identities for read-only
@@ -714,14 +778,7 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
       results.needsRestart.push('radicle');
     }
   } else {
-    // Get DID
-    const identity = await loadIdentityModule();
-    const radicleIdentity = identity.createRadicleIdentity(
-      derivedKeys.radicleKey.privateKey,
-      derivedKeys.radicleKey.publicKey,
-      radicleAlias
-    );
-    results.radicle = { did: radicleIdentity.did, alreadyInjected: true };
+    results.radicle = { did: addresses.radicle.did, alreadyInjected: true };
   }
 
   console.log('[IdentityManager] All identities injected/verified');
@@ -743,22 +800,15 @@ async function getIdentityStatus() {
 
   // Try to get addresses - works even when vault is locked
   let addresses = null;
+  const derived = isUnlocked ? await deriveAddresses({ accounts: [0] }) : null;
 
-  if (derivedKeys) {
-    // Vault is unlocked - compute from derived keys (most accurate)
-    const identity = await loadIdentityModule();
-
-    const radicleIdentity = identity.createRadicleIdentity(
-      derivedKeys.radicleKey.privateKey,
-      derivedKeys.radicleKey.publicKey,
-      'FreedomBrowser'
-    );
-
+  if (derived) {
+    // Vault is unlocked - from the core (most accurate)
     addresses = {
-      userWallet: derivedKeys.userWallet.address,
-      beeWallet: derivedKeys.beeWallet.address,
+      userWallet: derived.user_wallets[0].address,
+      beeWallet: derived.bee_wallet,
       ipfsPeerId: null,
-      radicleDid: radicleIdentity.did,
+      radicleDid: derived.radicle.did,
     };
   } else if (hasVaultResult) {
     // Vault is locked - read from stored metadata and node config files
@@ -787,12 +837,13 @@ async function getIdentityStatus() {
 }
 
 /**
- * Export mnemonic for backup (vault must be unlocked)
+ * Export the mnemonic for backup. The core verifies `password`, then needs
+ * the vault unlocked (the JS order: password first, then the lock state).
+ * @param {string} password
  * @returns {Promise<string>}
  */
-async function exportMnemonic() {
-  const identity = await loadIdentityModule();
-  return identity.exportMnemonic();
+async function exportMnemonic(password) {
+  return vaultBackend.exportMnemonic(password);
 }
 
 /**
@@ -809,13 +860,12 @@ function assertPrivateKeyExportable(accountIndex) {
 }
 
 /**
- * Export one account's private key from the unlocked vault. Callers must
- * have re-authenticated the user first (password or Touch ID).
+ * Export one account's private key from the unlocked vault. The core
+ * verifies `password` (typed, or unsealed by Touch ID) first.
  */
-async function exportPrivateKeyForAccount(accountIndex) {
+async function exportPrivateKeyForAccount(accountIndex, password) {
   assertPrivateKeyExportable(accountIndex);
-  const identity = await loadIdentityModule();
-  return identity.exportPrivateKey(accountIndex);
+  return vaultBackend.exportPrivateKey(password, accountIndex);
 }
 
 // ============================================
@@ -955,7 +1005,6 @@ function getWalletRecord(walletIndex, meta = getVaultMeta()) {
  * @returns {Array<{index: number, name: string, address: string, type: string}>}
  */
 async function getDerivedWallets() {
-  const identity = await loadIdentityModule();
   const meta = getVaultMeta();
 
   if (!meta) {
@@ -984,7 +1033,13 @@ async function getDerivedWallets() {
   }
 
   // If vault is unlocked, derive addresses; otherwise use stored addresses
-  const mnemonic = identity.getMnemonic();
+  const mnemonicIndices = meta.derivedWallets
+    .filter((wallet) => (wallet.type || WALLET_TYPES.MNEMONIC) === WALLET_TYPES.MNEMONIC)
+    .map((wallet) => wallet.index);
+  const derived = await deriveAddresses({ accounts: mnemonicIndices });
+  const derivedByIndex = new Map(
+    (derived?.user_wallets || []).map((wallet) => [wallet.account, wallet.address])
+  );
   const wallets = [];
 
   for (const wallet of meta.derivedWallets) {
@@ -995,10 +1050,8 @@ async function getDerivedWallets() {
       // Device accounts (Ledger, phone): the address was read from the
       // device when the account was added; nothing to derive locally.
       address = wallet.address || null;
-    } else if (mnemonic) {
-      // Derive address from mnemonic
-      const derived = identity.deriveUserWallet(mnemonic, wallet.index);
-      address = derived.address;
+    } else if (derived) {
+      address = derivedByIndex.get(wallet.index) ?? null;
     } else {
       // Use stored address from wallet object, or fallback to meta.addresses for index 0
       if (wallet.address) {
@@ -1212,10 +1265,7 @@ async function setActiveWalletIndex(index) {
  * @returns {Promise<{index: number, name: string, address: string}>}
  */
 async function createDerivedWallet(name) {
-  const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
-
-  if (!mnemonic) {
+  if (!(await isVaultUnlocked())) {
     throw new Error('Vault must be unlocked to create a new wallet');
   }
 
@@ -1243,8 +1293,12 @@ async function createDerivedWallet(name) {
     newIndex += 1;
   }
 
-  // Derive the new wallet
-  const derived = identity.deriveUserWallet(mnemonic, newIndex);
+  // Derive the new wallet's address
+  const addresses = await deriveAddresses({ accounts: [newIndex] });
+  if (!addresses) {
+    throw new Error('Vault must be unlocked to create a new wallet');
+  }
+  const derived = { address: addresses.user_wallets[0].address };
 
   // Add to list (include address so it persists when vault is locked)
   const newWallet = {
@@ -1388,7 +1442,6 @@ async function deleteDerivedWallet(index) {
  * @returns {Promise<string|null>}
  */
 async function getActiveWalletAddress() {
-  const identity = await loadIdentityModule();
   const meta = getVaultMeta();
 
   if (!meta) {
@@ -1404,11 +1457,9 @@ async function getActiveWalletAddress() {
     return record.address;
   }
 
-  const mnemonic = identity.getMnemonic();
-
-  if (mnemonic) {
-    const derived = identity.deriveUserWallet(mnemonic, activeIndex);
-    return derived.address;
+  const derived = await deriveAddresses({ accounts: [activeIndex] });
+  if (derived) {
+    return derived.user_wallets[0].address;
   }
 
   // Vault locked - can only return main wallet address from stored meta
@@ -1421,9 +1472,7 @@ async function getActiveWalletAddress() {
  * @param {string} newPassword
  */
 async function changeVaultPassword(currentPassword, newPassword) {
-  const identity = await loadIdentityModule();
-  const dataDir = getIdentityDataDir();
-  await identity.changePassword(dataDir, currentPassword, newPassword);
+  await vaultBackend.changePassword(currentPassword, newPassword);
   console.log('[IdentityManager] Vault password changed');
 }
 
@@ -1432,10 +1481,7 @@ async function changeVaultPassword(currentPassword, newPassword) {
  * @param {string} password - Must verify password
  */
 async function deleteVaultData(password) {
-  const identity = await loadIdentityModule();
-  const dataDir = getIdentityDataDir();
-  await identity.deleteVault(dataDir, password);
-  derivedKeys = null;
+  await vaultBackend.deleteVault(password);
   injectedNodes = { bee: false, ipfs: false, radicle: false };
   console.log('[IdentityManager] Vault deleted');
 }
@@ -1465,8 +1511,7 @@ function registerIdentityIpc() {
   // Generate mnemonic (without saving vault)
   ipcMain.handle(IPC.IDENTITY_GENERATE_MNEMONIC, async (_event, strength) => {
     try {
-      const identity = await loadIdentityModule();
-      const mnemonic = identity.createMnemonic(strength);
+      const mnemonic = await vaultBackend.generateMnemonic(strength);
       return { success: true, mnemonic };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1549,10 +1594,8 @@ function registerIdentityIpc() {
       if (!password) {
         return { success: false, error: 'Password is required to export mnemonic' };
       }
-      const identity = await loadIdentityModule();
-      const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
-      const mnemonic = await exportMnemonic();
+      // The core verifies the password, then needs the vault unlocked.
+      const mnemonic = await exportMnemonic(password);
       return { success: true, mnemonic };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1565,11 +1608,7 @@ function registerIdentityIpc() {
       if (!password) {
         return { success: false, error: 'Password is required to export private key' };
       }
-      assertPrivateKeyExportable(accountIndex);
-      const identity = await loadIdentityModule();
-      const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
-      const privateKey = await exportPrivateKeyForAccount(accountIndex);
+      const privateKey = await exportPrivateKeyForAccount(accountIndex, password);
       return { success: true, privateKey };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1599,8 +1638,7 @@ function registerIdentityIpc() {
   // Validate mnemonic (for import form)
   ipcMain.handle(IPC.IDENTITY_VALIDATE_MNEMONIC, async (_event, mnemonic) => {
     try {
-      const identity = await loadIdentityModule();
-      return { valid: identity.isValidMnemonic(mnemonic) };
+      return { valid: await vaultBackend.validateMnemonic(mnemonic) };
     } catch (err) {
       return { valid: false, error: err.message };
     }
@@ -1705,7 +1743,6 @@ function registerIdentityIpc() {
 
 module.exports = {
   // Initialization
-  loadIdentityModule,
   registerIdentityIpc,
 
   // Vault operations
@@ -1721,9 +1758,11 @@ module.exports = {
   changeVaultPassword,
   deleteVaultData,
 
-  // Key operations
-  getDerivedKeys,
+  // Key operations (signing keys come from the core's compat.* exports)
+  getBeeWalletPrivateKey,
+  getBeeWalletAddress,
   getPublisherKey,
+  getPublisherAddress,
   getUserWalletKey,
 
   // Multi-wallet operations
