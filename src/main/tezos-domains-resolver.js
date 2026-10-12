@@ -6,10 +6,7 @@ const IPC = require('../shared/ipc-channels');
 const { blake2b } = require('../shared/blake2b');
 const { isDwebNameHost } = require('../shared/origin-utils');
 const { capCache } = require('./cache-utils');
-const {
-  runWithPrivateLogContext,
-  redactForLog,
-} = require('./private/private-log-context');
+const { runWithPrivateLogContext, redactForLog } = require('./private/private-log-context');
 const { isPrivateWebContents } = require('./private/private-windows');
 
 // PRIVATE MODE GUARD (name logging): same contract as the ENS resolver —
@@ -59,10 +56,13 @@ function isTezosDomainName(value) {
   const lower = value.toLowerCase();
   if (!lower.endsWith('.tez') || lower.length > 255) return false;
   if (/[\s/?#]/.test(lower)) return false;
-  if ([...lower].some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
-  })) return false;
+  if (
+    [...lower].some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || code === 0x7f;
+    })
+  )
+    return false;
   return lower.split('.').every((label) => label.length > 0);
 }
 
@@ -254,7 +254,11 @@ function parsePublishedUri(rawUri, { redirect = false } = {}) {
 
   if (!redirect && (protocol === 'ipfs' || protocol === 'ipns')) {
     if (!parsed.hostname || parsed.username || parsed.password || parsed.port) {
-      return { type: 'unsupported', reason: `invalid ${protocol.toUpperCase()} website URI`, system: 'tezos' };
+      return {
+        type: 'unsupported',
+        reason: `invalid ${protocol.toUpperCase()} website URI`,
+        system: 'tezos',
+      };
     }
     // A website record must point at content (CID / IPNS key / DNSLink host),
     // never at another dweb *name*. `ipns://self.tez` would be handed back to
@@ -287,7 +291,11 @@ function parsePublishedUri(rawUri, { redirect = false } = {}) {
     };
   }
 
-  return { type: 'unsupported', reason: `unsupported website protocol: ${protocol}`, system: 'tezos' };
+  return {
+    type: 'unsupported',
+    reason: `unsupported website protocol: ${protocol}`,
+    system: 'tezos',
+  };
 }
 
 async function fetchNormalizedScript(endpoint, blockHash, contract, fetchImpl) {
@@ -381,7 +389,11 @@ async function lookupRecord(endpoint, blockHash, name, discovery, fetchImpl) {
     }
     if (recordsMap.has('td:ttl')) ttl = decodeJsonBytes(recordsMap.get('td:ttl'));
   } catch (err) {
-    return { type: 'unsupported', reason: `invalid Tezos Domains metadata: ${err.message}`, system: 'tezos' };
+    return {
+      type: 'unsupported',
+      reason: `invalid Tezos Domains metadata: ${err.message}`,
+      system: 'tezos',
+    };
   }
 
   if (redirectUrl !== undefined) {
@@ -390,7 +402,13 @@ async function lookupRecord(endpoint, blockHash, name, discovery, fetchImpl) {
   if (contentUrl !== undefined) {
     return { ...parsePublishedUri(contentUrl), expiry, ttl };
   }
-  return { type: 'not_found', reason: 'domain has no website record', expiry, ttl, system: 'tezos' };
+  return {
+    type: 'not_found',
+    reason: 'domain has no website record',
+    expiry,
+    ttl,
+    system: 'tezos',
+  };
 }
 
 async function fetchHead(endpoint, fetchImpl = fetch) {
@@ -400,19 +418,24 @@ async function fetchHead(endpoint, fetchImpl = fetch) {
   ]);
   if (chainId !== MAINNET_CHAIN_ID) throw new Error(`unexpected Tezos chain: ${chainId}`);
   const level = Number(header?.level);
-  if (!Number.isSafeInteger(level) || level <= ANCHOR_DEPTH) throw new Error('invalid Tezos head level');
+  if (!Number.isSafeInteger(level) || level <= ANCHOR_DEPTH)
+    throw new Error('invalid Tezos head level');
   return { endpoint, level };
 }
 
 async function fetchAnchor(endpoint, level, fetchImpl = fetch) {
   const hash = await rpcRequest(endpoint, `/chains/main/blocks/${level}/hash`, { fetchImpl });
-  if (typeof hash !== 'string' || !hash.startsWith('B')) throw new Error('invalid Tezos block hash');
+  if (typeof hash !== 'string' || !hash.startsWith('B'))
+    throw new Error('invalid Tezos block hash');
   return { endpoint, level, hash };
 }
 
 function hostOf(url) {
-  try { return new URL(url).host; }
-  catch { return url; }
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 // Build one entry of the `groups` payload for a conflict outcome, in the
@@ -445,7 +468,10 @@ function headConflict(allHeads, retained) {
     type: 'conflict',
     reason: 'Tezos RPC providers disagree about the chain head',
     system: 'tezos',
-    groups: [...byLevel.entries()].map(([level, urls]) => ({ value: `chain head #${level}`, urls })),
+    groups: [...byLevel.entries()].map(([level, urls]) => ({
+      value: `chain head #${level}`,
+      urls,
+    })),
     trust: {
       level: 'conflict',
       system: 'tezos',
@@ -514,7 +540,9 @@ async function resolveTezosDomain(name, options) {
   const core = options === undefined ? require('./core/naming').namingDriver() : null;
   if (core) return core.resolveTezos(String(name || ''));
   const { fetchImpl = fetch, endpoints = getRpcEndpoints() } = options || {};
-  const normalized = String(name || '').trim().toLowerCase();
+  const normalized = String(name || '')
+    .trim()
+    .toLowerCase();
   if (!isTezosDomainName(normalized)) {
     return { type: 'not_found', reason: 'invalid .tez domain', system: 'tezos' };
   }
@@ -536,7 +564,9 @@ async function resolveTezosDomainUncached(normalized, fetchImpl, endpoints) {
   const headSettled = await Promise.allSettled(
     endpoints.slice(0, 3).map((endpoint) => fetchHead(endpoint, fetchImpl))
   );
-  const allHeads = headSettled.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value);
+  const allHeads = headSettled
+    .filter((entry) => entry.status === 'fulfilled')
+    .map((entry) => entry.value);
   if (allHeads.length === 0) {
     return { type: 'error', reason: 'all Tezos RPC providers failed', system: 'tezos' };
   }
@@ -571,9 +601,15 @@ async function resolveTezosDomainUncached(normalized, fetchImpl, endpoints) {
   const anchorSettled = await Promise.allSettled(
     heads.map((head) => fetchAnchor(head.endpoint, anchorLevel, fetchImpl))
   );
-  const anchors = anchorSettled.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value);
+  const anchors = anchorSettled
+    .filter((entry) => entry.status === 'fulfilled')
+    .map((entry) => entry.value);
   if (anchors.length === 0) {
-    return { type: 'error', reason: 'Tezos RPC providers could not anchor a block', system: 'tezos' };
+    return {
+      type: 'error',
+      reason: 'Tezos RPC providers could not anchor a block',
+      system: 'tezos',
+    };
   }
 
   const anchorGroups = new Map();
@@ -597,7 +633,9 @@ async function resolveTezosDomainUncached(normalized, fetchImpl, endpoints) {
       result: await resolveAtBlock(anchor.endpoint, anchor.hash, normalized, fetchImpl),
     }))
   );
-  const successful = legs.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value);
+  const successful = legs
+    .filter((entry) => entry.status === 'fulfilled')
+    .map((entry) => entry.value);
   if (successful.length === 0) {
     return { type: 'error', reason: 'Tezos Domains registry lookup failed', system: 'tezos' };
   }
@@ -671,7 +709,11 @@ function registerTezosDomainsIpc() {
       try {
         return await resolveTezosDomain(name);
       } catch (err) {
-        log.error(`[tezos-domains] Resolution failed for ${nameForLog(name)}: ${err.message}`);
+        // The message can name the domain (the naming core's "changed
+        // repeatedly"): redacted like the name in a private window.
+        log.error(
+          `[tezos-domains] Resolution failed for ${nameForLog(name)}: ${redactForLog(err.message)}`
+        );
         return { type: 'error', reason: err.message, system: 'tezos' };
       }
     });

@@ -6,6 +6,7 @@ const {
   wireQuorum,
   MAX_REMEMBERED,
   MAX_RPC_ENDPOINTS,
+  CONTROL_WATCHDOG_MS,
 } = require('./naming-config');
 
 function sources(overrides = {}) {
@@ -403,5 +404,74 @@ describe('NamingConfig', () => {
     release();
     await change;
     expect(config.generations.ens).toBe(2);
+  });
+
+  test('a lookup waits for the controls queued before it, in order', async () => {
+    let release;
+    const client = fakeClient((method) =>
+      method === 'naming.configure' && release === null
+        ? new Promise((resolve) => {
+            release = () => resolve({ ens: 2, tezos: 1, lifecycle: 1 });
+          })
+        : { ens: 1, tezos: 1, lifecycle: 1 }
+    );
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    // A settings change goes out and waits for its reply; an invalidation
+    // queues behind it; then a lookup asks for the process.
+    release = null;
+    const change = config.configure({ reset: true });
+    const invalidation = config.control((gen) =>
+      client.requestTo(gen, 'naming.invalidate_content', { name: 'a.eth' })
+    );
+    let served = null;
+    config.whenServing().then((gen) => (served = gen));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(served).toBeNull();
+    expect(methods(client).slice(-1)).toEqual(['1:naming.configure']);
+    release();
+    await change;
+    await invalidation;
+    await new Promise(setImmediate);
+    // Served only after both, with the generation the change brought.
+    expect(served).toBe(client.current);
+    expect(methods(client).slice(-2)).toEqual([
+      '1:naming.configure',
+      '1:naming.invalidate_content',
+    ]);
+    expect(config.generations.ens).toBe(2);
+  });
+
+  test('control requests carry a hang watchdog', async () => {
+    const client = fakeClient();
+    make(client);
+    client.start();
+    await new Promise(setImmediate);
+    const watched = client.requestTo.mock.calls.map(([, method, , , options]) => [
+      method,
+      options?.watchdogMs,
+    ]);
+    expect(watched).toEqual([
+      ['naming.configure', CONTROL_WATCHDOG_MS],
+      ['naming.availability', CONTROL_WATCHDOG_MS],
+    ]);
+  });
+
+  test('a process gone keeps its references and generations for its last replies', async () => {
+    const client = fakeClient((method) =>
+      method === 'naming.configure' ? { ens: 3, tezos: 1, lifecycle: 1 } : { lifecycle: 2 }
+    );
+    const config = make(client);
+    client.start();
+    const first = client.current;
+    await config.whenReady();
+    const ref = client.sent[0][2].rpc[0].endpoint;
+    client.exit();
+    client.start();
+    // The current process knows nothing of it; the first still does.
+    expect(config.endpointUrl(ref)).toBeUndefined();
+    expect(config.endpointUrl(ref, first)).toBe('https://a.rpc.example');
+    expect(config.generationsOf(first)).toEqual({ ens: 3, tezos: 1, lifecycle: 2 });
   });
 });

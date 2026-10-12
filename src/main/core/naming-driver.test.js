@@ -16,7 +16,7 @@ const resolutionFailed = (message, generations = GEN, attempts = 1) =>
   });
 
 /** A driver over a fake client whose replies come from `answer`. */
-function setUp(answer, { generations = GEN, core = {}, now } = {}) {
+function setUp(answer, { generations = GEN, core = {}, now = () => 0 } = {}) {
   const gen = { id: 'process' };
   const urls = new Map([
     ['e1', 'https://a.rpc.example/v1/key'],
@@ -27,9 +27,15 @@ function setUp(answer, { generations = GEN, core = {}, now } = {}) {
   const config = {
     core,
     generations: { ...generations },
+    generationsOf: jest.fn((of) => {
+      expect(of).toBe(gen);
+      return config.generations;
+    }),
     whenServing: jest.fn(async () => gen),
-    servingNow: jest.fn(() => gen),
-    endpointUrl: (ref) => urls.get(ref),
+    // A control runs at once here, with the process.
+    control: jest.fn(async (send) => (config.core ? send(gen) : undefined)),
+    // Mapped by the process that answered.
+    endpointUrl: jest.fn((ref, of) => (of === gen ? urls.get(ref) : undefined)),
   };
   const client = {
     whenReady: jest.fn(async () => ({})),
@@ -63,10 +69,17 @@ describe('NamingDriver', () => {
     await driver.resolveReverse('0x' + 'ab'.repeat(20), 1);
     await driver.resolveTezos('alice.tez');
     expect(client.requestTo.mock.calls.map(([, method, params]) => [method, params])).toEqual([
-      ['naming.resolve_content', { name: 'vitalik.eth', private: false }],
-      ['naming.resolve_address', { name: 'nick.eth', chain_id: 10, private: true }],
-      ['naming.resolve_reverse', { address: '0x' + 'ab'.repeat(20), chain_id: 1, private: false }],
-      ['naming.resolve_tezos', { name: 'alice.tez', private: false }],
+      // Each carries the caller's deadline: the core's and the watchdog's agree.
+      ['naming.resolve_content', { name: 'vitalik.eth', private: false, deadline_ms: DEADLINE_MS }],
+      [
+        'naming.resolve_address',
+        { name: 'nick.eth', chain_id: 10, private: true, deadline_ms: DEADLINE_MS },
+      ],
+      [
+        'naming.resolve_reverse',
+        { address: '0x' + 'ab'.repeat(20), chain_id: 1, private: false, deadline_ms: DEADLINE_MS },
+      ],
+      ['naming.resolve_tezos', { name: 'alice.tez', private: false, deadline_ms: DEADLINE_MS }],
     ]);
   });
 
@@ -168,7 +181,7 @@ describe('NamingDriver', () => {
     );
     expect(await driver.resolveContent('x.eth')).toEqual({ type: 'ok' });
     const sent = client.requestTo.mock.calls.map(([, , params]) => params);
-    expect(sent[0]).toEqual({ name: 'x.eth', private: false });
+    expect(sent[0]).toEqual({ name: 'x.eth', private: false, deadline_ms: DEADLINE_MS });
     expect(sent[1]).toEqual({
       name: 'x.eth',
       private: false,
@@ -199,7 +212,11 @@ describe('NamingDriver', () => {
   });
 
   test('three overtaken attempts are today\'s "changed repeatedly", by today\'s subject', async () => {
-    const stale = (generations) => setUp(() => ok({}, { generations, attempts: 0 }));
+    // Each reply ran an attempt: one more than the caller had used.
+    const stale = (generations) =>
+      setUp((_method, params) =>
+        ok({}, { generations, attempts: (params.attempts_used ?? 0) + 1 })
+      );
     const ens = stale({ ...GEN, lifecycle: 2 });
     await expect(ens.driver.resolveContent('  Vitalik.ETH ')).rejects.toThrow(
       /^Myotis availability changed repeatedly while resolving vitalik\.eth$/
@@ -213,6 +230,54 @@ describe('NamingDriver', () => {
     const spent = setUp(() => ok({}, { generations: { ...GEN, ens: 1 }, attempts: 3 }));
     await expect(spent.driver.resolveContent('x.eth')).rejects.toThrow(/changed repeatedly/);
     expect(spent.client.requestTo).toHaveBeenCalledTimes(1);
+  });
+
+  test('an overtaken immediate reply costs no attempt', async () => {
+    // Cache hits under an old generation, three times, then a current one:
+    // they ran no attempt, so the caller keeps its allowance.
+    const { driver, client } = setUp((_method, params, n) =>
+      ok(
+        { type: 'ok', n },
+        {
+          generations: n <= 3 ? { ...GEN, ens: 1 } : GEN,
+          attempts: params.attempts_used ?? 0,
+        }
+      )
+    );
+    expect(await driver.resolveContent('cached.eth')).toEqual({ type: 'ok', n: 4 });
+    expect(client.requestTo.mock.calls.map(([, , params]) => params.attempts_used)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  test('the first request carries what waiting for the core left of the deadline', async () => {
+    let t = 0;
+    const { driver, client, config, gen } = setUp(() => ok({ type: 'ok' }), { now: () => t });
+    config.whenServing.mockImplementation(async () => {
+      t += 30_000;
+      return gen;
+    });
+    await driver.resolveContent('x.eth');
+    const [, , params, , options] = client.requestTo.mock.calls[0];
+    expect(params.deadline_ms).toBe(DEADLINE_MS - 30_000);
+    expect(options.watchdogMs).toBe(DEADLINE_MS - 30_000 + WATCHDOG_MARGIN_MS);
+  });
+
+  test('a Tezos conflict gains no trust key it lacked', async () => {
+    const { driver } = setUp(() =>
+      ok({
+        type: 'conflict',
+        system: 'tezos',
+        groups: [{ value: 'chain head #1000', urls: [{ ref: 't1' }] }],
+        trust: { level: 'conflict', system: 'tezos', block: null, k: 2, m: 0 },
+      })
+    );
+    const result = await driver.resolveTezos('alice.tez');
+    expect(Object.keys(result.trust)).toEqual(['level', 'system', 'block', 'k', 'm']);
+    expect(result.groups[0].urls).toEqual(['t1.tez.example']);
   });
 
   test('without a core it is unavailable; one starting is waited for', async () => {
@@ -243,23 +308,26 @@ describe('NamingDriver', () => {
     expect(client.requestTo).toHaveBeenCalledTimes(1);
   });
 
-  test('invalidations go at once to the serving process, or nowhere', async () => {
+  test("invalidations go in order with the core's controls, or nowhere", async () => {
     const { driver, client, config } = setUp((method) =>
       method === 'naming.invalidate_content' ? { evicted: true } : {}
     );
-    const evicted = driver.invalidateContent('vitalik.eth');
-    // Sent before anything that follows.
-    expect(client.requestTo).toHaveBeenCalledWith(expect.anything(), 'naming.invalidate_content', {
-      name: 'vitalik.eth',
-    });
-    expect(await evicted).toBe(true);
+    expect(await driver.invalidateContent('vitalik.eth')).toBe(true);
+    expect(config.control).toHaveBeenCalledTimes(1);
+    expect(client.requestTo).toHaveBeenCalledWith(
+      expect.anything(),
+      'naming.invalidate_content',
+      { name: 'vitalik.eth' },
+      undefined,
+      { watchdogMs: expect.any(Number) }
+    );
     await driver.invalidateTezos('alice.tez');
     await driver.invalidateTezos(undefined);
     expect(client.requestTo.mock.calls.slice(1).map(([, m, p]) => [m, p])).toEqual([
       ['naming.invalidate_tezos', { name: 'alice.tez' }],
       ['naming.invalidate_tezos', {}],
     ]);
-    config.servingNow.mockReturnValue(null);
+    config.core = null;
     expect(await driver.invalidateContent('vitalik.eth')).toBe(false);
     await driver.invalidateTezos('alice.tez');
     expect(client.requestTo).toHaveBeenCalledTimes(3);

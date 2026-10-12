@@ -472,4 +472,30 @@ describe('tezos-domains-resolver with the naming core (FREEDOM_CORE=1)', () => {
     invalidateTezosDomain();
     expect(mockCoreDriver.invalidateTezos.mock.calls).toEqual([[' Alice.TEZ '], [undefined]]);
   });
+
+  test("a private window's failure keeps the name out of the log, message included", async () => {
+    const { ipcMain } = require('electron');
+    const IPC = require('../shared/ipc-channels');
+    const logger = require('./logger');
+    const secret = 'private-secret-site.tez';
+    const message = `Tezos configuration changed repeatedly while resolving ${secret}`;
+    mockCoreDriver = {
+      resolveTezos: jest.fn(async () => {
+        throw new Error(message);
+      }),
+    };
+    ipcMain.handle.mockClear();
+    registerTezosDomainsIpc();
+    const handler = ipcMain.handle.mock.calls.find(([c]) => c === IPC.TEZOS_DOMAINS_RESOLVE)[1];
+    logger.error.mockClear();
+    // The page gets today's shape, the message whole.
+    expect(await handler({ sender: { isPrivate: true } }, { name: secret })).toEqual({
+      type: 'error',
+      reason: message,
+      system: 'tezos',
+    });
+    const logged = logger.error.mock.calls.map((call) => call.join(' ')).join('\n');
+    expect(logged).toContain('[tezos-domains] Resolution failed');
+    expect(logged).not.toContain('private-secret');
+  });
 });

@@ -13,6 +13,9 @@ const crypto = require('crypto');
 
 /** References main can map back: far more than a configuration holds. */
 const MAX_REMEMBERED = 1024;
+/** A control request's hang watchdog (design 0001): the core answers it at
+ * once, so its deadline is just the watchdog's margin. */
+const CONTROL_WATCHDOG_MS = 15_000;
 /** The core takes at most this many RPC endpoints (design 0004). */
 const MAX_RPC_ENDPOINTS = 64;
 
@@ -150,6 +153,9 @@ class NamingConfig {
     this.sources = sources;
     this.log = log || console;
     this.core = null; // the current core process's state
+    // Every process's state by its client generation, while anything (a
+    // reply still being published) holds the generation.
+    this.processes = new WeakMap();
     client.on('ready', () => this.attach());
     client.on('exit', () => {
       this.core = null;
@@ -158,15 +164,23 @@ class NamingConfig {
     if (client.hello) this.attach();
   }
 
-  /** The URL behind one of the current core process's references, or
-   * undefined. */
-  endpointUrl(ref) {
-    return this.core?.refs.url(ref);
+  /** The URL behind one of a core process's references (`gen`'s, or the
+   * current one's), or undefined. A reply is mapped by the process that
+   * made it, even after that process has gone. */
+  endpointUrl(ref, gen) {
+    const core = gen ? this.processes.get(gen) : this.core;
+    return core?.refs.url(ref);
   }
 
   /** The generations the current core process has reported. */
   get generations() {
     return this.core ? { ...this.core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };
+  }
+
+  /** The generations a core process (`gen`'s) has reported. */
+  generationsOf(gen) {
+    const core = this.processes.get(gen);
+    return core ? { ...core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };
   }
 
   attach() {
@@ -179,6 +193,7 @@ class NamingConfig {
       ready: false, // initialized
     };
     this.core = core;
+    this.processes.set(core.gen, core);
     core.initialized = this.initialize(core);
   }
 
@@ -191,14 +206,6 @@ class NamingConfig {
       core.ready = true;
       return true;
     }).catch(() => false);
-  }
-
-  /** The initialized process, if one serves right now: for a request that
-   * must keep its order with what follows it (an invalidation before a
-   * lookup), sent without waiting. */
-  servingNow() {
-    const core = this.core;
-    return core?.ready && this.serving(core) ? core.gen : null;
   }
 
   /** Resolves true once the current core process is initialized, retrying
@@ -215,13 +222,28 @@ class NamingConfig {
   async whenServing() {
     const core = this.core;
     if (!core) return null;
+    // Every control queued before this (a settings change, an
+    // invalidation) goes first: a lookup must not reach the core before a
+    // configuration main has already moved to.
+    const queued = core.queue;
     const attempt = core.initialized;
     if ((await attempt) !== true) {
       if (!this.serving(core)) return null;
       if (core.initialized === attempt) core.initialized = this.initialize(core);
       if ((await core.initialized) !== true) return null;
     }
+    // The queue never rejects: run() keeps failures to their caller.
+    await queued;
     return this.serving(core) ? core.gen : null;
+  }
+
+  /** Queues `send(gen)` behind the core's earlier control requests, for one
+   * that must keep its order with them and with the lookups after it (an
+   * invalidation). Resolves its result, or undefined without a core. */
+  control(send) {
+    const core = this.core;
+    if (!core) return Promise.resolve(undefined);
+    return this.run(core, () => send(core.gen));
   }
 
   /** Whether `core` is current and its process still takes requests (its
@@ -260,9 +282,13 @@ class NamingConfig {
     };
     let result;
     try {
-      result = await this.client.requestTo(core.gen, 'naming.configure', params, {
-        caller: 'shell',
-      });
+      result = await this.client.requestTo(
+        core.gen,
+        'naming.configure',
+        params,
+        { caller: 'shell' },
+        { watchdogMs: CONTROL_WATCHDOG_MS }
+      );
     } catch (err) {
       core.refs.settle(false);
       this.log.warn('[Core] naming.configure failed', { code: err?.code });
@@ -278,9 +304,13 @@ class NamingConfig {
     const params = { ready: myotis.isReady() === true, enabled: myotis.isEnabled() === true };
     let result;
     try {
-      result = await this.client.requestTo(core.gen, 'naming.availability', params, {
-        caller: 'shell',
-      });
+      result = await this.client.requestTo(
+        core.gen,
+        'naming.availability',
+        params,
+        { caller: 'shell' },
+        { watchdogMs: CONTROL_WATCHDOG_MS }
+      );
     } catch (err) {
       this.log.warn('[Core] naming.availability failed', { code: err?.code });
       throw err;
@@ -307,4 +337,5 @@ module.exports = {
   wireQuorum,
   MAX_REMEMBERED,
   MAX_RPC_ENDPOINTS,
+  CONTROL_WATCHDOG_MS,
 };

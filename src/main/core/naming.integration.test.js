@@ -18,6 +18,8 @@ jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 jest.mock('../ipfs/gateway-transport', () => ({ netGatewayFetch: jest.fn() }));
 
 const binary = process.env.FREEDOM_CORED_PATH;
+// A real core resolves on real timers.
+jest.setTimeout(20_000);
 const describeIfBinary = binary ? describe : describe.skip;
 const quietLog = { info() {}, warn() {}, error() {} };
 
@@ -106,8 +108,9 @@ describeIfBinary('naming with the real freedom-cored', () => {
     let held = null;
     const hop = jest.fn((url, init) => {
       if (!held) {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
           held = resolve;
+          init.signal?.addEventListener('abort', () => reject(init.signal.reason));
         });
       }
       return failing(url, init);
@@ -118,6 +121,9 @@ describeIfBinary('naming with the real freedom-cored', () => {
     while (!held) await new Promise(setImmediate);
     const { ens, lifecycle } = config.generations;
     await config.configure({ reset: true });
+    // The held exchange fails now: the attempt ends, crossed, and the core
+    // restarts it rather than waiting out the quorum's timeout.
+    held(await failing());
     // Today's invalidateCachedProvider: a new lifecycle, the same snapshot.
     expect(config.generations.ens).toBe(ens);
     expect(config.generations.lifecycle).toBeGreaterThan(lifecycle);
