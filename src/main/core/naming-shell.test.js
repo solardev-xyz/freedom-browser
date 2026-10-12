@@ -2,6 +2,7 @@ const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
 const {
   registerNamingShell,
+  unlessAborted,
   fetchLoop,
   makeHop,
   gatewayAllowed,
@@ -318,6 +319,48 @@ describe('a hop', () => {
     await expect(idle('https://a.example', {})).rejects.toMatchObject({ code: 'timeout' });
   });
 
+  test('a cancel between reads starts no further read and leaves nothing unhandled', async () => {
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      // An already-rejected wait, already aborted: still observed.
+      const aborted = new AbortController();
+      aborted.abort();
+      await expect(unlessAborted(Promise.reject(new Error('late')), aborted.signal)).rejects.toBe(
+        aborted.signal.reason
+      );
+      // The cancel lands after a read has won its race, before the loop
+      // goes round: no further read starts.
+      const cancel = new AbortController();
+      let reads = 0;
+      const reader = {
+        read: () => {
+          reads += 1;
+          if (reads > 1)
+            return Promise.reject(Object.assign(new Error('x'), { name: 'AbortError' }));
+          const first = Promise.resolve({ done: false, value: new Uint8Array([1]) });
+          first.then(() => queueMicrotask(() => cancel.abort()));
+          return first;
+        },
+        cancel: async () => {},
+      };
+      const response = {
+        status: 200,
+        headers: new Headers(),
+        body: { getReader: () => reader, cancel: async () => {} },
+      };
+      const hop = makeHop({ fetch: jest.fn(async () => response) });
+      const err = await hop('https://a.example', { signal: cancel.signal }).catch((e) => e);
+      expect(err.name).toBe('AbortError');
+      await tick();
+      expect(reads).toBe(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
   test('a network failure, an onion refusal and inactivity', async () => {
     await expect(
       makeHop({ fetch: fakeFetch({ fail: new Error('ECONNRESET') }) })('https://a.example', {})
@@ -452,6 +495,47 @@ describe('the executors', () => {
       stuck.call('shell.prefetch', { uri: 'ipfs://bafy', generations: { ens: 2 }, deadline_ms: 10 })
     ).resolves.toEqual({});
     expect(abort).toHaveBeenCalled();
+  });
+
+  test('abandoned prefetches count until they end; past the bound, new ones are skipped', async () => {
+    const pending = [];
+    const prefetch = jest.fn(() => {
+      let end;
+      const done = new Promise((resolve) => (end = resolve));
+      pending.push(end);
+      return { abort: jest.fn(), done };
+    });
+    const { call } = setUp({ prefetch });
+    const params = { uri: 'ipfs://bafy', generations: { ens: 2 }, deadline_ms: 1 };
+    for (let i = 0; i < MAX_ABANDONED; i++) {
+      await expect(call('shell.prefetch', params)).resolves.toEqual({});
+    }
+    expect(prefetch).toHaveBeenCalledTimes(MAX_ABANDONED);
+    // At the bound: replied at once, nothing started.
+    await expect(call('shell.prefetch', params)).resolves.toEqual({});
+    expect(prefetch).toHaveBeenCalledTimes(MAX_ABANDONED);
+    // One ends: room for one more.
+    pending[0]();
+    await tick();
+    await expect(call('shell.prefetch', params)).resolves.toEqual({});
+    expect(prefetch).toHaveBeenCalledTimes(MAX_ABANDONED + 1);
+  });
+
+  test('a prefetch that ends leaves no listener; its abort comes only with the request', async () => {
+    const abort = jest.fn();
+    const { call } = setUp({ prefetch: jest.fn(() => ({ abort, done: Promise.resolve() })) });
+    const signal = new AbortController();
+    const added = jest.spyOn(AbortSignal, 'any');
+    await expect(
+      call('shell.prefetch', { uri: 'ipfs://bafy', generations: { ens: 2 } }, signal.signal)
+    ).resolves.toEqual({});
+    const within = added.mock.results.at(-1).value;
+    added.mockRestore();
+    const { getEventListeners } = require('events');
+    expect(getEventListeners(within, 'abort')).toEqual([]);
+    expect(getEventListeners(signal.signal, 'abort')).toEqual([]);
+    signal.abort();
+    expect(abort).not.toHaveBeenCalled();
   });
 
   test('an unknown reference is refused', async () => {

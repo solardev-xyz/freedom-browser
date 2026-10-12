@@ -70,12 +70,9 @@ const MAX_ABANDONED = 64;
  * aborts first. */
 function unlessAborted(promise, signal) {
   return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
     const onAbort = () => reject(signal.reason);
-    signal.addEventListener('abort', onAbort, { once: true });
+    // Observed whichever wins, so a rejection that comes after the abort is
+    // never left unhandled.
     promise.then(
       (value) => {
         signal.removeEventListener('abort', onAbort);
@@ -86,6 +83,11 @@ function unlessAborted(promise, signal) {
         reject(err);
       }
     );
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -164,6 +166,8 @@ function makeHop({ fetch = netGatewayFetch, inactivityMs = EXCHANGE_MS } = {}) {
         const reader = response.body.getReader();
         try {
           for (;;) {
+            // Once cancelled, no further read starts.
+            if (combined.aborted) throw combined.reason;
             const next = await unlessAborted(reader.read(), combined);
             if (next.done) break;
             touch();
@@ -305,6 +309,9 @@ function answer({ status, body }) {
 function registerNamingShell(client, config, deps = {}) {
   const hop = deps.hop || makeHop();
   const prefetch = deps.prefetch || prefetchGatewayUrl;
+  // Prefetches replied to while their own work (a proxy lookup) hadn't
+  // ended: past MAX_ABANDONED, a new one is skipped, as it's only a warm-up.
+  let abandonedPrefetches = 0;
   // A request made under an older generation than main's is refused before
   // anything is done (one main hasn't seen yet is newer, never stale).
   const stale = (params, scope) => {
@@ -389,21 +396,35 @@ function registerNamingShell(client, config, deps = {}) {
   client.handle('shell.prefetch', async (params, { signal }) => {
     stale(params, 'ens');
     // Cancelled before it started: it never does.
-    if (signal.aborted) return {};
+    if (signal.aborted || abandonedPrefetches >= MAX_ABANDONED) return {};
     const handle = prefetch(params.uri);
-    const onAbort = () => handle.abort();
-    signal.addEventListener('abort', onAbort, { once: true });
+    const done = Promise.resolve(handle.done);
+    let ended = false;
+    done.then(
+      () => (ended = true),
+      () => (ended = true)
+    );
     try {
       // Its own wait (a proxy lookup) may not end with the abort: the reply
-      // doesn't wait for it.
-      await withDeadline(params, signal, (within) => {
+      // doesn't wait for it, and the work counts until it does end.
+      await withDeadline(params, signal, async (within) => {
+        const onAbort = () => handle.abort();
         within.addEventListener('abort', onAbort, { once: true });
-        return unlessAborted(handle.done, within);
+        try {
+          return await unlessAborted(done, within);
+        } finally {
+          within.removeEventListener('abort', onAbort);
+        }
       });
     } catch {
       // Cancelled, or past its deadline: ended all the same.
-    } finally {
-      signal.removeEventListener('abort', onAbort);
+      if (!ended) {
+        abandonedPrefetches += 1;
+        const release = () => {
+          abandonedPrefetches -= 1;
+        };
+        done.then(release, release);
+      }
     }
     return {};
   });
