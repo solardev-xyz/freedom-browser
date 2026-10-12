@@ -671,6 +671,39 @@ describe('ens-resolver', () => {
       expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
     });
 
+    test('a name echoed in an ethers error message never quarantines an endpoint', async () => {
+      // dnsEncode refuses a label over 255 bytes and quotes the name.
+      const label = 'x503'.repeat(64);
+      let encodeError;
+      try {
+        actualEthers.dnsEncode(`${label}.eth`, 255);
+      } catch (err) {
+        encodeError = err;
+      }
+      expect(encodeError.shortMessage).toMatch(/503/);
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: encodeError }])));
+      const failing = await resolveEnsContent('echoed-name.box');
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent('healthy-after-echoed-name.box');
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test('an ABI decoding error stays an answer', async () => {
+      let decodeError;
+      try {
+        new actualEthers.Interface(['function f() view returns (bytes)']).decodeFunctionResult('f', '0x1234');
+      } catch (err) {
+        decodeError = err;
+      }
+      expect(decodeError.code).toBe('BAD_DATA');
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: decodeError }])));
+      const failing = await resolveEnsContent('abi-decoding.box');
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+    });
+
     test.each([
       ['a JSON-RPC internal error', { code: -32603, message: 'internal error' }],
       ['a node that did not respond', { code: -32000, message: 'no response' }],
@@ -686,6 +719,26 @@ describe('ens-resolver', () => {
       await resolveEnsContent(`${slug}.box`);
 
       // Two endpoints sit in quarantine: one source is left.
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const next = await resolveEnsContent(`after-${slug}.box`);
+      expect(next.trust.level).toBe('unverified');
+      expect(next.trust.queried).toEqual([new URL(TEST_PROVIDERS[2]).host]);
+    });
+
+    test.each([
+      ['a socket reset', () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+      ['a refused connection behind happy eyeballs', () => Object.assign(new AggregateError([Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })]), {})],
+      ['an answer without a response for the request', () => actualEthers.makeError('missing response for request', 'BAD_DATA', { value: [], info: { payload: { id: 1 } } })],
+    ])('%s quarantines the endpoint', async (label, makeFailure) => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: makeFailure() }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: makeFailure() }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+      const slug = label.replace(/\W+/g, '-');
+      await resolveEnsContent(`${slug}.box`);
+
       routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
       const next = await resolveEnsContent(`after-${slug}.box`);
       expect(next.trust.level).toBe('unverified');

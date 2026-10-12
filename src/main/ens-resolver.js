@@ -510,6 +510,12 @@ function invalidateCachedProvider() {
 
 const PROVIDER_FAILURE_TEXT = /502|503|504|429|timeout|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i;
 
+// Socket-level failures below ethers carry Node's own error code.
+const SOCKET_ERROR_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN',
+  'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
+]);
+
 // Revert evidence: return data as even-length hex, or a legacy
 // "Reverted 0x…" text.
 function isRevertData(data) {
@@ -529,10 +535,10 @@ function hasRevertEvidence(err, rpcError) {
 
 // Check if an error is a provider/network error that warrants retry.
 //
-// Text decides only where it holds neither request data nor contract
-// output. An ethers error's full message embeds the call (whose calldata
-// hex holds arbitrary digits), and a revert's node message carries the
-// contract's reason, so neither can mark an endpoint as failed.
+// Codes decide, not text: ethers' messages, short ones included, can embed
+// the request (a call's data, the name being encoded), and a revert's node
+// message carries the contract's reason. The one text matched is the node's
+// own error message, and only when nothing says the call reverted.
 function isProviderError(err) {
   const code = err.code || '';
 
@@ -540,6 +546,13 @@ function isProviderError(err) {
   if (code === 'SERVER_ERROR' || code === 'NETWORK_ERROR' || code === 'TIMEOUT') {
     return true;
   }
+  if (SOCKET_ERROR_CODES.has(code)) return true;
+  if (Array.isArray(err.errors) && err.errors.some((inner) => SOCKET_ERROR_CODES.has(inner?.code))) {
+    return true;
+  }
+  // The JSON-RPC answer held no response for the request: a protocol
+  // failure (ethers' own message), unlike an ABI decoding BAD_DATA.
+  if (code === 'BAD_DATA' && err.shortMessage === 'missing response for request') return true;
 
   // CALL_EXCEPTION can mean contract reverted OR RPC provider failed:
   // ethers turns every JSON-RPC error of an eth_call into one.
@@ -551,15 +564,11 @@ function isProviderError(err) {
     // Without revert evidence the node's own message describes a node
     // failure ("no response", an HTTP status relayed by a gateway).
     if (hasRevertEvidence(err, rpcError)) return false;
-    return /no response/i.test(String(rpcError.message || ''))
-      || PROVIDER_FAILURE_TEXT.test(String(rpcError.message || ''));
+    const message = String(rpcError.message || '');
+    return /no response/i.test(message) || PROVIDER_FAILURE_TEXT.test(message);
   }
 
-  // Other ethers errors: their short message (the full one embeds request
-  // details). Errors from below ethers (a socket failure, say) carry only
-  // their own message.
-  const text = typeof err.shortMessage === 'string' ? err.shortMessage : (err.message || '');
-  return PROVIDER_FAILURE_TEXT.test(text);
+  return false;
 }
 
 // Canonical UR custom errors we classify. ethers v6 surfaces the 4-byte
