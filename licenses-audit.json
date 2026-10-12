@@ -552,23 +552,6 @@
       "issues": []
     },
     {
-      "name": "@metamask/browser-passworder",
-      "version": "6.0.0",
-      "type": "direct",
-      "scope": "runtime",
-      "source": { "ecosystem": "npm", "url": "https://github.com/MetaMask/browser-passworder" },
-      "license": {
-        "spdx": ["ISC"],
-        "raw": "ISC",
-        "license_files": ["LICENSE"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": []
-    },
-    {
       "name": "@safe-global/protocol-kit",
       "version": "8.0.7",
       "type": "direct",
@@ -578,23 +561,6 @@
         "spdx": ["MIT"],
         "raw": "MIT",
         "license_files": ["LICENSE.md"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": []
-    },
-    {
-      "name": "@scure/bip39",
-      "version": "2.4.0",
-      "type": "direct",
-      "scope": "runtime",
-      "source": { "ecosystem": "npm", "url": "https://github.com/paulmillr/scure-bip39" },
-      "license": {
-        "spdx": ["MIT"],
-        "raw": "MIT",
-        "license_files": ["LICENSE"],
         "notice_required": false
       },
       "bundled_with_app": true,
@@ -630,23 +596,6 @@
         "raw": "Apache-2.0",
         "license_files": ["LICENSE"],
         "notice_required": true
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": []
-    },
-    {
-      "name": "micro-key-producer",
-      "version": "0.10.2",
-      "type": "direct",
-      "scope": "runtime",
-      "source": { "ecosystem": "npm", "url": "https://github.com/paulmillr/micro-key-producer" },
-      "license": {
-        "spdx": ["MIT"],
-        "raw": "MIT",
-        "license_files": ["LICENSE"],
-        "notice_required": false
       },
       "bundled_with_app": true,
       "linking_or_integration": "js-import",
@@ -707,29 +656,6 @@
           "kind": "copyleft",
           "details": "Reached through @openlv/signaling and bundled, unmodified, into src/renderer/vendor/openlv.esm.js. Covered by the same LGPL relinking story as the openlv entry.",
           "recommended_fix": "Covered by the vendored-bundle entry's handling."
-        }
-      ]
-    },
-    {
-      "name": "@ethereumjs/rlp, @ethereumjs/tx, @ethereumjs/util",
-      "version": "4.0.1, 4.2.0, 8.1.0",
-      "type": "transitive",
-      "scope": "runtime",
-      "source": { "ecosystem": "npm", "url": "https://github.com/ethereumjs/ethereumjs-monorepo" },
-      "license": {
-        "spdx": ["MPL-2.0"],
-        "raw": "MPL-2.0",
-        "license_files": ["LICENSE"],
-        "notice_required": true
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": [
-        {
-          "kind": "copyleft",
-          "details": "MPL-2.0, same as the project's own license; consumed unmodified.",
-          "recommended_fix": "Covered by the NOTICES npm-dependencies section."
         }
       ]
     },
@@ -820,17 +746,17 @@
     }
   ],
   "production_license_distribution": {
-    "unique_packages": 273,
+    "unique_packages": 241,
     "counts": {
-      "MIT": 198,
-      "Apache-2.0": 21,
-      "ISC": 20,
-      "MPL-2.0": 13,
+      "MIT": 174,
+      "Apache-2.0": 19,
+      "ISC": 18,
+      "MPL-2.0": 10,
       "LGPL-3.0-only": 4,
       "LGPL-3.0": 1,
       "Apache-2.0 OR MIT": 3,
       "BSD-3-Clause": 4,
-      "0BSD": 3,
+      "0BSD": 2,
       "(MIT OR X11)": 1,
       "(MIT OR WTFPL)": 1,
       "(BSD-2-Clause OR MIT OR Apache-2.0)": 1,
@@ -937,7 +863,7 @@
       "issues": []
     }
   ],
-  "summary": { "green": 266, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
+  "summary": { "green": 234, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
   "blockers": [],
   "resolved_since_last_audit": [
     {
