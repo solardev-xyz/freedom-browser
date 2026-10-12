@@ -19,7 +19,7 @@
  * distinctly so approval UIs can tell "declined on device" from failure.
  */
 
-const { Transaction, getAddress, verifyMessage, verifyTypedData } = require('ethers');
+const { Transaction, getAddress, verifyMessage, recoverAddress } = require('ethers');
 
 const { withVaultAccount, isValidWalletIndex } = require('./vault-access');
 const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
@@ -31,6 +31,7 @@ const {
   normalizeTypedData,
   toCoreTypedData,
   toCoreTransaction,
+  assertBoundedTypeGraph,
 } = require('./signing-utils');
 
 /**
@@ -70,16 +71,19 @@ function createVaultBackend(walletIndex) {
     err?.code === 'vault_locked' ? err : new Error(`${label}: ${err.message}`, { cause: err });
   return {
     getAddress: () => withVaultAccount(walletIndex, () => ownAddress()),
+    // The expected address is resolved before signing: a lock right after
+    // the core signs must not turn a good signature into a failure.
     signTransaction: (request) =>
       withVaultAccount(walletIndex, async (key) => {
         const { tx, unsigned, from } = toCoreTransaction(request);
+        const expected = await ownAddress();
         // Wallet.signTransaction's check.
-        if (from != null && getAddress(from) !== (await ownAddress())) {
+        if (from != null && getAddress(from) !== expected) {
           throw new Error('transaction from address mismatch');
         }
         const { raw } = await vaultBackend.sign.transaction(key, tx);
         const signed = Transaction.from(raw);
-        if (signed.unsignedHash !== unsigned.unsignedHash || signed.from !== (await ownAddress())) {
+        if (signed.unsignedHash !== unsigned.unsignedHash || signed.from !== expected) {
           throw mismatch();
         }
         return raw;
@@ -88,27 +92,32 @@ function createVaultBackend(walletIndex) {
       withVaultAccount(walletIndex, async (key) => {
         // Strings sign as UTF-8, as ethers' signMessage does.
         const bytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
+        const expected = await ownAddress();
         let signature;
         try {
           signature = await vaultBackend.sign.message(key, bytes);
         } catch (err) {
           throw wrapped('Message signing failed', err);
         }
-        if (verifyMessage(bytes, signature) !== (await ownAddress())) throw mismatch();
+        if (verifyMessage(bytes, signature) !== expected) throw mismatch();
         return signature;
       }),
     signTypedData: (typedData) =>
       withVaultAccount(walletIndex, async (key) => {
         const data = toCoreTypedData(typedData);
+        const expected = await ownAddress();
+        let digest;
         let signature;
         try {
+          // The digest from the core's bounded encoder, not ethers' (whose
+          // type walk is exponential on some graphs): the check is that the
+          // signature is this account's over it.
+          digest = await vaultBackend.typedDataHash(data);
           signature = await vaultBackend.sign.typedData(key, data);
         } catch (err) {
           throw wrapped('Typed data signing failed', err);
         }
-        if (verifyTypedData(data.domain, data.types, data.message, signature) !== (await ownAddress())) {
-          throw mismatch();
-        }
+        if (recoverAddress(digest, signature) !== expected) throw mismatch();
         return signature;
       }),
   };
@@ -172,7 +181,12 @@ function getSigner(walletIndex) {
     signTransaction: (tx) => backend.signTransaction(tx),
     // async: a malformed input rejects like any other signing failure.
     signMessage: async (message) => backend.signMessage(normalizeMessage(message)),
-    signTypedData: async (typedData) => backend.signTypedData(normalizeTypedData(typedData)),
+    signTypedData: async (typedData) => {
+      const normalized = normalizeTypedData(typedData);
+      // Every backend: the Ledger and phone ones walk the types with ethers.
+      assertBoundedTypeGraph(normalized?.types);
+      return backend.signTypedData(normalized);
+    },
   };
   // Optional capability: backends that sign AND broadcast through their
   // own channel (phone wallets only expose eth_sendTransaction). Callers

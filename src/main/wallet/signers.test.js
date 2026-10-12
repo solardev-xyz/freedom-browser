@@ -168,6 +168,53 @@ describe('getSigner (vault-backed)', () => {
     expect(verifyTypedData(domain, types, message, signature)).toBe(testWallet.address);
   });
 
+  test('a lock right after the core signs does not discard the signature', async () => {
+    const signer = getSigner(0);
+    // The simulated core locks the vault as soon as it has signed (its
+    // first key use is the address lookup, the second the signature).
+    let uses = 0;
+    mockIdentity.exportPrivateKey.mockImplementation(() => {
+      uses += 1;
+      if (uses === 2) queueMicrotask(() => mockIdentity.isUnlocked.mockReturnValue(false));
+      return TEST_PRIVATE_KEY;
+    });
+    await expect(signer.signMessage('just in time')).resolves.toBe(
+      await testWallet.signMessage('just in time')
+    );
+  });
+
+  test('a diamond-shaped type graph is refused before any backend walks it', async () => {
+    // 40 levels: ethers' TypedDataEncoder would visit 2^40 paths.
+    const types = {};
+    for (let level = 0; level < 40; level += 1) {
+      types[`T${level}`] = [
+        { name: 'a', type: `A${level}` },
+        { name: 'b', type: `B${level}` },
+      ];
+      types[`A${level}`] = [{ name: 'x', type: `T${level + 1}` }];
+      types[`B${level}`] = [{ name: 'x', type: `T${level + 1}` }];
+    }
+    types.T40 = [{ name: 'v', type: 'uint8' }];
+    const started = Date.now();
+    await expect(getSigner(0).signTypedData({ domain: {}, types, message: {} })).rejects.toThrow(
+      'too many nested types'
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(mockCore.calls).toEqual([]);
+  });
+
+  test('a field named __proto__ reaches the core as data', () => {
+    // (ethers' own Wallet.signTypedData drops it; the core's encoder keeps
+    // it, so the conversion must too.)
+    const { toCoreTypedData } = require('./signing-utils');
+    const types = { M: [{ name: '__proto__', type: 'uint256' }] };
+    const message = JSON.parse('{"__proto__": "7"}');
+    const data = toCoreTypedData({ domain: { name: 'x' }, types, message });
+    expect(Object.getOwnPropertyNames(data.message)).toEqual(['__proto__']);
+    expect(Object.getOwnPropertyDescriptor(data.message, '__proto__').value).toBe('7');
+    expect(JSON.stringify(data.message)).toBe('{"__proto__":"7"}');
+  });
+
   test('a 0x message must be well-formed hex', async () => {
     const signer = getSigner(0);
     await expect(signer.signMessage('0xzz')).rejects.toThrow('Invalid hex message');

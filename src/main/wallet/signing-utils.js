@@ -64,11 +64,62 @@ function toCoreValue(value) {
   if (value && typeof value === 'object') {
     const out = {};
     for (const [key, item] of Object.entries(value)) {
-      if (item !== undefined) out[key] = toCoreValue(item);
+      // defineProperty, not assignment: a field named __proto__ is data.
+      if (item !== undefined) {
+        Object.defineProperty(out, key, {
+          value: toCoreValue(item),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
     }
     return out;
   }
   return value;
+}
+
+// ethers' TypedDataEncoder walks a shared subtype once per path to it, so a
+// diamond-shaped type graph costs it exponential time; the Ledger and phone
+// backends run it on dApp input. This bound is far above any real payload.
+const MAX_TYPE_PATHS = 10000;
+
+/**
+ * Refuses a type graph ethers would take too long to walk: counts, in linear
+ * time, the paths its dependency walk would visit from every type.
+ * @param {object} types
+ */
+function assertBoundedTypeGraph(types) {
+  if (!types || typeof types !== 'object') return;
+  const names = Object.keys(types);
+  const children = new Map(names.map((name) => [name, new Set()]));
+  for (const name of names) {
+    for (const field of Array.isArray(types[name]) ? types[name] : []) {
+      const base = String(field?.type ?? '').replace(/\[.*$/, '');
+      if (base !== name && children.has(base)) children.get(name).add(base);
+    }
+  }
+  const paths = new Map();
+  const visiting = new Set();
+  const pathsFrom = (name) => {
+    if (paths.has(name)) return paths.get(name);
+    // A cycle: ethers refuses it; let it say so.
+    if (visiting.has(name)) return 1;
+    visiting.add(name);
+    let total = 1;
+    for (const child of children.get(name)) {
+      total += pathsFrom(child);
+      if (total > MAX_TYPE_PATHS) break;
+    }
+    visiting.delete(name);
+    paths.set(name, total);
+    return total;
+  };
+  for (const name of names) {
+    if (pathsFrom(name) > MAX_TYPE_PATHS) {
+      throw new Error('Typed data has too many nested types');
+    }
+  }
 }
 
 /**
@@ -128,6 +179,7 @@ module.exports = {
   withoutDomainType,
   toCoreTypedData,
   toCoreTransaction,
+  assertBoundedTypeGraph,
   getEip712WirePayload,
   messageToBytes,
 };

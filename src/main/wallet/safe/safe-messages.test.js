@@ -246,6 +246,73 @@ describe('startSafeMessage', () => {
     expect(input).not.toHaveProperty('primaryType');
   });
 
+  describe('while the core hashes the request (an await)', () => {
+    const typedRequest = { method: 'eth_signTypedData_v4', params: [SAFE_ADDRESS, DAPP_TYPED_DATA] };
+    // Holds the core's hash until released.
+    const pauseHash = () => {
+      let release;
+      mockTypedDataHash.mockImplementationOnce(
+        (data) =>
+          new Promise((resolve) => {
+            release = () =>
+              resolve(require('ethers').TypedDataEncoder.hash(data.domain, data.types, data.message));
+          })
+      );
+      return () => release();
+    };
+    const start = () =>
+      startSafeMessage({
+        safeIndex: 5,
+        request: typedRequest,
+        display: { site: 'app.example', method: 'eth_signTypedData_v4' },
+        requester: TAB_A,
+      });
+
+    test.each([
+      ['navigates', () => mockWebContentsById.get(TAB_A.webContentsId).emit('did-navigate')],
+      ['closes', () => destroyWebContents(TAB_A.webContentsId)],
+    ])('a page that %s meanwhile gets no session and no signatures', async (_label, leave) => {
+      const release = pauseHash();
+      const starting = start();
+      leave();
+      release();
+      await expect(starting).rejects.toThrow('went away');
+      expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+      // Nothing was left behind: another tab can start right away.
+      fakeWebContents(TAB_B.webContentsId);
+      await expect(
+        startSafeMessage({
+          safeIndex: 5,
+          request: typedRequest,
+          display: { site: 'app.example', method: 'eth_signTypedData_v4' },
+          requester: TAB_B,
+        })
+      ).resolves.toMatchObject({ collected: expect.any(Number) });
+    });
+
+    test('an account deleted meanwhile gets no session', async () => {
+      const release = pauseHash();
+      const starting = start();
+      const saved = mockWalletRecords[5];
+      delete mockWalletRecords[5];
+      try {
+        release();
+        await expect(starting).rejects.toThrow();
+        expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+      } finally {
+        mockWalletRecords[5] = saved;
+      }
+    });
+
+    test('the page listeners are removed once hashing is done', async () => {
+      await start();
+      const contents = mockWebContentsById.get(TAB_A.webContentsId);
+      // Only the session's own lifecycle listeners remain.
+      expect(contents.listenerCount('did-navigate')).toBe(1);
+      expect(contents.listenerCount('destroyed')).toBe(1);
+    });
+  });
+
   test('a typed-data request the core refuses never reaches the owners', async () => {
     mockTypedDataHash.mockRejectedValueOnce(
       Object.assign(new Error('bool takes only true or false'), { code: 'invalid_argument' })
