@@ -920,7 +920,7 @@ describe('CoreClient', () => {
     test("errors are fixed codes and messages, never a handler's text", async () => {
       const { send, replies } = await served((client) => {
         client.handle('shell.gateway', async () => {
-          throw new ShellError('refused', 'Refused');
+          throw new ShellError('refused');
         });
         client.handle('shell.tezos', async () => {
           throw new Error('connect ECONNREFUSED https://key@rpc.example');
@@ -966,7 +966,7 @@ describe('CoreClient', () => {
       send({ id: 1, method: 'shell.rpc', params: {} });
       for (let i = 0; i < 4; i++) await tick();
       expect(replies()).toEqual([
-        { type: 'response', id: 1, error: { code: 'too_large', message: 'Result too large' } },
+        { type: 'response', id: 1, error: { code: 'too_large', message: 'Too large' } },
       ]);
     });
 
@@ -1004,6 +1004,102 @@ describe('CoreClient', () => {
       finish({ status: 200 });
       for (let i = 0; i < 3; i++) await tick();
       expect(replies()).toEqual([]);
+    });
+
+    test('a request cancelled in the same read never reaches its handler', async () => {
+      const handler = jest.fn(() => new Promise(() => {}));
+      const { core, replies } = await served((client) => client.handle('shell.rpc', handler));
+      core.stdout.write(
+        Buffer.concat([
+          encodeFrame({ type: 'request', id: 1, method: 'shell.rpc', params: {} }),
+          encodeFrame({ type: 'cancel', id: 1 }),
+        ])
+      );
+      for (let i = 0; i < 4; i++) await tick();
+      expect(handler).not.toHaveBeenCalled();
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: { code: 'cancelled', message: 'Cancelled' } },
+      ]);
+    });
+
+    test('a generation is fenced as soon as it ends: exit without close, or a fault', async () => {
+      for (const end of [
+        (core) => core.exit(1, null, { close: false }),
+        (core) => core.reply({ type: 'bogus' }),
+      ]) {
+        let signal;
+        let finish;
+        const { core, send, replies } = await served((client) =>
+          client.handle('shell.rpc', (_params, context) => {
+            signal = context.signal;
+            return new Promise((resolve) => {
+              finish = resolve;
+            });
+          })
+        );
+        send({ id: 1, method: 'shell.rpc', params: {} });
+        await tick();
+        end(core);
+        await tick();
+        expect(signal.aborted).toBe(true);
+        finish({ status: 200 });
+        for (let i = 0; i < 3; i++) await tick();
+        expect(replies()).toEqual([]);
+      }
+    });
+
+    test('a request whose generation ended before dispatch never runs', async () => {
+      const handler = jest.fn(async () => ({}));
+      const { core, replies } = await served((client) => client.handle('shell.rpc', handler));
+      core.stdout.write(
+        Buffer.concat([
+          encodeFrame({ type: 'request', id: 1, method: 'shell.rpc', params: {} }),
+          encodeFrame({ type: 'bogus' }),
+        ])
+      );
+      for (let i = 0; i < 4; i++) await tick();
+      expect(handler).not.toHaveBeenCalled();
+      expect(replies()).toEqual([]);
+    });
+
+    test("pending replies hold their place, and never take requests' room", async () => {
+      const { client, core, send } = await served((client) =>
+        client.handle('shell.rpc', async () => ({ body: 'x'.repeat(80 * 1024) }))
+      );
+      // stdin accepts the replies but never finishes writing them.
+      core.stuck = true;
+      for (let id = 1; id <= MAX_INCOMING; id++) send({ id, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 6; i++) await tick();
+      // 20 MiB of replies waiting: a vault request is still admitted.
+      // (The stalled pipe buffers it, so it simply stays pending.)
+      const lock = client.request('vault.lock').catch((e) => e);
+      expect(await Promise.race([lock, tick().then(() => 'pending')])).toBe('pending');
+      // Their entries are held until written: one more request is a fault.
+      send({ id: MAX_INCOMING + 1, method: 'shell.rpc', params: {} });
+      await tick();
+      expect(core.killed).toBe('SIGKILL');
+    });
+
+    test('codes outside the fixed set, supplied text and unrepresentable results are internal', async () => {
+      const { send, replies } = await served((client) => {
+        client.handle('shell.gateway', async () => {
+          const err = new ShellError('weird_code');
+          err.message = 'https://key@rpc.example said no';
+          throw err;
+        });
+        client.handle('shell.rpc', async () => () => {});
+        client.handle('shell.tezos', async () => ({ toJSON: () => undefined }));
+      });
+      send({ id: 1, method: 'shell.gateway', params: {} });
+      send({ id: 2, method: 'shell.rpc', params: {} });
+      send({ id: 3, method: 'shell.tezos', params: {} });
+      for (let i = 0; i < 6; i++) await tick();
+      const internal = { code: 'internal', message: 'Internal error' };
+      expect(replies()).toEqual([
+        { type: 'response', id: 1, error: internal },
+        { type: 'response', id: 2, error: internal },
+        { type: 'response', id: 3, error: internal },
+      ]);
     });
   });
 });

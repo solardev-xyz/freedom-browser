@@ -112,13 +112,26 @@ class CoreError extends Error {
 }
 
 /**
- * A handler's terminal error for one of the core's requests: a fixed code
- * and message, never a URL or a server's text (design 0004, Transport
- * errors).
+ * The terminal errors main sends for the core's requests, each with its
+ * fixed message (design 0004, Transport errors): none carries a URL or a
+ * server's text.
  */
+const SHELL_ERRORS = Object.freeze({
+  timeout: 'Timed out',
+  network: 'Network error',
+  refused: 'Refused',
+  too_large: 'Too large',
+  cancelled: 'Cancelled',
+  stale_generation: 'Stale generation',
+  unknown_method: 'Unknown method',
+  internal: 'Internal error',
+});
+
+/** A handler's terminal error for one of the core's requests: one of
+ * SHELL_ERRORS' codes (anything else is sent as internal). */
 class ShellError extends Error {
-  constructor(code, message = code) {
-    super(message);
+  constructor(code) {
+    super(code);
     this.name = 'ShellError';
     this.code = code;
   }
@@ -131,9 +144,16 @@ function unavailable(message = 'The core is not running') {
 /** A handler's failure as a reply's error: a ShellError's code, cancelled
  * once the signal aborted, and otherwise `internal`, never its text. */
 function shellErrorBody(err, signal) {
-  if (err instanceof ShellError) return { code: err.code, message: err.message };
-  if (signal.aborted) return { code: 'cancelled', message: 'Cancelled' };
-  return { code: 'internal', message: 'Internal error' };
+  if (err instanceof ShellError) return shellError(err.code);
+  if (signal.aborted) return shellError('cancelled');
+  return shellError('internal');
+}
+
+/** `code`'s error body, with its fixed message; an unknown code is internal. */
+function shellError(code) {
+  return Object.hasOwn(SHELL_ERRORS, code)
+    ? { code, message: SHELL_ERRORS[code] }
+    : { code: 'internal', message: SHELL_ERRORS.internal };
 }
 
 function clip(text) {
@@ -177,8 +197,13 @@ class Generation {
     this.number = number;
     this.child = null;
     this.pending = new Map(); // id -> { settle(outcome) }
-    this.incoming = new Map(); // the core's request id -> AbortController
+    // The core's requests, by id, from arrival until their reply is written:
+    // MAX_INCOMING bounds them and their pending replies together.
+    this.incoming = new Map(); // id -> AbortController
     this.lastIncomingId = 0;
+    // Bytes of replies to the core still being written: their own account,
+    // apart from requests' admission.
+    this.replyBytes = 0;
     this.nextId = 1;
     this.writeBytes = 0;
     this.decoder = new FrameDecoder();
@@ -321,6 +346,7 @@ class CoreClient extends EventEmitter {
     const stopped = new Promise((resolve) => this.stopWaiters.push(resolve));
     // Also for a generation already ending after a fault: stdin is closed
     // once and the grace kill is armed.
+    this.fence(gen);
     if (!gen.exited && !gen.stopping) {
       gen.stopping = true;
       gen.cause = gen.cause || 'shutdown';
@@ -447,6 +473,7 @@ class CoreClient extends EventEmitter {
   onChildExit(gen, code, signal) {
     if (gen.exited || gen.retired) return;
     gen.exited = true;
+    this.fence(gen);
     gen.exitCode = code;
     gen.exitSignal = signal;
     this.cancelTimer(gen, gen.helloTimer);
@@ -495,9 +522,7 @@ class CoreClient extends EventEmitter {
     this.teardown(gen);
     // The core's requests die with it: their handlers stop, and their
     // replies have nowhere to go.
-    const incoming = [...gen.incoming.values()];
-    gen.incoming.clear();
-    for (const controller of incoming) controller.abort();
+    this.fence(gen);
     const pending = [...gen.pending.values()];
     gen.pending.clear();
     for (const entry of pending) entry.settle({ error: unavailable('The core exited') });
@@ -557,6 +582,7 @@ class CoreClient extends EventEmitter {
     if (gen.retired) return;
     gen.cause = gen.cause || cause;
     gen.ending = true;
+    this.fence(gen);
     this.kill(gen);
   }
 
@@ -612,6 +638,7 @@ class CoreClient extends EventEmitter {
   protocolFault(gen, category) {
     if (gen.retired || gen.distrusted) return;
     gen.distrusted = true;
+    this.fence(gen);
     this.log.error('[Core] protocol error', { category });
     this.end(gen, 'protocol');
   }
@@ -753,27 +780,44 @@ class CoreClient extends EventEmitter {
     if (gen.incoming.size >= MAX_INCOMING) return this.protocolFault(gen, 'too_many_requests');
     gen.lastIncomingId = id;
     // A generation on its way out serves nothing more.
-    if (gen.ending || gen.exited || gen !== this.current) return undefined;
-    const handler = this.handlers.get(method);
-    if (!handler) {
-      this.respond(gen, id, { error: { code: 'unknown_method', message: 'Unknown method' } });
-      return undefined;
-    }
+    if (!this.serving(gen)) return undefined;
     const controller = new AbortController();
     gen.incoming.set(id, controller);
+    const handler = this.handlers.get(method);
+    if (!handler) {
+      this.respond(gen, id, controller, { error: shellError('unknown_method') });
+      return undefined;
+    }
     Promise.resolve()
-      .then(() => handler(params ?? {}, { signal: controller.signal }))
-      .then(
-        (result) => ({ result: result ?? {} }),
-        (err) => ({ error: shellErrorBody(err, controller.signal) })
-      )
+      .then(() => {
+        // Fenced before it started (its generation ended), or cancelled in
+        // the same read as it arrived: the handler never runs.
+        if (gen.incoming.get(id) !== controller) return null;
+        if (controller.signal.aborted) return { error: shellError('cancelled') };
+        return Promise.resolve()
+          .then(() => handler(params ?? {}, { signal: controller.signal }))
+          .then(
+            (result) => ({ result: result ?? {} }),
+            (err) => ({ error: shellErrorBody(err, controller.signal) })
+          );
+      })
       .then((outcome) => {
-        // Gone with its generation: no reply.
-        if (gen.incoming.get(id) !== controller) return;
-        gen.incoming.delete(id);
-        this.respond(gen, id, outcome);
+        if (outcome) this.respond(gen, id, controller, outcome);
       });
     return undefined;
+  }
+
+  /** Whether `gen` still serves the core's requests. */
+  serving(gen) {
+    return gen === this.current && !gen.ending && !gen.exited && !gen.retired && !gen.distrusted;
+  }
+
+  /** The generation stops serving the core's requests: their handlers
+   * abort, and no reply goes for them. */
+  fence(gen) {
+    const incoming = [...gen.incoming.values()];
+    gen.incoming.clear();
+    for (const controller of incoming) controller.abort();
   }
 
   /** The core stopped waiting: the handler's signal aborts, and its one
@@ -785,29 +829,41 @@ class CoreClient extends EventEmitter {
     return undefined;
   }
 
-  /** Writes the reply to one of the core's requests. Replies are bounded by
-   * the core's outstanding requests, so they skip the request budget. */
-  respond(gen, id, outcome) {
-    if (gen.retired || gen.exited || gen.stdinEnded) return;
+  /**
+   * Writes the reply to one of the core's requests, unless its generation
+   * fenced it. Its entry is held until the write completes, so the core's
+   * MAX_INCOMING bounds pending replies too; their bytes are their own
+   * account, so they never take the room requests (vault.lock, shutdown)
+   * need.
+   */
+  respond(gen, id, controller, outcome) {
+    if (gen.incoming.get(id) !== controller) return;
+    if (gen.retired || gen.exited || gen.stdinEnded || !gen.child) {
+      gen.incoming.delete(id);
+      return;
+    }
     let frame;
     try {
+      // A result JSON can't represent (a function, a symbol, a toJSON
+      // returning nothing) would leave the response without an outcome.
+      if ('result' in outcome && JSON.stringify(outcome.result) === undefined) {
+        throw new TypeError('unrepresentable result');
+      }
       frame = encodeFrame({ type: 'response', id, ...outcome });
     } catch (err) {
-      const error =
-        err instanceof FrameError
-          ? { code: 'too_large', message: 'Result too large' }
-          : { code: 'internal', message: 'Internal error' };
+      const error = shellError(err instanceof FrameError ? 'too_large' : 'internal');
       frame = encodeFrame({ type: 'response', id, error });
     }
-    gen.writeBytes += frame.length;
+    gen.replyBytes += frame.length;
+    const written = (err) => {
+      gen.replyBytes -= frame.length;
+      if (gen.incoming.get(id) === controller) gen.incoming.delete(id);
+      if (err) this.connectionFailed(gen, 'stdin_error');
+    };
     try {
-      gen.child.stdin.write(frame, (err) => {
-        gen.writeBytes -= frame.length;
-        if (err) this.connectionFailed(gen, 'stdin_error');
-      });
+      gen.child.stdin.write(frame, written);
     } catch {
-      gen.writeBytes -= frame.length;
-      this.connectionFailed(gen, 'stdin_error');
+      written(true);
     }
   }
 
@@ -902,6 +958,7 @@ module.exports = {
   CoreClient,
   CoreError,
   ShellError,
+  SHELL_ERRORS,
   MAX_INCOMING,
   scrubbedEnv,
   PROTOCOL_VERSION,
