@@ -10,17 +10,14 @@ const mockIdentity = {
 };
 const mockResetVaultAutoLockTimer = jest.fn();
 
-// The identity core's compat.private_key, driven by mockIdentity: refused
-// with "Vault is locked" while locked.
+// The identity core's signing, simulated with ethers and the test key
+// (test/helpers/simulated-vault-core.js); mockIdentity drives the lock.
+const mockCore = { calls: [] };
 jest.mock('../core/vault-backend', () => ({
-  vaultBackend: {
-    compat: {
-      privateKey: async (index) => {
-        if (!mockIdentity.isUnlocked()) throw new Error('Vault is locked');
-        return mockIdentity.exportPrivateKey(index);
-      },
-    },
-  },
+  vaultBackend: require('../../../test/helpers/simulated-vault-core').simulatedVaultBackend(
+    mockIdentity,
+    mockCore
+  ),
 }));
 jest.mock('../identity-manager', () => ({
   getWalletRecord: jest.fn(() => null),
@@ -40,6 +37,7 @@ beforeEach(() => {
   mockIdentity.isUnlocked.mockReturnValue(true);
   mockIdentity.exportPrivateKey.mockReturnValue(TEST_PRIVATE_KEY);
   mockResetVaultAutoLockTimer.mockClear();
+  mockCore.calls = [];
 });
 
 describe('createX402Client', () => {
@@ -51,7 +49,7 @@ describe('createX402Client', () => {
   test('exposes the signer address on the client so callers can stamp from_address', async () => {
     const client = await createX402Client(0);
     expect(client.address).toBe(TEST_ADDRESS);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0);
+    expect(mockCore.calls).toContainEqual(['keys.addresses', [0]]);
   });
 
   test('payment signing throws if the vault re-locks after client construction', async () => {

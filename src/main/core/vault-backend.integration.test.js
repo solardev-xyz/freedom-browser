@@ -7,7 +7,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { Wallet, TypedDataEncoder } = require('ethers');
 const { CoreClient } = require('./core-client');
+const { toCoreTransaction, toCoreTypedData } = require('../wallet/signing-utils');
 
 const binary = process.env.FREEDOM_CORED_PATH;
 const describeIfBinary = binary ? describe : describe.skip;
@@ -102,6 +104,81 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
       code: 'vault_exists',
       message: 'Vault already exists. Use importVault to replace.',
     });
+  }, 60_000);
+
+  test('signing in the core matches ethers (freedom-core design 0002)', async () => {
+    await vaultBackend.importVault('testpass1', ABANDON);
+    const wallet = new Wallet(ABANDON_KEY);
+    const key = { kind: 'account', index: 0 };
+    const to = '0x8ba1f109551bD432803012645Ac136ddd64DBA72';
+    for (const request of [
+      {
+        type: 2,
+        chainId: 100n,
+        nonce: 5,
+        gasLimit: 21000n,
+        to,
+        value: 1n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+      },
+      { type: 0, chainId: 1, nonce: 0, gasLimit: 50000, to, value: 0, data: '0x1234', gasPrice: 7 },
+      {
+        chainId: 8453,
+        nonce: 1,
+        gasLimit: 21000,
+        to: null,
+        data: '0x6000',
+        maxFeePerGas: 3,
+        maxPriorityFeePerGas: 3,
+      },
+    ]) {
+      const { tx } = toCoreTransaction(request);
+      const { raw } = await vaultBackend.sign.transaction(key, tx);
+      expect(raw).toBe(await wallet.signTransaction(request));
+    }
+    for (const message of [Buffer.from('hi'), Buffer.alloc(0), Buffer.from('ff00', 'hex')]) {
+      expect(await vaultBackend.sign.message(key, message)).toBe(await wallet.signMessage(message));
+    }
+    const domain = { name: 'Ether Mail', version: '1', chainId: 1 };
+    const types = {
+      Mail: [
+        { name: 'contents', type: 'string' },
+        { name: 'amount', type: 'uint256' },
+      ],
+    };
+    const message = { contents: 'gm', amount: 10n ** 18n };
+    const data = toCoreTypedData({ domain, types: { ...types, EIP712Domain: [] }, message });
+    expect(await vaultBackend.sign.typedData(key, data)).toBe(
+      await wallet.signTypedData(domain, types, message)
+    );
+    expect(await vaultBackend.typedDataHash(data)).toBe(
+      TypedDataEncoder.hash(domain, types, message)
+    );
+    // Stricter than ethers: a bool given "false".
+    const bool = {
+      domain: {},
+      types: { M: [{ name: 'b', type: 'bool' }] },
+      message: { b: 'false' },
+    };
+    await expect(vaultBackend.sign.typedData(key, bool)).rejects.toMatchObject({
+      code: 'invalid_argument',
+    });
+    // Bee and publisher keys sign only chunks.
+    await expect(
+      vaultBackend.sign.message({ kind: 'bee_wallet' }, Buffer.from('x'))
+    ).rejects.toMatchObject({
+      code: 'invalid_argument',
+    });
+    // Locked: no signing, but the public hash still works.
+    await vaultBackend.lock();
+    await expect(vaultBackend.sign.message(key, Buffer.from('hi'))).rejects.toMatchObject({
+      code: 'vault_locked',
+      message: 'Vault is locked',
+    });
+    expect(await vaultBackend.typedDataHash(data)).toBe(
+      TypedDataEncoder.hash(domain, types, message)
+    );
   }, 60_000);
 
   test('node identities', async () => {

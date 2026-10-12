@@ -19,13 +19,20 @@
  * distinctly so approval UIs can tell "declined on device" from failure.
  */
 
-const { Wallet, computeAddress } = require('ethers');
+const { Transaction, getAddress, verifyMessage, recoverAddress } = require('ethers');
 
-const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
+const { withVaultAccount, isValidWalletIndex } = require('./vault-access');
 const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
+const { vaultBackend } = require('../core/vault-backend');
 const { createLedgerBackend } = require('./ledger/signer');
 const { createRemoteBackend } = require('./remote/signer');
-const { normalizeMessage, normalizeTypedData, withoutDomainType } = require('./signing-utils');
+const {
+  normalizeMessage,
+  normalizeTypedData,
+  toCoreTypedData,
+  toCoreTransaction,
+  assertBoundedTypeGraph,
+} = require('./signing-utils');
 
 /**
  * @typedef {Object} Signer
@@ -47,28 +54,71 @@ const { normalizeMessage, normalizeTypedData, withoutDomainType } = require('./s
  */
 
 function createVaultBackend(walletIndex) {
+  // Public and immutable for the index; resolved through the core.
+  let address = null;
+  const ownAddress = async () => {
+    if (address === null) {
+      const derived = await vaultBackend.addresses({ accounts: [walletIndex] });
+      address = derived.user_wallets[0].address;
+    }
+    return address;
+  };
+  // The core signs (freedom-core design 0002); main checks every result
+  // with ethers before it leaves, so a core fault can't produce a signature
+  // for something else or from another key.
+  const mismatch = () => new Error('The identity core returned a signature that does not match');
+  const wrapped = (label, err) =>
+    err?.code === 'vault_locked' ? err : new Error(`${label}: ${err.message}`, { cause: err });
   return {
-    getAddress: () => withVaultPrivateKey(walletIndex, (privateKey) => computeAddress(privateKey)),
-    signTransaction: (tx) =>
-      withVaultPrivateKey(walletIndex, (privateKey) => new Wallet(privateKey).signTransaction(tx)),
-    signMessage: (message) =>
-      withVaultPrivateKey(walletIndex, async (privateKey) => {
-        try {
-          // signMessage applies the EIP-191 prefix
-          return await new Wallet(privateKey).signMessage(message);
-        } catch (err) {
-          throw new Error(`Message signing failed: ${err.message}`, { cause: err });
+    getAddress: () => withVaultAccount(walletIndex, () => ownAddress()),
+    // The expected address is resolved before signing: a lock right after
+    // the core signs must not turn a good signature into a failure.
+    signTransaction: (request) =>
+      withVaultAccount(walletIndex, async (key) => {
+        const { tx, unsigned, from } = toCoreTransaction(request);
+        const expected = await ownAddress();
+        // Wallet.signTransaction's check.
+        if (from != null && getAddress(from) !== expected) {
+          throw new Error('transaction from address mismatch');
         }
+        const { raw } = await vaultBackend.sign.transaction(key, tx);
+        const signed = Transaction.from(raw);
+        if (signed.unsignedHash !== unsigned.unsignedHash || signed.from !== expected) {
+          throw mismatch();
+        }
+        return raw;
+      }),
+    signMessage: (message) =>
+      withVaultAccount(walletIndex, async (key) => {
+        // Strings sign as UTF-8, as ethers' signMessage does.
+        const bytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
+        const expected = await ownAddress();
+        let signature;
+        try {
+          signature = await vaultBackend.sign.message(key, bytes);
+        } catch (err) {
+          throw wrapped('Message signing failed', err);
+        }
+        if (verifyMessage(bytes, signature) !== expected) throw mismatch();
+        return signature;
       }),
     signTypedData: (typedData) =>
-      withVaultPrivateKey(walletIndex, async (privateKey) => {
+      withVaultAccount(walletIndex, async (key) => {
+        const data = toCoreTypedData(typedData);
+        const expected = await ownAddress();
+        let digest;
+        let signature;
         try {
-          const { domain, types, message } = typedData;
-          // ethers computes the domain separator itself
-          return await new Wallet(privateKey).signTypedData(domain, withoutDomainType(types), message);
+          // The digest from the core's bounded encoder, not ethers' (whose
+          // type walk is exponential on some graphs): the check is that the
+          // signature is this account's over it.
+          digest = await vaultBackend.typedDataHash(data);
+          signature = await vaultBackend.sign.typedData(key, data);
         } catch (err) {
-          throw new Error(`Typed data signing failed: ${err.message}`, { cause: err });
+          throw wrapped('Typed data signing failed', err);
         }
+        if (recoverAddress(digest, signature) !== expected) throw mismatch();
+        return signature;
       }),
   };
 }
@@ -129,8 +179,14 @@ function getSigner(walletIndex) {
       return address;
     },
     signTransaction: (tx) => backend.signTransaction(tx),
-    signMessage: (message) => backend.signMessage(normalizeMessage(message)),
-    signTypedData: (typedData) => backend.signTypedData(normalizeTypedData(typedData)),
+    // async: a malformed input rejects like any other signing failure.
+    signMessage: async (message) => backend.signMessage(normalizeMessage(message)),
+    signTypedData: async (typedData) => {
+      const normalized = normalizeTypedData(typedData);
+      // Every backend: the Ledger and phone ones walk the types with ethers.
+      assertBoundedTypeGraph(normalized?.types);
+      return backend.signTypedData(normalized);
+    },
   };
   // Optional capability: backends that sign AND broadcast through their
   // own channel (phone wallets only expose eth_sendTransaction). Callers

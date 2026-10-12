@@ -13,13 +13,13 @@ const CORE_REPO = process.env.FREEDOM_CORE_REPO || 'solardev-xyz/freedom-core';
 // The known-good release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run); never float on `latest`. Override with
 // FREEDOM_CORE_RELEASE_TAG for local testing.
-const PINNED_RELEASE_TAG = 'v0.1.0';
+const PINNED_RELEASE_TAG = 'v0.2.0';
 // In-repo trust root: the sha256 of the pinned release's SHA256SUMS asset
 // (the freedom-core release workflow prints it). Without it, a compromised
 // release could swap binaries and checksums together. Update with the tag.
-// v0.1.0: published as an immutable release; this digest matches the one its
+// v0.2.0: published as an immutable release; this digest matches the one its
 // publish job printed and was re-checked against the downloaded assets.
-const PINNED_SHA256SUMS_DIGEST = '59d0bfce9132f7b0d169f57b7758a47be83767025428195b65a742de4e77ee8c';
+const PINNED_SHA256SUMS_DIGEST = 'd1f52d4ff672ca04e434da344a056be81e5e3c83a96767714ac44246e8490a11';
 const CORE_RELEASE_TAG = process.env.FREEDOM_CORE_RELEASE_TAG || PINNED_RELEASE_TAG;
 
 const API_HOST = 'api.github.com';

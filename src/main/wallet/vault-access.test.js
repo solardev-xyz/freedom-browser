@@ -1,16 +1,9 @@
-// The identity core's compat.private_key: refused with "Vault is locked"
-// while mockVault.unlocked is false.
-const mockVault = { unlocked: true, key: null };
-const mockCompatPrivateKey = jest.fn(async () => {
-  if (!mockVault.unlocked) throw new Error('Vault is locked');
-  return mockVault.key;
-});
+// withVaultAccount: the guard every vault-account signing goes through. It
+// hands the operation a key reference for the identity core (freedom-core
+// design 0002); no key reaches JS.
 const mockResetVaultAutoLockTimer = jest.fn();
 const mockGetWalletRecord = jest.fn();
 
-jest.mock('../core/vault-backend', () => ({
-  vaultBackend: { compat: { privateKey: (...args) => mockCompatPrivateKey(...args) } },
-}));
 jest.mock('../identity-manager', () => ({
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
@@ -22,87 +15,70 @@ jest.mock('../vault-timer', () => ({
   resetVaultAutoLockTimer: mockResetVaultAutoLockTimer,
 }));
 
-const { withVaultPrivateKey } = require('./vault-access');
-
-const TEST_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+const { withVaultAccount } = require('./vault-access');
 
 beforeEach(() => {
-  // mockReset (vs mockClear) wipes the call list AND the impl — needed
-  // because individual tests below flip isUnlocked / exportPrivateKey
-  // mid-flight (locked-vault, throwing-callback) and we don't want one
-  // test's tampering to leak into the next.
-  mockVault.unlocked = true;
-  mockVault.key = TEST_KEY;
-  mockCompatPrivateKey.mockClear();
   mockGetWalletRecord.mockReset().mockReturnValue(null);
   mockResetVaultAutoLockTimer.mockClear();
 });
 
-describe('withVaultPrivateKey', () => {
-  test('passes the exported key to the callback and returns its result', async () => {
-    const result = await withVaultPrivateKey(0, (pk) => `signed:${pk}`);
-    expect(result).toBe(`signed:${TEST_KEY}`);
-    expect(mockCompatPrivateKey).toHaveBeenCalledWith(0);
-  });
-
-  test('awaits async callbacks', async () => {
-    const result = await withVaultPrivateKey(0, async (pk) => {
-      await Promise.resolve();
-      return pk.length;
-    });
-    expect(result).toBe(TEST_KEY.length);
+describe('withVaultAccount', () => {
+  test('passes the account key reference and returns the result', async () => {
+    const operation = jest.fn(async (key) => `signed with ${key.kind} ${key.index}`);
+    await expect(withVaultAccount(3, operation)).resolves.toBe('signed with account 3');
+    expect(operation).toHaveBeenCalledWith({ kind: 'account', index: 3 });
   });
 
   test('resets the auto-lock timer on success', async () => {
-    await withVaultPrivateKey(0, () => undefined);
+    await withVaultAccount(0, () => undefined);
     expect(mockResetVaultAutoLockTimer).toHaveBeenCalledTimes(1);
   });
 
-  test('throws "Vault is locked" when the vault is locked', async () => {
-    mockVault.unlocked = false;
-    await expect(withVaultPrivateKey(0, () => 'unreachable'))
-      .rejects.toThrow('Vault is locked');
-    // The core is asked, and refuses: no key, no callback.
+  test('a locked vault (refused by the core) does not reset the timer', async () => {
+    const locked = Object.assign(new Error('Vault is locked'), { code: 'vault_locked' });
+    await expect(
+      withVaultAccount(0, async () => {
+        throw locked;
+      })
+    ).rejects.toBe(locked);
     expect(mockResetVaultAutoLockTimer).not.toHaveBeenCalled();
   });
 
-  test('does not reset the timer when the callback throws', async () => {
-    // Preserves the existing per-handler invariant: only successful work
-    // extends the auto-lock lease. Failed signs / failed sends shouldn't
-    // keep an idle vault alive.
-    await expect(withVaultPrivateKey(0, () => {
-      throw new Error('signing failed');
-    })).rejects.toThrow('signing failed');
+  test('does not reset the timer when the operation throws', async () => {
+    // Only successful work extends the auto-lock lease. Failed signs or
+    // sends shouldn't keep an idle vault alive.
+    await expect(
+      withVaultAccount(0, () => {
+        throw new Error('signing failed');
+      })
+    ).rejects.toThrow('signing failed');
     expect(mockResetVaultAutoLockTimer).not.toHaveBeenCalled();
-  });
-
-  test('forwards the wallet index to exportPrivateKey', async () => {
-    await withVaultPrivateKey(3, () => undefined);
-    expect(mockCompatPrivateKey).toHaveBeenCalledWith(3);
   });
 
   test.each([
     ['ledger', '0xstax'],
     ['remote', '0xphone'],
-  ])('refuses to derive a vault key for a %s account index', async (type, address) => {
-    // The chokepoint guard: even a caller that bypasses the signer
-    // factory must never get a mnemonic key at a device account's index.
+  ])('refuses a %s account index', async (type, address) => {
+    // The chokepoint guard: even a caller that bypasses the signer factory
+    // must never sign with a mnemonic key at a device account's index.
     mockGetWalletRecord.mockReturnValue({ index: 3, type, address });
-    await expect(withVaultPrivateKey(3, () => 'unreachable'))
-      .rejects.toThrow('This account keeps its key on another device');
-    expect(mockCompatPrivateKey).not.toHaveBeenCalled();
+    const operation = jest.fn();
+    await expect(withVaultAccount(3, operation)).rejects.toThrow(
+      'This account keeps its key on another device'
+    );
+    expect(operation).not.toHaveBeenCalled();
   });
 
-  test('refuses to derive a vault key for a deleted hardware account', async () => {
-    // Deleting a Ledger removes its record, so the record-type guard above
-    // no longer fires. The index range must be decisive on its own —
-    // otherwise a stale reference (dApp permission, publisher identity)
-    // derives a phantom mnemonic key at m/44'/60'/1000000'/0/0 and signs
-    // with an address the user has never seen.
+  test('refuses a deleted hardware account', async () => {
+    // Deleting a Ledger removes its record, so the record-type guard no
+    // longer fires. The index range must be decisive on its own: otherwise
+    // a stale reference signs with a phantom key at m/44'/60'/1000000'/0/0.
     mockGetWalletRecord.mockReturnValue(null);
-    await expect(withVaultPrivateKey(1000000, () => 'unreachable'))
-      .rejects.toThrow('This account keeps its key on another device');
-    expect(mockCompatPrivateKey).not.toHaveBeenCalled();
+    const operation = jest.fn();
+    await expect(withVaultAccount(1000000, operation)).rejects.toThrow(
+      'This account keeps its key on another device'
+    );
+    expect(operation).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -112,10 +88,10 @@ describe('withVaultPrivateKey', () => {
     ['null', null],
     ['undefined', undefined],
     ['NaN', Number.NaN],
-  ])('rejects %s walletIndex without touching the vault', async (_label, badIndex) => {
-    await expect(withVaultPrivateKey(badIndex, () => 'unreachable'))
-      .rejects.toThrow('Invalid wallet index');
-    expect(mockCompatPrivateKey).not.toHaveBeenCalled();
+  ])('rejects %s walletIndex without running the operation', async (_label, badIndex) => {
+    const operation = jest.fn();
+    await expect(withVaultAccount(badIndex, operation)).rejects.toThrow('Invalid wallet index');
+    expect(operation).not.toHaveBeenCalled();
     expect(mockResetVaultAutoLockTimer).not.toHaveBeenCalled();
   });
 });

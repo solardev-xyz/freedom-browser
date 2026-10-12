@@ -1,23 +1,19 @@
 /**
- * Vault private-key access helper.
+ * Vault account access helper.
  *
- * Every caller that needs to sign with a vault key — wallet IPC handlers,
- * the x402 client, future signers — performs the same sequence:
+ * Every caller that signs with a vault account — the signer factory, and
+ * through it wallet IPC, the x402 client and Safe owners — performs the
+ * same sequence:
  *
  *   1. Guard the account record (no device or Safe accounts).
- *   2. `compat.private_key(walletIndex)` from the identity core — refused
- *      with VAULT_LOCKED_MESSAGE while the vault is locked.
- *   3. (do the work)
- *   4. `resetVaultAutoLockTimer()` — keep the vault alive through multi-
- *       step flows (server settlement, follow-up retries, etc.).
- *
- * Open-coded across six places before this helper existed; one of those
- * places (`wallet:send-transaction`) was missing step 5 and is fixed
- * incidentally by the consolidation.
+ *   2. Hand the operation the account's key *reference*; the identity core
+ *      signs with the key and never returns it (freedom-core design 0002).
+ *      A locked vault is refused with VAULT_LOCKED_MESSAGE.
+ *   3. `resetVaultAutoLockTimer()` after success — keep the vault alive
+ *      through multi-step flows (server settlement, follow-up retries).
  */
 
 const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
-const { vaultBackend } = require('../core/vault-backend');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 
 /**
@@ -33,46 +29,43 @@ function isValidWalletIndex(walletIndex) {
 }
 
 /**
- * Borrow a private key from the vault for a single operation.
+ * Run one operation on a vault (mnemonic) account.
  *
- * Throws `Error(VAULT_LOCKED_MESSAGE)` if the vault is locked at call
- * time. Recovery code: use `isVaultLockedError(err)` rather than a
- * literal string compare.
- * Throws `Error('Invalid wallet index')` if the index would not
- * round-trip through vault derivation.
+ * `operation` receives the account's key reference for the identity core,
+ * `{ kind: 'account', index }`. Throws `Error('Invalid wallet index')` for
+ * an index that would not round-trip through vault derivation, and refuses
+ * device accounts before anything reaches the core. A locked vault fails
+ * inside the operation with VAULT_LOCKED_MESSAGE; check with
+ * `isVaultLockedError(err)`.
  *
- * Resets the auto-lock timer after the callback resolves; if the
- * callback throws, the timer is *not* reset (preserves the existing
- * per-handler behaviour — only successful operations extend the lease).
+ * Resets the auto-lock timer after the operation resolves; if it throws,
+ * the timer is *not* reset (only successful operations extend the lease).
  *
  * @template T
  * @param {number} walletIndex
- * @param {(privateKey: string) => T | Promise<T>} callback
+ * @param {(key: {kind: 'account', index: number}) => T | Promise<T>} operation
  * @returns {Promise<T>}
  */
-async function withVaultPrivateKey(walletIndex, callback) {
+async function withVaultAccount(walletIndex, operation) {
   if (!isValidWalletIndex(walletIndex)) {
     throw new Error('Invalid wallet index');
   }
-  // Hard stop for non-mnemonic accounts at the key-derivation chokepoint:
-  // deriving a mnemonic key at a hardware/phone account's index would silently
-  // sign with a key whose address the user has never seen.
+  // Hard stop for non-mnemonic accounts: signing with a mnemonic key at a
+  // hardware/phone account's index would silently use a key whose address
+  // the user has never seen.
   //
   // The index-range half of the check stands on its own and must come
   // first: a *deleted* device account has no record at all, and a stale
   // reference to it (dApp permission, publisher identity, an index from
-  // untrusted renderer code) would otherwise fall through to derivation
-  // at m/44'/60'/<hardware index>'/0/0 — a phantom account.
+  // untrusted renderer code) would otherwise reach derivation at
+  // m/44'/60'/<hardware index>'/0/0 — a phantom account.
   const record = getWalletRecord(walletIndex);
   if (isHardwareWalletIndex(walletIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
     throw new Error('This account keeps its key on another device; sign via its device signer');
   }
-  // compat.private_key (removed in Phase 2); `vault_locked` comes back with
-  // VAULT_LOCKED_MESSAGE.
-  const privateKey = await vaultBackend.compat.privateKey(walletIndex);
-  const result = await callback(privateKey);
+  const result = await operation({ kind: 'account', index: walletIndex });
   resetVaultAutoLockTimer();
   return result;
 }
 
-module.exports = { withVaultPrivateKey, isValidWalletIndex };
+module.exports = { withVaultAccount, isValidWalletIndex };

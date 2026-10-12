@@ -340,6 +340,32 @@ const vaultBackend = {
     return result.did;
   },
 
+  /**
+   * Signing in the core (freedom-core design 0002). `key` is a reference:
+   * `{ kind: 'account', index }` here; Swarm adds `bee_wallet` and
+   * `publisher`. Inputs are already in the core's wire form.
+   */
+  sign: {
+    /** @returns {{ raw: string, hash: string }} */
+    transaction(key, tx) {
+      return call('sign.transaction', { key, tx });
+    },
+    /** @param {Uint8Array} bytes @returns {string} 65-byte signature, v 27/28 */
+    async message(key, bytes) {
+      const message = '0x' + Buffer.from(bytes).toString('hex');
+      return (await call('sign.message', { key, message })).signature;
+    },
+    /** @param {{domain, types, message}} typedData */
+    async typedData(key, typedData) {
+      return (await call('sign.typed_data', { key, typed_data: typedData })).signature;
+    },
+  },
+
+  /** EIP-712 digest with the core's strict rules; public, works while locked. */
+  async typedDataHash(typedData) {
+    return (await call('typed_data.hash', { typed_data: typedData })).hash;
+  },
+
   // Temporary raw-key exports for signing (design 0001, Phase 2 removes them).
   compat: {
     async privateKey(account) {
