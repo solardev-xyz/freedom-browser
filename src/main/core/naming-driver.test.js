@@ -362,6 +362,28 @@ describe('NamingDriver', () => {
     expect(unrelated.config.whenServing).toHaveBeenCalledTimes(2);
   });
 
+  test('a reply is judged only with no control in flight, however late one comes', async () => {
+    const { driver, client, config } = setUp((_method, _params, n) => {
+      // One control lands while the lookup runs and moves nothing.
+      if (n === 1) config.controls.push(() => {});
+      return ok({ type: 'ok', n }, { attempts: n, generations: { ...config.generations } });
+    });
+    // Another lands after the first has settled, just before the judgment,
+    // and moves the lifecycle: the reply is judged after it, and retried.
+    let calls = 0;
+    const idle = config.idle.getMockImplementation();
+    config.idle.mockImplementation(() => {
+      calls += 1;
+      if (calls === 5) {
+        config.controls.push((generations) => (generations.lifecycle += 1));
+        return false;
+      }
+      return idle();
+    });
+    expect(await driver.resolveContent('x.eth')).toEqual({ type: 'ok', n: 2 });
+    expect(client.requestTo).toHaveBeenCalledTimes(2);
+  });
+
   test('a lookup is sent only while no control is in flight', async () => {
     // A control queued while the barrier ran: the barrier is passed again.
     const during = setUp(() => ok({ type: 'ok' }));

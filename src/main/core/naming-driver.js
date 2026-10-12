@@ -184,8 +184,9 @@ class NamingDriver {
       // A control asked for while the lookup ran may have overtaken it,
       // though the core hadn't seen it yet: the reply is judged once every
       // control has settled, by the generations they leave. One that left
-      // this system's alone costs nothing.
-      if (!this.config.idle(gen)) await this.quiet(gen, until);
+      // this system's alone costs nothing. Checked again after every wait,
+      // so the last check, the judgment and the result are one step.
+      while (!this.config.idle(gen)) await this.quiet(gen, until);
       if (this.overtaken(data?.generations, system, gen)) {
         // The reply says how many attempts the caller has used: an
         // immediate one (a cache hit) used none. Only a reply that doesn't
