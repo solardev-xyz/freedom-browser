@@ -9,7 +9,9 @@ const { announceMainProcessAntDial } = require('./swarm/ant-api-main-dials');
 // see. Quorum outcomes typically tear prefetch down earlier via abort().
 const PREFETCH_TIMEOUT_MS = 10_000;
 
-const NOOP_HANDLE = Object.freeze({ abort: () => {} });
+// `done` settles when the prefetch ends, whichever way (the naming core's
+// shell.prefetch replies then).
+const NOOP_HANDLE = Object.freeze({ abort: () => {}, done: Promise.resolve() });
 
 /**
  * Pull the body and throw it away. The point of the prefetch is the work the
@@ -139,7 +141,7 @@ function prefetchGatewayUrl(uri) {
     const releaseDial =
       isAntDial && !isLoopbackGatewayUrl(url) ? announceMainProcessAntDial(url) : () => {};
 
-    gatewayFetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal })
+    const done = gatewayFetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal })
       .then(drainResponseBody)
       .catch((err) => {
         // Includes the refusal to dial a `.onion` gateway the session is not
@@ -159,7 +161,7 @@ function prefetchGatewayUrl(uri) {
     }, PREFETCH_TIMEOUT_MS);
 
     log.info(`[ens-prefetch] warming ${sanitizeUrlForLog(url)}`);
-    return { abort };
+    return { abort, done: done.then(() => {}) };
   } catch (err) {
     // Hard rule: prefetch can never break the caller.
     log.warn(`[ens-prefetch] noop after throw: ${err.message}`);
