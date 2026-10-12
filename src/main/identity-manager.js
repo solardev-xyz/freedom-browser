@@ -238,42 +238,12 @@ async function lockVault() {
 }
 
 /**
- * The Bee wallet's private key, for Swarm signing (compat.bee_wallet_key,
- * removed in Phase 2). Throws VAULT_LOCKED_MESSAGE while locked.
- * @returns {Promise<string>} 0x private key
- */
-async function getBeeWalletPrivateKey() {
-  return vaultBackend.compat.beeWalletKey();
-}
-
-/**
  * The Bee wallet's address, or null while the vault is locked.
  * @returns {Promise<string|null>}
  */
 async function getBeeWalletAddress() {
   const addresses = await deriveAddresses();
   return addresses ? addresses.bee_wallet : null;
-}
-
-/**
- * A Swarm publisher key at an origin index, for signing (compat.publisher_key,
- * removed in Phase 2). Vault must be unlocked.
- * @param {number} originIndex - Origin index (0, 1, 2, ...)
- * @returns {Promise<{privateKey: string, originIndex: number}>}
- */
-async function getPublisherKey(originIndex) {
-  if (typeof originIndex !== 'number' || originIndex < 0 || !Number.isInteger(originIndex)) {
-    throw new Error('Origin index must be a non-negative integer');
-  }
-  try {
-    const privateKey = await vaultBackend.compat.publisherKey(originIndex);
-    return { privateKey, originIndex };
-  } catch (err) {
-    if (isVaultLockedError(err)) {
-      throw new Error('Vault must be unlocked to derive publisher keys', { cause: err });
-    }
-    throw err;
-  }
 }
 
 /**
@@ -290,37 +260,6 @@ async function getPublisherAddress(originIndex) {
     throw new Error('Vault must be unlocked to derive publisher keys');
   }
   return addresses.publishers[0].address;
-}
-
-/**
- * Derive a browser Ethereum wallet key by wallet/account index.
- * Vault must be unlocked. This returns the same key material used by
- * wallet transaction/message signing without persisting it elsewhere.
- * @param {number} walletIndex - Wallet account index (0, 1, 2, ...)
- * @returns {Promise<{privateKey: string, accountIndex: number}>}
- */
-async function getUserWalletKey(walletIndex) {
-  if (typeof walletIndex !== 'number' || !Number.isInteger(walletIndex) || walletIndex < 0) {
-    throw new Error('Wallet index must be a non-negative integer');
-  }
-
-  const record = getWalletRecord(walletIndex);
-  if (!record) {
-    throw new Error(`Wallet with index ${walletIndex} does not exist`);
-  }
-  if (record.type !== WALLET_TYPES.MNEMONIC) {
-    throw new Error('This account has no derivable private key — the key never leaves its device');
-  }
-
-  try {
-    const privateKey = await vaultBackend.compat.privateKey(walletIndex);
-    return { privateKey, accountIndex: walletIndex };
-  } catch (err) {
-    if (isVaultLockedError(err)) {
-      throw new Error('Vault must be unlocked to derive wallet keys', { cause: err });
-    }
-    throw err;
-  }
 }
 
 /**
@@ -1758,12 +1697,10 @@ module.exports = {
   changeVaultPassword,
   deleteVaultData,
 
-  // Key operations (signing keys come from the core's compat.* exports)
-  getBeeWalletPrivateKey,
+  // Public key data (the core signs; design 0002)
+  deriveAddresses,
   getBeeWalletAddress,
-  getPublisherKey,
   getPublisherAddress,
-  getUserWalletKey,
 
   // Multi-wallet operations
   WALLET_TYPES,
