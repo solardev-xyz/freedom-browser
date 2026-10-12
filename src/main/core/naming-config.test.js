@@ -422,9 +422,7 @@ describe('NamingConfig', () => {
     // queues behind it; then a lookup asks for the process.
     release = null;
     const change = config.configure({ reset: true });
-    const invalidation = config.control((gen) =>
-      client.requestTo(gen, 'naming.invalidate_content', { name: 'a.eth' })
-    );
+    const invalidation = config.invalidate('naming.invalidate_content', { name: 'a.eth' });
     let served = null;
     config.whenServing().then((gen) => (served = gen));
     for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -473,5 +471,72 @@ describe('NamingConfig', () => {
     expect(config.endpointUrl(ref)).toBeUndefined();
     expect(config.endpointUrl(ref, first)).toBe('https://a.rpc.example');
     expect(config.generationsOf(first)).toEqual({ ens: 3, tezos: 1, lifecycle: 2 });
+  });
+
+  test('a control that fails is owed: nothing is served until it goes', async () => {
+    let refuse = false;
+    const client = fakeClient((method) => {
+      if (refuse && method !== 'naming.resolve_tezos') {
+        throw Object.assign(new Error('busy'), { code: 'busy' });
+      }
+      return method === 'naming.configure' ? { ens: 2, tezos: 2, lifecycle: 1 } : { lifecycle: 1 };
+    });
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    const before = client.sent.length;
+    // A settings change fails locally (the client is full).
+    refuse = true;
+    await expect(config.configure({ reset: true })).rejects.toMatchObject({ code: 'busy' });
+    // While it can't go, the process isn't served.
+    expect(await config.whenServing()).toBeNull();
+    // Once it can, it goes first, with its reset, and then the process is served.
+    refuse = false;
+    expect(await config.whenServing()).toBe(client.current);
+    const resent = client.sent.slice(before).filter(([, method]) => method === 'naming.configure');
+    expect(resent.at(-1)[2].reset).toBe('providers');
+    expect(await config.whenServing()).toBe(client.current);
+  });
+
+  test('a failed invalidation is owed as clearing its cache', async () => {
+    let refuse = true;
+    const client = fakeClient((method) => {
+      if (refuse && method.startsWith('naming.invalidate')) throw new Error('busy');
+      return method === 'naming.configure' ? { ens: 1, tezos: 1, lifecycle: 1 } : { lifecycle: 1 };
+    });
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    await expect(
+      config.invalidate('naming.invalidate_content', { name: 'a.eth' })
+    ).rejects.toThrow();
+    await expect(config.invalidate('naming.invalidate_tezos', { name: 'a.tez' })).rejects.toThrow();
+    refuse = false;
+    const before = client.sent.length;
+    expect(await config.whenServing()).toBe(client.current);
+    // ENS content: a provider reset clears every ENS cache; Tezos: all of it.
+    expect(client.sent.slice(before).map(([, method, params]) => [method, params.reset])).toEqual([
+      ['naming.configure', 'providers'],
+      ['naming.invalidate_tezos', undefined],
+    ]);
+  });
+
+  test('controls asked for are counted at once, per scope', async () => {
+    const client = fakeClient();
+    const config = make(client);
+    client.start();
+    await config.whenReady();
+    const gen = client.current;
+    const before = config.requestedOf(gen);
+    const pending = config.availability();
+    // Counted before it is sent or answered.
+    expect(config.requestedOf(gen)).toEqual({ ...before, lifecycle: before.lifecycle + 1 });
+    await pending;
+    config.configure({ reset: false }).catch(() => {});
+    expect(config.requestedOf(gen)).toEqual({
+      ens: before.ens + 1,
+      tezos: before.tezos + 1,
+      lifecycle: before.lifecycle + 1,
+    });
   });
 });

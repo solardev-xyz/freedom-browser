@@ -183,6 +183,24 @@ class NamingConfig {
     return core ? { ...core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };
   }
 
+  /** How many controls main has asked for, per scope, for a core process
+   * (`gen`'s): counted when asked, before they are sent. A lookup answered
+   * after one was asked was overtaken by it, as today's epoch check
+   * discards a result that crossed a transition. */
+  requestedOf(gen) {
+    const core = this.processes.get(gen);
+    return core ? { ...core.requested } : { ens: 0, tezos: 0, lifecycle: 0 };
+  }
+
+  /** Of those, how many the core has applied, per scope. A reply that
+   * arrives once every control asked for since its lookup went out is
+   * applied carries generations that tell the truth; until then, it may
+   * predate one. */
+  appliedOf(gen) {
+    const core = this.processes.get(gen);
+    return core ? { ...core.applied } : { ens: 0, tezos: 0, lifecycle: 0 };
+  }
+
   attach() {
     const core = {
       gen: this.client.current,
@@ -191,6 +209,18 @@ class NamingConfig {
       queue: Promise.resolve(), // its control requests, in order
       initialized: null,
       ready: false, // initialized
+      requested: { ens: 0, tezos: 0, lifecycle: 0 },
+      applied: { ens: 0, tezos: 0, lifecycle: 0 },
+      // Controls that failed: owed before anything more is served, so no
+      // lookup runs on a snapshot main has moved from. `scopes` counts what
+      // they would have applied.
+      owed: {
+        configure: false,
+        reset: false,
+        availability: false,
+        tezosCache: false,
+        scopes: { ens: 0, tezos: 0, lifecycle: 0 },
+      },
     };
     this.core = core;
     this.processes.set(core.gen, core);
@@ -234,16 +264,72 @@ class NamingConfig {
     }
     // The queue never rejects: run() keeps failures to their caller.
     await queued;
+    if (this.owes(core)) {
+      const settled = await this.run(core, () => this.resync(core)).then(
+        () => true,
+        () => false
+      );
+      if (!settled) return null;
+    }
     return this.serving(core) ? core.gen : null;
   }
 
-  /** Queues `send(gen)` behind the core's earlier control requests, for one
-   * that must keep its order with them and with the lookups after it (an
-   * invalidation). Resolves its result, or undefined without a core. */
-  control(send) {
+  owes(core) {
+    const { owed } = core;
+    return owed.configure || owed.availability || owed.tezosCache;
+  }
+
+  /** Sends what failed before, from the settings of now. */
+  async resync(core) {
+    const { owed } = core;
+    if (owed.configure) {
+      await this.sendConfigure(core, owed.reset);
+      owed.configure = false;
+      owed.reset = false;
+    }
+    if (owed.availability) {
+      await this.sendAvailability(core);
+      owed.availability = false;
+    }
+    if (owed.tezosCache) {
+      await this.sendControl(core, 'naming.invalidate_tezos', {});
+      owed.tezosCache = false;
+    }
+    for (const scope of ['ens', 'tezos', 'lifecycle']) {
+      core.applied[scope] += owed.scopes[scope];
+      owed.scopes[scope] = 0;
+    }
+  }
+
+  /**
+   * Queues an invalidation behind the core's earlier control requests, so it
+   * keeps its order with them and with the lookups after it. Resolves its
+   * result, or undefined without a core. One that fails is owed as a
+   * clearing of its whole cache (a provider reset for ENS content, every
+   * Tezos result), which covers it.
+   */
+  invalidate(method, params) {
     const core = this.core;
     if (!core) return Promise.resolve(undefined);
-    return this.run(core, () => send(core.gen));
+    return this.run(core, () => this.sendControl(core, method, params)).catch((err) => {
+      if (method === 'naming.invalidate_tezos') {
+        core.owed.tezosCache = true;
+      } else {
+        core.owed.configure = true;
+        core.owed.reset = true;
+      }
+      throw err;
+    });
+  }
+
+  sendControl(core, method, params) {
+    return this.client.requestTo(
+      core.gen,
+      method,
+      params,
+      { caller: 'shell' },
+      { watchdogMs: CONTROL_WATCHDOG_MS }
+    );
   }
 
   /** Whether `core` is current and its process still takes requests (its
@@ -252,17 +338,39 @@ class NamingConfig {
     return this.core === core && this.client.serves(core.gen);
   }
 
-  /** Sends the current snapshot (a settings change). */
+  /** Sends the current snapshot (a settings change). Failed, it is owed:
+   * nothing is served until it goes. */
   async configure({ reset = false } = {}) {
     const core = this.core;
-    if (core) await this.run(core, () => this.sendConfigure(core, reset));
+    if (!core) return this.generations;
+    const scopes = reset ? ['ens', 'tezos', 'lifecycle'] : ['ens', 'tezos'];
+    for (const scope of scopes) core.requested[scope] += 1;
+    try {
+      await this.run(core, () => this.sendConfigure(core, reset));
+    } catch (err) {
+      core.owed.configure = true;
+      core.owed.reset ||= reset;
+      for (const scope of scopes) core.owed.scopes[scope] += 1;
+      throw err;
+    }
+    for (const scope of scopes) core.applied[scope] += 1;
     return this.generations;
   }
 
-  /** Sends whether Myotis is ready and enabled (a transition). */
+  /** Sends whether Myotis is ready and enabled (a transition). Failed, it
+   * is owed likewise. */
   async availability() {
     const core = this.core;
-    if (core) await this.run(core, () => this.sendAvailability(core));
+    if (!core) return this.generations;
+    core.requested.lifecycle += 1;
+    try {
+      await this.run(core, () => this.sendAvailability(core));
+    } catch (err) {
+      core.owed.availability = true;
+      core.owed.scopes.lifecycle += 1;
+      throw err;
+    }
+    core.applied.lifecycle += 1;
     return this.generations;
   }
 

@@ -16,8 +16,9 @@ const resolutionFailed = (message, generations = GEN, attempts = 1) =>
   });
 
 /** A driver over a fake client whose replies come from `answer`. */
-function setUp(answer, { generations = GEN, core = {}, now = () => 0 } = {}) {
+function setUp(answer, { generations = GEN, core, now = () => 0 } = {}) {
   const gen = { id: 'process' };
+  if (core === undefined) core = { gen };
   const urls = new Map([
     ['e1', 'https://a.rpc.example/v1/key'],
     ['e2', 'https://b.rpc.example'],
@@ -32,13 +33,21 @@ function setUp(answer, { generations = GEN, core = {}, now = () => 0 } = {}) {
       return config.generations;
     }),
     whenServing: jest.fn(async () => gen),
-    // A control runs at once here, with the process.
-    control: jest.fn(async (send) => (config.core ? send(gen) : undefined)),
+    requested: { ens: 0, tezos: 0, lifecycle: 0 },
+    requestedOf: jest.fn(() => ({ ...config.requested })),
+    // Nothing applied unless a test says so.
+    applied: { ens: 0, tezos: 0, lifecycle: 0 },
+    appliedOf: jest.fn(() => ({ ...config.applied })),
+    // An invalidation goes at once here, to the process.
+    invalidate: jest.fn(async (method, params) =>
+      config.core ? client.requestTo(gen, method, params) : undefined
+    ),
     // Mapped by the process that answered.
     endpointUrl: jest.fn((ref, of) => (of === gen ? urls.get(ref) : undefined)),
   };
   const client = {
     whenReady: jest.fn(async () => ({})),
+    serves: jest.fn((of) => of === gen),
     requestTo: jest.fn(async (to, method, params) => {
       expect(to).toBe(gen);
       return answer(method, params, client.requestTo.mock.calls.length);
@@ -313,14 +322,9 @@ describe('NamingDriver', () => {
       method === 'naming.invalidate_content' ? { evicted: true } : {}
     );
     expect(await driver.invalidateContent('vitalik.eth')).toBe(true);
-    expect(config.control).toHaveBeenCalledTimes(1);
-    expect(client.requestTo).toHaveBeenCalledWith(
-      expect.anything(),
-      'naming.invalidate_content',
-      { name: 'vitalik.eth' },
-      undefined,
-      { watchdogMs: expect.any(Number) }
-    );
+    expect(config.invalidate).toHaveBeenCalledWith('naming.invalidate_content', {
+      name: 'vitalik.eth',
+    });
     await driver.invalidateTezos('alice.tez');
     await driver.invalidateTezos(undefined);
     expect(client.requestTo.mock.calls.slice(1).map(([, m, p]) => [m, p])).toEqual([
@@ -331,5 +335,62 @@ describe('NamingDriver', () => {
     expect(await driver.invalidateContent('vitalik.eth')).toBe(false);
     await driver.invalidateTezos('alice.tez');
     expect(client.requestTo).toHaveBeenCalledTimes(3);
+  });
+
+  test('a control main asked for while the lookup ran overtakes it', async () => {
+    // The availability goes after the lookup went out: its answer, though
+    // current for the core, is from before the transition.
+    let config;
+    const replies = [];
+    const setup = setUp((_method, _params, n) => {
+      if (n === 1) config.requested.lifecycle += 1;
+      replies.push(n);
+      return ok({ type: 'ok', n }, { attempts: n });
+    });
+    config = setup.config;
+    expect(await setup.driver.resolveContent('x.eth')).toEqual({ type: 'ok', n: 2 });
+    expect(setup.client.requestTo.mock.calls.map(([, , params]) => params.attempts_used)).toEqual([
+      undefined,
+      1,
+    ]);
+    // One the core has already applied when the answer comes: the answer's
+    // generations say whether it is current, and here it is.
+    const applied = setUp((_method, _params, n) => {
+      if (n === 1) {
+        applied.config.requested.lifecycle += 1;
+        applied.config.applied.lifecycle += 1;
+      }
+      return ok({ type: 'ok', n });
+    });
+    expect(await applied.driver.resolveContent('x.eth')).toEqual({ type: 'ok', n: 1 });
+    // A Tezos lookup isn't overtaken by a lifecycle change.
+    const tezos = setUp((_method, _params, n) => {
+      if (n === 1) tezos.config.requested.lifecycle += 1;
+      return ok({ type: 'ok', n });
+    });
+    expect(await tezos.driver.resolveTezos('a.tez')).toEqual({ type: 'ok', n: 1 });
+  });
+
+  test('a lookup stays with its process: a restart sends nothing again', async () => {
+    // A retry would be answered, and current.
+    const { driver, client, config, gen } = setUp(() => ok({ type: 'ok' }, { attempts: 1 }));
+    // Overtaken, then its process is gone before the retry.
+    client.requestTo.mockImplementationOnce(async (to) => {
+      expect(to).toBe(gen);
+      config.core = { gen: { id: 'replacement' } };
+      return ok({ type: 'stale' }, { generations: { ...GEN, ens: 1 }, attempts: 1 });
+    });
+    await expect(driver.resolveContent('x.eth')).rejects.toThrow(RESTARTED);
+    expect(client.requestTo).toHaveBeenCalledTimes(1);
+
+    // Gone with no replacement yet, while it waits for the retry's controls.
+    const exited = setUp(() => ok({ type: 'ok' }, { attempts: 1 }));
+    exited.client.requestTo.mockImplementationOnce(async () => {
+      exited.config.whenServing.mockResolvedValue(null);
+      exited.client.serves.mockReturnValue(false);
+      return ok({ type: 'stale' }, { generations: { ...GEN, ens: 1 }, attempts: 1 });
+    });
+    await expect(exited.driver.resolveContent('x.eth')).rejects.toThrow(RESTARTED);
+    expect(exited.client.requestTo).toHaveBeenCalledTimes(1);
   });
 });

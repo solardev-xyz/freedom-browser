@@ -15,7 +15,6 @@
  */
 
 const { isPrivateLogContext } = require('../private/private-log-context');
-const { CONTROL_WATCHDOG_MS } = require('./naming-config');
 
 /** A caller's lifecycle attempts, in all (resolveAcrossStableLifecycle). */
 const MAX_ATTEMPTS = 3;
@@ -92,11 +91,7 @@ class NamingDriver {
    * a core. */
   async invalidateContent(name) {
     const reply = await this.config
-      .control((gen) =>
-        this.client.requestTo(gen, 'naming.invalidate_content', { name }, undefined, {
-          watchdogMs: CONTROL_WATCHDOG_MS,
-        })
-      )
+      .invalidate('naming.invalidate_content', { name })
       .catch(() => undefined);
     return reply?.evicted === true;
   }
@@ -104,16 +99,10 @@ class NamingDriver {
   /** Drops a Tezos name's cached result, or every Tezos cache, in the same
    * order. */
   invalidateTezos(name) {
-    return this.config
-      .control((gen) =>
-        this.client.requestTo(gen, 'naming.invalidate_tezos', name ? { name } : {}, undefined, {
-          watchdogMs: CONTROL_WATCHDOG_MS,
-        })
-      )
-      .then(
-        () => undefined,
-        () => undefined
-      );
+    return this.config.invalidate('naming.invalidate_tezos', name ? { name } : {}).then(
+      () => undefined,
+      () => undefined
+    );
   }
 
   /** The subject today's "changed repeatedly" error names. */
@@ -145,11 +134,20 @@ class NamingDriver {
   async resolve(method, subject, system, subjectOf) {
     const until = this.now() + DEADLINE_MS;
     let attempts = 0;
+    // A lookup belongs to the process it first went to: a restart sends
+    // nothing again (design 0004, Generations).
+    let pinned = null;
     for (;;) {
       const left = until - this.now();
       if (left <= 0) throw new Error(DEADLINE);
+      if (pinned && this.config.core?.gen !== pinned) throw new Error(RESTARTED);
       const gen = await this.process(until);
+      // Its process gone, replaced or not.
+      if (pinned && gen !== pinned && (gen || !this.client.serves(pinned))) {
+        throw new Error(RESTARTED);
+      }
       if (!gen) throw new Error(this.now() >= until ? DEADLINE : UNAVAILABLE);
+      pinned = gen;
       // What is left after waiting for the core: the core's deadline for
       // the request, and its watchdog's, agree.
       const remaining = Math.floor(until - this.now());
@@ -159,6 +157,7 @@ class NamingDriver {
       let reply = null;
       let failed = null;
       let lost = null;
+      const asked = this.config.requestedOf(gen);
       try {
         reply = await this.client.requestTo(gen, method, params, undefined, {
           watchdogMs: remaining + WATCHDOG_MARGIN_MS,
@@ -172,12 +171,19 @@ class NamingDriver {
       if (lost)
         throw new Error(lost?.code === 'core_unavailable' ? RESTARTED : String(lost?.message));
       const data = failed ? failed.data : reply;
-      if (this.overtaken(data?.generations, system, gen)) {
+      // A control main asked for while the lookup ran overtakes it too,
+      // though the core hasn't seen it yet.
+      const moved = this.config.requestedOf(gen);
+      const applied = this.config.appliedOf(gen);
+      const crossed = SCOPES[system].some(
+        (scope) => moved[scope] > asked[scope] && applied[scope] < moved[scope]
+      );
+      if (crossed || this.overtaken(data?.generations, system, gen)) {
         // The reply says how many attempts the caller has used: an
         // immediate one (a cache hit) used none. Only a reply that doesn't
         // say counts as one, so the loop always ends.
         attempts =
-          Number.isSafeInteger(data.attempts) && data.attempts >= attempts
+          Number.isSafeInteger(data?.attempts) && data.attempts >= attempts
             ? data.attempts
             : attempts + 1;
         if (attempts >= MAX_ATTEMPTS) throw new Error(REPEATED[system](subjectOf()));
