@@ -48,6 +48,20 @@ describe('EndpointReferences', () => {
     expect(refs.url(undefined)).toBeUndefined();
   });
 
+  test('a lookup counts as a use, and the current configuration is never forgotten', () => {
+    const refs = new EndpointReferences();
+    const pinned = refs.ref('https://pinned.example');
+    refs.pin([pinned]);
+    const looked = refs.ref('https://looked.example');
+    for (let i = 0; i < MAX_REMEMBERED + 10; i++) {
+      refs.ref(`https://n${i}.example`);
+      refs.url(looked);
+    }
+    expect(refs.url(pinned)).toBe('https://pinned.example');
+    expect(refs.url(looked)).toBe('https://looked.example');
+    expect(refs.urls.size).toBe(MAX_REMEMBERED);
+  });
+
   test('it remembers the most recently used references', () => {
     const refs = new EndpointReferences();
     const first = refs.ref('https://first.example');
@@ -101,13 +115,22 @@ describe('the snapshot', () => {
     expect(snapshot.policy).toEqual({ order: ['quorum'], prefer_verified: false });
   });
 
-  test('quorum keys are renamed for the wire, values left raw', () => {
+  test('only the quorum fields today reads go, renamed, their values raw', () => {
     expect(wireQuorum({ k: '4', timeoutMs: 'x', anchorTtlMs: 1, extra: true })).toEqual({
       k: '4',
       timeout_ms: 'x',
       anchor_ttl_ms: 1,
-      extra: true,
     });
+    // A wire-spelt alias can't overwrite what today reads, nor can an
+    // inherited name come along.
+    const raw = Object.assign(Object.create({ m: 9 }), {
+      timeoutMs: 5000,
+      timeout_ms: 1,
+      anchorTtlMs: 30000,
+      anchor_ttl_ms: 0,
+      toString: 'x',
+    });
+    expect(wireQuorum(raw)).toEqual({ timeout_ms: 5000, anchor_ttl_ms: 30000 });
   });
 });
 
@@ -151,5 +174,54 @@ describe('NamingConfig', () => {
     await tick();
     await config.configure({ reset: true });
     expect(client.request.mock.calls.at(-1)[1].reset).toBe('providers');
+  });
+
+  test('naming waits for initialization, which a failure leaves to retry', async () => {
+    const client = new EventEmitter();
+    let fail = true;
+    client.request = jest.fn(async (method) => {
+      if (method === 'naming.configure' && fail)
+        throw Object.assign(new Error('x'), { code: 'invalid_argument' });
+      return method === 'naming.configure' ? { ens: 1, tezos: 1, lifecycle: 0 } : { lifecycle: 1 };
+    });
+    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
+    expect(await config.whenReady()).toBe(false);
+    client.emit('ready');
+    expect(await config.whenReady()).toBe(false);
+    // Availability waits for a configuration that took.
+    expect(client.request.mock.calls.map(([m]) => m)).toEqual([
+      'naming.configure',
+      'naming.configure',
+    ]);
+    fail = false;
+    expect(await config.whenReady()).toBe(true);
+    expect(client.request.mock.calls.map(([m]) => m).slice(-2)).toEqual([
+      'naming.configure',
+      'naming.availability',
+    ]);
+    expect(config.generations).toEqual({ ens: 1, tezos: 1, lifecycle: 1 });
+  });
+
+  test('built after the handshake, it initializes at once', async () => {
+    const client = fakeClient();
+    client.hello = { protocol: 1 };
+    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
+    expect(await config.whenReady()).toBe(true);
+  });
+
+  test('a provider reset takes the lifecycle the reply reports', async () => {
+    const client = fakeClient();
+    client.request = jest.fn(async (method, params) => {
+      if (method === 'naming.availability') return { lifecycle: 1 };
+      return { ens: 1, tezos: 1, lifecycle: params.reset === 'providers' ? 2 : 1 };
+    });
+    const config = new NamingConfig({ client, sources: sources(), log: { warn: jest.fn() } });
+    client.emit('ready');
+    await config.whenReady();
+    await config.configure({ reset: true });
+    expect(config.generations.lifecycle).toBe(2);
+    // A late, lower report never moves it back.
+    config.adopt({ lifecycle: 1 }, ['lifecycle']);
+    expect(config.generations.lifecycle).toBe(2);
   });
 });
