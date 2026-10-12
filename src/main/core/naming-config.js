@@ -158,6 +158,12 @@ class NamingConfig {
     if (client.hello) this.attach();
   }
 
+  /** The URL behind one of the current core process's references, or
+   * undefined. */
+  endpointUrl(ref) {
+    return this.core?.refs.url(ref);
+  }
+
   /** The generations the current core process has reported. */
   get generations() {
     return this.core ? { ...this.core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };

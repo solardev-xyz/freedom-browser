@@ -717,6 +717,8 @@ function removeCustomChain(chainId) {
 }
 
 module.exports = {
+  // The naming core's RPC executor checks redirect hops against it.
+  validateRpcUrl,
   getNetwork,
   getAllNetworks,
   isChainAvailable,
