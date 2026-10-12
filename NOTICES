@@ -227,8 +227,7 @@ npm dependencies
   See package.json for the full list.
   Most use permissive licenses (MIT, ISC, BSD, Apache-2.0, 0BSD,
   BlueOak-1.0.0, Python-2.0). The weak-copyleft ones are:
-    MPL-2.0        @ghostery/adblocker and its @remusao/* helpers,
-                   @ethereumjs/{rlp,tx,util}
+    MPL-2.0        @ghostery/adblocker and its @remusao/* helpers
     LGPL-3.0-only  @openlv/*, websocket-mqtt (both entries above)
   Neither MPL-2.0 nor LGPL-3.0 is combined into Freedom's own sources: the
   MPL packages are consumed unmodified from npm, and the LGPL ones ship as

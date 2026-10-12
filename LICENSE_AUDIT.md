@@ -21,13 +21,13 @@
 
 | Category                                                    | Count       | Status                                                             |
 | ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
-| Production npm packages (unique name@version)               | 273         | See distribution below                                             |
+| Production npm packages (unique name@version)               | 241         | See distribution below                                             |
 | Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
 | External binaries / native addons shipped in `resources/`   | 6           | Ant, freedom-ipfs, libradicle, Myotis, Arti, freedom-cored         |
 | Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
 | Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
 | GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
-| Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
+| Weak copyleft (MPL-2.0)                                     | 10 packages | Compatible; MPL-2.0 is our own license                             |
 | Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                          |
 | Weak copyleft (LGPL-2.1) in the Linux AppImage runtime      | 1 library   | Separate program, upstream source — **decided** (see below)        |
 
@@ -169,7 +169,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ### MPL-2.0 packages
 
-13 production packages are MPL-2.0: `@ghostery/adblocker` and its `@remusao/*` / `@ghostery/url-parser` helpers, `@ethereumjs/{rlp,tx,util}`, and DOMPurify under its MPL arm. MPL-2.0 is file-level weak copyleft and is Freedom's own license, so combination is unproblematic; Freedom consumes all of them unmodified, so no source-disclosure obligation is triggered.
+10 production packages are MPL-2.0: `@ghostery/adblocker` and its `@remusao/*` / `@ghostery/url-parser` helpers, and DOMPurify under its MPL arm. MPL-2.0 is file-level weak copyleft and is Freedom's own license, so combination is unproblematic; Freedom consumes all of them unmodified, so no source-disclosure obligation is triggered.
 
 ---
 
@@ -220,14 +220,14 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 
 | License                           | Count   |
 | --------------------------------- | ------- |
-| MIT                               | 198     |
-| Apache-2.0                        | 21      |
-| ISC                               | 20      |
-| MPL-2.0                           | 13      |
+| MIT                               | 174     |
+| Apache-2.0                        | 19      |
+| ISC                               | 18      |
+| MPL-2.0                           | 10      |
 | BSD-3-Clause                      | 4       |
 | LGPL-3.0-only                     | 4       |
 | Apache-2.0 OR MIT                 | 3       |
-| 0BSD                              | 3       |
+| 0BSD                              | 2       |
 | LGPL-3.0                          | 1       |
 | MIT OR X11                        | 1       |
 | MIT OR WTFPL                      | 1       |
@@ -235,7 +235,7 @@ Walk of `package.json` `dependencies` and `optionalDependencies` plus their tran
 | Zlib OR MIT OR Apache-2.0         | 1       |
 | Python-2.0                        | 1       |
 | BlueOak-1.0.0                     | 1       |
-| **Total**                         | **273** |
+| **Total**                         | **241** |
 
 ---
 
@@ -332,7 +332,7 @@ The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"
 
 ### Weak copyleft: present and handled
 
-- **MPL-2.0** (13 packages) — file-level copyleft, same license as Freedom itself, all consumed unmodified. No obligation beyond notice.
+- **MPL-2.0** (10 packages) — file-level copyleft, same license as Freedom itself, all consumed unmodified. No obligation beyond notice.
 - **LGPL-3.0** (5 packages: `@openlv/{core,session,signaling,transport}`, `websocket-mqtt`) — shipped as one isolated, regenerable bundle so §4 relinking is possible. See _The LGPL question_ above.
 - **LGPL-2.1** (libfuse, statically linked into the Linux AppImage runtime) — a separate upstream program, attributed in `NOTICES`, whose published upstream source meets §6 (maintainer decision, 2026-10-07). See _AppImage runtime_ above.
 
