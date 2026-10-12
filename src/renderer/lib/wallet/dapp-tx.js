@@ -24,7 +24,12 @@ import {
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
 import { confirmSigning } from './signing-confirmation.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
-import { registerDappPrompt, assertNoDappPromptShowing } from './dapp-prompt-guard.js';
+import {
+  registerDappPrompt,
+  assertNoDappPromptShowing,
+  isDappPromptShowing,
+  requestPendingError,
+} from './dapp-prompt-guard.js';
 
 // DOM references
 let dappTxScreen;
@@ -192,7 +197,12 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
     assertNoSignatureInFlight();
     assertNoDappPromptShowing();
     const request = { permissionKey, walletIndex: permission.walletIndex, txParams, resolve, reject, webview, chainId, selector };
+    // A request still being prepared (never shown) gives way, and is
+    // answered now rather than left waiting. One that is signing (a Safe
+    // ceremony on its board) carries on with its own reference.
+    const previous = dappTxPending;
     dappTxPending = request;
+    if (previous && !previous.signing) previous.reject({ code: 4001, message: 'Replaced by a newer request' });
 
     if (dappTxSite) {
       dappTxSite.textContent = permissionKey;
@@ -207,8 +217,11 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
 
     Promise.all([
       populateDappTxDetails(request),
-      checkDappTxUnlockStatus(),
+      checkDappTxUnlockStatus(request),
     ]).then(() => {
+      // Replaced while it was being prepared: it was answered then, and its
+      // details must never be shown under another request.
+      if (dappTxPending !== request) return;
       // Another surface may have started a device signature while we were
       // estimating fees / checking vault status (the user could still
       // click Pay on an x402 card, say). It owns the sidebar now — refuse
@@ -216,6 +229,12 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
       if (isSignatureInFlight()) {
         if (dappTxPending === request) dappTxPending = null;
         reject(signatureInFlightError());
+        return;
+      }
+      // Another prompt was shown meanwhile: it keeps the screen.
+      if (isDappPromptShowing()) {
+        dappTxPending = null;
+        reject(requestPendingError());
         return;
       }
       hideAllSubscreens();
@@ -319,16 +338,18 @@ async function populateDappTxDetails(request) {
   }
 }
 
-async function checkDappTxUnlockStatus() {
+// Writes the unlock UI only while `request` is still the pending one.
+async function checkDappTxUnlockStatus(request) {
   try {
     if (
-      bypassUnlockGateForDevice(dappTxPending?.walletIndex, dappTxUnlock, dappTxApproveBtn) ||
-      bypassUnlockGateForSafe(dappTxPending?.walletIndex, dappTxUnlock, dappTxApproveBtn)
+      bypassUnlockGateForDevice(request?.walletIndex, dappTxUnlock, dappTxApproveBtn) ||
+      bypassUnlockGateForSafe(request?.walletIndex, dappTxUnlock, dappTxApproveBtn)
     ) {
       return;
     }
 
     const status = await window.identity.getStatus();
+    if (dappTxPending !== request) return;
 
     if (status.isUnlocked) {
       dappTxUnlock?.classList.add('hidden');
@@ -340,10 +361,13 @@ async function checkDappTxUnlockStatus() {
     if (dappTxApproveBtn) dappTxApproveBtn.disabled = true;
 
     const canUseTouchId = await window.quickUnlock.canUseTouchId();
+    if (dappTxPending !== request) return;
     const touchIdEnabled = await window.quickUnlock.isEnabled();
+    if (dappTxPending !== request) return;
     const hasTouchId = canUseTouchId && touchIdEnabled;
 
     const vaultMeta = await window.identity.getVaultMeta();
+    if (dappTxPending !== request) return;
     const userKnowsPassword = vaultMeta?.userKnowsPassword ?? true;
 
     if (dappTxTouchIdBtn) {

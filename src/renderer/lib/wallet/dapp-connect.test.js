@@ -211,6 +211,42 @@ describe('dapp-connect prompt', () => {
     expect(elements['dapp-connection-site'].textContent).toBe('https://app.example');
   });
 
+  test("an earlier request's favicon never lands on a later one", async () => {
+    const { elements, openConnect } = await loadDappConnect();
+    let faviconA;
+    window.electronAPI = {
+      getCachedFavicon: jest
+        .fn()
+        .mockReturnValueOnce(new Promise((resolve) => (faviconA = resolve)))
+        .mockResolvedValue(null),
+    };
+    openConnect('https://a.example');
+    elements['dapp-connect-reject'].dispatch('click');
+    openConnect('https://b.example');
+    await flush();
+    faviconA('data:image/png;base64,AAAA');
+    await flush();
+    expect(elements['dapp-connect-favicon'].src).toBe('');
+  });
+
+  test("a stale banner lookup never repaints a newer one", async () => {
+    const { mod, elements, provider, tab } = await loadDappConnect();
+    let failA;
+    window.wallet = { getDerivedWallets: jest.fn(async () => ({ success: true, wallets: [{ index: 0, name: 'Main' }] })) };
+    window.dappPermissions.getPermission
+      .mockReturnValueOnce(new Promise((_resolve, reject) => (failA = reject)))
+      .mockResolvedValue({ walletIndex: 0 });
+    provider.active = tab('https://a.example');
+    const stale = mod.updateConnectionBanner();
+    // The user switches tabs; B's banner completes first.
+    provider.active = tab('https://b.example');
+    await mod.updateConnectionBanner();
+    expect(elements['dapp-connection-site'].textContent).toBe('https://b.example');
+    failA(new Error('lookup failed'));
+    await stale;
+    expect(elements['dapp-connection-banner'].classList.contains('hidden')).toBe(false);
+  });
+
   test('disconnect tells the active tab only if it is the disconnected site', async () => {
     const { mod, provider, tab, emitAccountsChanged } = await loadDappConnect();
     window.dappPermissions.revokePermission = jest.fn(async () => ({ success: true }));

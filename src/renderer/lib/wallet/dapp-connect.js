@@ -266,7 +266,10 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
     dappConnectFavicon.src = '';
 
     if (displayUrl && window.electronAPI?.getCachedFavicon) {
+      // Only for the request that asked: a later one owns the icon.
+      const request = dappConnectPending;
       window.electronAPI.getCachedFavicon(displayUrl).then((favicon) => {
+        if (dappConnectPending !== request) return;
         if (favicon) {
           dappConnectFavicon.src = favicon;
           dappConnectIcon.classList.add('has-favicon');
@@ -277,7 +280,7 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
           dappConnectIcon.classList.add('hidden');
         }
       }).catch(() => {
-        dappConnectIcon.classList.add('hidden');
+        if (dappConnectPending === request) dappConnectIcon.classList.add('hidden');
       });
     } else {
       dappConnectIcon.classList.add('hidden');
@@ -380,8 +383,11 @@ export async function updateConnectionBanner(permissionKey = null) {
   const activeKey = permissionKeyForWebview(getActiveWebview());
   if (permissionKey && permissionKey !== activeKey) return;
   permissionKey = activeKey;
-  // Only the latest update paints, whatever order the awaits finish in.
+  // Only the latest update paints, and only while the same site is active,
+  // whatever order the awaits finish in.
   const update = ++bannerUpdate;
+  const current = () =>
+    update === bannerUpdate && permissionKeyForWebview(getActiveWebview()) === permissionKey;
 
   if (!permissionKey) {
     dappConnectionBanner.classList.add('hidden');
@@ -391,11 +397,11 @@ export async function updateConnectionBanner(permissionKey = null) {
 
   try {
     const permission = await window.dappPermissions.getPermission(permissionKey);
-    if (update !== bannerUpdate) return;
+    if (!current()) return;
 
     if (permission) {
       const walletsResult = await window.wallet.getDerivedWallets();
-      if (update !== bannerUpdate) return;
+      if (!current()) return;
       const wallets = walletsResult.success ? walletsResult.wallets : [];
       const wallet = wallets.find(w => w.index === permission.walletIndex);
       const walletName = wallet?.name || 'Unknown Wallet';
@@ -419,6 +425,7 @@ export async function updateConnectionBanner(permissionKey = null) {
     }
   } catch (err) {
     console.error('[WalletUI] Failed to check connection:', err);
+    if (!current()) return;
     dappConnectionBanner.classList.add('hidden');
     currentBannerPermissionKey = null;
   }
@@ -432,8 +439,11 @@ export async function disconnectDapp(permissionKey = null) {
     await window.dappPermissions.revokePermission(key);
     console.log('[WalletUI] Disconnected dApp:', key);
 
-    dappConnectionBanner?.classList.add('hidden');
-    currentBannerPermissionKey = null;
+    // Clear the banner only if it still shows the disconnected site.
+    if (currentBannerPermissionKey === key) {
+      dappConnectionBanner?.classList.add('hidden');
+      currentBannerPermissionKey = null;
+    }
 
     // Tell the active tab only if it is the site that was disconnected.
     const webview = getActiveWebview();

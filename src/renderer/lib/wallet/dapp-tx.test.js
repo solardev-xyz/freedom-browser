@@ -246,6 +246,54 @@ describe('dapp-tx approval lifecycle', () => {
     expect(second.settled.state).toBe('pending');
   });
 
+  test("a replaced request's late preparation never shows its details under the newcomer", async () => {
+    const { mod, elements, send } = await loadDappTx();
+    const gasA = deferred();
+    window.wallet.estimateGas.mockReturnValueOnce(gasA.promise);
+    // A paints its recipient, then waits on its quote; it isn't shown yet.
+    const a = mod.showDappTxApproval({}, 'https://a.example', { to: '0xA0000000000000000000000000000000000000aa', value: '1', data: '0x' });
+    await flush();
+    expect(elements['sidebar-dapp-tx'].classList.contains('hidden')).toBe(true);
+
+    // B replaces A; B's chain lookup is slow.
+    const chainsB = deferred();
+    window.networks.getChains.mockReturnValueOnce(chainsB.promise);
+    const b = mod.showDappTxApproval({}, 'https://b.example', { to: '0xB0000000000000000000000000000000000000bb', value: '2', data: '0x' });
+    b.catch(() => {});
+    await flush();
+    await expect(a).rejects.toMatchObject({ code: 4001 });
+
+    // A's quote lands first: nothing is shown.
+    gasA.resolve({ success: true, gasLimit: '21000' });
+    await flush();
+    expect(elements['sidebar-dapp-tx'].classList.contains('hidden')).toBe(true);
+
+    // B shows with B's details, and Confirm sends B.
+    chainsB.resolve({ success: true, chains: { 8453: { name: 'Base', nativeSymbol: 'ETH' } } });
+    await flush();
+    expect(elements['sidebar-dapp-tx'].classList.contains('hidden')).toBe(false);
+    expect(elements['dapp-tx-to'].title).toBe('0xB0000000000000000000000000000000000000bb');
+    expect(elements['dapp-tx-site'].textContent).toBe('https://b.example');
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    expect(window.wallet.dappSendTransaction.mock.calls[0][0].to).toBe('0xB0000000000000000000000000000000000000bb');
+    send.resolve({ success: true, hash: '0xhash' });
+    await expect(b).resolves.toBe('0xhash');
+  });
+
+  test('a prompt shown while this one prepared keeps the screen', async () => {
+    const { mod, elements } = await loadDappTx();
+    const gas = deferred();
+    window.wallet.estimateGas.mockReturnValueOnce(gas.promise);
+    const pending = mod.showDappTxApproval({}, 'https://app.example', { to: '0xA0000000000000000000000000000000000000aa', value: '1', data: '0x' });
+    await flush();
+    // Another prompt (Connect or Sign) appears meanwhile.
+    (await import('./dapp-prompt-guard.js')).registerDappPrompt(() => true);
+    gas.resolve({ success: true, gasLimit: '21000' });
+    await expect(pending).rejects.toMatchObject({ code: -32002 });
+    expect(elements['sidebar-dapp-tx'].classList.contains('hidden')).toBe(true);
+  });
+
   test('a quote that lands after its request was replaced is dropped', async () => {
     const { openApproval, elements } = await loadDappTx();
     const gas = deferred();

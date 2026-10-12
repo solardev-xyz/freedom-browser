@@ -142,6 +142,41 @@ describe('dapp-sign approval lifecycle', () => {
     expect(second.settled.state).toBe('pending');
   });
 
+  test('a prompt shown while this one prepared keeps the screen', async () => {
+    const { mod, elements } = await loadDappSign();
+    // A vault account: preparing waits on the vault status.
+    require('./wallet-utils.js').bypassUnlockGateForDevice.mockReturnValueOnce(false);
+    let status;
+    window.identity = { getStatus: jest.fn(() => new Promise((resolve) => (status = resolve))) };
+    const pending = mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', ['0xdeadbeef', '0xvault']);
+    await flush();
+    (await import('./dapp-prompt-guard.js')).registerDappPrompt(() => true);
+    status({ isUnlocked: true });
+    await expect(pending).rejects.toMatchObject({ code: -32002 });
+    expect(elements['sidebar-dapp-sign'].classList.contains('hidden')).toBe(true);
+  });
+
+  test("a replaced request's late preparation never shows its message", async () => {
+    const { mod, elements, executeSign, sign } = await loadDappSign();
+    require('./wallet-utils.js').bypassUnlockGateForDevice.mockReturnValueOnce(false);
+    let statusA;
+    window.identity = { getStatus: jest.fn(() => new Promise((resolve) => (statusA = resolve))) };
+    const a = mod.showDappSignApproval({}, 'https://a.example', 'personal_sign', ['0xaaaa', '0xvault']);
+    await flush();
+    // B (a device account, no wait) replaces A, which was never shown.
+    const b = mod.showDappSignApproval({}, 'https://b.example', 'personal_sign', ['0xbbbb', '0xledger']);
+    await flush();
+    await expect(a).rejects.toMatchObject({ code: 4001 });
+    statusA({ isUnlocked: true });
+    await flush();
+    expect(elements['dapp-sign-site'].textContent).toBe('https://b.example');
+    elements['dapp-sign-approve'].dispatch('click');
+    await flush();
+    expect(JSON.stringify(executeSign.mock.calls[0])).toContain('0xbbbb');
+    sign.resolve('0xsig');
+    await expect(b).resolves.toBe('0xsig');
+  });
+
   test('a message that cannot be displayed is refused and holds off nothing', async () => {
     const { mod, openApproval } = await loadDappSign();
     await expect(mod.showDappSignApproval({}, 'https://app.example', 'personal_sign', [12345, '0xledger'])).rejects.toThrow();
