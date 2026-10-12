@@ -326,29 +326,47 @@ describe('verified installation', () => {
     expect(calls).toHaveLength(1);
   });
 
-  test.each(['missing', 'directory', 'symlink', 'hardlink'])(
-    'rejects an archive with a %s executable',
-    async (kind) => {
-      installResponses(releaseFixture());
-      execFileSync.mockImplementation((_bin, args, options) => {
-        const bin = path.join(options.cwd, args.at(-1));
-        if (kind === 'directory') fs.mkdirSync(bin);
-        if (kind === 'symlink' || kind === 'hardlink') {
-          // Windows contributors need no symlink privilege to check rejection.
-          fs.writeFileSync(bin, 'linked-binary');
-          const lstat = fs.lstatSync;
-          jest
-            .spyOn(fs, 'lstatSync')
-            .mockImplementation((file) =>
-              file === bin
-                ? { isFile: () => kind !== 'symlink', nlink: kind === 'hardlink' ? 2 : 1 }
-                : lstat(file)
-            );
-        }
-      });
-      await fetcher.main({ outputDir: dir });
-      expect(process.exitCode).toBe(1);
-      expect(fs.existsSync(path.join(dir, 'mac-arm64', 'freedom-cored'))).toBe(false);
-    }
-  );
+  // Every requested member is extracted except the one under test, which is
+  // missing, a directory, a symlink or a hard link: the binary (args[2]) or a
+  // notice file.
+  test.each(
+    ['missing', 'directory', 'symlink', 'hardlink'].flatMap((kind) => [
+      [kind, 'freedom-cored'],
+      [kind, 'THIRD-PARTY-NOTICES'],
+      [kind, 'THIRD-PARTY-NOTICES-rust-std.html'],
+    ])
+  )('rejects an archive with a %s %s', async (kind, member) => {
+    installResponses(releaseFixture());
+    let lstatSpy;
+    execFileSync.mockImplementation((_bin, args, options) => {
+      expect(args[2]).toMatch(/^freedom-cored(?:\.exe)?$/);
+      let target;
+      for (const name of args.slice(2)) {
+        const file = path.join(options.cwd, name);
+        const isTarget = name.replace(/\.exe$/, '') === member;
+        if (isTarget) target = file;
+        if (isTarget && kind === 'missing') continue;
+        if (isTarget && kind === 'directory') fs.mkdirSync(file);
+        else fs.writeFileSync(file, 'extracted');
+      }
+      if (kind === 'symlink' || kind === 'hardlink') {
+        // Windows contributors need no symlink privilege to check rejection.
+        const lstat = lstatSpy ? lstatSpy.getMockImplementation() : fs.lstatSync;
+        lstatSpy = jest
+          .spyOn(fs, 'lstatSync')
+          .mockImplementation((file) =>
+            file === target
+              ? { isFile: () => kind !== 'symlink', nlink: kind === 'hardlink' ? 2 : 1 }
+              : lstat(file)
+          );
+      }
+    });
+    await fetcher.main({ outputDir: dir });
+    expect(process.exitCode).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(
+      'Error:',
+      expect.objectContaining({ message: expect.stringContaining(`has no regular ${member}`) })
+    );
+    expect(fs.existsSync(path.join(dir, 'mac-arm64', 'freedom-cored'))).toBe(false);
+  });
 });
