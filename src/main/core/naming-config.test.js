@@ -333,8 +333,9 @@ describe('NamingConfig', () => {
       '2:naming.configure',
       '2:naming.availability',
     ]);
-    const second = config.core.refs;
-    expect(second.url(client.sent[1][2].rpc[0].endpoint)).toBe('https://a.rpc.example');
+    expect(config.endpointUrl(client.sent[1][2].rpc[0].endpoint)).toBe('https://a.rpc.example');
+    // The first process's references don't map.
+    expect(config.endpointUrl(client.sent[0][2].rpc[0].endpoint)).toBeUndefined();
   });
 
   test('a refused proposal leaves the configuration the core runs mapped', async () => {
