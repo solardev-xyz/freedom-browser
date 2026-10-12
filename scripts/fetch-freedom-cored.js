@@ -23,6 +23,9 @@ const PINNED_SHA256SUMS_DIGEST = 'PENDING_RELEASE';
 const CORE_RELEASE_TAG = process.env.FREEDOM_CORE_RELEASE_TAG || PINNED_RELEASE_TAG;
 
 const API_HOST = 'api.github.com';
+// Shipped beside the binary in every archive: the notices of the third-party
+// code it statically links (crates, and the Rust toolchain's runtime).
+const NOTICE_FILES = ['THIRD-PARTY-NOTICES', 'THIRD-PARTY-NOTICES-rust-std.html'];
 
 const TARGETS = [
   { os: 'mac', arch: 'arm64', keywords: ['darwin', 'arm64'] },
@@ -151,8 +154,9 @@ async function main({ outputDir = OUTPUT_DIR } = {}) {
     });
 
     for (const { target, asset, expected } of downloads) {
-      // Extract only the known binary into a fresh directory. Never unpack a
-      // whole archive into an existing install or discard it before verification.
+      // Extract only the known binary and notices into a fresh directory. Never
+      // unpack a whole archive into an existing install or discard it before
+      // verification.
       const stage = fs.mkdtempSync(path.join(outputDir, '.fetch-'));
       try {
         const archive = path.join(stage, asset.name);
@@ -169,19 +173,29 @@ async function main({ outputDir = OUTPUT_DIR } = {}) {
           ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
           : 'tar';
         const opts = { cwd: stage, stdio: 'inherit' };
+        const members = [binName, ...NOTICE_FILES];
         if (target.exe && !isWindows) {
-          execFileSync('unzip', ['-o', asset.name, binName], opts);
+          execFileSync('unzip', ['-o', asset.name, ...members], opts);
         } else {
-          execFileSync(tarBin, ['-xf', asset.name, binName], opts);
+          execFileSync(tarBin, ['-xf', asset.name, ...members], opts);
         }
-        const bin = path.join(stage, binName);
-        if (!fs.existsSync(bin) || !fs.lstatSync(bin).isFile() || fs.lstatSync(bin).nlink !== 1) {
-          throw new Error(`The ${asset.name} archive has no regular ${binName} binary`);
+        for (const member of members) {
+          const file = path.join(stage, member);
+          if (
+            !fs.existsSync(file) ||
+            !fs.lstatSync(file).isFile() ||
+            fs.lstatSync(file).nlink !== 1
+          ) {
+            throw new Error(`The ${asset.name} archive has no regular ${member}`);
+          }
         }
-        if (!target.exe) fs.chmodSync(bin, 0o755);
+        if (!target.exe) fs.chmodSync(path.join(stage, binName), 0o755);
         const targetDir = path.join(outputDir, `${target.os}-${target.arch}`);
         fs.mkdirSync(targetDir, { recursive: true });
-        fs.renameSync(bin, path.join(targetDir, binName));
+        // Notices first: the binary's presence marks a complete install.
+        for (const member of [...NOTICE_FILES, binName]) {
+          fs.renameSync(path.join(stage, member), path.join(targetDir, member));
+        }
       } finally {
         fs.rmSync(stage, { recursive: true, force: true });
       }
@@ -192,9 +206,11 @@ async function main({ outputDir = OUTPUT_DIR } = {}) {
     fs.mkdirSync(winArmDir, { recursive: true });
     const stage = fs.mkdtempSync(path.join(outputDir, '.fetch-'));
     try {
-      const bin = path.join(stage, 'freedom-cored.exe');
-      fs.copyFileSync(path.join(outputDir, 'win-x64', 'freedom-cored.exe'), bin);
-      fs.renameSync(bin, path.join(winArmDir, 'freedom-cored.exe'));
+      for (const member of [...NOTICE_FILES, 'freedom-cored.exe']) {
+        const file = path.join(stage, member);
+        fs.copyFileSync(path.join(outputDir, 'win-x64', member), file);
+        fs.renameSync(file, path.join(winArmDir, member));
+      }
     } finally {
       fs.rmSync(stage, { recursive: true, force: true });
     }
@@ -219,6 +235,7 @@ module.exports = {
   parseChecksums,
   assetFor,
   TARGETS,
+  NOTICE_FILES,
   CORE_REPO,
   PINNED_RELEASE_TAG,
 };

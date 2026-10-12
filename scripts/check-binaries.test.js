@@ -123,10 +123,12 @@ describe('freedom-cored build inputs', () => {
     ['linux', 'arm64'],
     ['win', 'x64'],
     ['win', 'arm64'],
-  ])('requires the core binary for %s-%s', (os, arch) => {
+  ])('requires the core binary and its notices for %s-%s', (os, arch) => {
     fs.existsSync.mockImplementation((target) => !target.includes('freedom-cored-bin'));
     expect(checkBinaries([{ os, arch }])).toEqual([
       expect.stringContaining(`freedom-cored binary for ${os}-${arch}`),
+      expect.stringContaining(`freedom-cored THIRD-PARTY-NOTICES for ${os}-${arch}`),
+      expect.stringContaining(`freedom-cored THIRD-PARTY-NOTICES-rust-std.html for ${os}-${arch}`),
     ]);
     expect(fs.existsSync).toHaveBeenCalledWith(
       path.join(
@@ -139,11 +141,16 @@ describe('freedom-cored build inputs', () => {
     );
   });
 
-  test('packages only the executable and explicitly signs it on macOS', () => {
+  test('packages the executable with its notices and explicitly signs it on macOS', () => {
     expect(packageJson.build.extraResources.find(({ to }) => to === 'freedom-cored')).toEqual({
       from: 'freedom-cored-bin/${os}-${arch}/',
       to: 'freedom-cored',
-      filter: ['freedom-cored', 'freedom-cored.exe'],
+      filter: [
+        'freedom-cored',
+        'freedom-cored.exe',
+        'THIRD-PARTY-NOTICES',
+        'THIRD-PARTY-NOTICES-rust-std.html',
+      ],
     });
     expect(packageJson.build.mac.binaries).toContain(
       'Contents/Resources/freedom-cored/freedom-cored'

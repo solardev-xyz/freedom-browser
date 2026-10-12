@@ -272,7 +272,9 @@
         "to": "freedom-cored",
         "filter": [
           "freedom-cored",
-          "freedom-cored.exe"
+          "freedom-cored.exe",
+          "THIRD-PARTY-NOTICES",
+          "THIRD-PARTY-NOTICES-rust-std.html"
         ]
       },
       {

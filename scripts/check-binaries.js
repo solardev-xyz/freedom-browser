@@ -117,6 +117,13 @@ function checkBinaries(platforms) {
     if (!fs.existsSync(corePath)) {
       missing.push(`freedom-cored binary for ${platformDir}: ${corePath}`);
     }
+    // Its third-party notices ship with it.
+    for (const notice of ['THIRD-PARTY-NOTICES', 'THIRD-PARTY-NOTICES-rust-std.html']) {
+      const noticePath = path.join(CORE_BIN_DIR, platformDir, notice);
+      if (!fs.existsSync(noticePath)) {
+        missing.push(`freedom-cored ${notice} for ${platformDir}: ${noticePath}`);
+      }
+    }
 
     const freedomIpfsAddonPath = path.join(
       FREEDOM_IPFS_NATIVE_PREBUILDS_DIR,

@@ -46,8 +46,8 @@
       "issues": [
         {
           "kind": "missing-license",
-          "details": "The freedom-core README says no license has been chosen yet. The download digest is a failing placeholder until v0.1.0 exists.",
-          "recommended_fix": "Confirm the release license and statically linked dependency notices before filling the real digest and shipping."
+          "details": "freedom-core has no license yet (the maintainer's decision). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html). The download digest is a failing placeholder until v0.1.0 exists.",
+          "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
         }
       ]
     },

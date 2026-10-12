@@ -93,8 +93,12 @@ beforeEach(() => {
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
   jest.spyOn(console, 'error').mockImplementation(() => {});
+  // Extracts the requested members (everything after the archive name).
   execFileSync.mockImplementation((_command, args, options) => {
-    fs.writeFileSync(path.join(options.cwd, args.at(-1)), 'verified-binary');
+    for (const member of args.slice(2)) {
+      const body = member.startsWith('freedom-cored') ? 'verified-binary' : `notice ${member}`;
+      fs.writeFileSync(path.join(options.cwd, member), body);
+    }
   });
 });
 
@@ -235,12 +239,20 @@ describe('verified installation', () => {
       if (!target.exe && process.platform !== 'win32')
         expect(fs.statSync(bin).mode & 0o777).toBe(0o755);
     }
+    for (const target of [...fetcher.TARGETS, { os: 'win', arch: 'arm64' }]) {
+      for (const notice of fetcher.NOTICE_FILES) {
+        expect(fs.readFileSync(path.join(dir, `${target.os}-${target.arch}`, notice), 'utf8')).toBe(
+          `notice ${notice}`
+        );
+      }
+    }
     expect(fs.readFileSync(path.join(dir, 'win-arm64', 'freedom-cored.exe'))).toEqual(
       fs.readFileSync(path.join(dir, 'win-x64', 'freedom-cored.exe'))
     );
     expect(fs.readdirSync(dir).some((entry) => entry.startsWith('.fetch-'))).toBe(false);
     for (const [_command, args, options] of execFileSync.mock.calls) {
-      expect(args.at(-1)).toMatch(/^freedom-cored(?:\.exe)?$/);
+      expect(args[2]).toMatch(/^freedom-cored(?:\.exe)?$/);
+      expect(args.slice(3)).toEqual(fetcher.NOTICE_FILES);
       expect(args[1]).not.toMatch(/[/\\]/);
       expect(options.shell).toBeUndefined();
     }

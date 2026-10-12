@@ -84,7 +84,8 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 
 - **Pin:** `v0.1.0` in `scripts/fetch-freedom-cored.js`; its SHA256SUMS digest is a failing placeholder until publication.
 - **Integration:** a separate binary under `resources/freedom-cored/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation.
-- **License:** not selected yet according to freedom-core's README. No license is inferred from Freedom Browser's license. Confirm the release's license, statically linked dependency licenses and required notices before setting the real download digest and shipping it.
+- **License:** not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
+- **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, plus the Rust toolchain runtime: the standard library's crates, compiler-builtins and, on Linux, musl and LLVM's libunwind and crt objects) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). `scripts/fetch-freedom-cored.js` installs both next to the binary, `package.json` ships them in `resources/freedom-cored/`, and `scripts/check-binaries.js` requires them.
 - **Source:** <https://github.com/solardev-xyz/freedom-core>.
 
 ### Ant (antd, Swarm Node)
