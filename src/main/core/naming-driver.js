@@ -131,15 +131,11 @@ class NamingDriver {
     }
   }
 
-  async resolve(method, subject, system, subjectOf) {
-    const until = this.now() + DEADLINE_MS;
-    let attempts = 0;
-    // A lookup belongs to the process it first went to: a restart sends
-    // nothing again (design 0004, Generations).
-    let pinned = null;
+  /** The process `pinned` (or, first, the current one) once no control is
+   * in flight on it. A lookup belongs to the process it first went to: a
+   * restart sends nothing again (design 0004, Generations). */
+  async quiet(pinned, until) {
     for (;;) {
-      const left = until - this.now();
-      if (left <= 0) throw new Error(DEADLINE);
       if (pinned && this.config.core?.gen !== pinned) throw new Error(RESTARTED);
       const gen = await this.process(until);
       // Its process gone, replaced or not.
@@ -147,7 +143,22 @@ class NamingDriver {
         throw new Error(RESTARTED);
       }
       if (!gen) throw new Error(this.now() >= until ? DEADLINE : UNAVAILABLE);
+      if (this.config.idle(gen)) return gen;
+    }
+  }
+
+  async resolve(method, subject, system, subjectOf) {
+    const until = this.now() + DEADLINE_MS;
+    let attempts = 0;
+    let pinned = null;
+    for (;;) {
+      const left = until - this.now();
+      if (left <= 0) throw new Error(DEADLINE);
+      const gen = await this.quiet(pinned, until);
       pinned = gen;
+      // Checked again with nothing between it and the send: a control
+      // queued since goes first.
+      if (!this.config.idle(gen)) continue;
       // What is left after waiting for the core: the core's deadline for
       // the request, and its watchdog's, agree.
       const remaining = Math.floor(until - this.now());
@@ -157,7 +168,6 @@ class NamingDriver {
       let reply = null;
       let failed = null;
       let lost = null;
-      const asked = this.config.requestedOf(gen);
       try {
         reply = await this.client.requestTo(gen, method, params, undefined, {
           watchdogMs: remaining + WATCHDOG_MARGIN_MS,
@@ -171,14 +181,12 @@ class NamingDriver {
       if (lost)
         throw new Error(lost?.code === 'core_unavailable' ? RESTARTED : String(lost?.message));
       const data = failed ? failed.data : reply;
-      // A control main asked for while the lookup ran overtakes it too,
-      // though the core hasn't seen it yet.
-      const moved = this.config.requestedOf(gen);
-      const applied = this.config.appliedOf(gen);
-      const crossed = SCOPES[system].some(
-        (scope) => moved[scope] > asked[scope] && applied[scope] < moved[scope]
-      );
-      if (crossed || this.overtaken(data?.generations, system, gen)) {
+      // A control asked for while the lookup ran may have overtaken it,
+      // though the core hadn't seen it yet: the reply is judged once every
+      // control has settled, by the generations they leave. One that left
+      // this system's alone costs nothing.
+      if (!this.config.idle(gen)) await this.quiet(gen, until);
+      if (this.overtaken(data?.generations, system, gen)) {
         // The reply says how many attempts the caller has used: an
         // immediate one (a cache hit) used none. Only a reply that doesn't
         // say counts as one, so the loop always ends.

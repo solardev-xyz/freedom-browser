@@ -183,22 +183,16 @@ class NamingConfig {
     return core ? { ...core.generations } : { ens: 0, tezos: 0, lifecycle: 0 };
   }
 
-  /** How many controls main has asked for, per scope, for a core process
-   * (`gen`'s): counted when asked, before they are sent. A lookup answered
-   * after one was asked was overtaken by it, as today's epoch check
-   * discards a result that crossed a transition. */
-  requestedOf(gen) {
+  /**
+   * Whether `gen`'s process is current and no control is in flight on it:
+   * none queued, none owed. A lookup is sent only then, so it can't
+   * overtake a control main has asked for, and its reply is judged only
+   * then, once the generations of every control it may have crossed are
+   * known.
+   */
+  idle(gen) {
     const core = this.processes.get(gen);
-    return core ? { ...core.requested } : { ens: 0, tezos: 0, lifecycle: 0 };
-  }
-
-  /** Of those, how many the core has applied, per scope. A reply that
-   * arrives once every control asked for since its lookup went out is
-   * applied carries generations that tell the truth; until then, it may
-   * predate one. */
-  appliedOf(gen) {
-    const core = this.processes.get(gen);
-    return core ? { ...core.applied } : { ens: 0, tezos: 0, lifecycle: 0 };
+    return Boolean(core) && this.core === core && core.pending === 0 && !this.owes(core);
   }
 
   attach() {
@@ -209,18 +203,10 @@ class NamingConfig {
       queue: Promise.resolve(), // its control requests, in order
       initialized: null,
       ready: false, // initialized
-      requested: { ens: 0, tezos: 0, lifecycle: 0 },
-      applied: { ens: 0, tezos: 0, lifecycle: 0 },
+      pending: 0, // control requests queued and not yet settled
       // Controls that failed: owed before anything more is served, so no
-      // lookup runs on a snapshot main has moved from. `scopes` counts what
-      // they would have applied.
-      owed: {
-        configure: false,
-        reset: false,
-        availability: false,
-        tezosCache: false,
-        scopes: { ens: 0, tezos: 0, lifecycle: 0 },
-      },
+      // lookup runs on a snapshot main has moved from.
+      owed: { configure: false, reset: false, availability: false, tezosCache: false },
     };
     this.core = core;
     this.processes.set(core.gen, core);
@@ -295,10 +281,6 @@ class NamingConfig {
       await this.sendControl(core, 'naming.invalidate_tezos', {});
       owed.tezosCache = false;
     }
-    for (const scope of ['ens', 'tezos', 'lifecycle']) {
-      core.applied[scope] += owed.scopes[scope];
-      owed.scopes[scope] = 0;
-    }
   }
 
   /**
@@ -343,17 +325,13 @@ class NamingConfig {
   async configure({ reset = false } = {}) {
     const core = this.core;
     if (!core) return this.generations;
-    const scopes = reset ? ['ens', 'tezos', 'lifecycle'] : ['ens', 'tezos'];
-    for (const scope of scopes) core.requested[scope] += 1;
     try {
       await this.run(core, () => this.sendConfigure(core, reset));
     } catch (err) {
       core.owed.configure = true;
       core.owed.reset ||= reset;
-      for (const scope of scopes) core.owed.scopes[scope] += 1;
       throw err;
     }
-    for (const scope of scopes) core.applied[scope] += 1;
     return this.generations;
   }
 
@@ -362,15 +340,12 @@ class NamingConfig {
   async availability() {
     const core = this.core;
     if (!core) return this.generations;
-    core.requested.lifecycle += 1;
     try {
       await this.run(core, () => this.sendAvailability(core));
     } catch (err) {
       core.owed.availability = true;
-      core.owed.scopes.lifecycle += 1;
       throw err;
     }
-    core.applied.lifecycle += 1;
     return this.generations;
   }
 
@@ -378,7 +353,13 @@ class NamingConfig {
    * unless the core has gone by then. */
   run(core, task) {
     const result = core.queue.then(() => (this.core === core ? task() : false));
-    core.queue = result.catch(() => {});
+    // Counted at once, so a lookup about to be sent sees it; settled
+    // before the queue moves on.
+    core.pending += 1;
+    const settle = () => {
+      core.pending -= 1;
+    };
+    core.queue = result.then(settle, settle);
     return result;
   }
 

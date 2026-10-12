@@ -521,22 +521,39 @@ describe('NamingConfig', () => {
     ]);
   });
 
-  test('controls asked for are counted at once, per scope', async () => {
-    const client = fakeClient();
+  test('a process is idle only with no control queued or owed', async () => {
+    let refuse = false;
+    let release = null;
+    const client = fakeClient(async (method) => {
+      if (method === 'naming.availability' && release === null) {
+        await new Promise((resolve) => (release = resolve));
+      }
+      if (refuse) throw Object.assign(new Error('busy'), { code: 'busy' });
+      return method === 'naming.configure' ? { ens: 1, tezos: 1, lifecycle: 1 } : { lifecycle: 1 };
+    });
     const config = make(client);
     client.start();
+    release = () => {};
     await config.whenReady();
     const gen = client.current;
-    const before = config.requestedOf(gen);
+    expect(config.idle(gen)).toBe(true);
+    // Queued: not idle at once, before it is sent.
+    release = null;
     const pending = config.availability();
-    // Counted before it is sent or answered.
-    expect(config.requestedOf(gen)).toEqual({ ...before, lifecycle: before.lifecycle + 1 });
+    expect(config.idle(gen)).toBe(false);
+    for (let i = 0; i < 5 && !release; i++) await Promise.resolve();
+    release();
     await pending;
-    config.configure({ reset: false }).catch(() => {});
-    expect(config.requestedOf(gen)).toEqual({
-      ens: before.ens + 1,
-      tezos: before.tezos + 1,
-      lifecycle: before.lifecycle + 1,
-    });
+    expect(config.idle(gen)).toBe(true);
+    // Owed: not idle until it goes.
+    refuse = true;
+    release = () => {};
+    await expect(config.configure({ reset: false })).rejects.toMatchObject({ code: 'busy' });
+    expect(config.idle(gen)).toBe(false);
+    refuse = false;
+    expect(await config.whenServing()).toBe(gen);
+    expect(config.idle(gen)).toBe(true);
+    // Another process's never is.
+    expect(config.idle({ id: 'other' })).toBe(false);
   });
 });

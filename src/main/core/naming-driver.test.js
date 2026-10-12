@@ -32,12 +32,14 @@ function setUp(answer, { generations = GEN, core, now = () => 0 } = {}) {
       expect(of).toBe(gen);
       return config.generations;
     }),
-    whenServing: jest.fn(async () => gen),
-    requested: { ens: 0, tezos: 0, lifecycle: 0 },
-    requestedOf: jest.fn(() => ({ ...config.requested })),
-    // Nothing applied unless a test says so.
-    applied: { ens: 0, tezos: 0, lifecycle: 0 },
-    appliedOf: jest.fn(() => ({ ...config.applied })),
+    // Controls in flight: each, once settled by the barrier, may change
+    // generations.
+    controls: [],
+    idle: jest.fn(() => config.controls.length === 0),
+    whenServing: jest.fn(async () => {
+      for (const settle of config.controls.splice(0)) settle(config.generations);
+      return gen;
+    }),
     // An invalidation goes at once here, to the process.
     invalidate: jest.fn(async (method, params) =>
       config.core ? client.requestTo(gen, method, params) : undefined
@@ -337,38 +339,59 @@ describe('NamingDriver', () => {
     expect(client.requestTo).toHaveBeenCalledTimes(3);
   });
 
-  test('a control main asked for while the lookup ran overtakes it', async () => {
-    // The availability goes after the lookup went out: its answer, though
-    // current for the core, is from before the transition.
-    let config;
-    const replies = [];
-    const setup = setUp((_method, _params, n) => {
-      if (n === 1) config.requested.lifecycle += 1;
-      replies.push(n);
-      return ok({ type: 'ok', n }, { attempts: n });
+  test('a control asked for while the lookup ran is waited for, then judged', async () => {
+    // An availability goes after the lookup went out: its answer, though
+    // current for the core then, is from before the transition.
+    const crossed = setUp((_method, _params, n) => {
+      if (n === 1) crossed.config.controls.push((generations) => (generations.lifecycle += 1));
+      // Made under the core's generations of the moment.
+      return ok({ type: 'ok', n }, { attempts: n, generations: { ...crossed.config.generations } });
     });
-    config = setup.config;
-    expect(await setup.driver.resolveContent('x.eth')).toEqual({ type: 'ok', n: 2 });
-    expect(setup.client.requestTo.mock.calls.map(([, , params]) => params.attempts_used)).toEqual([
-      undefined,
-      1,
-    ]);
-    // One the core has already applied when the answer comes: the answer's
-    // generations say whether it is current, and here it is.
-    const applied = setUp((_method, _params, n) => {
-      if (n === 1) {
-        applied.config.requested.lifecycle += 1;
-        applied.config.applied.lifecycle += 1;
-      }
-      return ok({ type: 'ok', n });
+    expect(await crossed.driver.resolveContent('x.eth')).toEqual({ type: 'ok', n: 2 });
+    expect(crossed.client.requestTo.mock.calls.map(([, , params]) => params.attempts_used)).toEqual(
+      [undefined, 1]
+    );
+    // One that leaves the lookup's generations alone costs nothing: the
+    // answer is published, no attempt spent.
+    const unrelated = setUp((_method, _params, n) => {
+      if (n === 1) unrelated.config.controls.push((generations) => (generations.ens += 1));
+      return ok({ type: 'ok', n }, { generations: { ...unrelated.config.generations } });
     });
-    expect(await applied.driver.resolveContent('x.eth')).toEqual({ type: 'ok', n: 1 });
-    // A Tezos lookup isn't overtaken by a lifecycle change.
-    const tezos = setUp((_method, _params, n) => {
-      if (n === 1) tezos.config.requested.lifecycle += 1;
-      return ok({ type: 'ok', n });
+    expect(await unrelated.driver.resolveTezos('a.tez')).toEqual({ type: 'ok', n: 1 });
+    expect(unrelated.client.requestTo).toHaveBeenCalledTimes(1);
+    expect(unrelated.config.whenServing).toHaveBeenCalledTimes(2);
+  });
+
+  test('a lookup is sent only while no control is in flight', async () => {
+    // A control queued while the barrier ran: the barrier is passed again.
+    const during = setUp(() => ok({ type: 'ok' }));
+    let settled = false;
+    during.config.whenServing.mockImplementationOnce(async () => {
+      during.config.controls.push(() => (settled = true));
+      return during.gen;
     });
-    expect(await tezos.driver.resolveTezos('a.tez')).toEqual({ type: 'ok', n: 1 });
+    during.client.requestTo.mockImplementationOnce(async () => {
+      expect(settled).toBe(true);
+      return ok({ type: 'ok' });
+    });
+    expect(await during.driver.resolveContent('x.eth')).toEqual({ type: 'ok' });
+    expect(during.client.requestTo).toHaveBeenCalledTimes(1);
+    expect(during.config.whenServing).toHaveBeenCalledTimes(2);
+
+    // One queued after the barrier, just before the send: it goes first too.
+    const after = setUp(() => ok({ type: 'ok' }));
+    let first = false;
+    after.config.idle.mockImplementationOnce(() => true);
+    after.config.idle.mockImplementationOnce(() => {
+      after.config.controls.push(() => (first = true));
+      return false;
+    });
+    after.client.requestTo.mockImplementationOnce(async () => {
+      expect(first).toBe(true);
+      return ok({ type: 'ok' });
+    });
+    expect(await after.driver.resolveContent('x.eth')).toEqual({ type: 'ok' });
+    expect(after.client.requestTo).toHaveBeenCalledTimes(1);
   });
 
   test('a lookup stays with its process: a restart sends nothing again', async () => {
