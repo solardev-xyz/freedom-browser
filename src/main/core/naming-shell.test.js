@@ -1,6 +1,7 @@
 const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
 const { OnionGateRefusal } = require('../ipfs/onion-gate');
+const { isOnionGatewayUrl } = require('../ipfs/gateway-transport');
 const { LookupsExhausted } = require('../networks/blockscout-logs');
 const {
   registerNamingShell,
@@ -288,6 +289,28 @@ describe("an RPC redirect's target", () => {
       expect(await check(location, 'https://a.rpc.example', lookup)).toBe(true);
     }
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  // Review of #692 (security, round 2): one onion test on both sides.
+  test('the onion gate takes every name the check passes to it unresolved', async () => {
+    for (const location of [
+      'https://next.onion/',
+      'https://NEXT.ONION./',
+      'https://next.onion../',
+      'https://next%2eonion/',
+    ]) {
+      const lookup = jest.fn(async () => PUBLIC);
+      expect(await check(location, 'https://a.rpc.example', lookup)).toBe(true);
+      expect(lookup).not.toHaveBeenCalled();
+      expect(isOnionGatewayUrl(location)).toBe(true);
+    }
+    // And a name that only looks onion is resolved, never gated.
+    for (const location of ['https://onion.example/', 'https://next.onion.example/']) {
+      const lookup = jest.fn(async () => PUBLIC);
+      expect(await check(location, 'https://a.rpc.example', lookup)).toBe(true);
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(isOnionGatewayUrl(location)).toBe(false);
+    }
   });
 
   test('its lookup ends with the exchange, and past the lookup bound it is busy', async () => {
