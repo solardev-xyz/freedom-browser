@@ -109,3 +109,17 @@ npm test
 `npm run ipfs:native:smoke` loads the real native addon, starts it, and retrieves
 `/ipns/ipfs.tech/` through the native request API. Set
 `FREEDOM_IPFS_NATIVE_SMOKE_LIVE=0` for startup/diagnostics-only checks.
+
+The backend contract suite (`src/main/ipfs/ipfs-backend.contract.test.js`,
+freedom-core design 0007) drives `ipfsBackend()` and the `ipfs:` handler against
+the real addon, serving content built by the test from loopback servers only
+(`test/helpers/ipfs-fixture.js`). It is skipped unless a backend is named:
+
+```sh
+npm run ipfs:download
+FREEDOM_IPFS_CONTRACT_BACKEND=addon npx jest src/main/ipfs/ipfs-backend.contract.test.js
+```
+
+Its `[pending: …]` tests cover what the design adds and the addon lacks. They
+run against a backend that honours them, or with
+`FREEDOM_IPFS_CONTRACT_PENDING=all` (or a comma-separated list of features).
