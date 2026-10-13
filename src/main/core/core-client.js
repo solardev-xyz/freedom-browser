@@ -498,17 +498,20 @@ class CoreClient extends EventEmitter {
    *
    * `signal` cancels it (0001's `cancel`): the caller gets `cancelled` at
    * once and the core is told, unless its response came first. A signal
-   * already aborted sends nothing.
+   * already aborted sends nothing. With `untilResponse`, the core is told
+   * and the caller still gets its one response: a broadcast's is its
+   * outcome, which a cancel doesn't make unknown (design 0005,
+   * Cancellation).
    */
   requestTo(
     gen,
     method,
     params = {},
     context = { caller: 'chrome' },
-    { watchdogMs = null, signal = null } = {}
+    { watchdogMs = null, signal = null, untilResponse = false } = {}
   ) {
     if (!this.serves(gen)) return Promise.reject(unavailable());
-    return this.send(gen, method, params, context, { watchdogMs, signal });
+    return this.send(gen, method, params, context, { watchdogMs, signal, untilResponse });
   }
 
   /** Whether `gen` is the process requests go to now: the current one,
@@ -872,10 +875,17 @@ class CoreClient extends EventEmitter {
   /**
    * Writes one request. `control` frames (hello, shutdown) skip the
    * admission limits; `onReply` receives the outcome synchronously instead
-   * of a promise; `signal` cancels it.
+   * of a promise; `signal` cancels it, its caller waiting for the core's
+   * response with `untilResponse`.
    */
   send(gen, method, params, context, options) {
-    const { control = false, onReply = null, watchdogMs = null, signal = null } = options || {};
+    const {
+      control = false,
+      onReply = null,
+      watchdogMs = null,
+      signal = null,
+      untilResponse = false,
+    } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
       if (!onReply) return Promise.reject(error);
@@ -924,7 +934,7 @@ class CoreClient extends EventEmitter {
         };
       });
     }
-    if (signal) this.cancellable(gen, id, entry, signal);
+    if (signal) this.cancellable(gen, id, entry, signal, untilResponse);
     if (watchdogMs !== null) {
       // The hang watchdog (design 0001): the core enforces the request's
       // deadline and always replies, so no reply by deadline + 15 s means
@@ -967,15 +977,17 @@ class CoreClient extends EventEmitter {
    * core's one response, which is consumed and dropped; a fragmented one
    * still returns its credit, as a delivered one does (design 0005, Main's
    * pool). A response that came first answers the caller, and nothing is
-   * cancelled.
+   * cancelled. `untilResponse` leaves the caller waiting for that one
+   * response, which then answers it.
    */
-  cancellable(gen, id, entry, signal) {
+  cancellable(gen, id, entry, signal, untilResponse = false) {
     const settle = entry.settle;
     let answered = false;
     const onAbort = () => {
       if (answered || gen.pending.get(id) !== entry) return;
-      answered = true;
       this.writeCancel(gen, id);
+      if (untilResponse) return;
+      answered = true;
       settle({ error: cancelled() });
     };
     entry.settle = (outcome) => {

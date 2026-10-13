@@ -1601,6 +1601,25 @@ describe('CoreClient', () => {
       expect(core.killed).toBeNull();
     });
 
+    // Design 0005, Cancellation: a cancelled broadcast still ends with its
+    // outcome, which its caller must have.
+    test('with untilResponse, a cancel tells the core and the caller gets its response', async () => {
+      const { core, gen, send, cancels } = await held();
+      const request = send({ untilResponse: true });
+      await tick();
+      const id = request.id();
+      request.cancel();
+      // Told once, however often it aborts.
+      request.cancel();
+      await tick();
+      expect(cancels()).toEqual([{ type: 'cancel', id }]);
+      expect(gen.pending.has(id)).toBe(true);
+      core.reply({ type: 'response', id, result: { outcome: 'uncertain' } });
+      expect(await request.pending).toEqual({ result: { outcome: 'uncertain' } });
+      expect(gen.pending.size).toBe(0);
+      expect(core.killed).toBeNull();
+    });
+
     test("a fragmented response to a cancelled request still returns the core's credit", async () => {
       const { core, send } = await held();
       const request = send();
