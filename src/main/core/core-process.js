@@ -55,7 +55,8 @@ async function startCore() {
     log,
     shellVersion: app.getVersion(),
   });
-  client.on('failed', (reason) => log.error('[Core] not available', { reason }));
+  // No 'failed' listener: the client already logs '[Core] giving up' with
+  // the reason, once.
   const starting = client;
   let hello;
   try {
@@ -63,6 +64,8 @@ async function startCore() {
   } catch (err) {
     // Wind-down began while the core was starting: not a failure.
     if (shutDown) return null;
+    // The client gave up and has logged why; don't report it a second time.
+    if (starting.state === 'failed') return null;
     throw err;
   }
   log.info('[Core] ready', {

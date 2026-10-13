@@ -511,7 +511,7 @@ describe('CoreClient', () => {
         child: { pid: undefined },
       });
       const started = client.start().catch((e) => e);
-      children[0].emit('error', new Error('ENOENT'));
+      children[0].emit('error', Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' }));
       expect(children[0].killed).toBeNull();
       expect(client.state).toBe('starting');
       runTimers(RESTART_DELAYS_MS[0]);
@@ -520,6 +520,66 @@ describe('CoreClient', () => {
       children[1].exit(0);
       await stopped;
       expect((await started).code).toBe('core_unavailable');
+    });
+    test.each(['ENOENT', 'EACCES', 'ENOEXEC'])(
+      'a %s spawn error gives up at once and logs the code and path',
+      async (code) => {
+        const log = quietLog();
+        const { client, children, runTimers } = makeClient([() => {}], {
+          child: { pid: undefined },
+          log,
+        });
+        const failed = jest.fn();
+        client.on('failed', failed);
+        const started = client.start().catch((e) => e);
+        children[0].emit('error', Object.assign(new Error(`spawn ${code}`), { code }));
+        expect(client.state).toBe('failed');
+        expect(failed).toHaveBeenCalledWith(`spawn ${code}: /bin/freedom-cored`);
+        expect(log.error).toHaveBeenCalledWith('[Core] spawn failed', {
+          code,
+          path: '/bin/freedom-cored',
+        });
+        expect(log.warn).not.toHaveBeenCalledWith('[Core] exited; restarting', expect.anything());
+        runTimers(RESTART_DELAYS_MS[2]);
+        expect(children).toHaveLength(1);
+        expect((await started).code).toBe('core_unavailable');
+      }
+    );
+
+    test('a synchronous spawn throw with ENOENT gives up too', async () => {
+      const log = quietLog();
+      const spawn = jest.fn(() => {
+        throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+      });
+      const client = new CoreClient({ spawn, command: '/x/freedom-cored', args: [], log });
+      await expect(client.start()).rejects.toMatchObject({ code: 'core_unavailable' });
+      expect(client.state).toBe('failed');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(log.error).toHaveBeenCalledWith('[Core] spawn failed', {
+        code: 'ENOENT',
+        path: '/x/freedom-cored',
+      });
+    });
+
+    test('a malformed error code is logged as unknown and retried', async () => {
+      const log = quietLog();
+      const { client, children, runTimers } = makeClient([() => {}], {
+        child: { pid: undefined },
+        log,
+      });
+      const started = client.start().catch((e) => e);
+      children[0].emit('error', Object.assign(new Error('x'), { code: 'not\nan errno' }));
+      expect(log.error).toHaveBeenCalledWith('[Core] spawn failed', {
+        code: 'unknown',
+        path: '/bin/freedom-cored',
+      });
+      expect(client.state).toBe('starting');
+      runTimers(RESTART_DELAYS_MS[0]);
+      expect(children).toHaveLength(2);
+      const stopped = client.stop();
+      children[1].exit(0);
+      await stopped;
+      await started;
     });
   });
 

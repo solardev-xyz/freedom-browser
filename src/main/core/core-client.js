@@ -45,6 +45,9 @@ const MAX_CRASHES_IN_WINDOW = 3;
 // 76 (protocol) is restarted under the crash policy, unless the handshake
 // reported a protocol mismatch.
 const NO_RESTART_EXIT_CODES = new Set([64, 74, 75]);
+// Spawn errors no restart can fix: the binary is missing or can't be run.
+const NO_RESTART_SPAWN_ERRORS = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'ENOEXEC']);
+const ERRNO_CODE = /^E[A-Z0-9]{1,31}$/;
 // Admission limits per generation. Control frames (hello, shutdown) don't
 // count, so they always get through.
 const MAX_PENDING = 256;
@@ -167,6 +170,7 @@ class Generation {
     this.stopping = false; // stop() closed stdin and armed the grace kill
     this.killing = false; // inside child.kill (it can emit 'error' synchronously)
     this.killAttempts = 0;
+    this.spawnError = null; // the errno code when the process never started
     this.distrusted = false; // a protocol fault: its output is ignored
     this.stdinEnded = false;
     this.cause = null; // shutdown | mismatch | protocol | transport | handshake_timeout | spawn
@@ -321,11 +325,8 @@ class CoreClient extends EventEmitter {
         env: scrubbedEnv(),
         windowsHide: true,
       });
-    } catch {
-      this.log.error('[Core] spawn failed');
-      gen.cause = 'spawn';
-      gen.exited = true;
-      this.retire(gen);
+    } catch (err) {
+      this.spawnFailed(gen, err);
       return;
     }
     gen.child = child;
@@ -342,7 +343,7 @@ class CoreClient extends EventEmitter {
     for (const name of ['stdin', 'stdout', 'stderr']) {
       child[name].on('error', () => this.connectionFailed(gen, `${name}_error`));
     }
-    child.on('error', () => this.onChildError(gen));
+    child.on('error', (err) => this.onChildError(gen, err));
     child.on('exit', (code, signal) => this.onChildExit(gen, code, signal));
     child.on('close', () => this.retire(gen));
 
@@ -420,13 +421,10 @@ class CoreClient extends EventEmitter {
    * existed), or a signal couldn't be delivered (the process may live on, so
    * nothing is released until it actually exits).
    */
-  onChildError(gen) {
+  onChildError(gen, err) {
     if (gen.retired) return;
     if (gen.child && gen.child.pid === undefined) {
-      this.log.error('[Core] spawn failed');
-      gen.cause = gen.cause || 'spawn';
-      gen.exited = true;
-      this.retire(gen);
+      this.spawnFailed(gen, err);
       return;
     }
     if (gen.exited) return;
@@ -440,6 +438,21 @@ class CoreClient extends EventEmitter {
       return;
     }
     this.end(gen, 'transport');
+  }
+
+  /**
+   * The process never started. Logs the errno code and the binary path, so
+   * a missing binary reads as that rather than as a crash; `retire` gives up
+   * at once on the codes no restart can fix.
+   */
+  spawnFailed(gen, err) {
+    const code =
+      err && typeof err.code === 'string' && ERRNO_CODE.test(err.code) ? err.code : 'unknown';
+    this.log.error('[Core] spawn failed', { code, path: this.command });
+    gen.cause = gen.cause || 'spawn';
+    gen.spawnError = code;
+    gen.exited = true;
+    this.retire(gen);
   }
 
   /**
@@ -469,6 +482,10 @@ class CoreClient extends EventEmitter {
     }
     if (gen.cause === 'mismatch') {
       this.fail('protocol mismatch');
+      return;
+    }
+    if (gen.spawnError && NO_RESTART_SPAWN_ERRORS.has(gen.spawnError)) {
+      this.fail(`spawn ${gen.spawnError}: ${this.command}`);
       return;
     }
     if (code !== null && NO_RESTART_EXIT_CODES.has(code)) {
