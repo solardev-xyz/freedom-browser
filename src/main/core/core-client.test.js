@@ -1081,6 +1081,31 @@ describe('CoreClient', () => {
       ]);
     });
 
+    test('a method two threads share goes by its params: a shaped handler first, then the other', async () => {
+      const chain = jest.fn(async () => ({ from: 'chain' }));
+      const naming = jest.fn(async () => ({ from: 'naming' }));
+      const chainOnly = jest.fn(async () => ({ from: 'chain' }));
+      const isChain = (params) => typeof params.generation === 'number';
+      const { send, replies } = await served((client) => {
+        client.handle('shell.rpc', chain, { when: isChain });
+        client.handle('shell.rpc', naming);
+        client.handle('shell.blockscout', chainOnly, { when: isChain });
+      });
+      send({ id: 1, method: 'shell.rpc', params: { generations: { ens: 1 } } });
+      send({ id: 2, method: 'shell.rpc', params: { generation: 1 } });
+      send({ id: 3, method: 'shell.blockscout', params: { generation: 1 } });
+      send({ id: 4, method: 'shell.blockscout', params: { generations: {} } });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(naming).toHaveBeenCalledWith({ generations: { ens: 1 } }, expect.anything());
+      expect(chain).toHaveBeenCalledWith({ generation: 1 }, expect.anything());
+      expect(replies().sort((a, b) => a.id - b.id)).toEqual([
+        { type: 'response', id: 1, result: { from: 'naming' } },
+        { type: 'response', id: 2, result: { from: 'chain' } },
+        { type: 'response', id: 3, result: { from: 'chain' } },
+        { type: 'response', id: 4, error: { code: 'unknown_method', message: 'Unknown method' } },
+      ]);
+    });
+
     test("errors are fixed codes and messages, never a handler's text", async () => {
       const { send, replies } = await served((client) => {
         client.handle('shell.gateway', async () => {

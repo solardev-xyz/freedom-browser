@@ -406,8 +406,10 @@ class CoreClient extends EventEmitter {
     // Requests waiting for readiness, and their serialized parameter bytes.
     this.waitingRequests = 0;
     this.waitingBytes = 0;
-    // Handlers for the core's requests, by method.
+    // Handlers for the core's requests, by method; and those that take only
+    // the requests whose params they accept, tried first.
     this.handlers = new Map();
+    this.shapedHandlers = new Map();
   }
 
   /**
@@ -418,9 +420,26 @@ class CoreClient extends EventEmitter {
    * handler still settles, and exactly one reply goes back. `charge(bytes)`
    * charges what the handler holds for its reply to main's pool, until the
    * reply is serialized: false, and nothing charged, past the pool.
+   *
+   * The core's naming and chain threads share method names (`shell.rpc`,
+   * `shell.verified`), and tell their requests apart by their params. A
+   * handler registered with `when(params)` takes the requests it accepts,
+   * before the one registered without, which takes the rest.
    */
-  handle(method, handler) {
-    this.handlers.set(method, handler);
+  handle(method, handler, { when = null } = {}) {
+    if (!when) {
+      this.handlers.set(method, handler);
+      return;
+    }
+    const shaped = this.shapedHandlers.get(method) || [];
+    shaped.push({ when, handler });
+    this.shapedHandlers.set(method, shaped);
+  }
+
+  /** The handler for one of the core's requests, or undefined. */
+  handlerFor(method, params) {
+    const shaped = this.shapedHandlers.get(method)?.find((route) => route.when(params));
+    return shaped ? shaped.handler : this.handlers.get(method);
   }
 
   /** Spawns the core and completes the handshake. */
@@ -1054,7 +1073,7 @@ class CoreClient extends EventEmitter {
     if (!this.serving(gen)) return undefined;
     const controller = new AbortController();
     gen.incoming.set(id, controller);
-    const handler = this.handlers.get(method);
+    const handler = this.handlerFor(method, params ?? {});
     if (!handler) {
       this.respond(gen, id, controller, { error: shellError('unknown_method') });
       return undefined;
