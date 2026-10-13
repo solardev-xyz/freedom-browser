@@ -102,12 +102,14 @@ function isLoopbackGatewayUrl(url) {
 
 // The PAC's own host test, mirrored (`dnsDomainIs(host, ".onion") || host ===
 // "onion"` in src/main/tor-proxy.js), so the two cannot disagree about what
-// counts as an onion address. A trailing root dot is stripped: `abc.onion.`
-// is the same name to Chromium and to the resolver.
+// counts as an onion address. Trailing root dots are stripped: `abc.onion.`
+// is the same name to Chromium and to the resolver, and `abc.onion..` is
+// taken as onion too, failing closed. The one onion test in main: this gate
+// and the redirect checks (blockscout-logs.js, naming-shell.js) all ask it.
 function isOnionHostname(hostname) {
   const host = String(hostname || '')
     .toLowerCase()
-    .replace(/\.$/, '');
+    .replace(/\.+$/, '');
   return host === 'onion' || host.endsWith('.onion');
 }
 

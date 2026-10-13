@@ -141,6 +141,9 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     // trailing root dot is the same name to Chromium and to the resolver.
     ['onion', true],
     ['abc.onion.', true],
+    // More than one root dot: still onion, so the gate fails closed (and
+    // agrees with the redirect checks, which ask this same test).
+    ['abc.onion..', true],
     ['abc.onion.example', false],
     ['onionsite.example', false],
     ['gateway.example', false],
@@ -148,6 +151,21 @@ describe('an .onion gateway is only dialled when the session proxies it', () => 
     ['', false],
   ])('isOnionHostname(%s) === %s', (hostname, expected) => {
     expect(isOnionHostname(hostname)).toBe(expected);
+  });
+
+  test('a name with trailing root dots is gated like the bare name', async () => {
+    const requestImpl = jest.fn();
+    for (const url of ['https://hidden.onion./x', 'https://hidden.onion../x']) {
+      expect(isOnionGatewayUrl(url)).toBe(true);
+      await expect(
+        netGatewayFetch(
+          url,
+          { redirect: 'manual' },
+          { requestImpl, resolveProxy: async () => 'DIRECT' }
+        )
+      ).rejects.toBeInstanceOf(OnionGateRefusal);
+    }
+    expect(requestImpl).not.toHaveBeenCalled();
   });
 
   test('a URL that cannot be parsed is not onion (it takes the ordinary path)', () => {

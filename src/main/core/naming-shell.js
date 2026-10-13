@@ -12,14 +12,13 @@
 const dns = require('node:dns');
 const { isIP } = require('net');
 const { ShellError } = require('./core-client');
-const { netGatewayFetch } = require('../ipfs/gateway-transport');
+const { netGatewayFetch, isOnionHostname } = require('../ipfs/gateway-transport');
 const { OnionGateRefusal } = require('../ipfs/onion-gate');
 const { validateRpcUrl } = require('../networks/network-registry');
 const {
   LookupsExhausted,
   boundLookups,
   isLocalHostname,
-  isOnionName,
   resolvesToLocalAddress,
 } = require('../networks/blockscout-logs');
 const { prefetchGatewayUrl } = require('../ens-prefetch');
@@ -319,7 +318,7 @@ async function redirectAllowed(location, origin, { lookup, signal }) {
   const target = new URL(location);
   if (target.origin === origin) return true;
   if (isLocalHostname(target.hostname)) return false;
-  if (isOnionName(target.hostname)) return true;
+  if (isOnionHostname(target.hostname)) return true;
   try {
     return !(await resolvesToLocalAddress(target.hostname, { lookup, signal }));
   } catch (err) {

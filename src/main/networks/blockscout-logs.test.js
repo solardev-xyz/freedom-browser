@@ -606,14 +606,15 @@ describe('fetchBlockscoutTransferLogs', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test.each(['https://wallet.onion/api', 'https://WALLET.ONION./api'])(
-    'a redirect to %s is refused without asking the resolver',
-    async (location) => {
-      const lookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
-      await expect(read(redirectTo(location), 10_000, lookup)).rejects.toThrow('does not resolve');
-      expect(lookup).not.toHaveBeenCalled();
-    }
-  );
+  test.each([
+    'https://wallet.onion/api',
+    'https://WALLET.ONION./api',
+    'https://wallet.onion../api',
+  ])('a redirect to %s is refused without asking the resolver', async (location) => {
+    const lookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);
+    await expect(read(redirectTo(location), 10_000, lookup)).rejects.toThrow('does not resolve');
+    expect(lookup).not.toHaveBeenCalled();
+  });
 
   test('a redirect to a public name is resolved, then followed', async () => {
     const lookup = jest.fn(async () => [{ address: '104.18.12.34', family: 4 }]);

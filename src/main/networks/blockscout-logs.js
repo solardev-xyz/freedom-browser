@@ -367,13 +367,6 @@ function isLocalHostname(hostname) {
   return LOCAL_ADDRESSES.check(host, version === 4 ? 'ipv4' : 'ipv6');
 }
 
-// Whether a URL's hostname is a `.onion` name, as the onion gate and the
-// PAC read one (trailing root dots aside): it has no DNS answer, and asking
-// the system resolver for it would leak it.
-function isOnionName(hostname) {
-  return isOnionHostname(bareHost(hostname));
-}
-
 // A lookup its caller gave up on still runs: the system resolver can't
 // cancel one, and the abort only stops the wait for it. At most this many
 // may be outstanding at once, through one boundLookups.
@@ -450,7 +443,7 @@ async function redirectTarget(location, current, origin, { lookup, signal }) {
   // Off the configured origin, never to this machine or its LAN.
   if (next.origin !== origin) {
     if (isLocalHostname(next.hostname)) throw new BlockscoutError('redirected to a local host');
-    if (isOnionName(next.hostname)) {
+    if (isOnionHostname(next.hostname)) {
       throw new BlockscoutError('redirected to a host that does not resolve');
     }
     let local;
@@ -655,7 +648,6 @@ module.exports = {
   canonicalLog,
   fetchBlockscoutTransferLogs,
   isLocalHostname,
-  isOnionName,
   resolvesToLocalAddress,
   logIndexFilter,
   logIndexHost,
