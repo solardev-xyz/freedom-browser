@@ -103,31 +103,49 @@ function decodeJson(payload) {
   }
 }
 
+// A begin header as fc-protocol's serde reads it: an object of two members,
+// each a JSON string name and a `u64` in serde_json's grammar (digits only:
+// no sign, fraction, exponent or leading zero), with JSON's whitespace
+// between tokens. JSON.parse would take `3.0`, `7e0` or `-0` as integers.
+const WS = String.raw`[ \t\n\r]*`;
+const MEMBER = String.raw`("(?:[^"\\]|\\.)*")${WS}:${WS}(0|[1-9][0-9]*)`;
+const BEGIN_HEADER = new RegExp(
+  String.raw`^${WS}\{${WS}${MEMBER}${WS},${WS}${MEMBER}${WS}\}${WS}$`
+);
+const MAX_U64 = 2n ** 64n - 1n;
+
 /** A begin frame's header: an object with exactly `id`, a valid message ID,
- * and `bytes`, a size the reassembler checks. Each is named once: where
- * JSON.parse keeps a duplicate's last value, serde refuses it, and a valid
- * header holds no strings but its two names. */
+ * and `bytes`, a `u64` the reassembler checks against the cap. Each is named
+ * once: where JSON.parse keeps a duplicate's last value, serde refuses it. */
 function decodeBegin(payload) {
   let text;
-  let header;
   try {
     text = UTF8.decode(payload);
-    header = JSON.parse(text);
   } catch {
     throw new FrameError('begin_header');
   }
-  if (
-    !isObject(header) ||
-    Object.keys(header).length !== 2 ||
-    text.split('"').length !== 5 ||
-    !Number.isSafeInteger(header.id) ||
-    header.id < 1 ||
-    !Number.isInteger(header.bytes) ||
-    header.bytes < 0
-  ) {
+  const match = BEGIN_HEADER.exec(text);
+  if (!match) throw new FrameError('begin_header');
+  const members = new Map();
+  for (const [name, digits] of [match.slice(1, 3), match.slice(3, 5)]) {
+    let key;
+    try {
+      // Names may be escaped, as serde unescapes them.
+      key = JSON.parse(name);
+    } catch {
+      throw new FrameError('begin_header');
+    }
+    // Past 20 digits it is over u64 without converting it.
+    if (digits.length > 20 || BigInt(digits) > MAX_U64) throw new FrameError('begin_header');
+    members.set(key, BigInt(digits));
+  }
+  const id = members.get('id');
+  const bytes = members.get('bytes');
+  if (members.size !== 2 || id === undefined || bytes === undefined) {
     throw new FrameError('begin_header');
   }
-  return { id: header.id, bytes: header.bytes };
+  if (id < 1n || id > BigInt(Number.MAX_SAFE_INTEGER)) throw new FrameError('begin_header');
+  return { id: Number(id), bytes: Number(bytes) };
 }
 
 /**

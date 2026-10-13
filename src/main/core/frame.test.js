@@ -237,27 +237,85 @@ describe('Reassembler', () => {
     throw new Error('asked outside a begin');
   };
 
-  test('begin headers must be exactly { id, bytes }', () => {
-    const r = new Reassembler();
-    expect(r.push(frame(KIND_BEGIN, ' { "bytes" : 5, "id" : 7 } '), pending)).toBeNull();
-    for (const bad of [
-      '{"id":7}',
-      '{"bytes":5}',
-      '{"id":7,"bytes":5,"extra":1}',
-      '{"id":7,"id":7,"bytes":5}',
-      '{"id":7,"bytes":5,"bytes":5}',
-      '{"id":0,"bytes":5}',
-      '{"id":9007199254740992,"bytes":5}',
-      '{"id":7,"bytes":-1}',
-      '{"id":7,"bytes":1.5}',
-      '{"id":"7","bytes":5}',
-      '[7,5]',
-      'null',
-      '',
-      Buffer.from([0xff]),
-    ]) {
-      expect(() => new Reassembler().push(frame(KIND_BEGIN, bad), pending)).toThrow(/begin_header/);
+  // What a begin with each header gives, as fc-protocol's Begin::decode and
+  // the core's size check give it (each checked against a Rust probe at
+  // freedom-core ebc0b90). serde reads both members as u64, so only plain
+  // digits pass, even where JSON.parse would take an integer.
+  const BS = String.fromCharCode(92);
+  test.each([
+    ['{"id":7,"bytes":3}', 'ok'],
+    [' { "bytes" : 3, "id" : 7 } ', 'ok'],
+    ['\t{"id":7 ,"bytes":3 }\r\n', 'ok'],
+    [`{"${BS}u0069d":7,"${BS}u0062ytes":3}`, 'ok'],
+    // Decimals and exponents, integral or not.
+    ['{"id":7,"bytes":3.0}', 'begin_header'],
+    ['{"id":7e0,"bytes":3}', 'begin_header'],
+    ['{"id":7,"bytes":3e0}', 'begin_header'],
+    ['{"id":7,"bytes":3E+0}', 'begin_header'],
+    ['{"id":7,"bytes":1e2}', 'begin_header'],
+    ['{"id":7,"bytes":3.5}', 'begin_header'],
+    ['{"id":7,"bytes":3.}', 'begin_header'],
+    ['{"id":7,"bytes":.3}', 'begin_header'],
+    // Signs, negative zero included.
+    ['{"id":7,"bytes":-0}', 'begin_header'],
+    ['{"id":-0,"bytes":3}', 'begin_header'],
+    ['{"id":7,"bytes":-1}', 'begin_header'],
+    ['{"id":7,"bytes":+3}', 'begin_header'],
+    // Leading zeros.
+    ['{"id":7,"bytes":00}', 'begin_header'],
+    ['{"id":7,"bytes":03}', 'begin_header'],
+    ['{"id":07,"bytes":3}', 'begin_header'],
+    // A size within u64 meets the cap; past u64 the header is malformed.
+    ['{"id":7,"bytes":0}', 'begin_size'],
+    ['{"id":7,"bytes":33554432}', 'ok'],
+    ['{"id":7,"bytes":33554433}', 'begin_size'],
+    ['{"id":7,"bytes":9007199254740993}', 'begin_size'],
+    ['{"id":7,"bytes":18446744073709551615}', 'begin_size'],
+    ['{"id":7,"bytes":18446744073709551616}', 'begin_header'],
+    ['{"id":7,"bytes":18446744073709552000}', 'begin_header'],
+    ['{"id":7,"bytes":99999999999999999999999}', 'begin_header'],
+    // A message ID: 1 to 2^53 - 1.
+    ['{"id":0,"bytes":3}', 'begin_header'],
+    ['{"id":9007199254740991,"bytes":3}', 'ok'],
+    ['{"id":9007199254740992,"bytes":3}', 'begin_header'],
+    ['{"id":18446744073709551615,"bytes":3}', 'begin_header'],
+    ['{"id":18446744073709551616,"bytes":3}', 'begin_header'],
+    // Exactly the two names, each once, escaped or not.
+    [`{"${BS}u0069d":7,"id":7}`, 'begin_header'],
+    ['{"id":7,"id":7,"bytes":3}', 'begin_header'],
+    ['{"id":7,"bytes":3,"id":7}', 'begin_header'],
+    ['{"id":7,"id":7}', 'begin_header'],
+    ['{"id":7,"bytes":3,"extra":1}', 'begin_header'],
+    ['{"id":7,"Bytes":3}', 'begin_header'],
+    ['{"id":7}', 'begin_header'],
+    ['{}', 'begin_header'],
+    ['{"id":7,"bytes":3,}', 'begin_header'],
+    // Other values and shapes.
+    ['{"id":7,"bytes":"3"}', 'begin_header'],
+    ['{"id":"7","bytes":3}', 'begin_header'],
+    ['{"id":7,"bytes":null}', 'begin_header'],
+    ['{"id":7,"bytes":true}', 'begin_header'],
+    ['{"id":7,"bytes":[3]}', 'begin_header'],
+    ['[7,3]', 'begin_header'],
+    ['null', 'begin_header'],
+    ['', 'begin_header'],
+    ['{"id":7,"bytes":3}x', 'begin_header'],
+    // Whitespace JSON doesn't have: a byte-order mark, a no-break space.
+    [`${String.fromCharCode(0xfeff)}{"id":7,"bytes":3}`, 'begin_header'],
+    [`${String.fromCharCode(0xa0)}{"id":7,"bytes":3}`, 'begin_header'],
+  ])('a begin header %j: %s', (header, category) => {
+    let got = 'ok';
+    try {
+      new Reassembler().push(frame(KIND_BEGIN, header), () => true);
+    } catch (err) {
+      got = err.category;
     }
+    expect(got).toBe(category);
+  });
+
+  test('a begin header must be UTF-8', () => {
+    const bad = frame(KIND_BEGIN, Buffer.from([0x7b, 0xff, 0x7d]));
+    expect(() => new Reassembler().push(bad, pending)).toThrow(/begin_header/);
   });
 
   test('a split response reassembles in any chunking, whole messages between', () => {
@@ -363,7 +421,7 @@ describe('Reassembler', () => {
     ['begin_unknown_id', [begin(8, 10)]],
     // A size over the message cap, or none at all.
     ['begin_size', [begin(7, MAX_MESSAGE + 1)]],
-    ['begin_size', [begin(7, 2 ** 64)]],
+    ['begin_size', [frame(KIND_BEGIN, '{"id":7,"bytes":18446744073709551615}')]],
     ['begin_size', [begin(7, 0)]],
     ['begin_header', [frame(KIND_BEGIN, '{"id":7}')]],
     // An empty fragment, or an empty last one.
