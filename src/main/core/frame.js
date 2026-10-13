@@ -394,9 +394,14 @@ function encodeEnd(id) {
   return streamHeader(KIND_END, id, 0);
 }
 
-/** Stream `id`'s abort frame: `{"code":…,"message":…}`, at most 1 KiB. */
+/**
+ * Stream `id`'s abort frame: `{"code":…,"message":…}`, at most 1 KiB. The
+ * message must be well-formed UTF-16: JSON.stringify writes a lone
+ * surrogate as its escape, which serde and this decoder refuse, so such a
+ * message is refused here, before anything is written.
+ */
 function encodeAbort(id, code, message) {
-  if (!ABORT_CODES.has(code) || typeof message !== 'string') {
+  if (!ABORT_CODES.has(code) || typeof message !== 'string' || !message.isWellFormed()) {
     throw new FrameError('abort_payload');
   }
   const json = Buffer.from(JSON.stringify({ code, message }), 'utf8');

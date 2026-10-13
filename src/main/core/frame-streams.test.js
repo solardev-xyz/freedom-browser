@@ -95,6 +95,19 @@ describe('the stream encoders', () => {
     expect(() => encodeEnd(1.5)).toThrow('stream_id');
   });
 
+  test('an abort whose message holds a lone surrogate is refused; a pair round-trips', () => {
+    const high = String.fromCharCode(0xd800);
+    const low = String.fromCharCode(0xdc00);
+    for (const message of [high, low, `a${high}`, `${low}b`, `${low}${high}`]) {
+      expect(() => encodeAbort(7, 'internal', message)).toThrow('abort_payload');
+    }
+    const decoder = new FrameDecoder({ kinds: serviceKinds('receiver') });
+    for (const message of [`${high}${low}`, String.fromCodePoint(0x1f680), `x${high}${low}y`]) {
+      const [frame] = decoder.push(encodeAbort(7, 'internal', message));
+      expect(frame).toEqual({ kind: KIND_ABORT, id: 7, code: 'internal', message });
+    }
+  });
+
   test("an abort's JSON is what the service writes", () => {
     expect(encodeAbort(7, 'cancelled', 'Cancelled').subarray(13).toString()).toBe(
       '{"code":"cancelled","message":"Cancelled"}'
