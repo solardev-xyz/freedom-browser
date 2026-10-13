@@ -14,8 +14,9 @@
  *   recording, after its recorded delay: the first unused record of its
  *   kind that matches (URL and body with its id normalized; verifier,
  *   operation, chain and params), up to the current step. Answers due in
- *   one instant settle in one turn, in the reference's order. One the
- *   reference aborted, or left open, is never answered.
+ *   one instant settle in one turn, in the reference's order, however the
+ *   core's requests reach main (`pump`). One the reference aborted, or
+ *   left open, is never answered.
  * - **Each result** is compared with the router's: its keys in order and
  *   their values, or the error's constructor, `name`, message and own
  *   properties. Scenarios a deviation changes (the machine replay's
@@ -74,6 +75,11 @@ const SETTLE_GRACE_MS = 20_000;
 const quietLog = { info() {}, warn() {}, error() {} };
 /** Answers due this close together settle in one turn. */
 const TICK_MS = 2;
+/** A chain no world configures: `chain.availability` for it is the
+ * ledger's barrier through the core's chain thread. */
+const BARRIER_CHAIN = 4_000_000_001;
+/** The kinds whose order the core sees: its own requests' answers. */
+const ORDERED = new Set(['rpc', 'verified-op']);
 /** Settle times further than this from the reference's are reported. */
 const DRIFT_MS = 250;
 
@@ -187,6 +193,42 @@ function worldStatus(world, chainId) {
 // ---------------------------------------------------------------------------
 // The recorded I/O, answered as the reference's world answered it.
 
+/** Whether a record settled with an answer main delivers. */
+const deliverable = (record) =>
+  (record.outcome === 'answered' || record.outcome === 'failed') && record.end != null;
+
+/** A record's place among answers due in one instant (fc-chain's replay): a
+ * failure or a non-2xx status settles before a 2xx body is read. */
+const depthOf = (record) =>
+  record.kind === 'rpc' &&
+  record.outcome === 'answered' &&
+  record.answer.status >= 200 &&
+  record.answer.status < 300
+    ? 1
+    : 0;
+
+/** What a request is, to tell which record it will take: an exchange by
+ * its URL and body, a verifier operation by its verifier, operation and
+ * chain. */
+function recordKey(record) {
+  if (record.kind === 'rpc') return `rpc ${record.url} ${textField(record, 'body')}`;
+  if (record.kind === 'verified-op') return `op ${record.host} ${record.op} ${record.chain}`;
+  return null;
+}
+
+/** The same, for one of the core's requests as main's executors get it. */
+function requestKey(method, params, config) {
+  if (method === 'shell.rpc' && typeof params.body === 'string') {
+    const url = config.endpoint(params.endpoint)?.url;
+    return url ? `rpc ${url} ${normalizedBody(params.body)}` : null;
+  }
+  if (method === 'shell.verified') {
+    if (typeof params.myotis === 'string') return `op myotis ${params.myotis} ${params.chain_id}`;
+    if (params.colibri === 'request') return `op colibri request ${params.chain_id}`;
+  }
+  return null;
+}
+
 class Ledger {
   constructor(scenario, world, { reconcile }) {
     this.records = scenario.io ?? [];
@@ -194,10 +236,19 @@ class Ledger {
     this.reconcile = reconcile;
     this.used = new Set();
     this.step = 0;
-    // Answers waiting for their time (`schedule`).
+    // Answers waiting for their time (`schedule`), and what `pump` waits
+    // for: the requests whose executors have started but not reached the
+    // ledger, and a barrier through the core (`attach`).
     this.queue = [];
     this.timer = null;
     this.seq = 0;
+    this.pumping = false;
+    this.coming = [];
+    this.waiters = [];
+    this.core = null;
+    // Holds that ran out: requests that started and never reached the
+    // ledger.
+    this.problems = [];
     // Requests the reference never made, and the replies that use
     // Colibri's two newer shapes (freedom-core #58), which an older core
     // refuses.
@@ -217,9 +268,99 @@ class Ledger {
       if (this.used.has(record) || record.kind !== kind || (record.step ?? 0) > this.step) continue;
       if (!match(record)) continue;
       this.used.add(record);
+      this.arrived(recordKey(record));
       return record;
     }
     return null;
+  }
+
+  /** The core process whose chain thread the barrier goes through. */
+  attach(client) {
+    this.core = { client, gen: client.current };
+  }
+
+  /** One of the core's requests reached its executor: until it reaches the
+   * ledger (or ends without), it is on its way. */
+  onItsWay(key) {
+    const token = { key };
+    if (key !== null) this.coming.push(token);
+    return token;
+  }
+
+  /** A request reached the ledger. */
+  arrived(key) {
+    const at = this.coming.findIndex((token) => token.key === key);
+    if (at >= 0) this.landed(this.coming[at]);
+  }
+
+  /** A request on its way landed, or ended without reaching the ledger. */
+  landed(token) {
+    const at = this.coming.indexOf(token);
+    if (at < 0) return;
+    this.coming.splice(at, 1);
+    for (const resolve of this.waiters.splice(0)) resolve();
+  }
+
+  /** Until a request on its way lands, or the hold's bound passes. */
+  landing() {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.problems.push(
+          `held answers ${SETTLE_GRACE_MS} ms for requests that never reached the ledger: ` +
+            this.coming.map((token) => token.key.slice(0, 120)).join('; ')
+        );
+        this.coming = [];
+        resolve();
+      }, SETTLE_GRACE_MS);
+      this.waiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  /** A round trip through the core's chain thread, then a turn for what it
+   * brought: every request the thread sent before it has reached main's
+   * executors, and through them the ledger or its way there. */
+  async barrier() {
+    if (!this.core) return;
+    const { client, gen } = this.core;
+    await client
+      .requestTo(
+        gen,
+        'chain.availability',
+        { chain_id: BARRIER_CHAIN, ready: false },
+        {
+          caller: 'shell',
+        }
+      )
+      .catch(() => {});
+    await new Promise(setImmediate);
+  }
+
+  /**
+   * The records a due answer must follow: those of its call that the
+   * reference settled in the same instant before it (by depth, then as
+   * they were made), which haven't reached the ledger. Each is either on
+   * its way (main has the request, the probe of the review delays it), not
+   * sent by the core yet (staggered on the pipe), or not sent at all, being
+   * one the answer itself causes (Direct's next endpoint, a fee quote's
+   * second half).
+   */
+  blockers(item) {
+    const record = item.record;
+    if (!record || !ORDERED.has(record.kind)) return [];
+    return this.records.filter(
+      (other) =>
+        other !== record &&
+        ORDERED.has(other.kind) &&
+        !this.used.has(other) &&
+        deliverable(other) &&
+        other.step === record.step &&
+        other.call === record.call &&
+        other.end === record.end &&
+        (depthOf(other) - item.depth || other.id - record.id) < 0
+    );
   }
 
   /** The records never answered: requests the reference made and the core
@@ -233,8 +374,8 @@ class Ledger {
 
   /** Settles as the record did, after its recorded delay: `produce` makes
    * its answer. One the reference aborted or left open never settles but
-   * on `signal`. `depth` orders answers due together (`schedule`). */
-  answer(record, signal, produce, depth = 0) {
+   * on `signal`. */
+  answer(record, signal, produce) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
         reject(signal.reason);
@@ -246,8 +387,8 @@ class Ledger {
         reject(signal.reason);
       };
       signal?.addEventListener('abort', onAbort, { once: true });
-      if (record.outcome === 'aborted' || record.outcome === 'open' || record.end == null) return;
-      item = this.schedule(Math.max(0, record.end - record.t), record.end, depth, () => {
+      if (!deliverable(record)) return;
+      item = this.schedule(record, () => {
         signal?.removeEventListener('abort', onAbort);
         try {
           resolve(produce(record));
@@ -259,15 +400,18 @@ class Ledger {
   }
 
   /**
-   * Delivers `deliver` once `delay` has passed. Answers due together (within
-   * a tick) settle in one turn, as the reference's did in one virtual
-   * instant, in its order (fc-chain's replay): by their recorded end, then
-   * a failure or a non-2xx status before a body is read (`depth`), then as
-   * they came. Main's work on each then interleaves as the reference's
+   * Delivers `deliver` once its record's delay has passed, from when its
+   * request reached the ledger. Answers due together (within a tick)
+   * settle in one turn, as the reference's did in one virtual instant, in
+   * its order (fc-chain's replay): by their recorded end, then a failure or
+   * a non-2xx status before a body is read (`depth`), then as the reference
+   * made them. Main's work on each then interleaves as the reference's
    * microtasks did.
    */
-  schedule(delay, end, depth, deliver) {
-    const item = { due: performance.now() + delay, end, depth, seq: this.seq++, deliver };
+  schedule(record, deliver) {
+    const due = performance.now() + Math.max(0, record.end - record.t);
+    const depth = depthOf(record);
+    const item = { due, end: record.end, depth, order: record.id, record, deliver };
     this.queue.push(item);
     this.arm();
     return item;
@@ -278,22 +422,55 @@ class Ledger {
     this.timer = null;
     if (this.queue.length === 0) return;
     const next = Math.min(...this.queue.map((item) => item.due));
-    this.timer = setTimeout(() => this.flush(), Math.max(0, next - performance.now()));
+    this.timer = setTimeout(() => this.pump(), Math.max(0, next - performance.now()));
   }
 
-  flush() {
-    const now = performance.now() + TICK_MS;
-    const due = this.queue
-      .filter((item) => item.due <= now)
-      .sort((a, b) => a.end - b.end || a.depth - b.depth || a.seq - b.seq);
-    this.queue = this.queue.filter((item) => item.due > now);
-    for (const item of due) item.deliver();
+  /**
+   * Delivers what is due, in the reference's causal order however its
+   * requests reached main. A due answer whose instant's earlier records
+   * (`blockers`) haven't reached the ledger waits: for those on their way,
+   * until they land; for the rest, one barrier through the core's chain
+   * thread, after which any the thread sent before are here too. What is
+   * still missing then wasn't sent before the answer, and can't be until
+   * it goes, so it goes. Nothing here waits on machine load.
+   */
+  async pump() {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      let crossed = false;
+      for (;;) {
+        const now = performance.now() + TICK_MS;
+        const due = this.queue
+          .filter((item) => item.due <= now)
+          .sort((a, b) => a.end - b.end || a.depth - b.depth || a.order - b.order);
+        if (due.length === 0) break;
+        const blockers = due.flatMap((item) => this.blockers(item));
+        const keys = new Set(blockers.map(recordKey));
+        if (this.coming.some((token) => keys.has(token.key))) {
+          await this.landing();
+          continue;
+        }
+        if (blockers.length > 0 && !crossed) {
+          crossed = true;
+          await this.barrier();
+          continue;
+        }
+        crossed = false;
+        this.queue = this.queue.filter((item) => !due.includes(item));
+        for (const item of due) item.deliver();
+      }
+    } finally {
+      this.pumping = false;
+    }
     this.arm();
   }
 
   close() {
     clearTimeout(this.timer);
     this.queue = [];
+    this.coming = [];
+    for (const resolve of this.waiters.splice(0)) resolve();
   }
 
   /** A request the reference never made: a reconciliation lookup is
@@ -315,19 +492,12 @@ class Ledger {
         () => new Response('{"jsonrpc":"2.0","id":1,"result":null}', { status: 200 })
       );
     }
-    const ok =
-      record.outcome === 'answered' && record.answer.status >= 200 && record.answer.status < 300;
-    return this.answer(
-      record,
-      init.signal,
-      (r) => {
-        if (r.outcome === 'failed') throw new TypeError(r.answer.fail);
-        const { status } = r.answer;
-        const body = [204, 205, 304].includes(status) ? null : textField(r.answer, 'body');
-        return new Response(body, { status, headers: { 'content-type': 'application/json' } });
-      },
-      ok ? 1 : 0
-    );
+    return this.answer(record, init.signal, (r) => {
+      if (r.outcome === 'failed') throw new TypeError(r.answer.fail);
+      const { status } = r.answer;
+      const body = [204, 205, 304].includes(status) ? null : textField(r.answer, 'body');
+      return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+    });
   }
 
   page(url, init) {
@@ -632,7 +802,11 @@ function duration(scenario) {
   return end;
 }
 
-async function replay(scenario) {
+/**
+ * One scenario through main's drivers and a real core. `tap({ client,
+ * config, ledger })` runs before the core starts (a test's seam).
+ */
+async function replay(scenario, { tap } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-chain-replay-'));
   const world = structuredClone(scenario.world);
   const deviation = DEVIATIONS.get(scenario.id);
@@ -666,11 +840,30 @@ async function replay(scenario) {
     lookup: ledger.lookup,
   });
   registerChainVerified(client, config, { broadcasts, adapters: ledger.adapters() });
+  // Each of the core's requests is on its way to the ledger from when its
+  // executor starts until it reaches the ledger or ends without.
+  const handlerFor = client.handlerFor.bind(client);
+  client.handlerFor = (method, params) => {
+    const handler = handlerFor(method, params);
+    if (!handler) return handler;
+    return (body, context) => {
+      const token = ledger.onItsWay(requestKey(method, body, config));
+      let pending;
+      try {
+        pending = Promise.resolve(handler(body, context));
+      } catch (err) {
+        pending = Promise.reject(err);
+      }
+      return pending.finally(() => ledger.landed(token));
+    };
+  };
   const driver = new ChainDriver({ client, config, broadcasts });
   const outcome = { id: scenario.id, mismatches: [], throughput: [], drift: 0, ledger };
   const timers = [];
+  tap?.({ client, config, ledger });
   try {
     await client.start();
+    ledger.attach(client);
     if ((await config.whenServing()) === null) throw new Error('the core never served chain data');
     const changed = () => {
       config.configure().catch(() => {});
@@ -737,6 +930,7 @@ async function replay(scenario) {
         outcome.drift = Math.max(outcome.drift, Math.abs(got.elapsed - took));
       });
     }
+    outcome.mismatches.push(...ledger.problems);
     if (EXACT_IO.has(scenario.id)) {
       for (const what of ledger.extra) {
         outcome.mismatches.push(`a request the reference never made: ${what}`);
@@ -922,6 +1116,67 @@ describeIfReplay("chain data's replay through main's drivers and the real freedo
     }
     expect(outcome.throughput).toEqual([]);
     expect(outcome.mismatches).toHaveLength(scenario.steps.length);
+  }, 60_000);
+
+  // Review of #698 (parity, round 2): three quorum members answer in one
+  // recorded instant, a's 2xx body after b's and c's failed fetches. Their
+  // requests reaching main apart must not reorder them: a's range error
+  // would win over the recorded aggregate.
+  const SAME_INSTANT = 'ant-scan-members-1of3-range';
+  const LATE = new Set(['https://b.example', 'https://c.example']);
+  const scenarioOf = (id) =>
+    JSON.parse(fs.readFileSync(vectors, 'utf8')).scenarios.find((s) => s.id === id);
+
+  test("an instant's answers keep the reference's order however late its requests reach the ledger", async () => {
+    // The reviewer's probe: b's and c's requests enter the ledger 20 ms
+    // after a's.
+    const original = Ledger.prototype.rpc;
+    const rpc = jest
+      .spyOn(Ledger.prototype, 'rpc')
+      .mockImplementation(async function late(url, init) {
+        if (LATE.has(url)) await sleep(20);
+        return original.call(this, url, init);
+      });
+    let outcome;
+    try {
+      outcome = await replay(scenarioOf(SAME_INSTANT));
+    } finally {
+      rpc.mockRestore();
+    }
+    expect(outcome.mismatches).toEqual([]);
+  }, 60_000);
+
+  test("an instant's answers keep the reference's order however late the core sends its requests", async () => {
+    // The pipe's own stagger: from b's or c's request on, the core's
+    // frames reach main 20 ms late, in order.
+    const tap = ({ client, config }) => {
+      const stdout = client.onStdout.bind(client);
+      let pending = Buffer.alloc(0);
+      let late = null;
+      client.onStdout = (gen, chunk) => {
+        pending = Buffer.concat([pending, chunk]);
+        while (pending.length >= 4 && pending.length >= 4 + pending.readUInt32BE(0)) {
+          const size = 4 + pending.readUInt32BE(0);
+          const frame = pending.subarray(0, size);
+          pending = pending.subarray(size);
+          if (!late) {
+            let message = null;
+            try {
+              message = JSON.parse(frame.subarray(5).toString('utf8'));
+            } catch {
+              // Not a whole JSON message: passed on as it is.
+            }
+            const url =
+              message?.method === 'shell.rpc' && config.endpoint(message.params?.endpoint)?.url;
+            if (LATE.has(url)) late = sleep(20);
+          }
+          if (late) late = late.then(() => stdout(gen, frame));
+          else stdout(gen, frame);
+        }
+      };
+    };
+    const outcome = await replay(scenarioOf(SAME_INSTANT), { tap });
+    expect(outcome.mismatches).toEqual([]);
   }, 60_000);
 
   test(
