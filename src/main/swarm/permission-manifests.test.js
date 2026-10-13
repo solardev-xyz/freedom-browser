@@ -7,6 +7,16 @@ const ipcHandlers = {};
 jest.mock('electron', () => ({
   app: { getPath: jest.fn() },
   ipcMain: { handle: (channel, handler) => { ipcHandlers[channel] = handler; } },
+  session: {
+    defaultSession: { partition: 'default' },
+    fromPartition: (partition) => ({ partition }),
+  },
+}));
+
+let mockPrivatePartition = null;
+jest.mock('../private/private-windows', () => ({
+  getPartitionForWebContents: () => mockPrivatePartition,
+  isPrivateWebContents: () => Boolean(mockPrivatePartition),
 }));
 
 const mockPermissionState = {};
@@ -528,6 +538,38 @@ describe('permission manifests', () => {
     } finally {
       Date.now = realNow;
     }
+  });
+
+  // freedom-core design 0006, "Other callers": the in-process bzz: handler is
+  // told which session the manifest is fetched on, and whether it is private.
+  test("fetches the manifest on the asking window's session, with its private context", async () => {
+    registerPermissionManifestIpc();
+    mockHandleBzzRequest.mockResolvedValue(responseFor({}, 404));
+    const check = (origin) =>
+      ipcHandlers['swarm:manifest-check']({ sender: { id: 7 } }, {
+        origin,
+        committedUrl: `bzz://${origin}/`,
+        eager: true,
+      });
+
+    mockPrivatePartition = 'private-1';
+    await check('private-app.eth');
+    mockPrivatePartition = null;
+    await check('app.eth');
+
+    const [[privateRequest, privateContext], [request, context]] = mockHandleBzzRequest.mock.calls;
+    expect(privateRequest.url).toBe('bzz://private-app.eth/freedom-manifest.json');
+    expect(privateContext).toEqual({
+      session: { partition: 'private-1' },
+      partition: 'private-1',
+      isPrivate: true,
+    });
+    expect(request.url).toBe('bzz://app.eth/freedom-manifest.json');
+    expect(context).toEqual({
+      session: { partition: 'default' },
+      partition: null,
+      isPrivate: false,
+    });
   });
 
   test('serializes concurrent manifest IPC checks for the same origin', async () => {
