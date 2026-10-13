@@ -32,7 +32,7 @@ jest.mock('./fetch-admission', () => {
 });
 
 const { NamingConfig } = require('../core/naming-config');
-const { NamingDriver } = require('../core/naming-driver');
+const { NamingDriver, DEADLINE_MS } = require('../core/naming-driver');
 const { handleDwebRequest } = require('./dweb-handler');
 const { createFetchAdmission } = require('./fetch-admission');
 
@@ -351,6 +351,36 @@ describe("the final judgment and the plan's use are one step", () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ code: 503, message: 'The core is unavailable' });
     expect(dials).toHaveLength(0);
+    expect(mockAdmission.stats()).toEqual({ active: 0, waiting: 0 });
+  });
+
+  // The deadline is read in the final step too: a slot granted after it,
+  // before the deadline's timer has run, is a 504 and frees the slot once.
+  test('admission granted past the deadline, its timer still pending, is a 504 with no dial', async () => {
+    await setUp();
+    let t = 0;
+    mockDriver.now = () => t;
+    const acquire = mockAdmission.acquire;
+    let releases = 0;
+    mockAdmission.acquire = async (request) => {
+      const slot = await acquire(request);
+      t = DEADLINE_MS + 1;
+      const release = slot.release;
+      return {
+        ...slot,
+        release: () => {
+          releases += 1;
+          release();
+        },
+      };
+    };
+
+    const res = await handle('bzz://site.eth/index.html');
+
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({ code: 504, message: "The resolution's deadline passed" });
+    expect(dials).toHaveLength(0);
+    expect(releases).toBe(1);
     expect(mockAdmission.stats()).toEqual({ active: 0, waiting: 0 });
   });
 

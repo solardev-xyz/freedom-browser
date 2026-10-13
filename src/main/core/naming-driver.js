@@ -255,8 +255,9 @@ class NamingDriver {
    * after it.
    *
    * `use(reply)`, when given, is how the plan is consumed: called in the same
-   * synchronous turn as the final judgment (the process still serves, no
-   * control is in flight, the generations are current), so nothing can come
+   * synchronous turn as the final judgment (the request is neither aborted
+   * nor past its deadline, the process still serves, no control is in
+   * flight, the generations are current), so nothing can come
    * between them; `open` returns what it returns. A plan that a control
    * overtook by then is planned again; one whose process has ended is
    * `core_unavailable`, and never used. Without `use`, the plan is returned.
@@ -279,28 +280,40 @@ class NamingDriver {
     const until = this.now() + DEADLINE_MS;
     let attempts = 0;
     let pinned = null;
-    // One wait in the request's lifetime: it settles at once as `cancelled`
-    // when `signal` aborts and as `deadline` when the deadline passes, and
-    // `run` gets a signal that aborts with it, for the work it starts.
-    const inLife = async (run) => {
+    // The request's lifetime, read now: its abort and its monotonic
+    // deadline. A timer only says when the deadline passed; a wait that
+    // settles after it, before that timer runs, is caught here.
+    // Synchronous, and the first thing every check after a wait does.
+    const lifeLeft = () => {
       if (signal?.aborted) throw failure('cancelled', 'Cancelled');
       const left = until - this.now();
       if (left <= 0) throw failure('deadline', DEADLINE);
+      return left;
+    };
+    // One wait in the request's lifetime: it settles at once as `cancelled`
+    // when `signal` aborts and as `deadline` when the deadline passes, and
+    // `run` gets a signal that aborts with it, for the work it starts. A
+    // wait that succeeds is judged against the lifetime once more.
+    const inLife = async (run) => {
+      const left = lifeLeft();
       const life = new AbortController();
       const onAbort = () => life.abort(failure('cancelled', 'Cancelled'));
       signal?.addEventListener('abort', onAbort, { once: true });
       const timer = setTimeout(() => life.abort(failure('deadline', DEADLINE)), left);
       try {
-        return await unlessAborted((async () => run(life.signal))(), life.signal);
+        const result = await unlessAborted((async () => run(life.signal))(), life.signal);
+        lifeLeft();
+        return result;
       } finally {
         clearTimeout(timer);
         signal?.removeEventListener('abort', onAbort);
       }
     };
-    // Whether the plan can be judged now: no control in flight on its
-    // process, which still serves. Synchronous, so a loop that ends on it
-    // goes straight on to the judgment.
+    // Whether the plan can be judged now: the request still lives, and no
+    // control is in flight on its process, which still serves. Synchronous,
+    // so a loop that ends on it goes straight on to the judgment and use.
     const quietNow = (gen) => {
+      lifeLeft();
       if (!this.client.serves(gen) || this.config.core?.gen !== gen) {
         throw failure('core_unavailable', RESTARTED);
       }
@@ -348,7 +361,8 @@ class NamingDriver {
         if (overtaken(reply, gen)) continue;
       }
       // Nothing is awaited between the last check and here: the final
-      // judgment and the plan's use are one synchronous step.
+      // judgment (the lifetime, the process, the controls, the generations)
+      // and the plan's use are one synchronous step.
       return use ? use(reply) : reply;
     }
   }

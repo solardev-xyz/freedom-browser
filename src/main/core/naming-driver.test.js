@@ -678,3 +678,49 @@ describe('NamingDriver.open: every wait in the request lifetime', () => {
     expect(use).not.toHaveBeenCalled();
   });
 });
+
+// A wait can settle after the deadline but before its timeout runs: the
+// lifetime is read again after every wait, and in the final step.
+describe('NamingDriver.open: the deadline read after each wait', () => {
+  const params = {
+    url: 'bzz://site.eth/index.html',
+    method: 'GET',
+    headers: [],
+    backend: { ant: 'bundled', up: true },
+  };
+  const planned = () => ({ plan: { fetch: {} }, generations: GEN, attempts: 1 });
+
+  test('admission that completes past the deadline, its timer still pending, is never used', async () => {
+    let t = 0;
+    const { driver } = setUp(() => planned(), { now: () => t });
+    const use = jest.fn();
+    const ready = jest.fn(async () => {
+      // Granted late: the clock has passed the deadline, the timeout
+      // callback hasn't run yet.
+      t = DEADLINE_MS + 1;
+    });
+    await expect(driver.open(params, { ready, use })).rejects.toMatchObject({
+      code: 'deadline',
+    });
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(use).not.toHaveBeenCalled();
+  });
+
+  test('a plan answered past the deadline goes no further', async () => {
+    let t = 0;
+    const { driver } = setUp(
+      () => {
+        t = DEADLINE_MS;
+        return planned();
+      },
+      { now: () => t }
+    );
+    const ready = jest.fn();
+    const use = jest.fn();
+    await expect(driver.open(params, { ready, use })).rejects.toMatchObject({
+      code: 'deadline',
+    });
+    expect(ready).not.toHaveBeenCalled();
+    expect(use).not.toHaveBeenCalled();
+  });
+});
