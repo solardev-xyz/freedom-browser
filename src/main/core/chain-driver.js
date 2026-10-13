@@ -1,0 +1,443 @@
+/**
+ * Main's chain-data callers as drivers of the core's `chain.*` requests
+ * (freedom-core design 0005, implementation step 5). A read, a fee quote or
+ * a broadcast goes to the initialized core process alone (`whenServing`,
+ * then `requestTo`), and its reply becomes today's result, or today's
+ * thrown error:
+ *
+ * - a read's `result` gets back the `undefined` its reply names in
+ *   `undefined_keys`, first in key order; endpoint references in its trust
+ *   label become hosts, as the router's `endpointHost` makes them (design
+ *   0005, Replies);
+ * - `chain_error` is rebuilt as the router throws it: its constructor, its
+ *   message and its own properties, in order (Errors and text);
+ * - 0001's codes (`deadline`, `busy`, `budget`, `too_large`,
+ *   `reconfigured`) throw the core's text;
+ * - a caller's abort cancels the request and throws the signal's reason,
+ *   as the router's `throwIfAborted` did.
+ *
+ * **Fencing** (Generations): reads and fee quotes are sent and judged only
+ * with no chain control in flight. One that a configuration change ended
+ * (`reconfigured`), or whose reply such a change overtook in the pipe, is
+ * sent again once, within the caller's deadline.
+ *
+ * **Broadcasts** are neither fenced nor sent again: an outcome is a fact
+ * about the network. `sent` resolves the hash as today; `uncertain`
+ * resolves it too, marked (`outcome: 'uncertain'`): sent but unconfirmed,
+ * never a failure. `rejected` and `not_sent` throw today's error, tagged
+ * with the outcome. With no reply from the core, main's record decides
+ * (chain-broadcasts.js): `uncertain` once an attempt may have left main,
+ * `not_sent` otherwise, never `rejected`.
+ */
+
+const { keccak256 } = require('ethers');
+const { MAX_PAYLOAD } = require('./frame');
+
+/** A call's overall deadline (design 0005, Deadlines): the core's bound. */
+const DEADLINE_MS = 120_000;
+/** The hang watchdog's margin past the core's deadline (design 0001). */
+const WATCHDOG_MARGIN_MS = 15_000;
+/** The client's largest request ID, as wide as an ID gets on the wire. */
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+/** The context chain requests go with (the client's default). */
+const CONTEXT = { caller: 'chrome' };
+
+/** A pending request whose core process ended. */
+const RESTARTED = 'Chain data restarted';
+/** No core process to send a request to. */
+const UNAVAILABLE = 'Chain data is unavailable';
+/** The core's own text for its `deadline`, which main also uses when the
+ * caller's time ran out before sending (deviation `overall-deadline`). */
+const DEADLINE = "The chain request's deadline passed";
+/** The core's own text for `reconfigured`, which a read or a fee quote
+ * throws when its one resend ended so too. */
+const RECONFIGURED = "The chain's configuration changed";
+/** A request over one frame (deviation `request-size`). */
+const TOO_LARGE = 'The chain request is too large';
+
+/** The router's error classes, which main rebuilds the core's errors as:
+ * their own properties (`name` among them) come from the reply. */
+class SourceUnavailableError extends Error {}
+class SourceDeadlineError extends SourceUnavailableError {}
+class TruncatedLogsError extends Error {}
+const CONSTRUCTORS = new Map([
+  ['Error', Error],
+  ['TypeError', TypeError],
+  ['SyntaxError', SyntaxError],
+  ['RangeError', RangeError],
+  ['SourceUnavailableError', SourceUnavailableError],
+  ['SourceDeadlineError', SourceDeadlineError],
+  ['TruncatedLogsError', TruncatedLogsError],
+]);
+
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isRef = (value) =>
+  isObject(value) && typeof value.ref === 'string' && Object.keys(value).length === 1;
+
+/** The router's `endpointHost`: `''` for a URL that doesn't parse. */
+function endpointHost(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+/** A chain ID as the wire carries it, or null. The router looked a chain up
+ * by `String(chainId)`, so a number names its chain and so does its
+ * decimal text; nothing else names a configured one. */
+function wireChainId(chainId) {
+  if (typeof chainId === 'symbol') return null;
+  const id = Number(chainId);
+  return Number.isSafeInteger(id) && id >= 0 && String(id) === String(chainId) ? id : null;
+}
+
+/** Whether a request would take more than one frame (deviation
+ * `request-size`), measured as the client frames it, with the widest ID
+ * and deadline. One that can't be serialized is the client's to refuse. */
+function oversized(method, params) {
+  let json;
+  try {
+    json = JSON.stringify({
+      type: 'request',
+      id: MAX_ID,
+      method,
+      params: { ...params, deadline_ms: DEADLINE_MS },
+      context: CONTEXT,
+    });
+  } catch {
+    return false;
+  }
+  return Buffer.byteLength(json, 'utf8') > MAX_PAYLOAD;
+}
+
+/** Today's thrown error, rebuilt from a `chain_error`'s data: its
+ * constructor, its message, then its own properties in order, an
+ * `undefined` restored where the reply names one. */
+function rebuilt(data) {
+  const name = isObject(data) && Object.hasOwn(data, 'constructor') ? data.constructor : null;
+  const Constructor = CONSTRUCTORS.get(name) ?? Error;
+  const error = new Constructor(String(data?.message ?? ''));
+  const props = isObject(data?.props) ? data.props : {};
+  const undefinedKeys = Array.isArray(data?.undefined_keys) ? data.undefined_keys : [];
+  for (const [key, value] of Object.entries(props)) {
+    Object.defineProperty(error, key, {
+      value: undefinedKeys.includes(key) ? undefined : value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return error;
+}
+
+/** The error a failed request throws: a `chain_error` rebuilt, anything
+ * else the core's or the client's text. */
+function thrown(err) {
+  return err?.code === 'chain_error' ? rebuilt(err.data) : new Error(String(err?.message));
+}
+
+/** Whether a failure is the core's reply to a chain request: those carry
+ * the generation they were made under. */
+function answered(err) {
+  return isObject(err?.data) && Number.isSafeInteger(err.data.generation);
+}
+
+/** A failure the core never answered: its process ended, or the client
+ * refused to send it. */
+function lost(err) {
+  return new Error(err?.code === 'core_unavailable' ? RESTARTED : String(err?.message));
+}
+
+/** A broadcast failure, tagged with its outcome. */
+function tagged(error, outcome) {
+  error.outcome = outcome;
+  return error;
+}
+
+/** keccak256 of a raw transaction's bytes, or null for one that isn't hex
+ * bytes. */
+function transactionHash(raw) {
+  try {
+    return keccak256(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Settles as `promise` does, or rejects once `ms` have passed or `signal`
+ * aborts. */
+function within(promise, ms, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  if (ms <= 0) return Promise.reject(new Error('deadline'));
+  let timer;
+  let onAbort;
+  return Promise.race([
+    promise,
+    new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('deadline')), ms);
+      onAbort = () => reject(signal.reason);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  });
+}
+
+class ChainDriver {
+  /**
+   * @param {object} options
+   * @param {import('./core-client').CoreClient} options.client
+   * @param {import('./chain-config').ChainConfig} options.config
+   * @param {import('./chain-broadcasts').BroadcastRecords} options.broadcasts
+   * @param {() => number} [options.now] - a monotonic clock, in ms
+   */
+  constructor({ client, config, broadcasts, now = () => performance.now() }) {
+    this.client = client;
+    this.config = config;
+    this.broadcasts = broadcasts;
+    this.now = now;
+  }
+
+  /**
+   * `request()`: one read, as the router served it. `routingContext.origin`
+   * goes as it is: the core normalizes it as the router did, and keeps it
+   * in memory only.
+   *
+   * @param {object} [options] - includeTrust, routingContext, signal,
+   *   background, and profile: `default`, or `ant_scan` for the Ant
+   *   bridge's log scans
+   */
+  request(
+    chainId,
+    method,
+    params = [],
+    { includeTrust = false, routingContext = null, signal, background = false, profile } = {}
+  ) {
+    const until = this.now() + DEADLINE_MS;
+    const id = wireChainId(chainId);
+    if (id === null) return Promise.reject(new Error(`Unsupported chain ID: ${chainId}`));
+    const origin = routingContext?.origin;
+    const payload = {
+      chain_id: id,
+      method,
+      params,
+      include_trust: Boolean(includeTrust),
+      ...(typeof origin === 'string' ? { origin } : {}),
+      background: Boolean(background),
+      profile: profile === 'ant_scan' ? 'ant_scan' : 'default',
+    };
+    return this.fenced('chain.request', id, payload, { signal, until }, (reply, gen) =>
+      this.published(reply, gen)
+    );
+  }
+
+  /** `getFeeQuote()`: today's quote. */
+  feeQuote(chainId) {
+    const until = this.now() + DEADLINE_MS;
+    const id = wireChainId(chainId);
+    if (id === null) return Promise.reject(new Error(`Unsupported chain ID: ${chainId}`));
+    return this.fenced('chain.fee_quote', id, { chain_id: id }, { until }, (reply) => {
+      const { generation: _generation, ...quote } = reply ?? {};
+      return quote;
+    });
+  }
+
+  /**
+   * `broadcastRawTransaction()`: `{ result, source }` once sent, with
+   * `outcome: 'uncertain'` when it may have been; otherwise a throw
+   * tagged `rejected` or `not_sent`. A cancel tells the core, and the
+   * outcome it still answers is the one given.
+   */
+  async broadcast(chainId, raw, { signal } = {}) {
+    const until = this.now() + DEADLINE_MS;
+    const id = wireChainId(chainId);
+    if (id === null) throw tagged(new Error(`Unsupported chain ID: ${chainId}`), 'not_sent');
+    const record = this.broadcasts.begin(id, raw);
+    try {
+      return await this.sendBroadcast(id, raw, record, { signal, until });
+    } finally {
+      this.broadcasts.end(record);
+    }
+  }
+
+  async sendBroadcast(id, raw, record, { signal, until }) {
+    const payload = { chain_id: id, raw };
+    if (oversized('chain.broadcast', payload)) throw tagged(new Error(TOO_LARGE), 'not_sent');
+    let gen;
+    try {
+      // After every control asked for before it, as a read goes.
+      gen = await this.quiet(null, until, signal);
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason;
+      throw tagged(err, 'not_sent');
+    }
+    const remaining = Math.floor(until - this.now());
+    if (remaining <= 0) throw tagged(new Error(DEADLINE), 'not_sent');
+    let reply;
+    try {
+      reply = await this.client.requestTo(
+        gen,
+        'chain.broadcast',
+        { ...payload, deadline_ms: remaining },
+        undefined,
+        { watchdogMs: remaining + WATCHDOG_MARGIN_MS, signal, untilResponse: true }
+      );
+    } catch (err) {
+      const outcome = err?.data?.outcome;
+      if (answered(err) && (outcome === 'rejected' || outcome === 'not_sent')) {
+        if (outcome === 'not_sent' && signal?.aborted) throw signal.reason;
+        throw tagged(thrown(err), outcome);
+      }
+      // No outcome from the core: main's record gives one.
+      if (record.sent) {
+        return { result: transactionHash(raw), source: record.source, outcome: 'uncertain' };
+      }
+      if (signal?.aborted) throw signal.reason;
+      throw tagged(answered(err) ? thrown(err) : lost(err), 'not_sent');
+    }
+    // Only `sent` is sent: anything else may have been.
+    if (reply?.outcome === 'sent') return { result: reply.hash, source: reply.source };
+    return { result: reply?.hash ?? null, source: reply?.source, outcome: 'uncertain' };
+  }
+
+  /** The initialized process, waiting for one that is starting. */
+  async process(until, signal) {
+    if (!this.config.core) {
+      try {
+        await within(this.client.whenReady(), until - this.now(), signal);
+      } catch {
+        if (signal?.aborted) throw signal.reason;
+        return null;
+      }
+    }
+    try {
+      return await within(this.config.whenServing(), until - this.now(), signal);
+    } catch {
+      if (signal?.aborted) throw signal.reason;
+      return null;
+    }
+  }
+
+  /** The process `pinned` (or, first, the current one) once no control is
+   * in flight on it. A request belongs to the process it first went to: a
+   * restart sends nothing again. */
+  async quiet(pinned, until, signal) {
+    for (;;) {
+      if (pinned && this.config.core?.gen !== pinned) throw new Error(RESTARTED);
+      const gen = await this.process(until, signal);
+      // Its process gone, replaced or not.
+      if (pinned && gen !== pinned && (gen || !this.client.serves(pinned))) {
+        throw new Error(RESTARTED);
+      }
+      if (!gen) throw new Error(this.now() >= until ? DEADLINE : UNAVAILABLE);
+      if (this.config.idle(gen)) return gen;
+    }
+  }
+
+  /**
+   * A read or a fee quote, fenced: sent with nothing between the last idle
+   * check and the send, judged once every control it may have crossed has
+   * settled, and sent again once when a configuration change ended or
+   * overtook it.
+   */
+  async fenced(method, chainId, payload, { signal, until }, publish) {
+    if (oversized(method, payload)) throw new Error(TOO_LARGE);
+    let pinned = null;
+    let resent = false;
+    for (;;) {
+      if (signal?.aborted) throw signal.reason;
+      if (this.now() >= until) throw new Error(DEADLINE);
+      const gen = await this.quiet(pinned, until, signal);
+      pinned = gen;
+      // Checked again with nothing between it and the send: a control
+      // queued since goes first.
+      if (!this.config.idle(gen)) continue;
+      // What is left after waiting for the core: the core's deadline for
+      // the request, and its watchdog's, agree.
+      const remaining = Math.floor(until - this.now());
+      if (remaining <= 0) throw new Error(DEADLINE);
+      let reply = null;
+      let failed = null;
+      try {
+        reply = await this.client.requestTo(
+          gen,
+          method,
+          { ...payload, deadline_ms: remaining },
+          undefined,
+          { watchdogMs: remaining + WATCHDOG_MARGIN_MS, signal }
+        );
+      } catch (err) {
+        failed = err ?? new Error('Internal error');
+      }
+      // A cancel is the caller's own: today's AbortError.
+      if (signal?.aborted) throw signal.reason;
+      if (failed && !answered(failed)) throw lost(failed);
+      // A control asked for while the request ran may have overtaken it,
+      // though the core hadn't seen it yet: the reply is judged once every
+      // control has settled, by the generations they leave. Checked again
+      // after every wait, so the last check, the judgment and the result
+      // are one step.
+      while (!this.config.idle(gen)) await this.quiet(gen, until, signal);
+      const generation = failed ? failed.data.generation : reply?.generation;
+      if (failed?.code === 'reconfigured' || this.config.overtaken(gen, chainId, generation)) {
+        if (resent) throw new Error(RECONFIGURED);
+        resent = true;
+        continue;
+      }
+      if (failed) throw thrown(failed);
+      return publish(reply, gen);
+    }
+  }
+
+  /** A read's result as the router returned it: `{ result, source,
+   * verified, trust? }`, its trust label's references mapped by the
+   * process that made it. */
+  published(reply, gen) {
+    const undefinedKeys = Array.isArray(reply?.undefined_keys) ? reply.undefined_keys : [];
+    const published = {
+      result: undefinedKeys.includes('result') ? undefined : reply?.result,
+      source: reply?.source,
+      verified: reply?.verified,
+    };
+    if (reply && Object.hasOwn(reply, 'trust')) published.trust = this.hosts(reply.trust, gen);
+    return published;
+  }
+
+  /** A trust label with its endpoint references as hosts, exactly where
+   * the router named endpoints: `''` (a URL that doesn't parse, or a
+   * reference main no longer maps) is dropped from `agreed`, `dissented`
+   * and `queried`; Colibri's `prover` keeps it. */
+  hosts(trust, gen) {
+    if (!isObject(trust)) return trust;
+    const host = (value) => endpointHost(this.config.endpointUrl(value.ref, gen));
+    for (const key of ['agreed', 'dissented', 'queried']) {
+      if (!Array.isArray(trust[key])) continue;
+      trust[key] = trust[key].flatMap((value) => {
+        if (!isRef(value)) return [value];
+        const mapped = host(value);
+        return mapped ? [mapped] : [];
+      });
+    }
+    if (isRef(trust.prover)) trust.prover = host(trust.prover);
+    return trust;
+  }
+}
+
+module.exports = {
+  ChainDriver,
+  SourceUnavailableError,
+  SourceDeadlineError,
+  TruncatedLogsError,
+  endpointHost,
+  wireChainId,
+  rebuilt,
+  DEADLINE_MS,
+  WATCHDOG_MARGIN_MS,
+  RESTARTED,
+  UNAVAILABLE,
+  DEADLINE,
+  RECONFIGURED,
+  TOO_LARGE,
+};

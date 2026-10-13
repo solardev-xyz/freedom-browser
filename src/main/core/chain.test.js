@@ -1,17 +1,26 @@
 const { CoreClient, ShellError } = require('./core-client');
 const { registerNamingShell } = require('./naming-shell');
 const { registerNamingVerified } = require('./naming-verified');
-const { attachChain } = require('./chain');
+const { attachChain, detachChain, chainDriver, chainSettingsChanged } = require('./chain');
 const { NOT_SENT } = require('./chain-shell');
+const { ChainConfig } = require('./chain-config');
+const { ChainDriver } = require('./chain-driver');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 jest.mock('../ipfs/gateway-transport', () => ({
   netGatewayFetch: jest.fn(),
   isOnionHostname: () => false,
 }));
-jest.mock('../myotis/myotis-manager', () => {
-  throw new Error('an unconfigured main runs no operation');
-});
+// Readiness and its transitions only: an unconfigured main runs no
+// operation.
+jest.mock('../myotis/myotis-manager', () => ({
+  NETWORKS: new Map([[1, { chainId: 1, displayName: 'Ethereum' }]]),
+  isReady: jest.fn(() => false),
+  onAvailabilityTransition: jest.fn(),
+}));
+const myotis = require('../myotis/myotis-manager');
+
+afterEach(() => detachChain());
 
 /** A client with naming's executors, then chain data's, attached. */
 function attached() {
@@ -22,7 +31,7 @@ function attached() {
   };
   registerNamingShell(client, config);
   const { running } = registerNamingVerified(client, config, { adapters: {} });
-  attachChain(client, { running });
+  const attachment = attachChain(client, { running });
   const call = (method, params) =>
     Promise.resolve().then(() =>
       client.handlerFor(method, params)(params, {
@@ -30,7 +39,7 @@ function attached() {
         charge: () => true,
       })
     );
-  return { client, call };
+  return { client, call, attachment };
 }
 
 test("chain data's executors take the chain thread's requests, and leave naming's", async () => {
@@ -74,4 +83,26 @@ test('until a chain is configured, main performs nothing for the chain thread: n
   ]) {
     expect(await call('shell.verified', { ...op, chain_id: 1, generation })).toEqual(NOT_SENT);
   }
+});
+
+test('attached, the drivers serve calls; detached, there are none', () => {
+  const { config, driver } = attached().attachment;
+  expect(config).toBeInstanceOf(ChainConfig);
+  expect(driver).toBeInstanceOf(ChainDriver);
+  expect(chainDriver()).toBe(driver);
+  detachChain();
+  expect(chainDriver()).toBeNull();
+  // Nothing to configure any more.
+  expect(() => chainSettingsChanged()).not.toThrow();
+});
+
+test('a registry change and a Myotis transition reach the configuration', () => {
+  const { config } = attached().attachment;
+  const configure = jest.spyOn(config, 'configure').mockResolvedValue();
+  const availability = jest.spyOn(config, 'availability').mockResolvedValue();
+  chainSettingsChanged();
+  expect(configure).toHaveBeenCalledTimes(1);
+  const [onTransition] = myotis.onAvailabilityTransition.mock.calls.at(-1);
+  onTransition({ chainId: 100, ready: true });
+  expect(availability).toHaveBeenCalledTimes(1);
 });
