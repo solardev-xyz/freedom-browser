@@ -46,7 +46,7 @@ Swarm and IPFS start automatically. Radicle and Myotis are opt-in under **Settin
 
 Freedom is an Electron application. Protocol, node-lifecycle, permission, wallet, download, and persistence logic lives in the main process. The renderer is a modular UI layer that communicates with the main process through the allowlisted channels in `src/shared/ipc-channels.js`.
 
-The main process handles `bzz:`, `ipfs:`, `ipns:`, `web3:`, `rad:`, and `.onion` navigation, manages per-profile nodes and storage, and resolves supported decentralized names. `web3:` needs no node or gateway: the handler reads the contract's ERC-8244 `html()` document through the same chain-data router the wallet uses. Security-sensitive capabilities stay out of page and renderer contexts unless exposed through a narrow preload or IPC API.
+The main process handles `bzz:`, `ipfs:`, `ipns:`, `web3:`, `rad:`, and `.onion` navigation, manages per-profile nodes and storage, and resolves supported decentralized names. `web3:` needs no node or gateway: the handler reads the contract's ERC-8244 `html()` document through the same chain data the wallet uses, routed in the core. Security-sensitive capabilities stay out of page and renderer contexts unless exposed through a narrow preload or IPC API.
 
 | Directory       | Responsibility                                                                         |
 | --------------- | -------------------------------------------------------------------------------------- |

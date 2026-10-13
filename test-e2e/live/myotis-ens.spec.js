@@ -272,7 +272,7 @@ test.describe('myotis live ENS resolution', () => {
     expect(result.protocol).toBe('ipfs');
 
     // 3. Gnosis uses a second native handle and profile-local state directory.
-    // Prove both the native account path and Freedom's capability router while
+    // Prove both the native account path and Freedom's capability routing while
     // the already-verified Ethereum client remains running.
     await waitForVerifiedRead({
       label: 'Gnosis',
