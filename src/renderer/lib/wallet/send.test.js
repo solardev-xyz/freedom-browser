@@ -663,3 +663,84 @@ describe('send again after a failed send (5)', () => {
     expect(elements['send-input-view'].classList.contains('hidden')).toBe(false);
   });
 });
+
+describe('send review: a payment that would wait behind a held one (D11)', () => {
+  afterEach(() => {
+    jest.dontMock('./balance-display.js');
+    jest.dontMock('../tabs.js');
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+    jest.useRealTimers();
+  });
+
+  const waiting = (overrides) => ({
+    intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a01',
+    chainId: 100,
+    sender: ADDRESS,
+    nonce: 7,
+    hash: '0x' + 'ab'.repeat(32),
+    state: 'held',
+    kind: 'wallet-send',
+    walletIndex: 0,
+    fields: {
+      type: 0,
+      to: ADDRESS,
+      value: '450000000000000000',
+      data: '0x',
+      gasLimit: '21000',
+      gasPrice: '1',
+    },
+    attention: 'refused',
+    lastOutcome: { outcome: 'rejected', reasonClass: 'insufficient funds' },
+    receipt: null,
+    ...overrides,
+  });
+
+  async function review(intents) {
+    const loaded = await loadSendScreen();
+    const { mod, state, elements } = loaded;
+    elements['send-held-warning'] = createElement('div', { classes: ['hidden'] });
+    elements['send-held-warning-text'] = createElement('span');
+    state.walletState.registeredChains[100].nativeSymbol = 'xDAI';
+    window.wallet.intentsList = jest.fn().mockResolvedValue({ success: true, intents });
+    await mod.openSend({
+      chainId: 100,
+      tokenKey: 'gnosis-native',
+      recipient: ADDRESS,
+      amount: '0.45',
+    });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    await flush();
+    await flush();
+    return elements;
+  }
+
+  const shown = (elements) => !elements['send-held-warning'].classList.contains('hidden');
+
+  test('names the held payment and its nonce', async () => {
+    const elements = await review([waiting()]);
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
+    expect(shown(elements)).toBe(true);
+    expect(elements['send-held-warning-text'].textContent).toBe(
+      "This payment will wait behind an earlier one that hasn't gone through yet: " +
+        '0.45 xDAI to 0x1111…1111 (nonce 7). Send that one again or raise its fee first, ' +
+        'from Payments waiting.'
+    );
+  });
+
+  test('says nothing for a payment that is only waiting to be mined, mined, or elsewhere', async () => {
+    for (const intents of [
+      [],
+      [waiting({ attention: 'uncertain' })],
+      [waiting({ attention: 'sent' })],
+      [waiting({ receipt: 'confirmed' })],
+      [waiting({ chainId: 1 })],
+      [waiting({ sender: '0x2222222222222222222222222222222222222222' })],
+    ]) {
+      const elements = await review(intents);
+      expect({ intents, shown: shown(elements) }).toEqual({ intents, shown: false });
+    }
+  });
+});

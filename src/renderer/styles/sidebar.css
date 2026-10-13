@@ -6674,3 +6674,22 @@
 [data-theme="light"] .safe-pending-row:hover {
   background: rgba(0, 0, 0, 0.06);
 }
+
+/* Payments waiting (held-payments.js): the Safe signing board's rows, with
+   the payment's actions under its details rather than beside them, so a
+   step's text and its Confirm/Cancel fit the sidebar's width. */
+.held-payment-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.held-payment-step {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The send review's warning that a payment would wait behind a held one. */
+.send-held-warning {
+  margin: 16px 0 0;
+}

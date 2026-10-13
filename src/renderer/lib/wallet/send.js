@@ -22,7 +22,8 @@ import {
 import { isPotentialEnsName } from '../origin-utils.js';
 import { createTab } from '../tabs.js';
 import { bindExplorerLink } from './explorer-link.js';
-import { outcomeText, ACTIONS, RESULT_TITLES } from './intent-texts.js';
+import { outcomeText, heldWarning, ACTIONS, RESULT_TITLES } from './intent-texts.js';
+import { waitingPaymentBehind, describePayment } from './held-payments.js';
 
 // DOM references
 let sendScreen;
@@ -1241,6 +1242,8 @@ function populateSendReview() {
     sendReviewNetwork.textContent = chain?.name || `Chain ${sendTxState.chainId}`;
   }
 
+  showHeldWarning().catch((err) => console.warn('[Send] Held payments unavailable:', err));
+
   const safe = activeSafeWallet();
   if (safe) {
     // The executor EOA pays the execution fee, quoted after signing.
@@ -1264,6 +1267,26 @@ function populateSendReview() {
       sendReviewTotal.textContent = `${sendTxState.amount} ${token?.symbol || ''}`;
     }
   }
+}
+
+// Each review asks afresh; an answer for an earlier one is dropped.
+let heldWarningRequest = 0;
+
+/**
+ * Warn on the review when this payment would wait behind one of the
+ * account's earlier payments on this chain that hasn't gone through (D11):
+ * a held payment's nonce comes first, so nothing after it can be mined
+ * until it is.
+ */
+async function showHeldWarning() {
+  const warning = document.getElementById('send-held-warning');
+  const text = document.getElementById('send-held-warning-text');
+  const request = ++heldWarningRequest;
+  warning?.classList.add('hidden');
+  const held = await waitingPaymentBehind(sendTxState.chainId, walletState.fullAddresses.wallet);
+  if (!held || request !== heldWarningRequest || !warning || !text) return;
+  text.textContent = heldWarning(describePayment(held), held.nonce);
+  warning.classList.remove('hidden');
 }
 
 function renderRecipientReview(container, address, resolution) {
@@ -1564,4 +1587,5 @@ export const __test__ = {
   renderRecipientReview,
   isEnsLikeName,
   showSendErrorView,
+  showHeldWarning,
 };

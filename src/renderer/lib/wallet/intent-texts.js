@@ -66,3 +66,44 @@ export const RESULT_TITLES = Object.freeze({
   notSent: 'Not sent',
   refused: 'Refused by the network',
 });
+
+/** The waiting payments: the identity-view row and its list. */
+export const HELD = Object.freeze({
+  // The sub-screen's title, "Payments Waiting", is in index.html.
+  rowLabel: 'Payments waiting',
+  message:
+    'These payments are signed but not confirmed yet. Sending one again sends the same ' +
+    'payment: it can only be paid once.',
+  nonce: (nonce) => `nonce ${nonce}`,
+  requestedBy: (origin) => `Requested by ${origin}`,
+  contractCall: (to) => `Contract call to ${to}`,
+  payment: (amount, symbol, to) => `${amount} ${symbol} to ${to}`,
+  // A dApp's payment is sent again only after this second step: the site's
+  // request may have moved on since.
+  confirmDappResend: (origin, age) =>
+    `Send the payment ${origin} requested ${age} again? It is the same signed payment.`,
+  confirm: 'Confirm',
+  cancel: 'Cancel',
+});
+
+/** Replacing a payment at its nonce with a higher fee. */
+export const REPLACE = Object.freeze({
+  replace: 'Raise the fee',
+  speedUp: 'Speed up',
+  newFee: (fee, symbol) => `New network fee: up to ${fee} ${symbol}`,
+  note: 'The same payment, signed again with a higher fee. Only one of the two can go through.',
+  replacing: 'Replacing…',
+  replaced: 'Replaced with a higher fee',
+});
+
+/**
+ * The warning on the send review when the new payment would wait behind an
+ * earlier one of the account that hasn't gone through (D11).
+ */
+export function heldWarning(payment, nonce) {
+  return (
+    `This payment will wait behind an earlier one that hasn't gone through yet: ${payment} ` +
+    `(${HELD.nonce(nonce)}). Send that one again or raise its fee first, from ` +
+    `${HELD.rowLabel}.`
+  );
+}

@@ -1511,6 +1511,18 @@
                     <span class="safe-pending-badge" id="safe-pending-count"></span>
                   </button>
 
+                  <!-- Held payments: signed, not confirmed yet (held-payments.js) -->
+                  <button type="button" id="held-payments-row" class="safe-pending-row hidden">
+                    <span class="safe-pending-row-label">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="12 6 12 12 16 14" />
+                      </svg>
+                      <span id="held-payments-row-label"></span>
+                    </span>
+                    <span class="safe-pending-badge" id="held-payments-count"></span>
+                  </button>
+
                   <!-- Recent payments (5 most recent; full list at freedom://payments) -->
                   <div class="recent-payments">
                     <div class="recent-payments-header">
@@ -2325,6 +2337,19 @@
               </div>
             </div>
 
+            <!-- Held payments sub-screen (texts from intent-texts.js) -->
+            <div id="sidebar-held-payments" class="sidebar-subscreen hidden">
+              <div
+                class="subscreen-header"
+                data-back="held-payments-back"
+                data-title="Payments Waiting"
+              ></div>
+              <div class="subscreen-content">
+                <p class="create-wallet-message" id="held-payments-message"></p>
+                <div id="held-payments-list" class="safe-signing-rows"></div>
+              </div>
+            </div>
+
             <!-- Receive sub-screen -->
             <div id="sidebar-receive" class="sidebar-subscreen hidden">
               <div class="subscreen-header" data-back="receive-back" data-title="Receive"></div>
@@ -2611,6 +2636,18 @@
                 <div class="send-review-section send-review-total">
                   <div class="send-review-label">Total</div>
                   <div class="send-review-value" id="send-review-total">--</div>
+                </div>
+
+                <!-- A held payment this one would wait behind (D11) -->
+                <div class="dapp-tx-warning send-held-warning hidden" id="send-held-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path
+                      d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                    />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                  <span id="send-held-warning-text"></span>
                 </div>
 
                 <!-- Action buttons -->
