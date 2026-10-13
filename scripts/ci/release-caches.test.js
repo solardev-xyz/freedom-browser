@@ -15,7 +15,6 @@
  *    skip the cache today anyway, so a later drop of `ignore-scripts` cannot
  *    quietly turn it back on);
  * 2. the action really does gate every one of its cache steps on that input;
- * 3. release.yml names no `cache:` input and no `actions/cache` itself.
  */
 
 const fs = require('fs');
@@ -76,6 +75,29 @@ const actionYml = withoutComments(read('.github/actions/install-node-deps/action
 const INSTALL =
   /^\s*(?:- )?uses:\s*(['"]?)\.\/\.github\/actions\/install-node-deps\/?\1\s*(?:#.*)?$/;
 
+function cacheViolations(text) {
+  const source = withoutComments(text);
+  const disabledGoInputs = new Set();
+  const violations = [];
+  for (const step of steps(source)) {
+    if (!step.lines.some((line) => /uses:\s*actions\/setup-go@/.test(line))) continue;
+    if (!/^(?:false|'false'|"false")$/.test(withInput(step, 'cache') || '')) {
+      violations.push(`release.yml:${step.line} Go cache is not explicitly disabled`);
+      continue;
+    }
+    step.lines.forEach((line, index) => {
+      if (/^\s*cache:/.test(line)) disabledGoInputs.add(step.line + index);
+    });
+  }
+  source.split('\n').forEach((line, index) => {
+    if ((/^\s*cache:/.test(line) && !disabledGoInputs.has(index + 1)) ||
+        /uses:\s*actions\/cache/.test(line)) {
+      violations.push(`release.yml:${index + 1} ${line.trim()}`);
+    }
+  });
+  return violations;
+}
+
 describe('release.yml restores no caches (#635)', () => {
   const installSteps = steps(releaseYml).filter((s) => s.lines.some((l) => INSTALL.test(l)));
 
@@ -120,12 +142,20 @@ describe('release.yml restores no caches (#635)', () => {
     );
   });
 
-  test('release.yml names no cache input and no actions/cache of its own', () => {
-    const offenders = releaseYml
-      .split('\n')
-      .map((l, i) => ({ l, n: i + 1 }))
-      .filter(({ l }) => /^\s*cache:/.test(l) || /uses:\s*actions\/cache/.test(l))
-      .map(({ l, n }) => `release.yml:${n} ${l.trim()}`);
-    expect(offenders).toEqual([]);
+  test('release.yml permits only explicitly disabled Go cache inputs', () => {
+    expect(cacheViolations(releaseYml)).toEqual([]);
+  });
+
+  test.each(['true', 'npm', 'missing'])('rejects %s Go caching instead of its required false input', (value) => {
+    const changed = releaseYml.replace(/^(\s*)cache: false$/m,
+      value === 'missing' ? '' : `$1cache: ${value}`);
+    expect(changed).not.toBe(releaseYml);
+    expect(cacheViolations(changed).length).toBeGreaterThan(0);
+  });
+
+  test('rejects other actions cache inputs and direct cache restores', () => {
+    for (const extra of ['cache: npm', 'cache: false', 'uses: actions/cache@deadbeef']) {
+      expect(cacheViolations(`${releaseYml}\n      - name: extra\n        ${extra}\n`).length).toBeGreaterThan(0);
+    }
   });
 });

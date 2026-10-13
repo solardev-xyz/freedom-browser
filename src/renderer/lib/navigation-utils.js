@@ -2,6 +2,7 @@ import {
   applyEnsNamePreservation,
   deriveDisplayValue,
   formatOnchainAppDisplayUrl,
+  parseTonInput,
   parseOnchainAppUrl,
 } from './url-utils.js';
 import {
@@ -363,6 +364,7 @@ export const resolveProtocolIconType = ({
   if (normalizedValue.startsWith('ipns://')) return 'ipns';
   if (normalizedValue.startsWith('web3://')) return 'onchain';
   if (normalizedValue.startsWith('rad://')) return 'radicle';
+  if (parseTonInput(normalizedValue)) return 'ton';
   // Internal pages aren't network-served, but we still surface the
   // neutral globe (same icon `rad://` falls back to when its integration
   // is disabled) so the address bar always carries some leading mark

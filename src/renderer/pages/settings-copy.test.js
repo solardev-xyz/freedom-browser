@@ -271,8 +271,8 @@ describe('settings.html helper lines earn their place (#273)', () => {
   test('the six startup rows agree on whether they get a helper, and what it says', () => {
     // Tor's joined the other five under Nodes in #275.
     const helpers = startupHelpers();
-    expect(helpers.length).toBe(6);
-    expect(helpers).toEqual(Array(6).fill('Restart to apply.'));
+    expect(helpers.length).toBe(7);
+    expect(helpers).toEqual(Array(7).fill('Restart to apply.'));
   });
 
   test('the two Myotis rows say Beta in a badge instead of in a paragraph', () => {
@@ -306,13 +306,14 @@ describe('settings.html Advanced holds only the experiments (#275)', () => {
   const rowLabels = (html) =>
     [...html.matchAll(/<p class="row-label">([\s\S]*?)<\/p>/g)].map(([, body]) => textOf(body));
 
-  test('the two Beta features are all that is left, each badged rather than parenthesised', () => {
+  test('all three experimental features carry Beta badges, each badged rather than parenthesised', () => {
     const advanced = section('experimental');
     expect(rowLabels(advanced)).toEqual([
       'Enable Identity &amp; Wallet Beta',
+      'Enable TON Sites Beta',
       'Enable Tor (.onion access) Beta',
     ]);
-    for (const label of ['Enable Identity &amp; Wallet', 'Enable Tor \\(\\.onion access\\)']) {
+    for (const label of ['Enable Identity &amp; Wallet', 'Enable TON Sites', 'Enable Tor \\(\\.onion access\\)']) {
       expect(advanced).toMatch(new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`));
     }
     expect(SOURCE).not.toContain('(Beta)</span>');

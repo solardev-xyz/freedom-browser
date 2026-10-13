@@ -3,6 +3,38 @@ import { cidV0ToV1Base32, cidV1B58btcToBase32, ipnsMhToCidV1Base36 } from './cid
 
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
 
+import { TON_SUFFIXES, isTonHost } from '../../shared/ton-suffixes.js';
+export { TON_SUFFIXES, isTonHost };
+
+export const parseTonInput = (input) => {
+  const raw = typeof input === 'string' ? input.trim() : '';
+  if (!raw) return null;
+
+  const withoutScheme = raw.replace(/^(?:https?|tonsite|ton):\/\//i, '');
+  let parsed;
+  try {
+    parsed = new URL(`http://${withoutScheme}`);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.port ||
+    parsed.username ||
+    parsed.password ||
+    !isTonHost(parsed.hostname, /^tonsite:\/\//i.test(raw))
+  )
+    return null;
+
+  const hostname = parsed.hostname.replace(/\.$/, '');
+  const host = parsed.port ? `${hostname}:${parsed.port}` : hostname;
+  const tail = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  const displayTail = tail === '/' ? '' : tail;
+  return {
+    targetUrl: `tonsite://${host}${tail}`,
+    displayValue: `tonsite://${host}${displayTail}`,
+  };
+};
+
 export const DEFAULT_ONCHAIN_APP_CHAIN_ID = 1;
 const ETHEREUM_ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 

@@ -65,6 +65,13 @@ const registry = {
     tempMessageTimeout: null,
     errorState: false,
   },
+  ton: {
+    proxy: null,
+    mode: MODE.NONE,
+    statusMessage: null,
+    tempMessage: null,
+    tempMessageTimeout: null,
+  },
 };
 
 function createEmptyServiceState(service) {
@@ -76,6 +83,16 @@ function createEmptyServiceState(service) {
       tempMessage: null,
       tempMessageTimeout: null,
       errorState: false,
+    };
+  }
+
+  if (service === 'ton') {
+    return {
+      proxy: null,
+      mode: MODE.NONE,
+      statusMessage: null,
+      tempMessage: null,
+      tempMessageTimeout: null,
     };
   }
 
@@ -102,6 +119,10 @@ const DEFAULTS = {
     socksPort: 19150, // Freedom-managed Arti SOCKS5 proxy; 9150 is treated as external
     fallbackRange: 10,
   },
+  ton: {
+    proxyPort: 18085,
+    fallbackRange: 10,
+  },
 };
 
 /**
@@ -121,6 +142,7 @@ function getRegistry() {
     ant: { ...registry.ant },
     radicle: { ...registry.radicle },
     tor: { ...registry.tor },
+    ton: { ...registry.ton },
   };
 }
 

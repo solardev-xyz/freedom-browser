@@ -57,6 +57,7 @@ Freedom Browser is distributed as:
   - `myotis-node.node` (`resources/myotis-node/`)
 - **External binaries** shipped in `resources/`:
   - Ant (`antd`, Swarm node)
+  - Tonutils Proxy (`tonutils-freedom-cli`, TON Sites HTTP proxy)
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
@@ -87,6 +88,17 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 - **Risk:** Green
 - **Integration:** Separate process via IPC
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔
+
+### Tonutils Proxy (TON Sites HTTP Proxy)
+
+- **Source:** https://github.com/xssnick/Tonutils-Proxy
+- **Version:** `upstream-bfcf778d4fb3`
+- **Source commit:** `bfcf778d4fb30992ac53631a58aef3dcfa31090c` (pin: `src/shared/ton-version.js` `PINNED_SOURCE_COMMIT`)
+- **Build:** Compiled from the pinned, unmodified upstream source in Freedom's release workflow; Go dependencies are locked by upstream's `go.mod` and `go.sum`.
+- **License:** MIT (upstream `LICENSE`, Copyright (c) 2025 Oleg Baranov)
+- **Risk:** Yellow — retain the upstream copyright notice and license text.
+- **Integration:** Separate process, accessed through a local HTTP proxy by the `tonsite://` handler.
+- **Action Required:** Upstream MIT copyright notice and full license text reproduced in `NOTICES` ✔
 
 ### freedom-ipfs (Native IPFS Addon)
 

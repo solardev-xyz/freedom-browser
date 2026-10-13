@@ -20,6 +20,7 @@ ant-data/
 assets/adblock/
 ipfs-bin/
 ipfs-data/
+ton-bin/
 dev-scripts/
 helios-bin/
 radicle-bin/

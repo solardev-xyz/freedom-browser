@@ -38,7 +38,7 @@ module.exports = [
     },
   },
   {
-    files: ['src/renderer/**/*.js'],
+    files: ['src/renderer/**/*.js', 'src/shared/ton-suffixes.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',

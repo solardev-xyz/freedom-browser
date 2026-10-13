@@ -43,6 +43,8 @@ describe('settings-store', () => {
         startRadicleAtLaunch: false,
         enableTorIntegration: false,
         startTorAtLaunch: false,
+        enableTonIntegration: false,
+        startTonAtLaunch: false,
         autoUpdate: true,
         showBookmarkBar: false,
         searchProvider: 'duckduckgo',

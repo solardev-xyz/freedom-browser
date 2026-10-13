@@ -829,6 +829,7 @@ const getHostRoutedHref = (anchor) => {
           'http:',
           'https:',
           'bzz:',
+          'tonsite:',
           'ipfs:',
           'ipns:',
           'rad:',

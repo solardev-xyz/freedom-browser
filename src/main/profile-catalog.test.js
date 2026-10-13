@@ -395,6 +395,17 @@ describe('profile catalog', () => {
     });
   });
 
+  test('TON defaults to managed and preserves a disabled choice on subsequent launches', () => {
+    const appRoot = track(makeTempDir());
+    const userDataDir = path.join(appRoot, 'Profiles', 'default');
+    const { metadata } = ensureProfile(appRoot, 'default');
+    const profile = { appRoot, userDataDir, id: 'default', metadata };
+    expect(profile.metadata.nodes.ton).toEqual({ mode: 'managed' });
+    const changed = updateProfileNodeConfig(profile, 'ton', { mode: 'disabled' });
+    expect(changed.metadata.nodes.ton).toEqual({ mode: 'disabled' });
+    expect(ensureProfile(appRoot, 'default').metadata.nodes.ton).toEqual({ mode: 'disabled' });
+  });
+
   test('updateProfileNodeConfig keeps the IPFS external gateway but clamps Myotis to native', () => {
     const appRoot = track(makeTempDir());
     const profileDir = path.join(appRoot, 'Profiles', 'default');

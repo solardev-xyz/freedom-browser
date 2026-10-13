@@ -102,6 +102,9 @@ function buildNodeConfig(ports) {
     radicle: {
       mode: 'managed',
     },
+    ton: {
+      mode: 'managed',
+    },
     tor: {
       mode: 'managed',
       socksPort: ports.torSocks,
@@ -140,6 +143,9 @@ function rebaseNodeConfig(nodes = {}, ports) {
     radicle: {
       mode: nodes.radicle?.mode === 'disabled' ? 'disabled' : defaults.radicle.mode,
     },
+    ton: {
+      mode: nodes.ton?.mode === 'disabled' ? 'disabled' : defaults.ton.mode,
+    },
     tor: {
       ...defaults.tor,
       mode: nodes.tor?.mode || defaults.tor.mode,
@@ -177,6 +183,9 @@ function fillMissingNodeConfig(nodes = {}, ports) {
     },
     radicle: {
       mode: nodes.radicle?.mode === 'disabled' ? 'disabled' : defaults.radicle.mode,
+    },
+    ton: {
+      mode: nodes.ton?.mode === 'disabled' ? 'disabled' : defaults.ton.mode,
     },
     tor: {
       ...defaults.tor,
@@ -974,7 +983,7 @@ function updateProfileNodeConfig(profile, protocol, updates) {
     return null;
   }
 
-  if (!['bee', 'ipfs', 'myotis', 'radicle', 'tor'].includes(protocol)) {
+  if (!['bee', 'ipfs', 'myotis', 'radicle', 'tor', 'ton'].includes(protocol)) {
     throw new Error(`Unsupported profile node protocol: ${protocol}`);
   }
 

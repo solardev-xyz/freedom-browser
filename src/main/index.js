@@ -167,7 +167,7 @@ app.setAboutPanelOptions({
   applicationVersion: version,
   version: `Electron ${process.versions.electron} · Chromium ${process.versions.chrome} · Node ${process.versions.node}`,
   copyright: '© 2025-2026 Freedom Team\nCopyleft — MPL-2.0',
-  credits: 'A browser for the decentralized web\nSwarm · IPFS · ENS',
+  credits: 'A browser for the decentralized web\nSwarm · IPFS · TON Sites · ENS',
   website: 'https://freedombrowser.eth.limo/',
   iconPath,
 });
@@ -241,6 +241,7 @@ const DWEB_PROTOCOL_PRIVILEGES = {
 };
 protocol.registerSchemesAsPrivileged([
   { scheme: 'bzz', privileges: DWEB_PROTOCOL_PRIVILEGES },
+  { scheme: 'tonsite', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipfs', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipns', privileges: DWEB_PROTOCOL_PRIVILEGES },
   // ERC-8244 documents are single onchain HTML responses. They need a
@@ -317,6 +318,14 @@ const {
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
 } = require('./tor-manager');
+const {
+  registerTonIpc,
+  stopTon,
+  startTon,
+  registerTonRoutingSession,
+  unregisterTonRoutingSession,
+  registerTonRequestGuard,
+} = require('./ton-manager');
 const { registerIdentityIpc, hasVault, setBeeLifecycle } = require('./identity-manager');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
@@ -414,6 +423,7 @@ async function bootstrap() {
   migrateBeeDataToAntData();
 
   const defaultSession = session.defaultSession;
+  registerTonRoutingSession('default', defaultSession);
   await defaultSession.clearCache();
   registerBaseIpcHandlers({
     onSetTitle: setWindowTitle,
@@ -434,6 +444,7 @@ async function bootstrap() {
   myotisManager.registerMyotisIpc();
   registerRadicleIpc();
   registerTorIpc();
+  registerTonIpc();
   registerGithubBridgeIpc();
   registerServiceRegistryIpc();
   registerIdentityIpc();
@@ -496,6 +507,7 @@ async function bootstrap() {
   // to the local Ant API past it (docs/security-audit-electron.md, O-1).
   // Runs in test mode too — it is browser policy, like onchain-app-guard.
   installAntApiGuard();
+  registerTonRequestGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
   // x402, so blocked requests never reach the payment flow. The landing gate
@@ -552,6 +564,7 @@ async function bootstrap() {
     // resolves *.onion DIRECT and hands the onion hostname to the system
     // resolver. Applies the live policy immediately when Tor is already up.
     registerOnionRoutingSession(partition, privateSession);
+    registerTonRoutingSession(partition, privateSession);
   });
   // On private-window close: cancel the window's still-running downloads
   // FIRST (once its rows are gone nothing can see or stop them, and a
@@ -563,6 +576,7 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => dropPrivateDownloads(partition));
   registerPrivateCleanup((partition) => clearPrivatePermissionDecisions(partition));
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
+  registerPrivateCleanup((partition) => unregisterTonRoutingSession(partition));
 
   registerWebContentsHandlers();
   registerClientCertificateHandler();
@@ -676,6 +690,9 @@ async function bootstrap() {
     if (settings.enableTorIntegration && settings.startTorAtLaunch) {
       startTor({ targetSession: defaultSession });
     }
+    if (settings.enableTonIntegration && settings.startTonAtLaunch) {
+      startTon();
+    }
   }
 
   // Initialize auto-updater (pass menu update callback). Skipped in
@@ -772,7 +789,7 @@ async function windDown() {
   // Clean up any GitHub bridge temp directories
   cleanupTempDirs();
 
-  log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');
+  log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, Tor, and TON to stop...');
   // allSettled, not all: Promise.all settles on the *first* rejection, so one
   // manager throwing would release the quit while the other legs are still in
   // flight — notably stopIpfs(), whose dispatcher ack is the very window this
@@ -786,6 +803,7 @@ async function windDown() {
     ['IPFS', stopIpfs],
     ['Radicle', stopRadicle],
     ['Tor', stopTor],
+    ['TON', stopTon],
   ];
   // The async wrapper keeps a *synchronous* throw from a stop function inside
   // the join too: thrown straight into Promise.allSettled's argument array it

@@ -12,6 +12,9 @@ const fields = {
   unverifiedEnsAction: $('unverified-ens-action'),
   askWhereToSave: $('ask-where-to-save'),
   startRadicle: $('start-radicle-at-launch'),
+  enableTon: $('enable-ton-integration'),
+  startTon: $('start-ton-at-launch'),
+  startTonRow: $('start-ton-row'),
   enableTor: $('enable-tor-integration'),
   startTorRow: $('start-tor-row'),
   startTor: $('start-tor-at-launch'),
@@ -1112,6 +1115,22 @@ const applyStartTorRowState = () => {
   }
 };
 
+const startTonHelp = $('start-ton-help');
+const defaultStartTonHelp = startTonHelp?.textContent || '';
+const applyStartTonRowState = () => {
+  const enabled = fields.enableTon?.checked === true;
+  const disabled = storedProfileNodes?.ton?.mode === 'disabled';
+  fields.startTon.disabled = !enabled || disabled;
+  fields.startTonRow?.classList.toggle('disabled', !enabled || disabled);
+  if (startTonHelp) {
+    startTonHelp.textContent = !enabled
+      ? 'Turn on Enable TON Sites under Advanced first.'
+      : disabled
+        ? 'Disabled for this profile under Settings → Nodes.'
+        : defaultStartTonHelp;
+  }
+};
+
 const NODE_MODE_LABELS = {
   managed: 'Managed by Freedom',
   external: 'Use external node',
@@ -1157,6 +1176,13 @@ const PROFILE_NODE_SERVICES = [
     label: 'Radicle',
     modes: ['managed', 'disabled'],
     endpointLines: () => ['Embedded libradicle native node'],
+  },
+  {
+    protocol: 'ton',
+    label: 'TON',
+    modes: ['managed', 'disabled'],
+    settingKey: 'enableTonIntegration',
+    endpointLines: (_config, service) => [service?.proxy || 'Local TON proxy'],
   },
   {
     protocol: 'tor',
@@ -1281,6 +1307,7 @@ const setExternalEditorVisible = (row, mode) => {
 const renderProfileNodes = (profile, registry, settings) => {
   const nodes = profile?.nodes || {};
   storedProfileNodes = nodes;
+  applyStartTonRowState();
   const rows = visibleProfileServices(settings).map((definition) => {
     const protocol = definition.protocol;
     const config = nodes[protocol] || {};
@@ -1650,6 +1677,8 @@ const currentFormState = () => ({
   startMyotisGnosisAtLaunch: fields.startMyotisGnosis.checked,
   askWhereToSave: fields.askWhereToSave.checked,
   startRadicleAtLaunch: fields.startRadicle.checked,
+  enableTonIntegration: fields.enableTon.checked,
+  startTonAtLaunch: fields.startTon.checked,
   enableTorIntegration: fields.enableTor.checked,
   startTorAtLaunch: fields.startTor.checked,
   enableIdentityWallet: fields.enableIdentity.checked,
@@ -1674,6 +1703,9 @@ const applyFormState = (settings) => {
   fields.startMyotisGnosis.checked = settings.startMyotisGnosisAtLaunch === true;
   fields.askWhereToSave.checked = settings.askWhereToSave === true;
   fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
+  fields.enableTon.checked = settings.enableTonIntegration === true;
+  fields.startTon.checked = settings.startTonAtLaunch === true;
+  applyStartTonRowState();
   fields.enableTor.checked = settings.enableTorIntegration === true;
   fields.startTor.checked = settings.startTorAtLaunch === true;
   fields.enableIdentity.checked = settings.enableIdentityWallet === true;
@@ -4427,3 +4459,9 @@ freedomAPI.onSettingsUpdated?.((settings) => {
 
   reload();
 })();
+
+fields.enableTon.addEventListener('change', () => {
+  applyStartTonRowState();
+  save();
+});
+fields.startTon.addEventListener('change', save);

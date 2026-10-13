@@ -82,6 +82,7 @@ const INTERNAL_SCHEMES = [
   // schemes webcontents-setup.js's will-navigate hands to the chrome.
   'freedom',
   'bzz',
+  'tonsite',
   'ipfs',
   'ipns',
   'web3',

@@ -735,6 +735,7 @@ jobs:
           test-e2e/internal-page-theme.spec.js
           test-e2e/updates.spec.js
           test-e2e/swarm-cache.spec.js
+          test-e2e/ton-protocol.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

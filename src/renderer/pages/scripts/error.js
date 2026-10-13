@@ -52,7 +52,7 @@ const explicitProtocol = params.get('protocol');
 // `file://` are blocked by Chromium so the practical surface is
 // limited, but allowlisting keeps paste / bookmark social-engineering
 // off the table.
-const ALLOWED_RETRY_SCHEMES = ['bzz:', 'ens:', 'ipfs:', 'ipns:', 'rad:', 'http:', 'https:'];
+const ALLOWED_RETRY_SCHEMES = ['bzz:', 'ens:', 'ipfs:', 'ipns:', 'rad:', 'tonsite:', 'http:', 'https:'];
 const sanitizeRetryUrl = (candidate) => {
   if (!candidate) return null;
   try {
@@ -347,6 +347,8 @@ async function displayError() {
       if (!status.running) {
         descriptionEl.innerHTML = `The IPFS node is not running. Open the Nodes menu ${NODES_ICON} in the toolbar to start it.`;
       }
+    } else if (protocol === 'ton') {
+      descriptionEl.innerHTML = `The TON proxy is not running. Open the Nodes menu ${NODES_ICON} in the toolbar to start it.`;
     }
     parts.push('');
     parts.push(error);

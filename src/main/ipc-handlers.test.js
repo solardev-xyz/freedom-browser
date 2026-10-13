@@ -267,6 +267,9 @@ function loadIpcHandlersModule(options = {}) {
       ...(options.radicleManager
         ? { [require.resolve('./radicle-manager')]: () => options.radicleManager }
         : {}),
+      ...(options.tonManager
+        ? { [require.resolve('./ton-manager')]: () => options.tonManager }
+        : {}),
       ...(options.torManager
         ? { [require.resolve('./tor-manager')]: () => options.torManager }
         : {}),
@@ -525,6 +528,7 @@ describe('ipc-handlers', () => {
         myotis: null,
         radicle: { mode: 'disabled' },
         tor: { mode: 'managed', socksPort: 19152 },
+        ton: null,
       },
     });
   });
@@ -1083,6 +1087,7 @@ describe('ipc-handlers', () => {
           myotis: { mode: 'managed', backend: 'myotis-native' },
           radicle: { mode: 'managed' },
           tor: { mode: 'managed', socksPort: 19151 },
+          ton: null,
         },
       },
     };
@@ -1116,6 +1121,7 @@ describe('ipc-handlers', () => {
             myotis: { mode: 'managed', backend: 'myotis-native' },
             radicle: { mode: 'managed' },
             tor: { mode: 'managed', socksPort: 19151 },
+            ton: null,
           },
         },
       })
@@ -1137,6 +1143,7 @@ describe('ipc-handlers', () => {
         myotis: { mode: 'managed', backend: 'myotis-native' },
         radicle: { mode: 'managed' },
         tor: { mode: 'managed', socksPort: 19151 },
+        ton: null,
       },
     });
   });
@@ -1224,6 +1231,7 @@ describe('ipc-handlers', () => {
             ipfs: null,
             myotis: null,
             radicle: null,
+            ton: null,
             tor: {
               mode: 'external',
               socksPort: 19151,
@@ -1413,6 +1421,30 @@ describe('ipc-handlers', () => {
         nodes: expect.objectContaining({ radicle: { mode: 'disabled' } }),
       })
     );
+  });
+
+  test('TON accepts only managed/disabled and applies a saved mode immediately', async () => {
+    const activeProfile = {
+      id: 'work',
+      source: 'catalog',
+      metadata: { nodes: { ton: { mode: 'managed' } } },
+    };
+    const tonManager = { syncProfileMode: jest.fn(async () => {}) };
+    const ctx = loadIpcHandlersModule({ activeProfile, tonManager });
+    ctx.mod.registerBaseIpcHandlers();
+    const result = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'ton',
+      config: { mode: 'disabled' },
+    });
+    expect(result.success).toBe(true);
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('ton', { mode: 'disabled' });
+    expect(tonManager.syncProfileMode).toHaveBeenCalledTimes(1);
+    const refused = await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'ton',
+      config: { mode: 'external' },
+    });
+    expect(refused.success).toBe(false);
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledTimes(1);
   });
 
   test('a saved Tor mode is published to the registry right away (#377)', async () => {

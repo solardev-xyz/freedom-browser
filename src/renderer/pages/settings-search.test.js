@@ -218,7 +218,7 @@ describe('the markup reader these tests are built on', () => {
     const rows = startup.children
       .flatMap((child) => child.children)
       .filter((child) => child.classList.contains('row'));
-    expect(rows.length).toBe(6);
+    expect(rows.length).toBe(7);
   });
 
   test('reads text in source order, through nested elements and entities', () => {
@@ -290,6 +290,8 @@ describe('buildSettingsSearchIndex', () => {
     // Experimental, not Startup; #275 moved it, and the result says where.
     expect(attribution('Start Tor when Freedom opens')).toBe('Nodes › Startup');
     expect(attribution('Enable Tor (.onion access) Beta')).toBe('Advanced');
+    expect(attribution('Start TON proxy')).toBe('Nodes › Startup');
+    expect(attribution('Enable TON Sites Beta')).toBe('Advanced');
     expect(attribution('Theme')).toBe('Appearance');
     expect(attribution('Show IPFS load progress in the status bar')).toBe('Appearance');
     expect(attribution('Swarm publishing')).toBe('Nodes');

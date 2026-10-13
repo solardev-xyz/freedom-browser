@@ -14,6 +14,7 @@ const { isExternalProtocolUrl, trackUserGestures } = require('./external-protoco
 const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 const { attachTabSwitchKeys } = require('./tab-switch-keys');
+const { isTonHost } = require('../shared/ton-suffixes');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -64,6 +65,24 @@ const isPrivateSender = (contents) => {
 
 const navUrlForLog = (contents, rawUrl) =>
   isPrivateSender(contents) ? '<private>' : sanitizeUrlForLog(rawUrl);
+
+const isHttpsTonNavigation = (rawUrl) => {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'https:' && isTonHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
+
+const isTonCustomNavigation = (rawUrl) => {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'ton:' && isTonHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
 
 // Resolve the BrowserWindow that hosts a webview's contents. Webviews carry
 // their chrome renderer as hostWebContents; routing through it (instead of
@@ -355,8 +374,10 @@ function registerWebContentsHandlers() {
           url.startsWith('ipns://') ||
           url.startsWith('web3://') ||
           url.startsWith('ens://') ||
+          isTonCustomNavigation(url) ||
           url.startsWith('rad:') ||
-          url.startsWith('ethereum:')
+          url.startsWith('ethereum:') ||
+          isHttpsTonNavigation(url)
         ) {
           log.info(`${tag} intercepted custom protocol navigation: ${navUrlForLog(contents, url)}`);
           event.preventDefault();

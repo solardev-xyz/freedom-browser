@@ -59,6 +59,8 @@ const DEFAULT_SETTINGS = {
   // the decentralized protocols keep connecting directly).
   enableTorIntegration: false,
   startTorAtLaunch: false,
+  enableTonIntegration: false,
+  startTonAtLaunch: false,
   autoUpdate: true,
   showBookmarkBar: false,
   // When true, every download opens a native save dialog. Off by default:

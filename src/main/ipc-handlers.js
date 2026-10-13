@@ -139,6 +139,7 @@ function serializeActiveProfile() {
       myotis: metadata.nodes.myotis ? { ...metadata.nodes.myotis } : null,
       radicle: metadata.nodes.radicle ? { ...metadata.nodes.radicle } : null,
       tor: metadata.nodes.tor ? { ...metadata.nodes.tor } : null,
+      ton: metadata.nodes.ton ? { ...metadata.nodes.ton } : null,
     };
   }
 
@@ -192,6 +193,7 @@ const PROFILE_NODE_MODES = {
   ipfs: new Set(['managed', 'external', 'disabled']),
   myotis: new Set(['managed', 'disabled']),
   radicle: new Set(['managed', 'disabled']),
+  ton: new Set(['managed', 'disabled']),
   tor: new Set(['managed', 'external', 'disabled']),
 };
 const PROFILE_NODE_FIELDS = {
@@ -199,6 +201,7 @@ const PROFILE_NODE_FIELDS = {
   ipfs: ['mode', 'externalGateway'],
   myotis: ['mode'],
   radicle: ['mode'],
+  ton: ['mode'],
   tor: ['mode', 'externalSocks'],
 };
 const EXTERNAL_FIELDS = {
@@ -334,6 +337,9 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
     if (protocol === 'radicle') {
       const radicleManager = require('./radicle-manager');
       await radicleManager.syncProfileMode();
+    }
+    if (protocol === 'ton') {
+      await require('./ton-manager').syncProfileMode();
     }
     if (protocol === 'ipfs') {
       // Publish the newly configured mode to the service registry. Nothing is

@@ -14,14 +14,14 @@
       "libradicle.node",
       "myotis-node.node"
     ],
-    "external_binaries": ["antd", "arti", "myotis-supervisor"],
+    "external_binaries": ["antd", "tonutils-freedom-cli", "arti", "myotis-supervisor"],
     "vendored_renderer_bundles": [
       "src/renderer/vendor/openlv.esm.js",
       "src/renderer/vendor/highlight.min.js",
       "src/renderer/vendor/marked.min.js",
       "src/renderer/vendor/purify.min.js"
     ],
-    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd), Tonutils Proxy and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
   },
   "dependencies": [
     {
@@ -64,6 +64,32 @@
       "bundled_with_app": true,
       "linking_or_integration": "separate-process",
       "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "tonutils-proxy",
+      "version": "bfcf778d4fb30992ac53631a58aef3dcfa31090c",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/xssnick/Tonutils-Proxy",
+        "commit": "bfcf778d4fb30992ac53631a58aef3dcfa31090c"
+      },
+      "license": {
+        "spdx": [
+          "MIT"
+        ],
+        "raw": "MIT",
+        "license_files": [
+          "LICENSE"
+        ],
+        "notice_required": true
+      },
+      "version_pin": "src/shared/ton-version.js PINNED_SOURCE_COMMIT; compiled from unmodified upstream source",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "yellow",
       "issues": []
     },
     {

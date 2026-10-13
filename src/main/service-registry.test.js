@@ -153,6 +153,20 @@ describe('service-registry', () => {
       tempMessageTimeout: null,
       errorState: false,
     });
+
+    mod.updateService('ton', {
+      proxy: 'http://127.0.0.1:18085',
+      mode: mod.MODE.BUNDLED,
+    });
+    mod.clearService('ton');
+
+    expect(mod.getService('ton')).toEqual({
+      proxy: null,
+      mode: mod.MODE.NONE,
+      statusMessage: null,
+      tempMessage: null,
+      tempMessageTimeout: null,
+    });
   });
 
   test('errorState tracks the error overlay, not the published URL (#445 R2-M2)', () => {
