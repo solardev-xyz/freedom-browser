@@ -1,0 +1,2 @@
+- Wallet payments settle once final: each is marked confirmed, failed on chain, or taken (another transaction used its nonce, so it may or may not have happened), from verified sources only ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A payment found on chain no longer shows under "Payments waiting", and one recovered after a restart says whether it is on chain yet
