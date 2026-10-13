@@ -1,20 +1,13 @@
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
 const { createIntentTracker, SCHEDULE, CONCURRENCY } = require('./intent-tracker');
+const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
 
 const SENDER = '0x1111111111111111111111111111111111111111';
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const T0 = Date.UTC(2026, 9, 13, 12, 0, 0);
-const hex = (n) => `0x${n.toString(16)}`;
 const hashOf = (i) => `0x${i.toString(16).padStart(64, '0')}`;
-
-const verified = (result) => ({
-  result,
-  source: 'quorum',
-  verified: true,
-  trust: { level: 'verified', method: 'quorum', quorum: { k: 3, m: 2, achieved: true } },
-});
 
 function intent(n, overrides = {}) {
   return {
@@ -41,8 +34,13 @@ function fakeStore(intents = []) {
     held: () =>
       [...map.values()].filter((i) => i.state === 'held').sort((a, b) => a.nonce - b.nonce),
     get: (id) => map.get(id) ?? null,
-    settle: jest.fn(async ({ intentId, label, hash, block }) => {
+    // As the real store: conditional on the hashes the label was read for.
+    settle: jest.fn(async ({ intentId, label, hash, block, hashes }) => {
       const settled = map.get(intentId);
+      const now = settled.hashes.map((entry) => entry.hash);
+      if (hashes && (hashes.length !== now.length || hashes.some((h, i) => h !== now[i]))) {
+        throw Object.assign(new Error('changed'), { code: 'INTENT_CHANGED' });
+      }
       settled.state = 'settled';
       settled.settlement = { label, hash, block };
       changed(intentId);
@@ -63,26 +61,24 @@ function fakeStore(intents = []) {
  * A chain where `mined` (nonce → status) are included at block 90, the
  * finalized block is 100 and the sender's finalized count `count`.
  */
-function chainReads({ count = 0, mined = {} } = {}) {
-  return jest.fn(async (_chainId, method, params) => {
-    if (method === 'eth_getBlockByNumber' && params[0] === 'finalized') {
-      return verified({ number: hex(100), hash: hashOf(9999) });
-    }
-    if (method === 'eth_getTransactionCount') return verified(hex(count));
-    if (method === 'eth_getTransactionReceipt') {
-      const nonce = Number(BigInt(params[0]));
-      if (!(nonce in mined)) return verified(null);
-      return verified({
-        transactionHash: params[0],
-        from: SENDER,
-        blockNumber: hex(90),
-        blockHash: hashOf(90),
-        status: hex(mined[nonce]),
-      });
-    }
-    if (method === 'eth_getBlockByNumber') return verified({ number: params[0], hash: hashOf(90) });
-    throw new Error(`unexpected ${method}`);
-  });
+/**
+ * A chain (fake-finality-chain.js) where the sender's finalized nonce is
+ * `count`: `mined` (nonce → status) are its own transactions, included at
+ * block 90 below the finalized 100, and `takenAt` a nonce another
+ * transaction of the sender used there.
+ */
+function chainReads({ count = 0, mined = {}, takenAt = null } = {}) {
+  const txs = Object.entries(mined).map(([nonce, status]) => ({
+    hash: hashOf(Number(nonce)),
+    nonce: Number(nonce),
+    status,
+  }));
+  if (takenAt !== null) txs.push({ hash: hashOf(0xeeee), nonce: takenAt, status: 1 });
+  return fakeFinalityChain({
+    sender: SENDER,
+    startNonce: count - txs.length,
+    txs: { 90: txs },
+  }).request;
 }
 
 function tracker({ store, request = chainReads(), coreReady = () => true, ...rest }) {
@@ -197,6 +193,7 @@ describe('the schedule', () => {
       label: 'paid',
       hash: hashOf(5),
       block: 100,
+      hashes: [hashOf(5)],
     });
     expect(recordSettlement).toHaveBeenCalledWith(
       expect.objectContaining({ intentId: 'intent-0005', hashes: [{ hash: hashOf(5) }] }),
@@ -226,8 +223,11 @@ describe('the bounds', () => {
   });
 
   test(`at most ${CONCURRENCY} reads at once, and an identical read once per pass`, async () => {
+    // A chain's intents are read one after another (they share its
+    // verified headers); the bound shows in a header walk's parallel
+    // fetches: intent 1's receipt is 10 blocks below F.
     const store = fakeStore(Array.from({ length: 12 }, (_, i) => intent(i + 1)));
-    const reads = chainReads({ count: 0 });
+    const reads = chainReads({ count: 2, mined: { 1: 1 } });
     let inFlight = 0;
     let most = 0;
     const request = jest.fn(async (...args) => {
@@ -242,20 +242,25 @@ describe('the bounds', () => {
     await jest.advanceTimersByTimeAsync(SECOND);
     await pass;
     expect(most).toBe(CONCURRENCY);
-    // One finalized block and one count for the sender; a receipt each.
-    expect(request.mock.calls.map(([, method]) => method).sort()).toEqual(
-      [
-        'eth_getBlockByNumber',
-        'eth_getTransactionCount',
-        ...Array(12).fill('eth_getTransactionReceipt'),
-      ].sort()
+    // One finalized block, one count for the sender at its hash, a receipt
+    // each, and the 10 headers down to intent 1's block, each once.
+    const calls = request.mock.calls.map(([, method, params]) =>
+      method === 'eth_getBlockByNumber' && params[0] !== 'finalized' ? 'header' : method
     );
+    const tally = calls.reduce((all, call) => ({ ...all, [call]: (all[call] ?? 0) + 1 }), {});
+    expect(tally).toEqual({
+      eth_getBlockByNumber: 1,
+      eth_getTransactionCount: 1,
+      eth_getTransactionReceipt: 12,
+      header: 10,
+    });
+    expect(store.get('intent-0001').state).toBe('settled');
   });
 
   test('a replacement committed while the reads ran is read again before it settles', async () => {
     const first = intent(5);
     const store = fakeStore([first]);
-    const reads = chainReads({ count: 6 });
+    const reads = chainReads({ count: 6, takenAt: 5 });
     const request = jest.fn(async (...args) => {
       // The user replaced it at nonce 5 meanwhile.
       if (args[1] === 'eth_getTransactionReceipt') {
@@ -263,10 +268,12 @@ describe('the bounds', () => {
       }
       return reads(...args);
     });
-    const { instance } = tracker({ store, request });
+    const { instance, recordSettlement } = tracker({ store, request });
     await instance.pass();
-    expect(store.settle).not.toHaveBeenCalled();
+    // Asked to settle the hashes it read; the store refuses: they changed.
+    expect(store.settle).toHaveBeenCalledWith(expect.objectContaining({ hashes: [hashOf(5)] }));
     expect(store.get('intent-0005').state).toBe('held');
+    expect(recordSettlement).not.toHaveBeenCalled();
   });
 });
 

@@ -10,21 +10,27 @@
  *   the newest held intent has seen no activity for an hour. Nothing held,
  *   no timer: the next intent's broadcast wakes it.
  * - **Settling:** `store.settle` with the label, the included hash and the
- *   finalized block; then the history row (`confirmed`, `failed` or
- *   `taken`). The store's change reaches the chrome as
- *   `wallet:intents-changed` (intent-ipc.js); so does a change in what the
- *   reads saw, through `onChange`.
+ *   finalized block, conditional on the hashes that were read; then the
+ *   history row (`confirmed`, `failed` or `taken`). The store's change
+ *   reaches the chrome as `wallet:intents-changed` (intent-ipc.js); so
+ *   does a change in what the reads saw, through `onChange`.
  * - **Bounds:** at most `concurrency` reads at once, one pass at a time,
  *   identical reads made once per pass, and no reads while the core isn't
- *   serving chain data.
+ *   serving chain data. Per pass and chain: the headers from the last
+ *   finalized block up to the new one, and down to the deepest block a
+ *   label needs, never more than MAX_DEPTH (8192) below F; per intent, its
+ *   nonce at F, up to 8 receipts, and, when another transaction may have
+ *   used its nonce, at most 2 × 13 nonce reads to find that block and one
+ *   block read.
  *
- * A label authorizes nothing: settling only ends the display of an intent
- * as waiting. Its nonce is used either way, so nothing at it can be mined
- * again.
+ * Settling is not only display: it forgets the intent's bytes and frees
+ * its key, so a later send of the same operation takes a new nonce. That
+ * is why a label rests only on evidence tied to the one finalized chain
+ * (intent-labels.js).
  */
 
 const log = require('../logger');
-const { LABELS, OBSERVED, readLabel } = require('./intent-labels');
+const { LABELS, OBSERVED, createChainSegment, readLabel } = require('./intent-labels');
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -94,6 +100,9 @@ function createIntentTracker({
   const schedule = { ...SCHEDULE, ...overrides };
   const limitedRequest = bounded(request, concurrency);
   const observations = new Map();
+  // Each chain's headers verified down from its finalized block: immutable,
+  // so kept across passes and shared by the chain's intents.
+  const segments = new Map();
   const listeners = new Set();
   let started = false;
   let timer = null;
@@ -177,17 +186,27 @@ function createIntentTracker({
   }
 
   // Settle `intent` as `result` says, if its hashes are still the ones
-  // read: a replacement committed meanwhile is read in the next pass.
+  // read: the store checks that in line with its other writes, so a
+  // replacement committed meanwhile, even one still being written, keeps
+  // it held until the next pass reads it.
   async function settle(intent, result) {
     const current = store.get(intent.intentId);
     if (!current || current.state !== 'held') return false;
-    if (current.hashes.length !== intent.hashes.length) return false;
-    await store.settle({
-      intentId: intent.intentId,
-      label: result.label,
-      hash: result.hash,
-      block: result.block,
-    });
+    try {
+      await store.settle({
+        intentId: intent.intentId,
+        label: result.label,
+        hash: result.hash,
+        block: result.block,
+        hashes: intent.hashes.map((entry) => entry.hash),
+      });
+    } catch (err) {
+      if (err.code !== 'INTENT_CHANGED') throw err;
+      log.info(
+        `[IntentTracker] Intent ${intent.intentId} changed while read; read again next pass`
+      );
+      return false;
+    }
     log.info(
       `[IntentTracker] Intent ${intent.intentId} is ${result.label} at finalized block ${result.block}`
     );
@@ -198,7 +217,8 @@ function createIntentTracker({
   async function check(intent, read) {
     let result;
     try {
-      result = await readLabel(intent, { request: read });
+      if (!segments.has(intent.chainId)) segments.set(intent.chainId, createChainSegment());
+      result = await readLabel(intent, { request: read, segment: segments.get(intent.chainId) });
     } catch (err) {
       result = { label: LABELS.HELD, observed: OBSERVED.UNKNOWN, reason: err.message };
     }
@@ -232,7 +252,23 @@ function createIntentTracker({
           if (!memo.has(key)) memo.set(key, limitedRequest(chainId, method, params, options));
           return memo.get(key);
         };
-        const changed = await Promise.all(held.map((intent) => check(intent, read)));
+        // Chains in parallel; a chain's intents one after another, since
+        // they share its verified headers (whose walks run in parallel,
+        // within the read bound).
+        const byChain = new Map();
+        for (const intent of held) {
+          if (!byChain.has(intent.chainId)) byChain.set(intent.chainId, []);
+          byChain.get(intent.chainId).push(intent);
+        }
+        const changed = (
+          await Promise.all(
+            [...byChain.values()].map(async (intents) => {
+              const results = [];
+              for (const intent of intents) results.push(await check(intent, read));
+              return results;
+            })
+          )
+        ).flat();
         for (const id of observations.keys()) {
           if (!held.some((intent) => intent.intentId === id)) observations.delete(id);
         }

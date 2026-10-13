@@ -51,7 +51,12 @@ export const ATTENTION_TEXT = Object.freeze({
   pending: LABELS.pending,
 });
 
+// What would settle the payment lies too deep below the finalized block to
+// verify (intent-labels.js): it stays waiting.
+export const UNVERIFIABLE_TEXT = 'Too old to check on chain';
+
 export function attentionText(summary) {
+  if (summary?.observed === 'unverifiable') return UNVERIFIABLE_TEXT;
   if (summary?.attention === 'refused') return refusedText(summary.lastOutcome?.reasonClass);
   return ATTENTION_TEXT[summary?.attention] ?? LABELS.pending;
 }

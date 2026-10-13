@@ -34,6 +34,7 @@ jest.mock('../networks/chain-data', () => ({
   getFeeQuote: (...args) => mockFeeQuote(...args),
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
+const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
 // The finality tracker reads only while the core serves chain data.
 jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'ready' } }) }));
 jest.mock('./signers', () => ({ getSigner: (index) => mockSigners[index] }));
@@ -1377,8 +1378,6 @@ describe('the finality tracker settles held payments (7)', () => {
     gasLimit: '21000',
     gasPrice: '1000000000',
   };
-  const hex = (n) => `0x${n.toString(16)}`;
-  const BLOCK_90 = `0x${'90'.repeat(32)}`;
 
   function startTracking() {
     const running = start();
@@ -1407,43 +1406,31 @@ describe('the finality tracker settles held payments (7)', () => {
     };
   }
 
-  // The chain as verified reads (a quorum of 2) see it: finalized block
-  // 100, Alice's finalized count, and `mined` included at block 90.
-  function finality({ count, mined = {}, at = 90 }) {
+  // The chain as verified reads (a quorum of 2) see it
+  // (fake-finality-chain.js): finalized block 100; Alice's nonce 7 before
+  // it; `mined` (hash → status), her own transactions, at block `at`;
+  // `taken`, another transaction of hers using nonce 7 at block 90.
+  function finality({ mined = {}, at = 90, taken = false }) {
     const plain = mockRequest.getMockImplementation();
-    mockRequest.mockImplementation(async (chainId, method, params, options) => {
-      if (!options?.includeTrust) return plain(chainId, method, params, options);
-      const verified = (result) => ({
-        result,
-        source: 'quorum',
-        verified: true,
-        trust: { level: 'verified', method: 'quorum', quorum: { k: 3, m: 2, achieved: true } },
-      });
-      if (method === 'eth_getBlockByNumber' && params[0] === 'finalized') {
-        return verified({ number: hex(100), hash: `0x${'aa'.repeat(32)}` });
-      }
-      if (method === 'eth_getTransactionCount') return verified(hex(count));
-      if (method === 'eth_getTransactionReceipt') {
-        const status = mined[params[0]];
-        if (status === undefined) return verified(null);
-        return verified({
-          transactionHash: params[0],
-          from: ALICE.address.toLowerCase(),
-          blockNumber: hex(at),
-          blockHash: BLOCK_90,
-          status: hex(status),
-        });
-      }
-      if (method === 'eth_getBlockByNumber') return verified({ number: params[0], hash: BLOCK_90 });
-      throw new Error(`unexpected verified read ${method}`);
-    });
+    const txs = {};
+    for (const [hash, status] of Object.entries(mined)) {
+      (txs[at] ??= []).push({ hash, nonce: 7, status });
+    }
+    if (taken) (txs[90] ??= []).push({ hash: `0x${'ee'.repeat(32)}`, nonce: 7, status: 1 });
+    const chain = fakeFinalityChain({ sender: ALICE.address.toLowerCase(), startNonce: 7, txs });
+    mockRequest.mockImplementation(async (chainId, method, params, options) =>
+      options?.includeTrust
+        ? chain.request(chainId, method, params, options)
+        : plain(chainId, method, params, options)
+    );
+    return chain;
   }
 
   test('a mined payment settles paid at finality; its history row and the chrome hear of it', async () => {
     const running = startTracking();
     const sent = await running.send();
     expect(sent).toMatchObject({ success: true, nonce: 7 });
-    finality({ count: 8, mined: { [sent.hash]: 1 } });
+    finality({ mined: { [sent.hash]: 1 } });
     running.sent.length = 0;
 
     await running.tracker.pass();
@@ -1473,7 +1460,7 @@ describe('the finality tracker settles held payments (7)', () => {
   test('a payment included with status 0 settles failed', async () => {
     const running = startTracking();
     const sent = await running.send();
-    finality({ count: 8, mined: { [sent.hash]: 0 } });
+    finality({ mined: { [sent.hash]: 0 } });
     await running.tracker.pass();
     expect(running.store.get(sent.intentId).settlement).toMatchObject({ label: 'failed' });
     expect(running.history.getRecent({})[0]).toMatchObject({ status: 'failed' });
@@ -1487,7 +1474,7 @@ describe('the finality tracker settles held payments (7)', () => {
     const refused = await running.send();
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
     expect(running.history.getRecent({})).toEqual([]);
-    finality({ count: 8 });
+    finality({ taken: true });
 
     await running.tracker.pass();
 
@@ -1517,7 +1504,7 @@ describe('the finality tracker settles held payments (7)', () => {
     });
     const refused = await running.send();
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
-    finality({ count: 7, mined: { [refused.intent.hash]: 1 }, at: 101 });
+    finality({ mined: { [refused.intent.hash]: 1 }, at: 101 });
     running.sent.length = 0;
     await running.tracker.pass();
     expect(running.store.get(refused.intentId).state).toBe('held');
@@ -1547,7 +1534,7 @@ describe('the finality tracker settles held payments (7)', () => {
     expect(await running.list()).toEqual([
       expect.objectContaining({ intentId: sent.intentId, attention: 'pending', observed: null }),
     ]);
-    finality({ count: 7 });
+    finality({});
     await running.tracker.pass();
     expect(await running.list()).toEqual([
       expect.objectContaining({

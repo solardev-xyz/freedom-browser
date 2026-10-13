@@ -503,3 +503,13 @@ describe('payments waiting: after a restart', () => {
     expect(markup(elements)).toContain('Pending');
   });
 });
+
+// #712 review: a payment whose settling evidence lies deeper than the
+// verifiable depth stays waiting, and says why.
+test('a payment too old to verify on chain says so', async () => {
+  const { mod, elements } = await load([
+    held({ attention: 'pending', observed: 'unverifiable', lastOutcome: null }),
+  ]);
+  await mod.openHeldPayments();
+  expect(markup(elements)).toContain('Too old to check on chain');
+});

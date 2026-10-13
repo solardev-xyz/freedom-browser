@@ -1,17 +1,18 @@
 const {
   LABELS,
   OBSERVED,
+  MAX_DEPTH,
   READ_OPTIONS,
   isVerifiedEvidence,
+  createChainSegment,
   readLabel,
 } = require('./intent-labels');
+const { fakeFinalityChain, quorum, hex } = require('../../../test/helpers/fake-finality-chain');
 
 const SENDER = '0x1111111111111111111111111111111111111111';
-const OTHER = '0x2222222222222222222222222222222222222222';
 const HASH = `0x${'aa'.repeat(32)}`;
 const REPLACEMENT = `0x${'bb'.repeat(32)}`;
-const BLOCK_HASH = `0x${'cc'.repeat(32)}`;
-const hex = (n) => `0x${n.toString(16)}`;
+const OTHER = `0x${'ee'.repeat(32)}`;
 
 const INTENT = {
   intentId: 'intent-0001',
@@ -21,13 +22,6 @@ const INTENT = {
   hashes: [{ hash: HASH }],
 };
 
-// A read's reply as chain-data returns it with trust.
-const quorum = (result, { m = 2, k = 3, achieved = true } = {}) => ({
-  result,
-  source: 'quorum',
-  verified: true,
-  trust: { level: 'verified', method: 'quorum', block: null, quorum: { k, m, achieved } },
-});
 const myotis = (result) => ({
   result,
   source: 'myotis',
@@ -58,46 +52,12 @@ const blockscout = (result) => ({
   verified: true,
   trust: { level: 'verified', method: 'blockscout', quorum: { k: 2, m: 2, achieved: true } },
 });
+const singleton = (result) => quorum(result, { m: 1, k: 1 });
 
-const receipt = (overrides = {}) => ({
-  transactionHash: HASH,
-  from: SENDER,
-  blockNumber: hex(90),
-  blockHash: BLOCK_HASH,
-  status: '0x1',
-  ...overrides,
-});
-
-/**
- * A chain as the reads see it: the finalized block, the sender's
- * finalized count, receipts by hash and blocks by number, each wrapped by
- * `source` (quorum unless a test says otherwise). Records every call.
- */
-function chain({
-  finalized = 100,
-  count = 7,
-  receipts = {},
-  blocks = { [hex(90)]: { number: hex(90), hash: BLOCK_HASH } },
-  source = {},
-} = {}) {
-  const calls = [];
-  const request = jest.fn(async (chainId, method, params, options) => {
-    calls.push({ method, params, options });
-    const wrap = source[method] ?? quorum;
-    if (method === 'eth_getBlockByNumber' && params[0] === 'finalized') {
-      if (finalized instanceof Error) throw finalized;
-      return wrap(
-        finalized === null ? null : { number: hex(finalized), hash: `0x${'ff'.repeat(32)}` }
-      );
-    }
-    if (method === 'eth_getTransactionCount') return wrap(hex(count));
-    if (method === 'eth_getTransactionReceipt') return wrap(receipts[params[0]] ?? null);
-    if (method === 'eth_getBlockByNumber')
-      return (source.block ?? quorum)(blocks[params[0]] ?? null);
-    throw new Error(`unexpected ${method}`);
-  });
-  return { request, calls };
-}
+// The sender's nonce is 7 before block 1; `txs` by height.
+const chainWith = (txs, options = {}) =>
+  fakeFinalityChain({ sender: SENDER, startNonce: 7, txs, ...options });
+const ours = (status = 1, hash = HASH) => ({ hash, nonce: 7, status });
 
 describe('what counts as evidence', () => {
   test('Myotis, Colibri, and a quorum agreed among at least two endpoints', () => {
@@ -110,7 +70,7 @@ describe('what counts as evidence', () => {
   test('not Direct, Blockscout, a quorum of one, an unachieved quorum, or a label that disagrees with its source', () => {
     expect(isVerifiedEvidence(direct('0x1'))).toBe(false);
     expect(isVerifiedEvidence(blockscout('0x1'))).toBe(false);
-    expect(isVerifiedEvidence(quorum('0x1', { m: 1, k: 1 }))).toBe(false);
+    expect(isVerifiedEvidence(singleton('0x1'))).toBe(false);
     expect(isVerifiedEvidence(quorum('0x1', { achieved: false }))).toBe(false);
     expect(isVerifiedEvidence({ ...quorum('0x1'), source: 'direct' })).toBe(false);
     expect(
@@ -124,172 +84,343 @@ describe('what counts as evidence', () => {
   });
 });
 
-describe('labels at the finalized block', () => {
-  test('included at or below the finalized block, in its canonical block, status 1: paid', async () => {
-    const { request, calls } = chain({ receipts: { [HASH]: receipt() } });
-    await expect(readLabel(INTENT, { request })).resolves.toEqual({
+describe('labels on the finalized chain', () => {
+  test('its own transaction in a block of the finalized chain, status 1: paid', async () => {
+    const chain = chainWith({ 90: [ours(1)] });
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toEqual({
       label: LABELS.PAID,
       hash: HASH,
       block: 100,
     });
-    // Every read asks for trust, with no routing context.
-    for (const { options } of calls) expect(options).toEqual(READ_OPTIONS);
+    for (const [, , , options] of chain.request.mock.calls) expect(options).toEqual(READ_OPTIONS);
     expect(READ_OPTIONS).toEqual({ includeTrust: true, background: true });
   });
 
   test('status 0: failed', async () => {
-    const { request } = chain({ receipts: { [HASH]: receipt({ status: '0x0' }) } });
-    await expect(readLabel(INTENT, { request })).resolves.toEqual({
+    const chain = chainWith({ 90: [ours(0)] });
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
       label: LABELS.FAILED,
       hash: HASH,
-      block: 100,
     });
   });
 
   test('a replacement of its own included: paid, naming the replacement', async () => {
+    const chain = chainWith({ 90: [ours(1, REPLACEMENT)] });
     const intent = { ...INTENT, hashes: [{ hash: HASH }, { hash: REPLACEMENT }] };
-    const { request } = chain({
-      receipts: { [REPLACEMENT]: receipt({ transactionHash: REPLACEMENT }) },
-    });
-    await expect(readLabel(intent, { request })).resolves.toEqual({
+    await expect(readLabel(intent, { request: chain.request })).resolves.toMatchObject({
       label: LABELS.PAID,
       hash: REPLACEMENT,
-      block: 100,
     });
   });
 
-  test('the same payment replaced from elsewhere: the nonce passed, none of its own included, taken', async () => {
-    const { request } = chain({ count: 8 });
-    await expect(readLabel(INTENT, { request })).resolves.toEqual({
+  test('the nonce is read at the finalized block by its hash (EIP-1898)', async () => {
+    const chain = chainWith({ 90: [ours(1)] });
+    await readLabel(INTENT, { request: chain.request });
+    const counts = chain.reads().filter(([method]) => method === 'eth_getTransactionCount');
+    expect(counts[0][1]).toEqual([SENDER, { blockHash: chain.canonicalHash(100) }]);
+    expect(counts.every(([, params]) => typeof params[1]?.blockHash === 'string')).toBe(true);
+  });
+
+  test('another transaction of the sender used its nonce in a finalized block: taken, found in that block', async () => {
+    // The same payment signed elsewhere, or anything else at nonce 7.
+    const chain = chainWith({ 90: [{ hash: OTHER, nonce: 7, status: 1 }] });
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toEqual({
       label: LABELS.TAKEN,
       hash: null,
       block: 100,
     });
+    // Positive evidence: the block that used nonce 7, read with its transactions.
+    expect(chain.reads()).toContainEqual(['eth_getBlockByHash', [chain.canonicalHash(90), true]]);
   });
 
-  test('none included and the nonce not passed: held, seen absent', async () => {
-    const { request } = chain({ count: 7 });
-    await expect(readLabel(INTENT, { request })).resolves.toMatchObject({
+  test('not included, and its nonce not used at F: held, absent', async () => {
+    const chain = chainWith({ 110: [ours(1)] });
+    // Included at 110, above F: the receipt says so.
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.INCLUDED,
+    });
+    const nothing = chainWith({});
+    await expect(readLabel(INTENT, { request: nothing.request })).resolves.toMatchObject({
       label: LABELS.HELD,
       observed: OBSERVED.ABSENT,
     });
   });
 
-  test('a receipt above the finalized block (it lags finality): held, seen included', async () => {
-    const { request } = chain({
-      finalized: 89,
-      count: 8,
-      receipts: { [HASH]: receipt({ blockNumber: hex(90) }) },
+  test('a reorg: its receipt names a block that is not on the finalized chain, held', async () => {
+    const chain = chainWith({});
+    chain.defineView('fork', { forkAt: 80, forkTxs: { 90: [ours(1)] }, finalized: 80 });
+    chain.route('eth_getTransactionReceipt', 'fork');
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
     });
-    await expect(readLabel(INTENT, { request })).resolves.toMatchObject({
+  });
+
+  test('a node or chain that refuses the block-hash parameter: held', async () => {
+    const chain = chainWith({ 90: [ours(1)] });
+    chain.reshape('eth_getTransactionCount', () => {
+      throw new Error('invalid argument 1: hex string without 0x prefix');
+    });
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNKNOWN,
+    });
+  });
+
+  test('no finalized block, or a chain that refuses the tag: held', async () => {
+    const none = chainWith({ 90: [ours(1)] }, { finalized: null });
+    await expect(readLabel(INTENT, { request: none.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+    });
+    const refused = chainWith({ 90: [ours(1)] });
+    refused.reshape('eth_getBlockByNumber', () => {
+      throw new Error('invalid block tag "finalized"');
+    });
+    await expect(readLabel(INTENT, { request: refused.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+    });
+  });
+
+  test('Myotis and Colibri evidence labels; a quorum of one, Direct and Blockscout never do', async () => {
+    for (const wrap of [myotis, colibri]) {
+      const chain = chainWith({ 90: [ours(1)] });
+      for (const route of [
+        'eth_getBlockByNumber',
+        'eth_getBlockByNumber:number',
+        'eth_getTransactionCount',
+        'eth_getTransactionReceipt',
+      ]) {
+        chain.wrap(route, wrap);
+      }
+      await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+        label: LABELS.PAID,
+      });
+    }
+    for (const wrap of [singleton, direct, blockscout]) {
+      for (const route of [
+        'eth_getBlockByNumber',
+        'eth_getTransactionCount',
+        'eth_getTransactionReceipt',
+      ]) {
+        const paid = chainWith({ 90: [ours(1)] });
+        paid.wrap(route, wrap);
+        await expect(readLabel(INTENT, { request: paid.request })).resolves.toMatchObject({
+          label: LABELS.HELD,
+        });
+        const taken = chainWith({ 90: [{ hash: OTHER, nonce: 7 }] });
+        taken.wrap(route, wrap);
+        await expect(readLabel(INTENT, { request: taken.request })).resolves.toMatchObject({
+          label: LABELS.HELD,
+        });
+      }
+      // The block that used the nonce, read on unverified evidence.
+      const taken = chainWith({ 90: [{ hash: OTHER, nonce: 7 }] });
+      taken.wrap('eth_getBlockByHash', wrap);
+      taken.wrap('eth_getBlockByNumber:number', wrap);
+      await expect(readLabel(INTENT, { request: taken.request })).resolves.toMatchObject({
+        label: LABELS.HELD,
+      });
+    }
+  });
+});
+
+// The #712 review: each read is agreed separately, by whichever pair
+// answers first. A lying X pairs with honest A for one read and with an
+// honest B, lagging or on an unfinalized fork, for another.
+describe('reads agreed by different honest views (#712 review)', () => {
+  test("split-fork-paid: F from A, the receipt and its block from B's unfinalized fork, never paid", async () => {
+    for (const status of [1, 0]) {
+      const chain = chainWith({});
+      chain.defineView('fork', { forkAt: 80, forkTxs: { 90: [ours(status)] }, finalized: 80 });
+      chain.route('eth_getTransactionReceipt', 'fork');
+      chain.route('eth_getBlockByNumber:number', 'fork');
+      const label = await readLabel(INTENT, { request: chain.request });
+      expect(label).toMatchObject({ label: LABELS.HELD });
+    }
+  });
+
+  test("a fork's receipt while another transaction used the nonce on the finalized chain: never paid", async () => {
+    // Finalized: another transaction at nonce 7 (C = 8 > N). B's fork: ours.
+    const chain = chainWith({ 85: [{ hash: OTHER, nonce: 7 }] });
+    chain.defineView('fork', { forkAt: 80, forkTxs: { 90: [ours(1)] }, finalized: 80 });
+    chain.route('eth_getTransactionReceipt', 'fork');
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNKNOWN,
+    });
+  });
+
+  test("split-evidence: F and the nonce from A, a lagging B's null receipt, never taken", async () => {
+    const chain = chainWith({ 90: [ours(1)] });
+    chain.defineView('lagging', { head: 85, finalized: 80 });
+    chain.route('eth_getTransactionReceipt', 'lagging');
+    // Its own transaction used the nonce: held until a receipt agrees.
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
       label: LABELS.HELD,
       observed: OBSERVED.INCLUDED,
     });
   });
 
-  test('a reorg before finality: the block at that height has another hash, held', async () => {
-    const { request } = chain({
-      count: 8,
-      receipts: { [HASH]: receipt() },
-      blocks: { [hex(90)]: { number: hex(90), hash: `0x${'dd'.repeat(32)}` } },
-    });
-    await expect(readLabel(INTENT, { request })).resolves.toMatchObject({
-      label: LABELS.HELD,
-      observed: OBSERVED.UNKNOWN,
-    });
-  });
-
-  test('inconsistent receipts (the quorum fell to Direct): held, not taken', async () => {
-    // Direct says no receipt and the nonce has passed: unverified, it
-    // proves nothing.
-    const { request } = chain({ count: 8, source: { eth_getTransactionReceipt: direct } });
-    await expect(readLabel(INTENT, { request })).resolves.toMatchObject({
-      label: LABELS.HELD,
-      observed: OBSERVED.UNKNOWN,
-    });
-    // Nor does a Direct receipt make it paid.
-    const paid = chain({
-      receipts: { [HASH]: receipt() },
-      source: { eth_getTransactionReceipt: direct },
-    });
-    await expect(readLabel(INTENT, { request: paid.request })).resolves.toMatchObject({
-      label: LABELS.HELD,
+  test("a lagging pair's older finalized block: labels at that block, on the same chain", async () => {
+    const chain = chainWith({ 90: [ours(1)] });
+    chain.defineView('lagging', { head: 98, finalized: 95 });
+    chain.route('eth_getBlockByNumber', 'lagging');
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toEqual({
+      label: LABELS.PAID,
+      hash: HASH,
+      block: 95,
     });
   });
 
-  test('a quorum of one counts as Direct: held', async () => {
-    const singleton = (result) => quorum(result, { m: 1, k: 1 });
-    for (const method of [
-      'eth_getBlockByNumber',
-      'eth_getTransactionCount',
-      'eth_getTransactionReceipt',
-    ]) {
-      const { request } = chain({
-        count: 8,
-        receipts: { [HASH]: receipt() },
-        source: { [method]: singleton },
-      });
-      await expect(readLabel(INTENT, { request })).resolves.toMatchObject({ label: LABELS.HELD });
-    }
-    const block = chain({ receipts: { [HASH]: receipt() }, source: { block: singleton } });
+  test('headers by number from a fork are checked by hash link, and fetched by hash instead', async () => {
+    const chain = chainWith({ 90: [ours(1)] });
+    chain.defineView('fork', { forkAt: 80, finalized: 80 });
+    chain.route('eth_getBlockByNumber:number', 'fork');
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.PAID,
+    });
+    const byHash = chain.reads().filter(([method]) => method === 'eth_getBlockByHash');
+    expect(byHash.length).toBeGreaterThan(0);
+    expect(byHash.every(([, params]) => params[0].startsWith('0xc0'))).toBe(true);
+  });
+});
+
+describe('malformed evidence stays held (#712 review)', () => {
+  test('missing-block-hashes: a receipt with no block hash, a block with no hash', async () => {
+    const receipt = chainWith({ 90: [ours(1)] });
+    receipt.reshape('eth_getTransactionReceipt', (answer) => {
+      const { blockHash: _, ...rest } = answer;
+      return rest;
+    });
+    await expect(readLabel(INTENT, { request: receipt.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+    });
+    const block = chainWith({ 90: [ours(1)] });
+    block.reshape(
+      'eth_getBlockByNumber:number',
+      (answer) => answer && { ...answer, hash: undefined }
+    );
+    block.reshape('eth_getBlockByHash', (answer) => answer && { ...answer, hash: undefined });
     await expect(readLabel(INTENT, { request: block.request })).resolves.toMatchObject({
       label: LABELS.HELD,
     });
   });
 
-  test('Myotis and Colibri evidence labels', async () => {
-    for (const wrap of [myotis, colibri]) {
-      const source = {
-        eth_getBlockByNumber: wrap,
-        eth_getTransactionCount: wrap,
-        eth_getTransactionReceipt: wrap,
-        block: wrap,
-      };
-      const { request } = chain({ receipts: { [HASH]: receipt() }, source });
-      await expect(readLabel(INTENT, { request })).resolves.toMatchObject({ label: LABELS.PAID });
-    }
+  test('undefined-receipt: no result is not a null receipt, so never taken', async () => {
+    const chain = chainWith({ 90: [{ hash: OTHER, nonce: 7 }] });
+    chain.reshape('eth_getTransactionReceipt', () => undefined);
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNKNOWN,
+    });
   });
 
-  test('no finalized block, or a chain that refuses the tag: held', async () => {
-    for (const finalized of [null, new Error('invalid block tag "finalized"')]) {
-      const { request, calls } = chain({ finalized, count: 8 });
-      await expect(readLabel(INTENT, { request })).resolves.toMatchObject({
-        label: LABELS.HELD,
-        observed: OBSERVED.UNKNOWN,
-      });
-      expect(calls).toHaveLength(1);
-    }
-  });
-
-  test('the finalized nonce is read before any receipt', async () => {
-    const intent = { ...INTENT, hashes: [{ hash: HASH }, { hash: REPLACEMENT }] };
-    const { request, calls } = chain({ count: 8 });
-    await readLabel(intent, { request });
-    expect(calls.map(({ method, params }) => [method, params[0]])).toEqual([
-      ['eth_getBlockByNumber', 'finalized'],
-      ['eth_getTransactionCount', SENDER],
-      ['eth_getTransactionReceipt', HASH],
-      ['eth_getTransactionReceipt', REPLACEMENT],
-    ]);
-    expect(calls[1].params).toEqual([SENDER, 'finalized']);
-  });
-
-  test("a receipt for another transaction, or another sender's: held", async () => {
-    for (const bad of [{ transactionHash: REPLACEMENT }, { from: OTHER }, { from: undefined }]) {
-      const { request } = chain({ count: 8, receipts: { [HASH]: receipt(bad) } });
-      await expect(readLabel(INTENT, { request })).resolves.toMatchObject({ label: LABELS.HELD });
-    }
-  });
-
-  test('malformed answers and failed reads: held', async () => {
-    for (const receiptOverrides of [
-      { blockNumber: 'ninety' },
-      { status: undefined },
+  test('a block of another height than asked, a receipt for another transaction or sender, a bad status', async () => {
+    const height = chainWith({ 90: [ours(1)] });
+    height.reshape(
+      'eth_getBlockByNumber:number',
+      (answer) => answer && { ...answer, number: hex(1) }
+    );
+    height.reshape('eth_getBlockByHash', (answer) => answer && { ...answer, number: hex(1) });
+    await expect(readLabel(INTENT, { request: height.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+    });
+    for (const bad of [
+      { transactionHash: REPLACEMENT },
+      { from: '0x2222222222222222222222222222222222222222' },
+      { from: undefined },
       { status: '0x2' },
+      { status: undefined },
+      { blockNumber: 'ninety' },
+      { blockHash: '0xcd' },
     ]) {
-      const { request } = chain({ count: 8, receipts: { [HASH]: receipt(receiptOverrides) } });
-      await expect(readLabel(INTENT, { request })).resolves.toMatchObject({ label: LABELS.HELD });
+      const chain = chainWith({ 90: [ours(1)] });
+      chain.reshape('eth_getTransactionReceipt', (answer) => answer && { ...answer, ...bad });
+      await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+        label: LABELS.HELD,
+      });
     }
+  });
+
+  test('a finalized nonce that disagrees with an included receipt: held', async () => {
+    const chain = chainWith({ 90: [ours(1)] });
+    chain.reshape('eth_getTransactionCount', () => hex(7));
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNKNOWN,
+    });
+  });
+
+  test('the block that used the nonce without such a transaction of the sender: held', async () => {
+    const chain = chainWith({ 90: [{ hash: OTHER, nonce: 7 }] });
+    chain.reshape('eth_getBlockByHash', (answer, params) =>
+      params[1] ? { ...answer, transactions: [] } : answer
+    );
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+    });
+  });
+});
+
+describe('the verified chain and its bounds', () => {
+  test('kept across intents and passes: a later read walks only the new headers', async () => {
+    const chain = chainWith({ 90: [ours(1)], 95: [{ hash: OTHER, nonce: 8 }] }, { head: 200 });
+    const segment = createChainSegment();
+    await readLabel(INTENT, { request: chain.request, segment });
+    const walked = () =>
+      chain
+        .reads()
+        .filter(
+          ([method, params]) => method === 'eth_getBlockByNumber' && params[0] !== 'finalized'
+        ).length;
+    const first = walked();
+    expect(first).toBe(10); // 99 down to 90
+
+    // F moves to 130: only 101..129 are new; 90 is already verified.
+    chain.views.canonical.finalized = 130;
+    await expect(readLabel(INTENT, { request: chain.request, segment })).resolves.toMatchObject({
+      label: LABELS.PAID,
+      block: 130,
+    });
+    expect(walked() - first).toBe(29);
+  });
+
+  test('taken needs at most 2 × 13 nonce reads to find the block, and one block read', async () => {
+    const chain = chainWith({ 1000: [{ hash: OTHER, nonce: 7 }] }, { head: 9000, finalized: 8900 });
+    await expect(readLabel(INTENT, { request: chain.request })).resolves.toMatchObject({
+      label: LABELS.TAKEN,
+    });
+    const counts = chain.reads().filter(([method]) => method === 'eth_getTransactionCount').length;
+    expect(counts).toBeLessThanOrEqual(1 + 2 * 13);
+    expect(
+      chain.reads().filter(([method]) => method === 'eth_getBlockByHash' && method).length
+    ).toBeLessThanOrEqual(1);
+  });
+
+  test(`deeper than ${MAX_DEPTH} blocks below F: held, recorded as unverifiable`, async () => {
+    const used = chainWith({ 10: [{ hash: OTHER, nonce: 7 }] }, { head: 9300, finalized: 9250 });
+    await expect(readLabel(INTENT, { request: used.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNVERIFIABLE,
+    });
+    const receipt = chainWith({ 10: [ours(1)] }, { head: 9300, finalized: 9250 });
+    await expect(readLabel(INTENT, { request: receipt.request })).resolves.toMatchObject({
+      label: LABELS.HELD,
+      observed: OBSERVED.UNVERIFIABLE,
+    });
+    // It looked no deeper than the bound.
+    const deepest = Math.min(
+      ...receipt
+        .reads()
+        .filter(
+          ([method, params]) => method === 'eth_getBlockByNumber' && params[0] !== 'finalized'
+        )
+        .map(([, params]) => Number(BigInt(params[0])))
+    );
+    expect(deepest).toBeGreaterThanOrEqual(9250 - Number(MAX_DEPTH));
+  });
+
+  test('read failures: held', async () => {
     const failing = jest.fn(async () => {
       throw new Error('Chain data is unavailable');
     });
