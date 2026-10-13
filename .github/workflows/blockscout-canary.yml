@@ -1,0 +1,63 @@
+name: Blockscout pair canary
+
+# Live check of the second source in Ant's first wallet scan (#529, #596):
+# the core's Blockscout pairing, run as Ant's scans run it — the pinned
+# freedom-cored, main's own drivers and executors, Gnosis as a fresh profile
+# configures it, the `ant_scan` profile and Ant's window halving — against
+# live Blockscout and the public Gnosis RPCs (scripts/check-blockscout-pair.js).
+# Blockscout changing its API sends every first scan of a wallet with history
+# back to the window-by-window path without an error anyone sees, so this runs
+# nightly and on demand. It needs the network, so never per pull request.
+#
+# A schedule runs from the default branch only: until the release merges
+# integration/rust-core into main, run it there with workflow_dispatch.
+#
+# Locally: `npm ci`, `node scripts/fetch-freedom-cored.js`, then
+# `node scripts/check-blockscout-pair.js`.
+
+on:
+  schedule:
+    # Daily, off the hour (GitHub delays on-the-hour schedules the most).
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  blockscout-pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # The JavaScript only: the check loads main's modules in Node, never
+      # Electron, and no native addon.
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: Download freedom-cored binaries
+        # The release scripts/fetch-freedom-cored.js pins: the core the app
+        # ships with. Same bounded watchdog as ci.yml's downloads.
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Check the core's Blockscout pairing
+        # The check bounds itself at 5 minutes.
+        timeout-minutes: 6
+        run: node scripts/check-blockscout-pair.js
