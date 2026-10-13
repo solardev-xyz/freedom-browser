@@ -298,14 +298,16 @@ test.describe('myotis live ENS resolution', () => {
         state.probe?.beaconChainVerified === true,
     });
 
-    const routerPath = path.join(repoRoot, 'src', 'main', 'networks', 'chain-data-router.js');
+    // Chain data's production path: the core routes the read, Myotis's
+    // readiness sent to it by main.
+    const chainDataPath = path.join(repoRoot, 'src', 'main', 'networks', 'chain-data.js');
     const routedGnosis = await electronApp.evaluate(
       // eslint-disable-next-line no-empty-pattern
       async ({}, { p, address }) => {
-        const router = process.mainModule.require(p);
-        return router.request(100, 'eth_getBalance', [address, 'latest']);
+        const chainData = process.mainModule.require(p);
+        return chainData.request(100, 'eth_getBalance', [address, 'latest']);
       },
-      { p: routerPath, address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' }
+      { p: chainDataPath, address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' }
     );
     expect(routedGnosis).toMatchObject({ source: 'myotis', verified: true });
     expect(routedGnosis.result).toMatch(/^0x[0-9a-f]+$/i);

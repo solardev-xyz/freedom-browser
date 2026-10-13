@@ -4,7 +4,7 @@ jest.mock('../logger', () => ({
   error: jest.fn(),
 }));
 
-jest.mock('../networks/chain-data-router', () => ({
+jest.mock('../networks/chain-data', () => ({
   request: jest.fn(),
 }));
 
@@ -13,7 +13,7 @@ jest.mock('../networks/network-registry', () => ({
 }));
 
 const { ethers } = require('ethers');
-const chainData = require('../networks/chain-data-router');
+const chainData = require('../networks/chain-data');
 const log = require('../logger');
 const {
   APPROVAL_HEADER,

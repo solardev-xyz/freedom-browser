@@ -7,7 +7,7 @@
  */
 
 const { parseUnits, formatUnits, Interface, Transaction } = require('ethers');
-const chainData = require('../networks/chain-data-router');
+const chainData = require('../networks/chain-data');
 const { getTxExplorerUrl } = require('./chains');
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
 

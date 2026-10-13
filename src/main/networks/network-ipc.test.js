@@ -30,6 +30,7 @@ function loadNetworkIpc(options = {}) {
   };
   const providerManager = { clearProviderCache: jest.fn() };
   const ensResolver = { invalidateCachedProvider: jest.fn() };
+  const chain = { chainSettingsChanged: jest.fn() };
   const settingsStore = {
     loadSettings: jest.fn(() => ({ theme: 'system' })),
   };
@@ -53,6 +54,7 @@ function loadNetworkIpc(options = {}) {
       [require.resolve('../wallet/rpc-manager')]: () => rpcManager,
       [require.resolve('../wallet/provider-manager')]: () => providerManager,
       [require.resolve('../ens-resolver')]: () => ensResolver,
+      [require.resolve('../core/chain')]: () => chain,
       [require.resolve('../settings-store')]: () => settingsStore,
     },
   });
@@ -65,6 +67,7 @@ function loadNetworkIpc(options = {}) {
     tokenRegistry,
     providerManager,
     ensResolver,
+    chain,
     settingsStore,
     rpcManager,
   };
@@ -95,6 +98,8 @@ describe('network-ipc', () => {
     });
     expect(ctx.providerManager.clearProviderCache).toHaveBeenCalled();
     expect(ctx.ensResolver.invalidateCachedProvider).toHaveBeenCalled();
+    // The core takes every chain's new snapshot.
+    expect(ctx.chain.chainSettingsChanged).toHaveBeenCalledTimes(1);
     expect(ctx.send).toHaveBeenCalledWith(
       IPC.SETTINGS_UPDATED,
       expect.objectContaining({ networkConfigUpdated: true })
@@ -129,6 +134,7 @@ describe('network-ipc', () => {
     expect(result).toEqual({ success: false, error: 'RPC URL must use https://' });
     expect(ctx.providerManager.clearProviderCache).not.toHaveBeenCalled();
     expect(ctx.ensResolver.invalidateCachedProvider).not.toHaveBeenCalled();
+    expect(ctx.chain.chainSettingsChanged).not.toHaveBeenCalled();
     expect(ctx.send).not.toHaveBeenCalled();
   });
 
@@ -142,5 +148,6 @@ describe('network-ipc', () => {
     expect(ctx.registry.resetEndpointSourceCoverage).toHaveBeenCalledWith('colibri-corpus', 1);
     expect(ctx.providerManager.clearProviderCache).toHaveBeenCalled();
     expect(ctx.ensResolver.invalidateCachedProvider).toHaveBeenCalled();
+    expect(ctx.chain.chainSettingsChanged).toHaveBeenCalled();
   });
 });

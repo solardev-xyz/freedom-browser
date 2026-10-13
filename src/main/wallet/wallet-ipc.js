@@ -20,7 +20,7 @@ const {
 const { signAndRecord, KINDS: PAYMENT_KINDS } = require('./tx-recorder');
 const { getActiveWalletIndex } = require('../identity-manager');
 const { getEffectiveRpcUrls } = require('./rpc-manager');
-const chainData = require('../networks/chain-data-router');
+const chainData = require('../networks/chain-data');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
 const {

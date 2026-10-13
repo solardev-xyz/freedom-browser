@@ -30,10 +30,13 @@ function broadcastNetworkConfigUpdated() {
 
 // registry.invalidate() already ran inside the mutation; this also drops
 // the caches that sit downstream of the registry — the wallet provider
-// pool and the ENS resolver pool — so the change is reflected live.
+// pool and the ENS resolver pool — and gives the core every chain's new
+// snapshot, ahead of the chain requests after it, so the change is
+// reflected live.
 function refreshDownstream() {
   require('../wallet/provider-manager').clearProviderCache();
   require('../ens-resolver').invalidateCachedProvider();
+  require('../core/chain').chainSettingsChanged();
   broadcastNetworkConfigUpdated();
 }
 

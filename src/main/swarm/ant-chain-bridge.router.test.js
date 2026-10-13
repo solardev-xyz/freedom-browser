@@ -1,5 +1,6 @@
 // The real chain-data router behind the real Ant bridge, over loopback
-// sockets with real timers. Only the registry, Myotis, Colibri and fetch are
+// sockets with real timers, until step 5.5 deletes the router (the core
+// serves the bridge now). Only the registry, Myotis, Colibri and fetch are
 // stubbed. Ant's log scans are answered by the RPC quorum alone (#484): the
 // provider's range-limit wording still reaches Ant (R2-F1 on PR #419), and no
 // single RPC's answer settles a scan.
@@ -26,7 +27,20 @@ jest.mock('../ens/colibri-resolver', () => ({
 jest.mock('../logger', () => ({ verbose: jest.fn(), info: jest.fn(), warn: jest.fn() }));
 
 const router = require('../networks/chain-data-router');
-const { startAntChainBridge } = require('./ant-chain-bridge');
+const { startAntChainBridge, LOG_SCAN_ROUTER_OPTIONS } = require('./ant-chain-bridge');
+
+// The bridge names its log scans' options as the core's `ant_scan` profile;
+// the JS router (deleted with step 5.5) takes them spelled out.
+const routerByProfile = {
+  request: (chainId, method, params, { profile, ...options }) =>
+    router.request(
+      chainId,
+      method,
+      params,
+      profile === 'ant_scan' ? { ...options, ...LOG_SCAN_ROUTER_OPTIONS } : options
+    ),
+  broadcastRawTransaction: router.broadcastRawTransaction,
+};
 
 const RPCS = ['https://a.example', 'https://b.example', 'https://c.example'];
 const originalFetch = global.fetch;
@@ -58,7 +72,10 @@ beforeEach(async () => {
   mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
     role === 'prover' ? ['https://prover.example'] : RPCS
   );
-  bridge = await startAntChainBridge({ router, log: { info: jest.fn(), verbose: jest.fn(), warn: jest.fn() } });
+  bridge = await startAntChainBridge({
+    router: routerByProfile,
+    log: { info: jest.fn(), verbose: jest.fn(), warn: jest.fn() },
+  });
 });
 afterEach(async () => {
   await bridge.close();

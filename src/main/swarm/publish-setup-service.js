@@ -1698,7 +1698,7 @@ function getPublishSetupService() {
       },
       getTransactionStatus,
       getWalletTxCount: async (address) => {
-        const chainData = require('../networks/chain-data-router');
+        const chainData = require('../networks/chain-data');
         const { result } = await chainData.request(GNOSIS_CHAIN_ID, 'eth_getTransactionCount', [
           address,
           'latest',

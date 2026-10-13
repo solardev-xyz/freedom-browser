@@ -17,6 +17,10 @@ const MAX_RESPONSE = 16 * 1024 * 1024;
 const MAX_ACTIVE = 8;
 const MAX_LOG_LINE = 64 * 1024;
 const MAX_ERROR_MESSAGE = 500;
+// Ant's reply to a broadcast that may have been sent: it reconciles the signed
+// transaction itself, and nothing is sent again here.
+const BROADCAST_UNCERTAIN = 'Broadcast outcome uncertain; reconcile the signed transaction';
+
 // A wide log scan gets a longer quorum budget than an interactive read would:
 // a full-history answer can take seconds. It fits the bridge's 120 s deadline
 // with room for the router's own handling.
@@ -184,7 +188,8 @@ function logScanRangeCap(error, span = null) {
   return null;
 }
 
-// Router options for Ant's eth_getLogs (window-halving) scans. Only two
+// Ant's eth_getLogs (window-halving) scans: the core's `ant_scan` profile,
+// which ports these router options (freedom-core design 0005, Logs). Only two
 // independent providers that agree answer them: the RPC quorum, or, for a
 // span wider than the quorum can verify, Blockscout's log index paired with
 // one RPC endpoint (#529, the router's blockscout source). A log Ant does not
@@ -194,7 +199,9 @@ function logScanRangeCap(error, span = null) {
 // only the logs it returns, not that none are missing, and answers a range
 // its RPC refuses ("Block range 32059916 exceeds the maximum of 10000
 // blocks") with only the most recent blocks' logs, so Ant would read a
-// whole-history scan as empty (#496).
+// whole-history scan as empty (#496). The JS router took them spelled out;
+// it is no longer asked (step 5.5 deletes it, and these with it).
+const LOG_SCAN_PROFILE = 'ant_scan';
 const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
   excludeSources: Object.freeze(['myotis', 'colibri', 'direct']),
   includeSources: Object.freeze(['blockscout']),
@@ -250,7 +257,7 @@ function antErrorReply(method, error) {
   }
   const message =
     error?.code === 'MYOTIS_BROADCAST_UNCERTAIN'
-      ? 'Broadcast outcome uncertain; reconcile the signed transaction'
+      ? BROADCAST_UNCERTAIN
       : code === 3
         ? 'Execution reverted'
         : `Chain request failed${detail ? `: ${detail}` : ''}`;
@@ -281,7 +288,7 @@ function receiptFailureIsPermanent(error) {
 // is generated per start, passed only to our child, and never persisted.
 async function startAntChainBridge({
   allowBroadcast = false,
-  router = require('../networks/chain-data-router'),
+  router = require('../networks/chain-data'),
   log = require('../logger'),
   timeoutMs = 120000,
   receiptGraceMs = RECEIPT_GRACE_MS,
@@ -371,7 +378,7 @@ async function startAntChainBridge({
       fail(
         -32002,
         method === 'eth_sendRawTransaction'
-          ? 'Broadcast outcome uncertain; reconcile the signed transaction'
+          ? BROADCAST_UNCERTAIN
           : 'Chain request failed: query timeout'
       );
       req.destroy();
@@ -448,9 +455,17 @@ async function startAntChainBridge({
               signal: controller.signal,
               // Ant's polling must not queue ahead of wallet/app reads.
               background: true,
-              ...(method === 'eth_getLogs' ? LOG_SCAN_ROUTER_OPTIONS : {}),
+              ...(method === 'eth_getLogs' ? { profile: LOG_SCAN_PROFILE } : {}),
             });
       controller.signal.throwIfAborted();
+      // Sent, but unconfirmed (a lost reply, an ambiguous node error): Ant
+      // reconciles the signed transaction, as after Myotis's uncertain
+      // outcome. A refusal or a broadcast that sent nothing throws below.
+      if (method === 'eth_sendRawTransaction' && answer.outcome === 'uncertain') {
+        fail(-32002, BROADCAST_UNCERTAIN);
+        log.warn('[Ant chain] eth_sendRawTransaction outcome uncertain');
+        return;
+      }
       if (answer.result === undefined) throw new Error('Missing chain result');
       if (receiptHash && answer.result !== null && receiptWaits.get(receiptHash) === receiptWait)
         receiptWaits.delete(receiptHash);
@@ -605,6 +620,7 @@ module.exports = {
   rankLogScanError,
   logScanRangeCap,
   antErrorReply,
+  LOG_SCAN_PROFILE,
   LOG_SCAN_ROUTER_OPTIONS,
   LOG_SCAN_ERROR_RANK: RANK,
   ANT_LOG_SCAN_SHRINK_NEEDLES,
