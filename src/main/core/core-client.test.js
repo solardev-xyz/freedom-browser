@@ -1613,6 +1613,59 @@ describe('CoreClient', () => {
       expect(core.killed).toBeNull();
     });
 
+    // Review of #692 (client): serializing runs the params' own code, which
+    // can abort the signal before the listener exists.
+    test.each([
+      [
+        'toJSON',
+        (abort) => ({
+          toJSON() {
+            abort();
+            return { chain_id: 1, raw: '0x1234', deadline_ms: 1000 };
+          },
+        }),
+      ],
+      [
+        'a getter',
+        (abort) => ({
+          chain_id: 1,
+          get raw() {
+            abort();
+            return '0x1234';
+          },
+        }),
+      ],
+    ])(
+      'an abort from %s while it is serialized: cancelled, and never sent',
+      async (_name, make) => {
+        const { client, core, gen, cancels } = await held();
+        const controller = new AbortController();
+        const params = make(() => controller.abort());
+        const outcome = await client
+          .requestTo(
+            gen,
+            'chain.broadcast',
+            params,
+            { caller: 'shell' },
+            { signal: controller.signal }
+          )
+          .then(
+            (result) => ({ result }),
+            (error) => ({ error })
+          );
+        expect(outcome.error).toMatchObject({ code: 'cancelled' });
+        await tick();
+        expect(core.requests.filter((r) => r.method === 'chain.broadcast')).toEqual([]);
+        expect(cancels()).toEqual([]);
+        expect(gen.pending.size).toBe(0);
+        // Its ID was never taken: the next request has the one after the
+        // hello's.
+        client.requestTo(gen, 'vault.status').catch(() => {});
+        await tick();
+        expect(core.requests.at(-1)).toMatchObject({ method: 'vault.status', id: 2 });
+      }
+    );
+
     test('a signal already aborted sends nothing; one after the response cancels nothing', async () => {
       const { client, core, gen, send, cancels } = await held();
       const controller = new AbortController();

@@ -903,6 +903,11 @@ class CoreClient extends EventEmitter {
       }
       return refuse(new CoreError('invalid_argument', 'Request is not serializable'));
     }
+    // Serializing ran the params' own code (a getter, a toJSON), which may
+    // have aborted the signal: an abort's event isn't replayed to a listener
+    // added later, so it is checked again. Cancelled before it is written,
+    // the request is never sent.
+    if (signal?.aborted) return refuse(cancelled());
     if (!control && gen.writeBytes + frame.length > MAX_WRITE_BYTES) {
       return refuse(new CoreError('busy', 'Too much data in flight'));
     }
