@@ -222,7 +222,7 @@ describeIfBinary('naming with the real freedom-cored', () => {
     while (credits.mock.calls.length < begins) await new Promise(setImmediate);
     expect(gen.credit).toBe(true);
     expect(gen.bulk).toEqual([]);
-    expect(gen.bulkBytes).toBe(0);
+    expect(client.pool.held).toBe(0);
     expect(client.serves(gen)).toBe(true);
   });
 });

@@ -39,6 +39,13 @@
  * `cancel`; the core's one response still comes, and is consumed and
  * dropped.
  *
+ * **Main's chain I/O pool** (design 0005, Main's pool): 192 MiB for what
+ * main holds for the core until it is written. Handlers charge the bodies
+ * they read and the results they hold; a reply of 64 KiB or more is charged
+ * from serialization until written or dropped. Past it, a reply is `busy`.
+ * Control frames (credit, cancels, shutdown) and smaller replies are never
+ * held back by it.
+ *
  * **Logs** carry fixed categories and validated public fields only: never
  * request or response bodies, peer-supplied IDs, types or error text.
  */
@@ -90,12 +97,16 @@ const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/;
 // are outstanding, as the core bounds them.
 const METHOD_NAME = EVENT_NAME;
 const MAX_INCOMING = 256;
-// Fragmented replies held for the core, waiting for its credit or being
-// written: one message cap in all, a single buffer's worth for this
-// direction, until main's chain I/O pool (design 0005, Main's pool) bounds
-// what its executors hold. Each is charged whole for as long as its buffer
-// is referenced, which a fragment being written does.
-const MAX_BULK_BYTES = MAX_MESSAGE;
+// Main's chain I/O pool (design 0005, Main's pool): what main holds for the
+// core until it is written. Handlers charge the bodies they read and the
+// verifier results they hold, until their reply is serialized; a reply of
+// POOL_EXEMPT_BYTES or more is charged from serialization until it is
+// written or dropped, a fragmented one whole for as long as its buffer is
+// referenced. Past the pool, an exchange or a reply is `busy`. Smaller
+// replies are exempt: main's limit of 256 outstanding requests bounds them
+// at 16 MiB.
+const POOL_BYTES = 192 * 1024 * 1024;
+const POOL_EXEMPT_BYTES = 64 * 1024;
 const ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 // fc-protocol's ErrorCode (crates/fc-protocol/src/error.rs). Only these are
 // ever logged; callers still get any well-formed code.
@@ -171,6 +182,48 @@ class ShellError extends Error {
     super(code);
     this.name = 'ShellError';
     this.code = code;
+  }
+}
+
+/** Main's chain I/O pool: bytes held, within a limit. */
+class IoPool {
+  constructor(limit) {
+    this.limit = limit;
+    this.held = 0;
+  }
+
+  /** Charges `bytes`: false, and nothing charged, when they don't fit. */
+  take(bytes) {
+    if (bytes > this.limit - this.held) return false;
+    this.held += bytes;
+    return true;
+  }
+
+  release(bytes) {
+    this.held -= bytes;
+  }
+
+  /**
+   * An account for one of the core's requests: `charge(bytes)` charges
+   * what its handler holds (false past the pool), and `close()` releases it
+   * all. A closed account charges nothing more.
+   */
+  lease() {
+    let held = 0;
+    let open = true;
+    return {
+      charge: (bytes) => {
+        if (!open || !Number.isSafeInteger(bytes) || bytes < 0 || !this.take(bytes)) return false;
+        held += bytes;
+        return true;
+      },
+      close: () => {
+        if (!open) return;
+        open = false;
+        this.release(held);
+        held = 0;
+      },
+    };
   }
 }
 
@@ -283,13 +336,15 @@ class Generation {
     // bulk credit.
     this.reassembler = new Reassembler();
     // Main's fragmented replies: only if the core offered them, one at a
-    // time while main holds the core's credit. Those waiting to begin, the
-    // one being written, and the bytes of the buffers they keep.
+    // time while main holds the core's credit. Those waiting to begin, and
+    // the one being written.
     this.fragments = false;
     this.credit = false;
     this.bulk = [];
-    this.sending = null; // { id, controller, payload, offset, writing }
-    this.bulkBytes = 0;
+    this.sending = null; // { id, controller, payload, release, offset, writing }
+    // The pool charges of its replies until written or dropped, each a
+    // release that runs once; retirement releases what is left.
+    this.charges = new Set();
     this.stderrText = new StringDecoder('utf8');
     this.stderrLine = '';
     this.stderrDropping = false;
@@ -322,6 +377,7 @@ class CoreClient extends EventEmitter {
    * @param {Function} [options.now]
    * @param {Function} [options.setTimer]
    * @param {Function} [options.clearTimer]
+   * @param {number} [options.poolBytes] - main's chain I/O pool (a test seam)
    */
   constructor(options) {
     super();
@@ -334,6 +390,9 @@ class CoreClient extends EventEmitter {
     this.now = options.now || Date.now;
     this.setTimer = options.setTimer || setTimeout;
     this.clearTimer = options.clearTimer || clearTimeout;
+    // One pool for every core process this client runs: what a retired
+    // one held is released with it.
+    this.pool = new IoPool(options.poolBytes ?? POOL_BYTES);
 
     this.state = STATE.STOPPED;
     this.generations = 0;
@@ -353,10 +412,12 @@ class CoreClient extends EventEmitter {
 
   /**
    * Registers the handler for the core's requests named `method`. It is
-   * called with (params, { signal }) and returns the result (or a promise
-   * of it); a ShellError is the terminal error reply. `signal` aborts when
-   * the core cancels the request or its generation ends; the handler still
-   * settles, and exactly one reply goes back.
+   * called with (params, { signal, charge }) and returns the result (or a
+   * promise of it); a ShellError is the terminal error reply. `signal`
+   * aborts when the core cancels the request or its generation ends; the
+   * handler still settles, and exactly one reply goes back. `charge(bytes)`
+   * charges what the handler holds for its reply to main's pool, until the
+   * reply is serialized: false, and nothing charged, past the pool.
    */
   handle(method, handler) {
     this.handlers.set(method, handler);
@@ -650,6 +711,8 @@ class CoreClient extends EventEmitter {
     // The core's requests die with it: their handlers stop, and their
     // replies have nowhere to go.
     this.fence(gen);
+    // Writes its stdio held may never report back: what they held goes now.
+    for (const release of [...gen.charges]) release();
     const pending = [...gen.pending.values()];
     gen.pending.clear();
     for (const entry of pending) entry.settle({ error: unavailable('The core exited') });
@@ -996,6 +1059,9 @@ class CoreClient extends EventEmitter {
       this.respond(gen, id, controller, { error: shellError('unknown_method') });
       return undefined;
     }
+    // What the handler holds for its reply, in main's pool until the reply
+    // is serialized (or dropped).
+    const lease = this.pool.lease();
     Promise.resolve()
       .then(() => {
         // Fenced before it started (its generation ended), or cancelled in
@@ -1006,7 +1072,7 @@ class CoreClient extends EventEmitter {
         if (controller.signal.aborted) return { error: shellError('cancelled') };
         let pending;
         try {
-          pending = handler(params ?? {}, { signal: controller.signal });
+          pending = handler(params ?? {}, { signal: controller.signal, charge: lease.charge });
         } catch (err) {
           return { error: shellErrorBody(err, controller.signal) };
         }
@@ -1016,7 +1082,11 @@ class CoreClient extends EventEmitter {
         );
       })
       .then((outcome) => {
-        if (outcome) this.respond(gen, id, controller, outcome);
+        try {
+          if (outcome) this.respond(gen, id, controller, outcome, lease);
+        } finally {
+          lease.close();
+        }
       });
     return undefined;
   }
@@ -1065,9 +1135,13 @@ class CoreClient extends EventEmitter {
    *
    * A reply over one frame goes fragmented, to a core that offered
    * fragments and within the message cap; otherwise it is `too_large`.
-   * Fragmented replies held take at most MAX_BULK_BYTES: past that, `busy`.
+   *
+   * Main's pool (design 0005): once the reply is serialized, what its
+   * handler held for it (`lease`) is released, and a reply of
+   * POOL_EXEMPT_BYTES or more is charged in its place until it is written or
+   * dropped. Past the pool, it is `busy`.
    */
-  respond(gen, id, controller, outcome) {
+  respond(gen, id, controller, outcome, lease = null) {
     if (!this.owes(gen, id, controller)) return;
     // Serialized once, so a result's toJSON runs once and what is checked
     // is what is sent: a result JSON can't represent (a function, a symbol,
@@ -1080,31 +1154,54 @@ class CoreClient extends EventEmitter {
     } catch {
       json = null;
     }
+    lease?.close();
     // Serializing ran the result's own code, which may have fenced it.
     if (!this.owes(gen, id, controller)) return;
     let code = 'internal';
     if (json !== null) {
       const size = Buffer.byteLength(json, 'utf8');
-      if (size <= MAX_PAYLOAD) {
-        this.writeReply(gen, id, controller, encodeJsonFrame(json));
-        return;
+      const whole = size <= MAX_PAYLOAD;
+      if (whole || (gen.fragments && size <= MAX_MESSAGE)) {
+        const release = this.hold(gen, size >= POOL_EXEMPT_BYTES ? size : 0);
+        if (release && whole) {
+          this.writeReply(gen, id, controller, encodeJsonFrame(json), release);
+          return;
+        }
+        if (release) {
+          this.queueBulk(gen, { id, controller, payload: Buffer.from(json, 'utf8'), release });
+          return;
+        }
+        code = 'busy';
+      } else {
+        code = 'too_large';
       }
-      const fits = gen.fragments && size <= MAX_MESSAGE;
-      if (fits && gen.bulkBytes + size <= MAX_BULK_BYTES) {
-        this.queueBulk(gen, { id, controller, payload: Buffer.from(json, 'utf8') });
-        return;
-      }
-      code = fits ? 'busy' : 'too_large';
     }
     const error = shellError(code);
     this.writeReply(gen, id, controller, encodeFrame({ type: 'response', id, error }));
   }
 
-  /** Writes a reply in one frame. */
-  writeReply(gen, id, controller, frame) {
+  /**
+   * Charges `bytes` of `gen`'s to main's pool: a release that runs once, or
+   * null past the pool. Its retirement releases whatever is still held.
+   */
+  hold(gen, bytes) {
+    if (bytes === 0) return () => {};
+    if (!this.pool.take(bytes)) return null;
+    const release = () => {
+      if (!gen.charges.delete(release)) return;
+      this.pool.release(bytes);
+    };
+    gen.charges.add(release);
+    return release;
+  }
+
+  /** Writes a reply in one frame; `release` returns its pool charge once
+   * it is written. */
+  writeReply(gen, id, controller, frame, release = null) {
     gen.replyBytes += frame.length;
     const written = (err) => {
       gen.replyBytes -= frame.length;
+      release?.();
       if (gen.incoming.get(id) === controller) gen.incoming.delete(id);
       if (err) this.connectionFailed(gen, 'stdin_error');
     };
@@ -1118,7 +1215,6 @@ class CoreClient extends EventEmitter {
   /** A reply over one frame waits for the core's credit, in order. */
   queueBulk(gen, reply) {
     gen.bulk.push(reply);
-    gen.bulkBytes += reply.payload.length;
     this.pumpBulk(gen);
   }
 
@@ -1131,7 +1227,7 @@ class CoreClient extends EventEmitter {
     while (!gen.sending && gen.credit && gen.bulk.length) {
       const reply = gen.bulk.shift();
       if (!this.owes(gen, reply.id, reply.controller)) {
-        gen.bulkBytes -= reply.payload.length;
+        reply.release();
         continue;
       }
       gen.credit = false;
@@ -1172,7 +1268,7 @@ class CoreClient extends EventEmitter {
         this.writeFragment(gen);
         return;
       }
-      gen.bulkBytes -= payload.length;
+      sending.release();
       if (gen.sending !== sending) return;
       gen.sending = null;
       if (err) {
@@ -1194,9 +1290,9 @@ class CoreClient extends EventEmitter {
    * written: the core reads no more of this generation's. A fragment still
    * being written holds its reply's buffer: its write releases the charge. */
   dropBulk(gen) {
-    if (gen.sending && !gen.sending.writing) gen.bulkBytes -= gen.sending.payload.length;
+    if (gen.sending && !gen.sending.writing) gen.sending.release();
     gen.sending = null;
-    for (const reply of gen.bulk) gen.bulkBytes -= reply.payload.length;
+    for (const reply of gen.bulk) reply.release();
     gen.bulk = [];
   }
 
@@ -1340,4 +1436,6 @@ module.exports = {
   RESTART_DELAYS_MS,
   MAX_PENDING,
   MAX_WRITE_BYTES,
+  POOL_BYTES,
+  POOL_EXEMPT_BYTES,
 };
