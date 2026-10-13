@@ -225,19 +225,37 @@ function fingerprint(manifest) {
 // 0006, "Other callers"): a private window's lookup is private to the core
 // and redacted in the log, its fetch stops with the window, and a remote Ant
 // is dialled on that session's network stack.
+//
+// The window is read when the check comes in, before it queues behind the
+// origin's lock: by the time the lock is free the window may be gone, and
+// what it was must not be guessed then. A sender that is gone, or one known
+// to be private whose partition can't be named, gets no context: its check
+// is refused, never fetched on the default session.
+function privateWindows() {
+  return require('../private/private-windows');
+}
+
 function manifestFetchContext(sender) {
-  if (!sender) return {};
+  if (typeof sender?.isDestroyed !== 'function' || sender.isDestroyed()) return null;
   const { session } = require('electron');
-  const {
-    getPartitionForWebContents,
-    isPrivateWebContents,
-  } = require('../private/private-windows');
+  const { getPartitionForWebContents, isPrivateWebContents } = privateWindows();
   const partition = getPartitionForWebContents(sender);
+  const isPrivate = Boolean(partition) || isPrivateWebContents(sender);
+  if (isPrivate && !partition) return null;
   return {
     session: partition ? session.fromPartition(partition) : session.defaultSession,
     partition,
-    isPrivate: Boolean(partition) || isPrivateWebContents(sender),
+    isPrivate,
   };
+}
+
+// Whether the window a queued check was taken from is still there, on the
+// same partition: a check that outlived its window fetches nothing.
+function stillAsking(sender, fetchContext) {
+  return (
+    !sender.isDestroyed() &&
+    privateWindows().getPartitionForWebContents(sender) === fetchContext.partition
+  );
 }
 
 async function discover(committedUrl, fetchManifest = handleBzzRequest, fetchContext = {}) {
@@ -645,11 +663,17 @@ function registerPermissionManifestIpc() {
   // that claims it — and can re-assert it on the next projection.
   permissions.onManifestMutation(detachManaged);
   feeds.onManifestMutation(detachManaged);
-  ipcMain.handle(IPC.SWARM_MANIFEST_CHECK, (event, request) => (
-    withOriginLock(request.origin, () => checkManifest(request, {
-      fetchContext: manifestFetchContext(event?.sender),
-    }))
-  ));
+  ipcMain.handle(IPC.SWARM_MANIFEST_CHECK, (event, request) => {
+    const sender = event?.sender;
+    // Read at receipt, before the lock's queue (see manifestFetchContext).
+    const fetchContext = manifestFetchContext(sender);
+    if (!fetchContext) return { kind: 'unresolved' };
+    return withOriginLock(request.origin, () => (
+      stillAsking(sender, fetchContext)
+        ? checkManifest(request, { fetchContext })
+        : { kind: 'unresolved' }
+    ));
+  });
   ipcMain.handle(IPC.SWARM_MANIFEST_DECIDE, (_event, { token, outcome }) => {
     const origin = tokens.get(token)?.origin || `consent-token:${token}`;
     return withOriginLock(origin, () => decideManifest(token, outcome));
